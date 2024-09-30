@@ -1,0 +1,11 @@
+__pycache__
+/target
+/.venv
+/venv
+/.vscode
+
+*.pyd
+*.so
+
+# genereted files
+

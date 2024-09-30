@@ -1,0 +1,8 @@
+[package]
+name = "egui_pysync_server"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+pyo3 = { version = "0.22.3", features = ["extension-module", "abi3-py311"] }
+egui_pysync_common = { workspace = true }

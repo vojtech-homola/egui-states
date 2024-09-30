@@ -1,0 +1,8 @@
+[package]
+name = "egui_pysync_client"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+egui = { version = "*" }
+egui_pysync_common = { workspace = true }
