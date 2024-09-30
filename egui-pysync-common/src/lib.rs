@@ -1,6 +1,7 @@
 pub mod collections;
 pub mod commands;
 pub mod event;
+pub mod image;
 pub mod transport;
 pub mod values;
 

@@ -33,7 +33,6 @@ impl Event {
         self.cond.notify_one();
     }
 
-    #[allow(dead_code)]
     pub fn is_set(&self) -> bool {
         *self.flag.lock().unwrap()
     }

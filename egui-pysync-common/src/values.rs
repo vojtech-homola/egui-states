@@ -1,16 +1,7 @@
-use std::io::Read;
-use std::net::TcpStream;
-
-use crate::transport::{self, ParseError, MESS_SIZE, SIZE_START};
+use crate::transport::SIZE_START;
 
 /*
 Values and Signals
-
-common head:
-|1B - type | 4B - u32 value id | 1B - signal / update | = 6B
-
-value head:
-| HEAD SIZE - 6B - rest of the message |
 */
 
 pub trait ReadValue: Sized + Send + Sync + Clone {
