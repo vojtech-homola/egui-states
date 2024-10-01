@@ -13,6 +13,7 @@ fn start_gui_client(
     mut rx: Receiver<WriteMessage>,
     channel: Sender<WriteMessage>,
     ui_state: UIState,
+    handshake: [u64; 2],
 ) {
     let _ = spawn(move || loop {
         // wait for the connection signal
@@ -78,7 +79,8 @@ fn start_gui_client(
             let mut head = [0u8; HEAD_SIZE];
 
             // send handshake
-            let handshake: WriteMessage = WriteMessage::Command(CommandMessage::Handshake(0, 0));
+            let handshake = CommandMessage::Handshake(handshake[0], handshake[1]);
+            let handshake: WriteMessage = WriteMessage::Command(handshake);
             let res = handshake.write_message(&mut head, &mut stream_write);
             if let Err(e) = res {
                 println!("Error for sending hadnskae: {:?}", e); // TODO: log error
@@ -135,7 +137,7 @@ impl ClientBuilder {
         &mut self.creator
     }
 
-    pub fn build(self) -> UIState {
+    pub fn build(self, handshake: [u64; 2]) -> UIState {
         let Self {
             creator,
             channel,
@@ -144,7 +146,7 @@ impl ClientBuilder {
 
         let values = creator.get_values();
         let ui_state = UIState::new();
-        start_gui_client(values, rx, channel, ui_state.clone());
+        start_gui_client(values, rx, channel, ui_state.clone(), handshake);
 
         ui_state
     }

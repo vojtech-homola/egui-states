@@ -1,5 +1,5 @@
+use std::ptr::copy_nonoverlapping;
 use std::sync::{Arc, RwLock};
-use std
 
 use egui_pysync_common::graphs::{GraphsMessage, Precision};
 
@@ -58,86 +58,107 @@ impl<T: GraphType> GraphUpdate for ValueGraph<T> {
     fn update_graph(&self, message: GraphsMessage) -> Result<(), String> {
         match message {
             GraphsMessage::All(graph) => {
+                T::check(graph.precision)?;
                 let mut x = vec![T::zero(); graph.points];
                 let line_size = graph.points * T::size();
 
                 let mut ptr = graph.data.as_ptr();
                 unsafe {
-
+                    copy_nonoverlapping(ptr, x.as_mut_ptr() as *mut u8, line_size);
+                    ptr = ptr.add(line_size);
                 }
 
-
-
-
-            }
-        }
-
-        T::check(message.precision)?;
-
-        match message.operation {
-            Operation::Delete => {
-                *self.graph.write().unwrap() = None;
-            }
-
-            Operation::New => {
-                if message.data.is_none() {
-                    return Err(ParseError::Parse("No data for new graph".to_string()));
-                }
-                let msg_data = message.data.unwrap();
-
-                if message.lines * message.count * T::size() != msg_data.len() {
-                    return Err(ParseError::Parse(
-                        "Invalid data size for new graph".to_string(),
-                    ));
-                }
-
-                let mut data = Vec::with_capacity(message.lines);
-                let mut ptr = msg_data.as_ptr();
-                let line_size = message.count * T::size();
-                for _ in 0..message.lines {
-                    let mut line = vec![T::zero(); message.count];
-                    let line_t = line.as_mut_ptr() as *mut u8;
+                let mut lines = Vec::new();
+                for _ in 0..graph.lines {
+                    let mut line = vec![T::zero(); graph.points];
                     unsafe {
-                        std::ptr::copy_nonoverlapping(ptr, line_t, line_size);
+                        copy_nonoverlapping(ptr, line.as_mut_ptr() as *mut u8, line_size);
                         ptr = ptr.add(line_size);
                     }
-                    data.push(line);
+                    lines.push(line);
                 }
-                *self.graph.write().unwrap() = Some(data);
+
+                let mut g = self.graph.write().unwrap();
+                g.x = x;
+                g.data = lines;
+                g.changed = true;
+
+                Ok(())
             }
 
-            Operation::Add => {
-                if message.data.is_none() {
-                    return Err(ParseError::Parse("No data for new graph".to_string()));
-                }
-                let mut msg_data = message.data.unwrap();
-
-                if message.lines * message.count * T::size() != msg_data.len() {
-                    return Err(ParseError::Parse(
-                        "Invalid data size for new graph".to_string(),
-                    ));
+            GraphsMessage::AddLine(graph) => {
+                T::check(graph.precision)?;
+                let line_size = graph.points * T::size();
+                let ptr = graph.data.as_ptr();
+                let mut line = vec![T::zero(); graph.points];
+                unsafe {
+                    copy_nonoverlapping(ptr, line.as_mut_ptr() as *mut u8, line_size);
                 }
 
-                let mut w = self.graph.write().unwrap();
-                if w.is_none() {
-                    return Err(ParseError::Parse("Graph not initialized".to_string()));
+                let mut g = self.graph.write().unwrap();
+                if g.x.len() != graph.points {
+                    return Err("Invalid points count".to_string());
+                }
+                g.data.push(line);
+
+                Ok(())
+            }
+
+            GraphsMessage::AddPoints(graph) => {
+                T::check(graph.precision)?;
+                let line_size = graph.points * T::size();
+                let mut x = vec![T::zero(); graph.points];
+                let mut ptr = graph.data.as_ptr();
+
+                unsafe {
+                    copy_nonoverlapping(ptr, x.as_mut_ptr() as *mut u8, line_size);
+                    ptr = ptr.add(line_size);
                 }
 
-                if w.as_ref().unwrap().len() != message.lines {
-                    return Err(ParseError::Parse("Invalid lines count".to_string()));
+                let mut lines = Vec::new();
+                for _ in 0..graph.lines {
+                    let mut line = vec![T::zero(); graph.points];
+                    unsafe {
+                        copy_nonoverlapping(ptr, line.as_mut_ptr() as *mut u8, line_size);
+                        ptr = ptr.add(line_size);
+                    }
+                    lines.push(line);
                 }
 
-                let ptr = msg_data.as_mut_ptr() as *mut T;
-                let data = w.as_mut().unwrap();
-                let line_size = message.count * T::size();
-                for line in data {
-                    let line_t = unsafe { std::slice::from_raw_parts_mut(ptr, line_size) };
-                    line.extend_from_slice(&line_t);
+                let mut g = self.graph.write().unwrap();
+                if g.data.len() != graph.lines {
+                    return Err("Invalid lines count".to_string());
                 }
+
+                g.x.extend_from_slice(&x);
+                for i in 0..graph.lines {
+                    g.data[i].extend_from_slice(&lines[i]);
+                }
+                g.changed = true;
+
+                Ok(())
+            }
+
+            GraphsMessage::RemoveLine(index) => {
+                let mut g = self.graph.write().unwrap();
+                if index >= g.data.len() {
+                    return Err("Invalid line index".to_string());
+                }
+                g.data.remove(index);
+                g.changed = true;
+
+                Ok(())
+            }
+
+            GraphsMessage::Reset => {
+                let mut g = self.graph.write().unwrap();
+                g.data.clear();
+                g.x.clear();
+                g.changed = true;
+
+                Ok(())
             }
         }
-
-        Ok(())
     }
 }
 

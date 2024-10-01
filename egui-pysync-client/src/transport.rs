@@ -4,8 +4,10 @@ use std::net::TcpStream;
 use egui_pysync_common::commands::CommandMessage;
 use egui_pysync_common::transport::{self, ParseError};
 use egui_pysync_common::values::ValueMessage;
+use egui_pysync_common::image::ImageMessage;
+use egui_pysync_common::graphs::GraphsMessage;
 
-use crate::image::read_image_message;
+// use crate::image::read_image_message;
 use crate::states_creator::ValuesList;
 
 pub(crate) enum WriteMessage {
@@ -56,6 +58,16 @@ impl WriteMessage {
 
 pub(crate) enum ReadResult {
     Update(bool),
+    Command(CommandMessage),
+}
+
+pub(crate) enum ReadMessage<'a> {
+    Value(u32, bool, &'a [u8], Option<Vec<u8>>),
+    Static(u32, bool, &'a [u8], Option<Vec<u8>>),
+    Image(u32, bool, ImageMessage),
+    Dict(u32, bool, &'a [u8], Option<Vec<u8>>),
+    List(u32, bool, &'a [u8], Option<Vec<u8>>),
+    Graph(u32, bool, GraphsMessage),
     Command(CommandMessage),
 }
 
