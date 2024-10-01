@@ -78,7 +78,7 @@ fn start_gui_client(
             let mut head = [0u8; HEAD_SIZE];
 
             // send handshake
-            let handshake: WriteMessage = WriteMessage::Command(CommandMessage::Handshake(0));
+            let handshake: WriteMessage = WriteMessage::Command(CommandMessage::Handshake(0, 0));
             let res = handshake.write_message(&mut head, &mut stream_write);
             if let Err(e) = res {
                 println!("Error for sending hadnskae: {:?}", e); // TODO: log error

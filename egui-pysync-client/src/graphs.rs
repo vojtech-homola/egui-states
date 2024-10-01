@@ -1,89 +1,82 @@
-use std::io::Read;
-use std::net::TcpStream;
 use std::sync::{Arc, RwLock};
+use std
 
-use egui_pysync_common::transport::{self, GraphMessage, Operation, ParseError, Precision};
-
-pub(crate) fn read_message(
-    head: &[u8],
-    stream: &mut TcpStream,
-) -> Result<GraphMessage, ParseError> {
-    let precision = match head[0] {
-        transport::GRAPH_F32 => Precision::F32,
-        transport::GRAPH_F64 => Precision::F64,
-        _ => return Err(ParseError::Parse("Invalid graph datatype".to_string())),
-    };
-
-    let operation = match head[1] {
-        transport::GRAPH_ADD => Operation::Add,
-        transport::GRAPH_NEW => Operation::New,
-        transport::GRAPH_DELETE => Operation::Delete,
-        _ => return Err(ParseError::Parse("Invalid graph operation".to_string())),
-    };
-
-    let count = u64::from_le_bytes(head[2..10].try_into().unwrap()) as usize;
-    let lines = u64::from_le_bytes(head[10..18].try_into().unwrap()) as usize;
-
-    let data = if let Operation::Add | Operation::New = operation {
-        let size = u64::from_le_bytes(head[18..26].try_into().unwrap()) as usize;
-        let mut data = vec![0; size];
-        stream
-            .read_exact(&mut data)
-            .map_err(|e| ParseError::Connection(e))?;
-        Some(data)
-    } else {
-        None
-    };
-
-    Ok(GraphMessage {
-        data,
-        precision,
-        operation,
-        count,
-        lines,
-    })
-}
+use egui_pysync_common::graphs::{GraphsMessage, Precision};
 
 pub(crate) trait GraphUpdate: Sync + Send {
-    fn update_graph(&self, head: &[u8], stream: &mut TcpStream) -> Result<(), ParseError>;
+    fn update_graph(&self, message: GraphsMessage) -> Result<(), String>;
 }
 
 pub trait GraphType: Sync + Send + Clone + Copy {
-    fn check(precision: Precision) -> Result<(), ParseError>;
+    fn check(precision: Precision) -> Result<(), String>;
     fn zero() -> Self;
     fn size() -> usize;
 }
 
+#[derive(Clone)]
+pub struct Graph<T> {
+    pub data: Vec<Vec<T>>,
+    pub x: Vec<T>,
+    pub changed: bool,
+}
+
+impl<T> Graph<T> {
+    fn new() -> Self {
+        Self {
+            data: Vec::new(),
+            x: Vec::new(),
+            changed: true,
+        }
+    }
+}
+
 pub struct ValueGraph<T> {
     _id: u32,
-    data: RwLock<Option<Vec<Vec<T>>>>,
+    graph: RwLock<Graph<T>>,
 }
 
 impl<T: Clone + Copy> ValueGraph<T> {
     pub(crate) fn new(id: u32) -> Arc<Self> {
         Arc::new(Self {
             _id: id,
-            data: RwLock::new(None),
+            graph: RwLock::new(Graph::new()),
         })
     }
 
-    pub fn get(&self) -> Option<Vec<Vec<T>>> {
-        self.data.read().unwrap().clone()
+    pub fn get(&self) -> Graph<T> {
+        self.graph.read().unwrap().clone()
     }
 
-    pub fn process(&self, op: impl FnOnce(Option<&Vec<Vec<T>>>)) {
-        op(self.data.read().unwrap().as_ref())
+    pub fn process(&self, op: impl Fn(&Graph<T>)) {
+        let mut g = self.graph.write().unwrap();
+        op(&*g);
+        g.changed = false;
     }
 }
 
 impl<T: GraphType> GraphUpdate for ValueGraph<T> {
-    fn update_graph(&self, head: &[u8], stream: &mut TcpStream) -> Result<(), ParseError> {
-        let message = read_message(head, stream)?;
+    fn update_graph(&self, message: GraphsMessage) -> Result<(), String> {
+        match message {
+            GraphsMessage::All(graph) => {
+                let mut x = vec![T::zero(); graph.points];
+                let line_size = graph.points * T::size();
+
+                let mut ptr = graph.data.as_ptr();
+                unsafe {
+
+                }
+
+
+
+
+            }
+        }
+
         T::check(message.precision)?;
 
         match message.operation {
             Operation::Delete => {
-                *self.data.write().unwrap() = None;
+                *self.graph.write().unwrap() = None;
             }
 
             Operation::New => {
@@ -110,7 +103,7 @@ impl<T: GraphType> GraphUpdate for ValueGraph<T> {
                     }
                     data.push(line);
                 }
-                *self.data.write().unwrap() = Some(data);
+                *self.graph.write().unwrap() = Some(data);
             }
 
             Operation::Add => {
@@ -125,7 +118,7 @@ impl<T: GraphType> GraphUpdate for ValueGraph<T> {
                     ));
                 }
 
-                let mut w = self.data.write().unwrap();
+                let mut w = self.graph.write().unwrap();
                 if w.is_none() {
                     return Err(ParseError::Parse("Graph not initialized".to_string()));
                 }
@@ -149,11 +142,9 @@ impl<T: GraphType> GraphUpdate for ValueGraph<T> {
 }
 
 impl GraphType for f32 {
-    fn check(precision: Precision) -> Result<(), ParseError> {
+    fn check(precision: Precision) -> Result<(), String> {
         if precision != Precision::F32 {
-            return Err(ParseError::Parse(
-                "Invalid precision for f32 graph".to_string(),
-            ));
+            return Err("Invalid precision for f32 graph".to_string());
         }
         Ok(())
     }
@@ -170,11 +161,9 @@ impl GraphType for f32 {
 }
 
 impl GraphType for f64 {
-    fn check(precision: Precision) -> Result<(), ParseError> {
+    fn check(precision: Precision) -> Result<(), String> {
         if precision != Precision::F64 {
-            return Err(ParseError::Parse(
-                "Invalid precision for f64 graph".to_string(),
-            ));
+            return Err("Invalid precision for f64 graph".to_string());
         }
         Ok(())
     }

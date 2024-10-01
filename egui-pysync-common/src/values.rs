@@ -193,3 +193,97 @@ impl ReadValue for () {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::transport::HEAD_SIZE;
+
+    #[test]
+    fn test_i64() {
+        let value = 1234567890;
+        let mut head = [0u8; HEAD_SIZE];
+        let data = value.write_message(&mut head[6..]);
+        assert_eq!(data, None);
+
+        let new_value = i64::read_message(&head, data).unwrap();
+        assert_eq!(value, new_value);
+    }
+
+    #[test]
+    fn test_u64() {
+        let value = 1234567890;
+        let mut head = [0u8; HEAD_SIZE];
+        let data = value.write_message(&mut head[6..]);
+        assert_eq!(data, None);
+
+        let new_value = u64::read_message(&head, data).unwrap();
+        assert_eq!(value, new_value);
+    }
+
+    #[test]
+    fn test_f64() {
+        let value = 1234.5678;
+        let mut head = [0u8; HEAD_SIZE];
+        let data = value.write_message(&mut head[6..]);
+        assert_eq!(data, None);
+
+        let new_value = f64::read_message(&head, data).unwrap();
+        assert_eq!(value, new_value);
+    }
+
+    #[test]
+    fn test_string() {
+        let value = "Hello, World!".to_string();
+        let mut head = [0u8; HEAD_SIZE];
+        let data = value.write_message(&mut head[6..]);
+        assert_eq!(data, Some(value.as_bytes().to_vec()));
+
+        let new_value = String::read_message(&head, data).unwrap();
+        assert_eq!(value, new_value);
+    }
+
+    #[test]
+    fn test_bool() {
+        let value = true;
+        let mut head = [0u8; HEAD_SIZE];
+        let data = value.write_message(&mut head[6..]);
+        assert_eq!(data, None);
+
+        let new_value = bool::read_message(&head, data).unwrap();
+        assert_eq!(value, new_value);
+    }
+
+    #[test]
+    fn test_empty() {
+        let value = ();
+        let mut head = [0u8; HEAD_SIZE];
+        let data = value.write_message(&mut head[6..]);
+        assert_eq!(data, None);
+
+        let new_value = <()>::read_message(&head, data).unwrap();
+        assert_eq!(value, new_value);
+    }
+
+    #[test]
+    fn test_two_f32() {
+        let value = [1234.5678, 8765.4321];
+        let mut head = [0u8; HEAD_SIZE];
+        let data = value.write_message(&mut head[6..]);
+        assert_eq!(data, None);
+
+        let new_value = <[f32; 2]>::read_message(&head, data).unwrap();
+        assert_eq!(value, new_value);
+    }
+
+    #[test]
+    fn test_two_f64() {
+        let value = [1234.5678, 8765.4321];
+        let mut head = [0u8; HEAD_SIZE];
+        let data = value.write_message(&mut head[6..]);
+        assert_eq!(data, None);
+
+        let new_value = <[f64; 2]>::read_message(&head, data).unwrap();
+        assert_eq!(value, new_value);
+    }
+}

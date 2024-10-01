@@ -1,16 +1,13 @@
-use std::io::Read;
-use std::net::TcpStream;
 use std::ptr::copy_nonoverlapping;
 use std::sync::{Arc, RwLock};
 
 use egui::{Color32, ColorImage, ImageData, TextureHandle};
 
-use egui_pysync_common::transport::{self, ImageDataMessage, ImageMessage, ImageType, ParseError};
-
-
+use egui_pysync_common::image::{HistogramMessage, ImageMessage, ImageType};
 
 pub(crate) trait ImageUpdate: Send + Sync {
     fn update_image(&self, message: ImageMessage) -> Result<(), String>;
+    fn update_histogram(&self, message: HistogramMessage) -> Result<(), String>;
 }
 
 const TEXTURE_OPTIONS: egui::TextureOptions = egui::TextureOptions {
@@ -50,7 +47,7 @@ impl ImageValue {
     pub fn process_histogram(&self, op: impl Fn(Option<&Vec<f32>>, bool)) {
         let mut w = self.histogram.write().unwrap();
         op(w.0.as_ref(), w.1);
-        w.1 = false; // TODO: use separate flag?
+        w.1 = false;
     }
 
     pub fn initialize(&self, ctx: &egui::Context) {
@@ -81,20 +78,19 @@ impl ImageValue {
 
 impl ImageUpdate for ImageValue {
     fn update_image(&self, message: ImageMessage) -> Result<(), String> {
-        let message = match message {
-            ImageMessage::Data(data) => data,
-            ImageMessage::Histogram(histogram) => {
-                *self.histogram.write().unwrap() = (histogram, true);
-                return Ok(());
-            }
-        };
+        // let message = match message {
+        //     ImageMessage::Data(data) => data,
+        //     ImageMessage::Histogram(histogram) => {
+        //         *self.histogram.write().unwrap() = (histogram, true);
+        //         return Ok(());
+        //     }
+        // };
 
-        let ImageDataMessage {
+        let ImageMessage {
             image_size,
             rect,
             data,
             image_type,
-            histogram,
         } = message;
 
         let actual_size = self.texture_handle.read().unwrap().1;
@@ -171,10 +167,11 @@ impl ImageUpdate for ImageValue {
             w.1 = size;
         }
 
-        if let Some(hist) = histogram {
-            *self.histogram.write().unwrap() = (Some(hist), true);
-        }
+        Ok(())
+    }
 
+    fn update_histogram(&self, message: HistogramMessage) -> Result<(), String> {
+        *self.histogram.write().unwrap() = (message.0, true);
         Ok(())
     }
 }

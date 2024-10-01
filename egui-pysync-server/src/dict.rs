@@ -14,75 +14,7 @@ use crate::py_convert::PyConvert;
 use crate::transport::WriteMessage;
 use crate::SyncTrait;
 
-pub(crate) trait WriteDictMessage: Send + Sync {
-    fn write_message(&self, head: &mut [u8]) -> Option<Vec<u8>>;
-}
 
-impl<K, T> WriteDictMessage for DictMessage<K, T>
-where
-    K: ItemWriteRead,
-    T: ItemWriteRead,
-{
-    fn write_message(&self, head: &mut [u8]) -> Option<Vec<u8>> {
-        match self {
-            DictMessage::All(dict) => {
-                head[0] = transport::DICT_ALL;
-
-                let size = dict.len() * (K::size() + T::size());
-                head[1..9].copy_from_slice(&(dict.len() as u64).to_le_bytes());
-                head[9..17].copy_from_slice(&(size as u64).to_le_bytes());
-
-                if size > 0 {
-                    let mut data = vec![0; size];
-                    for (i, (key, value)) in dict.iter().enumerate() {
-                        key.write(data[i * (K::size() + T::size())..].as_mut());
-                        value.write(data[i * (K::size() + T::size()) + K::size()..].as_mut());
-                    }
-
-                    Some(data)
-                } else {
-                    None
-                }
-            }
-
-            DictMessage::Set(key, value) => {
-                head[0] = transport::DICT_SET;
-
-                let size = K::size() + T::size();
-                if size >= transport::MESS_SIZE - 2 {
-                    head[1] = 0;
-                    key.write(head[2..].as_mut());
-                    value.write(head[2 + K::size()..].as_mut());
-                    return None;
-                }
-
-                head[1] = 255;
-                head[2..6].copy_from_slice(&(size as u32).to_le_bytes());
-                let mut data = vec![0; size];
-                key.write(data[0..].as_mut());
-                value.write(data[K::size()..].as_mut());
-                Some(data)
-            }
-
-            DictMessage::Remove(key) => {
-                head[0] = transport::DICT_REMOVE;
-
-                let size = K::size();
-                if size >= transport::MESS_SIZE - 2 {
-                    head[1] = 0;
-                    key.write(head[2..].as_mut());
-                    return None;
-                }
-
-                head[1] = 255;
-                head[2..6].copy_from_slice(&(size as u32).to_le_bytes());
-                let mut data = vec![0; size];
-                key.write(data[0..].as_mut());
-                Some(data)
-            }
-        }
-    }
-}
 
 pub(crate) trait PyDict: Send + Sync {
     fn get_py(&self, py: Python) -> PyObject;

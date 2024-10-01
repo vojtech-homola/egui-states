@@ -13,37 +13,6 @@ use egui_pysync_common::transport::{self, GraphMessage, Operation, Precision};
 use crate::transport::WriteMessage;
 use crate::SyncTrait;
 
-pub(crate) trait WriteGraphMessage: Send + Sync {
-    fn write_message(&self, head: &mut [u8], stream: &mut TcpStream) -> io::Result<()>;
-}
-
-impl WriteGraphMessage for GraphMessage {
-    fn write_message(&self, head: &mut [u8], stream: &mut TcpStream) -> io::Result<()> {
-        head[6] = match self.precision {
-            Precision::F32 => transport::GRAPH_F32,
-            Precision::F64 => transport::GRAPH_F64,
-        };
-
-        head[7] = match self.operation {
-            Operation::Add => transport::GRAPH_ADD,
-            Operation::New => transport::GRAPH_NEW,
-            Operation::Delete => transport::GRAPH_DELETE,
-        };
-
-        head[8..16].copy_from_slice(&(self.count as u64).to_le_bytes());
-        head[16..24].copy_from_slice(&(self.lines as u64).to_le_bytes());
-
-        match self.data {
-            Some(ref data) => {
-                head[24..32].copy_from_slice(&(data.len() as u64).to_le_bytes());
-                stream.write_all(head)?;
-                stream.write_all(data)
-            }
-            None => stream.write_all(head),
-        }
-    }
-}
-
 pub(crate) trait PyGraph: Send + Sync {
     fn add_py(&self, object: &Bound<PyAny>, update: bool) -> PyResult<()>;
     fn new_py(&self, object: &Bound<PyAny>, update: bool) -> PyResult<()>;

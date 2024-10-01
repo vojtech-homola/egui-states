@@ -1,7 +1,10 @@
 pub mod collections;
 pub mod commands;
+pub mod dict;
 pub mod event;
+pub mod graphs;
 pub mod image;
+pub mod list;
 pub mod transport;
 pub mod values;
 

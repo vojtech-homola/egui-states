@@ -53,7 +53,7 @@ impl ImageMessage {
         self.data
     }
 
-    fn read_message(head: &mut [u8], data: Option<Vec<u8>>) -> Result<Self, String> {
+    pub fn read_message(head: &mut [u8], data: Option<Vec<u8>>) -> Result<Self, String> {
         let data = data.ok_or("No data for the image message".to_string())?;
 
         let image_type = match head[0] {
