@@ -2,10 +2,9 @@ use std::marker::PhantomData;
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, RwLock};
 
+use egui_pysync_common::transport::WriteMessage;
 use egui_pysync_common::values::{ReadValue, ValueMessage, WriteValue};
 use egui_pysync_common::EnumInt;
-
-use crate::transport::WriteMessage;
 
 pub(crate) trait ValueUpdate: Send + Sync {
     fn update_value(&self, head: &[u8], data: Option<Vec<u8>>) -> Result<(), String>;
@@ -79,7 +78,7 @@ where
     }
 
     pub fn set(&self, value: T, signal: bool) {
-        let message = WriteMessage::value(self.id, signal, value.clone().into_message());
+        let message = WriteMessage::Value(self.id, signal, value.clone().into_message());
         let mut w = self.value.write().unwrap();
         *w = value;
         self.channel.send(message).unwrap();
@@ -149,7 +148,7 @@ impl<T: EnumInt> ValueEnum<T> {
 
     pub fn set(&self, value: T, signal: bool) {
         let val = value.as_int();
-        let message = WriteMessage::value(self.id, signal, ValueMessage::U64(val));
+        let message = WriteMessage::Value(self.id, signal, ValueMessage::U64(val));
         let mut w = self.value.write().unwrap();
         *w = value;
         self.channel.send(message).unwrap();
@@ -187,7 +186,7 @@ impl<T: WriteValue + Clone> Signal<T> {
 
     pub fn set(&self, value: T) {
         let message = value.into_message();
-        let message = WriteMessage::signal(self.id, message);
+        let message = WriteMessage::Signal(self.id, message);
         self.channel.send(message).unwrap();
     }
 }

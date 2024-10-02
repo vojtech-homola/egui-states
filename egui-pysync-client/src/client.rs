@@ -2,11 +2,97 @@ use std::net::TcpStream;
 use std::sync::mpsc::{Receiver, Sender};
 use std::thread::spawn;
 
-use egui_pysync_common::{commands::CommandMessage, transport::ParseError, transport::HEAD_SIZE};
+use egui_pysync_common::transport::{read_message, write_message, ReadMessage, WriteMessage};
+use egui_pysync_common::{commands::CommandMessage, transport::HEAD_SIZE};
 
 use crate::client_state::UIState;
 use crate::states_creator::{ValuesCreator, ValuesList};
-use crate::transport::{read_message, ReadResult, WriteMessage};
+// use crate::transport::{read_message, ReadResult, WriteMessage};
+
+fn handle_message(
+    message: ReadMessage,
+    vals: &ValuesList,
+    ui_state: &UIState,
+) -> Result<(), String> {
+    if let ReadMessage::Command(ref command) = message {
+        match command {
+            CommandMessage::Update(t) => {
+                ui_state.update(*t);
+            }
+            _ => {}
+        }
+    }
+
+    let update = match message {
+        ReadMessage::Value(id, updata, head, data) => match vals.values.get(&id) {
+            Some(value) => {
+                value.update_value(&head, data)?;
+                updata
+            }
+            None => return Err(format!("Value with id {} not found", id)),
+        },
+
+        ReadMessage::Static(id, updata, head, data) => match vals.static_values.get(&id) {
+            Some(value) => {
+                value.update_value(&head, data)?;
+                updata
+            }
+            None => return Err(format!("Static with id {} not found", id)),
+        },
+
+        ReadMessage::Image(id, updata, image) => match vals.images.get(&id) {
+            Some(value) => {
+                value.update_image(image)?;
+                updata
+            }
+            None => return Err(format!("Image with id {} not found", id)),
+        },
+
+        ReadMessage::Histogram(id, updata, hist) => match vals.images.get(&id) {
+            Some(value) => {
+                value.update_histogram(hist)?;
+                updata
+            }
+            None => return Err(format!("Image with id {} not found", id)),
+        },
+
+        ReadMessage::Dict(id, updata, head, data) => match vals.dicts.get(&id) {
+            Some(value) => {
+                value.update_dict(&head, data)?;
+                updata
+            }
+            None => return Err(format!("Dict with id {} not found", id)),
+        },
+
+        ReadMessage::List(id, updata, head, data) => match vals.lists.get(&id) {
+            Some(value) => {
+                value.update_list(&head, data)?;
+                updata
+            }
+            None => return Err(format!("List with id {} not found", id)),
+        },
+
+        ReadMessage::Graph(id, updata, graph) => match vals.graphs.get(&id) {
+            Some(value) => {
+                value.update_graph(graph)?;
+                updata
+            }
+            None => return Err(format!("Graph with id {} not found", id)),
+        },
+
+        ReadMessage::Signal(_, _, _) => {
+            return Err("Signal message should not be handled in the client".to_string());
+        }
+
+        ReadMessage::Command(_) => unreachable!("should not parse Command message"),
+    };
+
+    if update {
+        ui_state.update(0.);
+    }
+
+    Ok(())
+}
 
 fn start_gui_client(
     vals: ValuesList,
@@ -41,34 +127,32 @@ fn start_gui_client(
             let mut head = [0u8; HEAD_SIZE];
             loop {
                 // read the message
-                let res = read_message(&th_vals, &mut head, &mut stream_read);
+                let res = read_message(&mut head, &mut stream_read);
                 if let Err(e) = res {
-                    match e {
-                        ParseError::Connection(e) => {
-                            println!("Error reading message: {:?}", e); // TODO: log error
-                            break;
-                        }
-                        ParseError::Parse(error) => {
-                            th_channel
-                                .send(WriteMessage::Command(CommandMessage::Error(error)))
-                                .unwrap();
-                            continue;
-                        }
-                    }
+                    println!("Error reading message: {:?}", e); // TODO: log error
+                    break;
                 }
+                let (type_, data) = res.unwrap();
 
-                let result = res.unwrap();
-                match result {
-                    ReadResult::Update(update) => {
-                        if update {
-                            th_ui_state.update(0.);
-                        }
-                    }
-                    ReadResult::Command(command) => {
-                        if let CommandMessage::Update(t) = command {
-                            th_ui_state.update(t);
-                        }
-                    }
+                // parse message
+                let res = ReadMessage::parse(&mut head, type_, data);
+                if let Err(res) = res {
+                    let error = format!("Error parsing message: {:?}", res);
+                    th_channel
+                        .send(WriteMessage::Command(CommandMessage::Error(error)))
+                        .unwrap();
+                    break;
+                }
+                let message = res.unwrap();
+
+                // handle the message
+                let res = handle_message(message, &th_vals, &th_ui_state);
+                if let Err(e) = res {
+                    let error = format!("Error handling message: {:?}", e);
+                    th_channel
+                        .send(WriteMessage::Command(CommandMessage::Error(error)))
+                        .unwrap();
+                    break;
                 }
             }
         });
@@ -80,8 +164,8 @@ fn start_gui_client(
 
             // send handshake
             let handshake = CommandMessage::Handshake(handshake[0], handshake[1]);
-            let handshake: WriteMessage = WriteMessage::Command(handshake);
-            let res = handshake.write_message(&mut head, &mut stream_write);
+            let data = WriteMessage::Command(handshake).parse(&mut head);
+            let res = write_message(&mut head, data, &mut stream_write);
             if let Err(e) = res {
                 println!("Error for sending hadnskae: {:?}", e); // TODO: log error
                 return rx;
@@ -96,8 +180,11 @@ fn start_gui_client(
                     break;
                 }
 
-                // send message
-                let res = message.write_message(&mut head, &mut stream_write);
+                // parse the message
+                let data = message.parse(&mut head);
+
+                // write the message
+                let res = write_message(&head, data, &mut stream_write);
                 if let Err(e) = res {
                     println!("Error for sending message: {:?}", e); // TODO: log error
                     break;

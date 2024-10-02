@@ -33,7 +33,7 @@ pub enum ValueMessage {
 }
 
 impl ValueMessage {
-    pub fn write_message(&self, head: &mut [u8]) -> Option<Vec<u8>> {
+    pub(crate) fn write_message(&self, head: &mut [u8]) -> Option<Vec<u8>> {
         match self {
             ValueMessage::I64(v) => v.write_message(head),
             ValueMessage::Double(v) => v.write_message(head),
@@ -206,7 +206,7 @@ mod tests {
         let data = value.write_message(&mut head[6..]);
         assert_eq!(data, None);
 
-        let new_value = i64::read_message(&head, data).unwrap();
+        let new_value = i64::read_message(&head[6..], data).unwrap();
         assert_eq!(value, new_value);
     }
 
@@ -217,7 +217,7 @@ mod tests {
         let data = value.write_message(&mut head[6..]);
         assert_eq!(data, None);
 
-        let new_value = u64::read_message(&head, data).unwrap();
+        let new_value = u64::read_message(&head[6..], data).unwrap();
         assert_eq!(value, new_value);
     }
 
@@ -228,7 +228,7 @@ mod tests {
         let data = value.write_message(&mut head[6..]);
         assert_eq!(data, None);
 
-        let new_value = f64::read_message(&head, data).unwrap();
+        let new_value = f64::read_message(&head[6..], data).unwrap();
         assert_eq!(value, new_value);
     }
 
@@ -239,7 +239,7 @@ mod tests {
         let data = value.write_message(&mut head[6..]);
         assert_eq!(data, Some(value.as_bytes().to_vec()));
 
-        let new_value = String::read_message(&head, data).unwrap();
+        let new_value = String::read_message(&head[6..], data).unwrap();
         assert_eq!(value, new_value);
     }
 
@@ -250,7 +250,7 @@ mod tests {
         let data = value.write_message(&mut head[6..]);
         assert_eq!(data, None);
 
-        let new_value = bool::read_message(&head, data).unwrap();
+        let new_value = bool::read_message(&head[6..], data).unwrap();
         assert_eq!(value, new_value);
     }
 
@@ -261,7 +261,7 @@ mod tests {
         let data = value.write_message(&mut head[6..]);
         assert_eq!(data, None);
 
-        let new_value = <()>::read_message(&head, data).unwrap();
+        let new_value = <()>::read_message(&head[6..], data).unwrap();
         assert_eq!(value, new_value);
     }
 
@@ -272,7 +272,7 @@ mod tests {
         let data = value.write_message(&mut head[6..]);
         assert_eq!(data, None);
 
-        let new_value = <[f32; 2]>::read_message(&head, data).unwrap();
+        let new_value = <[f32; 2]>::read_message(&head[6..], data).unwrap();
         assert_eq!(value, new_value);
     }
 
@@ -283,7 +283,7 @@ mod tests {
         let data = value.write_message(&mut head[6..]);
         assert_eq!(data, None);
 
-        let new_value = <[f64; 2]>::read_message(&head, data).unwrap();
+        let new_value = <[f64; 2]>::read_message(&head[6..], data).unwrap();
         assert_eq!(value, new_value);
     }
 }

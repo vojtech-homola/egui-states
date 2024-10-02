@@ -222,7 +222,7 @@ mod tests {
 
         let data = message.write_message(&mut head[6..]);
         assert!(data.is_some());
-        let new_list = ListMessage::<u64>::read_message(&head, data).unwrap();
+        let new_list = ListMessage::<u64>::read_message(&head[6..], data).unwrap();
 
         match new_list {
             ListMessage::All(new_list) => assert_eq!(list, new_list),
@@ -239,7 +239,7 @@ mod tests {
 
         let data = message.write_message(&mut head[6..]);
         assert!(data.is_none());
-        let new_list = ListMessage::<u64>::read_message(&head, data).unwrap();
+        let new_list = ListMessage::<u64>::read_message(&head[6..], data).unwrap();
 
         match new_list {
             ListMessage::All(new_list) => assert_eq!(list, new_list),
@@ -256,7 +256,7 @@ mod tests {
 
         let data = message.write_message(&mut head[6..]);
         assert!(data.is_none());
-        let new_message = ListMessage::<u64>::read_message(&head, data).unwrap();
+        let new_message = ListMessage::<u64>::read_message(&head[6..], data).unwrap();
 
         match new_message {
             ListMessage::Set(idx, new_value) => {
@@ -276,7 +276,7 @@ mod tests {
 
         let data = message.write_message(&mut head[6..]);
         assert!(data.is_none());
-        let new_message = ListMessage::<u64>::read_message(&head, data).unwrap();
+        let new_message = ListMessage::<u64>::read_message(&head[6..], data).unwrap();
 
         match new_message {
             ListMessage::Add(new_value) => assert_eq!(value, new_value),
@@ -292,7 +292,7 @@ mod tests {
 
         let data = message.write_message(&mut head[6..]);
         assert!(data.is_none());
-        let new_message = ListMessage::<u64>::read_message(&head, data).unwrap();
+        let new_message = ListMessage::<u64>::read_message(&head[6..], data).unwrap();
 
         match new_message {
             ListMessage::Remove(idx) => assert_eq!(1, idx),

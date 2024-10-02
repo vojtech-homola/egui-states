@@ -28,7 +28,7 @@ pub struct ImageMessage {
 }
 
 impl ImageMessage {
-    pub fn write_message(self, head: &mut [u8]) -> Vec<u8> {
+    pub(crate) fn write_message(self, head: &mut [u8]) -> Vec<u8> {
         head[0] = match self.image_type {
             ImageType::Color => IMAGE_COLOR,
             ImageType::ColorAlpha => IMAGE_COLOR_ALPHA,
@@ -41,10 +41,10 @@ impl ImageMessage {
         match self.rect {
             Some(rec) => {
                 head[6] = 255;
-                head[6..8].copy_from_slice(&(rec[0] as u16).to_le_bytes());
-                head[8..10].copy_from_slice(&(rec[1] as u16).to_le_bytes());
-                head[10..12].copy_from_slice(&(rec[2] as u16).to_le_bytes());
-                head[12..14].copy_from_slice(&(rec[3] as u16).to_le_bytes());
+                head[7..9].copy_from_slice(&(rec[0] as u16).to_le_bytes());
+                head[9..11].copy_from_slice(&(rec[1] as u16).to_le_bytes());
+                head[11..13].copy_from_slice(&(rec[2] as u16).to_le_bytes());
+                head[13..15].copy_from_slice(&(rec[3] as u16).to_le_bytes());
             }
             None => head[6] = 0,
         }
@@ -53,7 +53,7 @@ impl ImageMessage {
         self.data
     }
 
-    pub fn read_message(head: &mut [u8], data: Option<Vec<u8>>) -> Result<Self, String> {
+    pub(crate) fn read_message(head: &mut [u8], data: Option<Vec<u8>>) -> Result<Self, String> {
         let data = data.ok_or("No data for the image message".to_string())?;
 
         let image_type = match head[0] {
@@ -70,17 +70,22 @@ impl ImageMessage {
 
         let (rectangle, data_size) = if is_rectangle {
             let rectangle = [
-                u16::from_le_bytes(head[6..8].try_into().unwrap()) as usize,
-                u16::from_le_bytes(head[8..10].try_into().unwrap()) as usize,
-                u16::from_le_bytes(head[10..12].try_into().unwrap()) as usize,
-                u16::from_le_bytes(head[12..14].try_into().unwrap()) as usize,
+                u16::from_le_bytes(head[7..9].try_into().unwrap()) as usize,
+                u16::from_le_bytes(head[9..11].try_into().unwrap()) as usize,
+                u16::from_le_bytes(head[11..13].try_into().unwrap()) as usize,
+                u16::from_le_bytes(head[13..15].try_into().unwrap()) as usize,
             ];
-            let data_size = rectangle[2] * rectangle[3];
+
+            if rectangle[0] >= rectangle[2] || rectangle[1] >= rectangle[3] {
+                return Err("Wrong rectangle coordinates".to_string());
+            }
+
+            let data_size = (rectangle[2] - rectangle[0]) * (rectangle[3] - rectangle[1]);
             (Some(rectangle), data_size)
         } else {
             (None, y * x)
         };
-        let size = u64::from_le_bytes(head[21..29].try_into().unwrap()) as usize;
+        let size = u64::from_le_bytes(head[SIZE_START..].try_into().unwrap()) as usize;
 
         let is_right = match image_type {
             ImageType::Color => size == data_size * 3,
@@ -90,7 +95,10 @@ impl ImageMessage {
         };
 
         if !is_right {
-            return Err(format!("Wrong size of the image data: {}", size));
+            return Err(format!(
+                "Wrong size of the image data: {} for data size {}",
+                size, data_size
+            ));
         }
 
         let image_data = ImageMessage {
@@ -112,7 +120,7 @@ histogram head:
 pub struct HistogramMessage(pub Option<Vec<f32>>);
 
 impl HistogramMessage {
-    pub fn write_message(self, head: &mut [u8]) -> Option<Vec<u8>> {
+    pub(crate) fn write_message(self, head: &mut [u8]) -> Option<Vec<u8>> {
         match self.0 {
             Some(hist) => {
                 let size = hist.len();
@@ -140,7 +148,7 @@ impl HistogramMessage {
         }
     }
 
-    pub fn read_message(head: &mut [u8], data: Option<Vec<u8>>) -> Result<Self, String> {
+    pub(crate) fn read_message(head: &mut [u8], data: Option<Vec<u8>>) -> Result<Self, String> {
         let size = u32::from_le_bytes(head[0..4].try_into().unwrap()) as usize;
         let data_size = u64::from_le_bytes(head[SIZE_START..].try_into().unwrap()) as usize;
 
@@ -185,8 +193,8 @@ mod tests {
         let data = vec![0u8; 5 * 5 * 3];
 
         let message = ImageMessage {
-            image_size: [10, 10],
-            rect: Some([0, 0, 5, 5]),
+            image_size: [10, 15],
+            rect: Some([0, 5, 5, 10]),
             data,
             image_type: ImageType::Color,
         };
@@ -194,8 +202,8 @@ mod tests {
         let data = message.write_message(&mut head[6..]);
         let message = ImageMessage::read_message(&mut head[6..], Some(data)).unwrap();
 
-        assert_eq!(message.image_size, [10, 10]);
-        assert_eq!(message.rect, Some([0, 0, 5, 5]));
+        assert_eq!(message.image_size, [10, 15]);
+        assert_eq!(message.rect, Some([0, 5, 5, 10]));
         assert_eq!(message.data.len(), 5 * 5 * 3);
         assert_eq!(message.image_type, ImageType::Color);
     }

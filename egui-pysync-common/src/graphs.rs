@@ -68,7 +68,7 @@ pub struct GraphsData {
     pub data: Vec<u8>,
 }
 
-pub enum GraphsMessage {
+pub enum GraphMessage {
     All(GraphsData),
     AddPoints(GraphsData),
     AddLine(GraphsData),
@@ -76,10 +76,10 @@ pub enum GraphsMessage {
     Reset,
 }
 
-impl GraphsMessage {
-    pub fn write_message(self, head: &mut [u8]) -> Option<Vec<u8>> {
+impl GraphMessage {
+    pub(crate) fn write_message(self, head: &mut [u8]) -> Option<Vec<u8>> {
         match self {
-            GraphsMessage::All(graph_data) => {
+            GraphMessage::All(graph_data) => {
                 head[0] = GRAPH_ALL;
                 head[1] = graph_data.precision.to_u8();
 
@@ -88,7 +88,7 @@ impl GraphsMessage {
                 head[SIZE_START..].copy_from_slice(&(graph_data.data.len() as u64).to_le_bytes());
                 Some(graph_data.data)
             }
-            GraphsMessage::AddPoints(graph_data) => {
+            GraphMessage::AddPoints(graph_data) => {
                 head[0] = GRAPH_ADD_POINTS;
                 head[1] = graph_data.precision.to_u8();
 
@@ -97,7 +97,7 @@ impl GraphsMessage {
                 head[SIZE_START..].copy_from_slice(&(graph_data.data.len() as u64).to_le_bytes());
                 Some(graph_data.data)
             }
-            GraphsMessage::AddLine(graph_data) => {
+            GraphMessage::AddLine(graph_data) => {
                 head[0] = GRAPH_ADD_LINES;
                 head[1] = graph_data.precision.to_u8();
 
@@ -106,19 +106,19 @@ impl GraphsMessage {
                 head[SIZE_START..].copy_from_slice(&(graph_data.data.len() as u64).to_le_bytes());
                 Some(graph_data.data)
             }
-            GraphsMessage::RemoveLine(index) => {
+            GraphMessage::RemoveLine(index) => {
                 head[0] = GRAPH_REMOVE_LINE;
                 head[1..9].copy_from_slice(&(index as u64).to_le_bytes());
                 None
             }
-            GraphsMessage::Reset => {
+            GraphMessage::Reset => {
                 head[0] = GRAPH_RESET;
                 None
             }
         }
     }
 
-    pub fn read_message(head: &mut [u8], data: Option<Vec<u8>>) -> Result<Self, String> {
+    pub(crate) fn read_message(head: &mut [u8], data: Option<Vec<u8>>) -> Result<Self, String> {
         let graph_type = head[0];
 
         match graph_type {
@@ -151,19 +151,19 @@ impl GraphsMessage {
                 };
 
                 Ok(match graph_type {
-                    GRAPH_ALL => GraphsMessage::All(graphs_data),
-                    GRAPH_ADD_POINTS => GraphsMessage::AddPoints(graphs_data),
-                    GRAPH_ADD_LINES => GraphsMessage::AddLine(graphs_data),
+                    GRAPH_ALL => GraphMessage::All(graphs_data),
+                    GRAPH_ADD_POINTS => GraphMessage::AddPoints(graphs_data),
+                    GRAPH_ADD_LINES => GraphMessage::AddLine(graphs_data),
                     _ => unreachable!(),
                 })
             }
 
             GRAPH_REMOVE_LINE => {
                 let index = u64::from_le_bytes(head[1..9].try_into().unwrap()) as usize;
-                Ok(GraphsMessage::RemoveLine(index))
+                Ok(GraphMessage::RemoveLine(index))
             }
 
-            GRAPH_RESET => Ok(GraphsMessage::Reset),
+            GRAPH_RESET => Ok(GraphMessage::Reset),
 
             _ => Err(format!("Unknown graph message type: {}", graph_type)),
         }
@@ -177,7 +177,7 @@ mod tests {
 
     #[test]
     fn test_graph_all() {
-        let data = vec![1, 2, 3, 4, 5];
+        let data = vec![0u8; 5 * 2 * std::mem::size_of::<f32>()];
         let graph_data = GraphsData {
             precision: Precision::F32,
             points: 5,
@@ -186,15 +186,15 @@ mod tests {
         };
 
         let mut head = [0u8; HEAD_SIZE];
-        let message = GraphsMessage::All(graph_data.clone());
+        let message = GraphMessage::All(graph_data.clone());
 
-        let data = message.write_message(&mut head);
-        assert_eq!(data, Some(vec![1, 2, 3, 4, 5]));
+        let data = message.write_message(&mut head[6..]);
+        assert_eq!(data, Some(vec![0u8; 5 * 2 * std::mem::size_of::<f32>()]));
 
-        let new_message = GraphsMessage::read_message(&mut head, data).unwrap();
+        let new_message = GraphMessage::read_message(&mut head[6..], data).unwrap();
 
         match new_message {
-            GraphsMessage::All(new_graph_data) => {
+            GraphMessage::All(new_graph_data) => {
                 assert_eq!(graph_data.data, new_graph_data.data);
                 assert_eq!(graph_data.points, new_graph_data.points);
                 assert_eq!(graph_data.lines, new_graph_data.lines);
@@ -209,14 +209,14 @@ mod tests {
         let index = 5;
         let mut head = [0u8; HEAD_SIZE];
 
-        let message = GraphsMessage::RemoveLine(index);
-        let data = message.write_message(&mut head);
+        let message = GraphMessage::RemoveLine(index);
+        let data = message.write_message(&mut head[6..]);
         assert_eq!(data, None);
 
-        let message = GraphsMessage::read_message(&mut head, data).unwrap();
+        let message = GraphMessage::read_message(&mut head[6..], data).unwrap();
 
         match message {
-            GraphsMessage::RemoveLine(new_index) => assert_eq!(index, new_index),
+            GraphMessage::RemoveLine(new_index) => assert_eq!(index, new_index),
             _ => panic!("Wrong message type."),
         }
     }
@@ -225,14 +225,14 @@ mod tests {
     fn test_reset() {
         let mut head = [0u8; HEAD_SIZE];
 
-        let message = GraphsMessage::Reset;
-        let data = message.write_message(&mut head);
+        let message = GraphMessage::Reset;
+        let data = message.write_message(&mut head[6..]);
         assert_eq!(data, None);
 
-        let message = GraphsMessage::read_message(&mut head, data).unwrap();
+        let message = GraphMessage::read_message(&mut head[6..], data).unwrap();
 
         match message {
-            GraphsMessage::Reset => (),
+            GraphMessage::Reset => (),
             _ => panic!("Wrong message type."),
         }
     }

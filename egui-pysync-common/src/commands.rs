@@ -28,12 +28,16 @@ impl CommandMessage {
         }
     }
 
-    pub fn write_message(&self, head: &mut [u8]) -> Option<Vec<u8>> {
+    pub(crate) fn write_message(&self, head: &mut [u8]) -> Option<Vec<u8>> {
         match self {
             CommandMessage::Error(error) => {
                 head[0] = COM_ERROR;
 
                 let data = error.as_bytes().to_vec();
+
+                println!("------------------------------------");
+                println!("len: {}", head[SIZE_START..].len());
+
                 head[SIZE_START..].copy_from_slice(&(data.len() as u64).to_le_bytes());
                 Some(data)
             }
@@ -59,7 +63,7 @@ impl CommandMessage {
         }
     }
 
-    pub fn read_message(head: &mut [u8], data: Option<Vec<u8>>) -> Result<Self, String> {
+    pub(crate) fn read_message(head: &mut [u8], data: Option<Vec<u8>>) -> Result<Self, String> {
         let command_type = head[0];
 
         match command_type {
@@ -119,10 +123,10 @@ mod tests {
 
         let message = CommandMessage::Error(error.clone());
 
-        let data = message.write_message(&mut head);
+        let data = message.write_message(&mut head[1..]);
         assert_eq!(data.is_some(), true);
 
-        let message = CommandMessage::read_message(&mut head, data).unwrap();
+        let message = CommandMessage::read_message(&mut head[1..], data).unwrap();
         assert_eq!(message.as_str(), "ErrorCommand");
 
         if let CommandMessage::Error(error) = message {
@@ -139,10 +143,10 @@ mod tests {
 
         let message = CommandMessage::Ack(ind);
 
-        let data = message.write_message(&mut head);
+        let data = message.write_message(&mut head[1..]);
         assert_eq!(data.is_none(), true);
 
-        let message = CommandMessage::read_message(&mut head, data).unwrap();
+        let message = CommandMessage::read_message(&mut head[1..], data).unwrap();
         assert_eq!(message.as_str(), "AckCommand");
 
         if let CommandMessage::Ack(new_ind) = message {
@@ -159,10 +163,10 @@ mod tests {
 
         let message = CommandMessage::Update(time);
 
-        let data = message.write_message(&mut head);
+        let data = message.write_message(&mut head[1..]);
         assert_eq!(data.is_none(), true);
 
-        let message = CommandMessage::read_message(&mut head, data).unwrap();
+        let message = CommandMessage::read_message(&mut head[1..], data).unwrap();
         assert_eq!(message.as_str(), "UpdateCommand");
 
         if let CommandMessage::Update(new_time) = message {
@@ -180,10 +184,10 @@ mod tests {
 
         let message = CommandMessage::Handshake(version, hash);
 
-        let data = message.write_message(&mut head);
+        let data = message.write_message(&mut head[1..]);
         assert_eq!(data.is_none(), true);
 
-        let message = CommandMessage::read_message(&mut head, data).unwrap();
+        let message = CommandMessage::read_message(&mut head[1..], data).unwrap();
         assert_eq!(message.as_str(), "HandshakeCommand");
 
         if let CommandMessage::Handshake(new_version, new_hash) = message {

@@ -1,10 +1,10 @@
 use std::ptr::copy_nonoverlapping;
 use std::sync::{Arc, RwLock};
 
-use egui_pysync_common::graphs::{GraphsMessage, Precision};
+use egui_pysync_common::graphs::{GraphMessage, Precision};
 
 pub(crate) trait GraphUpdate: Sync + Send {
-    fn update_graph(&self, message: GraphsMessage) -> Result<(), String>;
+    fn update_graph(&self, message: GraphMessage) -> Result<(), String>;
 }
 
 pub trait GraphType: Sync + Send + Clone + Copy {
@@ -55,9 +55,9 @@ impl<T: Clone + Copy> ValueGraph<T> {
 }
 
 impl<T: GraphType> GraphUpdate for ValueGraph<T> {
-    fn update_graph(&self, message: GraphsMessage) -> Result<(), String> {
+    fn update_graph(&self, message: GraphMessage) -> Result<(), String> {
         match message {
-            GraphsMessage::All(graph) => {
+            GraphMessage::All(graph) => {
                 T::check(graph.precision)?;
                 let mut x = vec![T::zero(); graph.points];
                 let line_size = graph.points * T::size();
@@ -86,7 +86,7 @@ impl<T: GraphType> GraphUpdate for ValueGraph<T> {
                 Ok(())
             }
 
-            GraphsMessage::AddLine(graph) => {
+            GraphMessage::AddLine(graph) => {
                 T::check(graph.precision)?;
                 let line_size = graph.points * T::size();
                 let ptr = graph.data.as_ptr();
@@ -104,7 +104,7 @@ impl<T: GraphType> GraphUpdate for ValueGraph<T> {
                 Ok(())
             }
 
-            GraphsMessage::AddPoints(graph) => {
+            GraphMessage::AddPoints(graph) => {
                 T::check(graph.precision)?;
                 let line_size = graph.points * T::size();
                 let mut x = vec![T::zero(); graph.points];
@@ -139,7 +139,7 @@ impl<T: GraphType> GraphUpdate for ValueGraph<T> {
                 Ok(())
             }
 
-            GraphsMessage::RemoveLine(index) => {
+            GraphMessage::RemoveLine(index) => {
                 let mut g = self.graph.write().unwrap();
                 if index >= g.data.len() {
                     return Err("Invalid line index".to_string());
@@ -150,7 +150,7 @@ impl<T: GraphType> GraphUpdate for ValueGraph<T> {
                 Ok(())
             }
 
-            GraphsMessage::Reset => {
+            GraphMessage::Reset => {
                 let mut g = self.graph.write().unwrap();
                 g.data.clear();
                 g.x.clear();
