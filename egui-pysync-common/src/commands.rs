@@ -63,7 +63,7 @@ impl CommandMessage {
         }
     }
 
-    pub(crate) fn read_message(head: &mut [u8], data: Option<Vec<u8>>) -> Result<Self, String> {
+    pub(crate) fn read_message(head: &[u8], data: Option<Vec<u8>>) -> Result<Self, String> {
         let command_type = head[0];
 
         match command_type {

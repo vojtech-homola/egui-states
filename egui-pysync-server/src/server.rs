@@ -9,12 +9,12 @@ use std::thread::{spawn, JoinHandle};
 
 use egui_pysync_common::commands::CommandMessage;
 use egui_pysync_common::event::Event;
-use egui_pysync_common::transport::{ParseError, HEAD_SIZE};
+use egui_pysync_common::transport::HEAD_SIZE;
+use egui_pysync_common::transport::{read_message, write_message, ReadMessage, WriteMessage};
 use egui_pysync_common::values::ValueMessage;
 
 use crate::signals::ChangedValues;
 use crate::states_creator::ValuesList;
-use crate::transport::{read_head, read_message, WriteMessage};
 
 struct StatesTransfer {
     thread: JoinHandle<Receiver<WriteMessage>>,
@@ -226,25 +226,25 @@ impl Server {
 
                 // read the message
                 let mut head = [0u8; HEAD_SIZE];
-                let value = read_head(&mut head, &mut stream);
-                if let Err(e) = value {
-                    match e {
-                        ParseError::Connection(e) => {
-                            let error = format!("Error reading message: {:?}", e);
-                            signals.set(0, ValueMessage::String(error));
-                            connected.store(false, atomic::Ordering::Relaxed);
-                            break;
-                        }
-                        ParseError::Parse(e) => {
-                            let error = format!("Error parsing message: {}", e);
-                            signals.set(0, ValueMessage::String(error));
-                            continue;
-                        }
-                    }
+                let res = read_message(&mut head, &mut stream);
+                if let Err(e) = res {
+                    let error = format!("Error reading message: {:?}", e);
+                    signals.set(0, ValueMessage::String(error));
+                    connected.store(false, atomic::Ordering::Relaxed);
+                    continue;
+                }
+                let (type_, data) = res.unwrap();
+
+                // parse the message
+                let res = ReadMessage::parse(&head, type_, data);
+                if let Err(res) = res {
+                    let error = format!("Error parsing message: {:?}", res);
+                    signals.set(0, ValueMessage::String(error));
+                    continue;
                 }
 
                 // check if message is handshake
-                if let Some(CommandMessage::Handshake(_)) = value.unwrap() {
+                if let ReadMessage::Command(CommandMessage::Handshake(_, _)) = res.unwrap() {
                     let rx = match holder {
                         // disconnect previous client
                         ChannelHolder::Transfer(st) => {

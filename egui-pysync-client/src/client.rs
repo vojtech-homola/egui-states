@@ -135,7 +135,7 @@ fn start_gui_client(
                 let (type_, data) = res.unwrap();
 
                 // parse message
-                let res = ReadMessage::parse(&mut head, type_, data);
+                let res = ReadMessage::parse(&head, type_, data);
                 if let Err(res) = res {
                     let error = format!("Error parsing message: {:?}", res);
                     th_channel

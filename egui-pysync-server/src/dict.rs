@@ -8,13 +8,11 @@ use pyo3::exceptions::PyKeyError;
 use pyo3::prelude::*;
 
 use egui_pysync_common::collections::ItemWriteRead;
-use egui_pysync_common::transport::{self, DictMessage};
+use egui_pysync_common::dict::DictMessage;
+use egui_pysync_common::transport::WriteMessage;
 
 use crate::py_convert::PyConvert;
-use crate::transport::WriteMessage;
 use crate::SyncTrait;
-
-
 
 pub(crate) trait PyDict: Send + Sync {
     fn get_py(&self, py: Python) -> PyObject;

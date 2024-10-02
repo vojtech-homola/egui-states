@@ -1,8 +1,6 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 
-use pyo3::ToPyObject;
-
 use egui_pysync_common::event::Event;
 use egui_pysync_common::values::ValueMessage;
 

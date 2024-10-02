@@ -118,7 +118,7 @@ impl GraphMessage {
         }
     }
 
-    pub(crate) fn read_message(head: &mut [u8], data: Option<Vec<u8>>) -> Result<Self, String> {
+    pub(crate) fn read_message(head: &[u8], data: Option<Vec<u8>>) -> Result<Self, String> {
         let graph_type = head[0];
 
         match graph_type {

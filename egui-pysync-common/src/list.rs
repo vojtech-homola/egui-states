@@ -52,7 +52,7 @@ pub enum ListMessage<T> {
     Remove(usize),
 }
 
-pub trait WriteListMessage: Send + Sync {
+pub trait WriteListMessage: Send + Sync + 'static {
     fn write_message(&self, head: &mut [u8]) -> Option<Vec<u8>>;
 }
 

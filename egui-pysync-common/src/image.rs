@@ -53,7 +53,7 @@ impl ImageMessage {
         self.data
     }
 
-    pub(crate) fn read_message(head: &mut [u8], data: Option<Vec<u8>>) -> Result<Self, String> {
+    pub(crate) fn read_message(head: &[u8], data: Option<Vec<u8>>) -> Result<Self, String> {
         let data = data.ok_or("No data for the image message".to_string())?;
 
         let image_type = match head[0] {
@@ -148,7 +148,7 @@ impl HistogramMessage {
         }
     }
 
-    pub(crate) fn read_message(head: &mut [u8], data: Option<Vec<u8>>) -> Result<Self, String> {
+    pub(crate) fn read_message(head: &[u8], data: Option<Vec<u8>>) -> Result<Self, String> {
         let size = u32::from_le_bytes(head[0..4].try_into().unwrap()) as usize;
         let data_size = u64::from_le_bytes(head[SIZE_START..].try_into().unwrap()) as usize;
 

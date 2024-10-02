@@ -2,3 +2,6 @@
 name = "egui_pysync_common"
 version.workspace = true
 edition.workspace = true
+
+[lib]
+doctest = false

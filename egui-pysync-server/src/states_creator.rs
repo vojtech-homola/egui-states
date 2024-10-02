@@ -8,6 +8,7 @@ use pyo3::ToPyObject;
 use egui_pysync_common::collections::ItemWriteRead;
 use egui_pysync_common::values::{ReadValue, WriteValue};
 use egui_pysync_common::{EnumInt, EnumStr};
+use egui_pysync_common::transport::WriteMessage;
 
 use crate::dict::{PyDict, ValueDict};
 use crate::graphs::{PyGraph, ValueGraph};
@@ -15,7 +16,6 @@ use crate::image::ImageValue;
 use crate::list::{PyListTrait, ValueList};
 use crate::py_convert::PyConvert;
 use crate::signals::ChangedValues;
-use crate::transport::WriteMessage;
 use crate::values::{PyValue, PyValueStatic, ValueUpdate};
 use crate::values::{Signal, Value, ValueEnum, ValueStatic};
 use crate::{Acknowledge, SyncTrait};

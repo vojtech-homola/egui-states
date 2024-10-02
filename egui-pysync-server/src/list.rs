@@ -6,10 +6,10 @@ use pyo3::exceptions::PyIndexError;
 use pyo3::prelude::*;
 
 use egui_pysync_common::collections::ItemWriteRead;
-use egui_pysync_common::transport::{self, ListMessage};
+use egui_pysync_common::list::ListMessage;
+use egui_pysync_common::transport::WriteMessage;
 
 use crate::py_convert::PyConvert;
-use crate::transport::WriteMessage;
 use crate::SyncTrait;
 
 

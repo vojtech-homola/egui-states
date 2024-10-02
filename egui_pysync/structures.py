@@ -4,13 +4,13 @@ import traceback
 
 import numpy as np
 
-from egui_pysync.core import StateServer
+from egui_pysync.base import StateServerBase
 
 
 class _SignalsManager:
     def __init__(
         self,
-        server: StateServer,
+        server: StateServerBase,
         workers: int,
         error_handler: Callable[[Exception], None] | None,
     ):
@@ -113,7 +113,7 @@ class ErrorSignal:
 
 
 class _ValueBase:
-    def __init__(self, value_id: int, server: StateServer, signals_manager: _SignalsManager):
+    def __init__(self, value_id: int, server: StateServerBase, signals_manager: _SignalsManager):
         self._value_id = value_id
         self._server = server
         self._signals_manager = signals_manager
@@ -165,7 +165,7 @@ class Value[T](_ValueBase):
 class ValueStatic[T](_ValueBase):
     """Numeric static UI value of type T. Static means that the value is not updated in the UI."""
 
-    def __init__(self, value_id: int, server: StateServer):  # noqa: D107
+    def __init__(self, value_id: int, server: StateServerBase):  # noqa: D107
         self._value_id = value_id
         self._server = server
 
@@ -190,7 +190,7 @@ class ValueStatic[T](_ValueBase):
 class ValueEnum[T](_ValueBase):
     """Enum UI value of type T."""
 
-    def __init__(self, value_id: int, server: StateServer, signal_manager: _SignalsManager, enum_type: type[T]):  # noqa: D107
+    def __init__(self, value_id: int, server: StateServerBase, signal_manager: _SignalsManager, enum_type: type[T]):  # noqa: D107
         super().__init__(value_id, server, signal_manager)
         self._enum_type = enum_type
 
@@ -289,7 +289,6 @@ class ValueImage(_ValueBase):
         self,
         image: np.ndarray,
         rect: list[int] | None = None,
-        histogram: np.ndarray | None = None,
         update: bool = False,
     ) -> None:
         """Set the image in the UI image.
@@ -297,10 +296,9 @@ class ValueImage(_ValueBase):
         Args:
             image(np.ndarray): The image to set.
             rect(list[int], optional): The rectangle [y, x, height, width]. Defaults to None.
-            histogram(np.ndarray, optional): The histogram numpy array of float32 normalized to 1. Defaults to None.
             update(bool, optional): Whether to update the UI. Defaults to True.
         """
-        self._server.set_image(self._value_id, image, update, rect, histogram)
+        self._server.set_image(self._value_id, image, update, rect)
 
     def set_histogram(self, histogram: np.ndarray | None = None, update: bool = False) -> None:
         """Set the histogram in the UI image.

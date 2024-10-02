@@ -5,9 +5,9 @@ use std::sync::{Arc, RwLock};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
-use egui_pysync_common::transport::{ImageDataMessage, ImageMessage, ImageType};
+use egui_pysync_common::image::{HistogramMessage, ImageMessage, ImageType};
+use egui_pysync_common::transport::WriteMessage;
 
-use crate::transport::WriteMessage;
 use crate::SyncTrait;
 
 struct ImageData {
@@ -57,7 +57,7 @@ impl ImageValue {
 
         if self.connected.load(Ordering::Relaxed) {
             let message =
-                WriteMessage::Image(self.id, update, ImageMessage::Histogram(histogram.clone()));
+                WriteMessage::Histogram(self.id, update, HistogramMessage(histogram.clone()));
             self.channel.send(message).unwrap();
         }
 
@@ -71,19 +71,8 @@ impl ImageValue {
         data: Vec<u8>,
         shape: Vec<usize>,
         rectangle: Option<[usize; 4]>,
-        histogram: Option<Vec<f32>>,
         update: bool,
     ) -> PyResult<()> {
-        if let Some(ref hist) = histogram {
-            if hist.len() < 128 || hist.len() > 1024 {
-                return Err(PyValueError::new_err(format!(
-                    "Invalid histogram size {}, must be between 128 and 1024",
-                    hist.len()
-                )));
-            }
-            self.histogram.write().unwrap().replace(hist.clone());
-        }
-
         let image_type = match shape.len() {
             2 => ImageType::Gray,
             3 => match shape[2] {
@@ -216,15 +205,14 @@ impl ImageValue {
         drop(w);
 
         if self.connected.load(Ordering::Relaxed) {
-            let image_message = ImageDataMessage {
+            let image_message = ImageMessage {
                 image_size: new_size,
                 rect: rectangle,
                 data,
                 image_type,
-                histogram,
             };
 
-            let message = WriteMessage::Image(self.id, update, ImageMessage::Data(image_message));
+            let message = WriteMessage::Image(self.id, update, image_message);
             self.channel.send(message).unwrap();
         }
 
@@ -235,24 +223,24 @@ impl ImageValue {
 impl SyncTrait for ImageValue {
     fn sync(&self) {
         let histogram = self.histogram.read().unwrap().clone();
+        let hist_message = HistogramMessage(histogram);
+        let message = WriteMessage::Histogram(self.id, false, hist_message);
+        self.channel.send(message).unwrap();
+
         let w = self.image.read().unwrap();
         if w.size[0] == 0 || w.size[1] == 0 {
-            let image_message = ImageMessage::Histogram(histogram);
-            let message = WriteMessage::Image(self.id, false, image_message);
-            self.channel.send(message).unwrap();
             return;
         }
 
-        let image_message = ImageDataMessage {
+        let image_message = ImageMessage {
             image_size: w.size,
             rect: None,
             data: w.data.clone(),
             image_type: ImageType::ColorAlpha,
-            histogram,
         };
         drop(w);
 
-        let message = WriteMessage::Image(self.id, false, ImageMessage::Data(image_message));
+        let message = WriteMessage::Image(self.id, false, image_message);
         self.channel.send(message).unwrap();
     }
 }

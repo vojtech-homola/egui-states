@@ -1,5 +1,3 @@
-use std::io::{self, Write};
-use std::net::TcpStream;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, RwLock};
@@ -8,15 +6,17 @@ use pyo3::buffer::PyBuffer;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
-use egui_pysync_common::transport::{self, GraphMessage, Operation, Precision};
+use egui_pysync_common::graphs::{GraphMessage, Precision};
+use egui_pysync_common::transport::WriteMessage;
 
-use crate::transport::WriteMessage;
 use crate::SyncTrait;
 
 pub(crate) trait PyGraph: Send + Sync {
-    fn add_py(&self, object: &Bound<PyAny>, update: bool) -> PyResult<()>;
-    fn new_py(&self, object: &Bound<PyAny>, update: bool) -> PyResult<()>;
-    fn delete_py(&self, update: bool);
+    fn all_py(&self, object: &Bound<PyAny>, update: bool) -> PyResult<()>;
+    fn add_points_py(&self, object: &Bound<PyAny>, update: bool) -> PyResult<()>;
+    fn add_lines_py(&self, object: &Bound<PyAny>, update: bool) -> PyResult<()>;
+    fn remove_line_py(&self, index: usize, update: bool) -> PyResult<()>;
+    fn reset_py(&self, update: bool);
 }
 
 struct GraphInner {
@@ -57,7 +57,7 @@ impl<T> ValueGraph<T> {
 }
 
 impl<T: Send + Sync> PyGraph for ValueGraph<T> {
-    fn new_py(&self, object: &Bound<PyAny>, update: bool) -> PyResult<()> {
+    fn all_py(&self, object: &Bound<PyAny>, update: bool) -> PyResult<()> {
         if object.is_none() {
             let mut w = self.graph.write().unwrap();
             w.data.clear();
@@ -171,7 +171,7 @@ impl<T: Send + Sync> PyGraph for ValueGraph<T> {
         Ok(())
     }
 
-    fn add_py(&self, object: &Bound<PyAny>, update: bool) -> PyResult<()> {
+    fn add_points_py(&self, object: &Bound<PyAny>, update: bool) -> PyResult<()> {
         if let Ok(buffer) = PyBuffer::<f32>::extract_bound(object) {
             let shape = buffer.shape();
             if shape.len() != 2 {
@@ -261,7 +261,7 @@ impl<T: Send + Sync> PyGraph for ValueGraph<T> {
         Ok(())
     }
 
-    fn delete_py(&self, update: bool) {
+    fn reset_py(&self, update: bool) {
         let mut w = self.graph.write().unwrap();
         w.data.clear();
         w.count = 0;

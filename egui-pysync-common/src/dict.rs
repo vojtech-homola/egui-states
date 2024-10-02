@@ -50,7 +50,7 @@ pub enum DictMessage<K, V> {
     Remove(K),
 }
 
-pub trait WriteDictMessage: Send + Sync {
+pub trait WriteDictMessage: Send + Sync + 'static {
     fn write_message(&self, head: &mut [u8]) -> Option<Vec<u8>>;
 }
 

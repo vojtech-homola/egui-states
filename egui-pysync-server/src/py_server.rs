@@ -10,12 +10,12 @@ use pyo3::prelude::*;
 use pyo3::types::PyTuple;
 
 use egui_pysync_common::commands::CommandMessage;
+use egui_pysync_common::transport::WriteMessage;
 use egui_pysync_common::values::ValueMessage;
 
 use crate::server::Server;
 use crate::signals::ChangedValues;
 use crate::states_creator::{PyValuesList, ValuesCreator};
-use crate::transport::WriteMessage;
 
 // To be able to create all values outside this crate
 pub static CREATE_HOOK: OnceLock<fn(&mut ValuesCreator)> = OnceLock::new();
@@ -173,7 +173,7 @@ impl StateServer {
         }
     }
 
-    #[pyo3(signature = (value_id, image, update, rect=None, histogram=None))]
+    #[pyo3(signature = (value_id, image, update, rect=None))]
     fn set_image(
         &self,
         py: Python,
@@ -181,20 +181,12 @@ impl StateServer {
         image: PyBuffer<u8>,
         update: bool,
         rect: Option<[usize; 4]>,
-        histogram: Option<PyBuffer<f32>>,
     ) -> PyResult<()> {
         match self.values.images.get(&value_id) {
             Some(image_val) => {
                 let image_data = image.to_vec(py)?;
                 let shape = image.shape().to_vec();
-                let histogram = match histogram {
-                    Some(hist) => Some(hist.to_vec(py)?),
-                    None => None,
-                };
-
-                py.allow_threads(|| {
-                    image_val.set_image_py(image_data, shape, rect, histogram, update)
-                })
+                py.allow_threads(|| image_val.set_image_py(image_data, shape, rect, update))
             }
             None => Err(pyo3::exceptions::PyValueError::new_err(format!(
                 "Image with id {} is not available.",
@@ -385,7 +377,7 @@ impl StateServer {
 
     fn set_graph(&self, py: Python, value_id: u32, graph: PyObject, update: bool) -> PyResult<()> {
         match self.values.graphs.get(&value_id) {
-            Some(graph_) => graph_.new_py(graph.bind(py), update),
+            Some(graph_) => graph_.all_py(graph.bind(py), update),
             None => Err(pyo3::exceptions::PyValueError::new_err(format!(
                 "Graph value with id {} is not available.",
                 value_id

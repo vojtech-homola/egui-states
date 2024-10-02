@@ -98,6 +98,14 @@ impl WriteMessage {
         WriteMessage::Command(CommandMessage::Ack(id))
     }
 
+    pub fn list(id: u32, update: bool, list: impl WriteListMessage) -> Self {
+        WriteMessage::List(id, update, Box::new(list))
+    }
+
+    pub fn dict(id: u32, update: bool, dict: impl WriteDictMessage) -> Self {
+        WriteMessage::Dict(id, update, Box::new(dict))
+    }
+
     pub fn parse(self, head: &mut [u8]) -> Option<Vec<u8>> {
         if let WriteMessage::Command(command) = self {
             return command.write_message(head);
@@ -176,12 +184,12 @@ pub enum ReadMessage<'a> {
 
 impl<'a> ReadMessage<'a> {
     pub fn parse(
-        head: &'a mut [u8],
+        head: &'a [u8],
         message_type: u8,
         data: Option<Vec<u8>>,
     ) -> Result<ReadMessage<'a>, String> {
         if message_type == TYPE_COMMAND {
-            let command = CommandMessage::read_message(&mut head[1..], data)?;
+            let command = CommandMessage::read_message(&head[1..], data)?;
             return Ok(ReadMessage::Command(command));
         }
 
