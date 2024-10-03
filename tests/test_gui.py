@@ -5,8 +5,9 @@ import numpy as np
 import cv2
 import matplotlib.pyplot as plt
 
-from egui_pysync import StateServer, enums, types
+from egui_pysync import enums, types
 from egui_pysync.enums import OpticalMode, View
+from egui_pysync.server import StateServer
 
 state_server = StateServer(signals_workers=10)
 state_server.start()

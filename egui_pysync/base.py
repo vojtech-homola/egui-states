@@ -1,9 +1,15 @@
+from abc import ABC, abstractmethod
 from collections.abc import Buffer
 from typing import Any
 
-class StateServerBase:
+
+class StateServerBase(ABC):
     def __init__(self) -> None: ...
+
+    @abstractmethod
     def start(self) -> None: ...
+
+    @abstractmethod
     def stop(self) -> None: ...
     def is_running(self) -> bool: ...
     def is_connected(self) -> bool: ...

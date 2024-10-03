@@ -1,10 +1,10 @@
 # ruff: noqa: D107 D101
 from egui_pysync import enums, structures, types
-from egui_pysync.core import StateServer
+from egui_pysync.base import StateServerBase
 
 
 class ScanImage:
-    def __init__(self, server: StateServer, signals_manager: structures._SignalsManager):
+    def __init__(self, server: StateServerBase, signals_manager: structures._SignalsManager):
         self.image = structures.ValueImage(11, server, signals_manager)
         self.scale = structures.Value[float](12, server, signals_manager)
         self.position = structures.Value[tuple[float, float]](13, server, signals_manager)
@@ -13,7 +13,7 @@ class ScanImage:
 
 
 class Optics:
-    def __init__(self, server: StateServer, signals_manager: structures._SignalsManager):
+    def __init__(self, server: StateServerBase, signals_manager: structures._SignalsManager):
         self.optical_mode = structures.ValueEnum(16, server, signals_manager, enums.OpticalMode)
         self.microscope_mode = structures.ValueEnum(17, server, signals_manager, enums.MicroscopeMode)
         self.mic_state = structures.SignalEmpty(18, server, signals_manager)
@@ -25,7 +25,7 @@ class Optics:
 
 
 class Stem:
-    def __init__(self, server: StateServer, signals_manager: structures._SignalsManager):
+    def __init__(self, server: StateServerBase, signals_manager: structures._SignalsManager):
         self.channel = structures.ValueEnum(24, server, signals_manager, enums.StemChannel)
         self.tools = structures.ValueEnum(25, server, signals_manager, enums.StemTools)
         self.histogram = structures.Value[bool](26, server, signals_manager)
@@ -37,7 +37,7 @@ class Stem:
 
 
 class Scanning:
-    def __init__(self, server: StateServer, signals_manager: structures._SignalsManager):
+    def __init__(self, server: StateServerBase, signals_manager: structures._SignalsManager):
         self.fov = structures.Value[float](32, server, signals_manager)
         self.pixel_time = structures.Value[float](33, server, signals_manager)
         self.pixel_count = structures.ValueEnum(34, server, signals_manager, enums.PixelCount)
@@ -48,7 +48,7 @@ class Scanning:
 
 
 class Camera:
-    def __init__(self, server: StateServer, signals_manager: structures._SignalsManager):
+    def __init__(self, server: StateServerBase, signals_manager: structures._SignalsManager):
         self.roi_mode = structures.ValueEnum(39, server, signals_manager, enums.ROIMode)
         self.exposure = structures.Value[float](40, server, signals_manager)
         self.angle = structures.Value[float](41, server, signals_manager)
@@ -58,7 +58,7 @@ class Camera:
 
 
 class Detectors:
-    def __init__(self, server: StateServer, signals_manager: structures._SignalsManager):
+    def __init__(self, server: StateServerBase, signals_manager: structures._SignalsManager):
         self.bf = structures.Value[bool](45, server, signals_manager)
         self.bf_busy = structures.Value[bool](46, server, signals_manager)
         self.bf_gain = structures.Value[float](47, server, signals_manager)
@@ -68,7 +68,7 @@ class Detectors:
 
 
 class Stem4D:
-    def __init__(self, server: StateServer, signals_manager: structures._SignalsManager):
+    def __init__(self, server: StateServerBase, signals_manager: structures._SignalsManager):
         self.pixel_time = structures.Value[float](51, server, signals_manager)
         self.pixel_count = structures.ValueEnum(52, server, signals_manager, enums.PixelCount)
         self.button = structures.SignalEmpty(53, server, signals_manager)
@@ -79,7 +79,7 @@ class Stem4D:
 
 
 class StemAdjustments:
-    def __init__(self, server: StateServer, signals_manager: structures._SignalsManager):
+    def __init__(self, server: StateServerBase, signals_manager: structures._SignalsManager):
         self.adjust_type = structures.ValueEnum(58, server, signals_manager, enums.StemAdjust)
         self.ele_adjust = structures.ValueEnum(59, server, signals_manager, enums.EleAdjust)
         self.scan = structures.Value[tuple[float, float]](60, server, signals_manager)
@@ -95,7 +95,7 @@ class StemAdjustments:
 
 
 class Stage:
-    def __init__(self, server: StateServer, signals_manager: structures._SignalsManager):
+    def __init__(self, server: StateServerBase, signals_manager: structures._SignalsManager):
         self.stop = structures.SignalEmpty(70, server, signals_manager)
         self.x = structures.Value[float](71, server, signals_manager)
         self.y = structures.Value[float](72, server, signals_manager)
@@ -108,7 +108,7 @@ class Stage:
 
 
 class Diffraction:
-    def __init__(self, server: StateServer, signals_manager: structures._SignalsManager):
+    def __init__(self, server: StateServerBase, signals_manager: structures._SignalsManager):
         self.channel = structures.ValueEnum(79, server, signals_manager, enums.DiffChannel)
         self.tools = structures.ValueEnum(80, server, signals_manager, enums.DiffTools)
         self.histogram = structures.Value[bool](81, server, signals_manager)
@@ -123,7 +123,7 @@ class Diffraction:
 
 
 class DiffAdjustments:
-    def __init__(self, server: StateServer, signals_manager: structures._SignalsManager):
+    def __init__(self, server: StateServerBase, signals_manager: structures._SignalsManager):
         self.adjust_type = structures.ValueEnum(90, server, signals_manager, enums.DiffAdjust)
         self.tilt = structures.ValueEnum(91, server, signals_manager, enums.EleTilt)
         self.illumination = structures.Value[tuple[float, float]](92, server, signals_manager)
@@ -131,7 +131,7 @@ class DiffAdjustments:
 
 
 class Precession:
-    def __init__(self, server: StateServer, signals_manager: structures._SignalsManager):
+    def __init__(self, server: StateServerBase, signals_manager: structures._SignalsManager):
         self.enabled = structures.Value[bool](94, server, signals_manager)
         self.image = structures.Value[bool](95, server, signals_manager)
         self.angle = structures.Value[float](96, server, signals_manager)
@@ -155,7 +155,7 @@ class Precession:
 
 
 class Xray:
-    def __init__(self, server: StateServer, signals_manager: structures._SignalsManager):
+    def __init__(self, server: StateServerBase, signals_manager: structures._SignalsManager):
         self.edx0 = structures.Value[bool](114, server, signals_manager)
         self.edx1 = structures.Value[bool](115, server, signals_manager)
         self.calibrate = structures.SignalEmpty(116, server, signals_manager)
@@ -166,7 +166,7 @@ class Xray:
 
 
 class States:
-    def __init__(self, server: StateServer, signals_manager: structures._SignalsManager):
+    def __init__(self, server: StateServerBase, signals_manager: structures._SignalsManager):
         self._server = server
         self._signals_manager = signals_manager
 
