@@ -11,7 +11,6 @@ use egui_pysync_common::commands::CommandMessage;
 use egui_pysync_common::event::Event;
 use egui_pysync_common::transport::HEAD_SIZE;
 use egui_pysync_common::transport::{read_message, write_message, ReadMessage, WriteMessage};
-use egui_pysync_common::values::ValueMessage;
 
 use crate::signals::ChangedValues;
 use crate::states_creator::ValuesList;
@@ -50,7 +49,7 @@ impl StatesTransfer {
 
                 if let Err(e) = res {
                     let error = format!("Error reading message: {:?}", e);
-                    signals.set(0, ValueMessage::String(error));
+                    signals.set(0, error);
                     connected.store(false, atomic::Ordering::Relaxed);
                     break;
                 }
@@ -60,7 +59,7 @@ impl StatesTransfer {
                 let res = ReadMessage::parse(&head, type_, data);
                 if let Err(res) = res {
                     let error = format!("Error parsing message: {:?}", res);
-                    signals.set(0, ValueMessage::String(error));
+                    signals.set(0, error);
                     continue;
                 }
                 let message = res.unwrap();
@@ -75,20 +74,20 @@ impl StatesTransfer {
                                 None => {
                                     let error =
                                         format!("Value with id {} not found for Ack command", v);
-                                    signals.set(0, ValueMessage::String(error));
+                                    signals.set(0, error);
                                 }
                             }
                         }
                         CommandMessage::Error(err) => {
                             let error = format!("Error message from UI client: {}", err);
-                            signals.set(0, ValueMessage::String(error));
+                            signals.set(0, error);
                         }
                         _ => {
                             let err = format!(
                                 "Command {} should not be processed here",
                                 command.as_str()
                             );
-                            signals.set(0, ValueMessage::String(err));
+                            signals.set(0, err);
                         }
                     }
                     continue;
@@ -97,26 +96,12 @@ impl StatesTransfer {
                 // process message
                 let res = match message {
                     ReadMessage::Value(id, siganl, head, data) => match values.updated.get(&id) {
-                        Some(val) => match val.process_value(head, data) {
-                            Ok(value) => {
-                                if siganl {
-                                    signals.set(id, value);
-                                }
-                                Ok(())
-                            }
-                            Err(e) => Err(e),
-                        },
+                        Some(val) => val.process_value(head, data, siganl),
                         None => Err(format!("Value with id {} not found", id)),
                     },
 
                     ReadMessage::Signal(id, head, data) => match values.updated.get(&id) {
-                        Some(val) => match val.process_value(head, data) {
-                            Ok(value) => {
-                                signals.set(id, value);
-                                Ok(())
-                            }
-                            Err(e) => Err(e),
-                        },
+                        Some(val) => val.process_value(head, data, true),
                         None => Err(format!("Value with id {} not found", id)),
                     },
 
@@ -128,7 +113,7 @@ impl StatesTransfer {
 
                 if let Err(e) = res {
                     let text = format!("Error parsing message: {}", e);
-                    signals.set(0, ValueMessage::String(text));
+                    signals.set(0, text);
                 }
             }
 
@@ -174,7 +159,7 @@ impl StatesTransfer {
                 let res = write_message(&mut head, data, &mut stream);
                 if let Err(e) = res {
                     let error = format!("Error writing message: {:?}", e);
-                    signals.set(0, ValueMessage::String(error));
+                    signals.set(0, error);
                     connected.store(false, atomic::Ordering::Relaxed);
                     break;
                 }
@@ -253,7 +238,7 @@ impl Server {
                 let res = read_message(&mut head, &mut stream);
                 if let Err(e) = res {
                     let error = format!("Error reading message: {:?}", e);
-                    signals.set(0, ValueMessage::String(error));
+                    signals.set(0, error);
                     connected.store(false, atomic::Ordering::Relaxed);
                     continue;
                 }
@@ -263,7 +248,7 @@ impl Server {
                 let res = ReadMessage::parse(&head, type_, data);
                 if let Err(res) = res {
                     let error = format!("Error parsing message: {:?}", res);
-                    signals.set(0, ValueMessage::String(error));
+                    signals.set(0, error);
                     continue;
                 }
 

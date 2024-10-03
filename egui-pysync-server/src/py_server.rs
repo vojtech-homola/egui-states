@@ -11,7 +11,6 @@ use pyo3::types::PyTuple;
 
 use egui_pysync_common::commands::CommandMessage;
 use egui_pysync_common::transport::WriteMessage;
-use egui_pysync_common::values::ValueMessage;
 
 use crate::server::Server;
 use crate::signals::ChangedValues;
@@ -110,18 +109,7 @@ impl StateServer {
                 break res;
             }
         });
-
-        let args = match value {
-            ValueMessage::Double(value) => PyTuple::new_bound(py, [value]),
-            ValueMessage::I64(value) => PyTuple::new_bound(py, [value]),
-            ValueMessage::String(value) => PyTuple::new_bound(py, [value]),
-            ValueMessage::TwoF32(value) => PyTuple::new_bound(py, [value]),
-            ValueMessage::TwoF64(value) => PyTuple::new_bound(py, [value]),
-            ValueMessage::U64(value) => PyTuple::new_bound(py, [value]),
-            ValueMessage::Empty(_) => PyTuple::empty_bound(py),
-            ValueMessage::Bool(value) => PyTuple::new_bound(py, [value]),
-            ValueMessage::General(value) => PyTuple::new_bound(py, [value.to_object(py)]),
-        };
+        let args = PyTuple::new_bound(py, [value.to_object(py)]);
 
         (value_id, args)
     }

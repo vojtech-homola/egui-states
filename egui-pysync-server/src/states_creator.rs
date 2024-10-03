@@ -16,7 +16,7 @@ use crate::image::ImageValue;
 use crate::list::{PyListTrait, ValueList};
 use crate::py_convert::PyConvert;
 use crate::signals::ChangedValues;
-use crate::values::{PyValue, PyValueStatic, ProccesValue};
+use crate::values::{ProccesValue, PyValue, PyValueStatic};
 use crate::values::{Signal, Value, ValueEnum, ValueStatic};
 use crate::{Acknowledge, SyncTrait};
 
@@ -175,9 +175,11 @@ impl ValuesCreator {
         value
     }
 
-    pub fn add_signal<T: WriteValue + ReadValue + Clone + 'static>(&mut self) -> Arc<Signal<T>> {
+    pub fn add_signal<T: WriteValue + ReadValue + Clone + ToPyObject + 'static>(
+        &mut self,
+    ) -> Arc<Signal<T>> {
         let id = self.get_id();
-        let signal = Signal::new(id);
+        let signal = Signal::new(id, self.signals.clone());
 
         self.val.updated.insert(id, signal.clone());
 
