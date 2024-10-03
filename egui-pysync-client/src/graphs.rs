@@ -15,7 +15,7 @@ pub trait GraphType: Sync + Send + Clone + Copy {
 
 #[derive(Clone)]
 pub struct Graph<T> {
-    pub data: Vec<Vec<T>>,
+    pub y: Vec<T>,
     pub x: Vec<T>,
     pub changed: bool,
 }
@@ -23,7 +23,7 @@ pub struct Graph<T> {
 impl<T> Graph<T> {
     fn new() -> Self {
         Self {
-            data: Vec::new(),
+            y: Vec::new(),
             x: Vec::new(),
             changed: true,
         }
@@ -60,46 +60,20 @@ impl<T: GraphType> GraphUpdate for ValueGraph<T> {
             GraphMessage::All(graph) => {
                 T::check(graph.precision)?;
                 let mut x = vec![T::zero(); graph.points];
+                let mut y = vec![T::zero(); graph.points];
                 let line_size = graph.points * T::size();
 
                 let mut ptr = graph.data.as_ptr();
                 unsafe {
                     copy_nonoverlapping(ptr, x.as_mut_ptr() as *mut u8, line_size);
                     ptr = ptr.add(line_size);
-                }
-
-                let mut lines = Vec::new();
-                for _ in 0..graph.lines {
-                    let mut line = vec![T::zero(); graph.points];
-                    unsafe {
-                        copy_nonoverlapping(ptr, line.as_mut_ptr() as *mut u8, line_size);
-                        ptr = ptr.add(line_size);
-                    }
-                    lines.push(line);
+                    copy_nonoverlapping(ptr, y.as_mut_ptr() as *mut u8, line_size);
                 }
 
                 let mut g = self.graph.write().unwrap();
                 g.x = x;
-                g.data = lines;
+                g.y = y;
                 g.changed = true;
-
-                Ok(())
-            }
-
-            GraphMessage::AddLine(graph) => {
-                T::check(graph.precision)?;
-                let line_size = graph.points * T::size();
-                let ptr = graph.data.as_ptr();
-                let mut line = vec![T::zero(); graph.points];
-                unsafe {
-                    copy_nonoverlapping(ptr, line.as_mut_ptr() as *mut u8, line_size);
-                }
-
-                let mut g = self.graph.write().unwrap();
-                if g.x.len() != graph.points {
-                    return Err("Invalid points count".to_string());
-                }
-                g.data.push(line);
 
                 Ok(())
             }
@@ -108,43 +82,18 @@ impl<T: GraphType> GraphUpdate for ValueGraph<T> {
                 T::check(graph.precision)?;
                 let line_size = graph.points * T::size();
                 let mut x = vec![T::zero(); graph.points];
+                let mut y = vec![T::zero(); graph.points];
                 let mut ptr = graph.data.as_ptr();
 
                 unsafe {
                     copy_nonoverlapping(ptr, x.as_mut_ptr() as *mut u8, line_size);
                     ptr = ptr.add(line_size);
-                }
-
-                let mut lines = Vec::new();
-                for _ in 0..graph.lines {
-                    let mut line = vec![T::zero(); graph.points];
-                    unsafe {
-                        copy_nonoverlapping(ptr, line.as_mut_ptr() as *mut u8, line_size);
-                        ptr = ptr.add(line_size);
-                    }
-                    lines.push(line);
+                    copy_nonoverlapping(ptr, y.as_mut_ptr() as *mut u8, line_size);
                 }
 
                 let mut g = self.graph.write().unwrap();
-                if g.data.len() != graph.lines {
-                    return Err("Invalid lines count".to_string());
-                }
-
                 g.x.extend_from_slice(&x);
-                for i in 0..graph.lines {
-                    g.data[i].extend_from_slice(&lines[i]);
-                }
-                g.changed = true;
-
-                Ok(())
-            }
-
-            GraphMessage::RemoveLine(index) => {
-                let mut g = self.graph.write().unwrap();
-                if index >= g.data.len() {
-                    return Err("Invalid line index".to_string());
-                }
-                g.data.remove(index);
+                g.y.extend_from_slice(&y);
                 g.changed = true;
 
                 Ok(())
@@ -152,7 +101,7 @@ impl<T: GraphType> GraphUpdate for ValueGraph<T> {
 
             GraphMessage::Reset => {
                 let mut g = self.graph.write().unwrap();
-                g.data.clear();
+                g.y.clear();
                 g.x.clear();
                 g.changed = true;
 

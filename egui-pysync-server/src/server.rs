@@ -40,7 +40,7 @@ impl StatesTransfer {
             let mut head = [0u8; HEAD_SIZE];
             loop {
                 // read the message
-                let value = read_head(&mut head, &mut stream);
+                let res = read_message(&mut head, &mut stream);
 
                 // check if not connected
                 if !connected.load(atomic::Ordering::Relaxed) {
@@ -48,24 +48,25 @@ impl StatesTransfer {
                     break;
                 }
 
-                if let Err(e) = value {
-                    match e {
-                        ParseError::Connection(e) => {
-                            let error = format!("Error reading message: {:?}", e);
-                            signals.set(0, ValueMessage::String(error));
-                            connected.store(false, atomic::Ordering::Relaxed);
-                            break;
-                        }
-                        ParseError::Parse(e) => {
-                            let error = format!("Error parsing message: {}", e);
-                            signals.set(0, ValueMessage::String(error));
-                            continue;
-                        }
-                    }
+                if let Err(e) = res {
+                    let error = format!("Error reading message: {:?}", e);
+                    signals.set(0, ValueMessage::String(error));
+                    connected.store(false, atomic::Ordering::Relaxed);
+                    break;
                 }
+                let (type_, data) = res.unwrap();
+
+                // parse the message
+                let res = ReadMessage::parse(&head, type_, data);
+                if let Err(res) = res {
+                    let error = format!("Error parsing message: {:?}", res);
+                    signals.set(0, ValueMessage::String(error));
+                    continue;
+                }
+                let message = res.unwrap();
 
                 // process posible command message
-                if let Some(command) = value.unwrap() {
+                if let ReadMessage::Command(command) = message {
                     match command {
                         CommandMessage::Ack(v) => {
                             let val_res = values.ack.get(&v);
@@ -93,21 +94,41 @@ impl StatesTransfer {
                     continue;
                 }
 
-                let result = read_message(&values, &signals, &head, &mut stream);
-                if let Err(e) = result {
-                    match e {
-                        ParseError::Connection(e) => {
-                            let error = format!("Error reading message: {:?}", e);
-                            signals.set(0, ValueMessage::String(error));
-                            connected.store(false, atomic::Ordering::Relaxed);
-                            break;
-                        }
-                        ParseError::Parse(error) => {
-                            let text = format!("Error parsing message: {}", error);
-                            signals.set(0, ValueMessage::String(text));
-                            continue;
-                        }
-                    }
+                // process message
+                let res = match message {
+                    ReadMessage::Value(id, siganl, head, data) => match values.updated.get(&id) {
+                        Some(val) => match val.process_value(head, data) {
+                            Ok(value) => {
+                                if siganl {
+                                    signals.set(id, value);
+                                }
+                                Ok(())
+                            }
+                            Err(e) => Err(e),
+                        },
+                        None => Err(format!("Value with id {} not found", id)),
+                    },
+
+                    ReadMessage::Signal(id, head, data) => match values.updated.get(&id) {
+                        Some(val) => match val.process_value(head, data) {
+                            Ok(value) => {
+                                signals.set(id, value);
+                                Ok(())
+                            }
+                            Err(e) => Err(e),
+                        },
+                        None => Err(format!("Value with id {} not found", id)),
+                    },
+
+                    _ => Err(format!(
+                        "Message {} should not be processed here",
+                        message.to_str()
+                    )),
+                };
+
+                if let Err(e) = res {
+                    let text = format!("Error parsing message: {}", e);
+                    signals.set(0, ValueMessage::String(text));
                 }
             }
 
@@ -146,8 +167,11 @@ impl StatesTransfer {
                     break;
                 }
 
+                //parse message
+                let data = message.parse(&mut head);
+
                 // send message
-                let res = message.write_message(&mut head, &mut stream);
+                let res = write_message(&mut head, data, &mut stream);
                 if let Err(e) = res {
                     let error = format!("Error writing message: {:?}", e);
                     signals.set(0, ValueMessage::String(error));

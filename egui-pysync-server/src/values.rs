@@ -14,8 +14,8 @@ use crate::py_convert::PyConvert;
 use crate::signals::ChangedValues;
 use crate::{Acknowledge, SyncTrait};
 
-pub(crate) trait ValueUpdate: Send + Sync {
-    fn update_value(&self, head: &[u8], data: Option<Vec<u8>>) -> Result<ValueMessage, String>;
+pub(crate) trait ProccesValue: Send + Sync {
+    fn process_value(&self, head: &[u8], data: Option<Vec<u8>>) -> Result<ValueMessage, String>;
 }
 
 pub(crate) trait PyValue: Send + Sync {
@@ -71,22 +71,26 @@ where
             w.0 = value.clone();
             w.1 += 1;
             self.channel.send(message).unwrap();
+            if set_signal {
+                self.signals.set(self.id, value.into_message());
+            }
         } else {
-            self.value.write().unwrap().0 = value.clone();
+            let mut w = self.value.write().unwrap();
+            w.0 = value.clone();
+            if set_signal {
+                self.signals.set(self.id, value.into_message());
+            }
         }
 
-        if set_signal {
-            self.signals.set(self.id, value.into_message());
-        }
         Ok(())
     }
 }
 
-impl<T> ValueUpdate for Value<T>
+impl<T> ProccesValue for Value<T>
 where
     T: ReadValue + WriteValue,
 {
-    fn update_value(&self, head: &[u8], data: Option<Vec<u8>>) -> Result<ValueMessage, String> {
+    fn process_value(&self, head: &[u8], data: Option<Vec<u8>>) -> Result<ValueMessage, String> {
         let value = T::read_message(head, data)?;
 
         let mut w = self.value.write().unwrap();
@@ -158,7 +162,8 @@ where
         let value = T::from_python(value)?;
         if self.connected.load(Ordering::Relaxed) {
             let message = WriteMessage::Static(self.id, update, value.clone().into_message());
-            *self.value.write().unwrap() = value;
+            let mut v = self.value.write().unwrap();
+            *v = value;
             self.channel.send(message).unwrap();
         } else {
             *self.value.write().unwrap() = value;
@@ -225,22 +230,26 @@ where
             w.0 = value.clone();
             w.1 += 1;
             self.channel.send(message).unwrap();
+            if set_signal {
+                self.signals.set(self.id, ValueMessage::U64(int_val));
+            }
         } else {
-            self.value.write().unwrap().0 = value.clone();
+            let mut w = self.value.write().unwrap();
+            w.0 = value.clone();
+            if set_signal {
+                self.signals.set(self.id, ValueMessage::U64(int_val));
+            }
         }
 
-        if set_signal {
-            self.signals.set(self.id, ValueMessage::U64(int_val));
-        }
         Ok(())
     }
 }
 
-impl<T> ValueUpdate for ValueEnum<T>
+impl<T> ProccesValue for ValueEnum<T>
 where
     T: EnumInt,
 {
-    fn update_value(&self, head: &[u8], data: Option<Vec<u8>>) -> Result<ValueMessage, String> {
+    fn process_value(&self, head: &[u8], data: Option<Vec<u8>>) -> Result<ValueMessage, String> {
         let value_int = u64::read_message(head, data)?;
         let value = T::from_int(value_int).map_err(|_| "Invalid enum format".to_string())?;
 
@@ -292,11 +301,11 @@ impl<T: WriteValue + Clone> Signal<T> {
     }
 }
 
-impl<T> ValueUpdate for Signal<T>
+impl<T> ProccesValue for Signal<T>
 where
     T: ReadValue + WriteValue,
 {
-    fn update_value(&self, head: &[u8], data: Option<Vec<u8>>) -> Result<ValueMessage, String> {
+    fn process_value(&self, head: &[u8], data: Option<Vec<u8>>) -> Result<ValueMessage, String> {
         let value = T::read_message(head, data)?;
         Ok(value.into_message())
     }

@@ -12,8 +12,6 @@ use egui_pysync_common::transport::WriteMessage;
 use crate::py_convert::PyConvert;
 use crate::SyncTrait;
 
-
-
 pub(crate) trait PyListTrait: Send + Sync {
     fn get_py(&self, py: Python) -> PyObject;
     fn get_item_py(&self, py: Python, idx: usize) -> PyResult<PyObject>;
@@ -71,6 +69,8 @@ where
             data.push(T::from_python(&val)?);
         }
 
+        let mut l = self.list.write().unwrap();
+
         if self.connected.load(Ordering::Relaxed) {
             let message = ListMessage::All(data.clone());
             let message = WriteMessage::list(self.id, update, message);
@@ -78,22 +78,21 @@ where
             self.channel.send(message).unwrap();
         }
 
-        *self.list.write().unwrap() = data;
+        *l = data;
 
         Ok(())
     }
 
     fn set_item_py(&self, idx: usize, value: &Bound<PyAny>, update: bool) -> PyResult<()> {
+        let value = T::from_python(&value)?;
         let mut list = self.list.write().unwrap();
         if idx >= list.len() {
             return Err(PyIndexError::new_err("list index out of range"));
         }
 
-        let value = T::from_python(&value)?;
         if self.connected.load(Ordering::Relaxed) {
             let message = ListMessage::Set(idx, value.clone());
             let message = WriteMessage::list(self.id, update, message);
-
             self.channel.send(message).unwrap();
         }
 
@@ -111,7 +110,6 @@ where
         if self.connected.load(Ordering::Relaxed) {
             let message = ListMessage::Remove::<T>(idx);
             let message = WriteMessage::list(self.id, update, message);
-
             self.channel.send(message).unwrap();
         }
 
@@ -122,6 +120,8 @@ where
 
     fn add_item_py(&self, value: &Bound<PyAny>, update: bool) -> PyResult<()> {
         let value = T::from_python(&value)?;
+
+        let mut list = self.list.write().unwrap();
         if self.connected.load(Ordering::Relaxed) {
             let message = ListMessage::Add(value.clone());
             let message = WriteMessage::list(self.id, update, message);
@@ -129,7 +129,7 @@ where
             self.channel.send(message).unwrap();
         }
 
-        self.list.write().unwrap().push(value);
+        list.push(value);
 
         Ok(())
     }

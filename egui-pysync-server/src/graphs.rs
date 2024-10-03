@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, RwLock};
 
-use pyo3::buffer::PyBuffer;
+use pyo3::buffer::{Element, PyBuffer};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
@@ -14,20 +14,36 @@ use crate::SyncTrait;
 pub(crate) trait PyGraph: Send + Sync {
     fn all_py(&self, object: &Bound<PyAny>, update: bool) -> PyResult<()>;
     fn add_points_py(&self, object: &Bound<PyAny>, update: bool) -> PyResult<()>;
-    fn add_lines_py(&self, object: &Bound<PyAny>, update: bool) -> PyResult<()>;
-    fn remove_line_py(&self, index: usize, update: bool) -> PyResult<()>;
     fn reset_py(&self, update: bool);
 }
 
+pub trait GraphType: Element {
+    fn precision() -> Precision;
+}
+
+impl GraphType for f32 {
+    #[inline]
+    fn precision() -> Precision {
+        Precision::F32
+    }
+}
+
+impl GraphType for f64 {
+    #[inline]
+    fn precision() -> Precision {
+        Precision::F64
+    }
+}
+
 struct GraphInner {
-    data: Vec<Vec<u8>>,
-    count: usize,
-    precision: Precision,
+    y: Vec<u8>,
+    x: Vec<u8>,
 }
 
 pub struct ValueGraph<T> {
     id: u32,
     graph: RwLock<GraphInner>,
+    precision: Precision,
 
     channel: Sender<WriteMessage>,
     connected: Arc<AtomicBool>,
@@ -35,20 +51,21 @@ pub struct ValueGraph<T> {
     _phantom: std::marker::PhantomData<T>,
 }
 
-impl<T> ValueGraph<T> {
+impl<T: GraphType> ValueGraph<T> {
     pub(crate) fn new(
         id: u32,
         channel: Sender<WriteMessage>,
         connected: Arc<AtomicBool>,
     ) -> Arc<Self> {
         let graph = RwLock::new(GraphInner {
-            data: Vec::new(),
-            count: 0,
-            precision: Precision::F32,
+            y: Vec::new(),
+            x: Vec::new(),
         });
+
         Arc::new(Self {
             id,
             graph,
+            precision: T::precision(),
             channel,
             connected,
             _phantom: std::marker::PhantomData,
@@ -56,206 +73,97 @@ impl<T> ValueGraph<T> {
     }
 }
 
-impl<T: Send + Sync> PyGraph for ValueGraph<T> {
+impl<T> PyGraph for ValueGraph<T>
+where
+    T: Send + Sync + Clone + Element,
+{
     fn all_py(&self, object: &Bound<PyAny>, update: bool) -> PyResult<()> {
-        if object.is_none() {
-            let mut w = self.graph.write().unwrap();
-            w.data.clear();
-            w.count = 0;
+        let buffer = PyBuffer::<T>::extract_bound(object)?;
 
-            if self.connected.load(Ordering::Relaxed) {
-                let message = GraphMessage {
-                    precision: Precision::F32,
-                    operation: Operation::Delete,
-                    count: 0,
-                    lines: 0,
-                    data: None,
-                };
-                self.channel
-                    .send(WriteMessage::Graph(self.id, update, message))
-                    .unwrap();
-            }
-            return Ok(());
+        let shape = buffer.shape();
+        if shape.len() != 2 {
+            return Err(PyValueError::new_err("Graph data must have 2 dimensions."));
         }
 
-        if let Ok(buffer) = PyBuffer::<f32>::extract_bound(object) {
-            let shape = buffer.shape();
-            if shape.len() != 2 {
-                return Err(PyValueError::new_err("Graph data must have 2 dimensions."));
-            }
-            let count = shape[1];
-
-            let mut data = Vec::new();
-            let line_size = count * size_of::<f32>();
-            for i in 0..shape[0] {
-                let mut line = vec![0u8; line_size];
-                let ptr = buffer.get_ptr(&[i, 0]) as *const u8;
-                unsafe { std::ptr::copy_nonoverlapping(ptr, line.as_mut_ptr(), line_size) };
-                data.push(line);
-            }
-
-            let graph = GraphInner {
-                data,
-                count,
-                precision: Precision::F32,
-            };
-            let mut w = self.graph.write().unwrap();
-            *w = graph;
-
-            if self.connected.load(Ordering::Relaxed) {
-                let mut data = vec![0u8; shape[0] * shape[1] * size_of::<f32>()];
-                let data_f32 = data.as_mut_ptr() as *mut f32;
-                let data_f32 =
-                    unsafe { std::slice::from_raw_parts_mut(data_f32, shape[0] * shape[1]) };
-                buffer.copy_to_slice(object.py(), data_f32).unwrap();
-
-                let message = GraphMessage {
-                    precision: Precision::F32,
-                    operation: Operation::New,
-                    count: shape[1],
-                    lines: shape[0],
-                    data: Some(data),
-                };
-                self.channel
-                    .send(WriteMessage::Graph(self.id, update, message))
-                    .unwrap();
-            }
-        } else if let Ok(buffer) = PyBuffer::<f64>::extract_bound(object) {
-            let shape = buffer.shape();
-            if shape.len() != 2 {
-                return Err(PyValueError::new_err("Graph data must have 2 dimensions."));
-            }
-            let count = shape[1];
-
-            let mut data = Vec::new();
-            let line_size = count * std::mem::size_of::<f64>();
-            for i in 0..shape[0] {
-                let mut line = vec![0u8; line_size];
-                let ptr = buffer.get_ptr(&[i, 0]) as *const u8;
-                unsafe { std::ptr::copy_nonoverlapping(ptr, line.as_mut_ptr(), line_size) };
-                data.push(line);
-            }
-
-            let graph = GraphInner {
-                data,
-                count,
-                precision: Precision::F64,
-            };
-            let mut w = self.graph.write().unwrap();
-            *w = graph;
-
-            if self.connected.load(Ordering::Relaxed) {
-                let mut data = vec![0u8; shape[0] * shape[1] * size_of::<f64>()];
-                let data_f64 = data.as_mut_ptr() as *mut f64;
-                let data_f64 =
-                    unsafe { std::slice::from_raw_parts_mut(data_f64, shape[0] * shape[1]) };
-                buffer.copy_to_slice(object.py(), data_f64).unwrap();
-
-                let message = GraphMessage {
-                    precision: Precision::F64,
-                    operation: Operation::New,
-                    count: shape[1],
-                    lines: shape[0],
-                    data: Some(data),
-                };
-                self.channel
-                    .send(WriteMessage::Graph(self.id, update, message))
-                    .unwrap();
-            }
-        } else {
+        if shape[0] != 2 {
             return Err(PyValueError::new_err(
-                "Only float32 and float64 are supported for graphs.",
+                "Graph data must have at 2 lines (x, y).",
             ));
         }
+        if shape[1] < 2 {
+            return Err(PyValueError::new_err(
+                "Graph data must have at least 2 points.",
+            ));
+        }
+
+        let points = shape[1];
+
+        let line_size = points * size_of::<T>();
+        let mut x = vec![0u8; line_size];
+        let mut y = vec![0u8; line_size];
+        let ptr = buffer.get_ptr(&[0, 0]) as *const u8;
+        unsafe { std::ptr::copy_nonoverlapping(ptr, x.as_mut_ptr(), line_size) };
+        let ptr = buffer.get_ptr(&[1, 0]) as *const u8;
+        unsafe { std::ptr::copy_nonoverlapping(ptr, y.as_mut_ptr(), line_size) };
+
+        let mut w = self.graph.write().unwrap();
+
+        if self.connected.load(Ordering::Relaxed) {
+            let mut send_data = vec![0u8; line_size * 2];
+            send_data[..line_size].copy_from_slice(&x);
+            send_data[line_size..].copy_from_slice(&y);
+
+            let message = GraphMessage::All(GraphsData {
+                precision: self.precision,
+                points,
+                data: send_data,
+            });
+            self.channel
+                .send(WriteMessage::Graph(self.id, update, message))
+                .unwrap();
+        }
+
+        *w = GraphInner { y, x };
 
         Ok(())
     }
 
     fn add_points_py(&self, object: &Bound<PyAny>, update: bool) -> PyResult<()> {
-        if let Ok(buffer) = PyBuffer::<f32>::extract_bound(object) {
-            let shape = buffer.shape();
-            if shape.len() != 2 {
-                return Err(PyValueError::new_err("Graph data must have 2 dimensions."));
-            }
-            let count = shape[1];
+        let buffer = PyBuffer::<T>::extract_bound(object)?;
+        let shape = buffer.shape();
 
-            let mut w = self.graph.write().unwrap();
-            if w.precision != Precision::F32 {
-                return Err(PyValueError::new_err("Graph datatype does not match."));
-            }
-            if w.data.len() != shape[0] {
-                return Err(PyValueError::new_err("Graph lines count do not match."));
-            }
-
-            let line_size = count * size_of::<f32>();
-            for (i, data_line) in w.data.iter_mut().enumerate() {
-                let ptr = buffer.get_ptr(&[i, 0]) as *const u8;
-                let line = unsafe { std::slice::from_raw_parts(ptr, line_size) };
-                data_line.extend_from_slice(&line);
-            }
-
-            if self.connected.load(Ordering::Relaxed) {
-                let mut data = vec![0u8; shape[0] * shape[1] * size_of::<f32>()];
-                let data_f32 = data.as_mut_ptr() as *mut f32;
-                let data_f32 =
-                    unsafe { std::slice::from_raw_parts_mut(data_f32, shape[0] * shape[1]) };
-                buffer.copy_to_slice(object.py(), data_f32).unwrap();
-
-                let message = GraphMessage {
-                    precision: Precision::F32,
-                    operation: Operation::Add,
-                    count: shape[1],
-                    lines: shape[0],
-                    data: Some(data),
-                };
-                self.channel
-                    .send(WriteMessage::Graph(self.id, update, message))
-                    .unwrap();
-            }
-        } else if let Ok(buffer) = PyBuffer::<f64>::extract_bound(object) {
-            let shape = buffer.shape();
-            if shape.len() != 2 {
-                return Err(PyValueError::new_err("Graph data must have 2 dimensions."));
-            }
-            let count = shape[1];
-
-            let mut w = self.graph.write().unwrap();
-            if w.precision != Precision::F64 {
-                return Err(PyValueError::new_err("Graph datatype does not match."));
-            }
-            if w.data.len() != shape[0] {
-                return Err(PyValueError::new_err("Graph lines count do not match."));
-            }
-
-            let line_size = count * size_of::<f64>();
-            for (i, data_line) in w.data.iter_mut().enumerate() {
-                let ptr = buffer.get_ptr(&[i, 0]) as *const u8;
-                let line = unsafe { std::slice::from_raw_parts(ptr, line_size) };
-                data_line.extend_from_slice(&line);
-            }
-
-            if self.connected.load(Ordering::Relaxed) {
-                let mut data = vec![0u8; shape[0] * shape[1] * size_of::<f64>()];
-                let data_f64 = data.as_mut_ptr() as *mut f64;
-                let data_f64 =
-                    unsafe { std::slice::from_raw_parts_mut(data_f64, shape[0] * shape[1]) };
-                buffer.copy_to_slice(object.py(), data_f64).unwrap();
-
-                let message = GraphMessage {
-                    precision: Precision::F64,
-                    operation: Operation::Add,
-                    count: shape[1],
-                    lines: shape[0],
-                    data: Some(data),
-                };
-                self.channel
-                    .send(WriteMessage::Graph(self.id, update, message))
-                    .unwrap();
-            }
-        } else {
+        if shape.len() != 2 {
+            return Err(PyValueError::new_err("Graph data must have 2 dimensions."));
+        }
+        let points = shape[1];
+        if points < 1 {
             return Err(PyValueError::new_err(
-                "Only float32 and float64 are supported for graphs.",
+                "Added graph data must have at least 1 point.",
             ));
+        }
+
+        let mut g = self.graph.write().unwrap();
+        let start = g.x.len();
+        let ptr = buffer.get_ptr(&[0, 0]) as *const u8;
+        let line = unsafe { std::slice::from_raw_parts(ptr, points * size_of::<T>()) };
+        g.x.extend_from_slice(line);
+        let ptr = buffer.get_ptr(&[1, 0]) as *const u8;
+        let line = unsafe { std::slice::from_raw_parts(ptr, points * size_of::<T>()) };
+        g.y.extend_from_slice(line);
+
+        if self.connected.load(Ordering::Relaxed) {
+            let mut data = vec![0u8; points * size_of::<T>() * 2];
+            data[..points * size_of::<T>()].copy_from_slice(&g.x[start..]);
+            data[points * size_of::<T>()..].copy_from_slice(&g.y[start..]);
+
+            let message = GraphMessage::AddPoints(GraphsData {
+                precision: self.precision,
+                points,
+                data,
+            });
+            self.channel
+                .send(WriteMessage::Graph(self.id, update, message))
+                .unwrap();
         }
 
         Ok(())
@@ -263,19 +171,12 @@ impl<T: Send + Sync> PyGraph for ValueGraph<T> {
 
     fn reset_py(&self, update: bool) {
         let mut w = self.graph.write().unwrap();
-        w.data.clear();
-        w.count = 0;
+        w.x.clear();
+        w.y.clear();
 
         if self.connected.load(Ordering::Relaxed) {
-            let message = GraphMessage {
-                precision: Precision::F32,
-                operation: Operation::Delete,
-                count: 0,
-                lines: 0,
-                data: None,
-            };
             self.channel
-                .send(WriteMessage::Graph(self.id, update, message))
+                .send(WriteMessage::Graph(self.id, update, GraphMessage::Reset))
                 .unwrap();
         }
     }
@@ -284,22 +185,19 @@ impl<T: Send + Sync> PyGraph for ValueGraph<T> {
 impl<T: Send + Sync> SyncTrait for ValueGraph<T> {
     fn sync(&self) {
         let w = self.graph.read().unwrap();
-        if w.data.is_empty() {
+        if w.x.is_empty() {
             return;
         }
 
-        let mut data = Vec::new();
-        for line in &w.data {
-            data.extend_from_slice(line);
-        }
+        let mut data = vec![0u8; w.x.len() + w.y.len()];
+        data[..w.x.len()].copy_from_slice(&w.x);
+        data[w.x.len()..].copy_from_slice(&w.y);
 
-        let message = GraphMessage {
-            precision: w.precision,
-            operation: Operation::New,
-            count: w.count,
-            lines: w.data.len(),
-            data: Some(data),
-        };
+        let message = GraphMessage::All(GraphsData {
+            precision: self.precision,
+            points: w.x.len() / size_of::<T>(),
+            data,
+        });
         self.channel
             .send(WriteMessage::Graph(self.id, false, message))
             .unwrap();

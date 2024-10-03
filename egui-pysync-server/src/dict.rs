@@ -75,13 +75,16 @@ where
 
     fn del_item_py(&self, key: &Bound<PyAny>, update: bool) -> PyResult<()> {
         let dict_key = K::from_python(key)?;
+
+        let mut d = self.dict.write().unwrap();
+
         if self.connected.load(Ordering::Relaxed) {
             let message: DictMessage<K, V> = DictMessage::Remove(dict_key.clone());
             let message = WriteMessage::dict(self.id, update, message);
             self.channel.send(message).unwrap();
         }
 
-        self.dict.write().unwrap().remove(&dict_key);
+        d.remove(&dict_key);
         Ok(())
     }
 
@@ -89,13 +92,15 @@ where
         let dict_key = K::from_python(key)?;
         let dict_value = V::from_python(value)?;
 
+        let mut d = self.dict.write().unwrap();
+
         if self.connected.load(Ordering::Relaxed) {
             let message: DictMessage<K, V> = DictMessage::Set(dict_key.clone(), dict_value.clone());
             let message = WriteMessage::dict(self.id, update, message);
             self.channel.send(message).unwrap();
         }
 
-        self.dict.write().unwrap().insert(dict_key, dict_value);
+        d.insert(dict_key, dict_value);
         Ok(())
     }
 
@@ -109,13 +114,15 @@ where
             new_dict.insert(key, value);
         }
 
+        let mut d = self.dict.write().unwrap();
+
         if self.connected.load(Ordering::Relaxed) {
             let message: DictMessage<K, V> = DictMessage::All(new_dict.clone());
             let message = WriteMessage::dict(self.id, update, message);
             self.channel.send(message).unwrap();
         }
 
-        *self.dict.write().unwrap() = new_dict;
+        *d = new_dict;
         Ok(())
     }
 

@@ -55,13 +55,15 @@ impl ImageValue {
             }
         }
 
+        let mut h = self.histogram.write().unwrap();
+
         if self.connected.load(Ordering::Relaxed) {
             let message =
                 WriteMessage::Histogram(self.id, update, HistogramMessage(histogram.clone()));
             self.channel.send(message).unwrap();
         }
 
-        *self.histogram.write().unwrap() = histogram; // set None if histogram is None
+        *h = histogram; // set None if histogram is None
 
         Ok(())
     }
@@ -201,8 +203,6 @@ impl ImageValue {
             }
         }
         let new_size = w.size;
-
-        drop(w);
 
         if self.connected.load(Ordering::Relaxed) {
             let image_message = ImageMessage {

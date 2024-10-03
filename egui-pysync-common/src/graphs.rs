@@ -8,19 +8,11 @@ data:
 
 ---------
 graph all:
-| 1B - subtype | 1B - precision | 8B - u64 points | 8B - u64 lines | 8B - u64 data size |
+| 1B - subtype | 1B - precision | 8B - u64 points | ... |8B - u64 data size |
 
 ---------
 graph add points:
-| 1B - subtype | 1B - precision | 8B - u64 points | 8B - u64 lines | 8B - u64 data size |
-
----------
-graph add line:
-| 1B - subtype | 1B - precision | 8B - u64 points | 8B - u64 lines | 8B - u64 data size |
-
----------
-graph remove line:
-| 1B - subtype | 8B - u64 index |
+| 1B - subtype | 1B - precision | 8B - u64 points | ... |8B - u64 data size |
 
 ---------
 graph reset:
@@ -32,8 +24,6 @@ const GRAPH_F64: u8 = 61;
 
 const GRAPH_ALL: u8 = 200;
 const GRAPH_ADD_POINTS: u8 = 201;
-const GRAPH_ADD_LINES: u8 = 202;
-const GRAPH_REMOVE_LINE: u8 = 203;
 const GRAPH_RESET: u8 = 204;
 
 #[derive(PartialEq, Copy, Clone, Debug)]
@@ -64,15 +54,12 @@ impl Precision {
 pub struct GraphsData {
     pub precision: Precision,
     pub points: usize,
-    pub lines: usize, // number of y lines -> +1 for x line
     pub data: Vec<u8>,
 }
 
 pub enum GraphMessage {
     All(GraphsData),
     AddPoints(GraphsData),
-    AddLine(GraphsData),
-    RemoveLine(usize),
     Reset,
 }
 
@@ -84,7 +71,6 @@ impl GraphMessage {
                 head[1] = graph_data.precision.to_u8();
 
                 head[2..10].copy_from_slice(&(graph_data.points as u64).to_le_bytes());
-                head[10..18].copy_from_slice(&(graph_data.lines as u64).to_le_bytes());
                 head[SIZE_START..].copy_from_slice(&(graph_data.data.len() as u64).to_le_bytes());
                 Some(graph_data.data)
             }
@@ -93,23 +79,8 @@ impl GraphMessage {
                 head[1] = graph_data.precision.to_u8();
 
                 head[2..10].copy_from_slice(&(graph_data.points as u64).to_le_bytes());
-                head[10..18].copy_from_slice(&(graph_data.lines as u64).to_le_bytes());
                 head[SIZE_START..].copy_from_slice(&(graph_data.data.len() as u64).to_le_bytes());
                 Some(graph_data.data)
-            }
-            GraphMessage::AddLine(graph_data) => {
-                head[0] = GRAPH_ADD_LINES;
-                head[1] = graph_data.precision.to_u8();
-
-                head[2..10].copy_from_slice(&(graph_data.points as u64).to_le_bytes());
-                head[10..18].copy_from_slice(&(graph_data.lines as u64).to_le_bytes());
-                head[SIZE_START..].copy_from_slice(&(graph_data.data.len() as u64).to_le_bytes());
-                Some(graph_data.data)
-            }
-            GraphMessage::RemoveLine(index) => {
-                head[0] = GRAPH_REMOVE_LINE;
-                head[1..9].copy_from_slice(&(index as u64).to_le_bytes());
-                None
             }
             GraphMessage::Reset => {
                 head[0] = GRAPH_RESET;
@@ -122,7 +93,7 @@ impl GraphMessage {
         let graph_type = head[0];
 
         match graph_type {
-            GRAPH_ALL | GRAPH_ADD_LINES | GRAPH_ADD_POINTS => {
+            GRAPH_ALL | GRAPH_ADD_POINTS => {
                 let precision = match head[1] {
                     GRAPH_F32 => Precision::F32,
                     GRAPH_F64 => Precision::F64,
@@ -130,37 +101,23 @@ impl GraphMessage {
                 };
 
                 let points = u64::from_le_bytes(head[2..10].try_into().unwrap()) as usize;
-                let lines = u64::from_le_bytes(head[10..18].try_into().unwrap()) as usize;
 
                 let data = data.ok_or("Graph data is missing.".to_string())?;
-
-                let transfer_lines = if graph_type == GRAPH_ADD_LINES {
-                    lines
-                } else {
-                    lines + 1
-                };
-                if points * transfer_lines * precision.size() != data.len() {
+                if points * 2 * precision.size() != data.len() {
                     return Err("Invalid data size for graph.".to_string());
                 }
 
                 let graphs_data = GraphsData {
                     precision,
                     points,
-                    lines,
                     data,
                 };
 
                 Ok(match graph_type {
                     GRAPH_ALL => GraphMessage::All(graphs_data),
                     GRAPH_ADD_POINTS => GraphMessage::AddPoints(graphs_data),
-                    GRAPH_ADD_LINES => GraphMessage::AddLine(graphs_data),
                     _ => unreachable!(),
                 })
-            }
-
-            GRAPH_REMOVE_LINE => {
-                let index = u64::from_le_bytes(head[1..9].try_into().unwrap()) as usize;
-                Ok(GraphMessage::RemoveLine(index))
             }
 
             GRAPH_RESET => Ok(GraphMessage::Reset),
@@ -181,7 +138,6 @@ mod tests {
         let graph_data = GraphsData {
             precision: Precision::F32,
             points: 5,
-            lines: 1,
             data,
         };
 
@@ -197,26 +153,8 @@ mod tests {
             GraphMessage::All(new_graph_data) => {
                 assert_eq!(graph_data.data, new_graph_data.data);
                 assert_eq!(graph_data.points, new_graph_data.points);
-                assert_eq!(graph_data.lines, new_graph_data.lines);
                 assert_eq!(graph_data.precision, new_graph_data.precision);
             }
-            _ => panic!("Wrong message type."),
-        }
-    }
-
-    #[test]
-    fn test_remove_line() {
-        let index = 5;
-        let mut head = [0u8; HEAD_SIZE];
-
-        let message = GraphMessage::RemoveLine(index);
-        let data = message.write_message(&mut head[6..]);
-        assert_eq!(data, None);
-
-        let message = GraphMessage::read_message(&mut head[6..], data).unwrap();
-
-        match message {
-            GraphMessage::RemoveLine(new_index) => assert_eq!(index, new_index),
             _ => panic!("Wrong message type."),
         }
     }

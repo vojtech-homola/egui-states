@@ -6,17 +6,17 @@ use std::sync::Arc;
 use pyo3::ToPyObject;
 
 use egui_pysync_common::collections::ItemWriteRead;
+use egui_pysync_common::transport::WriteMessage;
 use egui_pysync_common::values::{ReadValue, WriteValue};
 use egui_pysync_common::{EnumInt, EnumStr};
-use egui_pysync_common::transport::WriteMessage;
 
 use crate::dict::{PyDict, ValueDict};
-use crate::graphs::{PyGraph, ValueGraph};
+use crate::graphs::{GraphType, PyGraph, ValueGraph};
 use crate::image::ImageValue;
 use crate::list::{PyListTrait, ValueList};
 use crate::py_convert::PyConvert;
 use crate::signals::ChangedValues;
-use crate::values::{PyValue, PyValueStatic, ValueUpdate};
+use crate::values::{PyValue, PyValueStatic, ProccesValue};
 use crate::values::{Signal, Value, ValueEnum, ValueStatic};
 use crate::{Acknowledge, SyncTrait};
 
@@ -54,7 +54,7 @@ impl PyValuesList {
 
 #[derive(Clone)]
 pub(crate) struct ValuesList {
-    pub(crate) updated: HashMap<u32, Arc<dyn ValueUpdate>>,
+    pub(crate) updated: HashMap<u32, Arc<dyn ProccesValue>>,
     pub(crate) ack: HashMap<u32, Arc<dyn Acknowledge>>,
     pub(crate) sync: HashMap<u32, Arc<dyn SyncTrait>>,
 }
@@ -221,7 +221,7 @@ impl ValuesCreator {
         list
     }
 
-    pub fn add_graph<T: Send + Sync + 'static>(&mut self) -> Arc<ValueGraph<T>> {
+    pub fn add_graph<T: Send + Sync + GraphType + 'static>(&mut self) -> Arc<ValueGraph<T>> {
         let id = self.get_id();
         let graph = ValueGraph::new(id, self.channel.clone(), self.connected.clone());
 

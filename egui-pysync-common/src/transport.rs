@@ -183,6 +183,22 @@ pub enum ReadMessage<'a> {
 }
 
 impl<'a> ReadMessage<'a> {
+    pub fn to_str(&self) -> &'static str {
+        match self {
+            Self::Value(_, _, _, _) => "Value",
+            Self::Static(_, _, _, _) => "Static",
+            Self::Signal(_, _, _) => "Signal",
+            Self::Image(_, _, _) => "Image",
+            Self::Histogram(_, _, _) => "Histogram",
+            Self::Dict(_, _, _, _) => "Dict",
+            Self::List(_, _, _, _) => "List",
+            Self::Graph(_, _, _) => "Graph",
+            Self::Command(_) => "Command",
+        }
+    }
+}
+
+impl<'a> ReadMessage<'a> {
     pub fn parse(
         head: &'a [u8],
         message_type: u8,

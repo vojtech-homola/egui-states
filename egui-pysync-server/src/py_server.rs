@@ -393,7 +393,7 @@ impl StateServer {
         update: bool,
     ) -> PyResult<()> {
         match self.values.graphs.get(&value_id) {
-            Some(graph) => graph.add_py(node.bind(py), update),
+            Some(graph) => graph.add_points_py(node.bind(py), update),
             None => Err(pyo3::exceptions::PyValueError::new_err(format!(
                 "Graph value with id {} is not available.",
                 value_id
@@ -404,7 +404,7 @@ impl StateServer {
     fn clear_graph(&self, value_id: u32, update: bool) -> PyResult<()> {
         match self.values.graphs.get(&value_id) {
             Some(graph) => {
-                graph.delete_py(update);
+                graph.reset_py(update);
                 Ok(())
             }
             None => Err(pyo3::exceptions::PyValueError::new_err(format!(
