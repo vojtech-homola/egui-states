@@ -7,10 +7,10 @@ use std::sync::{
 };
 use std::thread::{spawn, JoinHandle};
 
-use egui_pysync_common::commands::CommandMessage;
-use egui_pysync_common::event::Event;
-use egui_pysync_common::transport::HEAD_SIZE;
-use egui_pysync_common::transport::{read_message, write_message, ReadMessage, WriteMessage};
+use egui_pysync_transport::commands::CommandMessage;
+use egui_pysync_transport::event::Event;
+use egui_pysync_transport::transport::HEAD_SIZE;
+use egui_pysync_transport::transport::{read_message, write_message, ReadMessage, WriteMessage};
 
 use crate::signals::ChangedValues;
 use crate::states_creator::ValuesList;

@@ -4,13 +4,13 @@ import traceback
 
 import numpy as np
 
-from egui_pysync.base import StateServerBase
+from egui_pysync.base import CoreBase
 
 
 class _SignalsManager:
     def __init__(
         self,
-        server: StateServerBase,
+        server: CoreBase,
         workers: int,
         error_handler: Callable[[Exception], None] | None,
     ):
@@ -113,7 +113,7 @@ class ErrorSignal:
 
 
 class _ValueBase:
-    def __init__(self, value_id: int, server: StateServerBase, signals_manager: _SignalsManager):
+    def __init__(self, value_id: int, server: CoreBase, signals_manager: _SignalsManager):
         self._value_id = value_id
         self._server = server
         self._signals_manager = signals_manager
@@ -165,7 +165,7 @@ class Value[T](_ValueBase):
 class ValueStatic[T](_ValueBase):
     """Numeric static UI value of type T. Static means that the value is not updated in the UI."""
 
-    def __init__(self, value_id: int, server: StateServerBase):  # noqa: D107
+    def __init__(self, value_id: int, server: CoreBase):  # noqa: D107
         self._value_id = value_id
         self._server = server
 
@@ -190,7 +190,7 @@ class ValueStatic[T](_ValueBase):
 class ValueEnum[T](_ValueBase):
     """Enum UI value of type T."""
 
-    def __init__(self, value_id: int, server: StateServerBase, signal_manager: _SignalsManager, enum_type: type[T]):  # noqa: D107
+    def __init__(self, value_id: int, server: CoreBase, signal_manager: _SignalsManager, enum_type: type[T]):  # noqa: D107
         super().__init__(value_id, server, signal_manager)
         self._enum_type = enum_type
 

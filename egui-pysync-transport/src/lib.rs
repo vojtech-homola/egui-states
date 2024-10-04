@@ -8,11 +8,10 @@ pub mod list;
 pub mod transport;
 pub mod values;
 
-// pub use transport::ParseError;
-// pub use values::{ReadValue, WriteValue};
+pub use values::{ReadValue, WriteValue};
 
 // traints for EnumValue -------------------------------------------------------
-// pub use states_server_macros::{EnumInt, EnumStr};
+pub use egui_pysync_macros::{EnumInt, EnumStr};
 
 pub trait EnumStr: Send + Sync + Copy {
     fn as_str(&self) -> &'static str;

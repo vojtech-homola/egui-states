@@ -1,17 +1,21 @@
-import os
+"""Generate the python files for generated rust binding."""
+
 import io
+import os
+import sys
 
-files_path = os.path.join(os.path.dirname(__file__), "expert_ui")
-source_path = os.path.join(os.path.dirname(__file__), "src")
 
+def _write_enums(input_path: str, output_path: str) -> bool:
+    input_file = os.path.join(input_path, "enums.rs")
+    if not os.path.exists(input_file):
+        return False
 
-def _write_enums() -> None:
     enums_list = []
-    with open(os.path.join(files_path, "enums.py"), "w", encoding="utf-8") as file:  # noqa: PLR1702
+    with open(os.path.join(output_path, "enums.py"), "w", encoding="utf-8") as file:  # noqa: PLR1702
         file.write("# ruff: noqa: D101\n")
         file.write("from enum import Enum\n")
 
-        with open(os.path.join(source_path, "enums.rs"), encoding="utf-8") as enums_file:
+        with open(input_file, encoding="utf-8") as enums_file:
             lines = enums_file.readlines()
 
         while len(lines) > 0:
@@ -37,9 +41,15 @@ def _write_enums() -> None:
                             file.write(f"    {line} = {counter}\n")
                             counter += 1
 
+    return True
 
-def _write_types() -> None:
-    with open(os.path.join(source_path, "types.rs"), encoding="utf-8") as enums_file:
+
+def _write_types(input_path: str, output_path: str) -> bool:
+    input_file = os.path.join(input_path, "enums.rs")
+    if not os.path.exists(input_file):
+        return False
+
+    with open(input_file, encoding="utf-8") as enums_file:
         lines = enums_file.readlines()
 
     to_write = []
@@ -50,6 +60,7 @@ def _write_types() -> None:
         inner_lines = lines[i + 1 :]
         firs_line = inner_lines[0]
         if "struct" in firs_line and "{" in firs_line:
+            # TODO: Implement structs
             # name = firs_line.replace("pub(crate)", "").replace("pub", "").replace("struct", "").replace("{", "").strip()
             raise NotImplementedError("Normal structs are not supported yet")
 
@@ -60,10 +71,12 @@ def _write_types() -> None:
             text = f"type {name} = tuple[{', '.join(types)}]"
             to_write.append(text)
 
-    with open(os.path.join(files_path, "types.py"), "w", encoding="utf-8") as file:
+    with open(os.path.join(output_path, "types.py"), "w", encoding="utf-8") as file:
         # file.write("# ruff: noqa: D101\n\n")
         for line in to_write:
             file.write(f"{line}\n")
+
+    return True
 
 
 type_map = {
@@ -239,9 +252,9 @@ class _Struct:
         return name, to_write
 
 
-def _write_states() -> None:  # noqa: PLR0912, PLR0915
+def _write_states(input_path: str, output_path: str, enums: bool, types: bool) -> None:  # noqa: PLR0912, PLR0915
     id_counter = 10  # first 10 ids are reserved for the special values
-    with open(os.path.join(source_path, "states.rs"), encoding="utf-8") as state_file:
+    with open(os.path.join(input_path, "states.rs"), encoding="utf-8") as state_file:
         lines = state_file.readlines()
 
     structs: dict[str, _Struct] = {}
@@ -252,9 +265,13 @@ def _write_states() -> None:  # noqa: PLR0912, PLR0915
 
     structs["States"].set_id(id_counter, structs)
 
-    with open(os.path.join(files_path, "states.py"), "w", encoding="utf-8") as file:
+    with open(os.path.join(output_path, "states.py"), "w", encoding="utf-8") as file:
         file.write("# ruff: noqa: D107 D101\n")
-        file.write("from expert_ui import enums, structures, types\n")
+        if enums:
+            file.write("from expert_ui import enums\n")
+        if types:
+            file.write("from expert_ui import types\n")
+        file.write("from expert_ui import structures\n")
         file.write("from expert_ui.core import StateServer\n")
         file.write("\n")
 
@@ -278,6 +295,9 @@ def _write_states() -> None:  # noqa: PLR0912, PLR0915
 
 
 if __name__ == "__main__":
-    _write_enums()
-    _write_types()
-    _write_states()
+    input_path = os.path.join(os.path.dirname(__file__), sys.argv[1])
+    output_path = os.path.join(os.path.dirname(__file__), sys.argv[2])
+
+    enums = _write_enums(input_path, output_path)
+    types = _write_types(input_path, output_path)
+    _write_states(input_path, output_path, enums, types)

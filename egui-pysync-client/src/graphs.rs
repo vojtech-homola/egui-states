@@ -1,7 +1,7 @@
 use std::ptr::copy_nonoverlapping;
 use std::sync::{Arc, RwLock};
 
-use egui_pysync_common::graphs::{GraphMessage, Precision};
+use egui_pysync_transport::graphs::{GraphMessage, Precision};
 
 pub(crate) trait GraphUpdate: Sync + Send {
     fn update_graph(&self, message: GraphMessage) -> Result<(), String>;

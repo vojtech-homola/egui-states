@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::{Arc, RwLock};
 
-use egui_pysync_common::collections::ItemWriteRead;
-use egui_pysync_common::dict::DictMessage;
+use egui_pysync_transport::collections::ItemWriteRead;
+use egui_pysync_transport::dict::DictMessage;
 
 pub(crate) trait DictUpdate: Sync + Send {
     fn update_dict(&self, head: &[u8], data: Option<Vec<u8>>) -> Result<(), String>;

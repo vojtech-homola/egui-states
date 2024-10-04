@@ -5,10 +5,10 @@ use std::sync::Arc;
 
 use pyo3::ToPyObject;
 
-use egui_pysync_common::collections::ItemWriteRead;
-use egui_pysync_common::transport::WriteMessage;
-use egui_pysync_common::values::{ReadValue, WriteValue};
-use egui_pysync_common::{EnumInt, EnumStr};
+use egui_pysync_transport::collections::ItemWriteRead;
+use egui_pysync_transport::transport::WriteMessage;
+use egui_pysync_transport::values::{ReadValue, WriteValue};
+use egui_pysync_transport::{EnumInt, EnumStr};
 
 use crate::dict::{PyDict, ValueDict};
 use crate::graphs::{GraphType, PyGraph, ValueGraph};

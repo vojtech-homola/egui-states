@@ -2,8 +2,8 @@ use std::net::TcpStream;
 use std::sync::mpsc::{Receiver, Sender};
 use std::thread::spawn;
 
-use egui_pysync_common::transport::{read_message, write_message, ReadMessage, WriteMessage};
-use egui_pysync_common::{commands::CommandMessage, transport::HEAD_SIZE};
+use egui_pysync_transport::transport::{read_message, write_message, ReadMessage, WriteMessage};
+use egui_pysync_transport::{commands::CommandMessage, transport::HEAD_SIZE};
 
 use crate::client_state::UIState;
 use crate::states_creator::{ValuesCreator, ValuesList};

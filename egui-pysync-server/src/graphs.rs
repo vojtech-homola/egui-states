@@ -6,8 +6,8 @@ use pyo3::buffer::{Element, PyBuffer};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
-use egui_pysync_common::graphs::{GraphMessage, GraphsData, Precision};
-use egui_pysync_common::transport::WriteMessage;
+use egui_pysync_transport::graphs::{GraphMessage, GraphsData, Precision};
+use egui_pysync_transport::transport::WriteMessage;
 
 use crate::SyncTrait;
 

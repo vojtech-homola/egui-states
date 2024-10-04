@@ -6,9 +6,9 @@ use std::sync::{Arc, RwLock};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
-use egui_pysync_common::transport::WriteMessage;
-use egui_pysync_common::values::{ReadValue, ValueMessage, WriteValue};
-use egui_pysync_common::EnumInt;
+use egui_pysync_transport::transport::WriteMessage;
+use egui_pysync_transport::values::{ReadValue, ValueMessage, WriteValue};
+use egui_pysync_transport::EnumInt;
 
 use crate::py_convert::PyConvert;
 use crate::signals::ChangedValues;

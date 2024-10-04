@@ -5,4 +5,4 @@ edition.workspace = true
 
 [dependencies]
 egui = { version = "*" }
-egui_pysync_common = { workspace = true }
+egui_pysync_transport = { workspace = true }

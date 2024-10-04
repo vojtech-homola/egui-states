@@ -1,6 +1,6 @@
 from collections.abc import Callable
 
-from egui_pysync.base import StateServerBase as _Server
+from egui_pysync.base import CoreBase
 from egui_pysync.structures import _SignalsManager, ErrorSignal
 
 
@@ -9,12 +9,13 @@ class StateServer[T]:
 
     def __init__(
         self,
-        state_class: Callable[[_Server, _SignalsManager], T],
+        state_class: Callable[[CoreBase, _SignalsManager], T],
+        server_class: type[CoreBase],
         signals_workers: int = 3,
         error_handler: Callable[[Exception], None] | None = None,
     ) -> None:
         """Initialize the SteteServer."""
-        self._server = _Server()
+        self._server = server_class()
         self._signals_manager = _SignalsManager(self._server, signals_workers, error_handler)
         self._states: T = state_class(self._server, self._signals_manager)
 

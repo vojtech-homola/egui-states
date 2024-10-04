@@ -2,7 +2,7 @@
 members = [
     "egui-pysync-server",
     "egui-pysync-client",
-    "egui-pysync-common",
+    "egui-pysync-transport",
     "egui-pysync-macros",
 ]
 resolver = "2"
@@ -12,4 +12,6 @@ version = "0.1.0"
 edition = "2021"
 
 [workspace.dependencies]
-egui_pysync_common = { path = "egui-pysync-common" }
+egui_pysync_transport = { path = "egui-pysync-transport" }
+egui_pysync_macros = { path = "egui-pysync-macros" }
+
