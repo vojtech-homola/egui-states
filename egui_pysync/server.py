@@ -1,7 +1,16 @@
 from collections.abc import Callable
+from types import ModuleType
 
-from egui_pysync.base import CoreBase
-from egui_pysync.structures import _SignalsManager, ErrorSignal
+from egui_pysync.structures import ErrorSignal, _SignalsManager, _StatesBase, _ValueBase
+from egui_pysync.typing import SteteServerCoreBase
+
+
+def _initialize_states(obj, server: SteteServerCoreBase, signals_manager: _SignalsManager) -> None:
+    for o in obj.__dict__.values():
+        if isinstance(o, _ValueBase):
+            o._initialize(server, signals_manager)
+        elif isinstance(o, _StatesBase):
+            _initialize_states(o, server, signals_manager)
 
 
 class StateServer[T]:
@@ -9,17 +18,20 @@ class StateServer[T]:
 
     def __init__(
         self,
-        state_class: Callable[[CoreBase, _SignalsManager], T],
-        server_class: type[CoreBase],
+        state_class: type[T],
+        core_module: ModuleType,
         signals_workers: int = 3,
         error_handler: Callable[[Exception], None] | None = None,
     ) -> None:
         """Initialize the SteteServer."""
-        self._server = server_class()
+        self._server: SteteServerCoreBase = getattr(core_module, "StateServerCore")()
         self._signals_manager = _SignalsManager(self._server, signals_workers, error_handler)
-        self._states: T = state_class(self._server, self._signals_manager)
+        self._states: T = state_class()
 
+        _initialize_states(self._states, self._server, self._signals_manager)
         self.error = ErrorSignal(self._signals_manager)
+
+        self._signals_manager.close_registration()
 
     @property
     def states(self) -> T:

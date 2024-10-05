@@ -112,7 +112,7 @@ impl StatesTransfer {
                 };
 
                 if let Err(e) = res {
-                    let text = format!("Error parsing message: {}", e);
+                    let text = format!("Error processing message: {}", e);
                     signals.set(0, text);
                 }
             }

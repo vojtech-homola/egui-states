@@ -17,10 +17,10 @@ use crate::signals::ChangedValues;
 use crate::states_creator::{PyValuesList, ValuesCreator};
 
 // To be able to create all values outside this crate
-pub static CREATE_HOOK: OnceLock<fn(&mut ValuesCreator)> = OnceLock::new();
+pub(crate) static CREATE_HOOK: OnceLock<fn(&mut ValuesCreator)> = OnceLock::new();
 
 #[pyclass]
-pub struct StateServer {
+pub(crate) struct StateServerCore {
     changed_values: ChangedValues,
     values: PyValuesList,
 
@@ -31,7 +31,7 @@ pub struct StateServer {
 }
 
 #[pymethods]
-impl StateServer {
+impl StateServerCore {
     #[new]
     fn new() -> PyResult<Self> {
         let (channel, rx) = mpsc::channel();

@@ -1,9 +1,9 @@
-# from abc import ABC, abstractmethod
+# ruff: noqa: D101, D102, D107
 from collections.abc import Buffer
 from typing import Any
 
 
-class CoreBase:
+class SteteServerCoreBase:
     def __init__(self) -> None: ...
     def start(self) -> None: ...
     def stop(self) -> None: ...

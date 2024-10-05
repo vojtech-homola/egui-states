@@ -108,7 +108,7 @@ impl WriteMessage {
 
     pub fn parse(self, head: &mut [u8]) -> Option<Vec<u8>> {
         if let WriteMessage::Command(command) = self {
-            return command.write_message(head);
+            return command.write_message(&mut head[1..]);
         }
 
         let (id, flag, type_, data) = match self {
@@ -128,12 +128,12 @@ impl WriteMessage {
             }
 
             Self::Image(id, update, message) => {
-                let data = message.write_message(head);
+                let data = message.write_message(&mut head[6..]);
                 (id, update, TYPE_IMAGE, Some(data))
             }
 
             Self::Histogram(id, update, message) => {
-                let data = message.write_message(head);
+                let data = message.write_message(&mut head[6..]);
                 (id, update, TYPE_HISTOGRAM, data)
             }
 
@@ -148,7 +148,7 @@ impl WriteMessage {
             }
 
             Self::Graph(id, update, message) => {
-                let data = message.write_message(head);
+                let data = message.write_message(&mut head[6..]);
                 (id, update, TYPE_GRAPH, data)
             }
 
@@ -217,43 +217,20 @@ impl<'a> ReadMessage<'a> {
             TYPE_STATIC => Ok(ReadMessage::Static(id, update, &head[6..], data)),
             TYPE_SIGNAL => Ok(ReadMessage::Signal(id, &head[6..], data)),
             TYPE_IMAGE => {
-                let image = ImageMessage::read_message(head, data)?;
+                let image = ImageMessage::read_message(&head[6..], data)?;
                 Ok(ReadMessage::Image(id, update, image))
             }
             TYPE_HISTOGRAM => {
-                let histogram = HistogramMessage::read_message(head, data)?;
+                let histogram = HistogramMessage::read_message(&head[6..], data)?;
                 Ok(ReadMessage::Histogram(id, update, histogram))
             }
             TYPE_DICT => Ok(ReadMessage::Dict(id, update, &head[6..], data)),
             TYPE_LIST => Ok(ReadMessage::List(id, update, &head[6..], data)),
             TYPE_GRAPH => {
-                let graph = GraphMessage::read_message(head, data)?;
+                let graph = GraphMessage::read_message(&head[6..], data)?;
                 Ok(ReadMessage::Graph(id, update, graph))
             }
-            _ => Err(format!("Unknown message type: {}", head[0])),
+            _ => Err(format!("Unknown message type: {}", message_type)),
         }
     }
 }
-
-// #[derive(Debug)]
-// pub enum ParseError {
-//     Connection(std::io::Error),
-//     Parse(String),
-// }
-
-// #[inline]
-// pub fn write_head_data(
-//     head: &mut [u8],
-//     id: u32,
-//     type_: u8,
-//     data: Option<Vec<u8>>,
-//     stream: &mut TcpStream,
-// ) -> std::io::Result<()> {
-//     head[0] = type_;
-//     head[1..5].copy_from_slice(&id.to_le_bytes());
-//     stream.write_all(head)?;
-//     if let Some(data) = data {
-//         stream.write_all(&data)?;
-//     }
-//     Ok(())
-// }

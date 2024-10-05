@@ -8,7 +8,7 @@ import sys
 def _write_enums(input_path: str, output_path: str) -> bool:
     input_file = os.path.join(input_path, "enums.rs")
     if not os.path.exists(input_file):
-        return False
+        raise FileNotFoundError(f"File not found: {input_file}")
 
     enums_list = []
     with open(os.path.join(output_path, "enums.py"), "w", encoding="utf-8") as file:  # noqa: PLR1702
@@ -45,9 +45,9 @@ def _write_enums(input_path: str, output_path: str) -> bool:
 
 
 def _write_types(input_path: str, output_path: str) -> bool:
-    input_file = os.path.join(input_path, "enums.rs")
+    input_file = os.path.join(input_path, "custom.rs")
     if not os.path.exists(input_file):
-        return False
+        raise FileNotFoundError(f"File not found: {input_file}")
 
     with open(input_file, encoding="utf-8") as enums_file:
         lines = enums_file.readlines()
@@ -102,8 +102,8 @@ def _parse_value(value: str) -> str:
     if value == "()":
         return ""
 
-    if "types::" in value:
-        return value.replace("::", ".")
+    if "custom::" in value:
+        return value.replace("custom::", "types.")
 
     if value[0] == "[" and value[-1] == "]":
         val = value[1:-1]
@@ -134,12 +134,19 @@ class _Struct:
         self._structs_names = {}
         self._items = {}
         self._order = []
+        self._original_items = {}
+        self._original_types = {}
 
         for line in lines:
             if "Arc" in line:
                 name, text = self._parse_item(line)
                 if name:
                     self._items[name] = text
+                    type_string = line.split("Arc<")[1].split(">,")[0]
+                    if "<" in type_string:
+                        type_string = type_string.split("<")[1].split(">")[0]
+                        self._original_types[name] = type_string
+
             elif not line.strip():
                 continue
             elif "}" in line:
@@ -150,7 +157,7 @@ class _Struct:
                 name = line.strip().split(":")[0].split(" ")[-1].strip()
                 struct_name = line.split(":")[1].split(",")[0].strip()
                 self._structs_names[name] = struct_name
-                self._structs[name] = f"        self.{name} = {struct_name}(server, signals_manager)\n"
+                self._structs[name] = f"        self.{name} = {struct_name}()\n"
 
         started = False
         for line in lines:
@@ -165,6 +172,14 @@ class _Struct:
 
             name = line.split(":")[0].strip()
             self._order.append(name)
+            if "::new(c)," not in line:
+                original = line.split(": ")[1].strip()
+                original = original.replace("),", ");")
+                if name in self._original_types and "<" not in original:
+                    idx = original.find("(")
+                    original = original[:idx] + f"::<{self._original_types[name]}>" + original[idx:]
+
+                self._original_items[name] = original
 
     def set_id(self, id_counter: int, structs: dict) -> int:
         for item in self._order:
@@ -177,8 +192,6 @@ class _Struct:
         return id_counter
 
     def write(self, file: io.TextIOWrapper, structs: dict, head: list[str] | None = None):
-        # id_counter = self.get_counter(structs)
-
         for struct in self._structs:
             name = self._structs_names[struct]
             structs[name].write(file, structs)
@@ -187,8 +200,8 @@ class _Struct:
             for line in head:
                 file.write(line)
         else:
-            file.write(f"\nclass {self._name}:\n")
-            file.write("    def __init__(self, server: StateServer, signals_manager: structures._SignalsManager):")
+            file.write(f"\nclass {self._name}(structures._StatesBase):\n")
+            file.write("    def __init__(self):")
 
         for to_write in self._structs.values():
             file.write(to_write)
@@ -199,6 +212,15 @@ class _Struct:
             file.write(item)
 
         file.write("\n")
+
+    def write_server_state(self, file: io.TextIOWrapper, structs: dict) -> None:
+        for item in self._order:
+            if item in self._original_items:
+                file.write(f"    {self._original_items[item]}\n")
+            else:
+                file.write(f"    //{self._structs_names[item]}\n")
+                structs[self._structs_names[item]].write_server_state(file, structs)
+
 
     @staticmethod
     def _parse_item(line: str) -> tuple[str, str]:
@@ -215,36 +237,37 @@ class _Struct:
 
         if "Value<" in line:
             val_type = _parse_value(type_string)
-            to_write = f"        self.{name} = structures.Value[{val_type}](*, server, signals_manager)\n"
+            to_write = f"        self.{name} = structures.Value[{val_type}](*)\n"
 
         elif "ValueEnum" in line:
             enum_str = type_string.replace("::", ".")
-            to_write = f"        self.{name} = structures.ValueEnum(*, server, signals_manager, {enum_str})\n"
+            to_write = f"        self.{name} = structures.ValueEnum(*, {enum_str})\n"
 
         elif "ValueStatic" in line:
             val_type = _parse_value(type_string)
-            to_write = f"        self.{name} = structures.ValueStatic[{val_type}](*, server)\n"
+            to_write = f"        self.{name} = structures.ValueStatic[{val_type}](*)\n"
 
         elif "Signal" in line:
             val_type = _parse_value(type_string)
             if val_type:
-                to_write = f"        self.{name} = structures.Signal[{val_type}](*, server, signals_manager)\n"
+                to_write = f"        self.{name} = structures.Signal[{val_type}](*)\n"
             else:
-                to_write = f"        self.{name} = structures.SignalEmpty(*, server, signals_manager)\n"
+                to_write = f"        self.{name} = structures.SignalEmpty(*)\n"
 
         elif "ImageValue" in line:
-            to_write = f"        self.{name} = structures.ValueImage(*, server, signals_manager)\n"
+            to_write = f"        self.{name} = structures.ValueImage(*)\n"
 
         elif "ValueDict" in line:
             key_type = _parse_value(type_string.split(",")[0].strip())
             val_type = _parse_value(type_string.split(",")[1].strip())
-            to_write = (
-                f"        self.{name} = structures.ValueDict[{key_type}, {val_type}](*, server, signals_manager)\n"
-            )
+            to_write = f"        self.{name} = structures.ValueDict[{key_type}, {val_type}](*)\n"
 
         elif "ValueList" in line:
             val_type = _parse_value(type_string)
-            to_write = f"        self.{name} = structures.ValueList[{val_type}](*, server, signals_manager)\n"
+            to_write = f"        self.{name} = structures.ValueList[{val_type}](*)\n"
+
+        elif "ValueGraph" in line:
+            to_write = f"        self.{name} = structures.ValueGraph(*)\n"
 
         else:
             raise ValueError(f"Unknown type: {line}")
@@ -252,7 +275,7 @@ class _Struct:
         return name, to_write
 
 
-def _write_states(input_path: str, output_path: str, enums: bool, types: bool) -> None:  # noqa: PLR0912, PLR0915
+def _write_states(input_path: str, output_path: str, server_path: str) -> None:  # noqa: PLR0912, PLR0915
     id_counter = 10  # first 10 ids are reserved for the special values
     with open(os.path.join(input_path, "states.rs"), encoding="utf-8") as state_file:
         lines = state_file.readlines()
@@ -267,37 +290,56 @@ def _write_states(input_path: str, output_path: str, enums: bool, types: bool) -
 
     with open(os.path.join(output_path, "states.py"), "w", encoding="utf-8") as file:
         file.write("# ruff: noqa: D107 D101\n")
-        if enums:
+        file.write("from egui_pysync import structures\n\n")
+        if os.path.exists(os.path.join(output_path, "enums.py")):
             file.write("from expert_ui import enums\n")
-        if types:
+        if os.path.exists(os.path.join(output_path, "types.py")):
             file.write("from expert_ui import types\n")
-        file.write("from expert_ui import structures\n")
-        file.write("from expert_ui.core import StateServer\n")
         file.write("\n")
 
         head = [
-            "\nclass States:\n",
-            "    def __init__(self, server: StateServer, signals_manager: structures._SignalsManager):\n",
-            "        self._server = server\n",
-            "        self._signals_manager = signals_manager\n\n",
+            "\nclass States(structures._StatesBase):\n",
+            "    def __init__(self):\n",
         ]
 
         structs["States"].write(file, structs, head)
 
-        file.write("        signals_manager.close_registration()\n")
+        file.write("        self._updater = structures._Updater()\n")
 
         file.write("\n    def update(self, duration: float | None = None) -> None:\n")
         file.write('        """Update the UI.\n\n')
         file.write("        Args:\n")
         file.write("            duration: The duration of the update.\n")
         file.write('        """\n')
-        file.write("        self._server.update(duration)\n")
+        file.write("        self._updater.update(duration)\n")
+
+    with open(os.path.join(server_path, "states.rs"), "w", encoding="utf-8") as file:
+        head = [
+            "#![allow(unused_imports)]\n",
+            "use types::{custom, enums};\n\n",
+            "use egui_pysync_server::{\n",
+            "    ImageValue, Signal, Value, ValueDict, ValueEnum, ValueStatic, ValuesCreator,\n",
+            "};\n\n",
+        ]
+        for line in head:
+            file.write(line)
+
+        file.write("pub(crate) fn create_states(c: &mut ValuesCreator) {\n")
+        structs["States"].write_server_state(file, structs)
+        file.write("}\n")
 
 
 if __name__ == "__main__":
-    input_path = os.path.join(os.path.dirname(__file__), sys.argv[1])
-    output_path = os.path.join(os.path.dirname(__file__), sys.argv[2])
+    command_type = sys.argv[1]
+    input_path = os.path.join(os.getcwd(), sys.argv[2])
+    output_path = os.path.join(os.getcwd(), sys.argv[3])
 
-    enums = _write_enums(input_path, output_path)
-    types = _write_types(input_path, output_path)
-    _write_states(input_path, output_path, enums, types)
+    if command_type == "enums":
+        _write_enums(input_path, output_path)
+    elif command_type == "types":
+        _write_types(input_path, output_path)
+    elif command_type == "states":
+        server_path = os.path.join(os.getcwd(), sys.argv[4])
+        _write_states(input_path, output_path, server_path)
+    else:
+        raise ValueError(f"Unknown command: {command_type}")
