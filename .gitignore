@@ -7,5 +7,7 @@ __pycache__
 *.pyd
 *.so
 
-# genereted files
-
+# build files
+/dist
+/*.egg-info
+/build

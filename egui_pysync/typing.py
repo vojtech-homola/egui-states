@@ -1,7 +1,9 @@
+# ruff: noqa: D101, D102, D107
 from collections.abc import Buffer
 from typing import Any
 
-class StateServer:
+
+class SteteServerCoreBase:
     def __init__(self) -> None: ...
     def start(self) -> None: ...
     def stop(self) -> None: ...
@@ -23,14 +25,7 @@ class StateServer:
     def set_register_value(self, value_id: int, register: bool) -> None: ...
 
     # image -----------------------------------------------------------------------
-    def set_image(
-        self,
-        value_id: int,
-        image: Buffer,
-        update: bool,
-        rect: list[int] | None = None,
-        histogram: Buffer | None = None,
-    ) -> None: ...
+    def set_image(self, value_id: int, image: Buffer, update: bool, rect: list[int] | None = None) -> None: ...
     def set_histogram(self, value_id: int, update: bool, histogram: Buffer | None = None) -> None: ...
 
     # dict ------------------------------------------------------------------------

@@ -1,16 +1,13 @@
 use std::marker::PhantomData;
-use std::net::TcpStream;
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, RwLock};
 
-use egui_pysync_common::transport::ParseError;
-use egui_pysync_common::values::{ReadValue, ValueMessage, WriteValue};
-use egui_pysync_common::EnumInt;
-
-use crate::transport::WriteMessage;
+use egui_pysync_transport::transport::WriteMessage;
+use egui_pysync_transport::values::{ReadValue, ValueMessage, WriteValue};
+use egui_pysync_transport::EnumInt;
 
 pub(crate) trait ValueUpdate: Send + Sync {
-    fn update_value(&self, head: &[u8], stream: &mut TcpStream) -> Result<(), ParseError>;
+    fn update_value(&self, head: &[u8], data: Option<Vec<u8>>) -> Result<(), String>;
 }
 
 pub struct Diff<T> {
@@ -81,7 +78,7 @@ where
     }
 
     pub fn set(&self, value: T, signal: bool) {
-        let message = WriteMessage::value(self.id, signal, value.clone().into_message());
+        let message = WriteMessage::Value(self.id, signal, value.clone().into_message());
         let mut w = self.value.write().unwrap();
         *w = value;
         self.channel.send(message).unwrap();
@@ -89,16 +86,9 @@ where
 }
 
 impl<T: ReadValue> ValueUpdate for Value<T> {
-    fn update_value(&self, head: &[u8], stream: &mut TcpStream) -> Result<(), ParseError> {
-        let value = T::read_message(head, stream).map_err(|e| {
-            if let ParseError::Parse(msg) = e {
-                return ParseError::Parse(format!(
-                    "Parse error: {} for value id: {}",
-                    msg, self.id
-                ));
-            }
-            e
-        })?;
+    fn update_value(&self, head: &[u8], data: Option<Vec<u8>>) -> Result<(), String> {
+        let value = T::read_message(head, data)
+            .map_err(|e| format!("Parse error: {} for value id: {}", e, self.id))?;
 
         let mut w = self.value.write().unwrap();
         *w = value;
@@ -127,16 +117,10 @@ impl<T: Clone> ValueStatic<T> {
 }
 
 impl<T: ReadValue> ValueUpdate for ValueStatic<T> {
-    fn update_value(&self, head: &[u8], stream: &mut TcpStream) -> Result<(), ParseError> {
-        let value = T::read_message(head, stream).map_err(|e| {
-            if let ParseError::Parse(msg) = e {
-                return ParseError::Parse(format!(
-                    "Parse error: {} for value id: {}",
-                    msg, self.id
-                ));
-            }
-            e
-        })?;
+    fn update_value(&self, head: &[u8], data: Option<Vec<u8>>) -> Result<(), String> {
+        let value = T::read_message(head, data)
+            .map_err(|e| format!("Parse error: {} for value id: {}", e, self.id))?;
+
         *self.value.write().unwrap() = value;
         Ok(())
     }
@@ -164,7 +148,7 @@ impl<T: EnumInt> ValueEnum<T> {
 
     pub fn set(&self, value: T, signal: bool) {
         let val = value.as_int();
-        let message = WriteMessage::value(self.id, signal, ValueMessage::U64(val));
+        let message = WriteMessage::Value(self.id, signal, ValueMessage::U64(val));
         let mut w = self.value.write().unwrap();
         *w = value;
         self.channel.send(message).unwrap();
@@ -172,11 +156,10 @@ impl<T: EnumInt> ValueEnum<T> {
 }
 
 impl<T: EnumInt> ValueUpdate for ValueEnum<T> {
-    fn update_value(&self, head: &[u8], stream: &mut TcpStream) -> Result<(), ParseError> {
-        let int_val = u64::read_message(&head, stream)?;
-        let value = T::from_int(int_val).map_err(|_| {
-            ParseError::Parse(format!("Invalid enum format for enum id: {}", self.id))
-        })?;
+    fn update_value(&self, head: &[u8], data: Option<Vec<u8>>) -> Result<(), String> {
+        let int_val = u64::read_message(&head, data)?;
+        let value = T::from_int(int_val)
+            .map_err(|_| format!("Invalid enum format for enum id: {}", self.id))?;
 
         let mut w = self.value.write().unwrap();
         *w = value;
@@ -203,7 +186,7 @@ impl<T: WriteValue + Clone> Signal<T> {
 
     pub fn set(&self, value: T) {
         let message = value.into_message();
-        let message = WriteMessage::signal(self.id, message);
+        let message = WriteMessage::Signal(self.id, message);
         self.channel.send(message).unwrap();
     }
 }

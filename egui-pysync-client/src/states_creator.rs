@@ -3,15 +3,15 @@ use std::hash::Hash;
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
 
-use egui_pysync_common::collections::ItemWriteRead;
-use egui_pysync_common::values::{ReadValue, WriteValue};
-use egui_pysync_common::EnumInt;
+use egui_pysync_transport::collections::ItemWriteRead;
+use egui_pysync_transport::values::{ReadValue, WriteValue};
+use egui_pysync_transport::EnumInt;
+use egui_pysync_transport::transport::WriteMessage;
 
 use crate::dict::{DictUpdate, ValueDict};
 use crate::graphs::{GraphType, GraphUpdate, ValueGraph};
 use crate::image::{ImageUpdate, ImageValue};
 use crate::list::{ListUpdate, ValueList};
-use crate::transport::WriteMessage;
 use crate::values::{Signal, Value, ValueEnum, ValueStatic, ValueUpdate};
 
 #[derive(Clone)]

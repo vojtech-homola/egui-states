@@ -3,11 +3,10 @@ use std::sync::{Arc, Mutex};
 
 use pyo3::ToPyObject;
 
-use egui_pysync_common::event::Event;
-use egui_pysync_common::values::ValueMessage;
+use egui_pysync_transport::event::Event;
 
 struct OrderedMap {
-    values: HashMap<u32, ValueMessage>,
+    values: HashMap<u32, Box<dyn ToPyObject + Sync + Send>>,
     indexes: VecDeque<u32>,
 }
 
@@ -19,12 +18,12 @@ impl OrderedMap {
         }
     }
 
-    fn insert(&mut self, id: u32, value: ValueMessage) {
+    fn insert(&mut self, id: u32, value: Box<dyn ToPyObject + Sync + Send>) {
         self.values.insert(id, value);
         self.indexes.push_back(id);
     }
 
-    fn pop_first(&mut self) -> Option<(u32, ValueMessage)> {
+    fn pop_first(&mut self) -> Option<(u32, Box<dyn ToPyObject + Sync + Send>)> {
         for _ in 0..self.indexes.len() {
             let id = self.indexes.pop_front().unwrap();
             if let Some(value) = self.values.remove(&id) {
@@ -36,10 +35,10 @@ impl OrderedMap {
 }
 
 struct ChnegedInner {
-    values: OrderedMap,                  // values not blocked
-    blocked: HashMap<u32, ValueMessage>, // values blocked by some thread
-    block_list: HashSet<u32>,            // ids blocked by some thread
-    threads_last: HashMap<u32, u32>,     // cache last id for each thread
+    values: OrderedMap,                                       // values not blocked
+    blocked: HashMap<u32, Box<dyn ToPyObject + Sync + Send>>, // values blocked by some thread
+    block_list: HashSet<u32>,                                 // ids blocked by some thread
+    threads_last: HashMap<u32, u32>,                          // cache last id for each thread
 }
 
 /*
@@ -56,7 +55,7 @@ impl ChnegedInner {
         }
     }
 
-    fn set(&mut self, id: u32, value: ValueMessage, event: &Event) {
+    fn set(&mut self, id: u32, value: Box<dyn ToPyObject + Sync + Send>, event: &Event) {
         if self.block_list.contains(&id) {
             self.blocked.insert(id, value);
         } else {
@@ -65,7 +64,7 @@ impl ChnegedInner {
         }
     }
 
-    fn get(&mut self, thread_id: u32) -> Option<(u32, ValueMessage)> {
+    fn get(&mut self, thread_id: u32) -> Option<(u32, Box<dyn ToPyObject + Send + Sync>)> {
         match self.threads_last.get(&thread_id) {
             // previous call was made
             Some(last_id) => {
@@ -107,7 +106,7 @@ impl ChnegedInner {
 }
 
 #[derive(Clone)]
-pub struct ChangedValues {
+pub(crate) struct ChangedValues {
     event: Event,
     values: Arc<Mutex<ChnegedInner>>,
 }
@@ -120,11 +119,12 @@ impl ChangedValues {
         }
     }
 
-    pub fn set(&self, id: u32, value: ValueMessage) {
+    pub fn set(&self, id: u32, value: impl ToPyObject + Sync + Send + 'static) {
+        let value = Box::new(value);
         self.values.lock().unwrap().set(id, value, &self.event);
     }
 
-    pub fn wait_changed_value(&self, thread_id: u32) -> (u32, ValueMessage) {
+    pub fn wait_changed_value(&self, thread_id: u32) -> (u32, Box<dyn ToPyObject + Send + Sync>) {
         loop {
             if let Some(val) = self.values.lock().unwrap().get(thread_id) {
                 return val;

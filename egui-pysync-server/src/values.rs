@@ -1,5 +1,4 @@
 use std::marker::PhantomData;
-use std::net::TcpStream;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, RwLock};
@@ -7,18 +6,17 @@ use std::sync::{Arc, RwLock};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
-use egui_pysync_common::transport::ParseError;
-use egui_pysync_common::values::{ReadValue, ValueMessage, WriteValue};
-use egui_pysync_common::EnumInt;
+use egui_pysync_transport::transport::WriteMessage;
+use egui_pysync_transport::values::{ReadValue, ValueMessage, WriteValue};
+use egui_pysync_transport::EnumInt;
 
 use crate::py_convert::PyConvert;
 use crate::signals::ChangedValues;
-use crate::transport::WriteMessage;
 use crate::{Acknowledge, SyncTrait};
 
-pub(crate) trait ValueUpdate: Send + Sync {
-    fn update_value(&self, head: &[u8], stream: &mut TcpStream)
-        -> Result<ValueMessage, ParseError>;
+pub(crate) trait ProccesValue: Send + Sync {
+    fn process_value(&self, head: &[u8], data: Option<Vec<u8>>, signal: bool)
+        -> Result<(), String>;
 }
 
 pub(crate) trait PyValue: Send + Sync {
@@ -69,39 +67,47 @@ where
     fn set_py(&self, value: &Bound<PyAny>, set_signal: bool, update: bool) -> PyResult<()> {
         let value = T::from_python(value)?;
         if self.connected.load(Ordering::Relaxed) {
-            let message = WriteMessage::value(self.id, update, value.clone().into_message());
+            let message = WriteMessage::Value(self.id, update, value.clone().into_message());
             let mut w = self.value.write().unwrap();
             w.0 = value.clone();
             w.1 += 1;
             self.channel.send(message).unwrap();
+            if set_signal {
+                self.signals.set(self.id, value);
+            }
         } else {
-            self.value.write().unwrap().0 = value.clone();
+            let mut w = self.value.write().unwrap();
+            w.0 = value.clone();
+            if set_signal {
+                self.signals.set(self.id, value);
+            }
         }
 
-        if set_signal {
-            self.signals.set(self.id, value.into_message());
-        }
         Ok(())
     }
 }
 
-impl<T> ValueUpdate for Value<T>
+impl<T> ProccesValue for Value<T>
 where
-    T: ReadValue + WriteValue,
+    T: ReadValue + WriteValue + ToPyObject,
 {
-    fn update_value(
+    fn process_value(
         &self,
         head: &[u8],
-        stream: &mut TcpStream,
-    ) -> Result<ValueMessage, ParseError> {
-        let value = T::read_message(head, stream)?;
+        data: Option<Vec<u8>>,
+        siganl: bool,
+    ) -> Result<(), String> {
+        let value = T::read_message(head, data)?;
 
         let mut w = self.value.write().unwrap();
         if w.1 == 0 {
             w.0 = value.clone();
         }
 
-        Ok(value.into_message())
+        if siganl {
+            self.signals.set(self.id, value);
+        }
+        Ok(())
     }
 }
 
@@ -124,7 +130,7 @@ where
         let message = w.0.clone().into_message();
         drop(w);
 
-        let message = WriteMessage::value(self.id, false, message);
+        let message = WriteMessage::Value(self.id, false, message);
         self.channel.send(message).unwrap();
     }
 }
@@ -164,8 +170,9 @@ where
     fn set_py(&self, value: &Bound<PyAny>, update: bool) -> PyResult<()> {
         let value = T::from_python(value)?;
         if self.connected.load(Ordering::Relaxed) {
-            let message = WriteMessage::static_value(self.id, update, value.clone().into_message());
-            *self.value.write().unwrap() = value;
+            let message = WriteMessage::Static(self.id, update, value.clone().into_message());
+            let mut v = self.value.write().unwrap();
+            *v = value;
             self.channel.send(message).unwrap();
         } else {
             *self.value.write().unwrap() = value;
@@ -181,7 +188,7 @@ where
 {
     fn sync(&self) {
         let message = self.value.write().unwrap().clone().into_message();
-        let message = WriteMessage::static_value(self.id, false, message);
+        let message = WriteMessage::Static(self.id, false, message);
         self.channel.send(message).unwrap();
     }
 }
@@ -227,41 +234,48 @@ where
             T::from_int(int_val).map_err(|_| PyValueError::new_err("Invalid enum value"))?;
 
         if self.connected.load(Ordering::Relaxed) {
-            let message = WriteMessage::value(self.id, update, ValueMessage::U64(int_val));
+            let message = WriteMessage::Value(self.id, update, ValueMessage::U64(int_val));
             let mut w = self.value.write().unwrap();
             w.0 = value.clone();
             w.1 += 1;
             self.channel.send(message).unwrap();
+            if set_signal {
+                self.signals.set(self.id, int_val);
+            }
         } else {
-            self.value.write().unwrap().0 = value.clone();
+            let mut w = self.value.write().unwrap();
+            w.0 = value.clone();
+            if set_signal {
+                self.signals.set(self.id, int_val);
+            }
         }
 
-        if set_signal {
-            self.signals.set(self.id, ValueMessage::U64(int_val));
-        }
         Ok(())
     }
 }
 
-impl<T> ValueUpdate for ValueEnum<T>
+impl<T> ProccesValue for ValueEnum<T>
 where
     T: EnumInt,
 {
-    fn update_value(
+    fn process_value(
         &self,
         head: &[u8],
-        stream: &mut TcpStream,
-    ) -> Result<ValueMessage, ParseError> {
-        let value_int = u64::read_message(head, stream)?;
-        let value = T::from_int(value_int)
-            .map_err(|_| ParseError::Parse("Invalid enum format".to_string()))?;
+        data: Option<Vec<u8>>,
+        siganl: bool,
+    ) -> Result<(), String> {
+        let value_int = u64::read_message(head, data)?;
+        let value = T::from_int(value_int).map_err(|_| "Invalid enum format".to_string())?;
 
         let mut w = self.value.write().unwrap();
         if w.1 == 0 {
             w.0 = value.clone();
         }
 
-        Ok(ValueMessage::U64(value_int))
+        if siganl {
+            self.signals.set(self.id, value_int);
+        }
+        Ok(())
     }
 }
 
@@ -284,36 +298,40 @@ where
         let val_int = w.0.as_int();
         drop(w);
 
-        let message = WriteMessage::value(self.id, false, ValueMessage::U64(val_int));
+        let message = WriteMessage::Value(self.id, false, ValueMessage::U64(val_int));
         self.channel.send(message).unwrap();
     }
 }
 
 // Signal ---------------------------------------------------
 pub struct Signal<T> {
-    _id: u32,
+    id: u32,
+    signals: ChangedValues,
     phantom: PhantomData<T>,
 }
 
 impl<T: WriteValue + Clone> Signal<T> {
-    pub(crate) fn new(id: u32) -> Arc<Self> {
+    pub(crate) fn new(id: u32, signals: ChangedValues) -> Arc<Self> {
         Arc::new(Self {
-            _id: id,
+            id,
+            signals,
             phantom: PhantomData,
         })
     }
 }
 
-impl<T> ValueUpdate for Signal<T>
+impl<T> ProccesValue for Signal<T>
 where
-    T: ReadValue + WriteValue,
+    T: ReadValue + WriteValue + ToPyObject,
 {
-    fn update_value(
+    fn process_value(
         &self,
         head: &[u8],
-        stream: &mut TcpStream,
-    ) -> Result<ValueMessage, ParseError> {
-        let value = T::read_message(head, stream)?;
-        Ok(value.into_message())
+        data: Option<Vec<u8>>,
+        _signal: bool,
+    ) -> Result<(), String> {
+        let value = T::read_message(head, data)?;
+        self.signals.set(self.id, value);
+        Ok(())
     }
 }

@@ -4,13 +4,17 @@ import traceback
 
 import numpy as np
 
-from egui_pysync.core import StateServer
+from egui_pysync.typing import SteteServerCoreBase
+
+
+class _StatesBase:
+    pass
 
 
 class _SignalsManager:
     def __init__(
         self,
-        server: StateServer,
+        server: SteteServerCoreBase,
         workers: int,
         error_handler: Callable[[Exception], None] | None,
     ):
@@ -55,6 +59,9 @@ class _SignalsManager:
                             callback(*args)
                         except Exception as e:
                             self._error_handler(e)
+            else:
+                error = IndexError(f"Signal with index {ind} not found.")
+                self._error_handler(error)
 
     @staticmethod
     def _default_error_handler(_e: Exception) -> None:
@@ -113,11 +120,26 @@ class ErrorSignal:
 
 
 class _ValueBase:
-    def __init__(self, value_id: int, server: StateServer, signals_manager: _SignalsManager):
+    _server: SteteServerCoreBase
+    _signals_manager: _SignalsManager
+
+    def __init__(self, value_id: int, has_signal: bool = True):
         self._value_id = value_id
+        self._has_signal = has_signal
+
+    def _initialize(self, server: SteteServerCoreBase, signals_manager: _SignalsManager):
         self._server = server
-        self._signals_manager = signals_manager
-        signals_manager.register_value(value_id)
+        if self._has_signal:
+            self._signals_manager = signals_manager
+            signals_manager.register_value(self._value_id)
+
+
+class _Updater(_ValueBase):
+    def __init__(self):
+        super().__init__(0, has_signal=False)
+
+    def update(self, duration: float | None = None) -> None:
+        self._server.update(duration)
 
 
 class Value[T](_ValueBase):
@@ -165,9 +187,8 @@ class Value[T](_ValueBase):
 class ValueStatic[T](_ValueBase):
     """Numeric static UI value of type T. Static means that the value is not updated in the UI."""
 
-    def __init__(self, value_id: int, server: StateServer):  # noqa: D107
-        self._value_id = value_id
-        self._server = server
+    def __init__(self, value_id: int):
+        super().__init__(value_id, has_signal=False)
 
     def set(self, value: T, update: bool = False) -> None:
         """Set the static value of the UI.
@@ -190,8 +211,8 @@ class ValueStatic[T](_ValueBase):
 class ValueEnum[T](_ValueBase):
     """Enum UI value of type T."""
 
-    def __init__(self, value_id: int, server: StateServer, signal_manager: _SignalsManager, enum_type: type[T]):  # noqa: D107
-        super().__init__(value_id, server, signal_manager)
+    def __init__(self, value_id: int, enum_type: type[T]):  # noqa: D107
+        super().__init__(value_id)
         self._enum_type = enum_type
 
     def set(self, value: T, set_signal: bool = True, update: bool = False) -> None:
@@ -285,11 +306,13 @@ class SignalEmpty(_ValueBase):
 class ValueImage(_ValueBase):
     """Image UI element."""
 
+    def __init__(self, value_id: int):
+        super().__init__(value_id, has_signal=False)
+
     def set_image(
         self,
         image: np.ndarray,
         rect: list[int] | None = None,
-        histogram: np.ndarray | None = None,
         update: bool = False,
     ) -> None:
         """Set the image in the UI image.
@@ -297,10 +320,9 @@ class ValueImage(_ValueBase):
         Args:
             image(np.ndarray): The image to set.
             rect(list[int], optional): The rectangle [y, x, height, width]. Defaults to None.
-            histogram(np.ndarray, optional): The histogram numpy array of float32 normalized to 1. Defaults to None.
             update(bool, optional): Whether to update the UI. Defaults to True.
         """
-        self._server.set_image(self._value_id, image, update, rect, histogram)
+        self._server.set_image(self._value_id, image, update, rect)
 
     def set_histogram(self, histogram: np.ndarray | None = None, update: bool = False) -> None:
         """Set the histogram in the UI image.
@@ -314,6 +336,9 @@ class ValueImage(_ValueBase):
 
 class ValueDict[K, V](_ValueBase):
     """Dict UI element."""
+
+    def __init__(self, value_id: int):
+        super().__init__(value_id, has_signal=False)
 
     def set(self, value: dict[K, V], update: bool = False) -> None:
         """Set the dict in the UI dict.
@@ -378,6 +403,9 @@ class ValueDict[K, V](_ValueBase):
 class ValueList[T](_ValueBase):
     """List UI element."""
 
+    def __init__(self, value_id: int):
+        super().__init__(value_id, has_signal=False)
+
     def set(self, value: list[T], update: bool = False) -> None:
         """Set the list in the UI list.
 
@@ -441,3 +469,36 @@ class ValueList[T](_ValueBase):
     def __setitem__(self, idx: int, value: T) -> None:
         """Set the item in the UI list."""
         self.set_item(idx, value, update=False)
+
+
+class ValueGraph(_ValueBase):
+    """Graph UI element."""
+
+    def __init__(self, value_id: int):
+        super().__init__(value_id, has_signal=False)
+
+    def set(self, graph: np.ndarray, update: bool = False) -> None:
+        """Set the graph in the UI graph.
+
+        Args:
+            graph(np.ndarray): The graph to set.
+            update(bool, optional): Whether to update the UI. Defaults to False.
+        """
+        self._server.set_graph(self._value_id, graph, update)
+
+    def add_points(self, points: np.ndarray, update: bool = False) -> None:
+        """Add the points to the UI graph.
+
+        Args:
+            points(np.ndarray): The points to add.
+            update(bool, optional): Whether to update the UI. Defaults to False.
+        """
+        self._server.add_graph_points(self._value_id, points, update)
+
+    def clear(self, update: bool = False) -> None:
+        """Clear the UI graph.
+
+        Args:
+            update(bool, optional): Whether to update the UI. Defaults to False.
+        """
+        self._server.clear_graph(self._value_id, update)

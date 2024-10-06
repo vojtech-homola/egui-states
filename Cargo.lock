@@ -74,12 +74,8 @@ name = "egui_pysync_client"
 version = "0.1.0"
 dependencies = [
  "egui",
- "egui_pysync_common",
+ "egui_pysync_transport",
 ]
-
-[[package]]
-name = "egui_pysync_common"
-version = "0.1.0"
 
 [[package]]
 name = "egui_pysync_macros"
@@ -94,8 +90,15 @@ dependencies = [
 name = "egui_pysync_server"
 version = "0.1.0"
 dependencies = [
- "egui_pysync_common",
+ "egui_pysync_transport",
  "pyo3",
+]
+
+[[package]]
+name = "egui_pysync_transport"
+version = "0.1.0"
+dependencies = [
+ "egui_pysync_macros",
 ]
 
 [[package]]
