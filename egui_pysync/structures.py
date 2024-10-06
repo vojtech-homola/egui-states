@@ -1,8 +1,6 @@
-from collections.abc import Callable
 import threading
 import traceback
-
-import numpy as np
+from collections.abc import Buffer, Callable
 
 from egui_pysync.typing import SteteServerCoreBase
 
@@ -120,12 +118,13 @@ class ErrorSignal:
 
 
 class _ValueBase:
+    _has_signal: bool = True
+
     _server: SteteServerCoreBase
     _signals_manager: _SignalsManager
 
-    def __init__(self, value_id: int, has_signal: bool = True):
+    def __init__(self, value_id: int):
         self._value_id = value_id
-        self._has_signal = has_signal
 
     def _initialize(self, server: SteteServerCoreBase, signals_manager: _SignalsManager):
         self._server = server
@@ -135,8 +134,7 @@ class _ValueBase:
 
 
 class _Updater(_ValueBase):
-    def __init__(self):
-        super().__init__(0, has_signal=False)
+    _has_signal = False
 
     def update(self, duration: float | None = None) -> None:
         self._server.update(duration)
@@ -187,8 +185,7 @@ class Value[T](_ValueBase):
 class ValueStatic[T](_ValueBase):
     """Numeric static UI value of type T. Static means that the value is not updated in the UI."""
 
-    def __init__(self, value_id: int):
-        super().__init__(value_id, has_signal=False)
+    _has_signal = False
 
     def set(self, value: T, update: bool = False) -> None:
         """Set the static value of the UI.
@@ -306,29 +303,28 @@ class SignalEmpty(_ValueBase):
 class ValueImage(_ValueBase):
     """Image UI element."""
 
-    def __init__(self, value_id: int):
-        super().__init__(value_id, has_signal=False)
+    _has_signal = False
 
     def set_image(
         self,
-        image: np.ndarray,
+        image: Buffer,
         rect: list[int] | None = None,
         update: bool = False,
     ) -> None:
         """Set the image in the UI image.
 
         Args:
-            image(np.ndarray): The image to set.
+            image(Buffer): The image to set.
             rect(list[int], optional): The rectangle [y, x, height, width]. Defaults to None.
             update(bool, optional): Whether to update the UI. Defaults to True.
         """
         self._server.set_image(self._value_id, image, update, rect)
 
-    def set_histogram(self, histogram: np.ndarray | None = None, update: bool = False) -> None:
+    def set_histogram(self, histogram: Buffer | None = None, update: bool = False) -> None:
         """Set the histogram in the UI image.
 
         Args:
-            histogram(np.ndarray, optional): The histogram numpy array of float32 normalized to 1. Defaults to None.
+            histogram(Buffer, optional): The histogram numpy array of float32 normalized to 1. Defaults to None.
             update(bool, optional): Whether to update the UI. Defaults to True.
         """
         self._server.set_histogram(self._value_id, update, histogram)
@@ -337,8 +333,7 @@ class ValueImage(_ValueBase):
 class ValueDict[K, V](_ValueBase):
     """Dict UI element."""
 
-    def __init__(self, value_id: int):
-        super().__init__(value_id, has_signal=False)
+    _has_signal = False
 
     def set(self, value: dict[K, V], update: bool = False) -> None:
         """Set the dict in the UI dict.
@@ -403,8 +398,7 @@ class ValueDict[K, V](_ValueBase):
 class ValueList[T](_ValueBase):
     """List UI element."""
 
-    def __init__(self, value_id: int):
-        super().__init__(value_id, has_signal=False)
+    _has_signal = False
 
     def set(self, value: list[T], update: bool = False) -> None:
         """Set the list in the UI list.
@@ -474,23 +468,22 @@ class ValueList[T](_ValueBase):
 class ValueGraph(_ValueBase):
     """Graph UI element."""
 
-    def __init__(self, value_id: int):
-        super().__init__(value_id, has_signal=False)
+    _has_signal = False
 
-    def set(self, graph: np.ndarray, update: bool = False) -> None:
+    def set(self, graph: Buffer, update: bool = False) -> None:
         """Set the graph in the UI graph.
 
         Args:
-            graph(np.ndarray): The graph to set.
+            graph(Buffer): The graph to set.
             update(bool, optional): Whether to update the UI. Defaults to False.
         """
         self._server.set_graph(self._value_id, graph, update)
 
-    def add_points(self, points: np.ndarray, update: bool = False) -> None:
+    def add_points(self, points: Buffer, update: bool = False) -> None:
         """Add the points to the UI graph.
 
         Args:
-            points(np.ndarray): The points to add.
+            points(Buffer): The points to add.
             update(bool, optional): Whether to update the UI. Defaults to False.
         """
         self._server.add_graph_points(self._value_id, points, update)

@@ -1,4 +1,4 @@
-use std::net::TcpStream;
+use std::net::{SocketAddrV4, TcpStream};
 use std::sync::mpsc::{Receiver, Sender};
 use std::thread::spawn;
 
@@ -7,7 +7,6 @@ use egui_pysync_transport::{commands::CommandMessage, transport::HEAD_SIZE};
 
 use crate::client_state::UIState;
 use crate::states_creator::{ValuesCreator, ValuesList};
-// use crate::transport::{read_message, ReadResult, WriteMessage};
 
 fn handle_message(
     message: ReadMessage,
@@ -95,11 +94,13 @@ fn handle_message(
 }
 
 fn start_gui_client(
+    addr: SocketAddrV4,
     vals: ValuesList,
+    version: u64,
     mut rx: Receiver<WriteMessage>,
     channel: Sender<WriteMessage>,
     ui_state: UIState,
-    handshake: [u64; 2],
+    handshake: u64,
 ) {
     let _ = spawn(move || loop {
         // wait for the connection signal
@@ -107,7 +108,7 @@ fn start_gui_client(
         ui_state.connect_signal().wait_lock();
 
         // try to connect to the server
-        let res = TcpStream::connect("127.0.0.1:888");
+        let res = TcpStream::connect(addr);
         if res.is_err() {
             continue;
         }
@@ -163,7 +164,7 @@ fn start_gui_client(
             let mut head = [0u8; HEAD_SIZE];
 
             // send handshake
-            let handshake = CommandMessage::Handshake(handshake[0], handshake[1]);
+            let handshake = CommandMessage::Handshake(version, handshake);
             let data = WriteMessage::Command(handshake).parse(&mut head);
             let res = write_message(&mut head, data, &mut stream_write);
             if let Err(e) = res {
@@ -224,16 +225,25 @@ impl ClientBuilder {
         &mut self.creator
     }
 
-    pub fn build(self, handshake: [u64; 2]) -> UIState {
+    pub fn build(self, addr: [u8; 4], port: u16, handshake: u64) -> UIState {
         let Self {
             creator,
             channel,
             rx,
         } = self;
 
-        let values = creator.get_values();
+        let addr = SocketAddrV4::new(addr.into(), port);
+        let (values, version) = creator.get_values();
         let ui_state = UIState::new();
-        start_gui_client(values, rx, channel, ui_state.clone(), handshake);
+        start_gui_client(
+            addr,
+            values,
+            version,
+            rx,
+            channel,
+            ui_state.clone(),
+            handshake,
+        );
 
         ui_state
     }

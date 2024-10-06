@@ -1,4 +1,4 @@
-use std::net::{TcpListener, TcpStream};
+use std::net::{SocketAddrV4, TcpListener, TcpStream};
 use std::sync::atomic::AtomicBool;
 use std::sync::{
     atomic,
@@ -184,6 +184,7 @@ pub(crate) struct Server {
     enabled: Arc<atomic::AtomicBool>,
     channel: Sender<WriteMessage>,
     start_event: Event,
+    addr: SocketAddrV4,
 }
 
 impl Server {
@@ -193,6 +194,9 @@ impl Server {
         connected: Arc<atomic::AtomicBool>,
         values: ValuesList,
         signals: ChangedValues,
+        addr: SocketAddrV4,
+        version: u64,
+        handshake: Option<Vec<u64>>,
     ) -> Self {
         let start_event = Event::new();
         let enabled = Arc::new(atomic::AtomicBool::new(false));
@@ -202,6 +206,7 @@ impl Server {
             enabled: enabled.clone(),
             channel: channel.clone(),
             start_event: start_event.clone(),
+            addr,
         };
 
         spawn(move || {
@@ -212,26 +217,32 @@ impl Server {
                 start_event.wait();
 
                 // listen to incoming connections
-                let listener = TcpListener::bind("127.0.0.1:888");
+                let listener = TcpListener::bind(addr);
                 if let Err(e) = listener {
-                    println!("Error binding: {:?}", e); // TODO: log error
+                    let error = format!("Error binding: {:?}", e);
+                    signals.set(0, error);
                     continue;
                 }
                 let listener = listener.unwrap();
 
                 // accept incoming connection
                 let stream = listener.accept();
-                if stream.is_err() {
-                    println!("Error accepting connection"); // TODO: log error
-                    continue;
-                }
-                let mut stream = stream.unwrap().0;
 
                 // if server is disabled, go back and wait for start control event
                 if !enabled.load(atomic::Ordering::Relaxed) {
-                    stream.shutdown(std::net::Shutdown::Both).unwrap();
+                    if let Ok((stream, _)) = stream {
+                        let _ = stream.shutdown(std::net::Shutdown::Both);
+                    }
                     continue;
                 }
+
+                // check if error accepting connection
+                if let Err(e) = stream {
+                    let error = format!("Error accepting connection: {:?}", e);
+                    signals.set(0, error);
+                    continue;
+                }
+                let mut stream = stream.unwrap().0;
 
                 // read the message
                 let mut head = [0u8; HEAD_SIZE];
@@ -253,7 +264,21 @@ impl Server {
                 }
 
                 // check if message is handshake
-                if let ReadMessage::Command(CommandMessage::Handshake(_, _)) = res.unwrap() {
+                if let ReadMessage::Command(CommandMessage::Handshake(v, h)) = res.unwrap() {
+                    if v != version {
+                        let error = format!("Attempted to connect with different version: {}, version {} is required.", v, version);
+                        signals.set(0, error);
+                        continue;
+                    }
+
+                    if let Some(ref hash) = handshake {
+                        if !hash.contains(&h) {
+                            let error = "Attempted to connect with wrong hash".to_string();
+                            signals.set(0, error);
+                            continue;
+                        }
+                    }
+
                     let rx = match holder {
                         // disconnect previous client
                         ChannelHolder::Transfer(st) => {
@@ -306,6 +331,9 @@ impl Server {
         self.start_event.clear();
         self.enabled.store(false, atomic::Ordering::Relaxed);
         self.disconnect_client();
+
+        // try to connect to the server to unblock the accept call
+        let _ = TcpStream::connect(self.addr);
     }
 
     pub(crate) fn disconnect_client(&mut self) {

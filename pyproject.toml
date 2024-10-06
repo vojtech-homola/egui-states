@@ -9,8 +9,6 @@ requires-python = ">=3.11"
 # dynamic = ["version"]
 version = "0.1.0"
 
-dependencies = ["numpy"]
-
 [tool.setuptools]
 packages = ["egui_pysync"]
 

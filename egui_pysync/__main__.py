@@ -213,14 +213,13 @@ class _Struct:
 
         file.write("\n")
 
-    def write_server_state(self, file: io.TextIOWrapper, structs: dict) -> None:
+    def write_server_state(self, file: io.TextIOWrapper, structs: dict[str, "_Struct"]) -> None:
         for item in self._order:
             if item in self._original_items:
                 file.write(f"    {self._original_items[item]}\n")
             else:
                 file.write(f"    //{self._structs_names[item]}\n")
                 structs[self._structs_names[item]].write_server_state(file, structs)
-
 
     @staticmethod
     def _parse_item(line: str) -> tuple[str, str]:

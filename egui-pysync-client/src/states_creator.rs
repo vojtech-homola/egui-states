@@ -4,9 +4,9 @@ use std::sync::mpsc::Sender;
 use std::sync::Arc;
 
 use egui_pysync_transport::collections::ItemWriteRead;
+use egui_pysync_transport::transport::WriteMessage;
 use egui_pysync_transport::values::{ReadValue, WriteValue};
 use egui_pysync_transport::EnumInt;
-use egui_pysync_transport::transport::WriteMessage;
 
 use crate::dict::{DictUpdate, ValueDict};
 use crate::graphs::{GraphType, GraphUpdate, ValueGraph};
@@ -49,6 +49,7 @@ impl ValuesList {
 pub struct ValuesCreator {
     counter: u32,
     val: ValuesList,
+    version: u64,
     channel: Sender<WriteMessage>,
 }
 
@@ -57,6 +58,7 @@ impl ValuesCreator {
         Self {
             counter: 10, // first 10 values are reserved for special values
             val: ValuesList::new(),
+            version: 0,
             channel,
         }
     }
@@ -67,10 +69,14 @@ impl ValuesCreator {
         count
     }
 
-    pub(crate) fn get_values(self) -> ValuesList {
+    pub(crate) fn get_values(self) -> (ValuesList, u64) {
         let mut val = self.val;
         val.shrink();
-        val
+        (val, self.version)
+    }
+
+    pub fn set_version(&mut self, version: u64) {
+        self.version = version;
     }
 
     pub fn add_value<T>(&mut self, value: T) -> Arc<Value<T>>

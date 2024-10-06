@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::{
     atomic,
     mpsc::{self, Sender},
@@ -30,10 +31,17 @@ pub(crate) struct StateServerCore {
     registed_values: RwLock<HashSet<u32>>,
 }
 
+impl Drop for StateServerCore {
+    fn drop(&mut self) {
+        self.server.write().unwrap().stop();
+    }
+}
+
 #[pymethods]
 impl StateServerCore {
     #[new]
-    fn new() -> PyResult<Self> {
+    #[pyo3(signature = (port, ip_addr=None, handshake=None))]
+    fn new(port: u16, ip_addr: Option<[u8; 4]>, handshake: Option<Vec<u64>>) -> PyResult<Self> {
         let (channel, rx) = mpsc::channel();
         let connected = Arc::new(atomic::AtomicBool::new(false));
 
@@ -53,13 +61,23 @@ impl StateServerCore {
             }
         }
 
-        let (values, py_values) = values_creator.get_values();
+        let (values, py_values, version) = values_creator.get_values();
+
+        let addr = match ip_addr {
+            Some(addr) => {
+                SocketAddrV4::new(Ipv4Addr::new(addr[0], addr[1], addr[2], addr[3]), port)
+            }
+            None => SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), port),
+        };
         let server = Server::new(
             channel.clone(),
             rx,
             connected.clone(),
             values,
             signals.clone(),
+            addr,
+            version,
+            handshake,
         );
 
         let obj = Self {
@@ -102,7 +120,11 @@ impl StateServerCore {
         }
     }
 
-    fn get_signal_value<'py>(&'py self, py: Python<'py>, thread_id: u32) -> (u32, Bound<PyTuple>) {
+    fn get_signal_value<'py, 'a>(
+        &'a self,
+        py: Python<'py>,
+        thread_id: u32,
+    ) -> (u32, Bound<'py, PyTuple>) {
         let (value_id, value) = py.allow_threads(|| loop {
             let res = self.changed_values.wait_changed_value(thread_id);
             if self.registed_values.read().unwrap().contains(&res.0) {

@@ -80,6 +80,7 @@ pub struct ValuesCreator {
     connected: Arc<AtomicBool>,
     signals: ChangedValues,
 
+    version: u64,
     counter: u32,
     val: ValuesList,
     py_val: PyValuesList,
@@ -96,6 +97,7 @@ impl ValuesCreator {
             connected,
             signals,
 
+            version: 0,
             counter: 10, // first 10 values are reserved for special values
             val: ValuesList::new(),
             py_val: PyValuesList::new(),
@@ -108,7 +110,7 @@ impl ValuesCreator {
         count
     }
 
-    pub(crate) fn get_values(self) -> (ValuesList, PyValuesList) {
+    pub(crate) fn get_values(self) -> (ValuesList, PyValuesList, u64) {
         let Self {
             mut val,
             mut py_val,
@@ -117,7 +119,11 @@ impl ValuesCreator {
         val.shrink();
         py_val.shrink();
 
-        (val, py_val)
+        (val, py_val, self.version)
+    }
+
+    pub fn set_version(&mut self, version: u64) {
+        self.version = version;
     }
 
     pub fn add_value<T>(&mut self, value: T) -> Arc<Value<T>>

@@ -20,11 +20,15 @@ class StateServer[T]:
         self,
         state_class: type[T],
         core_module: ModuleType,
+        port: int,
         signals_workers: int = 3,
         error_handler: Callable[[Exception], None] | None = None,
+        ip_addr: tuple[int, int, int, int] | None = None,
+        handshake: list[int] | None = None,
     ) -> None:
         """Initialize the SteteServer."""
-        self._server: SteteServerCoreBase = getattr(core_module, "StateServerCore")()
+        core_server_class: type[SteteServerCoreBase] = getattr(core_module, "StateServerCore")
+        self._server = core_server_class(port, ip_addr, handshake)
         self._signals_manager = _SignalsManager(self._server, signals_workers, error_handler)
         self._states: T = state_class()
 
