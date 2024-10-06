@@ -11,3 +11,6 @@ __pycache__
 /dist
 /*.egg-info
 /build
+
+# version
+/egui_pysync/version.py

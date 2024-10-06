@@ -4,13 +4,16 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "egui-pysync"
-requires-python = ">=3.11"
-# license = { file = "LICENSE" }
-# dynamic = ["version"]
-version = "0.1.0"
+description = "A Python library for egui-pysync project."
+authors = [{ name = "Vojtěch Homola", email = "vojhom@outlook.cz" }]
+requires-python = ">=3.12"
+license = { file = "LICENSE" }
+dynamic = ["version"]
+readme = "README.md"
 
 [tool.setuptools]
 packages = ["egui_pysync"]
+dynamic.version = { attr = "egui_pysync.__version__" }
 
 [tool.ruff]
 line-length = 120

@@ -15,3 +15,10 @@ edition = "2021"
 egui_pysync_transport = { path = "egui-pysync-transport" }
 egui_pysync_macros = { path = "egui-pysync-macros" }
 
+[package]
+name = "force-build"
+edition.workspace = true
+
+[[bin]]
+name = "force-build"
+path = "main.rs"
