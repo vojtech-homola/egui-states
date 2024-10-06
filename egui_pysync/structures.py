@@ -133,11 +133,14 @@ class _ValueBase:
             signals_manager.register_value(self._value_id)
 
 
-class _Updater(_ValueBase):
-    _has_signal = False
+class _Updater:
+    _server: SteteServerCoreBase
 
     def update(self, duration: float | None = None) -> None:
         self._server.update(duration)
+
+    def _initialize(self, server: SteteServerCoreBase):
+        self._server = server
 
 
 class Value[T](_ValueBase):
