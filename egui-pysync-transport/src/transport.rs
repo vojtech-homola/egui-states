@@ -13,15 +13,15 @@ pub(crate) const MESS_SIZE: usize = 26;
 pub(crate) const SIZE_START: usize = MESS_SIZE - 8;
 
 // message types
-const TYPE_VALUE: u8 = 16;
-const TYPE_STATIC: u8 = 32;
-const TYPE_SIGNAL: u8 = 12;
-const TYPE_COMMAND: u8 = 64;
-const TYPE_IMAGE: u8 = 4;
-const TYPE_HISTOGRAM: u8 = 24;
-const TYPE_DICT: u8 = 48;
-const TYPE_LIST: u8 = 96;
-const TYPE_GRAPH: u8 = 8;
+const TYPE_VALUE: i8 = 16;
+const TYPE_STATIC: i8 = 32;
+const TYPE_SIGNAL: i8 = 12;
+const TYPE_COMMAND: i8 = 64;
+const TYPE_IMAGE: i8 = 4;
+const TYPE_HISTOGRAM: i8 = 24;
+const TYPE_DICT: i8 = 48;
+const TYPE_LIST: i8 = 96;
+const TYPE_GRAPH: i8 = 8;
 
 /*
 Head of the message:
@@ -60,11 +60,11 @@ pub fn write_message(
 pub fn read_message(
     head: &mut [u8],
     stream: &mut TcpStream,
-) -> Result<(u8, Option<Vec<u8>>), io::Error> {
+) -> Result<(i8, Option<Vec<u8>>), io::Error> {
     stream.read_exact(head)?;
     let type_ = head[0] as i8;
     let has_data = type_.is_negative();
-    let type_ = type_.abs() as u8;
+    let type_ = type_.abs();
 
     let data = match has_data {
         true => {
@@ -108,10 +108,15 @@ impl WriteMessage {
 
     pub fn parse(self, head: &mut [u8]) -> Option<Vec<u8>> {
         if let WriteMessage::Command(command) = self {
-            return command.write_message(&mut head[1..]);
+            let data = command.write_message(&mut head[1..]);
+            match data {
+                Some(_) => head[0] = -TYPE_COMMAND as u8,
+                None => head[0] = TYPE_COMMAND as u8,
+            }
+            return data;
         }
 
-        let (id, flag, type_, data) = match self {
+        let (id, flag, mut type_, data) = match self {
             Self::Value(id, update_signal, message) => {
                 let data = message.write_message(&mut head[6..]);
                 (id, update_signal, TYPE_VALUE, data)
@@ -157,7 +162,6 @@ impl WriteMessage {
             }
         };
 
-        let mut type_ = type_ as i8;
         if data.is_some() {
             type_ = -type_;
         }
@@ -201,7 +205,7 @@ impl<'a> ReadMessage<'a> {
 impl<'a> ReadMessage<'a> {
     pub fn parse(
         head: &'a [u8],
-        message_type: u8,
+        message_type: i8,
         data: Option<Vec<u8>>,
     ) -> Result<ReadMessage<'a>, String> {
         if message_type == TYPE_COMMAND {
