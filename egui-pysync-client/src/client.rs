@@ -2,6 +2,7 @@ use std::net::{SocketAddrV4, TcpStream};
 use std::sync::mpsc::{Receiver, Sender};
 use std::thread::spawn;
 
+use egui::Context;
 use egui_pysync_transport::transport::{read_message, write_message, ReadMessage, WriteMessage};
 use egui_pysync_transport::{commands::CommandMessage, transport::HEAD_SIZE};
 
@@ -225,7 +226,7 @@ impl ClientBuilder {
         &mut self.creator
     }
 
-    pub fn build(self, addr: [u8; 4], port: u16, handshake: u64) -> UIState {
+    pub fn build(self, context: Context, addr: [u8; 4], port: u16, handshake: u64) -> UIState {
         let Self {
             creator,
             channel,
@@ -234,7 +235,7 @@ impl ClientBuilder {
 
         let addr = SocketAddrV4::new(addr.into(), port);
         let (values, version) = creator.get_values();
-        let ui_state = UIState::new();
+        let ui_state = UIState::new(context);
         start_gui_client(
             addr,
             values,

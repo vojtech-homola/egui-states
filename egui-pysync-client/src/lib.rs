@@ -8,6 +8,7 @@ pub mod states_creator;
 pub mod values;
 
 pub use crate::values::{Diff, DiffEnum};
+pub use client_state::UIState;
 pub use dict::ValueDict;
 pub use graphs::ValueGraph;
 pub use image::ImageValue;
