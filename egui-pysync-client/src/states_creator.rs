@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
@@ -6,7 +5,7 @@ use std::sync::Arc;
 use egui_pysync_transport::collections::ItemWriteRead;
 use egui_pysync_transport::transport::WriteMessage;
 use egui_pysync_transport::values::{ReadValue, WriteValue};
-use egui_pysync_transport::EnumInt;
+use egui_pysync_transport::{EnumInt, NoHashMap};
 
 use crate::dict::{DictUpdate, ValueDict};
 use crate::graphs::{GraphType, GraphUpdate, ValueGraph};
@@ -16,23 +15,23 @@ use crate::values::{Signal, Value, ValueEnum, ValueStatic, ValueUpdate};
 
 #[derive(Clone)]
 pub(crate) struct ValuesList {
-    pub(crate) values: HashMap<u32, Arc<dyn ValueUpdate>>,
-    pub(crate) static_values: HashMap<u32, Arc<dyn ValueUpdate>>,
-    pub(crate) images: HashMap<u32, Arc<dyn ImageUpdate>>,
-    pub(crate) dicts: HashMap<u32, Arc<dyn DictUpdate>>,
-    pub(crate) lists: HashMap<u32, Arc<dyn ListUpdate>>,
-    pub(crate) graphs: HashMap<u32, Arc<dyn GraphUpdate>>,
+    pub(crate) values: NoHashMap<Arc<dyn ValueUpdate>>,
+    pub(crate) static_values: NoHashMap<Arc<dyn ValueUpdate>>,
+    pub(crate) images: NoHashMap<Arc<dyn ImageUpdate>>,
+    pub(crate) dicts: NoHashMap<Arc<dyn DictUpdate>>,
+    pub(crate) lists: NoHashMap<Arc<dyn ListUpdate>>,
+    pub(crate) graphs: NoHashMap<Arc<dyn GraphUpdate>>,
 }
 
 impl ValuesList {
     fn new() -> Self {
         Self {
-            values: HashMap::new(),
-            static_values: HashMap::new(),
-            images: HashMap::new(),
-            dicts: HashMap::new(),
-            lists: HashMap::new(),
-            graphs: HashMap::new(),
+            values: NoHashMap::default(),
+            static_values: NoHashMap::default(),
+            images: NoHashMap::default(),
+            dicts: NoHashMap::default(),
+            lists: NoHashMap::default(),
+            graphs: NoHashMap::default(),
         }
     }
 

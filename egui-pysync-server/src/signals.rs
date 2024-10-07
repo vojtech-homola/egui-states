@@ -1,19 +1,20 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use pyo3::ToPyObject;
 
 use egui_pysync_transport::event::Event;
+use egui_pysync_transport::{NoHashMap, NoHashSet};
 
 struct OrderedMap {
-    values: HashMap<u32, Box<dyn ToPyObject + Sync + Send>>,
+    values: NoHashMap<Box<dyn ToPyObject + Sync + Send>>,
     indexes: VecDeque<u32>,
 }
 
 impl OrderedMap {
     fn new() -> Self {
         Self {
-            values: HashMap::new(),
+            values: NoHashMap::default(),
             indexes: VecDeque::new(),
         }
     }
@@ -35,10 +36,10 @@ impl OrderedMap {
 }
 
 struct ChnegedInner {
-    values: OrderedMap,                                       // values not blocked
-    blocked: HashMap<u32, Box<dyn ToPyObject + Sync + Send>>, // values blocked by some thread
-    block_list: HashSet<u32>,                                 // ids blocked by some thread
-    threads_last: HashMap<u32, u32>,                          // cache last id for each thread
+    values: OrderedMap,                                    // values not blocked
+    blocked: NoHashMap<Box<dyn ToPyObject + Sync + Send>>, // values blocked by some thread
+    block_list: NoHashSet,                                 // ids blocked by some thread
+    threads_last: NoHashMap<u32>,                          // cache last id for each thread
 }
 
 /*
@@ -49,9 +50,9 @@ impl ChnegedInner {
     fn new() -> Self {
         Self {
             values: OrderedMap::new(),
-            blocked: HashMap::new(),
-            block_list: HashSet::new(),
-            threads_last: HashMap::new(),
+            blocked: NoHashMap::default(),
+            block_list: NoHashSet::default(),
+            threads_last: NoHashMap::default(),
         }
     }
 

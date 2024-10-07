@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::{
     atomic,
@@ -12,6 +11,7 @@ use pyo3::types::PyTuple;
 
 use egui_pysync_transport::commands::CommandMessage;
 use egui_pysync_transport::transport::WriteMessage;
+use egui_pysync_transport::NoHashSet;
 
 use crate::server::Server;
 use crate::signals::ChangedValues;
@@ -28,7 +28,7 @@ pub(crate) struct StateServerCore {
     channel: Sender<WriteMessage>,
     connected: Arc<atomic::AtomicBool>,
     server: RwLock<Server>,
-    registed_values: RwLock<HashSet<u32>>,
+    registed_values: RwLock<NoHashSet>,
 }
 
 impl Drop for StateServerCore {
@@ -86,7 +86,7 @@ impl StateServerCore {
             channel,
             connected,
             server: RwLock::new(server),
-            registed_values: RwLock::new(HashSet::new()),
+            registed_values: RwLock::new(NoHashSet::default()),
         };
 
         Ok(obj)

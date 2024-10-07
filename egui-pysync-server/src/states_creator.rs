@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
@@ -8,7 +7,7 @@ use pyo3::ToPyObject;
 use egui_pysync_transport::collections::ItemWriteRead;
 use egui_pysync_transport::transport::WriteMessage;
 use egui_pysync_transport::values::{ReadValue, WriteValue};
-use egui_pysync_transport::{EnumInt, EnumStr};
+use egui_pysync_transport::{EnumInt, EnumStr, NoHashMap};
 
 use crate::dict::{PyDict, ValueDict};
 use crate::graphs::{GraphType, PyGraph, ValueGraph};
@@ -22,23 +21,23 @@ use crate::{Acknowledge, SyncTrait};
 
 #[derive(Clone)]
 pub(crate) struct PyValuesList {
-    pub(crate) values: HashMap<u32, Arc<dyn PyValue>>,
-    pub(crate) static_values: HashMap<u32, Arc<dyn PyValueStatic>>,
-    pub(crate) images: HashMap<u32, Arc<ImageValue>>,
-    pub(crate) dicts: HashMap<u32, Arc<dyn PyDict>>,
-    pub(crate) lists: HashMap<u32, Arc<dyn PyListTrait>>,
-    pub(crate) graphs: HashMap<u32, Arc<dyn PyGraph>>,
+    pub(crate) values: NoHashMap<Arc<dyn PyValue>>,
+    pub(crate) static_values: NoHashMap<Arc<dyn PyValueStatic>>,
+    pub(crate) images: NoHashMap<Arc<ImageValue>>,
+    pub(crate) dicts: NoHashMap<Arc<dyn PyDict>>,
+    pub(crate) lists: NoHashMap<Arc<dyn PyListTrait>>,
+    pub(crate) graphs: NoHashMap<Arc<dyn PyGraph>>,
 }
 
 impl PyValuesList {
     fn new() -> Self {
         Self {
-            values: HashMap::new(),
-            static_values: HashMap::new(),
-            images: HashMap::new(),
-            dicts: HashMap::new(),
-            lists: HashMap::new(),
-            graphs: HashMap::new(),
+            values: NoHashMap::default(),
+            static_values: NoHashMap::default(),
+            images: NoHashMap::default(),
+            dicts: NoHashMap::default(),
+            lists: NoHashMap::default(),
+            graphs: NoHashMap::default(),
         }
     }
 
@@ -54,17 +53,17 @@ impl PyValuesList {
 
 #[derive(Clone)]
 pub(crate) struct ValuesList {
-    pub(crate) updated: HashMap<u32, Arc<dyn ProccesValue>>,
-    pub(crate) ack: HashMap<u32, Arc<dyn Acknowledge>>,
-    pub(crate) sync: HashMap<u32, Arc<dyn SyncTrait>>,
+    pub(crate) updated: NoHashMap<Arc<dyn ProccesValue>>,
+    pub(crate) ack: NoHashMap<Arc<dyn Acknowledge>>,
+    pub(crate) sync: NoHashMap<Arc<dyn SyncTrait>>,
 }
 
 impl ValuesList {
     fn new() -> Self {
         Self {
-            updated: HashMap::new(),
-            ack: HashMap::new(),
-            sync: HashMap::new(),
+            updated: NoHashMap::default(),
+            ack: NoHashMap::default(),
+            sync: NoHashMap::default(),
         }
     }
 
