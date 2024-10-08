@@ -5,7 +5,7 @@ use std::sync::{
     mpsc::{Receiver, Sender},
     Arc,
 };
-use std::thread::{spawn, JoinHandle};
+use std::thread::{self, JoinHandle};
 
 use egui_pysync_transport::commands::CommandMessage;
 use egui_pysync_transport::event::Event;
@@ -35,94 +35,100 @@ impl StatesTransfer {
             signals.clone(),
         );
 
-        let thread = spawn(move || {
-            let mut head = [0u8; HEAD_SIZE];
-            loop {
-                // read the message
-                let res = read_message(&mut head, &mut stream);
+        let read_thread = thread::Builder::new().name("Reader".to_string());
+        let thread = read_thread
+            .spawn(move || {
+                let mut head = [0u8; HEAD_SIZE];
+                loop {
+                    // read the message
+                    let res = read_message(&mut head, &mut stream);
 
-                // check if not connected
-                if !connected.load(atomic::Ordering::Relaxed) {
-                    let _ = stream.shutdown(std::net::Shutdown::Both);
-                    break;
-                }
+                    // check if not connected
+                    if !connected.load(atomic::Ordering::Relaxed) {
+                        let _ = stream.shutdown(std::net::Shutdown::Both);
+                        break;
+                    }
 
-                if let Err(e) = res {
-                    let error = format!("Error reading message: {:?}", e);
-                    signals.set(0, error);
-                    connected.store(false, atomic::Ordering::Relaxed);
-                    break;
-                }
-                let (type_, data) = res.unwrap();
+                    if let Err(e) = res {
+                        let error = format!("Error reading message: {:?}", e);
+                        signals.set(0, error);
+                        connected.store(false, atomic::Ordering::Relaxed);
+                        break;
+                    }
+                    let (type_, data) = res.unwrap();
 
-                // parse the message
-                let res = ReadMessage::parse(&head, type_, data);
-                if let Err(res) = res {
-                    let error = format!("Error parsing message: {:?}", res);
-                    signals.set(0, error);
-                    continue;
-                }
-                let message = res.unwrap();
+                    // parse the message
+                    let res = ReadMessage::parse(&head, type_, data);
+                    if let Err(res) = res {
+                        let error = format!("Error parsing message: {:?}", res);
+                        signals.set(0, error);
+                        continue;
+                    }
+                    let message = res.unwrap();
 
-                // process posible command message
-                if let ReadMessage::Command(command) = message {
-                    match command {
-                        CommandMessage::Ack(v) => {
-                            let val_res = values.ack.get(&v);
-                            match val_res {
-                                Some(val) => val.acknowledge(),
-                                None => {
-                                    let error =
-                                        format!("Value with id {} not found for Ack command", v);
-                                    signals.set(0, error);
+                    // process posible command message
+                    if let ReadMessage::Command(command) = message {
+                        match command {
+                            CommandMessage::Ack(v) => {
+                                let val_res = values.ack.get(&v);
+                                match val_res {
+                                    Some(val) => val.acknowledge(),
+                                    None => {
+                                        let error = format!(
+                                            "Value with id {} not found for Ack command",
+                                            v
+                                        );
+                                        signals.set(0, error);
+                                    }
                                 }
                             }
+                            CommandMessage::Error(err) => {
+                                let error = format!("Error message from UI client: {}", err);
+                                signals.set(0, error);
+                            }
+                            _ => {
+                                let err = format!(
+                                    "Command {} should not be processed here",
+                                    command.as_str()
+                                );
+                                signals.set(0, err);
+                            }
                         }
-                        CommandMessage::Error(err) => {
-                            let error = format!("Error message from UI client: {}", err);
-                            signals.set(0, error);
-                        }
-                        _ => {
-                            let err = format!(
-                                "Command {} should not be processed here",
-                                command.as_str()
-                            );
-                            signals.set(0, err);
-                        }
+                        continue;
                     }
-                    continue;
+
+                    // process message
+                    let res = match message {
+                        ReadMessage::Value(id, siganl, head, data) => match values.updated.get(&id)
+                        {
+                            Some(val) => val.process_value(head, data, siganl),
+                            None => Err(format!("Value with id {} not found", id)),
+                        },
+
+                        ReadMessage::Signal(id, head, data) => match values.updated.get(&id) {
+                            Some(val) => val.process_value(head, data, true),
+                            None => Err(format!("Value with id {} not found", id)),
+                        },
+
+                        _ => Err(format!(
+                            "Message {} should not be processed here",
+                            message.to_str()
+                        )),
+                    };
+
+                    if let Err(e) = res {
+                        let text = format!("Error processing message: {}", e);
+                        signals.set(0, text);
+                    }
                 }
 
-                // process message
-                let res = match message {
-                    ReadMessage::Value(id, siganl, head, data) => match values.updated.get(&id) {
-                        Some(val) => val.process_value(head, data, siganl),
-                        None => Err(format!("Value with id {} not found", id)),
-                    },
+                // send close signal to writing thread if reading fails
+                channel.send(WriteMessage::Terminate).unwrap();
 
-                    ReadMessage::Signal(id, head, data) => match values.updated.get(&id) {
-                        Some(val) => val.process_value(head, data, true),
-                        None => Err(format!("Value with id {} not found", id)),
-                    },
-
-                    _ => Err(format!(
-                        "Message {} should not be processed here",
-                        message.to_str()
-                    )),
-                };
-
-                if let Err(e) = res {
-                    let text = format!("Error processing message: {}", e);
-                    signals.set(0, text);
-                }
-            }
-
-            // send close signal to writing thread if reading fails
-            channel.send(WriteMessage::Terminate).unwrap();
-
-            // wait for writing thread to finish and return the receiver
-            writer.join().unwrap()
-        });
+                // wait for writing thread to finish and return the receiver
+                writer.join().unwrap()
+            })
+            .unwrap();
 
         Self { thread }
     }
@@ -133,39 +139,42 @@ impl StatesTransfer {
         mut stream: TcpStream,
         signals: ChangedValues,
     ) -> JoinHandle<Receiver<WriteMessage>> {
-        spawn(move || {
-            let mut head = [0u8; HEAD_SIZE];
+        let thread = thread::Builder::new().name("Writer".to_string());
+        thread
+            .spawn(move || {
+                let mut head = [0u8; HEAD_SIZE];
 
-            loop {
-                // get message from channel
-                let message = rx.recv().unwrap();
+                loop {
+                    // get message from channel
+                    let message = rx.recv().unwrap();
 
-                // check if message is terminate signal
-                if let WriteMessage::Terminate = message {
-                    let _ = stream.shutdown(std::net::Shutdown::Both);
-                    break;
+                    // check if message is terminate signal
+                    if let WriteMessage::Terminate = message {
+                        let _ = stream.shutdown(std::net::Shutdown::Both);
+                        break;
+                    }
+
+                    // if not connected, stop thread
+                    if !connected.load(atomic::Ordering::Relaxed) {
+                        let _ = stream.shutdown(std::net::Shutdown::Both);
+                        break;
+                    }
+
+                    //parse message
+                    let data = message.parse(&mut head);
+
+                    // send message
+                    let res = write_message(&mut head, data, &mut stream);
+                    if let Err(e) = res {
+                        let error = format!("Error writing message: {:?}", e);
+                        signals.set(0, error);
+                        connected.store(false, atomic::Ordering::Relaxed);
+                        break;
+                    }
                 }
-
-                // if not connected, stop thread
-                if !connected.load(atomic::Ordering::Relaxed) {
-                    let _ = stream.shutdown(std::net::Shutdown::Both);
-                    break;
-                }
-
-                //parse message
-                let data = message.parse(&mut head);
-
-                // send message
-                let res = write_message(&mut head, data, &mut stream);
-                if let Err(e) = res {
-                    let error = format!("Error writing message: {:?}", e);
-                    signals.set(0, error);
-                    connected.store(false, atomic::Ordering::Relaxed);
-                    break;
-                }
-            }
-            rx
-        })
+                rx
+            })
+            .unwrap()
     }
 
     fn join(self) -> Receiver<WriteMessage> {
@@ -209,7 +218,8 @@ impl Server {
             addr,
         };
 
-        spawn(move || {
+        let server_thread = thread::Builder::new().name("Server".to_string());
+        let _ = server_thread.spawn(move || {
             let mut holder = ChannelHolder::Rx(rx);
 
             loop {

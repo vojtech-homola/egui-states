@@ -1,6 +1,6 @@
 use std::net::{SocketAddrV4, TcpStream};
 use std::sync::mpsc::{Receiver, Sender};
-use std::thread::spawn;
+use std::thread;
 
 use egui::Context;
 use egui_pysync_transport::transport::{read_message, write_message, ReadMessage, WriteMessage};
@@ -21,6 +21,7 @@ fn handle_message(
             }
             _ => {}
         }
+        return Ok(());
     }
 
     let update = match message {
@@ -103,7 +104,8 @@ fn start_gui_client(
     ui_state: UIState,
     handshake: u64,
 ) {
-    let _ = spawn(move || loop {
+    let client_thread = thread::Builder::new().name("Client".to_string());
+    let _ = client_thread.spawn(move || loop {
         // wait for the connection signal
         ui_state.connect_signal().clear();
         ui_state.connect_signal().wait_lock();
@@ -125,75 +127,82 @@ fn start_gui_client(
         let th_vals = vals.clone();
         let th_ui_state = ui_state.clone();
         let th_channel = channel.clone();
-        let recv_tread = spawn(move || {
-            let mut head = [0u8; HEAD_SIZE];
-            loop {
-                // read the message
-                let res = read_message(&mut head, &mut stream_read);
-                if let Err(e) = res {
-                    println!("Error reading message: {:?}", e); // TODO: log error
-                    break;
-                }
-                let (type_, data) = res.unwrap();
 
-                // parse message
-                let res = ReadMessage::parse(&head, type_, data);
-                if let Err(res) = res {
-                    let error = format!("Error parsing message: {:?}", res);
-                    th_channel
-                        .send(WriteMessage::Command(CommandMessage::Error(error)))
-                        .unwrap();
-                    break;
-                }
-                let message = res.unwrap();
+        let read_thread = thread::Builder::new().name("Read".to_string());
+        let recv_tread = read_thread
+            .spawn(move || {
+                let mut head = [0u8; HEAD_SIZE];
+                loop {
+                    // read the message
+                    let res = read_message(&mut head, &mut stream_read);
+                    if let Err(e) = res {
+                        println!("Error reading message: {:?}", e); // TODO: log error
+                        break;
+                    }
+                    let (type_, data) = res.unwrap();
 
-                // handle the message
-                let res = handle_message(message, &th_vals, &th_ui_state);
-                if let Err(e) = res {
-                    let error = format!("Error handling message: {:?}", e);
-                    th_channel
-                        .send(WriteMessage::Command(CommandMessage::Error(error)))
-                        .unwrap();
-                    break;
+                    // parse message
+                    let res = ReadMessage::parse(&head, type_, data);
+                    if let Err(res) = res {
+                        let error = format!("Error parsing message: {:?}", res);
+                        th_channel
+                            .send(WriteMessage::Command(CommandMessage::Error(error)))
+                            .unwrap();
+                        break;
+                    }
+                    let message = res.unwrap();
+
+                    // handle the message
+                    let res = handle_message(message, &th_vals, &th_ui_state);
+                    if let Err(e) = res {
+                        let error = format!("Error handling message: {:?}", e);
+                        th_channel
+                            .send(WriteMessage::Command(CommandMessage::Error(error)))
+                            .unwrap();
+                        break;
+                    }
                 }
-            }
-        });
+            })
+            .unwrap();
 
         // send thread -----------------------------------------
-        let send_thread = spawn(move || {
-            // preallocate buffer
-            let mut head = [0u8; HEAD_SIZE];
+        let write_thread = thread::Builder::new().name("Write".to_string());
+        let send_thread = write_thread
+            .spawn(move || {
+                // preallocate buffer
+                let mut head = [0u8; HEAD_SIZE];
 
-            // send handshake
-            let handshake = CommandMessage::Handshake(version, handshake);
-            let data = WriteMessage::Command(handshake).parse(&mut head);
-            let res = write_message(&mut head, data, &mut stream_write);
-            if let Err(e) = res {
-                println!("Error for sending hadnskae: {:?}", e); // TODO: log error
-                return rx;
-            }
-
-            loop {
-                // wait for the message from the channel
-                let message = rx.recv().unwrap();
-
-                // check if the message is terminate
-                if let WriteMessage::Terminate = message {
-                    break;
-                }
-
-                // parse the message
-                let data = message.parse(&mut head);
-
-                // write the message
-                let res = write_message(&head, data, &mut stream_write);
+                // send handshake
+                let handshake = CommandMessage::Handshake(version, handshake);
+                let data = WriteMessage::Command(handshake).parse(&mut head);
+                let res = write_message(&mut head, data, &mut stream_write);
                 if let Err(e) = res {
-                    println!("Error for sending message: {:?}", e); // TODO: log error
-                    break;
+                    println!("Error for sending hadnskae: {:?}", e); // TODO: log error
+                    return rx;
                 }
-            }
-            rx
-        });
+
+                loop {
+                    // wait for the message from the channel
+                    let message = rx.recv().unwrap();
+
+                    // check if the message is terminate
+                    if let WriteMessage::Terminate = message {
+                        break;
+                    }
+
+                    // parse the message
+                    let data = message.parse(&mut head);
+
+                    // write the message
+                    let res = write_message(&head, data, &mut stream_write);
+                    if let Err(e) = res {
+                        println!("Error for sending message: {:?}", e); // TODO: log error
+                        break;
+                    }
+                }
+                rx
+            })
+            .unwrap();
 
         // wait for the read thread to finish
         recv_tread.join().unwrap();
