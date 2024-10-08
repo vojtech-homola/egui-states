@@ -44,10 +44,11 @@ impl ImageValue {
         self.histogram.read().unwrap().0.clone()
     }
 
-    pub fn process_histogram(&self, op: impl Fn(Option<&Vec<f32>>, bool)) {
+    pub fn process_histogram<R>(&self, op: impl Fn(Option<&Vec<f32>>, bool) -> R) -> R {
         let mut w = self.histogram.write().unwrap();
-        op(w.0.as_ref(), w.1);
+        let result = op(w.0.as_ref(), w.1);
         w.1 = false;
+        result
     }
 
     pub fn initialize(&self, ctx: &egui::Context) {

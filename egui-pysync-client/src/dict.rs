@@ -35,6 +35,11 @@ where
     pub fn get_item(&self, key: &K) -> Option<V> {
         self.dict.read().unwrap().get(key).cloned()
     }
+
+    pub fn process<R>(&self, op: impl Fn(&HashMap<K, V>) -> R) -> R {
+        let d = self.dict.read().unwrap();
+        op(&*d)
+    }
 }
 
 impl<K, V> DictUpdate for ValueDict<K, V>

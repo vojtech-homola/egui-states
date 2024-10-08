@@ -47,10 +47,11 @@ impl<T: Clone + Copy> ValueGraph<T> {
         self.graph.read().unwrap().clone()
     }
 
-    pub fn process(&self, op: impl Fn(&Graph<T>)) {
+    pub fn process<R>(&self, op: impl Fn(&Graph<T>) -> R) -> R {
         let mut g = self.graph.write().unwrap();
-        op(&*g);
+        let result = op(&*g);
         g.changed = false;
+        result
     }
 }
 

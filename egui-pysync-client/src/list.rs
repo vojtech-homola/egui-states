@@ -27,6 +27,11 @@ impl<T: Clone> ValueList<T> {
     pub fn get_item(&self, idx: usize) -> Option<T> {
         self.list.read().unwrap().get(idx).cloned()
     }
+
+    pub fn process<R>(&self, op: impl Fn(&Vec<T>) -> R) -> R {
+        let l = self.list.read().unwrap();
+        op(&*l)
+    }
 }
 
 impl<T: ItemWriteRead> ListUpdate for ValueList<T> {
