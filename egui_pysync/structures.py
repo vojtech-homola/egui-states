@@ -1,12 +1,28 @@
 import threading
 import traceback
+from abc import ABC, abstractmethod
 from collections.abc import Buffer, Callable
 
 from egui_pysync.typing import SteteServerCoreBase
 
 
+class _Counter:
+    def __init__(self) -> None:
+        self._counter = 9  # first 10 values are reserved for system signals
+
+    def get_id(self) -> int:
+        self._counter += 1
+        return self._counter
+
+
 class _StatesBase:
     pass
+
+
+class _MainStatesBase(_StatesBase, ABC):
+    @abstractmethod
+    def __init__(self, update: Callable[[float | None], None]) -> None:
+        pass
 
 
 class _SignalsManager:
@@ -123,24 +139,14 @@ class _ValueBase:
     _server: SteteServerCoreBase
     _signals_manager: _SignalsManager
 
-    def __init__(self, value_id: int):
-        self._value_id = value_id
+    def __init__(self, counter: _Counter):
+        self._value_id = counter.get_id()
 
     def _initialize(self, server: SteteServerCoreBase, signals_manager: _SignalsManager):
         self._server = server
         if self._has_signal:
             self._signals_manager = signals_manager
             signals_manager.register_value(self._value_id)
-
-
-class _Updater:
-    _server: SteteServerCoreBase
-
-    def update(self, duration: float | None = None) -> None:
-        self._server.update(duration)
-
-    def _initialize(self, server: SteteServerCoreBase):
-        self._server = server
 
 
 class Value[T](_ValueBase):
@@ -211,8 +217,8 @@ class ValueStatic[T](_ValueBase):
 class ValueEnum[T](_ValueBase):
     """Enum UI value of type T."""
 
-    def __init__(self, value_id: int, enum_type: type[T]):  # noqa: D107
-        super().__init__(value_id)
+    def __init__(self, counter: _Counter, enum_type: type[T]):  # noqa: D107
+        super().__init__(counter)
         self._enum_type = enum_type
 
     def set(self, value: T, set_signal: bool = True, update: bool = False) -> None:

@@ -53,28 +53,41 @@ def _write_types(input_path: str, output_path: str) -> bool:
         lines = enums_file.readlines()
 
     to_write = []
-    for i, line in enumerate(lines):
-        if "#[derive" not in line:
-            continue
 
-        inner_lines = lines[i + 1 :]
-        firs_line = inner_lines[0]
-        if "struct" in firs_line and "{" in firs_line:
-            # TODO: Implement structs
-            # name = firs_line.replace("pub(crate)", "").replace("pub", "").replace("struct", "").replace("{", "").strip()
-            raise NotImplementedError("Normal structs are not supported yet")
+    def parse_types(lines: list[str]):
+        line = lines[0]
+        if "//" in line:
+            if "class" in line:
+                text = line.replace("//", "").strip()
+                to_write.append(f"\n{text}\n")
+                i = 1
+                while True:
+                    if "//" in lines[i]:
+                        text = lines[i].replace("//", "").strip()
+                        to_write.append(f"    {text}\n")
+                        i += 1
+                    else:
+                        break
+
+            else:
+                text = line.replace("//", "").strip()
+                to_write.append(f"\n{text}\n")
 
         else:
-            name = firs_line.split("(")[0].replace("pub(crate)", "").replace("pub", "").replace("struct", "").strip()
-            types_str = firs_line.split("(")[1].split(")")[0].split(", ")
-            types = [_parse_value(t.replace("pub", "").strip()) for t in types_str]
-            text = f"type {name} = tuple[{', '.join(types)}]"
-            to_write.append(text)
+            name = line.split("struct ")[1].split("(")[0].split("{")[0].strip()
+            to_write.append(f"\ntype {name} = Any\n")
+
+    for i, line in enumerate(lines):
+        if "#[derive" in line and "//" not in line:
+            parse_types(lines[i + 1 :])
 
     with open(os.path.join(output_path, "types.py"), "w", encoding="utf-8") as file:
-        # file.write("# ruff: noqa: D101\n\n")
+        file.write("# ruff: noqa: UP013 F403 F405 D101 E302 E305\n")
+        file.write("from typing import *  # type: ignore\n")
+        file.write("from collections.abc import *  # type: ignore\n\n")
+
         for line in to_write:
-            file.write(f"{line}\n")
+            file.write(line)
 
     return True
 
@@ -130,22 +143,24 @@ class _Struct:
     def __init__(self, lines: list[str]) -> None:
         self._name = lines[0].split("struct ")[1].split(" ")[0]
 
-        self._structs = {}
+        self._structs_line = {}
+        self._items_line = {}
+
         self._structs_names = {}
-        self._items = {}
+
         self._order = []
         self._original_items = {}
-        self._original_types = {}
 
+        original_types = {}
         for line in lines:
             if "Arc" in line:
                 name, text = self._parse_item(line)
                 if name:
-                    self._items[name] = text
+                    self._items_line[name] = text
                     type_string = line.split("Arc<")[1].split(">,")[0]
                     if "<" in type_string:
                         type_string = type_string.split("<")[1].split(">")[0]
-                        self._original_types[name] = type_string
+                        original_types[name] = type_string
 
             elif not line.strip():
                 continue
@@ -157,7 +172,7 @@ class _Struct:
                 name = line.strip().split(":")[0].split(" ")[-1].strip()
                 struct_name = line.split(":")[1].split(",")[0].strip()
                 self._structs_names[name] = struct_name
-                self._structs[name] = f"        self.{name} = {struct_name}()\n"
+                self._structs_line[name] = f"        self.{name} = {struct_name}(c)\n"
 
         started = False
         for line in lines:
@@ -175,41 +190,33 @@ class _Struct:
             if "::new(c)," not in line:
                 original = line.split(": ")[1].strip()
                 original = original.replace("),", ");")
-                if name in self._original_types and "<" not in original:
+                if name in original_types and "<" not in original:
                     idx = original.find("(")
-                    original = original[:idx] + f"::<{self._original_types[name]}>" + original[idx:]
+                    original = original[:idx] + f"::<{original_types[name]}>" + original[idx:]
 
                 self._original_items[name] = original
 
-    def set_id(self, id_counter: int, structs: dict) -> int:
-        for item in self._order:
-            if item in self._structs:
-                id_counter = structs[self._structs_names[item]].set_id(id_counter, structs)
-            else:
-                self._items[item] = self._items[item].replace("*", str(id_counter))
-                id_counter += 1
-
-        return id_counter
-
-    def write(self, file: io.TextIOWrapper, structs: dict, head: list[str] | None = None):
-        for struct in self._structs:
+    def write(self, file: io.TextIOWrapper, structs: dict, is_root: bool = False) -> None:
+        for struct in self._structs_line:
             name = self._structs_names[struct]
-            structs[name].write(file, structs)
+            if name in structs:
+                struct_to_process = structs.pop(name)
+                struct_to_process.write(file, structs)
 
-        if head:
-            for line in head:
-                file.write(line)
+        if is_root:
+            file.write(f"\nclass {self._name}(structures._MainStatesBase):\n")
+            file.write("    def __init__(self, update: Callable[[float | None], None]):\n")
+            file.write("        self._update = update\n")
+            file.write("        c = structures._Counter()\n\n")
         else:
             file.write(f"\nclass {self._name}(structures._StatesBase):\n")
-            file.write("    def __init__(self):")
+            file.write("    def __init__(self, c: structures._Counter):\n")
 
-        for to_write in self._structs.values():
-            file.write(to_write)
-
-        file.write("\n")
-
-        for item in self._items.values():
-            file.write(item)
+        for name in self._order:
+            if name in self._items_line:
+                file.write(self._items_line[name])
+            else:
+                file.write(self._structs_line[name])
 
         file.write("\n")
 
@@ -236,37 +243,37 @@ class _Struct:
 
         if "Value<" in line:
             val_type = _parse_value(type_string)
-            to_write = f"        self.{name} = structures.Value[{val_type}](*)\n"
+            to_write = f"        self.{name} = structures.Value[{val_type}](c)\n"
 
         elif "ValueEnum" in line:
             enum_str = type_string.replace("::", ".")
-            to_write = f"        self.{name} = structures.ValueEnum(*, {enum_str})\n"
+            to_write = f"        self.{name} = structures.ValueEnum(c, {enum_str})\n"
 
         elif "ValueStatic" in line:
             val_type = _parse_value(type_string)
-            to_write = f"        self.{name} = structures.ValueStatic[{val_type}](*)\n"
+            to_write = f"        self.{name} = structures.ValueStatic[{val_type}](c)\n"
 
         elif "Signal" in line:
             val_type = _parse_value(type_string)
             if val_type:
-                to_write = f"        self.{name} = structures.Signal[{val_type}](*)\n"
+                to_write = f"        self.{name} = structures.Signal[{val_type}](c)\n"
             else:
-                to_write = f"        self.{name} = structures.SignalEmpty(*)\n"
+                to_write = f"        self.{name} = structures.SignalEmpty(c)\n"
 
         elif "ImageValue" in line:
-            to_write = f"        self.{name} = structures.ValueImage(*)\n"
+            to_write = f"        self.{name} = structures.ValueImage(c)\n"
 
         elif "ValueDict" in line:
             key_type = _parse_value(type_string.split(",")[0].strip())
             val_type = _parse_value(type_string.split(",")[1].strip())
-            to_write = f"        self.{name} = structures.ValueDict[{key_type}, {val_type}](*)\n"
+            to_write = f"        self.{name} = structures.ValueDict[{key_type}, {val_type}](c)\n"
 
         elif "ValueList" in line:
             val_type = _parse_value(type_string)
-            to_write = f"        self.{name} = structures.ValueList[{val_type}](*)\n"
+            to_write = f"        self.{name} = structures.ValueList[{val_type}](c)\n"
 
         elif "ValueGraph" in line:
-            to_write = f"        self.{name} = structures.ValueGraph(*)\n"
+            to_write = f"        self.{name} = structures.ValueGraph(c)\n"
 
         else:
             raise ValueError(f"Unknown type: {line}")
@@ -275,7 +282,6 @@ class _Struct:
 
 
 def _write_states(input_path: str, output_path: str, server_path: str) -> None:  # noqa: PLR0912, PLR0915
-    id_counter = 10  # first 10 ids are reserved for the special values
     with open(os.path.join(input_path, "states.rs"), encoding="utf-8") as state_file:
         lines = state_file.readlines()
 
@@ -285,10 +291,9 @@ def _write_states(input_path: str, output_path: str, server_path: str) -> None: 
             struct = _Struct(lines[i:])
             structs[struct._name] = struct
 
-    structs["States"].set_id(id_counter, structs)
-
     with open(os.path.join(output_path, "states.py"), "w", encoding="utf-8") as file:
         file.write("# ruff: noqa: D107 D101\n")
+        file.write("from collections.abc import Callable\n\n")
         file.write("from egui_pysync import structures\n\n")
         if os.path.exists(os.path.join(output_path, "enums.py")):
             file.write("from expert_ui import enums\n")
@@ -296,21 +301,15 @@ def _write_states(input_path: str, output_path: str, server_path: str) -> None: 
             file.write("from expert_ui import types\n")
         file.write("\n")
 
-        head = [
-            "\nclass States(structures._StatesBase):\n",
-            "    def __init__(self):\n",
-        ]
+        structs_copy = structs.copy()
+        structs["States"].write(file, structs, is_root=True)
 
-        structs["States"].write(file, structs, head)
-
-        file.write("        self._updater = structures._Updater()\n")
-
-        file.write("\n    def update(self, duration: float | None = None) -> None:\n")
+        file.write("    def update(self, duration: float | None = None) -> None:\n")
         file.write('        """Update the UI.\n\n')
         file.write("        Args:\n")
         file.write("            duration: The duration of the update.\n")
         file.write('        """\n')
-        file.write("        self._updater.update(duration)\n")
+        file.write("        self._update(duration)\n")
 
     with open(os.path.join(server_path, "states.rs"), "w", encoding="utf-8") as file:
         head = [
@@ -324,7 +323,7 @@ def _write_states(input_path: str, output_path: str, server_path: str) -> None: 
             file.write(line)
 
         file.write("pub(crate) fn create_states(c: &mut ValuesCreator) {\n")
-        structs["States"].write_server_state(file, structs)
+        structs_copy["States"].write_server_state(file, structs_copy)
         file.write("}\n")
 
 
