@@ -7,7 +7,7 @@ use egui_pysync_transport::event::Event;
 use egui_pysync_transport::{NoHashMap, NoHashSet};
 
 struct OrderedMap {
-    values: NoHashMap<Box<dyn ToPyObject + Sync + Send>>,
+    values: NoHashMap<u32, Box<dyn ToPyObject + Sync + Send>>,
     indexes: VecDeque<u32>,
 }
 
@@ -37,9 +37,9 @@ impl OrderedMap {
 
 struct ChnegedInner {
     values: OrderedMap,                                    // values not blocked
-    blocked: NoHashMap<Box<dyn ToPyObject + Sync + Send>>, // values blocked by some thread
-    block_list: NoHashSet,                                 // ids blocked by some thread
-    threads_last: NoHashMap<u32>,                          // cache last id for each thread
+    blocked: NoHashMap<u32, Box<dyn ToPyObject + Sync + Send>>, // values blocked by some thread
+    block_list: NoHashSet<u32>,                                 // ids blocked by some thread
+    threads_last: NoHashMap<u32, u32>,                          // cache last id for each thread
 }
 
 /*

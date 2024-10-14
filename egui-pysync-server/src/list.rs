@@ -9,7 +9,7 @@ use egui_pysync_transport::collections::ItemWriteRead;
 use egui_pysync_transport::list::ListMessage;
 use egui_pysync_transport::transport::WriteMessage;
 
-use crate::py_convert::PyConvert;
+use crate::py_convert::FromPyValue;
 use crate::SyncTrait;
 
 pub(crate) trait PyListTrait: Send + Sync {
@@ -46,7 +46,7 @@ impl<T> ValueList<T> {
 
 impl<T> PyListTrait for ValueList<T>
 where
-    T: ItemWriteRead + ToPyObject + PyConvert,
+    T: ItemWriteRead + ToPyObject + FromPyValue,
 {
     fn get_py(&self, py: Python) -> PyObject {
         let list = self.list.read().unwrap().to_object(py);

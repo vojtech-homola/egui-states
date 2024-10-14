@@ -15,12 +15,12 @@ use crate::values::{Signal, Value, ValueEnum, ValueStatic, ValueUpdate};
 
 #[derive(Clone)]
 pub(crate) struct ValuesList {
-    pub(crate) values: NoHashMap<Arc<dyn ValueUpdate>>,
-    pub(crate) static_values: NoHashMap<Arc<dyn ValueUpdate>>,
-    pub(crate) images: NoHashMap<Arc<dyn ImageUpdate>>,
-    pub(crate) dicts: NoHashMap<Arc<dyn DictUpdate>>,
-    pub(crate) lists: NoHashMap<Arc<dyn ListUpdate>>,
-    pub(crate) graphs: NoHashMap<Arc<dyn GraphUpdate>>,
+    pub(crate) values: NoHashMap<u32, Arc<dyn ValueUpdate>>,
+    pub(crate) static_values: NoHashMap<u32, Arc<dyn ValueUpdate>>,
+    pub(crate) images: NoHashMap<u32, Arc<dyn ImageUpdate>>,
+    pub(crate) dicts: NoHashMap<u32, Arc<dyn DictUpdate>>,
+    pub(crate) lists: NoHashMap<u32, Arc<dyn ListUpdate>>,
+    pub(crate) graphs: NoHashMap<u32, Arc<dyn GraphUpdate>>,
 }
 
 impl ValuesList {

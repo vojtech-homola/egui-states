@@ -28,7 +28,7 @@ pub(crate) struct StateServerCore {
     channel: Sender<WriteMessage>,
     connected: Arc<atomic::AtomicBool>,
     server: RwLock<Server>,
-    registed_values: RwLock<NoHashSet>,
+    registed_values: RwLock<NoHashSet<u32>>,
 }
 
 impl Drop for StateServerCore {

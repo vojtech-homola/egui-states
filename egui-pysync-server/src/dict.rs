@@ -11,7 +11,7 @@ use egui_pysync_transport::collections::ItemWriteRead;
 use egui_pysync_transport::dict::DictMessage;
 use egui_pysync_transport::transport::WriteMessage;
 
-use crate::py_convert::PyConvert;
+use crate::py_convert::FromPyValue;
 use crate::SyncTrait;
 
 pub(crate) trait PyDict: Send + Sync {
@@ -47,8 +47,8 @@ impl<K, V> ValueDict<K, V> {
 
 impl<K, V> PyDict for ValueDict<K, V>
 where
-    K: ItemWriteRead + ToPyObject + PyConvert + Eq + Hash,
-    V: ItemWriteRead + ToPyObject + PyConvert,
+    K: ItemWriteRead + ToPyObject + FromPyValue + Eq + Hash,
+    V: ItemWriteRead + ToPyObject + FromPyValue,
 {
     fn get_py(&self, py: Python) -> PyObject {
         let dict = self.dict.read().unwrap();

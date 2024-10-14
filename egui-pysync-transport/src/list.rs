@@ -1,5 +1,5 @@
 use crate::collections::ItemWriteRead;
-use crate::transport::{MESS_SIZE, SIZE_START};
+use crate::transport::MESS_SIZE;
 
 // list -----------------------------------------------------------------------
 
@@ -64,7 +64,6 @@ impl<T: ItemWriteRead> WriteListMessage for ListMessage<T> {
 
                 let size = list.len() * T::size();
                 head[1..9].copy_from_slice(&(list.len() as u64).to_le_bytes());
-                head[SIZE_START..].copy_from_slice(&(size as u64).to_le_bytes());
 
                 if size > 0 {
                     let mut data = vec![0; size];
@@ -89,7 +88,6 @@ impl<T: ItemWriteRead> WriteListMessage for ListMessage<T> {
                 }
 
                 head[1..9].copy_from_slice(&(*idx as u64).to_le_bytes());
-                head[SIZE_START..].copy_from_slice(&(size as u64).to_le_bytes());
                 let mut data = vec![0; size];
                 value.write(data[0..].as_mut());
                 Some(data)
@@ -104,7 +102,6 @@ impl<T: ItemWriteRead> WriteListMessage for ListMessage<T> {
                     return None;
                 }
 
-                head[SIZE_START..].copy_from_slice(&(size as u64).to_le_bytes());
                 let mut data = vec![0; size];
                 value.write(data[0..].as_mut());
                 Some(data)
@@ -125,18 +122,14 @@ impl<T: ItemWriteRead> ListMessage<T> {
         match subtype {
             LIST_ALL => {
                 let count = u64::from_le_bytes(head[1..9].try_into().unwrap()) as usize;
-                let size = u64::from_le_bytes(head[SIZE_START..].try_into().unwrap()) as usize;
 
                 let list = if count > 0 {
                     let data = data.ok_or("List data is missing.".to_string())?;
-                    if data.len() != size {
-                        return Err("List data parsing failed.".to_string());
-                    }
 
                     let mut list = Vec::new();
                     let item_size = T::size();
 
-                    if item_size * count != size {
+                    if item_size * count != data.len() {
                         return Err("List data size is incorrect.".to_string());
                     }
 

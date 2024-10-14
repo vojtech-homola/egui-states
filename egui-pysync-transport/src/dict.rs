@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::hash::Hash;
 
 use crate::collections::ItemWriteRead;
-use crate::transport::{MESS_SIZE, SIZE_START};
+use crate::transport::MESS_SIZE;
 
 // dict -----------------------------------------------------------------------
 
@@ -66,7 +66,6 @@ where
 
                 let size = dict.len() * (K::size() + T::size());
                 head[1..9].copy_from_slice(&(dict.len() as u64).to_le_bytes());
-                head[SIZE_START..].copy_from_slice(&(size as u64).to_le_bytes());
 
                 if dict.len() > 0 {
                     let mut data = vec![0; size];
@@ -91,8 +90,6 @@ where
                     return None;
                 }
 
-                head[SIZE_START..].copy_from_slice(&(size as u64).to_le_bytes());
-
                 let mut data = vec![0; size];
                 key.write(data[0..].as_mut());
                 value.write(data[K::size()..].as_mut());
@@ -108,7 +105,6 @@ where
                     return None;
                 }
 
-                head[SIZE_START..].copy_from_slice(&(size as u64).to_le_bytes());
                 let mut data = vec![0; size];
                 key.write(data[0..].as_mut());
                 Some(data)
@@ -127,18 +123,14 @@ where
         match subtype {
             DICT_ALL => {
                 let count = u64::from_le_bytes(head[1..9].try_into().unwrap()) as usize;
-                let size = u64::from_le_bytes(head[SIZE_START..].try_into().unwrap()) as usize;
 
                 let dict = if count > 0 {
                     let data = data.ok_or("Dict data is missing.".to_string())?;
-                    if data.len() != size {
-                        return Err("Dict data is corrupted.".to_string());
-                    }
 
                     let mut dict = HashMap::new();
                     let bouth_size = K::size() + T::size();
 
-                    if bouth_size * count != size {
+                    if bouth_size * count != data.len() {
                         return Err("Dict data is corrupted.".to_string());
                     }
 

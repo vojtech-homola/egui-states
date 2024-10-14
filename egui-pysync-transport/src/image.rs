@@ -1,5 +1,3 @@
-use crate::transport::SIZE_START;
-
 // image ----------------------------------------------------------------------
 /*
 image head:
@@ -48,7 +46,6 @@ impl ImageMessage {
             }
             None => head[6] = 0,
         }
-        head[SIZE_START..].copy_from_slice(&(self.data.len() as u64).to_le_bytes());
 
         self.data
     }
@@ -85,7 +82,7 @@ impl ImageMessage {
         } else {
             (None, y * x)
         };
-        let size = u64::from_le_bytes(head[SIZE_START..].try_into().unwrap()) as usize;
+        let size = data.len();
 
         let is_right = match image_type {
             ImageType::Color => size == data_size * 3,
@@ -137,12 +134,10 @@ impl HistogramMessage {
                 }
 
                 head[0..4].copy_from_slice(&(size as u32).to_le_bytes());
-                head[SIZE_START..].copy_from_slice(&(data_size as u64).to_le_bytes());
                 Some(data)
             }
             None => {
                 head[0..4].copy_from_slice(&0u32.to_le_bytes());
-                head[SIZE_START..].copy_from_slice(&0u64.to_le_bytes());
                 None
             }
         }
@@ -150,11 +145,10 @@ impl HistogramMessage {
 
     pub(crate) fn read_message(head: &[u8], data: Option<Vec<u8>>) -> Result<Self, String> {
         let size = u32::from_le_bytes(head[0..4].try_into().unwrap()) as usize;
-        let data_size = u64::from_le_bytes(head[SIZE_START..].try_into().unwrap()) as usize;
 
         let data = match data {
             Some(data) => {
-                if size * std::mem::size_of::<f32>() != data.len() || data_size != data.len() {
+                if size * std::mem::size_of::<f32>() != data.len() {
                     return Err("Histogram data parsing failed.".to_string());
                 }
 

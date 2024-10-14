@@ -1,13 +1,13 @@
 use pyo3::prelude::*;
 
-pub trait PyConvert: Sized {
+pub trait FromPyValue: Sized {
     fn from_python(obj: &Bound<PyAny>) -> PyResult<Self>;
 }
 
 macro_rules! impl_simpl_conversion {
     ($($t:ty),*) => {
         $(
-            impl PyConvert for $t {
+            impl FromPyValue for $t {
                 #[inline]
                 fn from_python(obj: &Bound<PyAny>) -> PyResult<Self> {
                     obj.extract()

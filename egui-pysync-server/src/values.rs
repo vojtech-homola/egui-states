@@ -10,7 +10,7 @@ use egui_pysync_transport::transport::WriteMessage;
 use egui_pysync_transport::values::{ReadValue, ValueMessage, WriteValue};
 use egui_pysync_transport::EnumInt;
 
-use crate::py_convert::PyConvert;
+use crate::py_convert::FromPyValue;
 use crate::signals::ChangedValues;
 use crate::{Acknowledge, SyncTrait};
 
@@ -58,7 +58,7 @@ impl<T> Value<T> {
 
 impl<T> PyValue for Value<T>
 where
-    T: WriteValue + Clone + PyConvert + ToPyObject,
+    T: WriteValue + Clone + FromPyValue + ToPyObject,
 {
     fn get_py(&self, py: Python) -> PyObject {
         self.value.read().unwrap().0.to_object(py)
@@ -161,7 +161,7 @@ impl<T> ValueStatic<T> {
 
 impl<T> PyValueStatic for ValueStatic<T>
 where
-    T: WriteValue + Clone + PyConvert + ToPyObject,
+    T: WriteValue + Clone + FromPyValue + ToPyObject,
 {
     fn get_py(&self, py: Python) -> PyObject {
         self.value.read().unwrap().to_object(py)

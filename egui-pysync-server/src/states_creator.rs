@@ -13,7 +13,7 @@ use crate::dict::{PyDict, ValueDict};
 use crate::graphs::{GraphType, PyGraph, ValueGraph};
 use crate::image::ImageValue;
 use crate::list::{PyListTrait, ValueList};
-use crate::py_convert::PyConvert;
+use crate::py_convert::FromPyValue;
 use crate::signals::ChangedValues;
 use crate::values::{ProccesValue, PyValue, PyValueStatic};
 use crate::values::{Signal, Value, ValueEnum, ValueStatic};
@@ -21,12 +21,12 @@ use crate::{Acknowledge, SyncTrait};
 
 #[derive(Clone)]
 pub(crate) struct PyValuesList {
-    pub(crate) values: NoHashMap<Arc<dyn PyValue>>,
-    pub(crate) static_values: NoHashMap<Arc<dyn PyValueStatic>>,
-    pub(crate) images: NoHashMap<Arc<ImageValue>>,
-    pub(crate) dicts: NoHashMap<Arc<dyn PyDict>>,
-    pub(crate) lists: NoHashMap<Arc<dyn PyListTrait>>,
-    pub(crate) graphs: NoHashMap<Arc<dyn PyGraph>>,
+    pub(crate) values: NoHashMap<u32, Arc<dyn PyValue>>,
+    pub(crate) static_values: NoHashMap<u32, Arc<dyn PyValueStatic>>,
+    pub(crate) images: NoHashMap<u32, Arc<ImageValue>>,
+    pub(crate) dicts: NoHashMap<u32, Arc<dyn PyDict>>,
+    pub(crate) lists: NoHashMap<u32, Arc<dyn PyListTrait>>,
+    pub(crate) graphs: NoHashMap<u32, Arc<dyn PyGraph>>,
 }
 
 impl PyValuesList {
@@ -53,9 +53,9 @@ impl PyValuesList {
 
 #[derive(Clone)]
 pub(crate) struct ValuesList {
-    pub(crate) updated: NoHashMap<Arc<dyn ProccesValue>>,
-    pub(crate) ack: NoHashMap<Arc<dyn Acknowledge>>,
-    pub(crate) sync: NoHashMap<Arc<dyn SyncTrait>>,
+    pub(crate) updated: NoHashMap<u32, Arc<dyn ProccesValue>>,
+    pub(crate) ack: NoHashMap<u32, Arc<dyn Acknowledge>>,
+    pub(crate) sync: NoHashMap<u32, Arc<dyn SyncTrait>>,
 }
 
 impl ValuesList {
@@ -127,7 +127,7 @@ impl ValuesCreator {
 
     pub fn add_value<T>(&mut self, value: T) -> Arc<Value<T>>
     where
-        T: ReadValue + WriteValue + ToPyObject + PyConvert,
+        T: ReadValue + WriteValue + ToPyObject + FromPyValue,
     {
         let id = self.get_id();
         let value = Value::new(
@@ -148,7 +148,7 @@ impl ValuesCreator {
 
     pub fn add_static_value<T>(&mut self, value: T) -> Arc<ValueStatic<T>>
     where
-        T: WriteValue + ToPyObject + PyConvert + Sync + Send + Clone + 'static,
+        T: WriteValue + ToPyObject + FromPyValue + Sync + Send + Clone + 'static,
     {
         let id = self.get_id();
         let value = ValueStatic::new(id, value, self.channel.clone(), self.connected.clone());
@@ -203,8 +203,8 @@ impl ValuesCreator {
 
     pub fn add_dict<K, V>(&mut self) -> Arc<ValueDict<K, V>>
     where
-        K: ItemWriteRead + ToPyObject + PyConvert + Eq + std::hash::Hash + 'static,
-        V: ItemWriteRead + ToPyObject + PyConvert + 'static,
+        K: ItemWriteRead + ToPyObject + FromPyValue + Eq + std::hash::Hash + 'static,
+        V: ItemWriteRead + ToPyObject + FromPyValue + 'static,
     {
         let id = self.get_id();
         let dict = ValueDict::new(id, self.channel.clone(), self.connected.clone());
@@ -217,7 +217,7 @@ impl ValuesCreator {
 
     pub fn add_list<T>(&mut self) -> Arc<ValueList<T>>
     where
-        T: ItemWriteRead + ToPyObject + PyConvert + 'static,
+        T: ItemWriteRead + ToPyObject + FromPyValue + 'static,
     {
         let id = self.get_id();
         let list = ValueList::new(id, self.channel.clone(), self.connected.clone());

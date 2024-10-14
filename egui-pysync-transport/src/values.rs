@@ -1,5 +1,3 @@
-use crate::transport::SIZE_START;
-
 /*
 Values and Signals
 */
@@ -124,10 +122,7 @@ impl_basic_two_value!(f64, 8, 16, TwoF64);
 
 // String -----------------------------------------------------
 impl WriteValue for String {
-    fn write_message(&self, head: &mut [u8]) -> Option<Vec<u8>> {
-        let size = self.len();
-        head[SIZE_START..].copy_from_slice(&(size as u64).to_le_bytes());
-
+    fn write_message(&self, _head: &mut [u8]) -> Option<Vec<u8>> {
         Some(self.as_bytes().to_vec())
     }
 

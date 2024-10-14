@@ -1,5 +1,3 @@
-use crate::transport::SIZE_START;
-
 // graph ----------------------------------------------------------------------
 /*
 data:
@@ -71,7 +69,6 @@ impl GraphMessage {
                 head[1] = graph_data.precision.to_u8();
 
                 head[2..10].copy_from_slice(&(graph_data.points as u64).to_le_bytes());
-                head[SIZE_START..].copy_from_slice(&(graph_data.data.len() as u64).to_le_bytes());
                 Some(graph_data.data)
             }
             GraphMessage::AddPoints(graph_data) => {
@@ -79,7 +76,6 @@ impl GraphMessage {
                 head[1] = graph_data.precision.to_u8();
 
                 head[2..10].copy_from_slice(&(graph_data.points as u64).to_le_bytes());
-                head[SIZE_START..].copy_from_slice(&(graph_data.data.len() as u64).to_le_bytes());
                 Some(graph_data.data)
             }
             GraphMessage::Reset => {

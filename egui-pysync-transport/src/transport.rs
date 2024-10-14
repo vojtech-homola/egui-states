@@ -10,7 +10,8 @@ use crate::values::ValueMessage;
 
 pub const HEAD_SIZE: usize = 32;
 pub(crate) const MESS_SIZE: usize = 26;
-pub(crate) const SIZE_START: usize = MESS_SIZE - 8;
+
+const SIZE_START: usize = HEAD_SIZE - 4;
 
 // message types
 const TYPE_VALUE: i8 = 16;
@@ -68,8 +69,7 @@ pub fn read_message(
 
     let data = match has_data {
         true => {
-            const SIZE_START: usize = HEAD_SIZE - 8;
-            let size = u64::from_le_bytes(head[SIZE_START..].try_into().unwrap()) as usize;
+            let size = u32::from_le_bytes(head[SIZE_START..].try_into().unwrap()) as usize;
             let mut data = vec![0u8; size];
             stream.read_exact(&mut data)?;
             Some(data)
@@ -162,8 +162,10 @@ impl WriteMessage {
             }
         };
 
-        if data.is_some() {
+        if let Some(ref data) = data {
             type_ = -type_;
+            let size = data.len() as u32;
+            head[SIZE_START..].copy_from_slice(&size.to_le_bytes());
         }
 
         head[0] = type_ as u8;
