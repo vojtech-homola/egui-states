@@ -1,14 +1,26 @@
+use crate::items::SyncItemWrite;
+
 /*
 Values and Signals
 */
 
-pub trait ReadValue: Sized + Send + Sync + Clone {
-    fn read_message(head: &[u8], data: Option<Vec<u8>>) -> Result<Self, String>;
-}
+// pub trait ReadValue: Sized + Send + Sync + Clone {
+//     fn read_message(head: &[u8], data: Option<Vec<u8>>) -> Result<Self, String>;
+// }
 
-pub trait WriteValue: Send + Sync + 'static {
-    fn write_message(&self, head: &mut [u8]) -> Option<Vec<u8>>;
+// pub trait WriteValue: Send + Sync + 'static {
+//     fn write_message(&self, head: &mut [u8]) -> Option<Vec<u8>>;
 
+//     #[inline]
+//     fn into_message(self) -> ValueMessage
+//     where
+//         Self: Sized,
+//     {
+//         ValueMessage::General(Box::new(self))
+//     }
+// }
+
+pub trait IntoMessage: SyncItemWrite {
     #[inline]
     fn into_message(self) -> ValueMessage
     where
@@ -27,7 +39,7 @@ pub enum ValueMessage {
     TwoF64([f64; 2]),
     Bool(bool),
     Empty(()),
-    General(Box<dyn WriteValue>),
+    General(Box<dyn SyncItemWrite>),
 }
 
 impl ValueMessage {
