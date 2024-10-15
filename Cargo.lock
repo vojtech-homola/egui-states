@@ -70,15 +70,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "egui_pysync_client"
+name = "egui_pyclient"
 version = "0.1.2"
 dependencies = [
  "egui",
- "egui_pysync_transport",
+ "egui_pytransport",
 ]
 
 [[package]]
-name = "egui_pysync_macros"
+name = "egui_pymacros"
 version = "0.1.2"
 dependencies = [
  "proc-macro2",
@@ -87,18 +87,18 @@ dependencies = [
 ]
 
 [[package]]
-name = "egui_pysync_server"
+name = "egui_pyserver"
 version = "0.1.2"
 dependencies = [
- "egui_pysync_transport",
+ "egui_pytransport",
  "pyo3",
 ]
 
 [[package]]
-name = "egui_pysync_transport"
+name = "egui_pytransport"
 version = "0.1.2"
 dependencies = [
- "egui_pysync_macros",
+ "egui_pymacros",
 ]
 
 [[package]]

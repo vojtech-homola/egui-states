@@ -1,9 +1,9 @@
 [workspace]
 members = [
-    "egui-pysync-server",
-    "egui-pysync-client",
-    "egui-pysync-transport",
-    "egui-pysync-macros",
+    "egui-pyserver",
+    "egui-pyclient",
+    "egui-pytransport",
+    "egui-pymacros",
 ]
 resolver = "2"
 
@@ -12,8 +12,8 @@ version = "0.1.2"
 edition = "2021"
 
 [workspace.dependencies]
-egui_pysync_transport = { path = "egui-pysync-transport" }
-egui_pysync_macros = { path = "egui-pysync-macros" }
+egui_pytransport = { path = "egui-pytransport" }
+egui_pymacros = { path = "egui-pymacros" }
 
 [package]
 name = "force-build"

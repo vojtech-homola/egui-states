@@ -4,10 +4,10 @@ use std::sync::Arc;
 
 use pyo3::ToPyObject;
 
-use egui_pysync_transport::collections::ItemWriteRead;
-use egui_pysync_transport::transport::WriteMessage;
-use egui_pysync_transport::values::{ReadValue, WriteValue};
-use egui_pysync_transport::{EnumInt, EnumStr, NoHashMap};
+use egui_pytransport::collections::ItemWriteRead;
+use egui_pytransport::transport::WriteMessage;
+use egui_pytransport::values::{ReadValue, WriteValue};
+use egui_pytransport::{EnumInt, EnumStr, NoHashMap};
 
 use crate::dict::{PyDict, ValueDict};
 use crate::graphs::{GraphType, PyGraph, ValueGraph};

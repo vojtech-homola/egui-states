@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use egui::Context;
 
-use egui_pysync_transport::event::Event;
+use egui_pytransport::event::Event;
 
 #[derive(Clone)]
 pub struct UIState {

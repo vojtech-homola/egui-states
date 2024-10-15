@@ -2,10 +2,10 @@ use std::hash::Hash;
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
 
-use egui_pysync_transport::collections::ItemWriteRead;
-use egui_pysync_transport::transport::WriteMessage;
-use egui_pysync_transport::values::{ReadValue, WriteValue};
-use egui_pysync_transport::{EnumInt, NoHashMap};
+use egui_pytransport::collections::ItemWriteRead;
+use egui_pytransport::transport::WriteMessage;
+use egui_pytransport::values::{ReadValue, WriteValue};
+use egui_pytransport::{EnumInt, NoHashMap};
 
 use crate::dict::{DictUpdate, ValueDict};
 use crate::graphs::{GraphType, GraphUpdate, ValueGraph};

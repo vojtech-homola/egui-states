@@ -1,8 +1,8 @@
 [package]
-name = "egui_pysync_client"
+name = "egui_pyclient"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
 egui = { version = "*" }
-egui_pysync_transport = { workspace = true }
+egui_pytransport = { workspace = true }

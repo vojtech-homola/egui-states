@@ -1,5 +1,5 @@
 [package]
-name = "egui_pysync_transport"
+name = "egui_pytransport"
 version.workspace = true
 edition.workspace = true
 
@@ -7,4 +7,4 @@ edition.workspace = true
 doctest = false
 
 [dependencies]
-egui_pysync_macros = { workspace = true }
+egui_pymacros = { workspace = true }

@@ -1,7 +1,7 @@
 use std::sync::{Arc, RwLock};
 
-use egui_pysync_transport::collections::ItemWriteRead;
-use egui_pysync_transport::list::ListMessage;
+use egui_pytransport::collections::ItemWriteRead;
+use egui_pytransport::list::ListMessage;
 
 pub(crate) trait ListUpdate: Sync + Send {
     fn update_list(&self, head: &[u8], data: Option<Vec<u8>>) -> Result<(), String>;

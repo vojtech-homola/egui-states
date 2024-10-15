@@ -3,8 +3,8 @@ use std::sync::{Arc, Mutex};
 
 use pyo3::ToPyObject;
 
-use egui_pysync_transport::event::Event;
-use egui_pysync_transport::{NoHashMap, NoHashSet};
+use egui_pytransport::event::Event;
+use egui_pytransport::{NoHashMap, NoHashSet};
 
 struct OrderedMap {
     values: NoHashMap<u32, Box<dyn ToPyObject + Sync + Send>>,

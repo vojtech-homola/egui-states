@@ -13,7 +13,7 @@ pub mod items;
 pub use values::{ReadValue, WriteValue};
 
 // traints for EnumValue -------------------------------------------------------
-pub use egui_pysync_macros::{EnumInt, EnumStr};
+pub use egui_pymacros::{EnumInt, EnumStr};
 
 pub trait EnumStr: Send + Sync + Copy {
     fn as_str(&self) -> &'static str;
