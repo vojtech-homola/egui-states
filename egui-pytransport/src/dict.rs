@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 use std::hash::Hash;
+use std::ptr::copy_nonoverlapping;
 
-use crate::collections::ItemWriteRead;
+use crate::collections::CollectionItem;
 use crate::transport::MESS_SIZE;
 
 // dict -----------------------------------------------------------------------
@@ -54,52 +55,172 @@ pub trait WriteDictMessage: Send + Sync + 'static {
     fn write_message(&self, head: &mut [u8]) -> Option<Vec<u8>>;
 }
 
-impl<K, T> WriteDictMessage for DictMessage<K, T>
+impl<K, V> WriteDictMessage for DictMessage<K, V>
 where
-    K: ItemWriteRead,
-    T: ItemWriteRead,
+    K: CollectionItem,
+    V: CollectionItem,
 {
     fn write_message(&self, head: &mut [u8]) -> Option<Vec<u8>> {
         match self {
             DictMessage::All(dict) => {
                 head[0] = DICT_ALL;
 
-                let size = dict.len() * (K::size() + T::size());
-                head[1..9].copy_from_slice(&(dict.len() as u64).to_le_bytes());
+                let count = dict.len();
+                head[1..9].copy_from_slice(&(count as u64).to_le_bytes());
 
-                if dict.len() > 0 {
+                // empty dict
+                if count == 0 {
+                    return None;
+                }
+                // all static
+                else if K::SIZE > 0 && V::SIZE > 0 {
+                    let size = dict.len() * (K::SIZE + V::SIZE);
                     let mut data = vec![0; size];
                     for (i, (key, value)) in dict.iter().enumerate() {
-                        key.write(data[i * (K::size() + T::size())..].as_mut());
-                        value.write(data[i * (K::size() + T::size()) + K::size()..].as_mut());
+                        key.write_static(data[i * (K::SIZE + V::SIZE)..].as_mut());
+                        value.write_static(data[i * (K::SIZE + V::SIZE) + K::SIZE..].as_mut());
+                    }
+                    Some(data)
+                }
+                // all dynamic
+                else if K::SIZE == 0 && V::SIZE == 0 {
+                    let mut keys_sizes = vec![0u16; count];
+                    let mut keys_data = Vec::new();
+                    let mut values_sizes = vec![0u16; count];
+                    let mut values_data = Vec::new();
+                    for (i, (key, value)) in dict.iter().enumerate() {
+                        let k_data = key.get_dynamic();
+                        keys_sizes[i] = k_data.len() as u16;
+                        keys_data.extend_from_slice(&k_data);
+                        let v_data = value.get_dynamic();
+                        values_sizes[i] = v_data.len() as u16;
+                        values_data.extend_from_slice(&v_data);
                     }
 
-                    Some(data)
-                } else {
-                    None
+                    let mut final_data =
+                        vec![
+                            0u8;
+                            count * size_of::<u16>() * 2 + keys_data.len() + values_data.len()
+                        ];
+
+                    unsafe {
+                        copy_nonoverlapping(
+                            keys_sizes.as_ptr() as *const u8,
+                            final_data.as_mut_ptr(),
+                            count * size_of::<u16>(),
+                        );
+                        copy_nonoverlapping(
+                            values_sizes.as_ptr() as *const u8,
+                            final_data[count * size_of::<u16>()..].as_mut_ptr(),
+                            count * size_of::<u16>(),
+                        );
+                        copy_nonoverlapping(
+                            keys_data.as_ptr(),
+                            final_data[count * size_of::<u16>() * 2..].as_mut_ptr(),
+                            keys_data.len(),
+                        );
+                        copy_nonoverlapping(
+                            values_data.as_ptr(),
+                            final_data[count * size_of::<u16>() * 2 + keys_data.len()..]
+                                .as_mut_ptr(),
+                            values_data.len(),
+                        );
+                    }
+
+                    Some(final_data)
+                }
+                // key dynamic
+                else if K::SIZE == 0 {
+                    let mut keys_sizes = vec![0u16; count];
+                    let mut keys_data = Vec::new();
+                    let mut values_data = vec![0u8; count * V::SIZE];
+                    for (i, (key, value)) in dict.iter().enumerate() {
+                        let k_data = key.get_dynamic();
+                        keys_sizes[i] = k_data.len() as u16;
+                        keys_data.extend_from_slice(&k_data);
+                        value.write_static(values_data[i * V::SIZE..].as_mut());
+                    }
+
+                    let mut final_data =
+                        vec![0u8; count * size_of::<u16>() + keys_data.len() + values_data.len()];
+
+                    unsafe {
+                        copy_nonoverlapping(
+                            keys_sizes.as_ptr() as *const u8,
+                            final_data.as_mut_ptr(),
+                            count * size_of::<u16>(),
+                        );
+                        copy_nonoverlapping(
+                            keys_data.as_ptr(),
+                            final_data[count * size_of::<u16>()..].as_mut_ptr(),
+                            keys_data.len(),
+                        );
+                        copy_nonoverlapping(
+                            values_data.as_ptr(),
+                            final_data[count * size_of::<u16>() + keys_data.len()..].as_mut_ptr(),
+                            values_data.len(),
+                        );
+                    }
+
+                    Some(final_data)
+                }
+                // value dynamic
+                else {
+                    let mut keys_data = vec![0; count * K::SIZE];
+                    let mut values_sizes = vec![0u16; count];
+                    let mut values_data = Vec::new();
+                    for (i, (key, value)) in dict.iter().enumerate() {
+                        key.write_static(keys_data[i * K::SIZE..].as_mut());
+                        let v_data = value.get_dynamic();
+                        values_sizes[i] = v_data.len() as u16;
+                        values_data.extend_from_slice(&v_data);
+                    }
+
+                    let mut final_data =
+                        vec![0u8; count * K::SIZE + values_sizes.len() + values_data.len()];
+
+                    unsafe {
+                        copy_nonoverlapping(
+                            keys_data.as_ptr(),
+                            final_data.as_mut_ptr(),
+                            keys_data.len(),
+                        );
+                        copy_nonoverlapping(
+                            values_sizes.as_ptr() as *const u8,
+                            final_data[count * K::SIZE..].as_mut_ptr(),
+                            values_sizes.len(),
+                        );
+                        copy_nonoverlapping(
+                            values_data.as_ptr(),
+                            final_data[count * K::SIZE + values_sizes.len()..].as_mut_ptr(),
+                            values_data.len(),
+                        );
+                    }
+
+                    Some(final_data)
                 }
             }
 
             DictMessage::Set(key, value) => {
                 head[0] = DICT_SET;
 
-                let size = K::size() + T::size();
+                let size = K::SIZE + V::SIZE;
                 if size < MESS_SIZE {
                     key.write(head[1..].as_mut());
-                    value.write(head[1 + K::size()..].as_mut());
+                    value.write(head[1 + K::SIZE..].as_mut());
                     return None;
                 }
 
                 let mut data = vec![0; size];
                 key.write(data[0..].as_mut());
-                value.write(data[K::size()..].as_mut());
+                value.write(data[K::SIZE..].as_mut());
                 Some(data)
             }
 
             DictMessage::Remove(key) => {
                 head[0] = DICT_REMOVE;
 
-                let size = K::size();
+                let size = K::SIZE;
                 if size < MESS_SIZE {
                     key.write(head[1..].as_mut());
                     return None;
@@ -115,8 +236,8 @@ where
 
 impl<K, T> DictMessage<K, T>
 where
-    K: ItemWriteRead + Eq + Hash,
-    T: ItemWriteRead,
+    K: CollectionItem + Eq + Hash,
+    T: CollectionItem,
 {
     pub fn read_message(head: &[u8], data: Option<Vec<u8>>) -> Result<DictMessage<K, T>, String> {
         let subtype = head[0];
@@ -128,7 +249,7 @@ where
                     let data = data.ok_or("Dict data is missing.".to_string())?;
 
                     let mut dict = HashMap::new();
-                    let bouth_size = K::size() + T::size();
+                    let bouth_size = K::SIZE + T::SIZE;
 
                     if bouth_size * count != data.len() {
                         return Err("Dict data is corrupted.".to_string());
@@ -136,7 +257,7 @@ where
 
                     for i in 0..count {
                         let key = K::read(&data[i * bouth_size..]);
-                        let value = T::read(&data[i * bouth_size + K::size()..]);
+                        let value = T::read(&data[i * bouth_size + K::SIZE..]);
                         dict.insert(key, value);
                     }
                     dict
@@ -153,28 +274,28 @@ where
 
             DICT_SET => match data {
                 Some(data) => {
-                    if K::size() + T::size() != data.len() {
+                    if K::SIZE + T::SIZE != data.len() {
                         return Err("Dict data is corrupted.".to_string());
                     }
 
                     let key = K::read(&data[0..]);
-                    let value = T::read(&data[K::size()..]);
+                    let value = T::read(&data[K::SIZE..]);
                     Ok(DictMessage::Set(key, value))
                 }
                 None => {
-                    if K::size() + T::size() + 1 > MESS_SIZE {
+                    if K::SIZE + T::SIZE + 1 > MESS_SIZE {
                         return Err("Dict set failed to parse.".to_string());
                     }
 
                     let key = K::read(&head[1..]);
-                    let value = T::read(&head[1 + K::size()..]);
+                    let value = T::read(&head[1 + K::SIZE..]);
                     Ok(DictMessage::Set(key, value))
                 }
             },
 
             DICT_REMOVE => match data {
                 Some(data) => {
-                    if K::size() != data.len() {
+                    if K::SIZE != data.len() {
                         return Err("Dict data is corrupted.".to_string());
                     }
 
@@ -182,7 +303,7 @@ where
                     return Ok(DictMessage::Remove(key));
                 }
                 None => {
-                    if K::size() + 1 > MESS_SIZE {
+                    if K::SIZE + 1 > MESS_SIZE {
                         return Err("Dict remove failed to parse.".to_string());
                     }
 

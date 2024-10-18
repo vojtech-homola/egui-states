@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::{Arc, RwLock};
 
-use egui_pytransport::collections::ItemWriteRead;
+use egui_pytransport::collections::CollectionItem;
 use egui_pytransport::dict::DictMessage;
 
 pub(crate) trait DictUpdate: Sync + Send {
@@ -44,8 +44,8 @@ where
 
 impl<K, V> DictUpdate for ValueDict<K, V>
 where
-    K: ItemWriteRead + Eq + Hash,
-    V: ItemWriteRead,
+    K: CollectionItem + Eq + Hash,
+    V: CollectionItem,
 {
     fn update_dict(&self, head: &[u8], data: Option<Vec<u8>>) -> Result<(), String> {
         let message: DictMessage<K, V> = DictMessage::read_message(head, data)?;

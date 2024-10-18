@@ -2,7 +2,7 @@ use std::hash::Hash;
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
 
-use egui_pytransport::collections::ItemWriteRead;
+use egui_pytransport::collections::CollectionItem;
 use egui_pytransport::transport::WriteMessage;
 use egui_pytransport::values::{ReadValue, WriteValue};
 use egui_pytransport::{EnumInt, NoHashMap};
@@ -125,8 +125,8 @@ impl ValuesCreator {
 
     pub fn add_dict<K, V>(&mut self) -> Arc<ValueDict<K, V>>
     where
-        K: ItemWriteRead + Hash + Eq,
-        V: ItemWriteRead,
+        K: CollectionItem + Hash + Eq,
+        V: CollectionItem,
     {
         let id = self.get_id();
         let value = ValueDict::new(id);
@@ -137,7 +137,7 @@ impl ValuesCreator {
 
     pub fn add_list<T>(&mut self) -> Arc<ValueList<T>>
     where
-        T: ItemWriteRead,
+        T: CollectionItem,
     {
         let id = self.get_id();
         let value = ValueList::new(id);

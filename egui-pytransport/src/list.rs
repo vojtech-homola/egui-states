@@ -1,4 +1,6 @@
-use crate::collections::ItemWriteRead;
+use std::ptr::copy_nonoverlapping;
+
+use crate::collections::CollectionItem;
 use crate::transport::MESS_SIZE;
 
 // list -----------------------------------------------------------------------
@@ -56,55 +58,83 @@ pub trait WriteListMessage: Send + Sync + 'static {
     fn write_message(&self, head: &mut [u8]) -> Option<Vec<u8>>;
 }
 
-impl<T: ItemWriteRead> WriteListMessage for ListMessage<T> {
+impl<T: CollectionItem> WriteListMessage for ListMessage<T> {
     fn write_message(&self, head: &mut [u8]) -> Option<Vec<u8>> {
         match self {
             ListMessage::All(list) => {
                 head[0] = LIST_ALL;
 
-                let size = list.len() * T::size();
-                head[1..9].copy_from_slice(&(list.len() as u64).to_le_bytes());
+                let count = list.len();
+                head[1..9].copy_from_slice(&(count as u64).to_le_bytes());
 
-                if size > 0 {
-                    let mut data = vec![0; size];
+                // empty list
+                if count == 0 {
+                    None
+                }
+                // static items
+                else if T::SIZE > 0 {
+                    let mut data = vec![0; count * T::SIZE];
                     for (i, val) in list.iter().enumerate() {
-                        val.write(data[i * T::size()..].as_mut());
+                        val.write_static(data[i * T::SIZE..].as_mut());
+                    }
+                    Some(data)
+                // dynamic items
+                } else {
+                    let mut sizes = vec![0u16; count];
+                    let mut data = Vec::new();
+                    for (i, val) in list.iter().enumerate() {
+                        let dat = val.get_dynamic();
+                        sizes[i] = dat.len() as u16;
+                        data.extend_from_slice(&dat);
+                    }
+                    let mut final_data = vec![0u8; count * size_of::<u16>() + data.len()];
+                    unsafe {
+                        copy_nonoverlapping(
+                            sizes.as_ptr() as *const u8,
+                            final_data.as_mut_ptr(),
+                            count * size_of::<u16>(),
+                        );
+                        copy_nonoverlapping(
+                            data.as_ptr(),
+                            final_data[count * size_of::<u16>()..].as_mut_ptr(),
+                            data.len(),
+                        );
                     }
 
-                    Some(data)
-                } else {
-                    None
+                    Some(final_data)
                 }
             }
 
             ListMessage::Set(idx, value) => {
                 head[0] = LIST_SET;
-
-                let size = T::size();
-                if size + 8 < MESS_SIZE {
-                    head[1..9].copy_from_slice(&(*idx as u64).to_le_bytes());
-                    value.write(head[9..].as_mut());
-                    return None;
-                }
-
                 head[1..9].copy_from_slice(&(*idx as u64).to_le_bytes());
-                let mut data = vec![0; size];
-                value.write(data[0..].as_mut());
-                Some(data)
+
+                if T::SIZE == 0 {
+                    let data = value.get_dynamic();
+                    Some(data)
+                } else if T::SIZE + 8 < MESS_SIZE {
+                    value.write_static(head[9..].as_mut());
+                    None
+                } else {
+                    let mut data = vec![0; T::SIZE];
+                    value.write_static(data[0..].as_mut());
+                    Some(data)
+                }
             }
 
             ListMessage::Add(value) => {
                 head[0] = LIST_ADD;
 
-                let size = T::size();
-                if size < MESS_SIZE {
-                    value.write(head[1..].as_mut());
-                    return None;
+                if T::SIZE == 0 {
+                    Some(value.get_dynamic())
+                } else if T::SIZE < MESS_SIZE {
+                    value.write_static(head[1..].as_mut());
+                    None
+                } else {
+                    let mut data = vec![0; T::SIZE];
+                    value.write_static(data[0..].as_mut());
+                    Some(data)
                 }
-
-                let mut data = vec![0; size];
-                value.write(data[0..].as_mut());
-                Some(data)
             }
 
             ListMessage::Remove(idx) => {
@@ -116,7 +146,7 @@ impl<T: ItemWriteRead> WriteListMessage for ListMessage<T> {
     }
 }
 
-impl<T: ItemWriteRead> ListMessage<T> {
+impl<T: CollectionItem> ListMessage<T> {
     pub fn read_message(head: &[u8], data: Option<Vec<u8>>) -> Result<ListMessage<T>, String> {
         let subtype = head[0];
         match subtype {
@@ -125,17 +155,38 @@ impl<T: ItemWriteRead> ListMessage<T> {
 
                 let list = if count > 0 {
                     let data = data.ok_or("List data is missing.".to_string())?;
-
                     let mut list = Vec::new();
-                    let item_size = T::size();
 
-                    if item_size * count != data.len() {
-                        return Err("List data size is incorrect.".to_string());
-                    }
+                    // static items
+                    if T::SIZE > 0 {
+                        if T::SIZE * count != data.len() {
+                            return Err("List data size is incorrect.".to_string());
+                        }
 
-                    for i in 0..count {
-                        let value = T::read(&data[i * item_size..]);
-                        list.push(value);
+                        for i in 0..count {
+                            let value = T::read_item(&data[i * T::SIZE..]);
+                            list.push(value);
+                        }
+                    // dynamic items
+                    } else {
+                        let mut data_pos = count * size_of::<u16>();
+                        if data.len() < data_pos {
+                            return Err("List data is corrupted.".to_string());
+                        }
+                        let positions = unsafe {
+                            std::slice::from_raw_parts(data.as_ptr() as *const u16, count)
+                        };
+
+                        for i in 0..count {
+                            let size = positions[i] as usize;
+                            if data_pos + size > data.len() {
+                                return Err("List data is corrupted.".to_string());
+                            }
+
+                            let value = T::read_item(&data[data_pos..data_pos + size]);
+                            list.push(value);
+                            data_pos += size;
+                        }
                     }
                     list
                 } else {
@@ -153,40 +204,40 @@ impl<T: ItemWriteRead> ListMessage<T> {
                 Some(data) => {
                     let idx = u64::from_le_bytes(head[1..9].try_into().unwrap()) as usize;
 
-                    if T::size() != data.len() {
+                    if T::SIZE > 0 && T::SIZE != data.len() {
                         return Err("List data size is incorrect.".to_string());
                     }
 
-                    let value = T::read(&data[0..]);
+                    let value = T::read_item(&data[0..]);
                     Ok(ListMessage::Set(idx, value))
                 }
                 None => {
                     let idx = u64::from_le_bytes(head[1..9].try_into().unwrap()) as usize;
 
-                    if T::size() + 9 > MESS_SIZE {
+                    if T::SIZE == 0 || T::SIZE + 9 > MESS_SIZE {
                         return Err("List set failed to parse.".to_string());
                     }
 
-                    let value = T::read(&head[9..]);
+                    let value = T::read_item(&head[9..]);
                     Ok(ListMessage::Set(idx, value))
                 }
             },
 
             LIST_ADD => match data {
                 Some(data) => {
-                    if T::size() != data.len() {
+                    if T::SIZE > 0 && T::SIZE != data.len() {
                         return Err("List data size is incorrect.".to_string());
                     }
 
-                    let value = T::read(&data[0..]);
+                    let value = T::read_item(&data[0..]);
                     return Ok(ListMessage::Add(value));
                 }
                 None => {
-                    if T::size() + 1 > MESS_SIZE {
+                    if T::SIZE == 0 || T::SIZE + 1 > MESS_SIZE {
                         return Err("List add failed to parse.".to_string());
                     }
 
-                    let value = T::read(&head[1..]);
+                    let value = T::read_item(&head[1..]);
                     return Ok(ListMessage::Add(value));
                 }
             },

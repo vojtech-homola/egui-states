@@ -1,6 +1,6 @@
 use std::sync::{Arc, RwLock};
 
-use egui_pytransport::collections::ItemWriteRead;
+use egui_pytransport::collections::CollectionItem;
 use egui_pytransport::list::ListMessage;
 
 pub(crate) trait ListUpdate: Sync + Send {
@@ -34,7 +34,7 @@ impl<T: Clone> ValueList<T> {
     }
 }
 
-impl<T: ItemWriteRead> ListUpdate for ValueList<T> {
+impl<T: CollectionItem> ListUpdate for ValueList<T> {
     fn update_list(&self, head: &[u8], data: Option<Vec<u8>>) -> Result<(), String> {
         let message = ListMessage::read_message(head, data)?;
         match message {

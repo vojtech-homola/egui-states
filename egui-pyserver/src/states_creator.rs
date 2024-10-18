@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use pyo3::ToPyObject;
 
-use egui_pytransport::collections::ItemWriteRead;
+use egui_pytransport::collections::CollectionItem;
 use egui_pytransport::transport::WriteMessage;
 use egui_pytransport::values::{ReadValue, WriteValue};
 use egui_pytransport::{EnumInt, EnumStr, NoHashMap};
@@ -203,8 +203,8 @@ impl ValuesCreator {
 
     pub fn add_dict<K, V>(&mut self) -> Arc<ValueDict<K, V>>
     where
-        K: ItemWriteRead + ToPyObject + FromPyValue + Eq + std::hash::Hash + 'static,
-        V: ItemWriteRead + ToPyObject + FromPyValue + 'static,
+        K: CollectionItem + ToPyObject + FromPyValue + Eq + std::hash::Hash + 'static,
+        V: CollectionItem + ToPyObject + FromPyValue + 'static,
     {
         let id = self.get_id();
         let dict = ValueDict::new(id, self.channel.clone(), self.connected.clone());
@@ -217,7 +217,7 @@ impl ValuesCreator {
 
     pub fn add_list<T>(&mut self) -> Arc<ValueList<T>>
     where
-        T: ItemWriteRead + ToPyObject + FromPyValue + 'static,
+        T: CollectionItem + ToPyObject + FromPyValue + 'static,
     {
         let id = self.get_id();
         let list = ValueList::new(id, self.channel.clone(), self.connected.clone());

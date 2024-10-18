@@ -5,7 +5,7 @@ use std::sync::{Arc, RwLock};
 use pyo3::exceptions::PyIndexError;
 use pyo3::prelude::*;
 
-use egui_pytransport::collections::ItemWriteRead;
+use egui_pytransport::collections::CollectionItem;
 use egui_pytransport::list::ListMessage;
 use egui_pytransport::transport::WriteMessage;
 
@@ -46,7 +46,7 @@ impl<T> ValueList<T> {
 
 impl<T> PyListTrait for ValueList<T>
 where
-    T: ItemWriteRead + ToPyObject + FromPyValue,
+    T: CollectionItem + ToPyObject + FromPyValue,
 {
     fn get_py(&self, py: Python) -> PyObject {
         let list = self.list.read().unwrap().to_object(py);
@@ -139,7 +139,7 @@ where
     }
 }
 
-impl<T: ItemWriteRead> SyncTrait for ValueList<T> {
+impl<T: CollectionItem> SyncTrait for ValueList<T> {
     fn sync(&self) {
         let list = self.list.read().unwrap().clone();
         let message = WriteMessage::list(self.id, false, ListMessage::All(list));

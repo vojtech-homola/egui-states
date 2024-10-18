@@ -1,26 +1,10 @@
-use crate::items::SyncItemWrite;
-
 /*
 Values and Signals
 */
 
-// pub trait ReadValue: Sized + Send + Sync + Clone {
-//     fn read_message(head: &[u8], data: Option<Vec<u8>>) -> Result<Self, String>;
-// }
+pub trait WriteValue: Send + Sync + 'static {
+    fn write_message(&self, head: &mut [u8]) -> Option<Vec<u8>>;
 
-// pub trait WriteValue: Send + Sync + 'static {
-//     fn write_message(&self, head: &mut [u8]) -> Option<Vec<u8>>;
-
-//     #[inline]
-//     fn into_message(self) -> ValueMessage
-//     where
-//         Self: Sized,
-//     {
-//         ValueMessage::General(Box::new(self))
-//     }
-// }
-
-pub trait IntoMessage: SyncItemWrite {
     #[inline]
     fn into_message(self) -> ValueMessage
     where
@@ -28,6 +12,10 @@ pub trait IntoMessage: SyncItemWrite {
     {
         ValueMessage::General(Box::new(self))
     }
+}
+
+pub trait ReadValue: Sized + Send + Sync + Clone {
+    fn read_message(head: &[u8], data: Option<Vec<u8>>) -> Result<Self, String>;
 }
 
 pub enum ValueMessage {
@@ -39,7 +27,7 @@ pub enum ValueMessage {
     TwoF64([f64; 2]),
     Bool(bool),
     Empty(()),
-    General(Box<dyn SyncItemWrite>),
+    General(Box<dyn WriteValue>),
 }
 
 impl ValueMessage {
@@ -58,6 +46,7 @@ impl ValueMessage {
     }
 }
 
+// -----------------------------------------------------
 // basic values
 macro_rules! impl_basic_value {
     ($type:ty, $size:literal, $enum_type:ident) => {
@@ -93,8 +82,7 @@ impl_basic_value!(i64, 8, I64);
 impl_basic_value!(u64, 8, U64);
 impl_basic_value!(f64, 8, Double);
 
-// basic values
-macro_rules! impl_basic_two_value {
+macro_rules! impl_basic_2_value {
     ($t:ty, $size_1:literal, $size_2:literal, $enum_type:ident) => {
         impl WriteValue for [$t; 2] {
             fn write_message(&self, head: &mut [u8]) -> Option<Vec<u8>> {
@@ -129,10 +117,10 @@ macro_rules! impl_basic_two_value {
     };
 }
 
-impl_basic_two_value!(f32, 4, 8, TwoF32);
-impl_basic_two_value!(f64, 8, 16, TwoF64);
+impl_basic_2_value!(f32, 4, 8, TwoF32);
+impl_basic_2_value!(f64, 8, 16, TwoF64);
 
-// String -----------------------------------------------------
+// String
 impl WriteValue for String {
     fn write_message(&self, _head: &mut [u8]) -> Option<Vec<u8>> {
         Some(self.as_bytes().to_vec())
@@ -154,7 +142,7 @@ impl ReadValue for String {
     }
 }
 
-// bool -----------------------------------------------------
+// bool
 impl WriteValue for bool {
     fn write_message(&self, head: &mut [u8]) -> Option<Vec<u8>> {
         head[0] = *self as u8;
@@ -178,7 +166,7 @@ impl ReadValue for bool {
     }
 }
 
-// Empty -----------------------------------------------------
+// Empty
 impl WriteValue for () {
     fn write_message(&self, _head: &mut [u8]) -> Option<Vec<u8>> {
         None
@@ -200,6 +188,7 @@ impl ReadValue for () {
         Ok(())
     }
 }
+// -----------------------------------------------------
 
 #[cfg(test)]
 mod tests {

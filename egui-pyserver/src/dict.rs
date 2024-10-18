@@ -7,7 +7,7 @@ use std::sync::{Arc, RwLock};
 use pyo3::exceptions::PyKeyError;
 use pyo3::prelude::*;
 
-use egui_pytransport::collections::ItemWriteRead;
+use egui_pytransport::collections::CollectionItem;
 use egui_pytransport::dict::DictMessage;
 use egui_pytransport::transport::WriteMessage;
 
@@ -47,8 +47,8 @@ impl<K, V> ValueDict<K, V> {
 
 impl<K, V> PyDict for ValueDict<K, V>
 where
-    K: ItemWriteRead + ToPyObject + FromPyValue + Eq + Hash,
-    V: ItemWriteRead + ToPyObject + FromPyValue,
+    K: CollectionItem + ToPyObject + FromPyValue + Eq + Hash,
+    V: CollectionItem + ToPyObject + FromPyValue,
 {
     fn get_py(&self, py: Python) -> PyObject {
         let dict = self.dict.read().unwrap();
@@ -133,8 +133,8 @@ where
 
 impl<K, V> SyncTrait for ValueDict<K, V>
 where
-    K: ItemWriteRead,
-    V: ItemWriteRead,
+    K: CollectionItem,
+    V: CollectionItem,
 {
     fn sync(&self) {
         let dict = self.dict.read().unwrap().clone();
