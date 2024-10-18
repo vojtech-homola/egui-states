@@ -109,20 +109,25 @@ where
                             final_data.as_mut_ptr(),
                             count * size_of::<u16>(),
                         );
+                        let mut position = count * size_of::<u16>();
+
                         copy_nonoverlapping(
                             values_sizes.as_ptr() as *const u8,
-                            final_data[count * size_of::<u16>()..].as_mut_ptr(),
+                            final_data[position..].as_mut_ptr(),
                             count * size_of::<u16>(),
                         );
+                        position += count * size_of::<u16>();
+
                         copy_nonoverlapping(
                             keys_data.as_ptr(),
-                            final_data[count * size_of::<u16>() * 2..].as_mut_ptr(),
+                            final_data[position..].as_mut_ptr(),
                             keys_data.len(),
                         );
+                        position += keys_data.len();
+
                         copy_nonoverlapping(
                             values_data.as_ptr(),
-                            final_data[count * size_of::<u16>() * 2 + keys_data.len()..]
-                                .as_mut_ptr(),
+                            final_data[position..].as_mut_ptr(),
                             values_data.len(),
                         );
                     }
@@ -150,15 +155,19 @@ where
                             final_data.as_mut_ptr(),
                             count * size_of::<u16>(),
                         );
-                        copy_nonoverlapping(
-                            keys_data.as_ptr(),
-                            final_data[count * size_of::<u16>()..].as_mut_ptr(),
-                            keys_data.len(),
-                        );
+                        let mut position = count * size_of::<u16>();
+
                         copy_nonoverlapping(
                             values_data.as_ptr(),
-                            final_data[count * size_of::<u16>() + keys_data.len()..].as_mut_ptr(),
+                            final_data[position..].as_mut_ptr(),
                             values_data.len(),
+                        );
+                        position += values_data.len();
+
+                        copy_nonoverlapping(
+                            keys_data.as_ptr(),
+                            final_data[position..].as_mut_ptr(),
+                            keys_data.len(),
                         );
                     }
 
@@ -181,18 +190,22 @@ where
 
                     unsafe {
                         copy_nonoverlapping(
-                            keys_data.as_ptr(),
-                            final_data.as_mut_ptr(),
-                            keys_data.len(),
-                        );
-                        copy_nonoverlapping(
                             values_sizes.as_ptr() as *const u8,
-                            final_data[count * K::SIZE..].as_mut_ptr(),
+                            final_data.as_mut_ptr(),
                             values_sizes.len(),
                         );
+                        let mut position = values_sizes.len();
+
+                        copy_nonoverlapping(
+                            keys_data.as_ptr(),
+                            final_data[position..].as_mut_ptr(),
+                            keys_data.len(),
+                        );
+
+                        position += keys_data.len();
                         copy_nonoverlapping(
                             values_data.as_ptr(),
-                            final_data[count * K::SIZE + values_sizes.len()..].as_mut_ptr(),
+                            final_data[position..].as_mut_ptr(),
                             values_data.len(),
                         );
                     }
@@ -204,42 +217,68 @@ where
             DictMessage::Set(key, value) => {
                 head[0] = DICT_SET;
 
-                let size = K::SIZE + V::SIZE;
-                if size < MESS_SIZE {
-                    key.write(head[1..].as_mut());
-                    value.write(head[1 + K::SIZE..].as_mut());
-                    return None;
-                }
+                // all static
+                if K::SIZE > 0 && V::SIZE > 0 {
+                    let size = K::SIZE + V::SIZE;
+                    if size < MESS_SIZE {
+                        key.write_static(head[1..].as_mut());
+                        value.write_static(head[1 + K::SIZE..].as_mut());
+                        return None;
+                    }
 
-                let mut data = vec![0; size];
-                key.write(data[0..].as_mut());
-                value.write(data[K::SIZE..].as_mut());
-                Some(data)
+                    let mut data = vec![0; size];
+                    key.write_static(data[0..].as_mut());
+                    value.write_static(data[K::SIZE..].as_mut());
+                    Some(data)
+                // all dynamic
+                } else if K::SIZE == 0 && V::SIZE == 0 {
+                    let mut data = key.get_dynamic();
+                    data.extend(value.get_dynamic());
+                    Some(data)
+                // key dynamic
+                } else if K::SIZE == 0 {
+                    let k_data = key.get_dynamic();
+                    let size = k_data.len() + V::SIZE;
+                    let mut data = vec![0; size];
+                    data[0..k_data.len()].copy_from_slice(&k_data);
+                    value.write_static(data[k_data.len()..].as_mut());
+                    Some(data)
+                // value dynamic
+                } else {
+                    let v_data = value.get_dynamic();
+                    let size = K::SIZE + v_data.len();
+                    let mut data = vec![0; size];
+                    key.write_static(data[0..].as_mut());
+                    data[K::SIZE..].copy_from_slice(&v_data);
+                    Some(data)
+                }
             }
 
             DictMessage::Remove(key) => {
                 head[0] = DICT_REMOVE;
 
-                let size = K::SIZE;
-                if size < MESS_SIZE {
-                    key.write(head[1..].as_mut());
+                if K::SIZE == 0 {
+                    let data = key.get_dynamic();
+                    Some(data)
+                } else if K::SIZE < MESS_SIZE {
+                    key.write_static(head[1..].as_mut());
                     return None;
+                } else {
+                    let mut data = vec![0; K::SIZE];
+                    key.write_static(data[0..].as_mut());
+                    Some(data)
                 }
-
-                let mut data = vec![0; size];
-                key.write(data[0..].as_mut());
-                Some(data)
             }
         }
     }
 }
 
-impl<K, T> DictMessage<K, T>
+impl<K, V> DictMessage<K, V>
 where
     K: CollectionItem + Eq + Hash,
-    T: CollectionItem,
+    V: CollectionItem,
 {
-    pub fn read_message(head: &[u8], data: Option<Vec<u8>>) -> Result<DictMessage<K, T>, String> {
+    pub fn read_message(head: &[u8], data: Option<Vec<u8>>) -> Result<DictMessage<K, V>, String> {
         let subtype = head[0];
         match subtype {
             DICT_ALL => {
@@ -249,7 +288,7 @@ where
                     let data = data.ok_or("Dict data is missing.".to_string())?;
 
                     let mut dict = HashMap::new();
-                    let bouth_size = K::SIZE + T::SIZE;
+                    let bouth_size = K::SIZE + V::SIZE;
 
                     if bouth_size * count != data.len() {
                         return Err("Dict data is corrupted.".to_string());
@@ -257,7 +296,7 @@ where
 
                     for i in 0..count {
                         let key = K::read(&data[i * bouth_size..]);
-                        let value = T::read(&data[i * bouth_size + K::SIZE..]);
+                        let value = V::read(&data[i * bouth_size + K::SIZE..]);
                         dict.insert(key, value);
                     }
                     dict
@@ -274,21 +313,21 @@ where
 
             DICT_SET => match data {
                 Some(data) => {
-                    if K::SIZE + T::SIZE != data.len() {
+                    if K::SIZE + V::SIZE != data.len() {
                         return Err("Dict data is corrupted.".to_string());
                     }
 
                     let key = K::read(&data[0..]);
-                    let value = T::read(&data[K::SIZE..]);
+                    let value = V::read(&data[K::SIZE..]);
                     Ok(DictMessage::Set(key, value))
                 }
                 None => {
-                    if K::SIZE + T::SIZE + 1 > MESS_SIZE {
+                    if K::SIZE + V::SIZE + 1 > MESS_SIZE {
                         return Err("Dict set failed to parse.".to_string());
                     }
 
                     let key = K::read(&head[1..]);
-                    let value = T::read(&head[1 + K::SIZE..]);
+                    let value = V::read(&head[1 + K::SIZE..]);
                     Ok(DictMessage::Set(key, value))
                 }
             },
