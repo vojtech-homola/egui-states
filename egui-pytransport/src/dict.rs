@@ -90,10 +90,10 @@ where
                     let mut values_data = Vec::new();
                     for (i, (key, value)) in dict.iter().enumerate() {
                         let k_data = key.get_dynamic();
-                        keys_sizes[i] = k_data.len() as u16;
+                        keys_sizes[i] = (k_data.len() as u16).to_le();
                         keys_data.extend_from_slice(&k_data);
                         let v_data = value.get_dynamic();
-                        values_sizes[i] = v_data.len() as u16;
+                        values_sizes[i] = (v_data.len() as u16).to_le();
                         values_data.extend_from_slice(&v_data);
                     }
 
@@ -141,7 +141,7 @@ where
                     let mut values_data = vec![0u8; count * V::SIZE];
                     for (i, (key, value)) in dict.iter().enumerate() {
                         let k_data = key.get_dynamic();
-                        keys_sizes[i] = k_data.len() as u16;
+                        keys_sizes[i] = (k_data.len() as u16).to_le();
                         keys_data.extend_from_slice(&k_data);
                         value.write_static(values_data[i * V::SIZE..].as_mut());
                     }
@@ -181,7 +181,7 @@ where
                     for (i, (key, value)) in dict.iter().enumerate() {
                         key.write_static(keys_data[i * K::SIZE..].as_mut());
                         let v_data = value.get_dynamic();
-                        values_sizes[i] = v_data.len() as u16;
+                        values_sizes[i] = (v_data.len() as u16).to_le();
                         values_data.extend_from_slice(&v_data);
                     }
 
@@ -314,9 +314,33 @@ where
                             return Err("Dict data is corrupted.".to_string());
                         }
 
+                        let mut keys_sizes = vec![0u16; count];
+                        let mut values_sizes = vec![0u16; count];
+
+                        unsafe {
+                            copy_nonoverlapping(
+                                data.as_ptr(),
+                                keys_sizes.as_mut_ptr() as *mut u8,
+                                count * size_of::<u16>(),
+                            );
+                            copy_nonoverlapping(
+                                data[count * size_of::<u16>()..].as_ptr(),
+                                values_sizes.as_mut_ptr() as *mut u8,
+                                count * size_of::<u16>(),
+                            );
+                        }
+
+
+
                         for i in 0..count {
                             let key_size = u16::from_ne_bytes();
                         }
+
+
+
+
+
+
 
 
 
@@ -327,14 +351,18 @@ where
 
                         let mut position = 0;
                         for _ in 0..count {
-                            let key_size = u16::from_le_bytes([data[position], data[position+1]]) as usize;
+                            let key_size =
+                                u16::from_le_bytes([data[position], data[position + 1]]) as usize;
                             keys_sizes.push(key_size as u16);
-                            keys_data.extend_from_slice(&data[position + 2..position + 2 + key_size]);
+                            keys_data
+                                .extend_from_slice(&data[position + 2..position + 2 + key_size]);
                             position += 2 + key_size;
 
-                            let value_size = u16::from_le_bytes([data[position], data[position+1]]) as usize;
+                            let value_size =
+                                u16::from_le_bytes([data[position], data[position + 1]]) as usize;
                             values_sizes.push(value_size as u16);
-                            values_data.extend_from_slice(&data[position + 2..position + 2 + value_size]);
+                            values_data
+                                .extend_from_slice(&data[position + 2..position + 2 + value_size]);
                             position += 2 + value_size;
                         }
 
@@ -354,9 +382,12 @@ where
 
                         let mut position = 0;
                         for _ in 0..count {
-                            let key_size = u16::from_le_bytes(data[position..position + 2].try_into().unwrap()) as usize;
+                            let key_size = u16::from_le_bytes(
+                                data[position..position + 2].try_into().unwrap(),
+                            ) as usize;
                             keys_sizes.push(key_size as u16);
-                            keys_data.extend_from_slice(&data[position + 2..position + 2 + key_size]);
+                            keys_data
+                                .extend_from_slice(&data[position + 2..position + 2 + key_size]);
                             position += 2 + key_size;
 
                             let value = V::read_item(&data[position..position + V::SIZE]);
@@ -380,9 +411,12 @@ where
 
                         let mut position = 0;
                         for _ in 0..count {
-                            let value_size = u16::from_le_bytes(data[position..position + 2].try_into().unwrap()) as usize;
+                            let value_size = u16::from_le_bytes(
+                                data[position..position + 2].try_into().unwrap(),
+                            ) as usize;
                             values_sizes.push(value_size as u16);
-                            values_data.extend_from_slice(&data[position + 2..position + 2 + value_size]);
+                            values_data
+                                .extend_from_slice(&data[position + 2..position + 2 + value_size]);
                             position += 2 + value_size;
 
                             let key = K::read_item(&data[position..position + K::SIZE]);
@@ -398,7 +432,7 @@ where
                         }
                         dict
                     }
-                }
+                };
 
                 // let dict = if count > 0 {
                 //     let data = data.ok_or("Dict data is missing.".to_string())?;

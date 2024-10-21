@@ -84,7 +84,7 @@ impl<T: CollectionItem> WriteListMessage for ListMessage<T> {
                     let mut data = Vec::new();
                     for (i, val) in list.iter().enumerate() {
                         let dat = val.get_dynamic();
-                        sizes[i] = dat.len() as u16;
+                        sizes[i] = (dat.len() as u16).to_le();
                         data.extend_from_slice(&dat);
                     }
                     let mut final_data = vec![0u8; count * size_of::<u16>() + data.len()];
@@ -178,7 +178,7 @@ impl<T: CollectionItem> ListMessage<T> {
                         };
 
                         for i in 0..count {
-                            let size = positions[i] as usize;
+                            let size = u16::from_le(positions[i]) as usize;
                             if data_pos + size > data.len() {
                                 return Err("List data is corrupted.".to_string());
                             }
