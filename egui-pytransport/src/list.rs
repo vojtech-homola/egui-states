@@ -1,5 +1,3 @@
-use std::ptr::copy_nonoverlapping;
-
 use crate::collections::CollectionItem;
 use crate::transport::MESS_SIZE;
 
@@ -80,28 +78,19 @@ impl<T: CollectionItem> WriteListMessage for ListMessage<T> {
                     Some(data)
                 // dynamic items
                 } else {
-                    let mut sizes = vec![0u16; count];
+                    let mut sizes = vec![0u8; count * size_of::<u16>()];
                     let mut data = Vec::new();
                     for (i, val) in list.iter().enumerate() {
                         let dat = val.get_dynamic();
-                        sizes[i] = (dat.len() as u16).to_le();
+                        let p = (dat.len() as u16).to_le_bytes();
+                        sizes[i * 2] = p[0];
+                        sizes[i * 2 + 1] = p[1];
+
                         data.extend_from_slice(&dat);
                     }
-                    let mut final_data = vec![0u8; count * size_of::<u16>() + data.len()];
-                    unsafe {
-                        copy_nonoverlapping(
-                            sizes.as_ptr() as *const u8,
-                            final_data.as_mut_ptr(),
-                            count * size_of::<u16>(),
-                        );
-                        copy_nonoverlapping(
-                            data.as_ptr(),
-                            final_data[count * size_of::<u16>()..].as_mut_ptr(),
-                            data.len(),
-                        );
-                    }
 
-                    Some(final_data)
+                    sizes.extend_from_slice(&data);
+                    Some(sizes)
                 }
             }
 
@@ -109,12 +98,15 @@ impl<T: CollectionItem> WriteListMessage for ListMessage<T> {
                 head[0] = LIST_SET;
                 head[1..9].copy_from_slice(&(*idx as u64).to_le_bytes());
 
+                // dynamic value
                 if T::SIZE == 0 {
                     let data = value.get_dynamic();
                     Some(data)
+                // small static value
                 } else if T::SIZE + 8 < MESS_SIZE {
                     value.write_static(head[9..].as_mut());
                     None
+                // big static value
                 } else {
                     let mut data = vec![0; T::SIZE];
                     value.write_static(data[0..].as_mut());
@@ -125,11 +117,14 @@ impl<T: CollectionItem> WriteListMessage for ListMessage<T> {
             ListMessage::Add(value) => {
                 head[0] = LIST_ADD;
 
+                // dynamic value
                 if T::SIZE == 0 {
                     Some(value.get_dynamic())
+                // small static value
                 } else if T::SIZE < MESS_SIZE {
                     value.write_static(head[1..].as_mut());
                     None
+                // big static value
                 } else {
                     let mut data = vec![0; T::SIZE];
                     value.write_static(data[0..].as_mut());
@@ -173,12 +168,9 @@ impl<T: CollectionItem> ListMessage<T> {
                         if data.len() < data_pos {
                             return Err("List data is corrupted.".to_string());
                         }
-                        let positions = unsafe {
-                            std::slice::from_raw_parts(data.as_ptr() as *const u16, count)
-                        };
 
                         for i in 0..count {
-                            let size = u16::from_le(positions[i]) as usize;
+                            let size = u16::from_le_bytes([data[i * 2], data[i * 2 + 1]]) as usize;
                             if data_pos + size > data.len() {
                                 return Err("List data is corrupted.".to_string());
                             }
@@ -243,6 +235,10 @@ impl<T: CollectionItem> ListMessage<T> {
             },
 
             LIST_REMOVE => {
+                if data.is_some() {
+                    return Err("List remove get data but should be empty.".to_string());
+                }
+
                 let idx = u64::from_le_bytes(head[1..9].try_into().unwrap()) as usize;
                 Ok(ListMessage::Remove(idx))
             }
