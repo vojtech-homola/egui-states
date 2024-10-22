@@ -9,38 +9,38 @@ use crate::list::WriteListMessage;
 use crate::values::ValueMessage;
 
 pub const HEAD_SIZE: usize = 32;
-pub(crate) const MESS_SIZE: usize = 26;
+pub(crate) const MESS_SIZE: usize = 28;
 
 const SIZE_START: usize = HEAD_SIZE - 4;
 
 // message types
-const TYPE_VALUE: i8 = 16;
-const TYPE_STATIC: i8 = 32;
-const TYPE_SIGNAL: i8 = 12;
-const TYPE_COMMAND: i8 = 64;
-const TYPE_IMAGE: i8 = 4;
-const TYPE_HISTOGRAM: i8 = 24;
-const TYPE_DICT: i8 = 48;
-const TYPE_LIST: i8 = 96;
-const TYPE_GRAPH: i8 = 8;
+const TYPE_VALUE: i8 = 4;
+const TYPE_STATIC: i8 = 8;
+const TYPE_SIGNAL: i8 = 10;
+const TYPE_COMMAND: i8 = 12;
+const TYPE_IMAGE: i8 = 14;
+const TYPE_HISTOGRAM: i8 = 16;
+const TYPE_DICT: i8 = 18;
+const TYPE_LIST: i8 = 20;
+const TYPE_GRAPH: i8 = 22;
 
 /*
 Head of the message:
 
 Value:
-|1B - type | 4B - u32 value id | 1B - signal / update | = 6B
+|1B - type / flag | 3B - u32 value id | = 4B
 
 Static:
-|1B - type | 4B - u32 value id | 1B - update | = 6B
+|1B - type / flag | 3B - u32 value id | = 4B
 
 Signal:
-|1B - type | 4B - u32 value id | 1B - reserve | = 6B
+|1B - type / flag | 3B - u32 value id | = 4B
 
 Image:
-|1B - type | 4B - u32 value id | 1B - update | = 6B
+|1B - type / flag | 3B - u32 value id | = 4B
 
 Dict and List:
-|1B - type | 4B - u32 value id | 1B - update | = 6B
+|1B - type / flag | 3B - u32 value id | = 4B
 
 Command:
 |1B - type | 1B - command |
@@ -118,42 +118,42 @@ impl WriteMessage {
 
         let (id, flag, mut type_, data) = match self {
             Self::Value(id, update_signal, message) => {
-                let data = message.write_message(&mut head[6..]);
+                let data = message.write_message(&mut head[4..]);
                 (id, update_signal, TYPE_VALUE, data)
             }
 
             Self::Static(id, update, message) => {
-                let data = message.write_message(&mut head[6..]);
+                let data = message.write_message(&mut head[4..]);
                 (id, update, TYPE_STATIC, data)
             }
 
             Self::Signal(id, message) => {
-                let data = message.write_message(&mut head[6..]);
+                let data = message.write_message(&mut head[4..]);
                 (id, false, TYPE_SIGNAL, data)
             }
 
             Self::Image(id, update, message) => {
-                let data = message.write_message(&mut head[6..]);
+                let data = message.write_message(&mut head[4..]);
                 (id, update, TYPE_IMAGE, Some(data))
             }
 
             Self::Histogram(id, update, message) => {
-                let data = message.write_message(&mut head[6..]);
+                let data = message.write_message(&mut head[4..]);
                 (id, update, TYPE_HISTOGRAM, data)
             }
 
             Self::Dict(id, update, dict) => {
-                let data = dict.write_message(&mut head[6..]);
+                let data = dict.write_message(&mut head[4..]);
                 (id, update, TYPE_DICT, data)
             }
 
             Self::List(id, update, list) => {
-                let data = list.write_message(&mut head[6..]);
+                let data = list.write_message(&mut head[4..]);
                 (id, update, TYPE_LIST, data)
             }
 
             Self::Graph(id, update, message) => {
-                let data = message.write_message(&mut head[6..]);
+                let data = message.write_message(&mut head[4..]);
                 (id, update, TYPE_GRAPH, data)
             }
 
@@ -161,6 +161,10 @@ impl WriteMessage {
                 unreachable!("should not parse Terminate message")
             }
         };
+
+        if flag {
+            type_ += 64;
+        }
 
         if let Some(ref data) = data {
             type_ = -type_;
@@ -170,7 +174,6 @@ impl WriteMessage {
 
         head[0] = type_ as u8;
         head[1..5].copy_from_slice(&id.to_le_bytes());
-        head[5] = flag as u8;
 
         data
     }
@@ -207,7 +210,7 @@ impl<'a> ReadMessage<'a> {
 impl<'a> ReadMessage<'a> {
     pub fn parse(
         head: &'a [u8],
-        message_type: i8,
+        mut message_type: i8,
         data: Option<Vec<u8>>,
     ) -> Result<ReadMessage<'a>, String> {
         if message_type == TYPE_COMMAND {
@@ -216,24 +219,29 @@ impl<'a> ReadMessage<'a> {
         }
 
         let id = u32::from_le_bytes(head[1..5].try_into().unwrap());
-        let update = head[5] != 0;
+        let update = if message_type > 63 {
+            message_type -= 64;
+            true
+        } else {
+            false
+        };
 
         match message_type {
-            TYPE_VALUE => Ok(ReadMessage::Value(id, update, &head[6..], data)),
-            TYPE_STATIC => Ok(ReadMessage::Static(id, update, &head[6..], data)),
-            TYPE_SIGNAL => Ok(ReadMessage::Signal(id, &head[6..], data)),
+            TYPE_VALUE => Ok(ReadMessage::Value(id, update, &head[4..], data)),
+            TYPE_STATIC => Ok(ReadMessage::Static(id, update, &head[4..], data)),
+            TYPE_SIGNAL => Ok(ReadMessage::Signal(id, &head[4..], data)),
             TYPE_IMAGE => {
-                let image = ImageMessage::read_message(&head[6..], data)?;
+                let image = ImageMessage::read_message(&head[4..], data)?;
                 Ok(ReadMessage::Image(id, update, image))
             }
             TYPE_HISTOGRAM => {
-                let histogram = HistogramMessage::read_message(&head[6..], data)?;
+                let histogram = HistogramMessage::read_message(&head[4..], data)?;
                 Ok(ReadMessage::Histogram(id, update, histogram))
             }
-            TYPE_DICT => Ok(ReadMessage::Dict(id, update, &head[6..], data)),
-            TYPE_LIST => Ok(ReadMessage::List(id, update, &head[6..], data)),
+            TYPE_DICT => Ok(ReadMessage::Dict(id, update, &head[4..], data)),
+            TYPE_LIST => Ok(ReadMessage::List(id, update, &head[4..], data)),
             TYPE_GRAPH => {
-                let graph = GraphMessage::read_message(&head[6..], data)?;
+                let graph = GraphMessage::read_message(&head[4..], data)?;
                 Ok(ReadMessage::Graph(id, update, graph))
             }
             _ => Err(format!("Unknown message type: {}", message_type)),
