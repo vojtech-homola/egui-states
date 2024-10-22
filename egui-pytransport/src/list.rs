@@ -3,43 +3,6 @@ use crate::transport::MESS_SIZE;
 
 // list -----------------------------------------------------------------------
 
-/*
-ListMessage
-
-common head:
-|1B - type | 4B - u32 value id | 1B - update | = 6B
-
----------
-list all:
-| 1B - list type | 8B - u64 count | ... | 8B - u64 size |
-data: | value | * count
-
-empty:
-| 1B - list type | 8B - u64 count = 0 |
-
----------
-list set:
-no data:
-| 1B - list type | 8B - u64 idx | value |
-
-with data:
-| 1B - list type | 8B - u64 idx | ... | 8B - u64 size |
-data: | value |
-
-------------
-list add:
-no data:
-| 1B - list type | value |
-
-with data:
-| 1B - list type | ... | 8B - u64 size |
-data: | value |
-
-------------
-list remove:
-| 1B - list type | 8B - u64 idx |
-*/
-
 const LIST_ALL: u8 = 100;
 const LIST_SET: u8 = 101;
 const LIST_ADD: u8 = 102;
@@ -252,6 +215,49 @@ impl<T: CollectionItem> ListMessage<T> {
 mod tests {
     use super::*;
     use crate::transport::HEAD_SIZE;
+
+    #[test]
+    fn test_dynamic_list_all() {
+        let mut list = Vec::new();
+        list.push("test 1".to_string());
+        list.push("test 48".to_string());
+        list.push("test 1234".to_string());
+        list.push("test 123456".to_string());
+
+        let mut head = [0u8; HEAD_SIZE];
+
+        let message = ListMessage::All(list.clone());
+
+        let data = message.write_message(&mut head[6..]);
+        assert!(data.is_some());
+        let new_list = ListMessage::<String>::read_message(&head[6..], data).unwrap();
+
+        match new_list {
+            ListMessage::All(new_list) => assert_eq!(list, new_list),
+            _ => panic!("Wrong message type."),
+        }
+    }
+
+    #[test]
+    fn test_dynamic_list_set() {
+        let value = "test 123456".to_string();
+
+        let mut head = [0u8; HEAD_SIZE];
+
+        let message = ListMessage::Set(1, value.clone());
+
+        let data = message.write_message(&mut head[6..]);
+        assert!(data.is_some());
+        let new_message = ListMessage::<String>::read_message(&head[6..], data).unwrap();
+
+        match new_message {
+            ListMessage::Set(idx, new_value) => {
+                assert_eq!(1, idx);
+                assert_eq!(value, new_value);
+            }
+            _ => panic!("Wrong message type."),
+        }
+    }
 
     #[test]
     fn test_list_all() {

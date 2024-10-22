@@ -31,6 +31,20 @@ impl CollectionItem for bool {
     }
 }
 
+impl CollectionItem for String {
+    const SIZE: usize = 0;
+
+    #[inline]
+    fn read_item(data: &[u8]) -> Self {
+        String::from_utf8(data.to_vec()).unwrap()
+    }
+
+    #[inline]
+    fn get_dynamic(&self) -> Vec<u8> {
+        self.as_bytes().to_vec()
+    }
+}
+
 macro_rules! impl_basic_item {
     ($($t:ty),*) => {
         $(

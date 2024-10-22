@@ -6,40 +6,6 @@ use crate::transport::MESS_SIZE;
 
 // dict -----------------------------------------------------------------------
 
-/*
-DictMessage
-
-common head:
-|1B - type | 4B - u32 value id | 1B - update | = 6B
-
----------
-dict all:
-| 1B - dict type | 8B - u64 count | ... | 8B - u64 size |
-data: | key | value | * count
-
-empty:
-| 1B - dict type | 8B - u64 count = 0 |
-
----------
-dict set:
-no data:
-| 1B - dict type | key | value | ...
-
-with data:
-| 1B - dict type | ... | 8B - u64 size |
-data: | key | value |
-
-------------
-dict remove:
-no data:
-| 1B - dict type | key |
-
-with data:
-| 1B - dict type | ... | 8B - u64 size |
-data: | key | ...
-
-*/
-
 const DICT_ALL: u8 = 20;
 const DICT_SET: u8 = 21;
 const DICT_REMOVE: u8 = 22;
@@ -165,22 +131,28 @@ where
                     Some(data)
                 // all dynamic
                 } else if K::SIZE == 0 && V::SIZE == 0 {
-                    let mut data = key.get_dynamic();
-                    data.extend(value.get_dynamic());
-                    Some(data)
+                    let mut key_data = key.get_dynamic();
+                    let value_data = value.get_dynamic();
+                    head[1..3].clone_from_slice(&(key_data.len() as u16).to_le_bytes());
+                    head[3..5].clone_from_slice(&(value_data.len() as u16).to_le_bytes());
+                    key_data.extend_from_slice(&value_data);
+
+                    Some(key_data)
                 // key dynamic
                 } else if K::SIZE == 0 {
                     let k_data = key.get_dynamic();
-                    let size = k_data.len() + V::SIZE;
-                    let mut data = vec![0; size];
+                    head[1..3].clone_from_slice(&(k_data.len() as u16).to_le_bytes());
+
+                    let mut data = vec![0; k_data.len() + V::SIZE];
                     data[0..k_data.len()].copy_from_slice(&k_data);
                     value.write_static(data[k_data.len()..].as_mut());
                     Some(data)
                 // value dynamic
                 } else {
                     let v_data = value.get_dynamic();
-                    let size = K::SIZE + v_data.len();
-                    let mut data = vec![0; size];
+                    head[1..3].clone_from_slice(&(v_data.len() as u16).to_le_bytes());
+
+                    let mut data = vec![0; K::SIZE + v_data.len()];
                     key.write_static(data[0..].as_mut());
                     data[K::SIZE..].copy_from_slice(&v_data);
                     Some(data)
@@ -265,6 +237,7 @@ where
                                 &data[position + key_size..position + key_size + value_size],
                             );
                             dict.insert(key, value);
+                            position += key_size + value_size;
                         }
                     }
                     // key dynamic
@@ -320,13 +293,51 @@ where
 
             DICT_SET => match data {
                 Some(data) => {
-                    if K::SIZE + V::SIZE != data.len() {
-                        return Err("Dict data is corrupted.".to_string());
-                    }
+                    // all static
+                    if K::SIZE > 0 && V::SIZE > 0 {
+                        if K::SIZE + V::SIZE != data.len() {
+                            return Err("Dict data is corrupted.".to_string());
+                        }
 
-                    let key = K::read_item(&data[0..]);
-                    let value = V::read_item(&data[K::SIZE..]);
-                    Ok(DictMessage::Set(key, value))
+                        let key = K::read_item(&data[0..K::SIZE]);
+                        let value = V::read_item(&data[K::SIZE..]);
+                        Ok(DictMessage::Set(key, value))
+                    }
+                    // all dynamic
+                    else if K::SIZE == 0 && V::SIZE == 0 {
+                        let key_size = u16::from_le_bytes([head[1], head[2]]) as usize;
+                        let value_size = u16::from_le_bytes([head[3], head[4]]) as usize;
+
+                        if key_size + value_size != data.len() {
+                            return Err("Dict data is corrupted.".to_string());
+                        }
+
+                        let key = K::read_item(&data[0..key_size]);
+                        let value = V::read_item(&data[key_size..]);
+                        Ok(DictMessage::Set(key, value))
+                    }
+                    // key dynamic
+                    else if K::SIZE == 0 {
+                        let key_size = u16::from_le_bytes([head[1], head[2]]) as usize;
+                        if key_size + V::SIZE != data.len() {
+                            return Err("Dict data is corrupted.".to_string());
+                        }
+
+                        let key = K::read_item(&data[0..key_size]);
+                        let value = V::read_item(&data[key_size..]);
+                        Ok(DictMessage::Set(key, value))
+                    }
+                    // value dynamic
+                    else {
+                        let value_size = u16::from_le_bytes([head[1], head[2]]) as usize;
+                        if K::SIZE + value_size != data.len() {
+                            return Err("Dict data is corrupted.".to_string());
+                        }
+
+                        let key = K::read_item(&data[0..]);
+                        let value = V::read_item(&data[K::SIZE..]);
+                        Ok(DictMessage::Set(key, value))
+                    }
                 }
                 None => {
                     if (K::SIZE == 0 && V::SIZE == 0) || K::SIZE + V::SIZE + 1 > MESS_SIZE {
@@ -341,19 +352,27 @@ where
 
             DICT_REMOVE => match data {
                 Some(data) => {
-                    if K::SIZE != data.len() {
-                        return Err("Dict data is corrupted.".to_string());
+                    // dynamic
+                    if K::SIZE == 0 {
+                        let key = K::read_item(&data[0..]);
+                        return Ok(DictMessage::Remove(key));
                     }
+                    // big static
+                    else {
+                        if K::SIZE != data.len() {
+                            return Err("Dict data is corrupted.".to_string());
+                        }
 
-                    let key = K::read(&data[0..]);
-                    return Ok(DictMessage::Remove(key));
+                        let key = K::read_item(&data[0..]);
+                        return Ok(DictMessage::Remove(key));
+                    }
                 }
                 None => {
-                    if K::SIZE + 1 > MESS_SIZE {
+                    if K::SIZE == 0 || K::SIZE + 1 > MESS_SIZE {
                         return Err("Dict remove failed to parse.".to_string());
                     }
 
-                    let key = K::read(&head[1..]);
+                    let key = K::read_item(&head[1..]);
                     return Ok(DictMessage::Remove(key));
                 }
             },
@@ -367,6 +386,77 @@ where
 mod tests {
     use super::*;
     use crate::transport::HEAD_SIZE;
+
+    #[test]
+    fn test_dict_dynamic_all() {
+        let mut head = [0u8; HEAD_SIZE];
+        let mut dict = HashMap::new();
+        dict.insert("key1".to_string(), "value1444".to_string());
+        dict.insert("key24".to_string(), "value2".to_string());
+        dict.insert("key378".to_string(), "value43".to_string());
+        dict.insert("key4874".to_string(), "value4885454".to_string());
+
+        let message = DictMessage::All(dict.clone());
+
+        let data = message.write_message(&mut head[6..]);
+        assert!(data.is_some());
+        let message = DictMessage::<String, String>::read_message(&mut head[6..], data).unwrap();
+
+        match message {
+            DictMessage::All(new_dict) => {
+                assert_eq!(dict, new_dict);
+            }
+            _ => panic!("Wrong message type."),
+        }
+    }
+
+    #[test]
+    fn test_dict_dynamic_keys() {
+        let mut head = [0u8; HEAD_SIZE];
+
+        let mut dict = HashMap::new();
+        dict.insert("key1".to_string(), 50);
+        dict.insert("key24".to_string(), 48);
+        dict.insert("key378".to_string(), 78);
+        dict.insert("key4874".to_string(), 98);
+
+        let message = DictMessage::All(dict.clone());
+
+        let data = message.write_message(&mut head[6..]);
+        assert!(data.is_some());
+        let message = DictMessage::<String, i64>::read_message(&mut head[6..], data).unwrap();
+
+        match message {
+            DictMessage::All(new_dict) => {
+                assert_eq!(dict, new_dict);
+            }
+            _ => panic!("Wrong message type."),
+        }
+    }
+
+    #[test]
+    fn test_dict_dynamic_values() {
+        let mut head = [0u8; HEAD_SIZE];
+
+        let mut dict = HashMap::new();
+        dict.insert(50, "value1444".to_string());
+        dict.insert(48, "value2".to_string());
+        dict.insert(78, "value43".to_string());
+        dict.insert(98, "value4885454".to_string());
+
+        let message = DictMessage::All(dict.clone());
+
+        let data = message.write_message(&mut head[6..]);
+        assert!(data.is_some());
+        let message = DictMessage::<i64, String>::read_message(&mut head[6..], data).unwrap();
+
+        match message {
+            DictMessage::All(new_dict) => {
+                assert_eq!(dict, new_dict);
+            }
+            _ => panic!("Wrong message type."),
+        }
+    }
 
     #[test]
     fn test_dict_all_message() {
