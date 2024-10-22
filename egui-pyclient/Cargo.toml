@@ -1,0 +1,8 @@
+[package]
+name = "egui_pyclient"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+egui = { version = "*" }
+egui_pytransport = { workspace = true }

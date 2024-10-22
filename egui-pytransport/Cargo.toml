@@ -1,0 +1,10 @@
+[package]
+name = "egui_pytransport"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+doctest = false
+
+[dependencies]
+egui_pymacros = { workspace = true }
