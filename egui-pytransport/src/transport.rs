@@ -173,8 +173,7 @@ impl WriteMessage {
         }
 
         head[0] = type_ as u8;
-        head[1..5].copy_from_slice(&id.to_le_bytes());
-
+        head[1..4].copy_from_slice(&id.to_le_bytes()[0..3]);
         data
     }
 }
@@ -218,7 +217,7 @@ impl<'a> ReadMessage<'a> {
             return Ok(ReadMessage::Command(command));
         }
 
-        let id = u32::from_le_bytes(head[1..5].try_into().unwrap());
+        let id = u32::from_le_bytes([head[1], head[2], head[3], 0]);
         let update = if message_type > 63 {
             message_type -= 64;
             true

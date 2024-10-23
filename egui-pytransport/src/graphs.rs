@@ -1,9 +1,16 @@
 // graph ----------------------------------------------------------------------
 /*
 data:
-| f32 | * count * lines
-| f64 | * count * lines
+| f32 | * count
+| f64 | * count
+---------
 
+graph add:
+| 1B - subtype | 1B - precision | 1B - graph subtype | 4B - u32 points | ... |4B - u32 data size |
+
+
+
+---------
 ---------
 graph all:
 | 1B - subtype | 1B - precision | 8B - u64 points | ... |8B - u64 data size |
@@ -23,6 +30,21 @@ const GRAPH_F64: u8 = 61;
 const GRAPH_ALL: u8 = 200;
 const GRAPH_ADD_POINTS: u8 = 201;
 const GRAPH_RESET: u8 = 204;
+
+pub struct GraphLine<T> {
+    pub x: Vec<T>,
+    pub y: Vec<T>,
+}
+
+pub struct GraphLinear<T> {
+    pub y: Vec<T>,
+    pub range: [T; 2],
+}
+
+pub enum Graph<T> {
+    Line(GraphLine<T>),
+    Linear(GraphLinear<T>),
+}
 
 #[derive(PartialEq, Copy, Clone, Debug)]
 pub enum Precision {

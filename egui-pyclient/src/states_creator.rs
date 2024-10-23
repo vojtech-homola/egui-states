@@ -63,6 +63,9 @@ impl ValuesCreator {
     }
 
     fn get_id(&mut self) -> u32 {
+        if self.counter > 16777215 {
+            panic!("id counter overflow, id is 24bit long");
+        }
         let count = self.counter;
         self.counter += 1;
         count
