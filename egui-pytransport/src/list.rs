@@ -1,5 +1,5 @@
 use crate::collections::CollectionItem;
-use crate::transport::MESS_SIZE;
+use crate::transport::{WriteMessageDyn, MESS_SIZE};
 
 // list -----------------------------------------------------------------------
 
@@ -15,11 +15,7 @@ pub enum ListMessage<T> {
     Remove(usize),
 }
 
-pub trait WriteListMessage: Send + Sync + 'static {
-    fn write_message(&self, head: &mut [u8]) -> Option<Vec<u8>>;
-}
-
-impl<T: CollectionItem> WriteListMessage for ListMessage<T> {
+impl<T: CollectionItem> WriteMessageDyn for ListMessage<T> {
     fn write_message(&self, head: &mut [u8]) -> Option<Vec<u8>> {
         match self {
             ListMessage::All(list) => {

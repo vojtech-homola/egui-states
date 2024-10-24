@@ -8,9 +8,10 @@ use egui_pytransport::collections::CollectionItem;
 use egui_pytransport::transport::WriteMessage;
 use egui_pytransport::values::{ReadValue, WriteValue};
 use egui_pytransport::{EnumInt, EnumStr, NoHashMap};
+use egui_pytransport::graphs::GraphElement;
 
 use crate::dict::{PyDict, ValueDict};
-use crate::graphs::{GraphType, PyGraph, ValueGraph};
+use crate::graphs::{PyGraph, ValueGraph};
 use crate::image::ImageValue;
 use crate::list::{PyListTrait, ValueList};
 use crate::py_convert::FromPyValue;
@@ -231,7 +232,7 @@ impl ValuesCreator {
         list
     }
 
-    pub fn add_graph<T: Send + Sync + GraphType + 'static>(&mut self) -> Arc<ValueGraph<T>> {
+    pub fn add_graph<T: GraphElement + 'static>(&mut self) -> Arc<ValueGraph<T>> {
         let id = self.get_id();
         let graph = ValueGraph::new(id, self.channel.clone(), self.connected.clone());
 

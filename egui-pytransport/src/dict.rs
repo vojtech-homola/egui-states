@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::hash::Hash;
 
 use crate::collections::CollectionItem;
-use crate::transport::MESS_SIZE;
+use crate::transport::{WriteMessageDyn, MESS_SIZE};
 
 // dict -----------------------------------------------------------------------
 
@@ -16,11 +16,7 @@ pub enum DictMessage<K, V> {
     Remove(K),
 }
 
-pub trait WriteDictMessage: Send + Sync + 'static {
-    fn write_message(&self, head: &mut [u8]) -> Option<Vec<u8>>;
-}
-
-impl<K, V> WriteDictMessage for DictMessage<K, V>
+impl<K, V> WriteMessageDyn for DictMessage<K, V>
 where
     K: CollectionItem,
     V: CollectionItem,

@@ -2,10 +2,8 @@ use std::io::{self, Read, Write};
 use std::net::TcpStream;
 
 use crate::commands::CommandMessage;
-use crate::dict::WriteDictMessage;
-use crate::graphs::GraphMessage;
+use crate::graphs::WriteGraphMessage;
 use crate::image::{HistogramMessage, ImageMessage};
-use crate::list::WriteListMessage;
 use crate::values::ValueMessage;
 
 pub const HEAD_SIZE: usize = 32;
@@ -80,15 +78,19 @@ pub fn read_message(
     Ok((type_, data))
 }
 
+pub trait WriteMessageDyn: Send + Sync + 'static {
+    fn write_message(&self, head: &mut [u8]) -> Option<Vec<u8>>;
+}
+
 pub enum WriteMessage {
     Value(u32, bool, ValueMessage),
     Static(u32, bool, ValueMessage),
     Signal(u32, ValueMessage),
     Image(u32, bool, ImageMessage),
     Histogram(u32, bool, HistogramMessage),
-    Dict(u32, bool, Box<dyn WriteDictMessage>),
-    List(u32, bool, Box<dyn WriteListMessage>),
-    Graph(u32, bool, GraphMessage),
+    Dict(u32, bool, Box<dyn WriteMessageDyn>),
+    List(u32, bool, Box<dyn WriteMessageDyn>),
+    Graph(u32, bool, Box<dyn WriteGraphMessage>),
     Command(CommandMessage),
     Terminate,
 }
@@ -98,11 +100,11 @@ impl WriteMessage {
         WriteMessage::Command(CommandMessage::Ack(id))
     }
 
-    pub fn list(id: u32, update: bool, list: impl WriteListMessage) -> Self {
+    pub fn list(id: u32, update: bool, list: impl WriteMessageDyn) -> Self {
         WriteMessage::List(id, update, Box::new(list))
     }
 
-    pub fn dict(id: u32, update: bool, dict: impl WriteDictMessage) -> Self {
+    pub fn dict(id: u32, update: bool, dict: impl WriteMessageDyn) -> Self {
         WriteMessage::Dict(id, update, Box::new(dict))
     }
 
@@ -186,7 +188,7 @@ pub enum ReadMessage<'a> {
     Histogram(u32, bool, HistogramMessage),
     Dict(u32, bool, &'a [u8], Option<Vec<u8>>),
     List(u32, bool, &'a [u8], Option<Vec<u8>>),
-    Graph(u32, bool, GraphMessage),
+    Graph(u32, bool, &'a [u8], Option<Vec<u8>>),
     Command(CommandMessage),
 }
 
@@ -200,7 +202,7 @@ impl<'a> ReadMessage<'a> {
             Self::Histogram(_, _, _) => "Histogram",
             Self::Dict(_, _, _, _) => "Dict",
             Self::List(_, _, _, _) => "List",
-            Self::Graph(_, _, _) => "Graph",
+            Self::Graph(_, _, _, _) => "Graph",
             Self::Command(_) => "Command",
         }
     }
@@ -239,10 +241,7 @@ impl<'a> ReadMessage<'a> {
             }
             TYPE_DICT => Ok(ReadMessage::Dict(id, update, &head[4..], data)),
             TYPE_LIST => Ok(ReadMessage::List(id, update, &head[4..], data)),
-            TYPE_GRAPH => {
-                let graph = GraphMessage::read_message(&head[4..], data)?;
-                Ok(ReadMessage::Graph(id, update, graph))
-            }
+            TYPE_GRAPH => Ok(ReadMessage::Graph(id, update, &head[4..], data)),
             _ => Err(format!("Unknown message type: {}", message_type)),
         }
     }
