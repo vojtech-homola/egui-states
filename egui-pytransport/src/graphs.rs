@@ -1,3 +1,5 @@
+use std::mem::size_of;
+
 // graph ----------------------------------------------------------------------
 /*
 data:
@@ -32,10 +34,10 @@ const GRAPH_ADD_POINTS: u8 = 201;
 const GRAPH_SET: u8 = 202;
 const GRAPH_RESET: u8 = 203;
 
-pub trait WriteGraphMessage {
-    fn write_message(self, head: &mut [u8]) -> Option<Vec<u8>>;
+pub trait WriteGraphMessage: Send + Sync {
+    fn write_message(self: Box<Self>, head: &mut [u8]) -> Option<Vec<u8>>;
 }
-pub trait GraphElement: Clone + Copy + Send + Sync {
+pub trait GraphElement: Clone + Copy + Send + Sync + 'static {
     const DOUBLE: bool;
 
     fn to_le_bytes(self) -> [u8; 8];
@@ -44,38 +46,44 @@ pub trait GraphElement: Clone + Copy + Send + Sync {
 }
 
 #[derive(Clone)]
-pub struct GraphLine<T> {
-    pub x: Vec<T>,
-    pub y: Vec<T>,
+pub enum XAxis<T> {
+    X(Vec<T>),
+    Range([T; 2]),
 }
 
 #[derive(Clone)]
-pub struct GraphLinear<T> {
+pub struct Graph<T> {
     pub y: Vec<T>,
-    pub range: [T; 2],
-}
-
-#[derive(Clone)]
-pub enum Graph<T> {
-    Line(GraphLine<T>),
-    Linear(GraphLinear<T>),
+    pub x: XAxis<T>,
 }
 
 impl<T: GraphElement> Graph<T> {
-    pub fn to_message(&self) -> GraphMessage<T> {
-        match self {
-            Graph::Line(graph) => {
-                let bytes_size = std::mem::size_of::<T>() * graph.x.len();
+    pub fn to_graph_data(&self, points: Option<usize>) -> GraphData<T> {
+        let (bytes_size, ptr_pos, points) = match points {
+            Some(points) => {
+                if points > self.y.len() {
+                    panic!("Points selection is bigger than the graph data.");
+                }
+                let ptr_pos = size_of::<T>() * (self.y.len() - points);
+                (size_of::<T>() * points, ptr_pos, points)
+            }
+            None => (std::mem::size_of::<T>() * self.y.len(), 0, self.y.len()),
+        };
+
+        match self.x {
+            XAxis::X(ref x) => {
                 let mut data = vec![0u8; bytes_size * 2];
                 #[cfg(target_endian = "little")]
                 {
                     let dat_slice = unsafe {
-                        std::slice::from_raw_parts(graph.x.as_ptr() as *const u8, bytes_size)
+                        let ptr = x.as_ptr().add(ptr_pos) as *const u8;
+                        std::slice::from_raw_parts(ptr, bytes_size)
                     };
                     data[..bytes_size].copy_from_slice(dat_slice);
 
                     let dat_slice = unsafe {
-                        std::slice::from_raw_parts(graph.y.as_ptr() as *const u8, bytes_size)
+                        let ptr = self.y.as_ptr().add(ptr_pos) as *const u8;
+                        std::slice::from_raw_parts(ptr, bytes_size)
                     };
                     data[bytes_size..].copy_from_slice(dat_slice);
                 }
@@ -86,20 +94,20 @@ impl<T: GraphElement> Graph<T> {
                     unimplemented!("Big endian not implemented yet.");
                 }
 
-                GraphMessage::Add(GraphsData {
+                GraphData {
                     range: None,
-                    points: graph.x.len(),
+                    points,
                     data,
-                })
+                }
             }
 
-            Graph::Linear(graph) => {
-                let bytes_size = std::mem::size_of::<T>() * graph.y.len();
+            XAxis::Range(range) => {
                 let mut data = vec![0u8; bytes_size];
                 #[cfg(target_endian = "little")]
                 {
                     let dat_slice = unsafe {
-                        std::slice::from_raw_parts(graph.y.as_ptr() as *const u8, bytes_size)
+                        let ptr = self.y.as_ptr().add(ptr_pos) as *const u8;
+                        std::slice::from_raw_parts(ptr, bytes_size)
                     };
                     data.copy_from_slice(dat_slice);
                 }
@@ -110,11 +118,11 @@ impl<T: GraphElement> Graph<T> {
                     unimplemented!("Big endian not implemented yet.");
                 }
 
-                GraphMessage::Add(GraphsData {
-                    range: Some(graph.range),
-                    points: graph.y.len(),
+                GraphData {
+                    range: Some(range),
+                    points,
                     data,
-                })
+                }
             }
         }
     }
@@ -145,20 +153,20 @@ impl<T: GraphElement> Graph<T> {
 // }
 
 #[derive(Clone)]
-pub struct GraphsData<T> {
+pub struct GraphData<T> {
     range: Option<[T; 2]>,
     points: usize,
     data: Vec<u8>,
 }
 
 pub enum GraphMessage<T> {
-    Add(GraphsData<T>),
-    AddPoints(u16, GraphsData<T>),
-    Set(u16, GraphsData<T>),
+    Add(GraphData<T>),
+    AddPoints(u16, GraphData<T>),
+    Set(u16, GraphData<T>),
     Reset,
 }
 
-fn write_head<T: GraphElement>(head: &mut [u8], graph_data: &GraphsData<T>) {
+fn write_head<T: GraphElement>(head: &mut [u8], graph_data: &GraphData<T>) {
     let mut flag = if T::DOUBLE { GRAPH_F64 } else { GRAPH_F32 };
 
     match graph_data.range {
@@ -176,8 +184,8 @@ fn write_head<T: GraphElement>(head: &mut [u8], graph_data: &GraphsData<T>) {
 }
 
 impl<T: GraphElement> WriteGraphMessage for GraphMessage<T> {
-    fn write_message(self, head: &mut [u8]) -> Option<Vec<u8>> {
-        match self {
+    fn write_message(self: Box<Self>, head: &mut [u8]) -> Option<Vec<u8>> {
+        match *self {
             GraphMessage::Add(graph_data) => {
                 head[0] = GRAPH_ADD;
                 write_head(head, &graph_data);
@@ -237,7 +245,7 @@ impl<T: GraphElement> GraphMessage<T> {
             GRAPH_ADD => {
                 let (range, points, data) = read_head(head, data)?;
 
-                Ok(GraphMessage::Add(GraphsData {
+                Ok(GraphMessage::Add(GraphData {
                     range,
                     points,
                     data,
@@ -250,7 +258,7 @@ impl<T: GraphElement> GraphMessage<T> {
 
                 Ok(GraphMessage::AddPoints(
                     id,
-                    GraphsData {
+                    GraphData {
                         range,
                         points,
                         data,
@@ -264,7 +272,7 @@ impl<T: GraphElement> GraphMessage<T> {
 
                 Ok(GraphMessage::Set(
                     id,
-                    GraphsData {
+                    GraphData {
                         range,
                         points,
                         data,
@@ -328,14 +336,14 @@ mod tests {
     #[test]
     fn test_graph_all() {
         let data = vec![0u8; 5 * 2 * std::mem::size_of::<f32>()];
-        let graph_data = GraphsData::<f32> {
+        let graph_data = GraphData::<f32> {
             range: None,
             points: 5,
             data,
         };
 
         let mut head = [0u8; HEAD_SIZE];
-        let message = GraphMessage::Add(graph_data.clone());
+        let message = Box::new(GraphMessage::Add(graph_data.clone()));
 
         let data = message.write_message(&mut head[6..]);
         assert_eq!(data, Some(vec![0u8; 5 * 2 * std::mem::size_of::<f32>()]));
@@ -356,7 +364,7 @@ mod tests {
     fn test_reset() {
         let mut head = [0u8; HEAD_SIZE];
 
-        let message = GraphMessage::<f32>::Reset;
+        let message = Box::new(GraphMessage::<f32>::Reset);
         let data = message.write_message(&mut head[6..]);
         assert_eq!(data, None);
 

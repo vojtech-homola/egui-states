@@ -2,13 +2,14 @@ use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
 
-use pyo3::ToPyObject;
+use pyo3::buffer::Element;
+use pyo3::{FromPyObject, ToPyObject};
 
 use egui_pytransport::collections::CollectionItem;
+use egui_pytransport::graphs::GraphElement;
 use egui_pytransport::transport::WriteMessage;
 use egui_pytransport::values::{ReadValue, WriteValue};
 use egui_pytransport::{EnumInt, EnumStr, NoHashMap};
-use egui_pytransport::graphs::GraphElement;
 
 use crate::dict::{PyDict, ValueDict};
 use crate::graphs::{PyGraph, ValueGraph};
@@ -232,7 +233,9 @@ impl ValuesCreator {
         list
     }
 
-    pub fn add_graph<T: GraphElement + 'static>(&mut self) -> Arc<ValueGraph<T>> {
+    pub fn add_graph<T: GraphElement + Element + for<'py> FromPyObject<'py> + 'static>(
+        &mut self,
+    ) -> Arc<ValueGraph<T>> {
         let id = self.get_id();
         let graph = ValueGraph::new(id, self.channel.clone(), self.connected.clone());
 

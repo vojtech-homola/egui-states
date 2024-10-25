@@ -385,31 +385,31 @@ impl StateServerCore {
         }
     }
 
-    fn set_graph(&self, py: Python, value_id: u32, graph: PyObject, update: bool) -> PyResult<()> {
-        match self.values.graphs.get(&value_id) {
-            Some(graph_) => graph_.all_py(graph.bind(py), update),
-            None => Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "Graph value with id {} is not available.",
-                value_id
-            ))),
-        }
-    }
+    // fn set_graph(&self, py: Python, value_id: u32, graph: PyObject, update: bool) -> PyResult<()> {
+    //     match self.values.graphs.get(&value_id) {
+    //         Some(graph_) => graph_.all_py(graph.bind(py), update),
+    //         None => Err(pyo3::exceptions::PyValueError::new_err(format!(
+    //             "Graph value with id {} is not available.",
+    //             value_id
+    //         ))),
+    //     }
+    // }
 
-    fn add_graph_points(
-        &self,
-        py: Python,
-        value_id: u32,
-        node: PyObject,
-        update: bool,
-    ) -> PyResult<()> {
-        match self.values.graphs.get(&value_id) {
-            Some(graph) => graph.add_points_py(node.bind(py), update),
-            None => Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "Graph value with id {} is not available.",
-                value_id
-            ))),
-        }
-    }
+    // fn add_graph_points(
+    //     &self,
+    //     py: Python,
+    //     value_id: u32,
+    //     node: PyObject,
+    //     update: bool,
+    // ) -> PyResult<()> {
+    //     match self.values.graphs.get(&value_id) {
+    //         Some(graph) => graph.add_points_py(node.bind(py), update),
+    //         None => Err(pyo3::exceptions::PyValueError::new_err(format!(
+    //             "Graph value with id {} is not available.",
+    //             value_id
+    //         ))),
+    //     }
+    // }
 
     fn clear_graph(&self, value_id: u32, update: bool) -> PyResult<()> {
         match self.values.graphs.get(&value_id) {
