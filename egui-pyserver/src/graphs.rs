@@ -8,12 +8,13 @@ use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 
 use egui_pytransport::graphs::{Graph, GraphElement, GraphMessage, XAxis};
+use egui_pytransport::nohash::NoHashMap;
 use egui_pytransport::transport::WriteMessage;
 
 use crate::SyncTrait;
 
 pub(crate) trait PyGraph: Send + Sync {
-    fn add_graph_py(
+    fn add_py(
         &self,
         object: &Bound<PyAny>,
         range: Option<Bound<PyAny>>,
@@ -26,91 +27,65 @@ pub(crate) trait PyGraph: Send + Sync {
         range: Option<Bound<PyAny>>,
         update: bool,
     ) -> PyResult<()>;
-    fn set_graph_py(
+    fn set_py(
         &self,
         idx: u16,
         object: &Bound<PyAny>,
         range: Option<Bound<PyAny>>,
         update: bool,
     ) -> PyResult<()>;
-    fn get_graph_py(&self, idx: u16, py: Python) -> PyResult<Bound<PyBytes>>;
+    fn get_py(&self, idx: u16, py: Python) -> PyResult<Bound<PyBytes>>;
 
+    fn delete_py(&self, idx: u16, update: bool) -> PyResult<()>;
     fn len_py(&self) -> u16;
     fn reset_py(&self, update: bool);
 }
 
-fn buffer_to_graph<'py, T>(
-    py: Python,
-    buffer: &PyBuffer<T>,
-    range: Option<Bound<'py, PyAny>>,
-) -> PyResult<Graph<T>>
-where
-    T: GraphElement + Element + FromPyObject<'py>,
-{
-    let shape = buffer.shape();
+struct GraphsHolder<T> {
+    graphs: NoHashMap<u16, Graph<T>>,
+    free_indexes: Vec<u16>,
+}
 
-    let graph = match range {
-        Some(range) => {
-            let range: [T; 2] = range.extract()?;
-
-            if shape.len() != 1 {
-                return Err(PyValueError::new_err(
-                    "Graph data with range must have 1 dimension.",
-                ));
-            }
-
-            if shape[0] < 2 {
-                return Err(PyValueError::new_err(
-                    "Graph data with range must have at least 2 points.",
-                ));
-            }
-
-            let points = shape[0];
-
-            let mut y = vec![T::zero(); points];
-            buffer.copy_to_slice(py, y.as_mut_slice())?;
-
-            Graph {
-                y,
-                x: XAxis::Range(range),
-            }
+impl<T> GraphsHolder<T> {
+    fn new() -> Self {
+        Self {
+            graphs: NoHashMap::default(),
+            free_indexes: Vec::new(),
         }
-        None => {
-            if shape.len() != 2 {
-                return Err(PyValueError::new_err("Graph data must have 2 dimensions."));
-            }
+    }
 
-            if shape[0] != 2 {
-                return Err(PyValueError::new_err(
-                    "Graph data must have at 2 lines (x, y).",
-                ));
-            }
-            if shape[1] < 2 {
-                return Err(PyValueError::new_err(
-                    "Graph data must have at least 2 points.",
-                ));
-            }
+    fn add(&mut self, graph: Graph<T>) -> u16 {
+        let idx = self
+            .free_indexes
+            .pop()
+            .unwrap_or_else(|| self.graphs.len() as u16);
+        self.graphs.insert(idx, graph);
+        idx
+    }
 
-            let points = shape[1];
+    fn set(&mut self, idx: u16, graph: Graph<T>) {
+        self.graphs.insert(idx, graph);
+    }
 
-            let mut x = vec![T::zero(); points];
-            let ptr = buffer.get_ptr(&[0, 0]) as *const T;
-            unsafe { std::ptr::copy_nonoverlapping(ptr, x.as_mut_ptr(), points) };
-
-            let mut y = vec![T::zero(); points];
-            let ptr = buffer.get_ptr(&[1, 0]) as *const T;
-            unsafe { std::ptr::copy_nonoverlapping(ptr, y.as_mut_ptr(), points) };
-
-            Graph { y, x: XAxis::X(x) }
+    fn remove(&mut self, idx: u16) {
+        if self.graphs.remove(&idx).is_some() {
+            self.free_indexes.push(idx);
         }
-    };
+    }
 
-    Ok(graph)
+    fn clear(&mut self) {
+        self.graphs.clear();
+        self.free_indexes.clear();
+    }
+
+    fn len(&self) -> u16 {
+        self.graphs.len() as u16
+    }
 }
 
 pub struct ValueGraph<T> {
     id: u32,
-    graphs: RwLock<Vec<Graph<T>>>,
+    graphs: RwLock<GraphsHolder<T>>,
 
     channel: Sender<WriteMessage>,
     connected: Arc<AtomicBool>,
@@ -122,7 +97,7 @@ impl<T> ValueGraph<T> {
         channel: Sender<WriteMessage>,
         connected: Arc<AtomicBool>,
     ) -> Arc<Self> {
-        let graphs = RwLock::new(Vec::new());
+        let graphs = RwLock::new(GraphsHolder::new());
 
         Arc::new(Self {
             id,
@@ -137,18 +112,16 @@ impl<T> PyGraph for ValueGraph<T>
 where
     T: GraphElement + Element + for<'py> FromPyObject<'py>,
 {
-    fn add_graph_py(
+    fn add_py(
         &self,
         object: &Bound<PyAny>,
         range: Option<Bound<PyAny>>,
         update: bool,
     ) -> PyResult<u16> {
         let buffer = PyBuffer::<T>::extract_bound(object)?;
-        let graph = buffer_to_graph(object.py(), &buffer, range)?;
+        let graph = buffer_to_graph(&buffer, range, None)?.unwrap();
 
         let mut w = self.graphs.write().unwrap();
-        let idx = w.len() as u16;
-
         if self.connected.load(Ordering::Relaxed) {
             let graph_data = graph.to_graph_data(None);
             let message = GraphMessage::Add(graph_data);
@@ -156,12 +129,12 @@ where
                 .send(WriteMessage::Graph(self.id, update, Box::new(message)))
                 .unwrap();
         }
-        w.push(graph);
+        let idx = w.push(graph);
 
         Ok(idx)
     }
 
-    fn set_graph_py(
+    fn set_py(
         &self,
         idx: u16,
         object: &Bound<PyAny>,
@@ -284,7 +257,7 @@ where
         Ok(())
     }
 
-    fn get_graph_py(&self, idx: u16, py: Python) -> PyResult<Bound<PyBytes>> {
+    fn get_py(&self, idx: u16, py: Python) -> PyResult<Bound<PyBytes>> {
         unimplemented!("get_graph_py")
     }
 
@@ -324,4 +297,135 @@ impl<T: GraphElement> SyncTrait for ValueGraph<T> {
                 .unwrap();
         }
     }
+}
+
+fn buffer_to_graph<'py, T>(
+    buffer: &PyBuffer<T>,
+    range: Option<Bound<'py, PyAny>>,
+    graph: Option<&mut Graph<T>>,
+) -> PyResult<Option<Graph<T>>>
+where
+    T: GraphElement + Element + FromPyObject<'py>,
+{
+    let shape = buffer.shape();
+
+    let graph = match range {
+        Some(range) => {
+            let range: [T; 2] = range.extract()?;
+
+            if shape.len() != 1 {
+                return Err(PyValueError::new_err(
+                    "Graph data with range must have 1 dimension.",
+                ));
+            }
+
+            if shape[0] < 2 {
+                return Err(PyValueError::new_err(
+                    "Graph data with range must have at least 2 points.",
+                ));
+            }
+
+            let points = shape[0];
+            let ptr = buffer.get_ptr(&[0, 0]) as *const T;
+
+            match graph {
+                Some(graph) => {
+                    if let XAxis::X(_) = graph.x {
+                        return Err(PyValueError::new_err(
+                            "Graph data with range must have the same x axis type.",
+                        ));
+                    }
+
+                    let original_len = graph.y.len();
+                    graph.y.resize(original_len + points, T::zero());
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(
+                            ptr,
+                            graph.y[original_len..].as_mut_ptr(),
+                            points,
+                        )
+                    };
+
+                    None
+                }
+                None => {
+                    let mut y = vec![T::zero(); points];
+                    unsafe { std::ptr::copy_nonoverlapping(ptr, y.as_mut_ptr(), points) };
+
+                    Some(Graph {
+                        y,
+                        x: XAxis::Range(range),
+                    })
+                }
+            }
+        }
+        None => {
+            if shape.len() != 2 {
+                return Err(PyValueError::new_err("Graph data must have 2 dimensions."));
+            }
+
+            if shape[0] != 2 {
+                return Err(PyValueError::new_err(
+                    "Graph data must have at 2 lines (x, y).",
+                ));
+            }
+            if shape[1] < 2 {
+                return Err(PyValueError::new_err(
+                    "Graph data must have at least 2 points.",
+                ));
+            }
+
+            let points = shape[1];
+
+            match graph {
+                Some(graph) => {
+                    match graph.x {
+                        XAxis::X(ref mut x) => {
+                            let original_len = x.len();
+                            x.resize(points + original_len, T::zero());
+                            let ptr = buffer.get_ptr(&[0, 0]) as *const T;
+                            unsafe {
+                                std::ptr::copy_nonoverlapping(
+                                    ptr,
+                                    x[original_len..].as_mut_ptr(),
+                                    points,
+                                )
+                            };
+                        }
+                        XAxis::Range(_) => {
+                            return Err(PyValueError::new_err(
+                                "Graph data with range must have the same x axis type.",
+                            ));
+                        }
+                    }
+
+                    let original_len = graph.y.len();
+                    graph.y.resize(points + original_len, T::zero());
+                    let ptr = buffer.get_ptr(&[1, 0]) as *const T;
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(
+                            ptr,
+                            graph.y[original_len..].as_mut_ptr(),
+                            points,
+                        )
+                    };
+
+                    None
+                }
+                None => {
+                    let mut x = vec![T::zero(); points];
+                    let ptr = buffer.get_ptr(&[0, 0]) as *const T;
+                    unsafe { std::ptr::copy_nonoverlapping(ptr, x.as_mut_ptr(), points) };
+
+                    let mut y = vec![T::zero(); points];
+                    let ptr = buffer.get_ptr(&[1, 0]) as *const T;
+                    unsafe { std::ptr::copy_nonoverlapping(ptr, y.as_mut_ptr(), points) };
+
+                    Some(Graph { y, x: XAxis::X(x) })
+                }
+            }
+        }
+    };
+
+    Ok(graph)
 }
