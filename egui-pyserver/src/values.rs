@@ -10,7 +10,6 @@ use egui_pytransport::transport::WriteMessage;
 use egui_pytransport::values::{ReadValue, ValueMessage, WriteValue};
 use egui_pytransport::EnumInt;
 
-use crate::py_convert::FromPyValue;
 use crate::signals::ChangedValues;
 use crate::{Acknowledge, SyncTrait};
 
@@ -58,14 +57,14 @@ impl<T> Value<T> {
 
 impl<T> PyValue for Value<T>
 where
-    T: WriteValue + Clone + FromPyValue + ToPyObject,
+    T: WriteValue + Clone + ToPyObject + for<'py> FromPyObject<'py>,
 {
     fn get_py(&self, py: Python) -> PyObject {
         self.value.read().unwrap().0.to_object(py)
     }
 
     fn set_py(&self, value: &Bound<PyAny>, set_signal: bool, update: bool) -> PyResult<()> {
-        let value = T::from_python(value)?;
+        let value: T = value.extract()?;
         if self.connected.load(Ordering::Relaxed) {
             let message = WriteMessage::Value(self.id, update, value.clone().into_message());
             let mut w = self.value.write().unwrap();
@@ -161,14 +160,14 @@ impl<T> ValueStatic<T> {
 
 impl<T> PyValueStatic for ValueStatic<T>
 where
-    T: WriteValue + Clone + FromPyValue + ToPyObject,
+    T: WriteValue + Clone + for<'py> FromPyObject<'py> + ToPyObject,
 {
     fn get_py(&self, py: Python) -> PyObject {
         self.value.read().unwrap().to_object(py)
     }
 
     fn set_py(&self, value: &Bound<PyAny>, update: bool) -> PyResult<()> {
-        let value = T::from_python(value)?;
+        let value: T = value.extract()?;
         if self.connected.load(Ordering::Relaxed) {
             let message = WriteMessage::Static(self.id, update, value.clone().into_message());
             let mut v = self.value.write().unwrap();
