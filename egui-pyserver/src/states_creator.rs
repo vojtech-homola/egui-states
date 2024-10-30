@@ -1,7 +1,9 @@
+use std::hash::Hash;
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
 
+use pyo3::prelude::*;
 use pyo3::ToPyObject;
 
 use egui_pytransport::collections::CollectionItem;
@@ -13,7 +15,6 @@ use crate::dict::{PyDict, ValueDict};
 use crate::graphs::{GraphType, PyGraph, ValueGraph};
 use crate::image::ImageValue;
 use crate::list::{PyListTrait, ValueList};
-use crate::py_convert::FromPyValue;
 use crate::signals::ChangedValues;
 use crate::values::{ProccesValue, PyValue, PyValueStatic};
 use crate::values::{Signal, Value, ValueEnum, ValueStatic};
@@ -127,7 +128,7 @@ impl ValuesCreator {
 
     pub fn add_value<T>(&mut self, value: T) -> Arc<Value<T>>
     where
-        T: ReadValue + WriteValue + ToPyObject + FromPyValue,
+        T: ReadValue + WriteValue + ToPyObject + for<'py> FromPyObject<'py>,
     {
         let id = self.get_id();
         let value = Value::new(
@@ -148,7 +149,7 @@ impl ValuesCreator {
 
     pub fn add_static_value<T>(&mut self, value: T) -> Arc<ValueStatic<T>>
     where
-        T: WriteValue + ToPyObject + FromPyValue + Sync + Send + Clone + 'static,
+        T: WriteValue + ToPyObject + for<'py> FromPyObject<'py> + Sync + Send + Clone + 'static,
     {
         let id = self.get_id();
         let value = ValueStatic::new(id, value, self.channel.clone(), self.connected.clone());
@@ -203,8 +204,8 @@ impl ValuesCreator {
 
     pub fn add_dict<K, V>(&mut self) -> Arc<ValueDict<K, V>>
     where
-        K: CollectionItem + ToPyObject + FromPyValue + Eq + std::hash::Hash + 'static,
-        V: CollectionItem + ToPyObject + FromPyValue + 'static,
+        K: CollectionItem + ToPyObject + for<'py> FromPyObject<'py> + Eq + Hash + 'static,
+        V: CollectionItem + ToPyObject + for<'py> FromPyObject<'py> + 'static,
     {
         let id = self.get_id();
         let dict = ValueDict::new(id, self.channel.clone(), self.connected.clone());
@@ -217,7 +218,7 @@ impl ValuesCreator {
 
     pub fn add_list<T>(&mut self) -> Arc<ValueList<T>>
     where
-        T: CollectionItem + ToPyObject + FromPyValue + 'static,
+        T: CollectionItem + ToPyObject + for<'py> FromPyObject<'py> + 'static,
     {
         let id = self.get_id();
         let list = ValueList::new(id, self.channel.clone(), self.connected.clone());

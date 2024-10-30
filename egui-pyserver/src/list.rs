@@ -9,7 +9,6 @@ use egui_pytransport::collections::CollectionItem;
 use egui_pytransport::list::ListMessage;
 use egui_pytransport::transport::WriteMessage;
 
-use crate::py_convert::FromPyValue;
 use crate::SyncTrait;
 
 pub(crate) trait PyListTrait: Send + Sync {
@@ -46,7 +45,7 @@ impl<T> ValueList<T> {
 
 impl<T> PyListTrait for ValueList<T>
 where
-    T: CollectionItem + ToPyObject + FromPyValue,
+    T: CollectionItem + ToPyObject + for<'py> FromPyObject<'py>,
 {
     fn get_py(&self, py: Python) -> PyObject {
         let list = self.list.read().unwrap().to_object(py);
@@ -66,7 +65,7 @@ where
         let list = list.downcast::<pyo3::types::PyList>()?;
         let mut data = Vec::new();
         for val in list {
-            data.push(T::from_python(&val)?);
+            data.push(val.extract()?);
         }
 
         let mut l = self.list.write().unwrap();
@@ -84,7 +83,7 @@ where
     }
 
     fn set_item_py(&self, idx: usize, value: &Bound<PyAny>, update: bool) -> PyResult<()> {
-        let value = T::from_python(&value)?;
+        let value: T = value.extract()?;
         let mut list = self.list.write().unwrap();
         if idx >= list.len() {
             return Err(PyIndexError::new_err("list index out of range"));
@@ -119,7 +118,7 @@ where
     }
 
     fn add_item_py(&self, value: &Bound<PyAny>, update: bool) -> PyResult<()> {
-        let value = T::from_python(&value)?;
+        let value: T = value.extract()?;
 
         let mut list = self.list.write().unwrap();
         if self.connected.load(Ordering::Relaxed) {
