@@ -112,7 +112,16 @@ impl StateServerCore {
         self.server.write().unwrap().disconnect_client();
     }
 
-    fn set_register_value(&self, value_id: u32, register: bool) {
+    #[pyo3(signature=(duration=None))]
+    fn update(&self, duration: Option<f32>) {
+        if self.connected.load(atomic::Ordering::Relaxed) {
+            let message = CommandMessage::Update(duration.unwrap_or(0.0));
+            self.channel.send(WriteMessage::Command(message)).unwrap();
+        }
+    }
+
+    // signals ----------------------------------------------------------------
+    fn value_set_register(&self, value_id: u32, register: bool) {
         if register {
             self.registed_values.write().unwrap().insert(value_id);
         } else {
@@ -120,7 +129,7 @@ impl StateServerCore {
         }
     }
 
-    fn get_signal_value<'py, 'a>(
+    fn value_get_signal<'py, 'a>(
         &'a self,
         py: Python<'py>,
         thread_id: u32,
@@ -136,16 +145,16 @@ impl StateServerCore {
         (value_id, args)
     }
 
-    fn set_value(
+    // values -----------------------------------------------------------------
+    fn value_set(
         &self,
-        py: Python,
         value_id: u32,
-        value: PyObject,
+        value: &Bound<PyAny>,
         set_signal: bool,
         update: bool,
     ) -> PyResult<()> {
         match self.values.values.get(&value_id) {
-            Some(setter) => setter.set_py(value.bind(py), set_signal, update),
+            Some(setter) => setter.set_py(value, set_signal, update),
             None => Err(pyo3::exceptions::PyValueError::new_err(format!(
                 "Value with id {} is not available.",
                 value_id
@@ -153,7 +162,7 @@ impl StateServerCore {
         }
     }
 
-    fn get_value(&self, py: Python, value_id: u32) -> PyResult<PyObject> {
+    fn value_get(&self, py: Python, value_id: u32) -> PyResult<PyObject> {
         match self.values.values.get(&value_id) {
             Some(getter) => Ok(getter.get_py(py)),
             None => Err(pyo3::exceptions::PyValueError::new_err(format!(
@@ -163,7 +172,8 @@ impl StateServerCore {
         }
     }
 
-    fn set_static(&self, py: Python, value_id: u32, value: PyObject, update: bool) -> PyResult<()> {
+    // static values ----------------------------------------------------------
+    fn static_set(&self, py: Python, value_id: u32, value: PyObject, update: bool) -> PyResult<()> {
         match self.values.static_values.get(&value_id) {
             Some(static_) => static_.set_py(value.bind(py), update),
             None => Err(pyo3::exceptions::PyValueError::new_err(format!(
@@ -173,7 +183,7 @@ impl StateServerCore {
         }
     }
 
-    fn get_static(&self, py: Python, value_id: u32) -> PyResult<PyObject> {
+    fn static_get(&self, py: Python, value_id: u32) -> PyResult<PyObject> {
         match self.values.static_values.get(&value_id) {
             Some(value) => Ok(value.get_py(py)),
             None => Err(pyo3::exceptions::PyValueError::new_err(format!(
@@ -183,8 +193,9 @@ impl StateServerCore {
         }
     }
 
+    // images -----------------------------------------------------------------
     #[pyo3(signature = (value_id, image, update, rect=None))]
-    fn set_image(
+    fn image_set(
         &self,
         py: Python,
         value_id: u32,
@@ -206,7 +217,7 @@ impl StateServerCore {
     }
 
     #[pyo3(signature = (value_id, update, histogram=None))]
-    fn set_histogram(
+    fn histogram_set(
         &self,
         py: Python,
         value_id: u32,
@@ -229,7 +240,8 @@ impl StateServerCore {
         }
     }
 
-    fn get_dict(&self, py: Python, value_id: u32) -> PyResult<PyObject> {
+    // dicts ------------------------------------------------------------------
+    fn dict_get(&self, py: Python, value_id: u32) -> PyResult<PyObject> {
         match self.values.dicts.get(&value_id) {
             Some(dict) => Ok(dict.get_py(py)),
             None => Err(pyo3::exceptions::PyValueError::new_err(format!(
@@ -239,9 +251,9 @@ impl StateServerCore {
         }
     }
 
-    fn get_dict_item(&self, py: Python, value_id: u32, key: PyObject) -> PyResult<PyObject> {
+    fn dict_item_get(&self, value_id: u32, key: &Bound<PyAny>) -> PyResult<PyObject> {
         match self.values.dicts.get(&value_id) {
-            Some(dict) => dict.get_item_py(key.bind(py)),
+            Some(dict) => dict.get_item_py(key),
             None => Err(pyo3::exceptions::PyValueError::new_err(format!(
                 "Dict value with id {} is not available.",
                 value_id
@@ -249,9 +261,9 @@ impl StateServerCore {
         }
     }
 
-    fn set_dict(&self, py: Python, value_id: u32, dict: PyObject, update: bool) -> PyResult<()> {
+    fn dict_set(&self, value_id: u32, dict: &Bound<PyAny>, update: bool) -> PyResult<()> {
         match self.values.dicts.get(&value_id) {
-            Some(dict_) => dict_.set_py(dict.bind(py), update),
+            Some(dict_) => dict_.set_py(dict, update),
             None => Err(pyo3::exceptions::PyValueError::new_err(format!(
                 "Dict value with id {} is not available.",
                 value_id
@@ -259,16 +271,15 @@ impl StateServerCore {
         }
     }
 
-    fn set_dict_item(
+    fn dict_item_set(
         &self,
-        py: Python,
         value_id: u32,
-        key: PyObject,
-        value: PyObject,
+        key: &Bound<PyAny>,
+        value: &Bound<PyAny>,
         update: bool,
     ) -> PyResult<()> {
         match self.values.dicts.get(&value_id) {
-            Some(dict) => dict.set_item_py(key.bind(py), value.bind(py), update),
+            Some(dict) => dict.set_item_py(key, value, update),
             None => Err(pyo3::exceptions::PyValueError::new_err(format!(
                 "Dict value with id {} is not available.",
                 value_id
@@ -276,15 +287,9 @@ impl StateServerCore {
         }
     }
 
-    fn del_dict_item(
-        &self,
-        py: Python,
-        value_id: u32,
-        key: PyObject,
-        update: bool,
-    ) -> PyResult<()> {
+    fn dict_item_del(&self, value_id: u32, key: &Bound<PyAny>, update: bool) -> PyResult<()> {
         match self.values.dicts.get(&value_id) {
-            Some(dict) => dict.del_item_py(key.bind(py), update),
+            Some(dict) => dict.del_item_py(key, update),
             None => Err(pyo3::exceptions::PyValueError::new_err(format!(
                 "Dict value with id {} is not available.",
                 value_id
@@ -302,7 +307,8 @@ impl StateServerCore {
         }
     }
 
-    fn get_list(&self, py: Python, value_id: u32) -> PyResult<PyObject> {
+    // lists ------------------------------------------------------------------
+    fn list_get(&self, py: Python, value_id: u32) -> PyResult<PyObject> {
         match self.values.lists.get(&value_id) {
             Some(list) => Ok(list.get_py(py)),
             None => Err(pyo3::exceptions::PyValueError::new_err(format!(
@@ -312,7 +318,7 @@ impl StateServerCore {
         }
     }
 
-    fn get_list_item(&self, py: Python, value_id: u32, idx: usize) -> PyResult<PyObject> {
+    fn list_item_get(&self, py: Python, value_id: u32, idx: usize) -> PyResult<PyObject> {
         match self.values.lists.get(&value_id) {
             Some(list) => list.get_item_py(py, idx),
             None => Err(pyo3::exceptions::PyValueError::new_err(format!(
@@ -322,9 +328,9 @@ impl StateServerCore {
         }
     }
 
-    fn set_list(&self, py: Python, value_id: u32, list: PyObject, update: bool) -> PyResult<()> {
+    fn list_set(&self, value_id: u32, list: &Bound<PyAny>, update: bool) -> PyResult<()> {
         match self.values.lists.get(&value_id) {
-            Some(list_) => list_.set_py(list.bind(py), update),
+            Some(list_) => list_.set_py(list, update),
             None => Err(pyo3::exceptions::PyValueError::new_err(format!(
                 "List value with id {} is not available.",
                 value_id
@@ -332,16 +338,15 @@ impl StateServerCore {
         }
     }
 
-    fn set_list_item(
+    fn list_item_set(
         &self,
-        py: Python,
         value_id: u32,
         idx: usize,
-        value: PyObject,
+        value: &Bound<PyAny>,
         update: bool,
     ) -> PyResult<()> {
         match self.values.lists.get(&value_id) {
-            Some(list) => list.set_item_py(idx, value.bind(py), update),
+            Some(list) => list.set_item_py(idx, value, update),
             None => Err(pyo3::exceptions::PyValueError::new_err(format!(
                 "List value with id {} is not available.",
                 value_id
@@ -349,7 +354,7 @@ impl StateServerCore {
         }
     }
 
-    fn del_list_item(&self, value_id: u32, idx: usize, update: bool) -> PyResult<()> {
+    fn list_item_del(&self, value_id: u32, idx: usize, update: bool) -> PyResult<()> {
         match self.values.lists.get(&value_id) {
             Some(list) => list.del_item_py(idx, update),
             None => Err(pyo3::exceptions::PyValueError::new_err(format!(
@@ -359,15 +364,9 @@ impl StateServerCore {
         }
     }
 
-    fn add_list_item(
-        &self,
-        py: Python,
-        value_id: u32,
-        value: PyObject,
-        update: bool,
-    ) -> PyResult<()> {
+    fn list_item_add(&self, value_id: u32, value: &Bound<PyAny>, update: bool) -> PyResult<()> {
         match self.values.lists.get(&value_id) {
-            Some(list) => list.add_item_py(value.bind(py), update),
+            Some(list) => list.add_item_py(value, update),
             None => Err(pyo3::exceptions::PyValueError::new_err(format!(
                 "List value with id {} is not available.",
                 value_id
@@ -385,36 +384,57 @@ impl StateServerCore {
         }
     }
 
-    // fn set_graph(&self, py: Python, value_id: u32, graph: PyObject, update: bool) -> PyResult<()> {
-    //     match self.values.graphs.get(&value_id) {
-    //         Some(graph_) => graph_.all_py(graph.bind(py), update),
-    //         None => Err(pyo3::exceptions::PyValueError::new_err(format!(
-    //             "Graph value with id {} is not available.",
-    //             value_id
-    //         ))),
-    //     }
-    // }
+    // graphs -----------------------------------------------------------------
+    #[pyo3(signature = (value_id, idx, graph, update, range=None))]
+    fn graphs_set(
+        &self,
+        value_id: u32,
+        idx: u16,
+        graph: &Bound<PyAny>,
+        update: bool,
+        range: Option<Bound<PyAny>>,
+    ) -> PyResult<()> {
+        match self.values.graphs.get(&value_id) {
+            Some(graph_) => graph_.set_py(idx, graph, range, update),
+            None => Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "Graph value with id {} is not available.",
+                value_id
+            ))),
+        }
+    }
 
-    // fn add_graph_points(
-    //     &self,
-    //     py: Python,
-    //     value_id: u32,
-    //     node: PyObject,
-    //     update: bool,
-    // ) -> PyResult<()> {
-    //     match self.values.graphs.get(&value_id) {
-    //         Some(graph) => graph.add_points_py(node.bind(py), update),
-    //         None => Err(pyo3::exceptions::PyValueError::new_err(format!(
-    //             "Graph value with id {} is not available.",
-    //             value_id
-    //         ))),
-    //     }
-    // }
+    fn graphs_get(&self, py: Python, value_id: u32, idx: u16) -> PyResult<PyObject> {
+        match self.values.graphs.get(&value_id) {
+            Some(graph) => graph.get_py(py, idx),
+            None => Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "Graph value with id {} is not available.",
+                value_id
+            ))),
+        }
+    }
 
-    fn clear_graph(&self, value_id: u32, update: bool) -> PyResult<()> {
+    #[pyo3(signature = (value_id, idx, points, update, range=None))]
+    fn graphs_add_points(
+        &self,
+        value_id: u32,
+        idx: u16,
+        points: &Bound<PyAny>,
+        update: bool,
+        range: Option<Bound<PyAny>>,
+    ) -> PyResult<()> {
+        match self.values.graphs.get(&value_id) {
+            Some(graph) => graph.add_points_py(idx, points, range, update),
+            None => Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "Graph value with id {} is not available.",
+                value_id
+            ))),
+        }
+    }
+
+    fn graphs_remove(&self, value_id: u32, idx: u16, update: bool) -> PyResult<()> {
         match self.values.graphs.get(&value_id) {
             Some(graph) => {
-                graph.reset_py(update);
+                graph.remove_py(idx, update);
                 Ok(())
             }
             None => Err(pyo3::exceptions::PyValueError::new_err(format!(
@@ -424,11 +444,26 @@ impl StateServerCore {
         }
     }
 
-    #[pyo3(signature=(duration=None))]
-    fn update(&self, duration: Option<f32>) {
-        if self.connected.load(atomic::Ordering::Relaxed) {
-            let message = CommandMessage::Update(duration.unwrap_or(0.0));
-            self.channel.send(WriteMessage::Command(message)).unwrap();
+    fn graphs_len(&self, value_id: u32) -> PyResult<u16> {
+        match self.values.graphs.get(&value_id) {
+            Some(graph) => Ok(graph.len_py()),
+            None => Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "Graph value with id {} is not available.",
+                value_id
+            ))),
+        }
+    }
+
+    fn graphs_clear(&self, value_id: u32, update: bool) -> PyResult<()> {
+        match self.values.graphs.get(&value_id) {
+            Some(graph) => {
+                graph.clear_py(update);
+                Ok(())
+            }
+            None => Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "Graph value with id {} is not available.",
+                value_id
+            ))),
         }
     }
 }

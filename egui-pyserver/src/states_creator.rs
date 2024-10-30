@@ -233,7 +233,9 @@ impl ValuesCreator {
         list
     }
 
-    pub fn add_graph<T: GraphElement + Element + for<'py> FromPyObject<'py> + 'static>(
+    pub fn add_graph<
+        T: GraphElement + Element + for<'py> FromPyObject<'py> + ToPyObject + 'static,
+    >(
         &mut self,
     ) -> Arc<ValueGraph<T>> {
         let id = self.get_id();

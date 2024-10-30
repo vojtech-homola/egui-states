@@ -27,7 +27,7 @@ fn handle_message(
     let update = match message {
         ReadMessage::Value(id, updata, head, data) => match vals.values.get(&id) {
             Some(value) => {
-                value.update_value(&head, data)?;
+                value.update_value(head, data)?;
                 updata
             }
             None => return Err(format!("Value with id {} not found", id)),
@@ -35,7 +35,7 @@ fn handle_message(
 
         ReadMessage::Static(id, updata, head, data) => match vals.static_values.get(&id) {
             Some(value) => {
-                value.update_value(&head, data)?;
+                value.update_value(head, data)?;
                 updata
             }
             None => return Err(format!("Static with id {} not found", id)),
@@ -59,7 +59,7 @@ fn handle_message(
 
         ReadMessage::Dict(id, updata, head, data) => match vals.dicts.get(&id) {
             Some(value) => {
-                value.update_dict(&head, data)?;
+                value.update_dict(head, data)?;
                 updata
             }
             None => return Err(format!("Dict with id {} not found", id)),
@@ -67,15 +67,15 @@ fn handle_message(
 
         ReadMessage::List(id, updata, head, data) => match vals.lists.get(&id) {
             Some(value) => {
-                value.update_list(&head, data)?;
+                value.update_list(head, data)?;
                 updata
             }
             None => return Err(format!("List with id {} not found", id)),
         },
 
-        ReadMessage::Graph(id, updata, graph) => match vals.graphs.get(&id) {
+        ReadMessage::Graph(id, updata, head, data) => match vals.graphs.get(&id) {
             Some(value) => {
-                value.update_graph(graph)?;
+                value.update_graph(head, data)?;
                 updata
             }
             None => return Err(format!("Graph with id {} not found", id)),

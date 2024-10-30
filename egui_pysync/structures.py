@@ -59,7 +59,7 @@ class _SignalsManager:
 
     def _run(self, thread_id) -> None:
         while True:
-            ind, args = self._server.get_signal_value(thread_id)
+            ind, args = self._server.value_get_signal(thread_id)
             if ind in self._callbacks:
                 if ind in self._args_parsers:
                     for callback in self._callbacks[ind]:
@@ -89,18 +89,18 @@ class _SignalsManager:
             self._callbacks[value_id].append(callback)
             if args_parser:
                 self._args_parsers[value_id] = args_parser
-            self._server.set_register_value(value_id, True)
+            self._server.value_set_register(value_id, True)
 
     def remove_callback(self, value_id: int, callback: Callable) -> None:
         if value_id in self._callbacks and callback in self._callbacks[value_id]:
             self._callbacks[value_id].remove(callback)
             if not self._callbacks[value_id]:
-                self._server.set_register_value(value_id, False)
+                self._server.value_set_register(value_id, False)
 
     def clear_callbacks(self, value_id: int) -> None:
         if value_id in self._callbacks:
             self._callbacks[value_id].clear()
-            self._server.set_register_value(value_id, False)
+            self._server.value_set_register(value_id, False)
 
 
 class ErrorSignal:
@@ -160,7 +160,7 @@ class Value[T](_ValueBase):
             set_signal(bool, optional): Whether to set the signal. Defaults to True.
             update(bool, optional): Whether to update the UI. Defaults to False.
         """
-        self._server.set_value(self._value_id, value, set_signal, update)
+        self._server.value_set(self._value_id, value, set_signal, update)
 
     def get(self) -> T:
         """Get the value of the UI element.
@@ -168,7 +168,7 @@ class Value[T](_ValueBase):
         Returns:
             T: The value of the UI element.
         """
-        return self._server.get_value(self._value_id)
+        return self._server.value_get(self._value_id)
 
     def connect(self, callback: Callable[[T], None]) -> None:
         """Connect a callback to the value.
@@ -203,7 +203,7 @@ class ValueStatic[T](_ValueBase):
             value(T): The value to set.
             update(bool, optional): Whether to update the UI. Defaults to False.
         """
-        self._server.set_static(self._value_id, value, update)
+        self._server.static_set(self._value_id, value, update)
 
     def get(self) -> T:
         """Get the static value of the UI.
@@ -211,7 +211,7 @@ class ValueStatic[T](_ValueBase):
         Returns:
             T: The static value.
         """
-        return self._server.get_static(self._value_id)
+        return self._server.static_get(self._value_id)
 
 
 class ValueEnum[T](_ValueBase):
@@ -229,7 +229,7 @@ class ValueEnum[T](_ValueBase):
             set_signal(bool, optional): Whether to set the signal. Defaults to True.
             update(bool, optional): Whether to update the UI. Defaults to False.
         """
-        self._server.set_value(self._value_id, value.value, set_signal, update)  # type: ignore
+        self._server.value_set(self._value_id, value.value, set_signal, update)  # type: ignore
 
     def get(self) -> T:
         """Get the value of the UI element.
@@ -237,7 +237,7 @@ class ValueEnum[T](_ValueBase):
         Returns:
             T: The value of the UI element.
         """
-        str_value: int = self._server.get_value(self._value_id)
+        str_value: int = self._server.value_get(self._value_id)
         return self._enum_type(str_value)  # type: ignore
 
     def connect(self, callback: Callable[[T], None]) -> None:
@@ -327,7 +327,7 @@ class ValueImage(_ValueBase):
             rect(list[int], optional): The rectangle [y, x, height, width]. Defaults to None.
             update(bool, optional): Whether to update the UI. Defaults to True.
         """
-        self._server.set_image(self._value_id, image, update, rect)
+        self._server.image_set(self._value_id, image, update, rect)
 
     def set_histogram(self, histogram: Buffer | None = None, update: bool = False) -> None:
         """Set the histogram in the UI image.
@@ -336,7 +336,7 @@ class ValueImage(_ValueBase):
             histogram(Buffer, optional): The histogram numpy array of float32 normalized to 1. Defaults to None.
             update(bool, optional): Whether to update the UI. Defaults to True.
         """
-        self._server.set_histogram(self._value_id, update, histogram)
+        self._server.histogram_set(self._value_id, update, histogram)
 
 
 class ValueDict[K, V](_ValueBase):
@@ -351,7 +351,7 @@ class ValueDict[K, V](_ValueBase):
             value(dict[K, V]): The dict to set.
             update(bool, optional): Whether to update the UI. Defaults to False.
         """
-        self._server.set_dict(self._value_id, value, update)
+        self._server.dict_set(self._value_id, value, update)
 
     def get(self) -> dict[K, V]:
         """Get the dict in the UI dict.
@@ -359,7 +359,7 @@ class ValueDict[K, V](_ValueBase):
         Returns:
             dict[K, V]: The dict in the UI dict.
         """
-        return self._server.get_dict(self._value_id)
+        return self._server.dict_get(self._value_id)
 
     def set_item(self, key: K, value: V, update: bool = False) -> None:
         """Set the item in the UI dict.
@@ -369,7 +369,7 @@ class ValueDict[K, V](_ValueBase):
             value(V): The value of the item.
             update(bool, optional): Whether to update the UI. Defaults to False.
         """
-        self._server.set_dict_item(self._value_id, key, value, update)
+        self._server.dict_item_set(self._value_id, key, value, update)
 
     def get_item(self, key: K) -> V:
         """Get the item in the UI dict.
@@ -380,7 +380,7 @@ class ValueDict[K, V](_ValueBase):
         Returns:
             V: The value of the item.
         """
-        return self._server.get_dict_item(self._value_id, key)
+        return self._server.dict_item_get(self._value_id, key)
 
     def remove_item(self, key: K, update: bool = False) -> None:
         """Remove the item from the UI dict.
@@ -389,7 +389,7 @@ class ValueDict[K, V](_ValueBase):
             key(K): The key of the item.
             update(bool, optional): Whether to update the UI. Defaults to False.
         """
-        self._server.del_dict_item(self._value_id, key, update)
+        self._server.dict_item_del(self._value_id, key, update)
 
     def __getitem__(self, key: K) -> V:
         """Get the item in the UI dict."""
@@ -416,7 +416,7 @@ class ValueList[T](_ValueBase):
             value(list[T]): The list to set.
             update(bool, optional): Whether to update the UI. Defaults to False.
         """
-        self._server.set_list(self._value_id, value, update)
+        self._server.list_set(self._value_id, value, update)
 
     def get(self) -> list[T]:
         """Get the list in the UI list.
@@ -424,7 +424,7 @@ class ValueList[T](_ValueBase):
         Returns:
             list[T]: The list in the UI list.
         """
-        return self._server.get_list(self._value_id)
+        return self._server.list_get(self._value_id)
 
     def set_item(self, idx: int, value: T, update: bool = False) -> None:
         """Set the item in the UI list.
@@ -434,7 +434,7 @@ class ValueList[T](_ValueBase):
             value(T): The value of the item.
             update(bool, optional): Whether to update the UI. Defaults to False.
         """
-        self._server.set_list_item(self._value_id, idx, value, update)
+        self._server.list_item_set(self._value_id, idx, value, update)
 
     def get_item(self, idx: int) -> T:
         """Get the item in the UI list.
@@ -445,7 +445,7 @@ class ValueList[T](_ValueBase):
         Returns:
             T: The value of the item.
         """
-        return self._server.get_list_item(self._value_id, idx)
+        return self._server.list_item_get(self._value_id, idx)
 
     def remove_item(self, idx: int, update: bool = False) -> None:
         """Remove the item from the UI list.
@@ -454,7 +454,7 @@ class ValueList[T](_ValueBase):
             idx(int): The index of the item.
             update(bool, optional): Whether to update the UI. Defaults to False.
         """
-        self._server.del_list_item(self._value_id, idx, update)
+        self._server.list_item_del(self._value_id, idx, update)
 
     def add_item(self, value: T, update: bool = False) -> None:
         """Add the item to the UI list.
@@ -463,7 +463,7 @@ class ValueList[T](_ValueBase):
             value(T): The value of the item.
             update(bool, optional): Whether to update the UI. Defaults to False.
         """
-        self._server.add_list_item(self._value_id, value, update)
+        self._server.list_item_add(self._value_id, value, update)
 
     def __getitem__(self, idx: int) -> T:
         """Get the item in the UI list."""

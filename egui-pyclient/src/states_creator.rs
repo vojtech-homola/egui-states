@@ -3,12 +3,13 @@ use std::sync::mpsc::Sender;
 use std::sync::Arc;
 
 use egui_pytransport::collections::CollectionItem;
+use egui_pytransport::graphs::GraphElement;
 use egui_pytransport::transport::WriteMessage;
 use egui_pytransport::values::{ReadValue, WriteValue};
 use egui_pytransport::{EnumInt, NoHashMap};
 
 use crate::dict::{DictUpdate, ValueDict};
-use crate::graphs::{GraphType, GraphUpdate, ValueGraph};
+use crate::graphs::{GraphUpdate, ValueGraph};
 use crate::image::{ImageUpdate, ImageValue};
 use crate::list::{ListUpdate, ValueList};
 use crate::values::{Signal, Value, ValueEnum, ValueStatic, ValueUpdate};
@@ -149,7 +150,7 @@ impl ValuesCreator {
         value
     }
 
-    pub fn add_graph<T: GraphType + 'static>(&mut self) -> Arc<ValueGraph<T>> {
+    pub fn add_graph<T: GraphElement + 'static>(&mut self) -> Arc<ValueGraph<T>> {
         let id = self.get_id();
         let value = ValueGraph::new(id);
 
