@@ -479,6 +479,9 @@ class ValueGraph(_ValueBase):
 
     _has_signal = False
 
+    def __init__(self, counter: _Counter):  # noqa: D107
+        super().__init__(counter)
+
     def set(self, graph: Buffer, update: bool = False) -> None:
         """Set the graph in the UI graph.
 

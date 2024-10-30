@@ -102,6 +102,54 @@ impl<T: GraphElement> Graph<T> {
         }
     }
 
+    pub fn add_points_from_data(&mut self, graph_data: GraphData<T>) -> Result<(), String> {
+        let GraphData {
+            points,
+            data,
+            range,
+        } = graph_data;
+
+        #[cfg(target_endian = "little")]
+        {
+            match (&mut self.x, range) {
+                (XAxis::X(ref mut x), None) => {
+                    let old_size = x.len();
+                    x.resize(old_size + points, T::zero());
+                    let mut ptr = data.as_ptr() as *const T;
+                    let data_slice = unsafe { std::slice::from_raw_parts(ptr, points) };
+                    x[old_size..].copy_from_slice(data_slice);
+
+                    self.y.resize(old_size + points, T::zero());
+                    let data_slice = unsafe {
+                        ptr = ptr.add(points);
+                        std::slice::from_raw_parts(ptr, points)
+                    };
+                    self.y[old_size..].copy_from_slice(data_slice);
+
+                    Ok(())
+                }
+                (XAxis::Range(old_range), Some(new_range)) => {
+                    let old_size = self.y.len();
+                    self.y.resize(old_size + points, T::zero());
+                    let data_slice = unsafe {
+                        let ptr = data.as_ptr() as *const T;
+                        std::slice::from_raw_parts(ptr, points)
+                    };
+                    self.y[old_size..].copy_from_slice(data_slice);
+
+                    *old_range = new_range;
+                    Ok(())
+                }
+                _ => return Err("Incoming Graph data and graph are not compatible.".to_string()),
+            }
+        }
+
+        #[cfg(target_endian = "big")]
+        {
+            unimplemented!("Big endian not implemented yet.");
+        }
+    }
+
     pub fn from_graph_data(graph_data: GraphData<T>) -> Self {
         let GraphData {
             range,

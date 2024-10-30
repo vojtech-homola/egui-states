@@ -28,15 +28,18 @@ impl<T: Clone + Copy> ValueGraph<T> {
         self.graphs.read().unwrap().len()
     }
 
-    pub fn process<R>(&self, idx: u16, op: impl Fn(Option<&(Graph<T>, bool)>) -> R) -> R {
+    pub fn process<R>(&self, idx: u16, op: impl Fn(Option<&Graph<T>>, bool) -> R) -> R {
         let mut g = self.graphs.write().unwrap();
         let graph = g.get_mut(&idx);
-        let result = op(g.get(&idx));
-        if let Some(graph) = graph {
-            graph.1 = false;
-        }
 
-        result
+        match graph {
+            Some((graph, changed)) => {
+                let r = op(Some(graph), *changed);
+                *changed = false;
+                r
+            }
+            None => op(None, false),
+        }
     }
 }
 
@@ -45,8 +48,16 @@ impl<T: GraphElement> GraphUpdate for ValueGraph<T> {
         let message: GraphMessage<T> = GraphMessage::read_message(head, data)?;
 
         match message {
-            GraphMessage::Set(idx, graph_data) => {}
-            GraphMessage::AddPoints(idx, graph_data) => {}
+            GraphMessage::Set(idx, graph_data) => {
+                let graph = Graph::from_graph_data(graph_data);
+                self.graphs.write().unwrap().insert(idx, (graph, true));
+            }
+            GraphMessage::AddPoints(idx, graph_data) => {
+                if let Some((graph, changed)) = self.graphs.write().unwrap().get_mut(&idx) {
+                    graph.add_points_from_data(graph_data)?;
+                    *changed = true;
+                }
+            }
             GraphMessage::Remove(idx) => {
                 self.graphs.write().unwrap().remove(&idx);
             }
