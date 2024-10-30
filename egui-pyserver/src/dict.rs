@@ -11,7 +11,6 @@ use egui_pytransport::collections::CollectionItem;
 use egui_pytransport::dict::DictMessage;
 use egui_pytransport::transport::WriteMessage;
 
-use crate::py_convert::FromPyValue;
 use crate::SyncTrait;
 
 pub(crate) trait PyDict: Send + Sync {
@@ -47,8 +46,8 @@ impl<K, V> ValueDict<K, V> {
 
 impl<K, V> PyDict for ValueDict<K, V>
 where
-    K: CollectionItem + ToPyObject + FromPyValue + Eq + Hash,
-    V: CollectionItem + ToPyObject + FromPyValue,
+    K: CollectionItem + ToPyObject + for<'py> FromPyObject<'py> + Eq + Hash,
+    V: CollectionItem + ToPyObject + for<'py> FromPyObject<'py>,
 {
     fn get_py(&self, py: Python) -> PyObject {
         let dict = self.dict.read().unwrap();
@@ -64,7 +63,7 @@ where
     }
 
     fn get_item_py(&self, key: &Bound<PyAny>) -> PyResult<PyObject> {
-        let dict_key = K::from_python(key)?;
+        let dict_key = key.extract()?;
         let dict = self.dict.read().unwrap();
 
         match dict.get(&dict_key) {
@@ -74,7 +73,7 @@ where
     }
 
     fn del_item_py(&self, key: &Bound<PyAny>, update: bool) -> PyResult<()> {
-        let dict_key = K::from_python(key)?;
+        let dict_key: K = key.extract()?;
 
         let mut d = self.dict.write().unwrap();
 
@@ -89,8 +88,8 @@ where
     }
 
     fn set_item_py(&self, key: &Bound<PyAny>, value: &Bound<PyAny>, update: bool) -> PyResult<()> {
-        let dict_key = K::from_python(key)?;
-        let dict_value = V::from_python(value)?;
+        let dict_key: K = key.extract()?;
+        let dict_value: V = value.extract()?;
 
         let mut d = self.dict.write().unwrap();
 
@@ -109,8 +108,8 @@ where
         let mut new_dict = HashMap::new();
 
         for (key, value) in dict {
-            let key = K::from_python(&key)?;
-            let value = V::from_python(&value)?;
+            let key = key.extract()?;
+            let value = value.extract()?;
             new_dict.insert(key, value);
         }
 

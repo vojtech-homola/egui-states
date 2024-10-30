@@ -36,7 +36,7 @@ impl OrderedMap {
 }
 
 struct ChnegedInner {
-    values: OrderedMap,                                    // values not blocked
+    values: OrderedMap,                                         // values not blocked
     blocked: NoHashMap<u32, Box<dyn ToPyObject + Sync + Send>>, // values blocked by some thread
     block_list: NoHashSet<u32>,                                 // ids blocked by some thread
     threads_last: NoHashMap<u32, u32>,                          // cache last id for each thread
