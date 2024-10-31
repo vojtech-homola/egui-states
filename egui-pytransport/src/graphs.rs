@@ -376,7 +376,7 @@ mod tests {
         let mut head = [0u8; HEAD_SIZE];
         let message = Box::new(GraphMessage::Set(42, graph_data.clone()));
 
-        let data = message.write_message(&mut head[6..]);
+        let data = message.write_message(&mut head[4..]);
         assert_eq!(data, Some(vec![0u8; 5 * 2 * std::mem::size_of::<f32>()]));
 
         let new_message = GraphMessage::read_message(&mut head[4..], data).unwrap();
@@ -397,10 +397,10 @@ mod tests {
         let mut head = [0u8; HEAD_SIZE];
 
         let message = Box::new(GraphMessage::<f32>::Reset);
-        let data = message.write_message(&mut head[6..]);
+        let data = message.write_message(&mut head[4..]);
         assert_eq!(data, None);
 
-        let message = GraphMessage::<f32>::read_message(&mut head[6..], data).unwrap();
+        let message = GraphMessage::<f32>::read_message(&mut head[4..], data).unwrap();
 
         match message {
             GraphMessage::Reset => (),

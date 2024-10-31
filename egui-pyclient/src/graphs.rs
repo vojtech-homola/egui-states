@@ -7,12 +7,12 @@ pub(crate) trait GraphUpdate: Sync + Send {
     fn update_graph(&self, head: &[u8], data: Option<Vec<u8>>) -> Result<(), String>;
 }
 
-pub struct ValueGraph<T> {
+pub struct ValueGraphs<T> {
     _id: u32,
     graphs: RwLock<NoHashMap<u16, (Graph<T>, bool)>>,
 }
 
-impl<T: Clone + Copy> ValueGraph<T> {
+impl<T: Clone + Copy> ValueGraphs<T> {
     pub(crate) fn new(id: u32) -> Arc<Self> {
         Arc::new(Self {
             _id: id,
@@ -43,7 +43,7 @@ impl<T: Clone + Copy> ValueGraph<T> {
     }
 }
 
-impl<T: GraphElement> GraphUpdate for ValueGraph<T> {
+impl<T: GraphElement> GraphUpdate for ValueGraphs<T> {
     fn update_graph(&self, head: &[u8], data: Option<Vec<u8>>) -> Result<(), String> {
         let message: GraphMessage<T> = GraphMessage::read_message(head, data)?;
 

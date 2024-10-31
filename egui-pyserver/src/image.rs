@@ -15,7 +15,7 @@ struct ImageData {
     size: [usize; 2],
 }
 
-pub struct ImageValue {
+pub struct ValueImage {
     id: u32,
     image: RwLock<ImageData>,
     histogram: RwLock<Option<Vec<f32>>>,
@@ -23,7 +23,7 @@ pub struct ImageValue {
     connected: Arc<AtomicBool>,
 }
 
-impl ImageValue {
+impl ValueImage {
     pub(crate) fn new(
         id: u32,
         channel: Sender<WriteMessage>,
@@ -220,7 +220,7 @@ impl ImageValue {
     }
 }
 
-impl SyncTrait for ImageValue {
+impl SyncTrait for ValueImage {
     fn sync(&self) {
         let histogram = self.histogram.read().unwrap().clone();
         let hist_message = HistogramMessage(histogram);

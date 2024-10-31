@@ -9,8 +9,8 @@ use egui_pytransport::values::{ReadValue, WriteValue};
 use egui_pytransport::{EnumInt, NoHashMap};
 
 use crate::dict::{DictUpdate, ValueDict};
-use crate::graphs::{GraphUpdate, ValueGraph};
-use crate::image::{ImageUpdate, ImageValue};
+use crate::graphs::{GraphUpdate, ValueGraphs};
+use crate::image::{ImageUpdate, ValueImage};
 use crate::list::{ListUpdate, ValueList};
 use crate::values::{Signal, Value, ValueEnum, ValueStatic, ValueUpdate};
 
@@ -104,9 +104,9 @@ impl ValuesCreator {
         value
     }
 
-    pub fn add_image(&mut self) -> Arc<ImageValue> {
+    pub fn add_image(&mut self) -> Arc<ValueImage> {
         let id = self.get_id();
-        let value = ImageValue::new(id);
+        let value = ValueImage::new(id);
 
         self.val.images.insert(id, value.clone());
         value
@@ -150,9 +150,9 @@ impl ValuesCreator {
         value
     }
 
-    pub fn add_graph<T: GraphElement + 'static>(&mut self) -> Arc<ValueGraph<T>> {
+    pub fn add_graph<T: GraphElement + 'static>(&mut self) -> Arc<ValueGraphs<T>> {
         let id = self.get_id();
-        let value = ValueGraph::new(id);
+        let value = ValueGraphs::new(id);
 
         self.val.graphs.insert(id, value.clone());
         value

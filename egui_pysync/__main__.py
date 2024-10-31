@@ -260,7 +260,7 @@ class _Struct:
             else:
                 to_write = f"        self.{name} = structures.SignalEmpty(c)\n"
 
-        elif "ImageValue" in line:
+        elif "ValueImage" in line:
             to_write = f"        self.{name} = structures.ValueImage(c)\n"
 
         elif "ValueDict" in line:
@@ -272,8 +272,8 @@ class _Struct:
             val_type = _parse_value(type_string)
             to_write = f"        self.{name} = structures.ValueList[{val_type}](c)\n"
 
-        elif "ValueGraph" in line:
-            to_write = f"        self.{name} = structures.ValueGraph(c)\n"
+        elif "ValueGraphs" in line:
+            to_write = f"        self.{name} = structures.ValueGraphs(c)\n"
 
         else:
             raise ValueError(f"Unknown type: {line}")

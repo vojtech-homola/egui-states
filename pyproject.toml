@@ -10,6 +10,7 @@ requires-python = ">=3.12"
 license = { file = "LICENSE" }
 dynamic = ["version"]
 readme = "README.md"
+dependencies = ["numpy"]
 
 [tool.setuptools]
 packages = ["egui_pysync"]

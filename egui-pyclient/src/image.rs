@@ -17,13 +17,13 @@ const TEXTURE_OPTIONS: egui::TextureOptions = egui::TextureOptions {
     mipmap_mode: None,
 };
 
-pub struct ImageValue {
+pub struct ValueImage {
     id: u32,
     texture_handle: RwLock<(Option<TextureHandle>, [usize; 2])>,
     histogram: RwLock<(Option<Vec<f32>>, bool)>,
 }
 
-impl ImageValue {
+impl ValueImage {
     pub fn new(id: u32) -> Arc<Self> {
         Arc::new(Self {
             id,
@@ -77,7 +77,7 @@ impl ImageValue {
     }
 }
 
-impl ImageUpdate for ImageValue {
+impl ImageUpdate for ValueImage {
     fn update_image(&self, message: ImageMessage) -> Result<(), String> {
         // let message = match message {
         //     ImageMessage::Data(data) => data,

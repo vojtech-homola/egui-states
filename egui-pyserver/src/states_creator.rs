@@ -13,8 +13,8 @@ use egui_pytransport::values::{ReadValue, WriteValue};
 use egui_pytransport::{EnumInt, EnumStr, NoHashMap};
 
 use crate::dict::{PyDict, ValueDict};
-use crate::graphs::{PyGraph, ValueGraph};
-use crate::image::ImageValue;
+use crate::graphs::{PyGraph, ValueGraphs};
+use crate::image::ValueImage;
 use crate::list::{PyListTrait, ValueList};
 use crate::signals::ChangedValues;
 use crate::values::{ProccesValue, PyValue, PyValueStatic};
@@ -25,7 +25,7 @@ use crate::{Acknowledge, SyncTrait};
 pub(crate) struct PyValuesList {
     pub(crate) values: NoHashMap<u32, Arc<dyn PyValue>>,
     pub(crate) static_values: NoHashMap<u32, Arc<dyn PyValueStatic>>,
-    pub(crate) images: NoHashMap<u32, Arc<ImageValue>>,
+    pub(crate) images: NoHashMap<u32, Arc<ValueImage>>,
     pub(crate) dicts: NoHashMap<u32, Arc<dyn PyDict>>,
     pub(crate) lists: NoHashMap<u32, Arc<dyn PyListTrait>>,
     pub(crate) graphs: NoHashMap<u32, Arc<dyn PyGraph>>,
@@ -196,9 +196,9 @@ impl ValuesCreator {
         signal
     }
 
-    pub fn add_image(&mut self) -> Arc<ImageValue> {
+    pub fn add_image(&mut self) -> Arc<ValueImage> {
         let id = self.get_id();
-        let image = ImageValue::new(id, self.channel.clone(), self.connected.clone());
+        let image = ValueImage::new(id, self.channel.clone(), self.connected.clone());
 
         self.py_val.images.insert(id, image.clone());
         self.val.sync.insert(id, image.clone());
@@ -237,9 +237,9 @@ impl ValuesCreator {
         T: GraphElement + Element + for<'py> FromPyObject<'py> + ToPyObject + 'static,
     >(
         &mut self,
-    ) -> Arc<ValueGraph<T>> {
+    ) -> Arc<ValueGraphs<T>> {
         let id = self.get_id();
-        let graph = ValueGraph::new(id, self.channel.clone(), self.connected.clone());
+        let graph = ValueGraphs::new(id, self.channel.clone(), self.connected.clone());
 
         self.py_val.graphs.insert(id, graph.clone());
         self.val.sync.insert(id, graph.clone());

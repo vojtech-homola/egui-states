@@ -3,6 +3,8 @@ import traceback
 from abc import ABC, abstractmethod
 from collections.abc import Buffer, Callable
 
+import numpy as np
+
 from egui_pysync.typing import SteteServerCoreBase
 
 
@@ -474,7 +476,28 @@ class ValueList[T](_ValueBase):
         self.set_item(idx, value, update=False)
 
 
-class ValueGraph(_ValueBase):
+class _Graph:
+    def __init__(self, value_id: int, idx: int, server: SteteServerCoreBase):
+        self._value_id = value_id
+        self._idx = idx
+        self._server = server
+
+        self._active = True
+
+    @property
+    def idx(self) -> int:
+        return self._idx
+
+    @property
+    def active(self) -> bool:
+        return self._active
+
+    def _kill(self):
+        self._active = False
+        self._server.graphs_remove(self._value_id, self._idx, update=False)
+
+
+class ValueGraphs(_ValueBase):
     """Graph UI element."""
 
     _has_signal = False
@@ -482,28 +505,73 @@ class ValueGraph(_ValueBase):
     def __init__(self, counter: _Counter):  # noqa: D107
         super().__init__(counter)
 
-    def set(self, graph: Buffer, update: bool = False) -> None:
-        """Set the graph in the UI graph.
+        self._graphs: dict[int, _Graph] = {}
+
+    def get(self, idx: int) -> _Graph:
+        """Get the graph by index.
 
         Args:
-            graph(Buffer): The graph to set.
-            update(bool, optional): Whether to update the UI. Defaults to False.
-        """
-        self._server.set_graph(self._value_id, graph, update)
+            idx(int): The index of the graph.
 
-    def add_points(self, points: Buffer, update: bool = False) -> None:
-        """Add the points to the UI graph.
+        Returns:
+            _Graph: The graph object.
+        """
+        return self._graphs[idx]
+
+    def __getitem__(self, idx: int) -> _Graph:
+        """Get the graph by index.
 
         Args:
-            points(Buffer): The points to add.
+            idx(int): The index of the graph.
+
+        Returns:
+            _Graph: The graph object.
+        """
+        return self._graphs[idx]
+
+    def add(
+        self, graph: Buffer, idx: int | None = None, range: tuple[float, float] | None = None, update: bool = False
+    ) -> _Graph:
+        """Add the graph to the UI graphs. Returns existing graph if the index is already used.
+
+        Two options for the graph data:
+        - Data with shape (2, N) where the first row is the x values and the second row is the y values.
+        - Data with shape (N,) where the x values are generated automatically from the range parameter.
+
+        Args:
+            graph(Buffer): The graph to set. Has to implement the buffer protocol (numpy array).
+            idx(int, optional): The index of the graph. Defaults to None.
+            range(tuple[float, float], optional): The range of the graph. Defaults to None.
             update(bool, optional): Whether to update the UI. Defaults to False.
         """
-        self._server.add_graph_points(self._value_id, points, update)
+        if idx is None:
+            idx = 0
+            while idx in self._graphs:
+                idx += 1
+        elif idx in self._graphs:
+            return self._graphs[idx]
+
+        self._server.graphs_set(self._value_id, idx, graph, update, range)
+        graph_obj = _Graph(self._value_id, idx, self._server)
+        self._graphs[idx] = graph_obj
+        return graph_obj
+
+    def remove(self, idx: int, update: bool = False) -> None:
+        """Remove the graph from the UI graphs.
+
+        Args:
+            idx(int): The index of the graph.
+            update(bool, optional): Whether to update the UI. Defaults to False.
+        """
+        if idx in self._graphs:
+            self._graphs[idx]._kill()
+            self._server.graphs_remove(self._value_id, idx, update)
 
     def clear(self, update: bool = False) -> None:
-        """Clear the UI graph.
+        """Clear the all UI graphs.
 
         Args:
             update(bool, optional): Whether to update the UI. Defaults to False.
         """
-        self._server.clear_graph(self._value_id, update)
+        self._graphs.clear()
+        self._server.graphs_clear(self._value_id, update)

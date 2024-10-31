@@ -34,7 +34,7 @@ pub(crate) trait PyGraph: Send + Sync {
     fn clear_py(&self, update: bool);
 }
 
-pub struct ValueGraph<T> {
+pub struct ValueGraphs<T> {
     id: u32,
     graphs: RwLock<NoHashMap<u16, Graph<T>>>,
 
@@ -42,7 +42,7 @@ pub struct ValueGraph<T> {
     connected: Arc<AtomicBool>,
 }
 
-impl<T> ValueGraph<T> {
+impl<T> ValueGraphs<T> {
     pub(crate) fn new(
         id: u32,
         channel: Sender<WriteMessage>,
@@ -59,7 +59,7 @@ impl<T> ValueGraph<T> {
     }
 }
 
-impl<T> PyGraph for ValueGraph<T>
+impl<T> PyGraph for ValueGraphs<T>
 where
     T: GraphElement + Element + for<'py> FromPyObject<'py> + ToPyObject,
 {
@@ -179,7 +179,7 @@ where
     }
 }
 
-impl<T: GraphElement> SyncTrait for ValueGraph<T> {
+impl<T: GraphElement> SyncTrait for ValueGraphs<T> {
     fn sync(&self) {
         let w = self.graphs.read().unwrap();
 
