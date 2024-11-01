@@ -3,7 +3,7 @@ use std::net::TcpStream;
 
 use crate::commands::CommandMessage;
 use crate::graphs::WriteGraphMessage;
-use crate::image::{HistogramMessage, ImageMessage};
+use crate::image::ImageMessage;
 use crate::values::ValueMessage;
 
 pub const HEAD_SIZE: usize = 32;
@@ -17,10 +17,9 @@ const TYPE_STATIC: i8 = 8;
 const TYPE_SIGNAL: i8 = 10;
 const TYPE_COMMAND: i8 = 12;
 const TYPE_IMAGE: i8 = 14;
-const TYPE_HISTOGRAM: i8 = 16;
-const TYPE_DICT: i8 = 18;
-const TYPE_LIST: i8 = 20;
-const TYPE_GRAPH: i8 = 22;
+const TYPE_DICT: i8 = 16;
+const TYPE_LIST: i8 = 18;
+const TYPE_GRAPH: i8 = 20;
 
 /*
 Head of the message:
@@ -87,7 +86,6 @@ pub enum WriteMessage {
     Static(u32, bool, ValueMessage),
     Signal(u32, ValueMessage),
     Image(u32, bool, ImageMessage),
-    Histogram(u32, bool, HistogramMessage),
     Dict(u32, bool, Box<dyn WriteMessageDyn>),
     List(u32, bool, Box<dyn WriteMessageDyn>),
     Graph(u32, bool, Box<dyn WriteGraphMessage>),
@@ -139,11 +137,6 @@ impl WriteMessage {
                 (id, update, TYPE_IMAGE, Some(data))
             }
 
-            Self::Histogram(id, update, message) => {
-                let data = message.write_message(&mut head[4..]);
-                (id, update, TYPE_HISTOGRAM, data)
-            }
-
             Self::Dict(id, update, dict) => {
                 let data = dict.write_message(&mut head[4..]);
                 (id, update, TYPE_DICT, data)
@@ -185,7 +178,6 @@ pub enum ReadMessage<'a> {
     Static(u32, bool, &'a [u8], Option<Vec<u8>>),
     Signal(u32, &'a [u8], Option<Vec<u8>>),
     Image(u32, bool, ImageMessage),
-    Histogram(u32, bool, HistogramMessage),
     Dict(u32, bool, &'a [u8], Option<Vec<u8>>),
     List(u32, bool, &'a [u8], Option<Vec<u8>>),
     Graph(u32, bool, &'a [u8], Option<Vec<u8>>),
@@ -199,7 +191,6 @@ impl<'a> ReadMessage<'a> {
             Self::Static(_, _, _, _) => "Static",
             Self::Signal(_, _, _) => "Signal",
             Self::Image(_, _, _) => "Image",
-            Self::Histogram(_, _, _) => "Histogram",
             Self::Dict(_, _, _, _) => "Dict",
             Self::List(_, _, _, _) => "List",
             Self::Graph(_, _, _, _) => "Graph",
@@ -234,10 +225,6 @@ impl<'a> ReadMessage<'a> {
             TYPE_IMAGE => {
                 let image = ImageMessage::read_message(&head[4..], data)?;
                 Ok(ReadMessage::Image(id, update, image))
-            }
-            TYPE_HISTOGRAM => {
-                let histogram = HistogramMessage::read_message(&head[4..], data)?;
-                Ok(ReadMessage::Histogram(id, update, histogram))
             }
             TYPE_DICT => Ok(ReadMessage::Dict(id, update, &head[4..], data)),
             TYPE_LIST => Ok(ReadMessage::List(id, update, &head[4..], data)),

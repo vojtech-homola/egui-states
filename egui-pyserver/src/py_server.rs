@@ -216,30 +216,6 @@ impl StateServerCore {
         }
     }
 
-    #[pyo3(signature = (value_id, update, histogram=None))]
-    fn histogram_set(
-        &self,
-        py: Python,
-        value_id: u32,
-        update: bool,
-        histogram: Option<PyBuffer<f32>>,
-    ) -> PyResult<()> {
-        match self.values.images.get(&value_id) {
-            Some(image_val) => {
-                let histogram = match histogram {
-                    Some(hist) => Some(hist.to_vec(py)?),
-                    None => None,
-                };
-
-                py.allow_threads(|| image_val.set_histogram_py(histogram, update))
-            }
-            None => Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "Image with id {} is not available.",
-                value_id
-            ))),
-        }
-    }
-
     // dicts ------------------------------------------------------------------
     fn dict_get(&self, py: Python, value_id: u32) -> PyResult<PyObject> {
         match self.values.dicts.get(&value_id) {
@@ -431,6 +407,16 @@ impl StateServerCore {
         }
     }
 
+    fn graphs_len(&self, value_id: u32, idx: u16) -> PyResult<usize> {
+        match self.values.graphs.get(&value_id) {
+            Some(graph) => graph.len_py(idx),
+            None => Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "Graph value with id {} is not available.",
+                value_id
+            ))),
+        }
+    }
+
     fn graphs_remove(&self, value_id: u32, idx: u16, update: bool) -> PyResult<()> {
         match self.values.graphs.get(&value_id) {
             Some(graph) => {
@@ -444,9 +430,9 @@ impl StateServerCore {
         }
     }
 
-    fn graphs_len(&self, value_id: u32) -> PyResult<u16> {
+    fn graphs_count(&self, value_id: u32) -> PyResult<u16> {
         match self.values.graphs.get(&value_id) {
-            Some(graph) => Ok(graph.len_py()),
+            Some(graph) => Ok(graph.count_py()),
             None => Err(pyo3::exceptions::PyValueError::new_err(format!(
                 "Graph value with id {} is not available.",
                 value_id

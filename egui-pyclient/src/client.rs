@@ -49,14 +49,6 @@ fn handle_message(
             None => return Err(format!("Image with id {} not found", id)),
         },
 
-        ReadMessage::Histogram(id, updata, hist) => match vals.images.get(&id) {
-            Some(value) => {
-                value.update_histogram(hist)?;
-                updata
-            }
-            None => return Err(format!("Image with id {} not found", id)),
-        },
-
         ReadMessage::Dict(id, updata, head, data) => match vals.dicts.get(&id) {
             Some(value) => {
                 value.update_dict(head, data)?;

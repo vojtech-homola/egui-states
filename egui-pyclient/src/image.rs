@@ -3,11 +3,10 @@ use std::sync::{Arc, RwLock};
 
 use egui::{Color32, ColorImage, ImageData, TextureHandle};
 
-use egui_pytransport::image::{HistogramMessage, ImageMessage, ImageType};
+use egui_pytransport::image::{ImageMessage, ImageType};
 
 pub(crate) trait ImageUpdate: Send + Sync {
     fn update_image(&self, message: ImageMessage) -> Result<(), String>;
-    fn update_histogram(&self, message: HistogramMessage) -> Result<(), String>;
 }
 
 const TEXTURE_OPTIONS: egui::TextureOptions = egui::TextureOptions {
@@ -20,7 +19,6 @@ const TEXTURE_OPTIONS: egui::TextureOptions = egui::TextureOptions {
 pub struct ValueImage {
     id: u32,
     texture_handle: RwLock<(Option<TextureHandle>, [usize; 2])>,
-    histogram: RwLock<(Option<Vec<f32>>, bool)>,
 }
 
 impl ValueImage {
@@ -28,7 +26,6 @@ impl ValueImage {
         Arc::new(Self {
             id,
             texture_handle: RwLock::new((None, [0, 0])),
-            histogram: RwLock::new((None, true)),
         })
     }
 
@@ -38,17 +35,6 @@ impl ValueImage {
 
     pub fn get_size(&self) -> [usize; 2] {
         self.texture_handle.read().unwrap().1
-    }
-
-    pub fn get_histogram(&self) -> Option<Vec<f32>> {
-        self.histogram.read().unwrap().0.clone()
-    }
-
-    pub fn process_histogram<R>(&self, op: impl Fn(Option<&Vec<f32>>, bool) -> R) -> R {
-        let mut w = self.histogram.write().unwrap();
-        let result = op(w.0.as_ref(), w.1);
-        w.1 = false;
-        result
     }
 
     pub fn initialize(&self, ctx: &egui::Context) {
@@ -168,11 +154,6 @@ impl ImageUpdate for ValueImage {
             w.1 = size;
         }
 
-        Ok(())
-    }
-
-    fn update_histogram(&self, message: HistogramMessage) -> Result<(), String> {
-        *self.histogram.write().unwrap() = (message.0, true);
         Ok(())
     }
 }

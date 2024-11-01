@@ -26,6 +26,24 @@ pub enum XAxis<T> {
     Range([T; 2]),
 }
 
+impl XAxis<f32> {
+    #[inline]
+    pub fn range(&self) -> Option<[f32; 2]> {
+        match self {
+            XAxis::X(_) => None,
+            XAxis::Range(range) => Some(*range),
+        }
+    }
+
+    #[inline]
+    pub fn x(&self) -> Option<Vec<f32>> {
+        match self {
+            XAxis::X(x) => Some(x.clone()),
+            XAxis::Range(_) => None,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Graph<T> {
     pub y: Vec<T>,

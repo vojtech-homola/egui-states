@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools"]
+requires = ["setuptools", "numpy"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -10,6 +10,7 @@ requires-python = ">=3.12"
 license = { file = "LICENSE" }
 dynamic = ["version"]
 readme = "README.md"
+
 dependencies = ["numpy"]
 
 [tool.setuptools]

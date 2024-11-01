@@ -315,9 +315,7 @@ def _write_states(input_path: str, output_path: str, server_path: str) -> None: 
         head = [
             "#![allow(unused_imports)]\n",
             "use types::{custom, enums};\n\n",
-            "use egui_pyserver::{\n",
-            "    ImageValue, Signal, Value, ValueDict, ValueEnum, ValueStatic, ValuesCreator,\n",
-            "};\n\n",
+            "use egui_pyserver::{Signal, Value, ValueDict, ValueEnum, ValueImage, ValueStatic, ValuesCreator};\n\n"
         ]
         for line in head:
             file.write(line)

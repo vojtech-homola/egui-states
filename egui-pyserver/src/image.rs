@@ -5,7 +5,7 @@ use std::sync::{Arc, RwLock};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
-use egui_pytransport::image::{HistogramMessage, ImageMessage, ImageType};
+use egui_pytransport::image::{ImageMessage, ImageType};
 use egui_pytransport::transport::WriteMessage;
 
 use crate::SyncTrait;
@@ -18,7 +18,6 @@ struct ImageData {
 pub struct ValueImage {
     id: u32,
     image: RwLock<ImageData>,
-    histogram: RwLock<Option<Vec<f32>>>,
     channel: Sender<WriteMessage>,
     connected: Arc<AtomicBool>,
 }
@@ -35,37 +34,9 @@ impl ValueImage {
                 data: Vec::with_capacity(0),
                 size: [0, 0],
             }),
-            histogram: RwLock::new(None),
             channel,
             connected,
         })
-    }
-
-    pub(crate) fn set_histogram_py(
-        &self,
-        histogram: Option<Vec<f32>>,
-        update: bool,
-    ) -> PyResult<()> {
-        if let Some(ref hist) = histogram {
-            if hist.len() < 128 || hist.len() > 1024 {
-                return Err(PyValueError::new_err(format!(
-                    "Invalid histogram size {}, must be between 128 and 1024",
-                    hist.len()
-                )));
-            }
-        }
-
-        let mut h = self.histogram.write().unwrap();
-
-        if self.connected.load(Ordering::Relaxed) {
-            let message =
-                WriteMessage::Histogram(self.id, update, HistogramMessage(histogram.clone()));
-            self.channel.send(message).unwrap();
-        }
-
-        *h = histogram; // set None if histogram is None
-
-        Ok(())
     }
 
     pub(crate) fn set_image_py(
@@ -222,11 +193,6 @@ impl ValueImage {
 
 impl SyncTrait for ValueImage {
     fn sync(&self) {
-        let histogram = self.histogram.read().unwrap().clone();
-        let hist_message = HistogramMessage(histogram);
-        let message = WriteMessage::Histogram(self.id, false, hist_message);
-        self.channel.send(message).unwrap();
-
         let w = self.image.read().unwrap();
         if w.size[0] == 0 || w.size[1] == 0 {
             return;

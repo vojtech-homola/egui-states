@@ -1,5 +1,6 @@
 use std::sync::{Arc, RwLock};
 
+pub use egui_pytransport::graphs::XAxis;
 use egui_pytransport::graphs::{Graph, GraphElement, GraphMessage};
 use egui_pytransport::nohash::NoHashMap;
 

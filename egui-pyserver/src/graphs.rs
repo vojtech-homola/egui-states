@@ -29,8 +29,9 @@ pub(crate) trait PyGraph: Send + Sync {
         update: bool,
     ) -> PyResult<()>;
     fn get_py<'py>(&self, py: Python<'py>, idx: u16) -> PyResult<PyObject>;
+    fn len_py(&self, idx: u16) -> PyResult<usize>;
     fn remove_py(&self, idx: u16, update: bool);
-    fn len_py(&self) -> u16;
+    fn count_py(&self) -> u16;
     fn clear_py(&self, update: bool);
 }
 
@@ -137,7 +138,7 @@ where
                     Ok(())
                 })?;
 
-                let shape = vec![2, graph.y.len(), size_of::<T>()];
+                let shape = (2usize, graph.y.len(), size_of::<T>());
                 Ok((bytes, shape, None::<Bound<PyTuple>>).to_object(py))
             }
             XAxis::Range(range) => {
@@ -146,9 +147,25 @@ where
                     unsafe { std::slice::from_raw_parts(graph.y.as_ptr() as *const u8, size) };
                 let bytes = PyBytes::new_bound(py, data);
                 let range = PyTuple::new_bound(py, [range[0], range[1]]);
-                Ok((bytes, vec![1, graph.y.len(), size_of::<T>()], Some(range)).to_object(py))
+                Ok((bytes, (graph.y.len(), size_of::<T>()), Some(range)).to_object(py))
             }
         }
+    }
+
+    fn len_py(&self, idx: u16) -> PyResult<usize> {
+        let size = self
+            .graphs
+            .read()
+            .unwrap()
+            .get(&idx)
+            .ok_or(PyValueError::new_err(format!(
+                "Graph with id {} not found",
+                idx
+            )))?
+            .y
+            .len();
+
+        Ok(size)
     }
 
     fn remove_py(&self, idx: u16, update: bool) {
@@ -162,7 +179,7 @@ where
         w.remove(&idx);
     }
 
-    fn len_py(&self) -> u16 {
+    fn count_py(&self) -> u16 {
         self.graphs.read().unwrap().len() as u16
     }
 
@@ -200,6 +217,13 @@ impl<T: GraphElement> SyncTrait for ValueGraphs<T> {
     }
 }
 
+fn buffer_to_graph_add<'py, T>(buffer: &PyBuffer<T>, range: Option<[T; 2]>, graph: &mut Graph<T>)
+where
+    T: GraphElement + Element + FromPyObject<'py>,
+{
+    
+}
+
 fn buffer_to_graph<'py, T>(
     buffer: &PyBuffer<T>,
     range: Option<[T; 2]>,
@@ -219,7 +243,7 @@ where
             }
 
             let points = shape[0];
-            let ptr = buffer.get_ptr(&[0, 0]) as *const T;
+            let ptr = buffer.get_ptr(&[0]) as *const T;
 
             match graph {
                 Some(graph) => {

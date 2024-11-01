@@ -109,73 +109,6 @@ impl ImageMessage {
     }
 }
 
-// histogram ------------------------------------------------------------------
-/*
-histogram head:
-| 4B - u32 histogram size | ... | 8B - u64 data size |
-*/
-pub struct HistogramMessage(pub Option<Vec<f32>>);
-
-impl HistogramMessage {
-    pub(crate) fn write_message(self, head: &mut [u8]) -> Option<Vec<u8>> {
-        match self.0 {
-            Some(hist) => {
-                let size = hist.len();
-                let data_size = size * std::mem::size_of::<f32>();
-                let mut data = vec![0u8; data_size];
-
-                // TODO: possibly do it witoout copying
-                unsafe {
-                    std::ptr::copy_nonoverlapping(
-                        hist.as_ptr(),
-                        data.as_mut_ptr() as *mut f32,
-                        size,
-                    );
-                }
-
-                head[0..4].copy_from_slice(&(size as u32).to_le_bytes());
-                Some(data)
-            }
-            None => {
-                head[0..4].copy_from_slice(&0u32.to_le_bytes());
-                None
-            }
-        }
-    }
-
-    pub(crate) fn read_message(head: &[u8], data: Option<Vec<u8>>) -> Result<Self, String> {
-        let size = u32::from_le_bytes(head[0..4].try_into().unwrap()) as usize;
-
-        let data = match data {
-            Some(data) => {
-                if size * std::mem::size_of::<f32>() != data.len() {
-                    return Err("Histogram data parsing failed.".to_string());
-                }
-
-                let mut hist = vec![0.0f32; size];
-                unsafe {
-                    std::ptr::copy_nonoverlapping(
-                        data.as_ptr() as *mut f32,
-                        hist.as_mut_ptr(),
-                        size,
-                    );
-                }
-
-                Some(hist)
-            }
-
-            None => {
-                if size != 0 {
-                    return Err("Histogram data parsing failed.".to_string());
-                }
-                None
-            }
-        };
-
-        Ok(HistogramMessage(data))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -200,18 +133,5 @@ mod tests {
         assert_eq!(message.rect, Some([0, 5, 5, 10]));
         assert_eq!(message.data.len(), 5 * 5 * 3);
         assert_eq!(message.image_type, ImageType::Color);
-    }
-
-    #[test]
-    fn test_histogram_message() {
-        let mut head = [0u8; HEAD_SIZE];
-        let original_data = vec![42.0f32; 10];
-
-        let message = HistogramMessage(Some(original_data.clone()));
-
-        let data = message.write_message(&mut head[6..]);
-        let message = HistogramMessage::read_message(&mut head[6..], data).unwrap();
-
-        assert_eq!(message.0.unwrap(), original_data);
     }
 }
