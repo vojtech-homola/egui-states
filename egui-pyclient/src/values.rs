@@ -2,9 +2,9 @@ use std::marker::PhantomData;
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, RwLock};
 
-use egui_pytransport::transport::WriteMessage;
-use egui_pytransport::values::{ReadValue, ValueMessage, WriteValue};
-use egui_pytransport::EnumInt;
+use egui_pysync::transport::WriteMessage;
+use egui_pysync::values::{ReadValue, ValueMessage, WriteValue};
+use egui_pysync::EnumInt;
 
 pub(crate) trait ValueUpdate: Send + Sync {
     fn update_value(&self, head: &[u8], data: Option<Vec<u8>>) -> Result<(), String>;

@@ -8,9 +8,9 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyTuple};
 
-use egui_pytransport::graphs::{Graph, GraphElement, GraphMessage, XAxis};
-use egui_pytransport::nohash::NoHashMap;
-use egui_pytransport::transport::WriteMessage;
+use egui_pysync::graphs::{Graph, GraphElement, GraphMessage, XAxis};
+use egui_pysync::nohash::NoHashMap;
+use egui_pysync::transport::WriteMessage;
 
 use crate::SyncTrait;
 

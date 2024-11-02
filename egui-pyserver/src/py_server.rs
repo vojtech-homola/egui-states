@@ -9,9 +9,9 @@ use pyo3::buffer::PyBuffer;
 use pyo3::prelude::*;
 use pyo3::types::PyTuple;
 
-use egui_pytransport::commands::CommandMessage;
-use egui_pytransport::transport::WriteMessage;
-use egui_pytransport::NoHashSet;
+use egui_pysync::commands::CommandMessage;
+use egui_pysync::transport::WriteMessage;
+use egui_pysync::NoHashSet;
 
 use crate::server::Server;
 use crate::signals::ChangedValues;

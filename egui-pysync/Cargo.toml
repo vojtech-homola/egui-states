@@ -1,5 +1,5 @@
 [package]
-name = "egui_pytransport"
+name = "egui_pysync"
 version.workspace = true
 edition.workspace = true
 

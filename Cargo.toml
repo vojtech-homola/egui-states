@@ -2,7 +2,7 @@
 members = [
     "egui-pyserver",
     "egui-pyclient",
-    "egui-pytransport",
+    "egui-pysync",
     "egui-pymacros",
 ]
 resolver = "2"
@@ -12,7 +12,7 @@ version = "0.2.0"
 edition = "2021"
 
 [workspace.dependencies]
-egui_pytransport = { path = "egui-pytransport" }
+egui_pysync = { path = "egui-pysync" }
 egui_pymacros = { path = "egui-pymacros" }
 
 [package]

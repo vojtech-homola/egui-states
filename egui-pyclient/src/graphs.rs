@@ -1,8 +1,8 @@
 use std::sync::{Arc, RwLock};
 
-pub use egui_pytransport::graphs::XAxis;
-use egui_pytransport::graphs::{Graph, GraphElement, GraphMessage};
-use egui_pytransport::nohash::NoHashMap;
+pub use egui_pysync::graphs::XAxis;
+use egui_pysync::graphs::{Graph, GraphElement, GraphMessage};
+use egui_pysync::nohash::NoHashMap;
 
 pub(crate) trait GraphUpdate: Sync + Send {
     fn update_graph(&self, head: &[u8], data: Option<Vec<u8>>) -> Result<(), String>;

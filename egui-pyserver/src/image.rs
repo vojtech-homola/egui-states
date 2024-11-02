@@ -5,8 +5,8 @@ use std::sync::{Arc, RwLock};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
-use egui_pytransport::image::{ImageMessage, ImageType};
-use egui_pytransport::transport::WriteMessage;
+use egui_pysync::image::{ImageMessage, ImageType};
+use egui_pysync::transport::WriteMessage;
 
 use crate::SyncTrait;
 

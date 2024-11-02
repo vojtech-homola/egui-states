@@ -6,11 +6,11 @@ use std::sync::Arc;
 use pyo3::buffer::Element;
 use pyo3::{FromPyObject, ToPyObject};
 
-use egui_pytransport::collections::CollectionItem;
-use egui_pytransport::graphs::GraphElement;
-use egui_pytransport::transport::WriteMessage;
-use egui_pytransport::values::{ReadValue, WriteValue};
-use egui_pytransport::{EnumInt, EnumStr, NoHashMap};
+use egui_pysync::collections::CollectionItem;
+use egui_pysync::graphs::GraphElement;
+use egui_pysync::transport::WriteMessage;
+use egui_pysync::values::{ReadValue, WriteValue};
+use egui_pysync::{EnumInt, EnumStr, NoHashMap};
 
 use crate::dict::{PyDict, ValueDict};
 use crate::graphs::{PyGraph, ValueGraphs};

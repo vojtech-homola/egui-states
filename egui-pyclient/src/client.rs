@@ -3,8 +3,8 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::thread;
 
 use egui::Context;
-use egui_pytransport::transport::{read_message, write_message, ReadMessage, WriteMessage};
-use egui_pytransport::{commands::CommandMessage, transport::HEAD_SIZE};
+use egui_pysync::transport::{read_message, write_message, ReadMessage, WriteMessage};
+use egui_pysync::{commands::CommandMessage, transport::HEAD_SIZE};
 
 use crate::client_state::UIState;
 use crate::states_creator::{ValuesCreator, ValuesList};

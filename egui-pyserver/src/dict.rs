@@ -7,9 +7,9 @@ use std::sync::{Arc, RwLock};
 use pyo3::exceptions::PyKeyError;
 use pyo3::prelude::*;
 
-use egui_pytransport::collections::CollectionItem;
-use egui_pytransport::dict::DictMessage;
-use egui_pytransport::transport::WriteMessage;
+use egui_pysync::collections::CollectionItem;
+use egui_pysync::dict::DictMessage;
+use egui_pysync::transport::WriteMessage;
 
 use crate::SyncTrait;
 

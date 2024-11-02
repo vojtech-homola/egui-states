@@ -3,7 +3,7 @@ use std::sync::{Arc, RwLock};
 
 use egui::{Color32, ColorImage, ImageData, TextureHandle};
 
-use egui_pytransport::image::{ImageMessage, ImageType};
+use egui_pysync::image::{ImageMessage, ImageType};
 
 pub(crate) trait ImageUpdate: Send + Sync {
     fn update_image(&self, message: ImageMessage) -> Result<(), String>;
