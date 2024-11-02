@@ -2,45 +2,42 @@ use std::io::{self, Read, Write};
 use std::net::TcpStream;
 
 use crate::commands::CommandMessage;
-use crate::dict::WriteDictMessage;
-use crate::graphs::GraphMessage;
-use crate::image::{HistogramMessage, ImageMessage};
-use crate::list::WriteListMessage;
+use crate::graphs::WriteGraphMessage;
+use crate::image::ImageMessage;
 use crate::values::ValueMessage;
 
 pub const HEAD_SIZE: usize = 32;
-pub(crate) const MESS_SIZE: usize = 26;
+pub(crate) const MESS_SIZE: usize = 28;
 
 const SIZE_START: usize = HEAD_SIZE - 4;
 
 // message types
-const TYPE_VALUE: i8 = 16;
-const TYPE_STATIC: i8 = 32;
-const TYPE_SIGNAL: i8 = 12;
-const TYPE_COMMAND: i8 = 64;
-const TYPE_IMAGE: i8 = 4;
-const TYPE_HISTOGRAM: i8 = 24;
-const TYPE_DICT: i8 = 48;
-const TYPE_LIST: i8 = 96;
-const TYPE_GRAPH: i8 = 8;
+const TYPE_VALUE: i8 = 4;
+const TYPE_STATIC: i8 = 8;
+const TYPE_SIGNAL: i8 = 10;
+const TYPE_COMMAND: i8 = 12;
+const TYPE_IMAGE: i8 = 14;
+const TYPE_DICT: i8 = 16;
+const TYPE_LIST: i8 = 18;
+const TYPE_GRAPH: i8 = 20;
 
 /*
 Head of the message:
 
 Value:
-|1B - type | 4B - u32 value id | 1B - signal / update | = 6B
+|1B - type / flag | 3B - u32 value id | = 4B
 
 Static:
-|1B - type | 4B - u32 value id | 1B - update | = 6B
+|1B - type / flag | 3B - u32 value id | = 4B
 
 Signal:
-|1B - type | 4B - u32 value id | 1B - reserve | = 6B
+|1B - type / flag | 3B - u32 value id | = 4B
 
 Image:
-|1B - type | 4B - u32 value id | 1B - update | = 6B
+|1B - type / flag | 3B - u32 value id | = 4B
 
 Dict and List:
-|1B - type | 4B - u32 value id | 1B - update | = 6B
+|1B - type / flag | 3B - u32 value id | = 4B
 
 Command:
 |1B - type | 1B - command |
@@ -80,15 +77,18 @@ pub fn read_message(
     Ok((type_, data))
 }
 
+pub trait WriteMessageDyn: Send + Sync + 'static {
+    fn write_message(&self, head: &mut [u8]) -> Option<Vec<u8>>;
+}
+
 pub enum WriteMessage {
     Value(u32, bool, ValueMessage),
     Static(u32, bool, ValueMessage),
     Signal(u32, ValueMessage),
     Image(u32, bool, ImageMessage),
-    Histogram(u32, bool, HistogramMessage),
-    Dict(u32, bool, Box<dyn WriteDictMessage>),
-    List(u32, bool, Box<dyn WriteListMessage>),
-    Graph(u32, bool, GraphMessage),
+    Dict(u32, bool, Box<dyn WriteMessageDyn>),
+    List(u32, bool, Box<dyn WriteMessageDyn>),
+    Graph(u32, bool, Box<dyn WriteGraphMessage>),
     Command(CommandMessage),
     Terminate,
 }
@@ -98,11 +98,11 @@ impl WriteMessage {
         WriteMessage::Command(CommandMessage::Ack(id))
     }
 
-    pub fn list(id: u32, update: bool, list: impl WriteListMessage) -> Self {
+    pub fn list(id: u32, update: bool, list: impl WriteMessageDyn) -> Self {
         WriteMessage::List(id, update, Box::new(list))
     }
 
-    pub fn dict(id: u32, update: bool, dict: impl WriteDictMessage) -> Self {
+    pub fn dict(id: u32, update: bool, dict: impl WriteMessageDyn) -> Self {
         WriteMessage::Dict(id, update, Box::new(dict))
     }
 
@@ -118,42 +118,37 @@ impl WriteMessage {
 
         let (id, flag, mut type_, data) = match self {
             Self::Value(id, update_signal, message) => {
-                let data = message.write_message(&mut head[6..]);
+                let data = message.write_message(&mut head[4..]);
                 (id, update_signal, TYPE_VALUE, data)
             }
 
             Self::Static(id, update, message) => {
-                let data = message.write_message(&mut head[6..]);
+                let data = message.write_message(&mut head[4..]);
                 (id, update, TYPE_STATIC, data)
             }
 
             Self::Signal(id, message) => {
-                let data = message.write_message(&mut head[6..]);
+                let data = message.write_message(&mut head[4..]);
                 (id, false, TYPE_SIGNAL, data)
             }
 
             Self::Image(id, update, message) => {
-                let data = message.write_message(&mut head[6..]);
+                let data = message.write_message(&mut head[4..]);
                 (id, update, TYPE_IMAGE, Some(data))
             }
 
-            Self::Histogram(id, update, message) => {
-                let data = message.write_message(&mut head[6..]);
-                (id, update, TYPE_HISTOGRAM, data)
-            }
-
             Self::Dict(id, update, dict) => {
-                let data = dict.write_message(&mut head[6..]);
+                let data = dict.write_message(&mut head[4..]);
                 (id, update, TYPE_DICT, data)
             }
 
             Self::List(id, update, list) => {
-                let data = list.write_message(&mut head[6..]);
+                let data = list.write_message(&mut head[4..]);
                 (id, update, TYPE_LIST, data)
             }
 
             Self::Graph(id, update, message) => {
-                let data = message.write_message(&mut head[6..]);
+                let data = message.write_message(&mut head[4..]);
                 (id, update, TYPE_GRAPH, data)
             }
 
@@ -162,6 +157,10 @@ impl WriteMessage {
             }
         };
 
+        if flag {
+            type_ += 64;
+        }
+
         if let Some(ref data) = data {
             type_ = -type_;
             let size = data.len() as u32;
@@ -169,9 +168,7 @@ impl WriteMessage {
         }
 
         head[0] = type_ as u8;
-        head[1..5].copy_from_slice(&id.to_le_bytes());
-        head[5] = flag as u8;
-
+        head[1..4].copy_from_slice(&id.to_le_bytes()[0..3]);
         data
     }
 }
@@ -181,10 +178,9 @@ pub enum ReadMessage<'a> {
     Static(u32, bool, &'a [u8], Option<Vec<u8>>),
     Signal(u32, &'a [u8], Option<Vec<u8>>),
     Image(u32, bool, ImageMessage),
-    Histogram(u32, bool, HistogramMessage),
     Dict(u32, bool, &'a [u8], Option<Vec<u8>>),
     List(u32, bool, &'a [u8], Option<Vec<u8>>),
-    Graph(u32, bool, GraphMessage),
+    Graph(u32, bool, &'a [u8], Option<Vec<u8>>),
     Command(CommandMessage),
 }
 
@@ -195,10 +191,9 @@ impl<'a> ReadMessage<'a> {
             Self::Static(_, _, _, _) => "Static",
             Self::Signal(_, _, _) => "Signal",
             Self::Image(_, _, _) => "Image",
-            Self::Histogram(_, _, _) => "Histogram",
             Self::Dict(_, _, _, _) => "Dict",
             Self::List(_, _, _, _) => "List",
-            Self::Graph(_, _, _) => "Graph",
+            Self::Graph(_, _, _, _) => "Graph",
             Self::Command(_) => "Command",
         }
     }
@@ -207,7 +202,7 @@ impl<'a> ReadMessage<'a> {
 impl<'a> ReadMessage<'a> {
     pub fn parse(
         head: &'a [u8],
-        message_type: i8,
+        mut message_type: i8,
         data: Option<Vec<u8>>,
     ) -> Result<ReadMessage<'a>, String> {
         if message_type == TYPE_COMMAND {
@@ -215,27 +210,25 @@ impl<'a> ReadMessage<'a> {
             return Ok(ReadMessage::Command(command));
         }
 
-        let id = u32::from_le_bytes(head[1..5].try_into().unwrap());
-        let update = head[5] != 0;
+        let id = u32::from_le_bytes([head[1], head[2], head[3], 0]);
+        let update = if message_type > 63 {
+            message_type -= 64;
+            true
+        } else {
+            false
+        };
 
         match message_type {
-            TYPE_VALUE => Ok(ReadMessage::Value(id, update, &head[6..], data)),
-            TYPE_STATIC => Ok(ReadMessage::Static(id, update, &head[6..], data)),
-            TYPE_SIGNAL => Ok(ReadMessage::Signal(id, &head[6..], data)),
+            TYPE_VALUE => Ok(ReadMessage::Value(id, update, &head[4..], data)),
+            TYPE_STATIC => Ok(ReadMessage::Static(id, update, &head[4..], data)),
+            TYPE_SIGNAL => Ok(ReadMessage::Signal(id, &head[4..], data)),
             TYPE_IMAGE => {
-                let image = ImageMessage::read_message(&head[6..], data)?;
+                let image = ImageMessage::read_message(&head[4..], data)?;
                 Ok(ReadMessage::Image(id, update, image))
             }
-            TYPE_HISTOGRAM => {
-                let histogram = HistogramMessage::read_message(&head[6..], data)?;
-                Ok(ReadMessage::Histogram(id, update, histogram))
-            }
-            TYPE_DICT => Ok(ReadMessage::Dict(id, update, &head[6..], data)),
-            TYPE_LIST => Ok(ReadMessage::List(id, update, &head[6..], data)),
-            TYPE_GRAPH => {
-                let graph = GraphMessage::read_message(&head[6..], data)?;
-                Ok(ReadMessage::Graph(id, update, graph))
-            }
+            TYPE_DICT => Ok(ReadMessage::Dict(id, update, &head[4..], data)),
+            TYPE_LIST => Ok(ReadMessage::List(id, update, &head[4..], data)),
+            TYPE_GRAPH => Ok(ReadMessage::Graph(id, update, &head[4..], data)),
             _ => Err(format!("Unknown message type: {}", message_type)),
         }
     }

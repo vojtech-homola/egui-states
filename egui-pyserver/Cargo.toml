@@ -4,5 +4,6 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-pyo3 = { version = "0.22.*", features = ["extension-module", "abi3-py311"] }
-egui_pytransport = { workspace = true }
+# pyo3 = { version = "0.22.*", features = ["extension-module", "abi3-py311"] }
+pyo3 = { version = "0.22.*" }
+egui_pysync = { workspace = true }

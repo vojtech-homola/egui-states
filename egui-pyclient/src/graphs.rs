@@ -1,151 +1,72 @@
-use std::ptr::copy_nonoverlapping;
 use std::sync::{Arc, RwLock};
 
-use egui_pytransport::graphs::{GraphMessage, Precision};
+pub use egui_pysync::graphs::XAxis;
+use egui_pysync::graphs::{Graph, GraphElement, GraphMessage};
+use egui_pysync::nohash::NoHashMap;
 
 pub(crate) trait GraphUpdate: Sync + Send {
-    fn update_graph(&self, message: GraphMessage) -> Result<(), String>;
+    fn update_graph(&self, head: &[u8], data: Option<Vec<u8>>) -> Result<(), String>;
 }
 
-pub trait GraphType: Sync + Send + Clone + Copy {
-    fn check(precision: Precision) -> Result<(), String>;
-    fn zero() -> Self;
-    fn size() -> usize;
-}
-
-#[derive(Clone)]
-pub struct Graph<T> {
-    pub y: Vec<T>,
-    pub x: Vec<T>,
-    pub changed: bool,
-}
-
-impl<T> Graph<T> {
-    fn new() -> Self {
-        Self {
-            y: Vec::new(),
-            x: Vec::new(),
-            changed: true,
-        }
-    }
-}
-
-pub struct ValueGraph<T> {
+pub struct ValueGraphs<T> {
     _id: u32,
-    graph: RwLock<Graph<T>>,
+    graphs: RwLock<NoHashMap<u16, (Graph<T>, bool)>>,
 }
 
-impl<T: Clone + Copy> ValueGraph<T> {
+impl<T: Clone + Copy> ValueGraphs<T> {
     pub(crate) fn new(id: u32) -> Arc<Self> {
         Arc::new(Self {
             _id: id,
-            graph: RwLock::new(Graph::new()),
+            graphs: RwLock::new(NoHashMap::default()),
         })
     }
 
-    pub fn get(&self) -> Graph<T> {
-        self.graph.read().unwrap().clone()
+    pub fn get(&self, idx: u16) -> Option<Graph<T>> {
+        self.graphs.read().unwrap().get(&idx).map(|g| g.0.clone())
     }
 
-    pub fn process<R>(&self, op: impl Fn(&Graph<T>) -> R) -> R {
-        let mut g = self.graph.write().unwrap();
-        let result = op(&*g);
-        g.changed = false;
-        result
+    pub fn len(&self) -> usize {
+        self.graphs.read().unwrap().len()
+    }
+
+    pub fn process<R>(&self, idx: u16, op: impl Fn(Option<&Graph<T>>, bool) -> R) -> R {
+        let mut g = self.graphs.write().unwrap();
+        let graph = g.get_mut(&idx);
+
+        match graph {
+            Some((graph, changed)) => {
+                let r = op(Some(graph), *changed);
+                *changed = false;
+                r
+            }
+            None => op(None, false),
+        }
     }
 }
 
-impl<T: GraphType> GraphUpdate for ValueGraph<T> {
-    fn update_graph(&self, message: GraphMessage) -> Result<(), String> {
+impl<T: GraphElement> GraphUpdate for ValueGraphs<T> {
+    fn update_graph(&self, head: &[u8], data: Option<Vec<u8>>) -> Result<(), String> {
+        let message: GraphMessage<T> = GraphMessage::read_message(head, data)?;
+
         match message {
-            GraphMessage::All(graph) => {
-                T::check(graph.precision)?;
-                let mut x = vec![T::zero(); graph.points];
-                let mut y = vec![T::zero(); graph.points];
-                let line_size = graph.points * T::size();
-
-                let mut ptr = graph.data.as_ptr();
-                unsafe {
-                    copy_nonoverlapping(ptr, x.as_mut_ptr() as *mut u8, line_size);
-                    ptr = ptr.add(line_size);
-                    copy_nonoverlapping(ptr, y.as_mut_ptr() as *mut u8, line_size);
-                }
-
-                let mut g = self.graph.write().unwrap();
-                g.x = x;
-                g.y = y;
-                g.changed = true;
-
-                Ok(())
+            GraphMessage::Set(idx, graph_data) => {
+                let graph = Graph::from_graph_data(graph_data);
+                self.graphs.write().unwrap().insert(idx, (graph, true));
             }
-
-            GraphMessage::AddPoints(graph) => {
-                T::check(graph.precision)?;
-                let line_size = graph.points * T::size();
-                let mut x = vec![T::zero(); graph.points];
-                let mut y = vec![T::zero(); graph.points];
-                let mut ptr = graph.data.as_ptr();
-
-                unsafe {
-                    copy_nonoverlapping(ptr, x.as_mut_ptr() as *mut u8, line_size);
-                    ptr = ptr.add(line_size);
-                    copy_nonoverlapping(ptr, y.as_mut_ptr() as *mut u8, line_size);
+            GraphMessage::AddPoints(idx, graph_data) => {
+                if let Some((graph, changed)) = self.graphs.write().unwrap().get_mut(&idx) {
+                    graph.add_points_from_data(graph_data)?;
+                    *changed = true;
                 }
-
-                let mut g = self.graph.write().unwrap();
-                g.x.extend_from_slice(&x);
-                g.y.extend_from_slice(&y);
-                g.changed = true;
-
-                Ok(())
             }
-
+            GraphMessage::Remove(idx) => {
+                self.graphs.write().unwrap().remove(&idx);
+            }
             GraphMessage::Reset => {
-                let mut g = self.graph.write().unwrap();
-                g.y.clear();
-                g.x.clear();
-                g.changed = true;
-
-                Ok(())
+                self.graphs.write().unwrap().clear();
             }
         }
-    }
-}
 
-impl GraphType for f32 {
-    fn check(precision: Precision) -> Result<(), String> {
-        if precision != Precision::F32 {
-            return Err("Invalid precision for f32 graph".to_string());
-        }
         Ok(())
-    }
-
-    #[inline]
-    fn zero() -> Self {
-        0.0
-    }
-
-    #[inline]
-    fn size() -> usize {
-        std::mem::size_of::<Self>()
-    }
-}
-
-impl GraphType for f64 {
-    fn check(precision: Precision) -> Result<(), String> {
-        if precision != Precision::F64 {
-            return Err("Invalid precision for f64 graph".to_string());
-        }
-        Ok(())
-    }
-
-    #[inline]
-    fn zero() -> Self {
-        0.0
-    }
-
-    #[inline]
-    fn size() -> usize {
-        std::mem::size_of::<Self>()
     }
 }

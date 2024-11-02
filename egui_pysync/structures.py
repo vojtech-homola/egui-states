@@ -3,6 +3,8 @@ import traceback
 from abc import ABC, abstractmethod
 from collections.abc import Buffer, Callable
 
+import numpy as np
+
 from egui_pysync.typing import SteteServerCoreBase
 
 
@@ -59,7 +61,7 @@ class _SignalsManager:
 
     def _run(self, thread_id) -> None:
         while True:
-            ind, args = self._server.get_signal_value(thread_id)
+            ind, args = self._server.value_get_signal(thread_id)
             if ind in self._callbacks:
                 if ind in self._args_parsers:
                     for callback in self._callbacks[ind]:
@@ -89,18 +91,18 @@ class _SignalsManager:
             self._callbacks[value_id].append(callback)
             if args_parser:
                 self._args_parsers[value_id] = args_parser
-            self._server.set_register_value(value_id, True)
+            self._server.value_set_register(value_id, True)
 
     def remove_callback(self, value_id: int, callback: Callable) -> None:
         if value_id in self._callbacks and callback in self._callbacks[value_id]:
             self._callbacks[value_id].remove(callback)
             if not self._callbacks[value_id]:
-                self._server.set_register_value(value_id, False)
+                self._server.value_set_register(value_id, False)
 
     def clear_callbacks(self, value_id: int) -> None:
         if value_id in self._callbacks:
             self._callbacks[value_id].clear()
-            self._server.set_register_value(value_id, False)
+            self._server.value_set_register(value_id, False)
 
 
 class ErrorSignal:
@@ -160,7 +162,7 @@ class Value[T](_ValueBase):
             set_signal(bool, optional): Whether to set the signal. Defaults to True.
             update(bool, optional): Whether to update the UI. Defaults to False.
         """
-        self._server.set_value(self._value_id, value, set_signal, update)
+        self._server.value_set(self._value_id, value, set_signal, update)
 
     def get(self) -> T:
         """Get the value of the UI element.
@@ -168,7 +170,7 @@ class Value[T](_ValueBase):
         Returns:
             T: The value of the UI element.
         """
-        return self._server.get_value(self._value_id)
+        return self._server.value_get(self._value_id)
 
     def connect(self, callback: Callable[[T], None]) -> None:
         """Connect a callback to the value.
@@ -203,7 +205,7 @@ class ValueStatic[T](_ValueBase):
             value(T): The value to set.
             update(bool, optional): Whether to update the UI. Defaults to False.
         """
-        self._server.set_static(self._value_id, value, update)
+        self._server.static_set(self._value_id, value, update)
 
     def get(self) -> T:
         """Get the static value of the UI.
@@ -211,7 +213,7 @@ class ValueStatic[T](_ValueBase):
         Returns:
             T: The static value.
         """
-        return self._server.get_static(self._value_id)
+        return self._server.static_get(self._value_id)
 
 
 class ValueEnum[T](_ValueBase):
@@ -229,7 +231,7 @@ class ValueEnum[T](_ValueBase):
             set_signal(bool, optional): Whether to set the signal. Defaults to True.
             update(bool, optional): Whether to update the UI. Defaults to False.
         """
-        self._server.set_value(self._value_id, value.value, set_signal, update)  # type: ignore
+        self._server.value_set(self._value_id, value.value, set_signal, update)  # type: ignore
 
     def get(self) -> T:
         """Get the value of the UI element.
@@ -237,7 +239,7 @@ class ValueEnum[T](_ValueBase):
         Returns:
             T: The value of the UI element.
         """
-        str_value: int = self._server.get_value(self._value_id)
+        str_value: int = self._server.value_get(self._value_id)
         return self._enum_type(str_value)  # type: ignore
 
     def connect(self, callback: Callable[[T], None]) -> None:
@@ -327,16 +329,7 @@ class ValueImage(_ValueBase):
             rect(list[int], optional): The rectangle [y, x, height, width]. Defaults to None.
             update(bool, optional): Whether to update the UI. Defaults to True.
         """
-        self._server.set_image(self._value_id, image, update, rect)
-
-    def set_histogram(self, histogram: Buffer | None = None, update: bool = False) -> None:
-        """Set the histogram in the UI image.
-
-        Args:
-            histogram(Buffer, optional): The histogram numpy array of float32 normalized to 1. Defaults to None.
-            update(bool, optional): Whether to update the UI. Defaults to True.
-        """
-        self._server.set_histogram(self._value_id, update, histogram)
+        self._server.image_set(self._value_id, image, update, rect)
 
 
 class ValueDict[K, V](_ValueBase):
@@ -351,7 +344,7 @@ class ValueDict[K, V](_ValueBase):
             value(dict[K, V]): The dict to set.
             update(bool, optional): Whether to update the UI. Defaults to False.
         """
-        self._server.set_dict(self._value_id, value, update)
+        self._server.dict_set(self._value_id, value, update)
 
     def get(self) -> dict[K, V]:
         """Get the dict in the UI dict.
@@ -359,7 +352,7 @@ class ValueDict[K, V](_ValueBase):
         Returns:
             dict[K, V]: The dict in the UI dict.
         """
-        return self._server.get_dict(self._value_id)
+        return self._server.dict_get(self._value_id)
 
     def set_item(self, key: K, value: V, update: bool = False) -> None:
         """Set the item in the UI dict.
@@ -369,7 +362,7 @@ class ValueDict[K, V](_ValueBase):
             value(V): The value of the item.
             update(bool, optional): Whether to update the UI. Defaults to False.
         """
-        self._server.set_dict_item(self._value_id, key, value, update)
+        self._server.dict_item_set(self._value_id, key, value, update)
 
     def get_item(self, key: K) -> V:
         """Get the item in the UI dict.
@@ -380,7 +373,7 @@ class ValueDict[K, V](_ValueBase):
         Returns:
             V: The value of the item.
         """
-        return self._server.get_dict_item(self._value_id, key)
+        return self._server.dict_item_get(self._value_id, key)
 
     def remove_item(self, key: K, update: bool = False) -> None:
         """Remove the item from the UI dict.
@@ -389,7 +382,7 @@ class ValueDict[K, V](_ValueBase):
             key(K): The key of the item.
             update(bool, optional): Whether to update the UI. Defaults to False.
         """
-        self._server.del_dict_item(self._value_id, key, update)
+        self._server.dict_item_del(self._value_id, key, update)
 
     def __getitem__(self, key: K) -> V:
         """Get the item in the UI dict."""
@@ -416,7 +409,7 @@ class ValueList[T](_ValueBase):
             value(list[T]): The list to set.
             update(bool, optional): Whether to update the UI. Defaults to False.
         """
-        self._server.set_list(self._value_id, value, update)
+        self._server.list_set(self._value_id, value, update)
 
     def get(self) -> list[T]:
         """Get the list in the UI list.
@@ -424,7 +417,7 @@ class ValueList[T](_ValueBase):
         Returns:
             list[T]: The list in the UI list.
         """
-        return self._server.get_list(self._value_id)
+        return self._server.list_get(self._value_id)
 
     def set_item(self, idx: int, value: T, update: bool = False) -> None:
         """Set the item in the UI list.
@@ -434,7 +427,7 @@ class ValueList[T](_ValueBase):
             value(T): The value of the item.
             update(bool, optional): Whether to update the UI. Defaults to False.
         """
-        self._server.set_list_item(self._value_id, idx, value, update)
+        self._server.list_item_set(self._value_id, idx, value, update)
 
     def get_item(self, idx: int) -> T:
         """Get the item in the UI list.
@@ -445,7 +438,7 @@ class ValueList[T](_ValueBase):
         Returns:
             T: The value of the item.
         """
-        return self._server.get_list_item(self._value_id, idx)
+        return self._server.list_item_get(self._value_id, idx)
 
     def remove_item(self, idx: int, update: bool = False) -> None:
         """Remove the item from the UI list.
@@ -454,7 +447,7 @@ class ValueList[T](_ValueBase):
             idx(int): The index of the item.
             update(bool, optional): Whether to update the UI. Defaults to False.
         """
-        self._server.del_list_item(self._value_id, idx, update)
+        self._server.list_item_del(self._value_id, idx, update)
 
     def add_item(self, value: T, update: bool = False) -> None:
         """Add the item to the UI list.
@@ -463,7 +456,7 @@ class ValueList[T](_ValueBase):
             value(T): The value of the item.
             update(bool, optional): Whether to update the UI. Defaults to False.
         """
-        self._server.add_list_item(self._value_id, value, update)
+        self._server.list_item_add(self._value_id, value, update)
 
     def __getitem__(self, idx: int) -> T:
         """Get the item in the UI list."""
@@ -474,33 +467,213 @@ class ValueList[T](_ValueBase):
         self.set_item(idx, value, update=False)
 
 
-class ValueGraph(_ValueBase):
+class _GraphBase:
+    def __init__(self, value_id: int, idx: int, server: SteteServerCoreBase):
+        self._value_id = value_id
+        self._idx = idx
+        self._server = server
+
+        self._deleted = False
+
+    @property
+    def idx(self) -> int:
+        return self._idx
+
+    @property
+    def active(self) -> bool:
+        return not self._deleted
+
+    def len(self) -> int:
+        """Get the length of the graph.
+
+        Returns:
+            int: The length of the graph.
+        """
+        self._check()
+        return self._server.graphs_len(self._value_id, self._idx)
+
+    def _kill(self):
+        self._deleted = True
+        self._server.graphs_remove(self._value_id, self._idx, update=False)
+
+    def _check(self):
+        if self._deleted:
+            raise RuntimeError("Graph was deleted. You have to create a new one.")
+
+    def __len__(self) -> int:
+        return self.len()
+
+
+class Graph(_GraphBase):
+    """Graph UI element."""
+
+    def add_points(self, points: Buffer, update: bool = False) -> None:
+        """Add the points to the graph.
+
+        Args:
+            points(Buffer): The points to add. Has to implement the buffer protocol.
+            update(bool, optional): Whether to update the UI. Defaults to False.
+        """
+        self._check()
+        self._server.graphs_add_points(self._value_id, self._idx, points, update, range=None)
+
+    def set(self, graph: Buffer, update: bool = False) -> None:
+        """Set the graph to the UI graphs.
+
+        Args:
+            graph(Buffer): The graph to set. Has to implement the buffer protocol.
+            update(bool, optional): Whether to update the UI. Defaults to False.
+        """
+        self._check()
+        self._server.graphs_set(self._value_id, self._idx, graph, update, range=None)
+
+    def get(self) -> np.ndarray:
+        """Get the graph from the UI graphs.
+
+        Returns:
+            np.ndarray: The graph.
+        """
+        data, shape, range = self._server.graphs_get(self._value_id, self._idx)
+        if range is not None or len(shape) != 3:
+            raise RuntimeError("Invalid graph data.")
+
+        if shape[2] == 4:
+            dtype = np.float32
+        elif shape[2] == 8:
+            dtype = np.float64
+        else:
+            raise RuntimeError("Invalid graph datatype.")
+
+        return np.frombuffer(data, dtype=dtype).reshape(shape[:2])
+
+
+class GraphRange(_GraphBase):
+    """Graph UI element with range."""
+
+    def add_points(self, points: Buffer, range: tuple[float, float], update: bool = False) -> None:
+        """Add the points to the graph.
+
+        Args:
+            points(Buffer): The points to add. Has to implement the buffer protocol.
+            range(tuple[float, float]): The range of the graph
+            update(bool, optional): Whether to update the UI. Defaults to False.
+        """
+        self._check()
+        self._server.graphs_add_points(self._value_id, self._idx, points, update, range)
+
+    def set(self, graph: Buffer, range: tuple[float, float], update: bool = False) -> None:
+        """Set the graph to the UI graphs.
+
+        Args:
+            graph(Buffer): The graph to set. Has to implement the buffer protocol.
+            range(tuple[float, float]): The range of the graph.
+            update(bool, optional): Whether to update the UI. Defaults to False.
+        """
+        self._check()
+        self._server.graphs_set(self._value_id, self._idx, graph, update, range)
+
+    def get(self) -> tuple[np.ndarray, tuple[float, float]]:
+        """Get the graph from the UI graphs.
+
+        Returns:
+            tuple[np.ndarray, tuple[float, float]]: The graph and the range.
+        """
+        data, shape, range = self._server.graphs_get(self._value_id, self._idx)
+        if range is None or len(shape) != 2:
+            raise RuntimeError("Invalid graph data.")
+
+        if shape[1] == 4:
+            dtype = np.float32
+        elif shape[1] == 8:
+            dtype = np.float64
+        else:
+            raise RuntimeError("Invalid graph datatype.")
+
+        return np.frombuffer(data, dtype=dtype), range
+
+
+class ValueGraphs(_ValueBase):
     """Graph UI element."""
 
     _has_signal = False
 
-    def set(self, graph: Buffer, update: bool = False) -> None:
-        """Set the graph in the UI graph.
+    def __init__(self, counter: _Counter):  # noqa: D107
+        super().__init__(counter)
+
+        self._graphs: dict[int, _GraphBase] = {}
+        self.__getitem__ = self.get
+
+    def get(self, idx: int) -> _GraphBase:
+        """Get the graph by index.
 
         Args:
-            graph(Buffer): The graph to set.
-            update(bool, optional): Whether to update the UI. Defaults to False.
-        """
-        self._server.set_graph(self._value_id, graph, update)
+            idx(int): The index of the graph.
 
-    def add_points(self, points: Buffer, update: bool = False) -> None:
-        """Add the points to the UI graph.
+        Returns:
+            _Graph: The graph object.
+        """
+        return self._graphs[idx]
+
+    def set(
+        self, graph: Buffer, idx: int | None = None, range: tuple[float, float] | None = None, update: bool = False
+    ) -> _GraphBase:
+        """Set the graph to the UI graphs. Returns existing graph if the index is already used.
+
+        Two options for the graph data:
+        - Data with shape (2, N) where the first row is the x values and the second row is the y values.
+        - Data with shape (N,) where the x values are generated automatically from the range parameter.
 
         Args:
-            points(Buffer): The points to add.
+            graph(Buffer): The graph to set. Has to implement the buffer protocol (numpy array).
+            idx(int, optional): The index of the graph. If None, smallest available index is used. Defaults to None.
+            range(tuple[float, float], optional): The range of the graph. Defaults to None.
             update(bool, optional): Whether to update the UI. Defaults to False.
         """
-        self._server.add_graph_points(self._value_id, points, update)
+        if idx is None:
+            idx = 0
+            while idx in self._graphs:
+                idx += 1
+        elif idx in self._graphs:
+            self._graphs[idx]._kill()
+
+        self._server.graphs_set(self._value_id, idx, graph, update, range)
+        if range is None:
+            graph_obj = Graph(self._value_id, idx, self._server)
+        else:
+            graph_obj = GraphRange(self._value_id, idx, self._server)
+        self._graphs[idx] = graph_obj
+        return graph_obj
+
+    def remove(self, graph: _GraphBase, update: bool = False) -> None:
+        """Remove the graph from the UI graphs.
+
+        Args:
+            graph(_Graph): The graph object.
+            update(bool, optional): Whether to update the UI. Defaults to False.
+        """
+        graph._kill()
+        if graph.idx in self._graphs:
+            graph._kill()
+            self._server.graphs_remove(self._value_id, graph.idx, update)
+            self._graphs.pop(graph.idx)
+
+    def remove_idx(self, idx: int, update: bool = False) -> None:
+        """Remove the graph from the UI graphs.
+
+        Args:
+            idx(int): The index of the graph.
+            update(bool, optional): Whether to update the UI. Defaults to False.
+        """
+        if idx in self._graphs:
+            self._graphs[idx]._kill()
+            self._server.graphs_remove(self._value_id, idx, update)
+            self._graphs.pop(idx)
 
     def clear(self, update: bool = False) -> None:
-        """Clear the UI graph.
+        """Clear the all UI graphs.
 
         Args:
             update(bool, optional): Whether to update the UI. Defaults to False.
         """
-        self._server.clear_graph(self._value_id, update)
+        self._graphs.clear()
+        self._server.graphs_clear(self._value_id, update)

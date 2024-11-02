@@ -3,17 +3,18 @@ use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
 
-use pyo3::prelude::*;
-use pyo3::ToPyObject;
+use pyo3::buffer::Element;
+use pyo3::{FromPyObject, ToPyObject};
 
-use egui_pytransport::collections::CollectionItem;
-use egui_pytransport::transport::WriteMessage;
-use egui_pytransport::values::{ReadValue, WriteValue};
-use egui_pytransport::{EnumInt, EnumStr, NoHashMap};
+use egui_pysync::collections::CollectionItem;
+use egui_pysync::graphs::GraphElement;
+use egui_pysync::transport::WriteMessage;
+use egui_pysync::values::{ReadValue, WriteValue};
+use egui_pysync::{EnumInt, EnumStr, NoHashMap};
 
 use crate::dict::{PyDict, ValueDict};
-use crate::graphs::{GraphType, PyGraph, ValueGraph};
-use crate::image::ImageValue;
+use crate::graphs::{PyGraph, ValueGraphs};
+use crate::image::ValueImage;
 use crate::list::{PyListTrait, ValueList};
 use crate::signals::ChangedValues;
 use crate::values::{ProccesValue, PyValue, PyValueStatic};
@@ -24,7 +25,7 @@ use crate::{Acknowledge, SyncTrait};
 pub(crate) struct PyValuesList {
     pub(crate) values: NoHashMap<u32, Arc<dyn PyValue>>,
     pub(crate) static_values: NoHashMap<u32, Arc<dyn PyValueStatic>>,
-    pub(crate) images: NoHashMap<u32, Arc<ImageValue>>,
+    pub(crate) images: NoHashMap<u32, Arc<ValueImage>>,
     pub(crate) dicts: NoHashMap<u32, Arc<dyn PyDict>>,
     pub(crate) lists: NoHashMap<u32, Arc<dyn PyListTrait>>,
     pub(crate) graphs: NoHashMap<u32, Arc<dyn PyGraph>>,
@@ -105,6 +106,9 @@ impl ValuesCreator {
     }
 
     fn get_id(&mut self) -> u32 {
+        if self.counter > 16777215 {
+            panic!("id counter overflow, id is 24bit long");
+        }
         let count = self.counter;
         self.counter += 1;
         count
@@ -192,9 +196,9 @@ impl ValuesCreator {
         signal
     }
 
-    pub fn add_image(&mut self) -> Arc<ImageValue> {
+    pub fn add_image(&mut self) -> Arc<ValueImage> {
         let id = self.get_id();
-        let image = ImageValue::new(id, self.channel.clone(), self.connected.clone());
+        let image = ValueImage::new(id, self.channel.clone(), self.connected.clone());
 
         self.py_val.images.insert(id, image.clone());
         self.val.sync.insert(id, image.clone());
@@ -229,9 +233,13 @@ impl ValuesCreator {
         list
     }
 
-    pub fn add_graph<T: Send + Sync + GraphType + 'static>(&mut self) -> Arc<ValueGraph<T>> {
+    pub fn add_graph<
+        T: GraphElement + Element + for<'py> FromPyObject<'py> + ToPyObject + 'static,
+    >(
+        &mut self,
+    ) -> Arc<ValueGraphs<T>> {
         let id = self.get_id();
-        let graph = ValueGraph::new(id, self.channel.clone(), self.connected.clone());
+        let graph = ValueGraphs::new(id, self.channel.clone(), self.connected.clone());
 
         self.py_val.graphs.insert(id, graph.clone());
         self.val.sync.insert(id, graph.clone());

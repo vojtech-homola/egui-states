@@ -138,7 +138,7 @@ mod tests {
 
     #[test]
     fn test_command_ack() {
-        let ind = 1234567890;
+        let ind = 123456;
         let mut head = [0u8; HEAD_SIZE];
 
         let message = CommandMessage::Ack(ind);

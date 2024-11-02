@@ -33,8 +33,8 @@ pub fn init_module(
 }
 
 pub use dict::ValueDict;
-pub use graphs::ValueGraph;
-pub use image::ImageValue;
+pub use graphs::ValueGraphs;
+pub use image::ValueImage;
 pub use list::ValueList;
 pub use states_creator::ValuesCreator;
 pub use values::{Signal, Value, ValueEnum, ValueStatic};

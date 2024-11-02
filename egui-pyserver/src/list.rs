@@ -5,9 +5,9 @@ use std::sync::{Arc, RwLock};
 use pyo3::exceptions::PyIndexError;
 use pyo3::prelude::*;
 
-use egui_pytransport::collections::CollectionItem;
-use egui_pytransport::list::ListMessage;
-use egui_pytransport::transport::WriteMessage;
+use egui_pysync::collections::CollectionItem;
+use egui_pysync::list::ListMessage;
+use egui_pysync::transport::WriteMessage;
 
 use crate::SyncTrait;
 
