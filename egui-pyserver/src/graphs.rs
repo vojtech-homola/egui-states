@@ -1,3 +1,4 @@
+use std::ptr::copy_nonoverlapping;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, RwLock};
@@ -76,7 +77,7 @@ where
             Some(range) => Some(range.extract::<[T; 2]>()?),
             None => None,
         };
-        let graph = buffer_to_graph(&buffer, range, None)?.unwrap();
+        let graph = buffer_to_graph(&buffer, range)?;
 
         let mut w = self.graphs.write().unwrap();
         if self.connected.load(Ordering::Relaxed) {
@@ -107,7 +108,7 @@ where
         let graph = w
             .get_mut(&idx)
             .ok_or_else(|| PyValueError::new_err("Graph not found"))?;
-        let _ = buffer_to_graph(&buffer, range, Some(graph));
+        buffer_to_graph_add(&buffer, range, graph)?;
 
         if self.connected.load(Ordering::Relaxed) {
             let message = GraphMessage::AddPoints(idx, graph.to_graph_data(None));
@@ -217,24 +218,16 @@ impl<T: GraphElement> SyncTrait for ValueGraphs<T> {
     }
 }
 
-fn buffer_to_graph_add<'py, T>(buffer: &PyBuffer<T>, range: Option<[T; 2]>, graph: &mut Graph<T>)
-where
-    T: GraphElement + Element + FromPyObject<'py>,
-{
-    
-}
-
-fn buffer_to_graph<'py, T>(
+fn buffer_to_graph_add<'py, T>(
     buffer: &PyBuffer<T>,
     range: Option<[T; 2]>,
-    graph: Option<&mut Graph<T>>,
-) -> PyResult<Option<Graph<T>>>
+    graph: &mut Graph<T>,
+) -> PyResult<()>
 where
     T: GraphElement + Element + FromPyObject<'py>,
 {
     let shape = buffer.shape();
-
-    let graph = match range {
+    match range {
         Some(range) => {
             if shape.len() != 1 {
                 return Err(PyValueError::new_err(
@@ -242,114 +235,108 @@ where
                 ));
             }
 
-            let points = shape[0];
-            let ptr = buffer.get_ptr(&[0]) as *const T;
-
-            match graph {
-                Some(graph) => {
-                    if let XAxis::X(_) = graph.x {
-                        return Err(PyValueError::new_err(
-                            "Graph data with range must have the same x axis type.",
-                        ));
-                    }
-
+            match graph.x {
+                XAxis::Range(ref mut r) => {
+                    let points = shape[0];
+                    let ptr = buffer.get_ptr(&[0]) as *const T;
                     let original_len = graph.y.len();
                     graph.y.resize(original_len + points, T::zero());
                     unsafe {
-                        std::ptr::copy_nonoverlapping(
-                            ptr,
-                            graph.y[original_len..].as_mut_ptr(),
-                            points,
-                        )
+                        copy_nonoverlapping(ptr, graph.y[original_len..].as_mut_ptr(), points)
                     };
-
-                    None
+                    *r = range;
                 }
-                None => {
-                    if shape[0] < 2 {
-                        return Err(PyValueError::new_err(
-                            "Graph data with range must have at least 2 points.",
-                        ));
-                    }
-
-                    let mut y = vec![T::zero(); points];
-                    unsafe { std::ptr::copy_nonoverlapping(ptr, y.as_mut_ptr(), points) };
-
-                    Some(Graph {
-                        y,
-                        x: XAxis::Range(range),
-                    })
+                XAxis::X(_) => {
+                    return Err(PyValueError::new_err(
+                        "Graph data with range must have the same x axis type.",
+                    ));
                 }
             }
+            Ok(())
         }
+
         None => {
             if shape.len() != 2 {
                 return Err(PyValueError::new_err("Graph data must have 2 dimensions."));
             }
-
             if shape[0] != 2 {
                 return Err(PyValueError::new_err(
                     "Graph data must have at 2 lines (x, y).",
                 ));
             }
 
-            let points = shape[1];
-
-            match graph {
-                Some(graph) => {
-                    match graph.x {
-                        XAxis::X(ref mut x) => {
-                            let original_len = x.len();
-                            x.resize(points + original_len, T::zero());
-                            let ptr = buffer.get_ptr(&[0, 0]) as *const T;
-                            unsafe {
-                                std::ptr::copy_nonoverlapping(
-                                    ptr,
-                                    x[original_len..].as_mut_ptr(),
-                                    points,
-                                )
-                            };
-                        }
-                        XAxis::Range(_) => {
-                            return Err(PyValueError::new_err(
-                                "Graph data with range must have the same x axis type.",
-                            ));
-                        }
-                    }
-
-                    let original_len = graph.y.len();
-                    graph.y.resize(points + original_len, T::zero());
-                    let ptr = buffer.get_ptr(&[1, 0]) as *const T;
-                    unsafe {
-                        std::ptr::copy_nonoverlapping(
-                            ptr,
-                            graph.y[original_len..].as_mut_ptr(),
-                            points,
-                        )
-                    };
-
-                    None
-                }
-                None => {
-                    if shape[1] < 2 {
-                        return Err(PyValueError::new_err(
-                            "Graph data must have at least 2 points.",
-                        ));
-                    }
-
-                    let mut x = vec![T::zero(); points];
+            match graph.x {
+                XAxis::X(ref mut x) => {
+                    let points = shape[1];
+                    let original_len = x.len();
+                    x.resize(points + original_len, T::zero());
                     let ptr = buffer.get_ptr(&[0, 0]) as *const T;
-                    unsafe { std::ptr::copy_nonoverlapping(ptr, x.as_mut_ptr(), points) };
-
-                    let mut y = vec![T::zero(); points];
-                    let ptr = buffer.get_ptr(&[1, 0]) as *const T;
-                    unsafe { std::ptr::copy_nonoverlapping(ptr, y.as_mut_ptr(), points) };
-
-                    Some(Graph { y, x: XAxis::X(x) })
+                    unsafe { copy_nonoverlapping(ptr, x[original_len..].as_mut_ptr(), points) };
+                }
+                XAxis::Range(_) => {
+                    return Err(PyValueError::new_err(
+                        "Graph data with range must have the same x axis type.",
+                    ));
                 }
             }
+            Ok(())
         }
-    };
+    }
+}
 
-    Ok(graph)
+fn buffer_to_graph<'py, T>(buffer: &PyBuffer<T>, range: Option<[T; 2]>) -> PyResult<Graph<T>>
+where
+    T: GraphElement + Element + FromPyObject<'py>,
+{
+    let shape = buffer.shape();
+    match range {
+        Some(range) => {
+            if shape.len() != 1 {
+                return Err(PyValueError::new_err(
+                    "Graph data with range must have 1 dimension.",
+                ));
+            }
+            if shape[0] < 2 {
+                return Err(PyValueError::new_err(
+                    "Graph data with range must have at least 2 points.",
+                ));
+            }
+
+            let points = shape[0];
+
+            let ptr = buffer.get_ptr(&[0]) as *const T;
+            let mut y = vec![T::zero(); points];
+            unsafe { std::ptr::copy_nonoverlapping(ptr, y.as_mut_ptr(), points) };
+
+            let x = XAxis::Range(range);
+            Ok(Graph { y, x })
+        }
+        None => {
+            if shape.len() != 2 {
+                return Err(PyValueError::new_err("Graph data must have 2 dimensions."));
+            }
+            if shape[0] != 2 {
+                return Err(PyValueError::new_err(
+                    "Graph data must have 2 lines (x, y).",
+                ));
+            }
+            if shape[1] < 2 {
+                return Err(PyValueError::new_err(
+                    "Graph data must have at least 2 points.",
+                ));
+            }
+
+            let points = shape[1];
+
+            let mut x = vec![T::zero(); points];
+            let ptr = buffer.get_ptr(&[0, 0]) as *const T;
+            unsafe { std::ptr::copy_nonoverlapping(ptr, x.as_mut_ptr(), points) };
+
+            let mut y = vec![T::zero(); points];
+            let ptr = buffer.get_ptr(&[1, 0]) as *const T;
+            unsafe { std::ptr::copy_nonoverlapping(ptr, y.as_mut_ptr(), points) };
+
+            Ok(Graph { y, x: XAxis::X(x) })
+        }
+    }
 }
