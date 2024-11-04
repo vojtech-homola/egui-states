@@ -1,4 +1,4 @@
-use std::collections::{hash_map, HashMap, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::string::ToString;
 use std::{fs, io::Write};
 
@@ -13,6 +13,8 @@ pub fn parse_enum(enum_path: impl ToString, output_path: impl ToString) -> Resul
     let mut file = fs::File::create(output_path.to_string())
         .map_err(|e| format!("Failed to create file: {}", e))?;
 
+    file.write_all(b"# Ganerated by build.rs, do not edit\n")
+        .unwrap();
     file.write_all(b"# ruff: noqa: D101\n").unwrap();
     file.write_all(b"from enum import Enum\n").unwrap();
 
@@ -98,6 +100,8 @@ pub fn parse_custom_types(
     let mut file = fs::File::create(output_path.to_string())
         .map_err(|e| format!("Failed to create file: {}", e))?;
 
+    file.write_all(b"# Ganerated by build.rs, do not edit\n")
+        .unwrap();
     file.write_all(b"# ruff: noqa: UP013 F403 F405 D101 E302 E305\n")
         .unwrap();
     file.write_all(b"from typing import *  # type: ignore\n")
@@ -110,6 +114,122 @@ pub fn parse_custom_types(
     }
 
     file.flush().unwrap();
+    Ok(())
+}
+
+// states -----------------------------------------------------------------------
+struct Value {
+    name: String,
+}
+
+enum Item {
+    Value(String, Value),
+    State(String, State),
+}
+
+struct State {
+    name: String,
+    items: Vec<Item>,
+}
+
+#[inline]
+fn test_if_value(line: &str) -> bool {
+    line.contains("Arc<Value<")
+        || line.contains("Arc<ValueStatic<")
+        || line.contains("Arc<ValueImage<")
+        || line.contains("Arc<ValueEnum<")
+        || line.contains("Arc<Signal<")
+        || line.contains("Arc<ValueDict<")
+        || line.contains("Arc<ValueList<")
+}
+
+impl State {
+    fn new(name: String, lines: &Vec<String>) -> Result<Self, String> {
+        let mut values = HashMap::new();
+        let mut substates = HashMap::new();
+
+        let mut started = false;
+        let mut finished = false;
+        for line in lines {
+            if line.contains(format!("struct {}", name).as_str()) {
+                started = true;
+                continue;
+            }
+
+            if started {
+                if line.contains("}") {
+                    finished = true;
+                    break;
+                } else if line.contains("{") {
+                    continue;
+                } else if line.trim().is_empty() {
+                    continue;
+                } else if test_if_value(line) {
+                    let item_name = line.split(": ").collect::<Vec<&str>>()[0];
+                    let item_name = item_name
+                        .split(" ")
+                        .collect::<Vec<&str>>()
+                        .last()
+                        .unwrap()
+                        .to_string();
+                    let item =
+                        line.split(": ").collect::<Vec<&str>>()[1][..line.len() - 1].to_string();
+                    values.insert(item_name, item);
+                } else {
+                    let item_name = line.split(": ").collect::<Vec<&str>>()[0];
+                    let item_name = item_name
+                        .split(" ")
+                        .collect::<Vec<&str>>()
+                        .last()
+                        .unwrap()
+                        .to_string();
+                    let item =
+                        line.split(": ").collect::<Vec<&str>>()[1][..line.len() - 1].to_string();
+
+                    let state = State::new(item, lines);
+                    if let Ok(state) = state {
+                        substates.insert(item_name, state);
+                    }
+                }
+            }
+        }
+
+        if !finished {
+            return Err(format!("Failed to parse state: {}", name));
+        }
+
+        let mut items = Vec::new();
+        let mut started = false;
+        let mut finished = false;
+
+        for line in lines {
+            if line.contains(format!("impl {}", name).as_str()) {
+                started = true;
+                continue;
+            }
+
+            if started {
+                
+            }
+        }
+
+        Ok(Self { name, items })
+    }
+}
+
+// states for server -----------------------------------------------------------
+pub fn parse_states_for_server(
+    states_file: impl ToString,
+    output_file: impl ToString,
+    root_state: &'static str,
+    imports: Vec<&'static str>,
+) -> Result<(), String> {
+    let lines: Vec<String> = fs::read_to_string(states_file.to_string())
+        .map_err(|e| format!("Failed to read file: {}", e))?
+        .lines()
+        .map(String::from)
+        .collect();
+
     Ok(())
 }
 
@@ -161,9 +281,8 @@ fn parse_types(value: &str, custom: &Option<(String, String)>) -> Result<String,
             let nums = val.split(";").collect::<Vec<&str>>()[1].trim();
 
             let typ_val = parse_types(typ_val, custom)?;
-            // let text = 
+            // let text =
         } else {
-            
         }
     }
 
