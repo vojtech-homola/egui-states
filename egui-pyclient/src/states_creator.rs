@@ -56,7 +56,7 @@ pub struct ValuesCreator {
 impl ValuesCreator {
     pub(crate) fn new(channel: Sender<WriteMessage>) -> Self {
         Self {
-            counter: 10, // first 10 values are reserved for special values
+            counter: 9, // first 10 values are reserved for special values
             val: ValuesList::new(),
             version: 0,
             channel,
@@ -67,9 +67,8 @@ impl ValuesCreator {
         if self.counter > 16777215 {
             panic!("id counter overflow, id is 24bit long");
         }
-        let count = self.counter;
         self.counter += 1;
-        count
+        self.counter
     }
 
     pub(crate) fn get_values(self) -> (ValuesList, u64) {

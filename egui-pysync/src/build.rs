@@ -210,15 +210,21 @@ impl State {
             }
         }
 
-        file.write_all(format!("\n\nclass {}(structures._StatesBase):\n", self.name).as_bytes())
-            .unwrap();
         if root {
+            file.write_all(
+                format!("\n\nclass {}(structures._MainStatesBase):\n", self.name).as_bytes(),
+            )
+            .unwrap();
             file.write_all(b"    def __init__(self, update: Callable[[float | None], None]):\n")
                 .unwrap();
             file.write_all(b"        self._update = update\n").unwrap();
             file.write_all(b"        c = structures._Counter()\n\n")
                 .unwrap();
         } else {
+            file.write_all(
+                format!("\n\nclass {}(structures._StatesBase):\n", self.name).as_bytes(),
+            )
+            .unwrap();
             file.write_all(b"    def __init__(self, c: structures._Counter):\n")
                 .unwrap();
         }
@@ -394,7 +400,7 @@ impl State {
 
                 let mut key = "".to_string();
                 for name in substates.keys() {
-                    if line.contains(format!("{}:", name).as_str()) {
+                    if line.contains(format!(" {}:", name).as_str()) {
                         key = name.clone();
                         break;
                     }
@@ -408,7 +414,7 @@ impl State {
 
                 let mut key = "".to_string();
                 for name in values.keys() {
-                    if line.contains(format!("{}:", name).as_str()) {
+                    if line.contains(format!(" {}:", name).as_str()) {
                         key = name.clone();
                         break;
                     }

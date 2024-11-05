@@ -99,7 +99,7 @@ impl ValuesCreator {
             signals,
 
             version: 0,
-            counter: 10, // first 10 values are reserved for special values
+            counter: 9, // first 10 values are reserved for special values
             val: ValuesList::new(),
             py_val: PyValuesList::new(),
         }
@@ -109,9 +109,8 @@ impl ValuesCreator {
         if self.counter > 16777215 {
             panic!("id counter overflow, id is 24bit long");
         }
-        let count = self.counter;
         self.counter += 1;
-        count
+        self.counter
     }
 
     pub(crate) fn get_values(self) -> (ValuesList, PyValuesList, u64) {
