@@ -93,7 +93,7 @@ impl ValuesCreator {
         value
     }
 
-    pub fn add_static_value<T>(&mut self, value: T) -> Arc<ValueStatic<T>>
+    pub fn add_static<T>(&mut self, value: T) -> Arc<ValueStatic<T>>
     where
         T: ReadValue + 'static,
     {
@@ -150,7 +150,7 @@ impl ValuesCreator {
         value
     }
 
-    pub fn add_graph<T: GraphElement + 'static>(&mut self) -> Arc<ValueGraphs<T>> {
+    pub fn add_graphs<T: GraphElement + 'static>(&mut self) -> Arc<ValueGraphs<T>> {
         let id = self.get_id();
         let value = ValueGraphs::new(id);
 

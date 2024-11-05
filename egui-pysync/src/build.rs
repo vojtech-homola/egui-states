@@ -118,8 +118,78 @@ pub fn parse_custom_types(
 }
 
 // states -----------------------------------------------------------------------
+enum ValueType {
+    Value,
+    ValueStatic,
+    ValueImage,
+    ValueEnum,
+    Signal,
+    ValueDict,
+    ValueList,
+    ValueGraphs,
+}
+
+impl ValueType {
+    fn as_add_str(&self) -> &'static str {
+        match self {
+            ValueType::Value => "add_value",
+            ValueType::ValueStatic => "add_static",
+            ValueType::ValueImage => "add_image",
+            ValueType::ValueEnum => "add_enum",
+            ValueType::Signal => "add_signal",
+            ValueType::ValueDict => "add_dict",
+            ValueType::ValueList => "add_list",
+            ValueType::ValueGraphs => "add_graphs",
+        }
+    }
+}
+
 struct Value {
-    name: String,
+    typ: ValueType,
+    default: String,
+    annotation: String,
+}
+
+impl Value {
+    fn new(definition: String, declaration: String) -> Self {
+        let typ = if definition.contains("ValueStatic") {
+            ValueType::ValueStatic
+        } else if definition.contains("<ValueImage>") {
+            ValueType::ValueImage
+        } else if definition.contains("<ValueEnum<") {
+            ValueType::ValueEnum
+        } else if definition.contains("<Signal<") {
+            ValueType::Signal
+        } else if definition.contains("<ValueDict<") {
+            ValueType::ValueDict
+        } else if definition.contains("<ValueList<") {
+            ValueType::ValueList
+        } else if definition.contains("<ValueGraphs<") {
+            ValueType::ValueGraphs
+        } else if definition.contains("<Value<") {
+            ValueType::Value
+        } else {
+            panic!("Unknown value type: {}", definition);
+        };
+
+        let annot = if let ValueType::ValueImage = typ {
+            "".to_string()
+        } else {
+            let annot = definition.split("<").collect::<Vec<&str>>()[2];
+            annot.split(">").collect::<Vec<&str>>()[0].to_string()
+        };
+
+        let first = declaration.find("(").unwrap();
+        let default = declaration[first + 1..].to_string();
+        let last = default.rfind(")").unwrap();
+        let default = default[..last].to_string();
+
+        Self {
+            typ,
+            default,
+            annotation: annot,
+        }
+    }
 }
 
 enum Item {
@@ -132,11 +202,119 @@ struct State {
     items: Vec<Item>,
 }
 
+impl State {
+    fn write_python(&self, file: &mut fs::File, custom: &Option<(String, String)>, root: bool) {
+        for item in &self.items {
+            if let Item::State(_, state) = item {
+                state.write_python(file, custom, false);
+            }
+        }
+
+        file.write_all(format!("\n\nclass {}(structures._StatesBase):\n", self.name).as_bytes())
+            .unwrap();
+        if root {
+            file.write_all(b"    def __init__(self, update: Callable[[float | None], None]):\n")
+                .unwrap();
+            file.write_all(b"        self._update = update\n").unwrap();
+            file.write_all(b"        c = structures._Counter()\n\n")
+                .unwrap();
+        } else {
+            file.write_all(b"    def __init__(self, c: structures._Counter):\n")
+                .unwrap();
+        }
+
+        for item in &self.items {
+            match item {
+                Item::Value(name, value) => {
+                    let text = match value.typ {
+                        ValueType::Value => {
+                            let val_type = parse_types(&value.annotation, custom).unwrap();
+                            format!(
+                                "        self.{} = structures.Value[{}](c)\n",
+                                name, val_type
+                            )
+                        }
+                        ValueType::ValueStatic => {
+                            let val_type = parse_types(&value.annotation, custom).unwrap();
+                            format!(
+                                "        self.{} = structures.ValueStatic[{}](c)\n",
+                                name, val_type
+                            )
+                        }
+                        ValueType::ValueImage => {
+                            format!("        self.{} = structures.ValueImage(c)\n", name)
+                        }
+                        ValueType::Signal => {
+                            if value.annotation == "()" {
+                                format!("        self.{} = structures.SignalEmpty(c)\n", name)
+                            } else {
+                                let val_type = parse_types(&value.annotation, custom).unwrap();
+                                format!(
+                                    "        self.{} = structures.Signal[{}](c)\n",
+                                    name, val_type
+                                )
+                            }
+                        }
+                        ValueType::ValueDict => {
+                            let key_type = value.annotation.split(",").collect::<Vec<&str>>()[0];
+                            let val_type =
+                                value.annotation.split(",").collect::<Vec<&str>>()[1].trim();
+                            let key_type = parse_types(key_type, custom).unwrap();
+                            let val_type = parse_types(val_type, custom).unwrap();
+                            format!(
+                                "        self.{} = structures.ValueDict[{}, {}](c)\n",
+                                name, key_type, val_type
+                            )
+                        }
+                        ValueType::ValueList => {
+                            let val_type = parse_types(&value.annotation, custom).unwrap();
+                            format!(
+                                "        self.{} = structures.ValueList[{}](c)\n",
+                                name, val_type
+                            )
+                        }
+                        ValueType::ValueGraphs => {
+                            format!("        self.{} = structures.ValueGraphs(c)\n", name)
+                        }
+                        ValueType::ValueEnum => {
+                            let enum_str = value.annotation.replace("::", ".");
+                            format!(
+                                "        self.{} = structures.ValueEnum(c, {})\n",
+                                name, enum_str
+                            )
+                        }
+                    };
+
+                    file.write_all(text.as_bytes()).unwrap();
+                }
+                Item::State(name, state) => {
+                    let text = format!("        self.{} = {}(c)\n", name, state.name);
+                    file.write_all(text.as_bytes()).unwrap();
+                }
+            }
+        }
+
+        if root {
+            file.write_all(b"\n    def update(self, duration: float | None = None) -> None:\n")
+                .unwrap();
+            file.write_all(b"        \"\"\"Update the UI.\n\n").unwrap();
+            file.write_all(b"        Args:\n").unwrap();
+            file.write_all(b"            duration (float | None): The duration of the update.\n")
+                .unwrap();
+            file.write_all(b"        \"\"\"\n").unwrap();
+            file.write_all(b"        self._update(duration)\n").unwrap();
+        }
+
+        // file.write_all(b"\n").unwrap();
+    }
+}
+
 #[inline]
 fn test_if_value(line: &str) -> bool {
     line.contains("Arc<Value<")
         || line.contains("Arc<ValueStatic<")
-        || line.contains("Arc<ValueImage<")
+        || line.contains("Arc<ValueImage>")
+        || line.contains("Arc<ValueGraphs<")
         || line.contains("Arc<ValueEnum<")
         || line.contains("Arc<Signal<")
         || line.contains("Arc<ValueDict<")
@@ -148,6 +326,7 @@ impl State {
         let mut values = HashMap::new();
         let mut substates = HashMap::new();
 
+        // process definition of the structs
         let mut started = false;
         let mut finished = false;
         for line in lines {
@@ -160,9 +339,7 @@ impl State {
                 if line.contains("}") {
                     finished = true;
                     break;
-                } else if line.contains("{") {
-                    continue;
-                } else if line.trim().is_empty() {
+                } else if line.contains("{") || line.trim().is_empty() || line.contains("//") {
                     continue;
                 } else if test_if_value(line) {
                     let item_name = line.split(": ").collect::<Vec<&str>>()[0];
@@ -172,8 +349,8 @@ impl State {
                         .last()
                         .unwrap()
                         .to_string();
-                    let item =
-                        line.split(": ").collect::<Vec<&str>>()[1][..line.len() - 1].to_string();
+                    let item = line.split(": ").collect::<Vec<&str>>()[1];
+                    let item = item[..item.len() - 1].to_string(); // remove comma
                     values.insert(item_name, item);
                 } else {
                     let item_name = line.split(": ").collect::<Vec<&str>>()[0];
@@ -183,8 +360,8 @@ impl State {
                         .last()
                         .unwrap()
                         .to_string();
-                    let item =
-                        line.split(": ").collect::<Vec<&str>>()[1][..line.len() - 1].to_string();
+                    let item = line.split(": ").collect::<Vec<&str>>()[1];
+                    let item = item[..item.len() - 1].to_string(); // remove comma
 
                     let state = State::new(item, lines);
                     if let Ok(state) = state {
@@ -198,6 +375,7 @@ impl State {
             return Err(format!("Failed to parse state: {}", name));
         }
 
+        // process impl of the structs
         let mut items = Vec::new();
         let mut started = false;
         let mut finished = false;
@@ -209,8 +387,43 @@ impl State {
             }
 
             if started {
-                
+                if line == "}" {
+                    finished = true;
+                    break;
+                }
+
+                let mut key = "".to_string();
+                for name in substates.keys() {
+                    if line.contains(format!("{}:", name).as_str()) {
+                        key = name.clone();
+                        break;
+                    }
+                }
+
+                if !key.is_empty() {
+                    let (name, state) = substates.remove_entry(&key).unwrap();
+                    items.push(Item::State(name, state));
+                    continue;
+                }
+
+                let mut key = "".to_string();
+                for name in values.keys() {
+                    if line.contains(format!("{}:", name).as_str()) {
+                        key = name.clone();
+                        break;
+                    }
+                }
+
+                if !key.is_empty() {
+                    let (name, definition) = values.remove_entry(&key).unwrap();
+                    let value = Value::new(definition, line.clone());
+                    items.push(Item::Value(name, value));
+                }
             }
+        }
+
+        if !finished || items.is_empty() {
+            return Err(format!("Failed to parse state: {}", name));
         }
 
         Ok(Self { name, items })
@@ -230,10 +443,52 @@ pub fn parse_states_for_server(
         .map(String::from)
         .collect();
 
+    let state = State::new(root_state.to_string(), &lines)?;
+
+    let mut file = fs::File::create(output_file.to_string())
+        .map_err(|e| format!("Failed to create file: {}", e))?;
+
+    file.write_all(b"// Ganerated by build.rs, do not edit\n")
+        .unwrap();
+    for import in imports {
+        file.write_all(format!("use {};\n", import).as_bytes())
+            .unwrap();
+    }
+    file.write_all(b"\nuse egui_pyserver::ValuesCreator;\n\n")
+        .unwrap();
+    file.write_all(b"pub(crate) fn create_states(c: &mut ValuesCreator) {\n")
+        .unwrap();
+
+    fn write_values(file: &mut fs::File, items: &Vec<Item>) {
+        for item in items {
+            match item {
+                Item::Value(_, value) => {
+                    let add_str = value.typ.as_add_str();
+                    let text = if value.annotation.is_empty() {
+                        format!("    c.{}({});\n", add_str, value.default)
+                    } else {
+                        format!(
+                            "    c.{}::<{}>({});\n",
+                            add_str, value.annotation, value.default
+                        )
+                    };
+                    file.write_all(text.as_bytes()).unwrap();
+                }
+                Item::State(_, state) => {
+                    write_values(file, &state.items);
+                }
+            }
+        }
+    }
+
+    write_values(&mut file, &state.items);
+
+    file.write_all(b"}\n").unwrap();
+
     Ok(())
 }
 
-// states -----------------------------------------------------------------------
+// states for client -----------------------------------------------------------
 fn type_map() -> HashMap<&'static str, &'static str> {
     let mut map = HashMap::new();
     map.insert("u8", "int");
@@ -279,12 +534,66 @@ fn parse_types(value: &str, custom: &Option<(String, String)>) -> Result<String,
         if val.contains(";") {
             let typ_val = val.split(";").collect::<Vec<&str>>()[0].trim();
             let nums = val.split(";").collect::<Vec<&str>>()[1].trim();
-
             let typ_val = parse_types(typ_val, custom)?;
-            // let text =
+            let typ_vals = vec![typ_val; nums.parse::<usize>().unwrap()];
+            let text = typ_vals.join(", ");
+            return Ok(format!("tuple[{}]", text));
         } else {
+            let vals = val.split(",").collect::<Vec<&str>>();
+            let vals_array = vals
+                .iter()
+                .map(|val| parse_types(val.trim(), custom))
+                .collect::<Result<Vec<String>, String>>()?;
+            let text = vals_array.join(", ");
+            return Ok(format!("tuple[{}]", text));
         }
     }
 
+    if value.starts_with("(") && value.ends_with(")") {
+        let val = value[1..value.len() - 1].to_string();
+        let vals = val.split(",").collect::<Vec<&str>>();
+        let vals_array = vals
+            .iter()
+            .map(|val| parse_types(val.trim(), custom))
+            .collect::<Result<Vec<String>, String>>()?;
+        let text = vals_array.join(", ");
+        return Ok(format!("tuple[{}]", text));
+    }
+
     Err(format!("Unknown type: {}", value))
+}
+
+pub fn parse_states_for_client(
+    state_file: impl ToString,
+    output_file: impl ToString,
+    root_state: &'static str,
+    imports: Vec<&'static str>,
+    custom: Option<(String, String)>,
+) -> Result<(), String> {
+    let lines: Vec<String> = fs::read_to_string(state_file.to_string())
+        .map_err(|e| format!("Failed to read file: {}", e))?
+        .lines()
+        .map(String::from)
+        .collect();
+
+    let state = State::new(root_state.to_string(), &lines)?;
+
+    let mut file = fs::File::create(output_file.to_string())
+        .map_err(|e| format!("Failed to create file: {}", e))?;
+
+    file.write_all(b"# Ganerated by build.rs, do not edit\n")
+        .unwrap();
+    file.write_all(b"# ruff: noqa: D107 D101\n").unwrap();
+    file.write_all(b"from collections.abc import Callable\n\n")
+        .unwrap();
+    file.write_all(b"from egui_pysync import structures\n\n")
+        .unwrap();
+    for import in imports {
+        file.write_all(import.as_bytes()).unwrap();
+    }
+    file.write_all(b"\n").unwrap();
+
+    state.write_python(&mut file, &custom, true);
+
+    Ok(())
 }
