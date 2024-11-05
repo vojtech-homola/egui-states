@@ -24,4 +24,5 @@ pub trait EnumInt: Sized + Send + Sync + Copy {
     fn from_int(value: u64) -> Result<Self, ()>;
 }
 
+// nohash -----------------------------------------------------------------------
 pub use nohash::{NoHashMap, NoHashSet};

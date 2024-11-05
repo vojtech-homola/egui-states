@@ -151,7 +151,7 @@ impl ValuesCreator {
         value
     }
 
-    pub fn add_static_value<T>(&mut self, value: T) -> Arc<ValueStatic<T>>
+    pub fn add_static<T>(&mut self, value: T) -> Arc<ValueStatic<T>>
     where
         T: WriteValue + ToPyObject + for<'py> FromPyObject<'py> + Sync + Send + Clone + 'static,
     {
@@ -233,7 +233,7 @@ impl ValuesCreator {
         list
     }
 
-    pub fn add_graph<
+    pub fn add_graphs<
         T: GraphElement + Element + for<'py> FromPyObject<'py> + ToPyObject + 'static,
     >(
         &mut self,
