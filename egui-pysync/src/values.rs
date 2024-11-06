@@ -21,6 +21,7 @@ pub trait ReadValue: Sized + Send + Sync + Clone {
 pub enum ValueMessage {
     I64(i64),
     Double(f64),
+    Float(f32),
     String(String),
     U64(u64),
     TwoF32([f32; 2]),
@@ -35,6 +36,7 @@ impl ValueMessage {
         match self {
             ValueMessage::I64(v) => v.write_message(head),
             ValueMessage::Double(v) => v.write_message(head),
+            ValueMessage::Float(v) => v.write_message(head),
             ValueMessage::String(v) => v.write_message(head),
             ValueMessage::U64(v) => v.write_message(head),
             ValueMessage::TwoF32(v) => v.write_message(head),
@@ -81,6 +83,7 @@ macro_rules! impl_basic_value {
 impl_basic_value!(i64, 8, I64);
 impl_basic_value!(u64, 8, U64);
 impl_basic_value!(f64, 8, Double);
+impl_basic_value!(f32, 4, Float);
 
 macro_rules! impl_basic_2_value {
     ($t:ty, $size_1:literal, $size_2:literal, $enum_type:ident) => {

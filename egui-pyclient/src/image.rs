@@ -65,14 +65,6 @@ impl ValueImage {
 
 impl ImageUpdate for ValueImage {
     fn update_image(&self, message: ImageMessage) -> Result<(), String> {
-        // let message = match message {
-        //     ImageMessage::Data(data) => data,
-        //     ImageMessage::Histogram(histogram) => {
-        //         *self.histogram.write().unwrap() = (histogram, true);
-        //         return Ok(());
-        //     }
-        // };
-
         let ImageMessage {
             image_size,
             rect,

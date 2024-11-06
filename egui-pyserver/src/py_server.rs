@@ -52,7 +52,7 @@ impl StateServerCore {
         let creator = CREATE_HOOK.get();
         match creator {
             Some(c) => {
-                let _ = c(&mut values_creator);
+                c(&mut values_creator);
             }
             None => {
                 return Err(pyo3::exceptions::PyRuntimeError::new_err(
