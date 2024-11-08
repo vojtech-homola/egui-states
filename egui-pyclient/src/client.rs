@@ -6,7 +6,7 @@ use egui::Context;
 use egui_pysync::transport::{read_message, write_message, ReadMessage, WriteMessage};
 use egui_pysync::{commands::CommandMessage, transport::HEAD_SIZE};
 
-use crate::client_state::UIState;
+use crate::client_state::{ConnectionState, UIState};
 use crate::states_creator::{ValuesCreator, ValuesList};
 
 fn handle_message(
@@ -99,8 +99,8 @@ fn start_gui_client(
     let client_thread = thread::Builder::new().name("Client".to_string());
     let _ = client_thread.spawn(move || loop {
         // wait for the connection signal
-        ui_state.connect_signal().clear();
-        ui_state.connect_signal().wait_lock();
+        ui_state.start_connection();
+        ui_state.set_state(ConnectionState::NotConnect);
 
         // try to connect to the server
         let res = TcpStream::connect(addr);
@@ -196,12 +196,16 @@ fn start_gui_client(
             })
             .unwrap();
 
+        ui_state.set_state(ConnectionState::Connect);
+
         // wait for the read thread to finish
         recv_tread.join().unwrap();
 
         // terminate the send thread
         channel.send(WriteMessage::Terminate).unwrap();
         rx = send_thread.join().unwrap();
+
+        ui_state.set_state(ConnectionState::Disconnect);
     });
 }
 
@@ -236,7 +240,7 @@ impl ClientBuilder {
 
         let addr = SocketAddrV4::new(addr.into(), port);
         let (values, version) = creator.get_values();
-        let ui_state = UIState::new(context);
+        let ui_state = UIState::new(context, channel.clone());
         start_gui_client(
             addr,
             values,
