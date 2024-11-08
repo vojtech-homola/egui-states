@@ -9,9 +9,9 @@ use egui_pysync::transport::WriteMessage;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ConnectionState {
-    NotConnect,
-    Connect,
-    Disconnect,
+    NotConnected,
+    Connected,
+    Disconnected,
 }
 
 #[derive(Clone)]
@@ -27,7 +27,7 @@ impl UIState {
         Self {
             context,
             connect_signal: Event::new(),
-            state: Arc::new(RwLock::new(ConnectionState::NotConnect)),
+            state: Arc::new(RwLock::new(ConnectionState::NotConnected)),
             channel,
         }
     }
@@ -41,9 +41,13 @@ impl UIState {
         }
     }
 
-    pub(crate) fn start_connection(&self) {
+    pub(crate) fn wait_connection(&self) {
         self.connect_signal.clear();
         self.connect_signal.wait_lock();
+    }
+
+    pub fn connect(&self) {
+        self.connect_signal.set();
     }
 
     pub fn disconnect(&self) {

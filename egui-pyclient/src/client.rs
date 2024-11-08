@@ -99,8 +99,8 @@ fn start_gui_client(
     let client_thread = thread::Builder::new().name("Client".to_string());
     let _ = client_thread.spawn(move || loop {
         // wait for the connection signal
-        ui_state.start_connection();
-        ui_state.set_state(ConnectionState::NotConnect);
+        ui_state.wait_connection();
+        ui_state.set_state(ConnectionState::NotConnected);
 
         // try to connect to the server
         let res = TcpStream::connect(addr);
@@ -196,7 +196,7 @@ fn start_gui_client(
             })
             .unwrap();
 
-        ui_state.set_state(ConnectionState::Connect);
+        ui_state.set_state(ConnectionState::Connected);
 
         // wait for the read thread to finish
         recv_tread.join().unwrap();
@@ -205,7 +205,7 @@ fn start_gui_client(
         channel.send(WriteMessage::Terminate).unwrap();
         rx = send_thread.join().unwrap();
 
-        ui_state.set_state(ConnectionState::Disconnect);
+        ui_state.set_state(ConnectionState::Disconnected);
     });
 }
 
