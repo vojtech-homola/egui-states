@@ -92,12 +92,17 @@ class _SignalsManager:
             if args_parser:
                 self._args_parsers[value_id] = args_parser
             self._server.value_set_register(value_id, True)
+        else:
+            raise RuntimeError(f"Signal with index {value_id} not found.")
 
     def remove_callback(self, value_id: int, callback: Callable) -> None:
-        if value_id in self._callbacks and callback in self._callbacks[value_id]:
-            self._callbacks[value_id].remove(callback)
-            if not self._callbacks[value_id]:
-                self._server.value_set_register(value_id, False)
+        if value_id in self._callbacks:
+            if callback in self._callbacks[value_id]:
+                self._callbacks[value_id].remove(callback)
+                if not self._callbacks[value_id]:
+                    self._server.value_set_register(value_id, False)
+        else:
+            raise RuntimeError(f"Signal with index {value_id} not found.")
 
     def clear_callbacks(self, value_id: int) -> None:
         if value_id in self._callbacks:
