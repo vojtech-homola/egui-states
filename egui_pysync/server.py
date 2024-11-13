@@ -1,7 +1,7 @@
 from collections.abc import Callable
 from types import ModuleType
 
-from egui_pysync.structures import ErrorSignal, _MainStatesBase, _SignalsManager, _StatesBase, _ValueBase
+from egui_pysync.structures import ErrorSignal, _MainStatesBase, _SignalsManager, _StatesBase, _StaticBase, _ValueBase
 from egui_pysync.typing import SteteServerCoreBase
 
 
@@ -9,6 +9,8 @@ def _initialize_states(obj, server: SteteServerCoreBase, signals_manager: _Signa
     for o in obj.__dict__.values():
         if isinstance(o, _ValueBase):
             o._initialize(server, signals_manager)
+        elif isinstance(o, _StaticBase):
+            o._initialize(server)
         elif isinstance(o, _StatesBase):
             _initialize_states(o, server, signals_manager)
 

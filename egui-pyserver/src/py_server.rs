@@ -7,7 +7,6 @@ use std::sync::{
 
 use pyo3::buffer::PyBuffer;
 use pyo3::prelude::*;
-use pyo3::types::PyTuple;
 
 use egui_pysync::commands::CommandMessage;
 use egui_pysync::transport::WriteMessage;
@@ -129,20 +128,16 @@ impl StateServerCore {
         }
     }
 
-    fn value_get_signal<'py, 'a>(
-        &'a self,
-        py: Python<'py>,
-        thread_id: u32,
-    ) -> (u32, Bound<'py, PyTuple>) {
+    fn value_get_signal<'py, 'a>(&'a self, py: Python<'py>, thread_id: u32) -> (u32, PyObject) {
         let (value_id, value) = py.allow_threads(|| loop {
             let res = self.changed_values.wait_changed_value(thread_id);
             if self.registed_values.read().unwrap().contains(&res.0) {
                 break res;
             }
         });
-        let args = PyTuple::new_bound(py, [value.to_object(py)]);
+        let arg = value.to_object(py);
 
-        (value_id, args)
+        (value_id, arg)
     }
 
     // values -----------------------------------------------------------------

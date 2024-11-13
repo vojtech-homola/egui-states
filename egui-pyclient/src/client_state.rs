@@ -56,6 +56,7 @@ impl UIState {
 
     pub(crate) fn set_state(&self, state: ConnectionState) {
         *self.state.write() = state;
+        self.context.request_repaint();
     }
 
     pub fn get_state(&self) -> ConnectionState {
