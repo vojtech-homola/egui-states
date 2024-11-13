@@ -1,20 +1,34 @@
+use std::sync::mpsc::Sender;
+use std::sync::Arc;
 use std::time::Duration;
 
-use egui::Context;
+use egui::{mutex::RwLock, Context};
 
 use egui_pysync::event::Event;
+use egui_pysync::transport::WriteMessage;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ConnectionState {
+    NotConnected,
+    Connected,
+    Disconnected,
+}
 
 #[derive(Clone)]
 pub struct UIState {
     context: Context,
     connect_signal: Event,
+    state: Arc<RwLock<ConnectionState>>,
+    channel: Sender<WriteMessage>,
 }
 
 impl UIState {
-    pub fn new(context: Context) -> Self {
+    pub(crate) fn new(context: Context, channel: Sender<WriteMessage>) -> Self {
         Self {
             context,
             connect_signal: Event::new(),
+            state: Arc::new(RwLock::new(ConnectionState::NotConnected)),
+            channel,
         }
     }
 
@@ -27,7 +41,25 @@ impl UIState {
         }
     }
 
-    pub fn connect_signal(&self) -> &Event {
-        &self.connect_signal
+    pub(crate) fn wait_connection(&self) {
+        self.connect_signal.clear();
+        self.connect_signal.wait_lock();
+    }
+
+    pub fn connect(&self) {
+        self.connect_signal.set();
+    }
+
+    pub fn disconnect(&self) {
+        self.channel.send(WriteMessage::Terminate).unwrap();
+    }
+
+    pub(crate) fn set_state(&self, state: ConnectionState) {
+        *self.state.write() = state;
+        self.context.request_repaint();
+    }
+
+    pub fn get_state(&self) -> ConnectionState {
+        *self.state.read()
     }
 }

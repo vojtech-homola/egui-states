@@ -2,6 +2,7 @@ import threading
 import traceback
 from abc import ABC, abstractmethod
 from collections.abc import Buffer, Callable
+from typing import Any
 
 import numpy as np
 
@@ -27,6 +28,9 @@ class _MainStatesBase(_StatesBase, ABC):
         pass
 
 
+type ArgParser = Callable[[Any], tuple[Any, ...]]
+
+
 class _SignalsManager:
     def __init__(
         self,
@@ -34,16 +38,15 @@ class _SignalsManager:
         workers: int,
         error_handler: Callable[[Exception], None] | None,
     ):
-        self._callbacks: dict[int, list[Callable]] = {}
-        self._args_parsers: dict[int, Callable] = {}
+        self._callbacks: dict[int, tuple[list[Callable], ArgParser | None]] = {}
         self._server = server
 
         self._workers_count = workers
         self._workers: list[threading.Thread] = []
         self._error_handler = error_handler or self._default_error_handler
 
-    def register_value(self, value_id: int) -> None:
-        self._callbacks[value_id] = []
+    def register_value(self, value_id: int, arg_parser: ArgParser | None = None) -> None:
+        self._callbacks[value_id] = ([], arg_parser)
 
     def close_registration(self) -> None:
         for i in range(self._workers_count):
@@ -61,18 +64,19 @@ class _SignalsManager:
 
     def _run(self, thread_id) -> None:
         while True:
-            ind, args = self._server.value_get_signal(thread_id)
-            if ind in self._callbacks:
-                if ind in self._args_parsers:
-                    for callback in self._callbacks[ind]:
+            ind, arg = self._server.value_get_signal(thread_id)
+            callbacks, arg_parser = self._callbacks.get(ind, (None, None))
+            if callbacks:
+                if arg_parser is None:
+                    for callback in callbacks:
                         try:
-                            callback(self._args_parsers[ind](*args))
+                            callback(arg)
                         except Exception as e:
                             self._error_handler(e)
                 else:
-                    for callback in self._callbacks[ind]:
+                    for callback in callbacks:
                         try:
-                            callback(*args)
+                            callback(*arg_parser(arg))
                         except Exception as e:
                             self._error_handler(e)
             else:
@@ -86,22 +90,25 @@ class _SignalsManager:
     def set_error_handler(self, error_handler: Callable[[Exception], None] | None) -> None:
         self._error_handler = error_handler or self._default_error_handler
 
-    def add_callback(self, value_id: int, callback: Callable, args_parser: Callable | None = None) -> None:
+    def add_callback(self, value_id: int, callback: Callable) -> None:
         if value_id in self._callbacks:
-            self._callbacks[value_id].append(callback)
-            if args_parser:
-                self._args_parsers[value_id] = args_parser
+            self._callbacks[value_id][0].append(callback)
             self._server.value_set_register(value_id, True)
+        else:
+            raise RuntimeError(f"Signal with index {value_id} not found.")
 
     def remove_callback(self, value_id: int, callback: Callable) -> None:
-        if value_id in self._callbacks and callback in self._callbacks[value_id]:
-            self._callbacks[value_id].remove(callback)
-            if not self._callbacks[value_id]:
-                self._server.value_set_register(value_id, False)
+        if value_id in self._callbacks:
+            if callback in self._callbacks[value_id]:
+                self._callbacks[value_id][0].remove(callback)
+                if not self._callbacks[value_id]:
+                    self._server.value_set_register(value_id, False)
+        else:
+            raise RuntimeError(f"Signal with index {value_id} not found.")
 
     def clear_callbacks(self, value_id: int) -> None:
         if value_id in self._callbacks:
-            self._callbacks[value_id].clear()
+            self._callbacks[value_id][0].clear()
             self._server.value_set_register(value_id, False)
 
 
@@ -135,26 +142,33 @@ class ErrorSignal:
         self._signals_manager.clear_callbacks(self._value_id)
 
 
-class _ValueBase:
-    _has_signal: bool = True
-
+class _StaticBase:
     _server: SteteServerCoreBase
-    _signals_manager: _SignalsManager
 
     def __init__(self, counter: _Counter):
         self._value_id = counter.get_id()
 
+    def _initialize(self, server: SteteServerCoreBase):
+        self._server = server
+
+
+class _ValueBase(_StaticBase):
+    _signals_manager: _SignalsManager
+
     def _initialize(self, server: SteteServerCoreBase, signals_manager: _SignalsManager):
         self._server = server
-        if self._has_signal:
-            self._signals_manager = signals_manager
+        self._signals_manager = signals_manager
+        if hasattr(self, "_arg_parser"):
+            arg_parser = getattr(self, "_arg_parser")
+            self._signals_manager.register_value(self._value_id, arg_parser=arg_parser)
+        else:
             signals_manager.register_value(self._value_id)
 
 
 class Value[T](_ValueBase):
     """General UI value of type T."""
 
-    def set(self, value: T, set_signal: bool = True, update: bool = False) -> None:
+    def set(self, value: T, set_signal: bool = False, update: bool = False) -> None:
         """Set the value of the UI element.
 
         Args:
@@ -193,10 +207,8 @@ class Value[T](_ValueBase):
         self._signals_manager.clear_callbacks(self._value_id)
 
 
-class ValueStatic[T](_ValueBase):
+class ValueStatic[T](_StaticBase):
     """Numeric static UI value of type T. Static means that the value is not updated in the UI."""
-
-    _has_signal = False
 
     def set(self, value: T, update: bool = False) -> None:
         """Set the static value of the UI.
@@ -223,7 +235,7 @@ class ValueEnum[T](_ValueBase):
         super().__init__(counter)
         self._enum_type = enum_type
 
-    def set(self, value: T, set_signal: bool = True, update: bool = False) -> None:
+    def set(self, value: T, set_signal: bool = False, update: bool = False) -> None:
         """Set the value of the UI element.
 
         Args:
@@ -248,7 +260,7 @@ class ValueEnum[T](_ValueBase):
         Args:
             callback(Callable[[T], None]): The callback to connect.
         """
-        self._signals_manager.add_callback(self._value_id, callback, args_parser=self._enum_type)
+        self._signals_manager.add_callback(self._value_id, callback)
 
     def disconnect(self, callback: Callable[[T], None]) -> None:
         """Disconnect a callback from the value.
@@ -261,6 +273,9 @@ class ValueEnum[T](_ValueBase):
     def disconnect_all(self) -> None:
         """Disconnect all callbacks from the value."""
         self._signals_manager.clear_callbacks(self._value_id)
+
+    def _arg_parser(self, arg: int):
+        return (self._enum_type(arg),)  # type: ignore
 
 
 class Signal[T](_ValueBase):
@@ -310,11 +325,13 @@ class SignalEmpty(_ValueBase):
         """Disconnect all callbacks from the signal."""
         self._signals_manager.clear_callbacks(self._value_id)
 
+    @staticmethod
+    def _arg_parser(_: None):
+        return ()
 
-class ValueImage(_ValueBase):
+
+class ValueImage(_StaticBase):
     """Image UI element."""
-
-    _has_signal = False
 
     def set_image(
         self,
@@ -332,10 +349,8 @@ class ValueImage(_ValueBase):
         self._server.image_set(self._value_id, image, update, rect)
 
 
-class ValueDict[K, V](_ValueBase):
+class ValueDict[K, V](_StaticBase):
     """Dict UI element."""
-
-    _has_signal = False
 
     def set(self, value: dict[K, V], update: bool = False) -> None:
         """Set the dict in the UI dict.
@@ -397,10 +412,8 @@ class ValueDict[K, V](_ValueBase):
         self.remove_item(key, update=False)
 
 
-class ValueList[T](_ValueBase):
+class ValueList[T](_StaticBase):
     """List UI element."""
-
-    _has_signal = False
 
     def set(self, value: list[T], update: bool = False) -> None:
         """Set the list in the UI list.
@@ -592,10 +605,8 @@ class GraphRange(_GraphBase):
         return np.frombuffer(data, dtype=dtype), range
 
 
-class ValueGraphs(_ValueBase):
+class ValueGraphs(_StaticBase):
     """Graph UI element."""
-
-    _has_signal = False
 
     def __init__(self, counter: _Counter):  # noqa: D107
         super().__init__(counter)
