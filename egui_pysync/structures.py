@@ -186,19 +186,19 @@ class Value[T](_ValueBase):
         """
         return self._server.value_get(self._value_id)
 
-    def connect(self, callback: Callable[[T], None]) -> None:
+    def connect(self, callback: Callable[[T], Any]) -> None:
         """Connect a callback to the value.
 
         Args:
-            callback(Callable[[T], None]): The callback to connect.
+            callback(Callable[[T], Any]): The callback to connect.
         """
         self._signals_manager.add_callback(self._value_id, callback)
 
-    def disconnect(self, callback: Callable[[T], None]) -> None:
+    def disconnect(self, callback: Callable[[T], Any]) -> None:
         """Disconnect a callback from the value.
 
         Args:
-            callback(Callable[[T], None]): The callback to disconnect.
+            callback(Callable[[T], Any]): The callback to disconnect.
         """
         self._signals_manager.remove_callback(self._value_id, callback)
 
@@ -254,19 +254,19 @@ class ValueEnum[T](_ValueBase):
         str_value: int = self._server.value_get(self._value_id)
         return self._enum_type(str_value)  # type: ignore
 
-    def connect(self, callback: Callable[[T], None]) -> None:
+    def connect(self, callback: Callable[[T], Any]) -> None:
         """Connect a callback to the value.
 
         Args:
-            callback(Callable[[T], None]): The callback to connect.
+            callback(Callable[[T], Any]): The callback to connect.
         """
         self._signals_manager.add_callback(self._value_id, callback)
 
-    def disconnect(self, callback: Callable[[T], None]) -> None:
+    def disconnect(self, callback: Callable[[T], Any]) -> None:
         """Disconnect a callback from the value.
 
         Args:
-            callback(Callable[[T], None]): The callback to disconnect.
+            callback(Callable[[T], Any]): The callback to disconnect.
         """
         self._signals_manager.remove_callback(self._value_id, callback)
 
@@ -281,19 +281,19 @@ class ValueEnum[T](_ValueBase):
 class Signal[T](_ValueBase):
     """Signal from UI."""
 
-    def connect(self, callback: Callable[[T], None]) -> None:
+    def connect(self, callback: Callable[[T], Any]) -> None:
         """Connect a callback to the signal.
 
         Args:
-            callback(Callable[[], None]): The callback to connect.
+            callback(Callable[[], Any]): The callback to connect.
         """
         self._signals_manager.add_callback(self._value_id, callback)
 
-    def disconnect(self, callback: Callable[[T], None]) -> None:
+    def disconnect(self, callback: Callable[[T], Any]) -> None:
         """Disconnect a callback from the value.
 
         Args:
-            callback(Callable[[], None]): The callback to disconnect.
+            callback(Callable[[], Any]): The callback to disconnect.
         """
         self._signals_manager.remove_callback(self._value_id, callback)
 
@@ -305,19 +305,19 @@ class Signal[T](_ValueBase):
 class SignalEmpty(_ValueBase):
     """Empty Signal from UI."""
 
-    def connect(self, callback: Callable[[], None]) -> None:
+    def connect(self, callback: Callable[[], Any]) -> None:
         """Connect a callback to the signal.
 
         Args:
-            callback(Callable[[], None]): The callback to connect.
+            callback(Callable[[], Any]): The callback to connect.
         """
         self._signals_manager.add_callback(self._value_id, callback)
 
-    def disconnect(self, callback: Callable[[], None]) -> None:
+    def disconnect(self, callback: Callable[[], Any]) -> None:
         """Disconnect a callback from the value.
 
         Args:
-            callback(Callable[[], None]): The callback to disconnect.
+            callback(Callable[[], Any]): The callback to disconnect.
         """
         self._signals_manager.remove_callback(self._value_id, callback)
 
