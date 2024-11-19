@@ -12,7 +12,7 @@ use egui_pysync::graphs::{Graph, GraphElement, GraphMessage, XAxis};
 use egui_pysync::nohash::NoHashMap;
 use egui_pysync::transport::WriteMessage;
 
-use crate::SyncTrait;
+use crate::{SyncTrait, ToPython};
 
 pub(crate) trait PyGraph: Send + Sync {
     fn set_py(
@@ -29,7 +29,7 @@ pub(crate) trait PyGraph: Send + Sync {
         range: Option<Bound<PyAny>>,
         update: bool,
     ) -> PyResult<()>;
-    fn get_py<'py>(&self, py: Python<'py>, idx: u16) -> PyResult<PyObject>;
+    fn get_py<'py>(&self, py: Python<'py>, idx: u16) -> PyResult<Bound<'py, PyTuple>>;
     fn len_py(&self, idx: u16) -> PyResult<usize>;
     fn remove_py(&self, idx: u16, update: bool);
     fn count_py(&self) -> u16;
@@ -63,7 +63,7 @@ impl<T> ValueGraphs<T> {
 
 impl<T> PyGraph for ValueGraphs<T>
 where
-    T: GraphElement + Element + for<'py> FromPyObject<'py> + ToPyObject,
+    T: GraphElement + Element + for<'py> FromPyObject<'py> + ToPython,
 {
     fn set_py(
         &self,
@@ -120,7 +120,7 @@ where
         Ok(())
     }
 
-    fn get_py<'py>(&self, py: Python<'py>, idx: u16) -> PyResult<PyObject> {
+    fn get_py<'py>(&self, py: Python<'py>, idx: u16) -> PyResult<Bound<'py, PyTuple>> {
         let w = self.graphs.read().unwrap();
         let graph = w
             .get(&idx)
@@ -129,7 +129,7 @@ where
         match graph.x {
             XAxis::X(ref x) => {
                 let size = (x.len() + graph.y.len()) * size_of::<T>();
-                let bytes = PyBytes::new_bound_with(py, size, |buf| {
+                let bytes = PyBytes::new_with(py, size, |buf| {
                     let mut ptr = buf.as_mut_ptr() as *mut T;
                     unsafe {
                         std::ptr::copy_nonoverlapping(x.as_ptr(), ptr, x.len());
@@ -140,15 +140,15 @@ where
                 })?;
 
                 let shape = (2usize, graph.y.len(), size_of::<T>());
-                Ok((bytes, shape, None::<Bound<PyTuple>>).to_object(py))
+                (bytes, shape, None::<Bound<PyTuple>>).into_pyobject(py)
             }
             XAxis::Range(range) => {
                 let size = graph.y.len() * size_of::<T>();
                 let data =
                     unsafe { std::slice::from_raw_parts(graph.y.as_ptr() as *const u8, size) };
-                let bytes = PyBytes::new_bound(py, data);
-                let range = PyTuple::new_bound(py, [range[0], range[1]]);
-                Ok((bytes, (graph.y.len(), size_of::<T>()), Some(range)).to_object(py))
+                let bytes = PyBytes::new(py, data);
+                let range = PyTuple::new(py, [range[0].to_python(py), range[1].to_python(py)])?;
+                (bytes, (graph.y.len(), size_of::<T>()), Some(range)).into_pyobject(py)
             }
         }
     }

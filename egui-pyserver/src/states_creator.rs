@@ -4,7 +4,7 @@ use std::sync::mpsc::Sender;
 use std::sync::Arc;
 
 use pyo3::buffer::Element;
-use pyo3::{FromPyObject, ToPyObject};
+use pyo3::prelude::*;
 
 use egui_pysync::collections::CollectionItem;
 use egui_pysync::graphs::GraphElement;
@@ -12,21 +12,21 @@ use egui_pysync::transport::WriteMessage;
 use egui_pysync::values::{ReadValue, WriteValue};
 use egui_pysync::{EnumInt, EnumStr, NoHashMap};
 
-use crate::dict::{PyDict, ValueDict};
+use crate::dict::{PyDictTrait, ValueDict};
 use crate::graphs::{PyGraph, ValueGraphs};
 use crate::image::ValueImage;
 use crate::list::{PyListTrait, ValueList};
 use crate::signals::ChangedValues;
 use crate::values::{ProccesValue, PyValue, PyValueStatic};
 use crate::values::{Signal, Value, ValueEnum, ValueStatic};
-use crate::{Acknowledge, SyncTrait};
+use crate::{Acknowledge, SyncTrait, ToPython};
 
 #[derive(Clone)]
 pub(crate) struct PyValuesList {
     pub(crate) values: NoHashMap<u32, Arc<dyn PyValue>>,
     pub(crate) static_values: NoHashMap<u32, Arc<dyn PyValueStatic>>,
     pub(crate) images: NoHashMap<u32, Arc<ValueImage>>,
-    pub(crate) dicts: NoHashMap<u32, Arc<dyn PyDict>>,
+    pub(crate) dicts: NoHashMap<u32, Arc<dyn PyDictTrait>>,
     pub(crate) lists: NoHashMap<u32, Arc<dyn PyListTrait>>,
     pub(crate) graphs: NoHashMap<u32, Arc<dyn PyGraph>>,
 }
@@ -131,7 +131,7 @@ impl ValuesCreator {
 
     pub fn add_value<T>(&mut self, value: T) -> Arc<Value<T>>
     where
-        T: ReadValue + WriteValue + ToPyObject + for<'py> FromPyObject<'py>,
+        T: ReadValue + WriteValue + ToPython + for<'py> FromPyObject<'py>,
     {
         let id = self.get_id();
         let value = Value::new(
@@ -152,7 +152,7 @@ impl ValuesCreator {
 
     pub fn add_static<T>(&mut self, value: T) -> Arc<ValueStatic<T>>
     where
-        T: WriteValue + ToPyObject + for<'py> FromPyObject<'py> + Sync + Send + Clone + 'static,
+        T: WriteValue + ToPython + for<'py> FromPyObject<'py> + Sync + Send + Clone + 'static,
     {
         let id = self.get_id();
         let value = ValueStatic::new(id, value, self.channel.clone(), self.connected.clone());
@@ -184,7 +184,7 @@ impl ValuesCreator {
         value
     }
 
-    pub fn add_signal<T: WriteValue + ReadValue + Clone + ToPyObject + 'static>(
+    pub fn add_signal<T: WriteValue + ReadValue + Clone + ToPython + 'static>(
         &mut self,
     ) -> Arc<Signal<T>> {
         let id = self.get_id();
@@ -207,8 +207,8 @@ impl ValuesCreator {
 
     pub fn add_dict<K, V>(&mut self) -> Arc<ValueDict<K, V>>
     where
-        K: CollectionItem + ToPyObject + for<'py> FromPyObject<'py> + Eq + Hash + 'static,
-        V: CollectionItem + ToPyObject + for<'py> FromPyObject<'py> + 'static,
+        K: CollectionItem + ToPython + for<'py> FromPyObject<'py> + Eq + Hash + 'static,
+        V: CollectionItem + ToPython + for<'py> FromPyObject<'py> + 'static,
     {
         let id = self.get_id();
         let dict = ValueDict::new(id, self.channel.clone(), self.connected.clone());
@@ -221,7 +221,7 @@ impl ValuesCreator {
 
     pub fn add_list<T>(&mut self) -> Arc<ValueList<T>>
     where
-        T: CollectionItem + ToPyObject + for<'py> FromPyObject<'py> + 'static,
+        T: CollectionItem + ToPython + for<'py> FromPyObject<'py> + 'static,
     {
         let id = self.get_id();
         let list = ValueList::new(id, self.channel.clone(), self.connected.clone());
@@ -233,7 +233,7 @@ impl ValuesCreator {
     }
 
     pub fn add_graphs<
-        T: GraphElement + Element + for<'py> FromPyObject<'py> + ToPyObject + 'static,
+        T: GraphElement + Element + for<'py> FromPyObject<'py> + ToPython + 'static,
     >(
         &mut self,
     ) -> Arc<ValueGraphs<T>> {

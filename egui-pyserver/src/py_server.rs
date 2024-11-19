@@ -7,6 +7,7 @@ use std::sync::{
 
 use pyo3::buffer::PyBuffer;
 use pyo3::prelude::*;
+use pyo3::types::{PyDict, PyList, PyTuple};
 
 use egui_pysync::commands::CommandMessage;
 use egui_pysync::transport::WriteMessage;
@@ -128,14 +129,14 @@ impl StateServerCore {
         }
     }
 
-    fn value_get_signal<'py, 'a>(&'a self, py: Python<'py>, thread_id: u32) -> (u32, PyObject) {
+    fn value_get_signal<'py>(&self, py: Python<'py>, thread_id: u32) -> (u32, Bound<'py, PyAny>) {
         let (value_id, value) = py.allow_threads(|| loop {
             let res = self.changed_values.wait_changed_value(thread_id);
             if self.registed_values.read().unwrap().contains(&res.0) {
                 break res;
             }
         });
-        let arg = value.to_object(py);
+        let arg = value.to_python(py);
 
         (value_id, arg)
     }
@@ -157,7 +158,7 @@ impl StateServerCore {
         }
     }
 
-    fn value_get(&self, py: Python, value_id: u32) -> PyResult<PyObject> {
+    fn value_get<'py>(&self, py: Python<'py>, value_id: u32) -> PyResult<Bound<'py, PyAny>> {
         match self.values.values.get(&value_id) {
             Some(getter) => Ok(getter.get_py(py)),
             None => Err(pyo3::exceptions::PyValueError::new_err(format!(
@@ -180,7 +181,7 @@ impl StateServerCore {
 
     fn static_get(&self, py: Python, value_id: u32) -> PyResult<PyObject> {
         match self.values.static_values.get(&value_id) {
-            Some(value) => Ok(value.get_py(py)),
+            Some(value) => Ok(value.get_py(py).unbind()),
             None => Err(pyo3::exceptions::PyValueError::new_err(format!(
                 "Static value with id {} is not available.",
                 value_id
@@ -212,7 +213,7 @@ impl StateServerCore {
     }
 
     // dicts ------------------------------------------------------------------
-    fn dict_get(&self, py: Python, value_id: u32) -> PyResult<PyObject> {
+    fn dict_get<'py>(&self, py: Python<'py>, value_id: u32) -> PyResult<Bound<'py, PyDict>> {
         match self.values.dicts.get(&value_id) {
             Some(dict) => Ok(dict.get_py(py)),
             None => Err(pyo3::exceptions::PyValueError::new_err(format!(
@@ -222,7 +223,11 @@ impl StateServerCore {
         }
     }
 
-    fn dict_item_get(&self, value_id: u32, key: &Bound<PyAny>) -> PyResult<PyObject> {
+    fn dict_item_get<'py>(
+        &self,
+        value_id: u32,
+        key: &Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyAny>> {
         match self.values.dicts.get(&value_id) {
             Some(dict) => dict.get_item_py(key),
             None => Err(pyo3::exceptions::PyValueError::new_err(format!(
@@ -279,7 +284,7 @@ impl StateServerCore {
     }
 
     // lists ------------------------------------------------------------------
-    fn list_get(&self, py: Python, value_id: u32) -> PyResult<PyObject> {
+    fn list_get<'py>(&self, py: Python<'py>, value_id: u32) -> PyResult<Bound<'py, PyList>> {
         match self.values.lists.get(&value_id) {
             Some(list) => Ok(list.get_py(py)),
             None => Err(pyo3::exceptions::PyValueError::new_err(format!(
@@ -289,7 +294,12 @@ impl StateServerCore {
         }
     }
 
-    fn list_item_get(&self, py: Python, value_id: u32, idx: usize) -> PyResult<PyObject> {
+    fn list_item_get<'py>(
+        &self,
+        py: Python<'py>,
+        value_id: u32,
+        idx: usize,
+    ) -> PyResult<Bound<'py, PyAny>> {
         match self.values.lists.get(&value_id) {
             Some(list) => list.get_item_py(py, idx),
             None => Err(pyo3::exceptions::PyValueError::new_err(format!(
@@ -374,7 +384,12 @@ impl StateServerCore {
         }
     }
 
-    fn graphs_get(&self, py: Python, value_id: u32, idx: u16) -> PyResult<PyObject> {
+    fn graphs_get<'py>(
+        &self,
+        py: Python<'py>,
+        value_id: u32,
+        idx: u16,
+    ) -> PyResult<Bound<'py, PyTuple>> {
         match self.values.graphs.get(&value_id) {
             Some(graph) => graph.get_py(py, idx),
             None => Err(pyo3::exceptions::PyValueError::new_err(format!(
