@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, RwLock};
 
+use pyo3::conversion::IntoPyObject;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
@@ -11,6 +12,7 @@ use egui_pysync::values::{ReadValue, ValueMessage, WriteValue};
 use egui_pysync::EnumInt;
 
 use crate::signals::ChangedValues;
+use crate::ToPython;
 use crate::{Acknowledge, SyncTrait};
 
 pub(crate) trait ProccesValue: Send + Sync {
@@ -19,12 +21,12 @@ pub(crate) trait ProccesValue: Send + Sync {
 }
 
 pub(crate) trait PyValue: Send + Sync {
-    fn get_py(&self, py: Python) -> PyObject;
+    fn get_py<'py>(&self, py: Python<'py>) -> Bound<'py, PyAny>;
     fn set_py(&self, value: &Bound<PyAny>, set_signal: bool, update: bool) -> PyResult<()>;
 }
 
 pub(crate) trait PyValueStatic: Send + Sync {
-    fn get_py(&self, py: Python) -> PyObject;
+    fn get_py<'py>(&self, py: Python<'py>) -> Bound<'py, PyAny>;
     fn set_py(&self, value: &Bound<PyAny>, update: bool) -> PyResult<()>;
 }
 
@@ -57,10 +59,10 @@ impl<T> Value<T> {
 
 impl<T> PyValue for Value<T>
 where
-    T: WriteValue + Clone + ToPyObject + for<'py> FromPyObject<'py>,
+    T: WriteValue + Clone + ToPython + for<'py> FromPyObject<'py>,
 {
-    fn get_py(&self, py: Python) -> PyObject {
-        self.value.read().unwrap().0.to_object(py)
+    fn get_py<'py>(&self, py: Python<'py>) -> Bound<'py, PyAny> {
+        self.value.read().unwrap().0.to_python(py)
     }
 
     fn set_py(&self, value: &Bound<PyAny>, set_signal: bool, update: bool) -> PyResult<()> {
@@ -88,7 +90,7 @@ where
 
 impl<T> ProccesValue for Value<T>
 where
-    T: ReadValue + WriteValue + ToPyObject,
+    T: ReadValue + WriteValue + ToPython,
 {
     fn process_value(
         &self,
@@ -160,10 +162,10 @@ impl<T> ValueStatic<T> {
 
 impl<T> PyValueStatic for ValueStatic<T>
 where
-    T: WriteValue + Clone + for<'py> FromPyObject<'py> + ToPyObject,
+    T: WriteValue + Clone + for<'py> FromPyObject<'py> + ToPython,
 {
-    fn get_py(&self, py: Python) -> PyObject {
-        self.value.read().unwrap().to_object(py)
+    fn get_py<'a, 'py>(&'a self, py: Python<'py>) -> Bound<'py, PyAny> {
+        self.value.read().unwrap().to_python(py)
     }
 
     fn set_py(&self, value: &Bound<PyAny>, update: bool) -> PyResult<()> {
@@ -223,8 +225,17 @@ impl<T> PyValue for ValueEnum<T>
 where
     T: EnumInt,
 {
-    fn get_py(&self, py: Python) -> PyObject {
-        self.value.read().unwrap().0.as_int().to_object(py)
+    fn get_py<'py>(&self, py: Python<'py>) -> Bound<'py, PyAny> {
+        let res = self
+            .value
+            .read()
+            .unwrap()
+            .0
+            .as_int()
+            .into_pyobject(py)
+            .unwrap();
+
+        res.into_any()
     }
 
     fn set_py(&self, value: &Bound<PyAny>, set_signal: bool, update: bool) -> PyResult<()> {
@@ -321,7 +332,7 @@ impl<T: WriteValue + Clone> Signal<T> {
 
 impl<T> ProccesValue for Signal<T>
 where
-    T: ReadValue + WriteValue + ToPyObject,
+    T: ReadValue + WriteValue + ToPython,
 {
     fn process_value(
         &self,
