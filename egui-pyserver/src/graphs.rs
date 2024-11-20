@@ -8,7 +8,7 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyTuple};
 
-use egui_pysync::graphs::{Graph, GraphElement, GraphMessage, XAxis};
+use egui_pysync::graphs::{Graph, GraphElement, GraphMessage};
 use egui_pysync::nohash::NoHashMap;
 use egui_pysync::transport::WriteMessage;
 
@@ -127,7 +127,7 @@ where
             .ok_or_else(|| PyValueError::new_err(format!("Graph with id {} not found", idx)))?;
 
         match graph.x {
-            XAxis::X(ref x) => {
+            Some(ref x) => {
                 let size = (x.len() + graph.y.len()) * size_of::<T>();
                 let bytes = PyBytes::new_with(py, size, |buf| {
                     let mut ptr = buf.as_mut_ptr() as *mut T;
@@ -140,15 +140,14 @@ where
                 })?;
 
                 let shape = (2usize, graph.y.len(), size_of::<T>());
-                (bytes, shape, None::<Bound<PyTuple>>).into_pyobject(py)
+                (bytes, shape).into_pyobject(py)
             }
-            XAxis::Range(range) => {
+            None => {
                 let size = graph.y.len() * size_of::<T>();
                 let data =
                     unsafe { std::slice::from_raw_parts(graph.y.as_ptr() as *const u8, size) };
                 let bytes = PyBytes::new(py, data);
-                let range = PyTuple::new(py, [range[0].to_python(py), range[1].to_python(py)])?;
-                (bytes, (graph.y.len(), size_of::<T>()), Some(range)).into_pyobject(py)
+                (bytes, (graph.y.len(), size_of::<T>())).into_pyobject(py)
             }
         }
     }
@@ -284,7 +283,17 @@ where
     }
 }
 
-fn buffer_to_graph<'py, T>(buffer: &PyBuffer<T>, range: Option<[T; 2]>) -> PyResult<Graph<T>>
+fn buffer_to_graph<'py, T>(buffer: &PyBuffer<T>) -> PyResult<Graph<T>>
+where
+    T: GraphElement + Element + FromPyObject<'py>,
+{
+    let shape = buffer.shape();
+
+    
+    
+}
+
+fn buffer_to_graph_old<'py, T>(buffer: &PyBuffer<T>, range: Option<[T; 2]>) -> PyResult<Graph<T>>
 where
     T: GraphElement + Element + FromPyObject<'py>,
 {
