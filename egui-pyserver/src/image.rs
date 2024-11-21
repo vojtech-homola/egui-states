@@ -59,6 +59,7 @@ impl ValueImage {
         let size = [shape[0], shape[1]];
 
         let mut w = self.image.write().unwrap();
+        let data_ptr = data.as_ptr();
         match rectangle {
             Some(rect) => {
                 if size != [rect[2], rect[3]] {
@@ -83,16 +84,30 @@ impl ValueImage {
 
                 match image_type {
                     ImageType::ColorAlpha => {
+                        let old_data_ptr = w.data.as_mut_ptr();
                         for i in 0..rect[2] {
                             for j in 0..rect[3] {
                                 let index = (rect[0] + i) * original_size[1] + rect[1] + j;
                                 let d_index = i * j * 4;
-                                w.data[index * 4] = data[d_index];
-                                w.data[index * 4 + 1] = data[d_index + 1];
-                                w.data[index * 4 + 2] = data[d_index + 2];
-                                w.data[index * 4 + 3] = data[d_index + 3];
+                                unsafe {
+                                    *old_data_ptr.add(index * 4) = *data_ptr.add(d_index);
+                                    *old_data_ptr.add(index * 4 + 1) = *data_ptr.add(d_index + 1);
+                                    *old_data_ptr.add(index * 4 + 2) = *data_ptr.add(d_index + 2);
+                                    *old_data_ptr.add(index * 4 + 3) = *data_ptr.add(d_index + 3);
+                                }
                             }
                         }
+
+                        // for i in 0..rect[2] {
+                        //     for j in 0..rect[3] {
+                        //         let index = (rect[0] + i) * original_size[1] + rect[1] + j;
+                        //         let d_index = i * j * 4;
+                        //         w.data[index * 4] = data[d_index];
+                        //         w.data[index * 4 + 1] = data[d_index + 1];
+                        //         w.data[index * 4 + 2] = data[d_index + 2];
+                        //         w.data[index * 4 + 3] = data[d_index + 3];
+                        //     }
+                        // }
                     }
                     ImageType::Color => {
                         for i in 0..rect[2] {
@@ -135,39 +150,72 @@ impl ValueImage {
             }
             None => {
                 w.size = size;
+                let all_size = size[0] * size[1];
                 match image_type {
                     ImageType::ColorAlpha => w.data = data.clone(),
                     ImageType::Color => {
-                        let mut new_data = vec![0u8; size[0] * size[1] * 4];
-                        for i in 0..size[0] * size[1] {
-                            new_data[i * 4] = data[i * 3];
-                            new_data[i * 4 + 1] = data[i * 3 + 1];
-                            new_data[i * 4 + 2] = data[i * 3 + 2];
-                            new_data[i * 4 + 3] = 255;
+                        let mut new_data = vec![0u8; all_size * 4];
+                        let new_data_ptr = new_data.as_mut_ptr();
+                        for i in 0..all_size {
+                            unsafe {
+                                *new_data_ptr.add(i * 4) = *data_ptr.add(i * 3);
+                                *new_data_ptr.add(i * 4 + 1) = *data_ptr.add(i * 3 + 1);
+                                *new_data_ptr.add(i * 4 + 2) = *data_ptr.add(i * 3 + 2);
+                                *new_data_ptr.add(i * 4 + 3) = 255;
+                            }
                         }
+
+                        // for i in 0..size[0] * size[1] {
+                        //     new_data[i * 4] = data[i * 3];
+                        //     new_data[i * 4 + 1] = data[i * 3 + 1];
+                        //     new_data[i * 4 + 2] = data[i * 3 + 2];
+                        //     new_data[i * 4 + 3] = 255;
+                        // }
                         w.data = new_data;
                     }
                     ImageType::Gray => {
-                        let mut new_data = vec![0u8; size[0] * size[1] * 4];
-                        for i in 0..size[0] * size[1] {
-                            let p = data[i];
-                            new_data[i * 4] = p;
-                            new_data[i * 4 + 1] = p;
-                            new_data[i * 4 + 2] = p;
-                            new_data[i * 4 + 3] = 255;
+                        let mut new_data = vec![0u8; all_size * 4];
+                        let new_data_ptr = new_data.as_mut_ptr();
+                        for i in 0..all_size {
+                            unsafe {
+                                let p = *data_ptr.add(i);
+                                *new_data_ptr.add(i * 4) = p;
+                                *new_data_ptr.add(i * 4 + 1) = p;
+                                *new_data_ptr.add(i * 4 + 2) = p;
+                                *new_data_ptr.add(i * 4 + 3) = 255;
+                            }
                         }
+
+                        // for i in 0..size[0] * size[1] {
+                        //     let p = data[i];
+                        //     new_data[i * 4] = p;
+                        //     new_data[i * 4 + 1] = p;
+                        //     new_data[i * 4 + 2] = p;
+                        //     new_data[i * 4 + 3] = 255;
+                        // }
                         w.data = new_data;
                     }
 
                     ImageType::GrayAlpha => {
-                        let mut new_data = vec![0u8; size[0] * size[1] * 4];
-                        for i in 0..size[0] * size[1] {
-                            let p = data[i * 2];
-                            new_data[i * 4] = p;
-                            new_data[i * 4 + 1] = p;
-                            new_data[i * 4 + 2] = p;
-                            new_data[i * 4 + 3] = data[i * 2 + 1];
+                        let mut new_data = vec![0u8; all_size * 4];
+                        let new_data_ptr = new_data.as_mut_ptr();
+                        for i in 0..all_size {
+                            unsafe {
+                                let p = *data_ptr.add(i * 2);
+                                *new_data_ptr.add(i * 4) = p;
+                                *new_data_ptr.add(i * 4 + 1) = p;
+                                *new_data_ptr.add(i * 4 + 2) = p;
+                                *new_data_ptr.add(i * 4 + 3) = *data_ptr.add(i * 2 + 1);
+                            }
                         }
+
+                        // for i in 0..size[0] * size[1] {
+                        //     let p = data[i * 2];
+                        //     new_data[i * 4] = p;
+                        //     new_data[i * 4 + 1] = p;
+                        //     new_data[i * 4 + 2] = p;
+                        //     new_data[i * 4 + 3] = data[i * 2 + 1];
+                        // }
                         w.data = new_data;
                     }
                 }
