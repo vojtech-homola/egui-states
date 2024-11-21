@@ -333,7 +333,7 @@ class SignalEmpty(_ValueBase):
 class ValueImage(_StaticBase):
     """Image UI element."""
 
-    def set_image(
+    def set(
         self,
         image: Buffer,
         rect: list[int] | None = None,
@@ -480,8 +480,11 @@ class ValueList[T](_StaticBase):
         self.set_item(idx, value, update=False)
 
 
-class _GraphBase:
+class Graph:
+    """Graph UI element."""
+
     def __init__(self, value_id: int, idx: int, server: SteteServerCoreBase):
+        """Initialize the Graph."""
         self._value_id = value_id
         self._idx = idx
         self._server = server
@@ -490,11 +493,18 @@ class _GraphBase:
 
     @property
     def idx(self) -> int:
+        """Get the index of the graph in ValueGraphs."""
         return self._idx
 
     @property
-    def active(self) -> bool:
+    def allive(self) -> bool:
+        """Check if the graph is allive."""
         return not self._deleted
+
+    @property
+    def is_linear(self) -> bool:
+        """Check if the graph is linear -> only Y axis."""
+        return self._server.graphs_is_linear(self._value_id, self._idx)
 
     def len(self) -> int:
         """Get the length of the graph.
@@ -505,21 +515,6 @@ class _GraphBase:
         self._check()
         return self._server.graphs_len(self._value_id, self._idx)
 
-    def _kill(self):
-        self._deleted = True
-        self._server.graphs_remove(self._value_id, self._idx, update=False)
-
-    def _check(self):
-        if self._deleted:
-            raise RuntimeError("Graph was deleted. You have to create a new one.")
-
-    def __len__(self) -> int:
-        return self.len()
-
-
-class Graph(_GraphBase):
-    """Graph UI element."""
-
     def add_points(self, points: Buffer, update: bool = False) -> None:
         """Add the points to the graph.
 
@@ -528,7 +523,7 @@ class Graph(_GraphBase):
             update(bool, optional): Whether to update the UI. Defaults to False.
         """
         self._check()
-        self._server.graphs_add_points(self._value_id, self._idx, points, update, range=None)
+        self._server.graphs_add_points(self._value_id, self._idx, points, update)
 
     def set(self, graph: Buffer, update: bool = False) -> None:
         """Set the graph to the UI graphs.
@@ -538,7 +533,7 @@ class Graph(_GraphBase):
             update(bool, optional): Whether to update the UI. Defaults to False.
         """
         self._check()
-        self._server.graphs_set(self._value_id, self._idx, graph, update, range=None)
+        self._server.graphs_set(self._value_id, self._idx, graph, update)
 
     def get(self) -> np.ndarray:
         """Get the graph from the UI graphs.
@@ -546,63 +541,29 @@ class Graph(_GraphBase):
         Returns:
             np.ndarray: The graph.
         """
-        data, shape, range = self._server.graphs_get(self._value_id, self._idx)
-        if range is not None or len(shape) != 3:
-            raise RuntimeError("Invalid graph data.")
+        data, shape = self._server.graphs_get(self._value_id, self._idx)
 
-        if shape[2] == 4:
+        if shape[-1] == 4:
             dtype = np.float32
-        elif shape[2] == 8:
+        elif shape[-1] == 8:
             dtype = np.float64
         else:
             raise RuntimeError("Invalid graph datatype.")
 
-        return np.frombuffer(data, dtype=dtype).reshape(shape[:2])
+        reshape = shape[:2] if len(shape) == 3 else shape[:1]
+        return np.frombuffer(data, dtype=dtype).reshape(reshape)
 
+    def _kill(self):
+        self._deleted = True
+        self._server.graphs_remove(self._value_id, self._idx, update=False)
 
-class GraphRange(_GraphBase):
-    """Graph UI element with range."""
+    def _check(self):
+        if self._deleted:
+            raise RuntimeError("Graph was deleted. You have to create a new one.")
 
-    def add_points(self, points: Buffer, range: tuple[float, float], update: bool = False) -> None:
-        """Add the points to the graph.
-
-        Args:
-            points(Buffer): The points to add. Has to implement the buffer protocol.
-            range(tuple[float, float]): The range of the graph
-            update(bool, optional): Whether to update the UI. Defaults to False.
-        """
-        self._check()
-        self._server.graphs_add_points(self._value_id, self._idx, points, update, range)
-
-    def set(self, graph: Buffer, range: tuple[float, float], update: bool = False) -> None:
-        """Set the graph to the UI graphs.
-
-        Args:
-            graph(Buffer): The graph to set. Has to implement the buffer protocol.
-            range(tuple[float, float]): The range of the graph.
-            update(bool, optional): Whether to update the UI. Defaults to False.
-        """
-        self._check()
-        self._server.graphs_set(self._value_id, self._idx, graph, update, range)
-
-    def get(self) -> tuple[np.ndarray, tuple[float, float]]:
-        """Get the graph from the UI graphs.
-
-        Returns:
-            tuple[np.ndarray, tuple[float, float]]: The graph and the range.
-        """
-        data, shape, range = self._server.graphs_get(self._value_id, self._idx)
-        if range is None or len(shape) != 2:
-            raise RuntimeError("Invalid graph data.")
-
-        if shape[1] == 4:
-            dtype = np.float32
-        elif shape[1] == 8:
-            dtype = np.float64
-        else:
-            raise RuntimeError("Invalid graph datatype.")
-
-        return np.frombuffer(data, dtype=dtype), range
+    def __len__(self) -> int:
+        """Get the length of the graph."""
+        return self.len()
 
 
 class ValueGraphs(_StaticBase):
@@ -611,10 +572,10 @@ class ValueGraphs(_StaticBase):
     def __init__(self, counter: _Counter):  # noqa: D107
         super().__init__(counter)
 
-        self._graphs: dict[int, _GraphBase] = {}
+        self._graphs: dict[int, Graph] = {}
         self.__getitem__ = self.get
 
-    def get(self, idx: int) -> _GraphBase:
+    def get(self, idx: int) -> Graph:
         """Get the graph by index.
 
         Args:
@@ -625,19 +586,18 @@ class ValueGraphs(_StaticBase):
         """
         return self._graphs[idx]
 
-    def set(
-        self, graph: Buffer, idx: int | None = None, range: tuple[float, float] | None = None, update: bool = False
-    ) -> _GraphBase:
-        """Set the graph to the UI graphs. Returns existing graph if the index is already used.
+    def set(self, graph: Buffer, idx: int | None = None, update: bool = False) -> Graph:
+        """Set the graph to the UI graphs.
+
+        If idx is specified and the graph with the index already exists, it will be updated.
 
         Two options for the graph data:
         - Data with shape (2, N) where the first row is the x values and the second row is the y values.
-        - Data with shape (N,) where the x values are generated automatically from the range parameter.
+        - Data with shape (N,) where the x axis is considered to be linear.
 
         Args:
             graph(Buffer): The graph to set. Has to implement the buffer protocol (numpy array).
             idx(int, optional): The index of the graph. If None, smallest available index is used. Defaults to None.
-            range(tuple[float, float], optional): The range of the graph. Defaults to None.
             update(bool, optional): Whether to update the UI. Defaults to False.
         """
         if idx is None:
@@ -645,24 +605,22 @@ class ValueGraphs(_StaticBase):
             while idx in self._graphs:
                 idx += 1
         elif idx in self._graphs:
-            self._graphs[idx]._kill()
+            existing_graph = self._graphs[idx]
+            existing_graph.set(graph, update)
+            return existing_graph
 
-        self._server.graphs_set(self._value_id, idx, graph, update, range)
-        if range is None:
-            graph_obj = Graph(self._value_id, idx, self._server)
-        else:
-            graph_obj = GraphRange(self._value_id, idx, self._server)
+        self._server.graphs_set(self._value_id, idx, graph, update)
+        graph_obj = Graph(self._value_id, idx, self._server)
         self._graphs[idx] = graph_obj
         return graph_obj
 
-    def remove(self, graph: _GraphBase, update: bool = False) -> None:
+    def remove(self, graph: Graph, update: bool = False) -> None:
         """Remove the graph from the UI graphs.
 
         Args:
             graph(_Graph): The graph object.
             update(bool, optional): Whether to update the UI. Defaults to False.
         """
-        graph._kill()
         if graph.idx in self._graphs:
             graph._kill()
             self._server.graphs_remove(self._value_id, graph.idx, update)
