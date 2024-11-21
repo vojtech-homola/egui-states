@@ -366,17 +366,16 @@ impl StateServerCore {
     }
 
     // graphs -----------------------------------------------------------------
-    #[pyo3(signature = (value_id, idx, graph, update, range=None))]
+    #[pyo3(signature = (value_id, idx, graph, update))]
     fn graphs_set(
         &self,
         value_id: u32,
         idx: u16,
         graph: &Bound<PyAny>,
         update: bool,
-        range: Option<Bound<PyAny>>,
     ) -> PyResult<()> {
         match self.values.graphs.get(&value_id) {
-            Some(graph_) => graph_.set_py(idx, graph, range, update),
+            Some(graph_) => graph_.set_py(idx, graph, update),
             None => Err(pyo3::exceptions::PyValueError::new_err(format!(
                 "Graph value with id {} is not available.",
                 value_id
@@ -399,17 +398,16 @@ impl StateServerCore {
         }
     }
 
-    #[pyo3(signature = (value_id, idx, points, update, range=None))]
+    #[pyo3(signature = (value_id, idx, points, update))]
     fn graphs_add_points(
         &self,
         value_id: u32,
         idx: u16,
         points: &Bound<PyAny>,
         update: bool,
-        range: Option<Bound<PyAny>>,
     ) -> PyResult<()> {
         match self.values.graphs.get(&value_id) {
-            Some(graph) => graph.add_points_py(idx, points, range, update),
+            Some(graph) => graph.add_points_py(idx, points, update),
             None => Err(pyo3::exceptions::PyValueError::new_err(format!(
                 "Graph value with id {} is not available.",
                 value_id
@@ -443,6 +441,16 @@ impl StateServerCore {
     fn graphs_count(&self, value_id: u32) -> PyResult<u16> {
         match self.values.graphs.get(&value_id) {
             Some(graph) => Ok(graph.count_py()),
+            None => Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "Graph value with id {} is not available.",
+                value_id
+            ))),
+        }
+    }
+
+    fn graphs_is_linear(&self, value_id: u32, idx: u16) -> PyResult<bool> {
+        match self.values.graphs.get(&value_id) {
+            Some(graph) => graph.is_linear_py(idx),
             None => Err(pyo3::exceptions::PyValueError::new_err(format!(
                 "Graph value with id {} is not available.",
                 value_id
