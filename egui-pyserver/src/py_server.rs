@@ -201,8 +201,9 @@ impl StateServerCore {
     ) -> PyResult<()> {
         match self.values.images.get(&value_id) {
             Some(image_val) => {
+                // TODO: check if is possible to avoid this copy and do it GIL free
                 let image_data = image.to_vec(py)?;
-                let shape = image.shape().to_vec();
+                let shape = image.shape();
                 py.allow_threads(|| image_val.set_image_py(image_data, shape, rect, update))
             }
             None => Err(pyo3::exceptions::PyValueError::new_err(format!(

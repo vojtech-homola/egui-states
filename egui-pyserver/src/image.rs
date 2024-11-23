@@ -42,7 +42,7 @@ impl ValueImage {
     pub(crate) fn set_image_py(
         &self,
         data: Vec<u8>,
-        shape: Vec<usize>,
+        shape: &[usize],
         rectangle: Option<[usize; 4]>,
         update: bool,
     ) -> PyResult<()> {
@@ -75,19 +75,22 @@ impl ValueImage {
                 }
 
                 let original_size = w.size;
+                let original_line = original_size[1];
                 if rect[0] + rect[2] > original_size[0] || rect[1] + rect[3] > original_size[1] {
                     return Err(PyValueError::new_err(format!(
                         "rectangle {:?} does not fit  int the image with size {:?}",
                         rect, original_size
                     )));
                 }
+                let top = rect[0];
+                let left = rect[1];
 
                 match image_type {
                     ImageType::ColorAlpha => {
                         let old_data_ptr = w.data.as_mut_ptr();
                         for i in 0..rect[2] {
                             for j in 0..rect[3] {
-                                let index = (rect[0] + i) * original_size[1] + rect[1] + j;
+                                let index = (top + i) * original_line + left + j;
                                 let d_index = i * j * 4;
                                 unsafe {
                                     *old_data_ptr.add(index * 4) = *data_ptr.add(d_index);
@@ -97,52 +100,50 @@ impl ValueImage {
                                 }
                             }
                         }
-
-                        // for i in 0..rect[2] {
-                        //     for j in 0..rect[3] {
-                        //         let index = (rect[0] + i) * original_size[1] + rect[1] + j;
-                        //         let d_index = i * j * 4;
-                        //         w.data[index * 4] = data[d_index];
-                        //         w.data[index * 4 + 1] = data[d_index + 1];
-                        //         w.data[index * 4 + 2] = data[d_index + 2];
-                        //         w.data[index * 4 + 3] = data[d_index + 3];
-                        //     }
-                        // }
                     }
                     ImageType::Color => {
+                        let old_data_ptr = w.data.as_mut_ptr();
                         for i in 0..rect[2] {
                             for j in 0..rect[3] {
-                                let index = (rect[0] + i) * original_size[1] + rect[1] + j;
+                                let index = (top + i) * original_line + left + j;
                                 let d_index = i * j * 3;
-                                w.data[index * 4] = data[d_index];
-                                w.data[index * 4 + 1] = data[d_index + 1];
-                                w.data[index * 4 + 2] = data[d_index + 2];
-                                w.data[index * 4 + 3] = 255;
+                                unsafe {
+                                    *old_data_ptr.add(index * 4) = *data_ptr.add(d_index);
+                                    *old_data_ptr.add(index * 4 + 1) = *data_ptr.add(d_index + 1);
+                                    *old_data_ptr.add(index * 4 + 2) = *data_ptr.add(d_index + 2);
+                                    *old_data_ptr.add(index * 4 + 3) = 255;
+                                }
                             }
                         }
                     }
                     ImageType::Gray => {
+                        let old_data_ptr = w.data.as_mut_ptr();
                         for i in 0..rect[2] {
                             for j in 0..rect[3] {
-                                let index = (rect[0] + i) * original_size[1] + rect[1] + j;
-                                let p = data[i * j];
-                                w.data[index * 4] = p;
-                                w.data[index * 4 + 1] = p;
-                                w.data[index * 4 + 2] = p;
-                                w.data[index * 4 + 3] = 255;
+                                let index = (top + i) * original_line + left + j;
+                                unsafe {
+                                    let p = *data_ptr.add(i * j);
+                                    *old_data_ptr.add(index * 4) = p;
+                                    *old_data_ptr.add(index * 4 + 1) = p;
+                                    *old_data_ptr.add(index * 4 + 2) = p;
+                                    *old_data_ptr.add(index * 4 + 3) = 255;
+                                }
                             }
                         }
                     }
                     ImageType::GrayAlpha => {
+                        let old_data_ptr = w.data.as_mut_ptr();
                         for i in 0..rect[2] {
                             for j in 0..rect[3] {
-                                let index = (rect[0] + i) * original_size[1] + rect[1] + j;
+                                let index = (top + i) * original_line + left + j;
                                 let d_index = i * j * 2;
-                                let p = data[d_index];
-                                w.data[index * 4] = p;
-                                w.data[index * 4 + 1] = p;
-                                w.data[index * 4 + 2] = p;
-                                w.data[index * 4 + 3] = data[d_index + 1];
+                                unsafe {
+                                    let p = *data_ptr.add(d_index);
+                                    *old_data_ptr.add(index * 4) = p;
+                                    *old_data_ptr.add(index * 4 + 1) = p;
+                                    *old_data_ptr.add(index * 4 + 2) = p;
+                                    *old_data_ptr.add(index * 4 + 3) = *data_ptr.add(d_index + 1);
+                                }
                             }
                         }
                     }
@@ -164,13 +165,6 @@ impl ValueImage {
                                 *new_data_ptr.add(i * 4 + 3) = 255;
                             }
                         }
-
-                        // for i in 0..size[0] * size[1] {
-                        //     new_data[i * 4] = data[i * 3];
-                        //     new_data[i * 4 + 1] = data[i * 3 + 1];
-                        //     new_data[i * 4 + 2] = data[i * 3 + 2];
-                        //     new_data[i * 4 + 3] = 255;
-                        // }
                         w.data = new_data;
                     }
                     ImageType::Gray => {
@@ -185,14 +179,6 @@ impl ValueImage {
                                 *new_data_ptr.add(i * 4 + 3) = 255;
                             }
                         }
-
-                        // for i in 0..size[0] * size[1] {
-                        //     let p = data[i];
-                        //     new_data[i * 4] = p;
-                        //     new_data[i * 4 + 1] = p;
-                        //     new_data[i * 4 + 2] = p;
-                        //     new_data[i * 4 + 3] = 255;
-                        // }
                         w.data = new_data;
                     }
 
@@ -208,14 +194,6 @@ impl ValueImage {
                                 *new_data_ptr.add(i * 4 + 3) = *data_ptr.add(i * 2 + 1);
                             }
                         }
-
-                        // for i in 0..size[0] * size[1] {
-                        //     let p = data[i * 2];
-                        //     new_data[i * 4] = p;
-                        //     new_data[i * 4 + 1] = p;
-                        //     new_data[i * 4 + 2] = p;
-                        //     new_data[i * 4 + 3] = data[i * 2 + 1];
-                        // }
                         w.data = new_data;
                     }
                 }
