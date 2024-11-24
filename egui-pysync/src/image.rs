@@ -10,7 +10,7 @@ const IMAGE_COLOR_ALPHA: u8 = 151;
 const IMAGE_GRAY: u8 = 152;
 const IMAGE_GRAY_ALPHA: u8 = 153;
 
-#[derive(PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum ImageType {
     Color,
     ColorAlpha,
@@ -73,11 +73,7 @@ impl ImageMessage {
                 u16::from_le_bytes(head[13..15].try_into().unwrap()) as usize,
             ];
 
-            if rectangle[0] >= rectangle[2] || rectangle[1] >= rectangle[3] {
-                return Err("Wrong rectangle coordinates".to_string());
-            }
-
-            let data_size = (rectangle[2] - rectangle[0]) * (rectangle[3] - rectangle[1]);
+            let data_size = rectangle[2] * rectangle[3];
             (Some(rectangle), data_size)
         } else {
             (None, y * x)

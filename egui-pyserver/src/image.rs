@@ -2,6 +2,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, RwLock};
 
+use pyo3::buffer::PyBuffer;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
@@ -39,169 +40,114 @@ impl ValueImage {
         })
     }
 
+    // Function is complex because it needs to handle different image types and also not contiguous
+    // data. Also it tries to avoid copying data if possible.
     pub(crate) fn set_image_py(
         &self,
-        data: Vec<u8>,
-        shape: &[usize],
+        image: &PyBuffer<u8>,
         rectangle: Option<[usize; 4]>,
         update: bool,
     ) -> PyResult<()> {
-        let image_type = match shape.len() {
-            2 => ImageType::Gray,
-            3 => match shape[2] {
-                2 => ImageType::GrayAlpha,
-                3 => ImageType::Color,
-                4 => ImageType::ColorAlpha,
-                _ => return Err(PyValueError::new_err("Invalid image dimensions")),
-            },
-            _ => return Err(PyValueError::new_err("Invalid image dimensions")),
-        };
+        let shape = image.shape();
+        let strides = image.strides();
+        let mut contiguous = image.is_c_contiguous();
+        let image_type = check_image_type(shape, strides)?;
         let size = [shape[0], shape[1]];
 
+        // get data stride
+        let mut stride = if contiguous {
+            0 // do not use strides
+        } else {
+            if strides[0] <= 0 {
+                return Err(PyValueError::new_err("Invalid strides"));
+            }
+            strides[0] as usize
+        };
+
+        // check if the rectangle is valid
+        if let Some(rect) = rectangle {
+            if size != [rect[2], rect[3]] {
+                return Err(PyValueError::new_err(format!(
+                    "image size {:?} does not match rectangle size {:?}",
+                    size,
+                    [rect[2], rect[3]]
+                )));
+            }
+
+            if rect[2] == 0 || rect[3] == 0 {
+                return Err(PyValueError::new_err("Rctangle size cannot be zero"));
+            }
+        }
+
+        // get data pointer and prepare data
+        let data_ptr;
+        let data = if self.connected.load(Ordering::Relaxed) {
+            let data_size = image.item_count();
+            let mut data = Vec::with_capacity(data_size);
+            if contiguous {
+                let buffer = image.buf_ptr() as *const u8;
+                unsafe {
+                    std::ptr::copy_nonoverlapping(buffer, data.as_mut_ptr(), data_size);
+                }
+            } else {
+                let image_ptr = image.buf_ptr() as *const u8;
+                let data_ptr = data.as_mut_ptr();
+                let line_size = size[1] * strides[1] as usize;
+                for i in 0..size[0] {
+                    let buffer = unsafe { image_ptr.add(i * stride) };
+                    let data_buffer = unsafe { data_ptr.add(i * line_size) };
+                    unsafe { std::ptr::copy_nonoverlapping(buffer, data_buffer, line_size) };
+                }
+                contiguous = true;
+                stride = 0;
+            }
+            unsafe { data.set_len(data_size) };
+            data_ptr = data.as_ptr();
+            Some(data)
+        } else {
+            data_ptr = image.buf_ptr() as *const u8;
+            None
+        };
+
+        // write data to the image
         let mut w = self.image.write().unwrap();
-        let data_ptr = data.as_ptr();
         match rectangle {
             Some(rect) => {
-                if size != [rect[2], rect[3]] {
-                    return Err(PyValueError::new_err(format!(
-                        "image size {:?} does not match rectangle size {:?}",
-                        size,
-                        [rect[2], rect[3]]
-                    )));
-                }
-
-                if rect[2] == 0 || rect[3] == 0 {
-                    return Err(PyValueError::new_err("Rctangle size cannot be zero"));
-                }
-
                 let original_size = w.size;
-                let original_line = original_size[1];
+
+                // check if the rectangle fits in the original image
                 if rect[0] + rect[2] > original_size[0] || rect[1] + rect[3] > original_size[1] {
                     return Err(PyValueError::new_err(format!(
-                        "rectangle {:?} does not fit  int the image with size {:?}",
+                        "rectangle {:?} does not fit in the original image with size {:?}",
                         rect, original_size
                     )));
                 }
-                let top = rect[0];
-                let left = rect[1];
 
-                match image_type {
-                    ImageType::ColorAlpha => {
-                        let old_data_ptr = w.data.as_mut_ptr();
-                        for i in 0..rect[2] {
-                            for j in 0..rect[3] {
-                                let index = (top + i) * original_line + left + j;
-                                let d_index = i * j * 4;
-                                unsafe {
-                                    *old_data_ptr.add(index * 4) = *data_ptr.add(d_index);
-                                    *old_data_ptr.add(index * 4 + 1) = *data_ptr.add(d_index + 1);
-                                    *old_data_ptr.add(index * 4 + 2) = *data_ptr.add(d_index + 2);
-                                    *old_data_ptr.add(index * 4 + 3) = *data_ptr.add(d_index + 3);
-                                }
-                            }
-                        }
-                    }
-                    ImageType::Color => {
-                        let old_data_ptr = w.data.as_mut_ptr();
-                        for i in 0..rect[2] {
-                            for j in 0..rect[3] {
-                                let index = (top + i) * original_line + left + j;
-                                let d_index = i * j * 3;
-                                unsafe {
-                                    *old_data_ptr.add(index * 4) = *data_ptr.add(d_index);
-                                    *old_data_ptr.add(index * 4 + 1) = *data_ptr.add(d_index + 1);
-                                    *old_data_ptr.add(index * 4 + 2) = *data_ptr.add(d_index + 2);
-                                    *old_data_ptr.add(index * 4 + 3) = 255;
-                                }
-                            }
-                        }
-                    }
-                    ImageType::Gray => {
-                        let old_data_ptr = w.data.as_mut_ptr();
-                        for i in 0..rect[2] {
-                            for j in 0..rect[3] {
-                                let index = (top + i) * original_line + left + j;
-                                unsafe {
-                                    let p = *data_ptr.add(i * j);
-                                    *old_data_ptr.add(index * 4) = p;
-                                    *old_data_ptr.add(index * 4 + 1) = p;
-                                    *old_data_ptr.add(index * 4 + 2) = p;
-                                    *old_data_ptr.add(index * 4 + 3) = 255;
-                                }
-                            }
-                        }
-                    }
-                    ImageType::GrayAlpha => {
-                        let old_data_ptr = w.data.as_mut_ptr();
-                        for i in 0..rect[2] {
-                            for j in 0..rect[3] {
-                                let index = (top + i) * original_line + left + j;
-                                let d_index = i * j * 2;
-                                unsafe {
-                                    let p = *data_ptr.add(d_index);
-                                    *old_data_ptr.add(index * 4) = p;
-                                    *old_data_ptr.add(index * 4 + 1) = p;
-                                    *old_data_ptr.add(index * 4 + 2) = p;
-                                    *old_data_ptr.add(index * 4 + 3) = *data_ptr.add(d_index + 1);
-                                }
-                            }
-                        }
-                    }
+                let old_data_ptr = w.data.as_mut_ptr();
+                unsafe {
+                    write_rectangle(
+                        data_ptr,
+                        stride,
+                        old_data_ptr,
+                        original_size[1],
+                        &rect,
+                        image_type,
+                    );
                 }
             }
             None => {
-                w.size = size;
-                let all_size = size[0] * size[1];
-                match image_type {
-                    ImageType::ColorAlpha => w.data = data.clone(),
-                    ImageType::Color => {
-                        let mut new_data = vec![0u8; all_size * 4];
-                        let new_data_ptr = new_data.as_mut_ptr();
-                        for i in 0..all_size {
-                            unsafe {
-                                *new_data_ptr.add(i * 4) = *data_ptr.add(i * 3);
-                                *new_data_ptr.add(i * 4 + 1) = *data_ptr.add(i * 3 + 1);
-                                *new_data_ptr.add(i * 4 + 2) = *data_ptr.add(i * 3 + 2);
-                                *new_data_ptr.add(i * 4 + 3) = 255;
-                            }
-                        }
-                        w.data = new_data;
-                    }
-                    ImageType::Gray => {
-                        let mut new_data = vec![0u8; all_size * 4];
-                        let new_data_ptr = new_data.as_mut_ptr();
-                        for i in 0..all_size {
-                            unsafe {
-                                let p = *data_ptr.add(i);
-                                *new_data_ptr.add(i * 4) = p;
-                                *new_data_ptr.add(i * 4 + 1) = p;
-                                *new_data_ptr.add(i * 4 + 2) = p;
-                                *new_data_ptr.add(i * 4 + 3) = 255;
-                            }
-                        }
-                        w.data = new_data;
-                    }
-
-                    ImageType::GrayAlpha => {
-                        let mut new_data = vec![0u8; all_size * 4];
-                        let new_data_ptr = new_data.as_mut_ptr();
-                        for i in 0..all_size {
-                            unsafe {
-                                let p = *data_ptr.add(i * 2);
-                                *new_data_ptr.add(i * 4) = p;
-                                *new_data_ptr.add(i * 4 + 1) = p;
-                                *new_data_ptr.add(i * 4 + 2) = p;
-                                *new_data_ptr.add(i * 4 + 3) = *data_ptr.add(i * 2 + 1);
-                            }
-                        }
-                        w.data = new_data;
-                    }
+                if contiguous {
+                    w.data = unsafe { write_all_new(data_ptr, &size, image_type) };
+                } else {
+                    w.data = unsafe { write_all_new_stride(data_ptr, stride, &size, image_type) };
                 }
+                w.size = size;
             }
         }
         let new_size = w.size;
 
-        if self.connected.load(Ordering::Relaxed) {
+        // send the image to the server
+        if let Some(data) = data {
             let image_message = ImageMessage {
                 image_size: new_size,
                 rect: rectangle,
@@ -234,5 +180,222 @@ impl SyncTrait for ValueImage {
 
         let message = WriteMessage::Image(self.id, false, image_message);
         self.channel.send(message).unwrap();
+    }
+}
+
+fn check_image_type(shape: &[usize], strides: &[isize]) -> PyResult<ImageType> {
+    match shape.len() {
+        2 => {
+            if strides[1] != 1 {
+                return Err(PyValueError::new_err("Invalid strides"));
+            }
+            Ok(ImageType::Gray)
+        }
+        3 => {
+            if strides[2] != 1 {
+                return Err(PyValueError::new_err("Invalid strides"));
+            }
+            match shape[2] {
+                2 => {
+                    if strides[1] != 2 {
+                        return Err(PyValueError::new_err("Invalid strides"));
+                    }
+                    Ok(ImageType::GrayAlpha)
+                }
+                3 => {
+                    if strides[1] != 3 {
+                        return Err(PyValueError::new_err("Invalid strides"));
+                    }
+
+                    Ok(ImageType::Color)
+                }
+                4 => {
+                    if strides[1] != 4 {
+                        return Err(PyValueError::new_err("Invalid strides"));
+                    }
+                    Ok(ImageType::ColorAlpha)
+                }
+                _ => Err(PyValueError::new_err("Invalid image dimensions")),
+            }
+        }
+        _ => Err(PyValueError::new_err("Invalid image dimensions")),
+    }
+}
+
+unsafe fn write_all_new(data: *const u8, size: &[usize; 2], image_type: ImageType) -> Vec<u8> {
+    let all_size = size[0] * size[1];
+    let mut new_data_vec: Vec<u8> = Vec::with_capacity(all_size * 4);
+    let new_data = new_data_vec.as_mut_ptr();
+
+    match image_type {
+        ImageType::ColorAlpha => {
+            std::ptr::copy_nonoverlapping(data, new_data, all_size * 4);
+        }
+        ImageType::Color => {
+            for i in 0..all_size {
+                *new_data.add(i * 4) = *data.add(i * 3);
+                *new_data.add(i * 4 + 1) = *data.add(i * 3 + 1);
+                *new_data.add(i * 4 + 2) = *data.add(i * 3 + 2);
+                *new_data.add(i * 4 + 3) = 255;
+            }
+        }
+        ImageType::Gray => {
+            for i in 0..all_size {
+                let p = *data.add(i);
+                *new_data.add(i * 4) = p;
+                *new_data.add(i * 4 + 1) = p;
+                *new_data.add(i * 4 + 2) = p;
+                *new_data.add(i * 4 + 3) = 255;
+            }
+        }
+
+        ImageType::GrayAlpha => {
+            for i in 0..all_size {
+                let p = *data.add(i * 2);
+                *new_data.add(i * 4) = p;
+                *new_data.add(i * 4 + 1) = p;
+                *new_data.add(i * 4 + 2) = p;
+                *new_data.add(i * 4 + 3) = *data.add(i * 2 + 1);
+            }
+        }
+    }
+    new_data_vec.set_len(all_size * 4);
+    new_data_vec
+}
+
+unsafe fn write_all_new_stride(
+    data: *const u8,
+    stride: usize,
+    size: &[usize; 2],
+    image_type: ImageType,
+) -> Vec<u8> {
+    let all_size = size[0] * size[1];
+    let mut new_data_vec: Vec<u8> = Vec::with_capacity(all_size * 4);
+    let new_data = new_data_vec.as_mut_ptr();
+
+    match image_type {
+        ImageType::ColorAlpha => {
+            for i in 0..size[0] {
+                let buffer = data.add(i * stride);
+                let data_buffer = new_data.add(i * size[1] * 4);
+                std::ptr::copy_nonoverlapping(buffer, data_buffer, size[1] * 4);
+            }
+        }
+        ImageType::Color => {
+            for i in 0..size[0] {
+                let buffer = data.add(i * stride);
+                let data_buffer = new_data.add(i * size[1] * 4);
+                for j in 0..size[1] {
+                    *data_buffer.add(j * 4) = *buffer.add(j * 3);
+                    *data_buffer.add(j * 4 + 1) = *buffer.add(j * 3 + 1);
+                    *data_buffer.add(j * 4 + 2) = *buffer.add(j * 3 + 2);
+                    *data_buffer.add(j * 4 + 3) = 255;
+                }
+            }
+        }
+        ImageType::Gray => {
+            for i in 0..size[0] {
+                let buffer = data.add(i * stride);
+                let data_buffer = new_data.add(i * size[1] * 4);
+                for j in 0..size[1] {
+                    let p = *buffer.add(j);
+                    *data_buffer.add(j * 4) = p;
+                    *data_buffer.add(j * 4 + 1) = p;
+                    *data_buffer.add(j * 4 + 2) = p;
+                    *data_buffer.add(j * 4 + 3) = 255;
+                }
+            }
+        }
+        ImageType::GrayAlpha => {
+            for i in 0..size[0] {
+                let buffer = data.add(i * stride);
+                let data_buffer = new_data.add(i * size[1] * 4);
+                for j in 0..size[1] {
+                    let p = *buffer.add(j * 2);
+                    *data_buffer.add(j * 4) = p;
+                    *data_buffer.add(j * 4 + 1) = p;
+                    *data_buffer.add(j * 4 + 2) = p;
+                    *data_buffer.add(j * 4 + 3) = *buffer.add(j * 2 + 1);
+                }
+            }
+        }
+    }
+    new_data_vec.set_len(all_size * 4);
+    new_data_vec
+}
+
+unsafe fn write_rectangle(
+    data: *const u8,
+    mut stride: usize,
+    old_data: *mut u8,
+    old_stride: usize,
+    rect: &[usize; 4],
+    image_type: ImageType,
+) {
+    let top = rect[0];
+    let left = rect[1];
+
+    match image_type {
+        ImageType::ColorAlpha => {
+            if stride == 0 {
+                stride = rect[3] * 4;
+            }
+            for i in 0..rect[2] {
+                for j in 0..rect[3] {
+                    let index = (top + i) * old_stride + left + j;
+                    let d_index = i * stride + j * 4;
+                    *old_data.add(index * 4) = *data.add(d_index);
+                    *old_data.add(index * 4 + 1) = *data.add(d_index + 1);
+                    *old_data.add(index * 4 + 2) = *data.add(d_index + 2);
+                    *old_data.add(index * 4 + 3) = *data.add(d_index + 3);
+                }
+            }
+        }
+        ImageType::Color => {
+            if stride == 0 {
+                stride = rect[3] * 3;
+            }
+            for i in 0..rect[2] {
+                for j in 0..rect[3] {
+                    let index = (top + i) * old_stride + left + j;
+                    let d_index = i * stride + j * 3;
+                    *old_data.add(index * 4) = *data.add(d_index);
+                    *old_data.add(index * 4 + 1) = *data.add(d_index + 1);
+                    *old_data.add(index * 4 + 2) = *data.add(d_index + 2);
+                    *old_data.add(index * 4 + 3) = 255;
+                }
+            }
+        }
+        ImageType::Gray => {
+            if stride == 0 {
+                stride = rect[3];
+            }
+            for i in 0..rect[2] {
+                for j in 0..rect[3] {
+                    let index = (top + i) * old_stride + left + j;
+                    let p = *data.add(i * stride + j);
+                    *old_data.add(index * 4) = p;
+                    *old_data.add(index * 4 + 1) = p;
+                    *old_data.add(index * 4 + 2) = p;
+                    *old_data.add(index * 4 + 3) = 255;
+                }
+            }
+        }
+        ImageType::GrayAlpha => {
+            if stride == 0 {
+                stride = rect[3] * 2;
+            }
+            for i in 0..rect[2] {
+                for j in 0..rect[3] {
+                    let index = (top + i) * old_stride + left + j;
+                    let d_index = i * stride + j * 2;
+                    let p = *data.add(d_index);
+                    *old_data.add(index * 4) = p;
+                    *old_data.add(index * 4 + 1) = p;
+                    *old_data.add(index * 4 + 2) = p;
+                    *old_data.add(index * 4 + 3) = *data.add(d_index + 1);
+                }
+            }
+        }
     }
 }
