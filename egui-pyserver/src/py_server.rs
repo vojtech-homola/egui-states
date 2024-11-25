@@ -7,7 +7,7 @@ use std::sync::{
 
 use pyo3::buffer::PyBuffer;
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList, PyTuple};
+use pyo3::types::{PyByteArray, PyDict, PyList, PyTuple};
 
 use egui_pysync::commands::CommandMessage;
 use egui_pysync::transport::WriteMessage;
@@ -190,21 +190,31 @@ impl StateServerCore {
     }
 
     // images -----------------------------------------------------------------
-    #[pyo3(signature = (value_id, image, update, rect=None))]
+    #[pyo3(signature = (value_id, image, update, origin=None))]
     fn image_set(
         &self,
         py: Python,
         value_id: u32,
         image: PyBuffer<u8>,
         update: bool,
-        rect: Option<[usize; 4]>,
+        origin: Option<[usize; 2]>,
     ) -> PyResult<()> {
         match self.values.images.get(&value_id) {
-            Some(image_val) => {
-                let image_data = image.to_vec(py)?;
-                let shape = image.shape().to_vec();
-                py.allow_threads(|| image_val.set_image_py(image_data, shape, rect, update))
-            }
+            Some(image_val) => py.allow_threads(|| image_val.set_image_py(&image, origin, update)),
+            None => Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "Image with id {} is not available.",
+                value_id
+            ))),
+        }
+    }
+
+    fn image_get<'py>(
+        &self,
+        py: Python<'py>,
+        value_id: u32,
+    ) -> PyResult<(Bound<'py, PyByteArray>, [usize; 2])> {
+        match self.values.images.get(&value_id) {
+            Some(image) => Ok(image.get_image_py(py)),
             None => Err(pyo3::exceptions::PyValueError::new_err(format!(
                 "Image with id {} is not available.",
                 value_id

@@ -1,3 +1,4 @@
+use std::io::Write;
 use std::net::{SocketAddrV4, TcpStream};
 use std::sync::mpsc::{Receiver, Sender};
 use std::thread;
@@ -179,6 +180,7 @@ fn start_gui_client(
 
                     // check if the message is terminate
                     if let WriteMessage::Terminate = message {
+                        stream_write.flush().unwrap();
                         break;
                     }
 

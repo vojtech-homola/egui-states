@@ -32,12 +32,7 @@ impl CommandMessage {
         match self {
             CommandMessage::Error(error) => {
                 head[0] = COM_ERROR;
-
                 let data = error.as_bytes().to_vec();
-
-                println!("------------------------------------");
-                println!("len: {}", head[SIZE_START..].len());
-
                 head[SIZE_START..].copy_from_slice(&(data.len() as u64).to_le_bytes());
                 Some(data)
             }

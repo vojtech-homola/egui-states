@@ -72,15 +72,13 @@ impl ImageUpdate for ValueImage {
             image_type,
         } = message;
 
-        let actual_size = self.texture_handle.read().unwrap().1;
-        if actual_size != image_size && rect.is_some() {
-            return Err(
-                "Rectangle is set but the image size is different from texture".to_string(),
-            );
-        }
-
         let size = match rect {
-            Some(r) => [r[3], r[2]],
+            Some(r) => {
+                if r[0] + r[2] > image_size[0] || r[1] + r[3] > image_size[1] {
+                    return Err("Rectangle is out of bounds".to_string());
+                }
+                [r[3], r[2]]
+            }
             None => [image_size[1], image_size[0]],
         };
 
@@ -137,13 +135,23 @@ impl ImageUpdate for ValueImage {
         }
 
         let mut w = self.texture_handle.write().unwrap();
+        let previous_size = w.1;
         if let Some(ref mut texture_handle) = w.0 {
             match rect {
-                Some(rec) => texture_handle.set_partial([rec[1], rec[0]], c_image, TEXTURE_OPTIONS),
-                None => texture_handle.set(c_image, TEXTURE_OPTIONS),
+                Some(rec) => {
+                    if previous_size[0] != image_size[1] || previous_size[1] != image_size[0] {
+                        return Err(
+                            "Rectangle is set but the image size is different from texture"
+                                .to_string(),
+                        );
+                    }
+                    texture_handle.set_partial([rec[1], rec[0]], c_image, TEXTURE_OPTIONS);
+                }
+                None => {
+                    texture_handle.set(c_image, TEXTURE_OPTIONS);
+                    w.1 = size;
+                }
             }
-
-            w.1 = size;
         }
 
         Ok(())

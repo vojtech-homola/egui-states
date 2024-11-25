@@ -6,7 +6,7 @@ use std::sync::{Arc, RwLock};
 use pyo3::buffer::{Element, PyBuffer};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyTuple};
+use pyo3::types::{PyByteArray, PyTuple};
 
 use egui_pysync::graphs::{Graph, GraphElement, GraphMessage};
 use egui_pysync::nohash::NoHashMap;
@@ -98,7 +98,7 @@ where
         match graph.x {
             Some(ref x) => {
                 let size = (x.len() + graph.y.len()) * size_of::<T>();
-                let bytes = PyBytes::new_with(py, size, |buf| {
+                let bytes = PyByteArray::new_with(py, size, |buf| {
                     let mut ptr = buf.as_mut_ptr() as *mut T;
                     unsafe {
                         std::ptr::copy_nonoverlapping(x.as_ptr(), ptr, x.len());
@@ -115,7 +115,7 @@ where
                 let size = graph.y.len() * size_of::<T>();
                 let data =
                     unsafe { std::slice::from_raw_parts(graph.y.as_ptr() as *const u8, size) };
-                let bytes = PyBytes::new(py, data);
+                let bytes = PyByteArray::new(py, data);
                 (bytes, (graph.y.len(), size_of::<T>())).into_pyobject(py)
             }
         }
