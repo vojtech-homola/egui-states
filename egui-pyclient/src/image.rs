@@ -72,13 +72,6 @@ impl ImageUpdate for ValueImage {
             image_type,
         } = message;
 
-        let actual_size = self.texture_handle.read().unwrap().1;
-        if actual_size != image_size && rect.is_some() {
-            return Err(
-                "Rectangle is set but the image size is different from texture".to_string(),
-            );
-        }
-
         let size = match rect {
             Some(r) => {
                 if r[0] + r[2] > image_size[0] || r[1] + r[3] > image_size[1] {

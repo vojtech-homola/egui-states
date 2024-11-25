@@ -110,7 +110,11 @@ impl WriteMessage {
         if let WriteMessage::Command(command) = self {
             let data = command.write_message(&mut head[1..]);
             match data {
-                Some(_) => head[0] = -TYPE_COMMAND as u8,
+                Some(ref data) => {
+                    head[0] = -TYPE_COMMAND as u8;
+                    let size = data.len() as u32;
+                    head[SIZE_START..].copy_from_slice(&size.to_le_bytes());
+                }
                 None => head[0] = TYPE_COMMAND as u8,
             }
             return data;

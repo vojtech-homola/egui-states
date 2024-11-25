@@ -258,7 +258,7 @@ impl Server {
                 let mut head = [0u8; HEAD_SIZE];
                 let res = read_message(&mut head, &mut stream);
                 if let Err(e) = res {
-                    let error = format!("Error reading message: {:?}", e);
+                    let error = format!("Error reading initial message: {:?}", e);
                     signals.set(0, error);
                     connected.store(false, atomic::Ordering::Relaxed);
                     continue;
@@ -268,7 +268,7 @@ impl Server {
                 // parse the message
                 let res = ReadMessage::parse(&head, type_, data);
                 if let Err(res) = res {
-                    let error = format!("Error parsing message: {:?}", res);
+                    let error = format!("Error parsing initial message: {:?}", res);
                     signals.set(0, error);
                     continue;
                 }

@@ -8,6 +8,7 @@ use pyo3::prelude::*;
 
 use egui_pysync::image::{ImageMessage, ImageType};
 use egui_pysync::transport::WriteMessage;
+use pyo3::types::PyByteArray;
 
 use crate::SyncTrait;
 
@@ -40,12 +41,22 @@ impl ValueImage {
         })
     }
 
+    pub(crate) fn get_image_py<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> (Bound<'py, PyByteArray>, [usize; 2]) {
+        let w = self.image.read().unwrap();
+        let size = w.size;
+        let data = PyByteArray::new(py, &w.data);
+        (data, size)
+    }
+
     // Function is complex because it needs to handle different image types and also not contiguous
     // data. Also it tries to avoid copying data if possible.
     pub(crate) fn set_image_py(
         &self,
         image: &PyBuffer<u8>,
-        rectangle: Option<[usize; 4]>,
+        origin: Option<[usize; 2]>,
         update: bool,
     ) -> PyResult<()> {
         let shape = image.shape();
@@ -63,21 +74,6 @@ impl ValueImage {
             }
             strides[0] as usize
         };
-
-        // check if the rectangle is valid
-        if let Some(rect) = rectangle {
-            if size != [rect[2], rect[3]] {
-                return Err(PyValueError::new_err(format!(
-                    "image size {:?} does not match rectangle size {:?}",
-                    size,
-                    [rect[2], rect[3]]
-                )));
-            }
-
-            if rect[2] == 0 || rect[3] == 0 {
-                return Err(PyValueError::new_err("Rctangle size cannot be zero"));
-            }
-        }
 
         // get data pointer and prepare data
         let data_ptr;
@@ -111,15 +107,16 @@ impl ValueImage {
 
         // write data to the image
         let mut w = self.image.write().unwrap();
-        match rectangle {
-            Some(rect) => {
+        match origin {
+            Some(origin) => {
                 let original_size = w.size;
 
                 // check if the rectangle fits in the original image
-                if rect[0] + rect[2] > original_size[0] || rect[1] + rect[3] > original_size[1] {
+                if origin[0] + size[0] > original_size[0] || origin[1] + size[1] > original_size[1]
+                {
                     return Err(PyValueError::new_err(format!(
                         "rectangle {:?} does not fit in the original image with size {:?}",
-                        rect, original_size
+                        origin, original_size
                     )));
                 }
 
@@ -130,7 +127,8 @@ impl ValueImage {
                         stride,
                         old_data_ptr,
                         original_size[1],
-                        &rect,
+                        &origin,
+                        &size,
                         image_type,
                     );
                 }
@@ -148,9 +146,10 @@ impl ValueImage {
 
         // send the image to the server
         if let Some(data) = data {
+            let rect = origin.map(|o| [o[0], o[1], size[0], size[1]]);
             let image_message = ImageMessage {
                 image_size: new_size,
-                rect: rectangle,
+                rect,
                 data,
                 image_type,
             };
@@ -329,19 +328,20 @@ unsafe fn write_rectangle(
     mut stride: usize,
     old_data: *mut u8,
     old_stride: usize,
-    rect: &[usize; 4],
+    origin: &[usize; 2],
+    size: &[usize; 2],
     image_type: ImageType,
 ) {
-    let top = rect[0];
-    let left = rect[1];
+    let top = origin[0];
+    let left = origin[1];
 
     match image_type {
         ImageType::ColorAlpha => {
             if stride == 0 {
-                stride = rect[3] * 4;
+                stride = size[1] * 4;
             }
-            for i in 0..rect[2] {
-                for j in 0..rect[3] {
+            for i in 0..size[0] {
+                for j in 0..size[1] {
                     let index = (top + i) * old_stride + left + j;
                     let d_index = i * stride + j * 4;
                     *old_data.add(index * 4) = *data.add(d_index);
@@ -353,10 +353,10 @@ unsafe fn write_rectangle(
         }
         ImageType::Color => {
             if stride == 0 {
-                stride = rect[3] * 3;
+                stride = size[1] * 3;
             }
-            for i in 0..rect[2] {
-                for j in 0..rect[3] {
+            for i in 0..size[0] {
+                for j in 0..size[1] {
                     let index = (top + i) * old_stride + left + j;
                     let d_index = i * stride + j * 3;
                     *old_data.add(index * 4) = *data.add(d_index);
@@ -368,10 +368,10 @@ unsafe fn write_rectangle(
         }
         ImageType::Gray => {
             if stride == 0 {
-                stride = rect[3];
+                stride = size[1];
             }
-            for i in 0..rect[2] {
-                for j in 0..rect[3] {
+            for i in 0..size[0] {
+                for j in 0..size[1] {
                     let index = (top + i) * old_stride + left + j;
                     let p = *data.add(i * stride + j);
                     *old_data.add(index * 4) = p;
@@ -383,10 +383,10 @@ unsafe fn write_rectangle(
         }
         ImageType::GrayAlpha => {
             if stride == 0 {
-                stride = rect[3] * 2;
+                stride = size[1] * 2;
             }
-            for i in 0..rect[2] {
-                for j in 0..rect[3] {
+            for i in 0..size[0] {
+                for j in 0..size[1] {
                     let index = (top + i) * old_stride + left + j;
                     let d_index = i * stride + j * 2;
                     let p = *data.add(d_index);
