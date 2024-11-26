@@ -4,7 +4,7 @@ from typing import Any
 
 import numpy as np
 
-from egui_pysync.signals import _SignalsManager
+from egui_pysync.signals import _SignalsManager, ArgParser
 from egui_pysync.typing import SteteServerCoreBase
 
 
@@ -60,8 +60,9 @@ class ErrorSignal:
 class _StaticBase:
     _server: SteteServerCoreBase
 
-    def __init__(self, counter: _Counter):
+    def __init__(self, counter: _Counter, arg_parser: ArgParser = False) -> None:
         self._value_id = counter.get_id()
+        self._arg_parser = arg_parser
 
     def _initialize(self, server: SteteServerCoreBase):
         self._server = server
@@ -73,11 +74,11 @@ class _ValueBase(_StaticBase):
     def _initialize(self, server: SteteServerCoreBase, signals_manager: _SignalsManager):
         self._server = server
         self._signals_manager = signals_manager
-        if hasattr(self, "_arg_parser"):
-            arg_parser = getattr(self, "_arg_parser")
-            self._signals_manager.register_value(self._value_id, arg_parser=arg_parser)
-        else:
-            signals_manager.register_value(self._value_id)
+        # if hasattr(self, "_arg_parser"):
+        #     arg_parser = getattr(self, "_arg_parser")
+        #     self._signals_manager.register_value(self._value_id, arg_parser=arg_parser)
+        # else:
+        signals_manager.register_value(self._value_id)
 
 
 class Value[T](_ValueBase):
@@ -190,7 +191,7 @@ class ValueEnum[T](_ValueBase):
         self._signals_manager.clear_callbacks(self._value_id)
 
     def _arg_parser(self, arg: int):
-        return (self._enum_type(arg),)  # type: ignore
+        return self._enum_type(arg)  # type: ignore
 
 
 class Signal[T](_ValueBase):
@@ -239,10 +240,6 @@ class SignalEmpty(_ValueBase):
     def disconnect_all(self) -> None:
         """Disconnect all callbacks from the signal."""
         self._signals_manager.clear_callbacks(self._value_id)
-
-    @staticmethod
-    def _arg_parser(_: None):
-        return ()
 
 
 class ValueImage(_StaticBase):

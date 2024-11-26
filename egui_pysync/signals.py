@@ -5,7 +5,7 @@ from typing import Any
 
 from egui_pysync.typing import SteteServerCoreBase
 
-type ArgParser = Callable[[Any], tuple[Any, ...]]
+type ArgParser = Callable[[Any], Any] | bool
 
 
 class _SignalsManager:
@@ -15,14 +15,14 @@ class _SignalsManager:
         workers: int,
         error_handler: Callable[[Exception], None] | None,
     ):
-        self._callbacks: dict[int, tuple[list[Callable], ArgParser | None]] = {}
+        self._callbacks: dict[int, tuple[list[Callable], ArgParser]] = {}
         self._server = server
 
         self._workers_count = workers
         self._workers: list[threading.Thread] = []
         self._error_handler = error_handler or self._default_error_handler
 
-    def register_value(self, value_id: int, arg_parser: ArgParser | None = None) -> None:
+    def register_value(self, value_id: int, arg_parser: ArgParser = False) -> None:
         self._callbacks[value_id] = ([], arg_parser)
 
     def close_registration(self) -> None:
@@ -42,20 +42,27 @@ class _SignalsManager:
     def _run(self, thread_id) -> None:
         while True:
             ind, arg = self._server.value_get_signal(thread_id)
-            callbacks, arg_parser = self._callbacks.get(ind, (None, None))
+            callbacks, arg_parser = self._callbacks.get(ind, (None, False))
             if callbacks:
-                if arg_parser is None:
+                if arg_parser is False:
                     for callback in callbacks:
                         try:
                             callback(arg)
                         except Exception as e:
                             self._error_handler(e)
+                elif arg_parser is True:
+                    for callback in callbacks:
+                        try:
+                            callback()
+                        except Exception as e:
+                            self._error_handler(e)
                 else:
                     for callback in callbacks:
                         try:
-                            callback(*arg_parser(arg))
+                            callback(arg_parser(arg))
                         except Exception as e:
                             self._error_handler(e)
+
             else:
                 error = IndexError(f"Signal with index {ind} not found.")
                 self._error_handler(error)
