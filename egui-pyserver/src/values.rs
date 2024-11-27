@@ -16,8 +16,7 @@ use crate::ToPython;
 use crate::{Acknowledge, SyncTrait};
 
 pub(crate) trait ProccesValue: Send + Sync {
-    fn process_value(&self, head: &[u8], data: Option<Vec<u8>>, signal: bool)
-        -> Result<(), String>;
+    fn read_value(&self, head: &[u8], data: Option<Vec<u8>>, signal: bool) -> Result<(), String>;
 }
 
 pub(crate) trait PyValue: Send + Sync {
@@ -92,12 +91,7 @@ impl<T> ProccesValue for Value<T>
 where
     T: ReadValue + WriteValue + ToPython,
 {
-    fn process_value(
-        &self,
-        head: &[u8],
-        data: Option<Vec<u8>>,
-        signal: bool,
-    ) -> Result<(), String> {
+    fn read_value(&self, head: &[u8], data: Option<Vec<u8>>, signal: bool) -> Result<(), String> {
         let value = T::read_message(head, data)?;
 
         let mut w = self.value.write().unwrap();
@@ -210,12 +204,7 @@ impl<T> ProccesValue for ValueEnum<T>
 where
     T: EnumInt,
 {
-    fn process_value(
-        &self,
-        head: &[u8],
-        data: Option<Vec<u8>>,
-        signal: bool,
-    ) -> Result<(), String> {
+    fn read_value(&self, head: &[u8], data: Option<Vec<u8>>, signal: bool) -> Result<(), String> {
         let value_int = u64::read_message(head, data)?;
         let value = T::from_int(value_int).map_err(|_| "Invalid enum format".to_string())?;
 
@@ -392,12 +381,7 @@ impl<T> ProccesValue for Signal<T>
 where
     T: ReadValue + WriteValue + ToPython,
 {
-    fn process_value(
-        &self,
-        head: &[u8],
-        data: Option<Vec<u8>>,
-        _signal: bool,
-    ) -> Result<(), String> {
+    fn read_value(&self, head: &[u8], data: Option<Vec<u8>>, _signal: bool) -> Result<(), String> {
         let value = T::read_message(head, data)?;
         self.signals.set(self.id, value);
         Ok(())
@@ -421,12 +405,7 @@ impl<T: Clone> SignalEnum<T> {
 }
 
 impl<T: EnumInt> ProccesValue for SignalEnum<T> {
-    fn process_value(
-        &self,
-        head: &[u8],
-        data: Option<Vec<u8>>,
-        _signal: bool,
-    ) -> Result<(), String> {
+    fn read_value(&self, head: &[u8], data: Option<Vec<u8>>, _signal: bool) -> Result<(), String> {
         let value = u64::read_message(head, data)?;
         self.signals.set(self.id, value);
         Ok(())
