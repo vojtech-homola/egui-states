@@ -1,11 +1,18 @@
+# ruff: noqa: D107
 from abc import ABC, abstractmethod
 from collections.abc import Buffer, Callable
 from typing import Any
+from enum import Enum
 
 import numpy as np
 
 from egui_pysync.signals import _SignalsManager, ArgParser
 from egui_pysync.typing import SteteServerCoreBase
+
+
+def enum_parser(value: Enum) -> int:
+    """Default enum parser for setting enums."""
+    return value.value
 
 
 class _Counter:
@@ -60,9 +67,12 @@ class ErrorSignal:
 class _StaticBase:
     _server: SteteServerCoreBase
 
-    def __init__(self, counter: _Counter, arg_parser: ArgParser = False) -> None:
+    def __init__(
+        self, counter: _Counter, arg_parser: ArgParser = False, set_parser: Callable[[Any], Any] | None = None
+    ) -> None:
         self._value_id = counter.get_id()
         self._arg_parser = arg_parser
+        self._set_parser = set_parser
 
     def _initialize(self, server: SteteServerCoreBase):
         self._server = server
@@ -74,11 +84,7 @@ class _ValueBase(_StaticBase):
     def _initialize(self, server: SteteServerCoreBase, signals_manager: _SignalsManager):
         self._server = server
         self._signals_manager = signals_manager
-        # if hasattr(self, "_arg_parser"):
-        #     arg_parser = getattr(self, "_arg_parser")
-        #     self._signals_manager.register_value(self._value_id, arg_parser=arg_parser)
-        # else:
-        signals_manager.register_value(self._value_id)
+        signals_manager.register_value(self._value_id, arg_parser=self._arg_parser)
 
 
 class Value[T](_ValueBase):
@@ -92,7 +98,11 @@ class Value[T](_ValueBase):
             set_signal(bool, optional): Whether to set the signal. Defaults to True.
             update(bool, optional): Whether to update the UI. Defaults to False.
         """
-        self._server.value_set(self._value_id, value, set_signal, update)
+        if self._set_parser:
+            value = self._set_parser(value)
+            self._server.value_set(self._value_id, value, set_signal, update)
+        else:
+            self._server.value_set(self._value_id, value, set_signal, update)
 
     def get(self) -> T:
         """Get the value of the UI element.
@@ -100,7 +110,11 @@ class Value[T](_ValueBase):
         Returns:
             T: The value of the UI element.
         """
-        return self._server.value_get(self._value_id)
+        val = self._server.value_get(self._value_id)
+        if callable(self._arg_parser):
+            return self._arg_parser(val)
+        else:
+            return val
 
     def connect(self, callback: Callable[[T], Any]) -> None:
         """Connect a callback to the value.
@@ -133,7 +147,11 @@ class ValueStatic[T](_StaticBase):
             value(T): The value to set.
             update(bool, optional): Whether to update the UI. Defaults to False.
         """
-        self._server.static_set(self._value_id, value, update)
+        if self._set_parser:
+            value = self._set_parser(value)
+            self._server.static_set(self._value_id, value, update)
+        else:
+            self._server.static_set(self._value_id, value, update)
 
     def get(self) -> T:
         """Get the static value of the UI.
@@ -141,7 +159,11 @@ class ValueStatic[T](_StaticBase):
         Returns:
             T: The static value.
         """
-        return self._server.static_get(self._value_id)
+        val = self._server.value_get(self._value_id)
+        if callable(self._arg_parser):
+            return self._arg_parser(val)
+        else:
+            return val
 
 
 class ValueEnum[T](_ValueBase):
@@ -220,6 +242,9 @@ class Signal[T](_ValueBase):
 
 class SignalEmpty(_ValueBase):
     """Empty Signal from UI."""
+
+    def __init__(self, counter: _Counter) -> None:
+        super().__init__(counter, arg_parser=True)
 
     def connect(self, callback: Callable[[], Any]) -> None:
         """Connect a callback to the signal.

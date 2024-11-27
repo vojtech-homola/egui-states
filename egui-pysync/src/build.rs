@@ -203,30 +203,39 @@ struct State {
 }
 
 impl State {
-    fn write_python(&self, file: &mut fs::File, custom: &Option<(String, String)>, root: bool) {
+    fn write_python(
+        &self,
+        file: &mut fs::File,
+        custom: &Option<(String, String)>,
+        written: &mut Vec<String>,
+        root: bool,
+    ) {
         for item in &self.items {
             if let Item::State(_, state) = item {
-                state.write_python(file, custom, false);
+                state.write_python(file, custom, written, false);
             }
         }
 
         if root {
             file.write_all(
-                format!("\n\nclass {}(structures._MainStatesBase):\n", self.name).as_bytes(),
+                format!("\n\nclass {}(sc._MainStatesBase):\n", self.name).as_bytes(),
             )
             .unwrap();
             file.write_all(b"    def __init__(self, update: Callable[[float | None], None]):\n")
                 .unwrap();
             file.write_all(b"        self._update = update\n").unwrap();
-            file.write_all(b"        c = structures._Counter()\n\n")
+            file.write_all(b"        c = sc._Counter()\n\n")
                 .unwrap();
-        } else {
+        } else if !written.contains(&self.name) {
             file.write_all(
-                format!("\n\nclass {}(structures._StatesBase):\n", self.name).as_bytes(),
+                format!("\n\nclass {}(sc._StatesBase):\n", self.name).as_bytes(),
             )
             .unwrap();
-            file.write_all(b"    def __init__(self, c: structures._Counter):\n")
+            file.write_all(b"    def __init__(self, c: sc._Counter):\n")
                 .unwrap();
+            written.push(self.name.clone());
+        } else {
+            return;
         }
 
         for item in &self.items {
@@ -236,27 +245,27 @@ impl State {
                         ValueType::Value => {
                             let val_type = parse_types(&value.annotation, custom).unwrap();
                             format!(
-                                "        self.{} = structures.Value[{}](c)\n",
+                                "        self.{} = sc.Value[{}](c)\n",
                                 name, val_type
                             )
                         }
                         ValueType::ValueStatic => {
                             let val_type = parse_types(&value.annotation, custom).unwrap();
                             format!(
-                                "        self.{} = structures.ValueStatic[{}](c)\n",
+                                "        self.{} = sc.ValueStatic[{}](c)\n",
                                 name, val_type
                             )
                         }
                         ValueType::ValueImage => {
-                            format!("        self.{} = structures.ValueImage(c)\n", name)
+                            format!("        self.{} = sc.ValueImage(c)\n", name)
                         }
                         ValueType::Signal => {
                             if value.annotation == "()" {
-                                format!("        self.{} = structures.SignalEmpty(c)\n", name)
+                                format!("        self.{} = sc.SignalEmpty(c)\n", name)
                             } else {
                                 let val_type = parse_types(&value.annotation, custom).unwrap();
                                 format!(
-                                    "        self.{} = structures.Signal[{}](c)\n",
+                                    "        self.{} = sc.Signal[{}](c)\n",
                                     name, val_type
                                 )
                             }
@@ -268,25 +277,25 @@ impl State {
                             let key_type = parse_types(key_type, custom).unwrap();
                             let val_type = parse_types(val_type, custom).unwrap();
                             format!(
-                                "        self.{} = structures.ValueDict[{}, {}](c)\n",
+                                "        self.{} = sc.ValueDict[{}, {}](c)\n",
                                 name, key_type, val_type
                             )
                         }
                         ValueType::ValueList => {
                             let val_type = parse_types(&value.annotation, custom).unwrap();
                             format!(
-                                "        self.{} = structures.ValueList[{}](c)\n",
+                                "        self.{} = sc.ValueList[{}](c)\n",
                                 name, val_type
                             )
                         }
                         ValueType::ValueGraphs => {
-                            format!("        self.{} = structures.ValueGraphs(c)\n", name)
+                            format!("        self.{} = sc.ValueGraphs(c)\n", name)
                         }
                         ValueType::ValueEnum => {
                             let enum_str = value.annotation.replace("::", ".");
                             format!(
-                                "        self.{} = structures.ValueEnum(c, {})\n",
-                                name, enum_str
+                                "        self.{} = sc.Value[{}](c, {}, sc.enum_parser)\n",
+                                name, enum_str, enum_str
                             )
                         }
                     };
@@ -592,14 +601,15 @@ pub fn parse_states_for_client(
     file.write_all(b"# ruff: noqa: D107 D101\n").unwrap();
     file.write_all(b"from collections.abc import Callable\n\n")
         .unwrap();
-    file.write_all(b"from egui_pysync import structures\n\n")
+    file.write_all(b"from egui_pysync import structures as sc\n\n")
         .unwrap();
     for import in imports {
         file.write_all(import.as_bytes()).unwrap();
     }
     file.write_all(b"\n").unwrap();
 
-    state.write_python(&mut file, &custom, true);
+    let mut written_classes = Vec::new();
+    state.write_python(&mut file, &custom, &mut written_classes, true);
 
     Ok(())
 }
