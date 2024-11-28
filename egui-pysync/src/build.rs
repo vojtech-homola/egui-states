@@ -122,7 +122,6 @@ enum ValueType {
     Value,
     ValueStatic,
     ValueImage,
-    ValueEnum,
     Signal,
     ValueDict,
     ValueList,
@@ -135,7 +134,6 @@ impl ValueType {
             ValueType::Value => "add_value",
             ValueType::ValueStatic => "add_static",
             ValueType::ValueImage => "add_image",
-            ValueType::ValueEnum => "add_enum",
             ValueType::Signal => "add_signal",
             ValueType::ValueDict => "add_dict",
             ValueType::ValueList => "add_list",
@@ -156,8 +154,6 @@ impl Value {
             ValueType::ValueStatic
         } else if definition.contains("<ValueImage>") {
             ValueType::ValueImage
-        } else if definition.contains("<ValueEnum<") {
-            ValueType::ValueEnum
         } else if definition.contains("<Signal<") {
             ValueType::Signal
         } else if definition.contains("<ValueDict<") {
@@ -217,20 +213,15 @@ impl State {
         }
 
         if root {
-            file.write_all(
-                format!("\n\nclass {}(sc._MainStatesBase):\n", self.name).as_bytes(),
-            )
-            .unwrap();
+            file.write_all(format!("\n\nclass {}(sc._MainStatesBase):\n", self.name).as_bytes())
+                .unwrap();
             file.write_all(b"    def __init__(self, update: Callable[[float | None], None]):\n")
                 .unwrap();
             file.write_all(b"        self._update = update\n").unwrap();
-            file.write_all(b"        c = sc._Counter()\n\n")
-                .unwrap();
+            file.write_all(b"        c = sc._Counter()\n\n").unwrap();
         } else if !written.contains(&self.name) {
-            file.write_all(
-                format!("\n\nclass {}(sc._StatesBase):\n", self.name).as_bytes(),
-            )
-            .unwrap();
+            file.write_all(format!("\n\nclass {}(sc._StatesBase):\n", self.name).as_bytes())
+                .unwrap();
             file.write_all(b"    def __init__(self, c: sc._Counter):\n")
                 .unwrap();
             written.push(self.name.clone());
@@ -244,17 +235,11 @@ impl State {
                     let text = match value.typ {
                         ValueType::Value => {
                             let val_type = parse_types(&value.annotation, custom).unwrap();
-                            format!(
-                                "        self.{} = sc.Value[{}](c)\n",
-                                name, val_type
-                            )
+                            format!("        self.{} = sc.Value[{}](c)\n", name, val_type)
                         }
                         ValueType::ValueStatic => {
                             let val_type = parse_types(&value.annotation, custom).unwrap();
-                            format!(
-                                "        self.{} = sc.ValueStatic[{}](c)\n",
-                                name, val_type
-                            )
+                            format!("        self.{} = sc.ValueStatic[{}](c)\n", name, val_type)
                         }
                         ValueType::ValueImage => {
                             format!("        self.{} = sc.ValueImage(c)\n", name)
@@ -264,10 +249,7 @@ impl State {
                                 format!("        self.{} = sc.SignalEmpty(c)\n", name)
                             } else {
                                 let val_type = parse_types(&value.annotation, custom).unwrap();
-                                format!(
-                                    "        self.{} = sc.Signal[{}](c)\n",
-                                    name, val_type
-                                )
+                                format!("        self.{} = sc.Signal[{}](c)\n", name, val_type)
                             }
                         }
                         ValueType::ValueDict => {
@@ -283,21 +265,17 @@ impl State {
                         }
                         ValueType::ValueList => {
                             let val_type = parse_types(&value.annotation, custom).unwrap();
-                            format!(
-                                "        self.{} = sc.ValueList[{}](c)\n",
-                                name, val_type
-                            )
+                            format!("        self.{} = sc.ValueList[{}](c)\n", name, val_type)
                         }
                         ValueType::ValueGraphs => {
                             format!("        self.{} = sc.ValueGraphs(c)\n", name)
-                        }
-                        ValueType::ValueEnum => {
-                            let enum_str = value.annotation.replace("::", ".");
-                            format!(
-                                "        self.{} = sc.Value[{}](c, {}, sc.enum_parser)\n",
-                                name, enum_str, enum_str
-                            )
-                        }
+                        } // ValueType::ValueEnum => {
+                          //     let enum_str = value.annotation.replace("::", ".");
+                          //     format!(
+                          //         "        self.{} = sc.Value[{}](c, {}, sc.enum_parser)\n",
+                          //         name, enum_str, enum_str
+                          //     )
+                          // }
                     };
 
                     file.write_all(text.as_bytes()).unwrap();
@@ -330,7 +308,6 @@ fn test_if_value(line: &str) -> bool {
         || line.contains("Arc<ValueStatic<")
         || line.contains("Arc<ValueImage>")
         || line.contains("Arc<ValueGraphs<")
-        || line.contains("Arc<ValueEnum<")
         || line.contains("Arc<Signal<")
         || line.contains("Arc<ValueDict<")
         || line.contains("Arc<ValueList<")
@@ -478,9 +455,25 @@ pub fn parse_states_for_server(
         for item in items {
             match item {
                 Item::Value(_, value) => {
-                    let add_str = value.typ.as_add_str();
+                    let add_str = value.typ.as_add_str().to_string();
+
+                    // let add_str = if value.annotation.contains("enums::") {
+                    //     format!("{}_en", add_str)
+                    // } else {
+                    //     add_str
+                    // };
+
                     let text = if value.annotation.is_empty() {
                         format!("    c.{}({});\n", add_str, value.default)
+                    } else if value.annotation.contains("enums::")
+                        && (add_str == "add_value" || add_str == "add_static")
+                    {
+                        format!(
+                            "    c.{}_en::<{}>({});\n",
+                            add_str, value.annotation, value.default
+                        )
+                    } else if value.annotation.contains("enums::") && add_str == "add_signal" {
+                        format!("    c.{}::<u64>({});\n", add_str, value.default)
                     } else {
                         format!(
                             "    c.{}::<{}>({});\n",

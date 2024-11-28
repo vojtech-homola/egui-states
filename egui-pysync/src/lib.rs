@@ -10,10 +10,10 @@ pub mod nohash;
 pub mod transport;
 pub mod values;
 
-pub use values::{ReadValue, WriteValue};
+pub use values::{ReadValue, ValueMessage, WriteValue};
 
 // traints for EnumValue -------------------------------------------------------
-pub use egui_pymacros::{EnumInt, EnumStr};
+pub use egui_pymacros::{EnumImpl, EnumStr};
 
 pub trait EnumStr: Send + Sync + Copy {
     fn as_str(&self) -> &'static str;
