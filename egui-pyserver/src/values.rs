@@ -108,7 +108,7 @@ where
     }
 
     fn set_py(&self, value: &Bound<PyAny>, set_signal: bool, update: bool) -> PyResult<()> {
-        let int_val: u64 = value.extract()?;
+        let int_val = value.getattr("value")?.extract::<u64>()?;
         let value =
             T::from_int(int_val).map_err(|_| PyValueError::new_err("Invalid enum value"))?;
         if self.connected.load(Ordering::Relaxed) {
@@ -195,120 +195,6 @@ where
     }
 }
 
-// // ValueEnum ---------------------------------------------------
-// pub struct ValueEnum<T> {
-//     id: u32,
-//     value: RwLock<(T, usize)>,
-//     channel: Sender<WriteMessage>,
-//     connected: Arc<AtomicBool>,
-//     signals: ChangedValues,
-// }
-
-// impl<T> ValueEnum<T> {
-//     pub(crate) fn new(
-//         id: u32,
-//         value: T,
-//         channel: Sender<WriteMessage>,
-//         connected: Arc<AtomicBool>,
-//         signals: ChangedValues,
-//     ) -> Arc<Self> {
-//         Arc::new(Self {
-//             id,
-//             value: RwLock::new((value, 0)),
-//             channel,
-//             connected,
-//             signals,
-//         })
-//     }
-// }
-
-// impl<T> PyValue for ValueEnum<T>
-// where
-//     T: EnumInt,
-// {
-//     fn get_py<'py>(&self, py: Python<'py>) -> Bound<'py, PyAny> {
-//         let res = self
-//             .value
-//             .read()
-//             .unwrap()
-//             .0
-//             .as_int()
-//             .into_pyobject(py)
-//             .unwrap();
-
-//         res.into_any()
-//     }
-
-//     fn set_py(&self, value: &Bound<PyAny>, set_signal: bool, update: bool) -> PyResult<()> {
-//         let int_val = value.extract::<u64>()?;
-//         let value =
-//             T::from_int(int_val).map_err(|_| PyValueError::new_err("Invalid enum value"))?;
-
-//         if self.connected.load(Ordering::Relaxed) {
-//             let message = WriteMessage::Value(self.id, update, ValueMessage::U64(int_val));
-//             let mut w = self.value.write().unwrap();
-//             w.0 = value.clone();
-//             w.1 += 1;
-//             self.channel.send(message).unwrap();
-//             if set_signal {
-//                 self.signals.set(self.id, int_val);
-//             }
-//         } else {
-//             let mut w = self.value.write().unwrap();
-//             w.0 = value.clone();
-//             if set_signal {
-//                 self.signals.set(self.id, int_val);
-//             }
-//         }
-
-//         Ok(())
-//     }
-// }
-
-// impl<T> ProccesValue for ValueEnum<T>
-// where
-//     T: EnumInt,
-// {
-//     fn read_value(&self, head: &[u8], data: Option<Vec<u8>>, signal: bool) -> Result<(), String> {
-//         let value_int = u64::read_message(head, data)?;
-//         let value = T::from_int(value_int).map_err(|_| "Invalid enum format".to_string())?;
-
-//         let mut w = self.value.write().unwrap();
-//         if w.1 == 0 {
-//             w.0 = value.clone();
-//         }
-
-//         if signal {
-//             self.signals.set(self.id, value_int);
-//         }
-//         Ok(())
-//     }
-// }
-
-// impl<T: Sync + Send> Acknowledge for ValueEnum<T> {
-//     fn acknowledge(&self) {
-//         let mut w = self.value.write().unwrap();
-//         if w.1 > 0 {
-//             w.1 -= 1;
-//         }
-//     }
-// }
-
-// impl<T: Sync + Send> SyncTrait for ValueEnum<T>
-// where
-//     T: EnumInt,
-// {
-//     fn sync(&self) {
-//         let mut w = self.value.write().unwrap();
-//         w.1 = 1;
-//         let val_int = w.0.as_int();
-//         drop(w);
-
-//         let message = WriteMessage::Value(self.id, false, ValueMessage::U64(val_int));
-//         self.channel.send(message).unwrap();
-//     }
-// }
-
 // ValueStatic ---------------------------------------------------
 pub struct ValueStatic<T, M> {
     id: u32,
@@ -373,7 +259,7 @@ where
     }
 
     fn set_py(&self, value: &Bound<PyAny>, update: bool) -> PyResult<()> {
-        let int_val: u64 = value.extract()?;
+        let int_val = value.getattr("value")?.extract::<u64>()?;
         let value: T =
             T::from_int(int_val).map_err(|_| PyValueError::new_err("Invalid enum value"))?;
         if self.connected.load(Ordering::Relaxed) {

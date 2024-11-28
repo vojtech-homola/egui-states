@@ -2,17 +2,11 @@
 from abc import ABC, abstractmethod
 from collections.abc import Buffer, Callable
 from typing import Any
-from enum import Enum
 
 import numpy as np
 
-from egui_pysync.signals import _SignalsManager, ArgParser
+from egui_pysync.signals import ArgParser, _SignalsManager
 from egui_pysync.typing import SteteServerCoreBase
-
-
-def enum_parser(value: Enum) -> int:
-    """Default enum parser for setting enums."""
-    return value.value
 
 
 class _Counter:
@@ -67,12 +61,9 @@ class ErrorSignal:
 class _StaticBase:
     _server: SteteServerCoreBase
 
-    def __init__(
-        self, counter: _Counter, arg_parser: ArgParser = False, set_parser: Callable[[Any], Any] | None = None
-    ) -> None:
+    def __init__(self, counter: _Counter, arg_parser: ArgParser = False) -> None:
         self._value_id = counter.get_id()
         self._arg_parser = arg_parser
-        self._set_parser = set_parser
 
     def _initialize(self, server: SteteServerCoreBase):
         self._server = server
@@ -98,11 +89,7 @@ class Value[T](_ValueBase):
             set_signal(bool, optional): Whether to set the signal. Defaults to True.
             update(bool, optional): Whether to update the UI. Defaults to False.
         """
-        if self._set_parser:
-            value = self._set_parser(value)
-            self._server.value_set(self._value_id, value, set_signal, update)
-        else:
-            self._server.value_set(self._value_id, value, set_signal, update)
+        self._server.value_set(self._value_id, value, set_signal, update)
 
     def get(self) -> T:
         """Get the value of the UI element.
@@ -147,11 +134,7 @@ class ValueStatic[T](_StaticBase):
             value(T): The value to set.
             update(bool, optional): Whether to update the UI. Defaults to False.
         """
-        if self._set_parser:
-            value = self._set_parser(value)
-            self._server.static_set(self._value_id, value, update)
-        else:
-            self._server.static_set(self._value_id, value, update)
+        self._server.static_set(self._value_id, value, update)
 
     def get(self) -> T:
         """Get the static value of the UI.
@@ -164,56 +147,6 @@ class ValueStatic[T](_StaticBase):
             return self._arg_parser(val)
         else:
             return val
-
-
-class ValueEnum[T](_ValueBase):
-    """Enum UI value of type T."""
-
-    def __init__(self, counter: _Counter, enum_type: type[T]):  # noqa: D107
-        super().__init__(counter)
-        self._enum_type = enum_type
-
-    def set(self, value: T, set_signal: bool = False, update: bool = False) -> None:
-        """Set the value of the UI element.
-
-        Args:
-            value(T): The value to set.
-            set_signal(bool, optional): Whether to set the signal. Defaults to True.
-            update(bool, optional): Whether to update the UI. Defaults to False.
-        """
-        self._server.value_set(self._value_id, value.value, set_signal, update)  # type: ignore
-
-    def get(self) -> T:
-        """Get the value of the UI element.
-
-        Returns:
-            T: The value of the UI element.
-        """
-        str_value: int = self._server.value_get(self._value_id)
-        return self._enum_type(str_value)  # type: ignore
-
-    def connect(self, callback: Callable[[T], Any]) -> None:
-        """Connect a callback to the value.
-
-        Args:
-            callback(Callable[[T], Any]): The callback to connect.
-        """
-        self._signals_manager.add_callback(self._value_id, callback)
-
-    def disconnect(self, callback: Callable[[T], Any]) -> None:
-        """Disconnect a callback from the value.
-
-        Args:
-            callback(Callable[[T], Any]): The callback to disconnect.
-        """
-        self._signals_manager.remove_callback(self._value_id, callback)
-
-    def disconnect_all(self) -> None:
-        """Disconnect all callbacks from the value."""
-        self._signals_manager.clear_callbacks(self._value_id)
-
-    def _arg_parser(self, arg: int):
-        return self._enum_type(arg)  # type: ignore
 
 
 class Signal[T](_ValueBase):

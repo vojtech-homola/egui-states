@@ -235,20 +235,39 @@ impl State {
                     let text = match value.typ {
                         ValueType::Value => {
                             let val_type = parse_types(&value.annotation, custom).unwrap();
-                            format!("        self.{} = sc.Value[{}](c)\n", name, val_type)
+                            if val_type.contains("enums.") {
+                                format!(
+                                    "        self.{} = sc.Value[{}](c, {})\n",
+                                    name, val_type, val_type,
+                                )
+                            } else {
+                                format!("        self.{} = sc.Value[{}](c)\n", name, val_type)
+                            }
                         }
                         ValueType::ValueStatic => {
                             let val_type = parse_types(&value.annotation, custom).unwrap();
-                            format!("        self.{} = sc.ValueStatic[{}](c)\n", name, val_type)
+                            if val_type.contains("enums.") {
+                                format!(
+                                    "        self.{} = sc.ValueStatic[{}](c, {})\n",
+                                    name, val_type, val_type,
+                                )
+                            } else {
+                                format!("        self.{} = sc.ValueStatic[{}](c)\n", name, val_type)
+                            }
                         }
                         ValueType::ValueImage => {
                             format!("        self.{} = sc.ValueImage(c)\n", name)
                         }
                         ValueType::Signal => {
+                            let val_type = parse_types(&value.annotation, custom).unwrap();
                             if value.annotation == "()" {
                                 format!("        self.{} = sc.SignalEmpty(c)\n", name)
+                            } else if val_type.contains("enums.") {
+                                format!(
+                                    "        self.{} = sc.Signal[{}](c, {})\n",
+                                    name, val_type, val_type
+                                )
                             } else {
-                                let val_type = parse_types(&value.annotation, custom).unwrap();
                                 format!("        self.{} = sc.Signal[{}](c)\n", name, val_type)
                             }
                         }
@@ -269,13 +288,7 @@ impl State {
                         }
                         ValueType::ValueGraphs => {
                             format!("        self.{} = sc.ValueGraphs(c)\n", name)
-                        } // ValueType::ValueEnum => {
-                          //     let enum_str = value.annotation.replace("::", ".");
-                          //     format!(
-                          //         "        self.{} = sc.Value[{}](c, {}, sc.enum_parser)\n",
-                          //         name, enum_str, enum_str
-                          //     )
-                          // }
+                        }
                     };
 
                     file.write_all(text.as_bytes()).unwrap();
@@ -455,13 +468,7 @@ pub fn parse_states_for_server(
         for item in items {
             match item {
                 Item::Value(_, value) => {
-                    let add_str = value.typ.as_add_str().to_string();
-
-                    // let add_str = if value.annotation.contains("enums::") {
-                    //     format!("{}_en", add_str)
-                    // } else {
-                    //     add_str
-                    // };
+                    let add_str = value.typ.as_add_str();
 
                     let text = if value.annotation.is_empty() {
                         format!("    c.{}({});\n", add_str, value.default)
@@ -535,6 +542,10 @@ fn parse_types(value: &str, custom: &Option<(String, String)>) -> Result<String,
         if value.contains(&origin) {
             return Ok(value.replace(&origin, &python));
         }
+    }
+
+    if value.contains("enums::") {
+        return Ok(value.replace("::", "."));
     }
 
     if value.starts_with("[") && value.ends_with("]") {
