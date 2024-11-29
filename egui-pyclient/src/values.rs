@@ -33,30 +33,6 @@ impl<'a, T: WriteValue + Clone + PartialEq> Diff<'a, T> {
     }
 }
 
-pub struct DiffEnum<'a, T> {
-    pub v: T,
-    original: T,
-    value: &'a Value<T>,
-}
-
-impl<'a, T: WriteValue + Clone + PartialEq> DiffEnum<'a, T> {
-    pub fn new(value: &'a Value<T>) -> Self {
-        let v = value.get();
-        Self {
-            v: v.clone(),
-            original: v,
-            value,
-        }
-    }
-
-    #[inline]
-    pub fn set(self, signal: bool) {
-        if self.v != self.original {
-            self.value.set(self.v, signal);
-        }
-    }
-}
-
 // Value --------------------------------------------
 pub struct Value<T> {
     id: u32,

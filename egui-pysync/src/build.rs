@@ -479,8 +479,15 @@ pub fn parse_states_for_server(
                             "    c.{}_en::<{}>({});\n",
                             add_str, value.annotation, value.default
                         )
-                    } else if value.annotation.contains("enums::") && add_str == "add_signal" {
-                        format!("    c.{}::<u64>({});\n", add_str, value.default)
+                    } else if add_str == "add_signal" {
+                        if value.annotation.contains("enums::") {
+                            format!("    c.{}_en::<{}>();\n", add_str, value.annotation)
+                        } else if value.annotation == "()" {
+                            // use u8 which is not actually used, only for python -> rust conversion
+                            format!("    c.{}::<u8>();\n", add_str)
+                        } else {
+                            format!("    c.{}::<{}>();\n", add_str, value.annotation)
+                        }
                     } else {
                         format!(
                             "    c.{}::<{}>({});\n",

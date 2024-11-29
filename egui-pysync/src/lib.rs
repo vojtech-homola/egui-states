@@ -9,6 +9,7 @@ pub mod list;
 pub mod nohash;
 pub mod transport;
 pub mod values;
+pub mod values_impl;
 
 pub use values::{ReadValue, ValueMessage, WriteValue};
 

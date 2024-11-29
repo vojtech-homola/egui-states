@@ -141,6 +141,16 @@ impl StateServerCore {
         (value_id, arg)
     }
 
+    fn signal_set(&self, value_id: u32, value: &Bound<PyAny>) -> PyResult<()> {
+        match self.values.signals.get(&value_id) {
+            Some(signal) => signal.set_py(value),
+            None => Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "Signal with id {} is not available.",
+                value_id
+            ))),
+        }
+    }
+
     // values -----------------------------------------------------------------
     fn value_set(
         &self,

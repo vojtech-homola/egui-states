@@ -152,6 +152,16 @@ class ValueStatic[T](_StaticBase):
 class Signal[T](_ValueBase):
     """Signal from UI."""
 
+    def set(self, value: T) -> None:
+        """Set the signal value.
+
+        Signal is emitted to all connected callbacks.
+
+        Args:
+            value(T): The value to set.
+        """
+        self._server.signal_set(self._value_id, value)
+
     def connect(self, callback: Callable[[T], Any]) -> None:
         """Connect a callback to the signal.
 
@@ -178,6 +188,13 @@ class SignalEmpty(_ValueBase):
 
     def __init__(self, counter: _Counter) -> None:
         super().__init__(counter, arg_parser=True)
+
+    def set(self) -> None:
+        """Set the signal value.
+
+        Signal is emitted to all connected callbacks.
+        """
+        self._server.signal_set(self._value_id, 0)
 
     def connect(self, callback: Callable[[], Any]) -> None:
         """Connect a callback to the signal.

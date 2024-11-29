@@ -7,7 +7,7 @@ pub mod list;
 pub mod states_creator;
 pub mod values;
 
-pub use crate::values::{Diff, DiffEnum};
+pub use crate::values::Diff;
 pub use client_state::UIState;
 pub use dict::ValueDict;
 pub use graphs::ValueGraphs;

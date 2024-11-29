@@ -29,6 +29,10 @@ pub(crate) trait PyValueStatic: Send + Sync {
     fn set_py(&self, value: &Bound<PyAny>, update: bool) -> PyResult<()>;
 }
 
+pub(crate) trait PySignal: Send + Sync {
+    fn set_py(&self, value: &Bound<PyAny>) -> PyResult<()>;
+}
+
 pub(crate) struct EnumType;
 pub(crate) struct NonEnumType;
 
@@ -287,29 +291,65 @@ where
 }
 
 // Signal ---------------------------------------------------
-pub struct Signal<T> {
+pub struct Signal<T, M> {
     id: u32,
     signals: ChangedValues,
     phantom: PhantomData<T>,
+    marker: PhantomData<M>,
 }
 
-impl<T: WriteValue + Clone> Signal<T> {
+impl<T, M> Signal<T, M> {
     pub(crate) fn new(id: u32, signals: ChangedValues) -> Arc<Self> {
         Arc::new(Self {
             id,
             signals,
             phantom: PhantomData,
+            marker: PhantomData,
         })
     }
 }
 
-impl<T> ProccesValue for Signal<T>
+impl<T> ProccesValue for Signal<T, NonEnumType>
 where
     T: ReadValue + WriteValue + ToPython,
 {
-    fn read_value(&self, head: &[u8], data: Option<Vec<u8>>, _signal: bool) -> Result<(), String> {
+    fn read_value(&self, head: &[u8], data: Option<Vec<u8>>, _: bool) -> Result<(), String> {
         let value = T::read_message(head, data)?;
         self.signals.set(self.id, value);
+        Ok(())
+    }
+}
+
+impl<T> ProccesValue for Signal<T, EnumType>
+where
+    T: EnumInt,
+{
+    fn read_value(&self, head: &[u8], data: Option<Vec<u8>>, _: bool) -> Result<(), String> {
+        let int_val = u64::read_message(head, data)?;
+        self.signals.set(self.id, int_val);
+        Ok(())
+    }
+}
+
+impl<T> PySignal for Signal<T, NonEnumType>
+where
+    T: for<'py> FromPyObject<'py> + ToPython + Send + Sync + 'static,
+{
+    fn set_py(&self, value: &Bound<PyAny>) -> PyResult<()> {
+        let value: T = value.extract()?;
+        self.signals.set(self.id, value);
+        Ok(())
+    }
+}
+
+impl<T> PySignal for Signal<T, EnumType>
+where
+    T: EnumInt,
+{
+    fn set_py(&self, value: &Bound<PyAny>) -> PyResult<()> {
+        let int_val = value.getattr("value")?.extract::<u64>()?;
+        T::from_int(int_val).map_err(|_| PyValueError::new_err("Invalid enum value"))?;
+        self.signals.set(self.id, int_val);
         Ok(())
     }
 }
