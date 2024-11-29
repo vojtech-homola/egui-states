@@ -25,7 +25,7 @@ pub(crate) fn enum_str_derive_impl(input: TokenStream) -> TokenStream {
     panic!("EnumStr can only be derived for enums");
 }
 
-pub(crate) fn enum_int_derive_impl(input: TokenStream) -> TokenStream {
+pub(crate) fn enum_impl_derive_impl(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let name = input.ident;
 
@@ -77,6 +77,23 @@ pub(crate) fn enum_int_derive_impl(input: TokenStream) -> TokenStream {
                         #( #vals => Ok(Self::#variants), )*
                         _ => Err(()),
                     }
+                }
+            }
+
+            impl ReadValue for #name {
+                fn read_message(head: &[u8], data: Option<Vec<u8>>) -> Result<Self, String> {
+                    let value = u64::read_message(head, data)?;
+                    #name::from_int(value).map_err(|_| format!("Invalid enum format for enum"))
+                }
+            }
+
+            impl WriteValue for #name {
+                fn write_message(&self, head: &mut [u8]) -> Option<Vec<u8>> {
+                    unreachable!("Enum should not be written directly")
+                }
+
+                fn into_message(self) -> ValueMessage {
+                    ValueMessage::U64(self.as_int())
                 }
             }
         );

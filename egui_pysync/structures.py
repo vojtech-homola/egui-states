@@ -1,10 +1,11 @@
+# ruff: noqa: D107
 from abc import ABC, abstractmethod
 from collections.abc import Buffer, Callable
 from typing import Any
 
 import numpy as np
 
-from egui_pysync.signals import _SignalsManager
+from egui_pysync.signals import ArgParser, _SignalsManager
 from egui_pysync.typing import SteteServerCoreBase
 
 
@@ -60,8 +61,9 @@ class ErrorSignal:
 class _StaticBase:
     _server: SteteServerCoreBase
 
-    def __init__(self, counter: _Counter):
+    def __init__(self, counter: _Counter, arg_parser: ArgParser = False) -> None:
         self._value_id = counter.get_id()
+        self._arg_parser = arg_parser
 
     def _initialize(self, server: SteteServerCoreBase):
         self._server = server
@@ -73,11 +75,7 @@ class _ValueBase(_StaticBase):
     def _initialize(self, server: SteteServerCoreBase, signals_manager: _SignalsManager):
         self._server = server
         self._signals_manager = signals_manager
-        if hasattr(self, "_arg_parser"):
-            arg_parser = getattr(self, "_arg_parser")
-            self._signals_manager.register_value(self._value_id, arg_parser=arg_parser)
-        else:
-            signals_manager.register_value(self._value_id)
+        signals_manager.register_value(self._value_id, arg_parser=self._arg_parser)
 
 
 class Value[T](_ValueBase):
@@ -99,7 +97,11 @@ class Value[T](_ValueBase):
         Returns:
             T: The value of the UI element.
         """
-        return self._server.value_get(self._value_id)
+        val = self._server.value_get(self._value_id)
+        if callable(self._arg_parser):
+            return self._arg_parser(val)
+        else:
+            return val
 
     def connect(self, callback: Callable[[T], Any]) -> None:
         """Connect a callback to the value.
@@ -140,61 +142,25 @@ class ValueStatic[T](_StaticBase):
         Returns:
             T: The static value.
         """
-        return self._server.static_get(self._value_id)
-
-
-class ValueEnum[T](_ValueBase):
-    """Enum UI value of type T."""
-
-    def __init__(self, counter: _Counter, enum_type: type[T]):  # noqa: D107
-        super().__init__(counter)
-        self._enum_type = enum_type
-
-    def set(self, value: T, set_signal: bool = False, update: bool = False) -> None:
-        """Set the value of the UI element.
-
-        Args:
-            value(T): The value to set.
-            set_signal(bool, optional): Whether to set the signal. Defaults to True.
-            update(bool, optional): Whether to update the UI. Defaults to False.
-        """
-        self._server.value_set(self._value_id, value.value, set_signal, update)  # type: ignore
-
-    def get(self) -> T:
-        """Get the value of the UI element.
-
-        Returns:
-            T: The value of the UI element.
-        """
-        str_value: int = self._server.value_get(self._value_id)
-        return self._enum_type(str_value)  # type: ignore
-
-    def connect(self, callback: Callable[[T], Any]) -> None:
-        """Connect a callback to the value.
-
-        Args:
-            callback(Callable[[T], Any]): The callback to connect.
-        """
-        self._signals_manager.add_callback(self._value_id, callback)
-
-    def disconnect(self, callback: Callable[[T], Any]) -> None:
-        """Disconnect a callback from the value.
-
-        Args:
-            callback(Callable[[T], Any]): The callback to disconnect.
-        """
-        self._signals_manager.remove_callback(self._value_id, callback)
-
-    def disconnect_all(self) -> None:
-        """Disconnect all callbacks from the value."""
-        self._signals_manager.clear_callbacks(self._value_id)
-
-    def _arg_parser(self, arg: int):
-        return (self._enum_type(arg),)  # type: ignore
+        val = self._server.value_get(self._value_id)
+        if callable(self._arg_parser):
+            return self._arg_parser(val)
+        else:
+            return val
 
 
 class Signal[T](_ValueBase):
     """Signal from UI."""
+
+    def set(self, value: T) -> None:
+        """Set the signal value.
+
+        Signal is emitted to all connected callbacks.
+
+        Args:
+            value(T): The value to set.
+        """
+        self._server.signal_set(self._value_id, value)
 
     def connect(self, callback: Callable[[T], Any]) -> None:
         """Connect a callback to the signal.
@@ -220,6 +186,16 @@ class Signal[T](_ValueBase):
 class SignalEmpty(_ValueBase):
     """Empty Signal from UI."""
 
+    def __init__(self, counter: _Counter) -> None:
+        super().__init__(counter, arg_parser=True)
+
+    def set(self) -> None:
+        """Set the signal value.
+
+        Signal is emitted to all connected callbacks.
+        """
+        self._server.signal_set(self._value_id, 0)
+
     def connect(self, callback: Callable[[], Any]) -> None:
         """Connect a callback to the signal.
 
@@ -239,10 +215,6 @@ class SignalEmpty(_ValueBase):
     def disconnect_all(self) -> None:
         """Disconnect all callbacks from the signal."""
         self._signals_manager.clear_callbacks(self._value_id)
-
-    @staticmethod
-    def _arg_parser(_: None):
-        return ()
 
 
 class ValueImage(_StaticBase):

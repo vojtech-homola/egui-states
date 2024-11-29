@@ -6,13 +6,13 @@ use egui_pysync::collections::CollectionItem;
 use egui_pysync::graphs::GraphElement;
 use egui_pysync::transport::WriteMessage;
 use egui_pysync::values::{ReadValue, WriteValue};
-use egui_pysync::{EnumInt, NoHashMap};
+use egui_pysync::NoHashMap;
 
 use crate::dict::{DictUpdate, ValueDict};
 use crate::graphs::{GraphUpdate, ValueGraphs};
 use crate::image::{ImageUpdate, ValueImage};
 use crate::list::{ListUpdate, ValueList};
-use crate::values::{Signal, Value, ValueEnum, ValueStatic, ValueUpdate};
+use crate::values::{Signal, Value, ValueStatic, ValueUpdate};
 
 #[derive(Clone)]
 pub(crate) struct ValuesList {
@@ -108,14 +108,6 @@ impl ValuesCreator {
         let value = ValueImage::new(id);
 
         self.val.images.insert(id, value.clone());
-        value
-    }
-
-    pub fn add_enum<T: EnumInt + 'static>(&mut self, value: T) -> Arc<ValueEnum<T>> {
-        let id = self.get_id();
-        let value = ValueEnum::new(id, value, self.channel.clone());
-
-        self.val.values.insert(id, value.clone());
         value
     }
 

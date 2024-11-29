@@ -16,8 +16,7 @@ use crate::ToPython;
 use crate::{Acknowledge, SyncTrait};
 
 pub(crate) trait ProccesValue: Send + Sync {
-    fn process_value(&self, head: &[u8], data: Option<Vec<u8>>, signal: bool)
-        -> Result<(), String>;
+    fn read_value(&self, head: &[u8], data: Option<Vec<u8>>, signal: bool) -> Result<(), String>;
 }
 
 pub(crate) trait PyValue: Send + Sync {
@@ -30,16 +29,24 @@ pub(crate) trait PyValueStatic: Send + Sync {
     fn set_py(&self, value: &Bound<PyAny>, update: bool) -> PyResult<()>;
 }
 
+pub(crate) trait PySignal: Send + Sync {
+    fn set_py(&self, value: &Bound<PyAny>) -> PyResult<()>;
+}
+
+pub(crate) struct EnumType;
+pub(crate) struct NonEnumType;
+
 // Value ---------------------------------------------------
-pub struct Value<T> {
+pub struct Value<T, M> {
     id: u32,
     value: RwLock<(T, usize)>,
     channel: Sender<WriteMessage>,
     connected: Arc<AtomicBool>,
     signals: ChangedValues,
+    marker: PhantomData<M>,
 }
 
-impl<T> Value<T> {
+impl<T, M> Value<T, M> {
     pub(crate) fn new(
         id: u32,
         value: T,
@@ -53,11 +60,12 @@ impl<T> Value<T> {
             channel,
             connected,
             signals,
+            marker: PhantomData,
         })
     }
 }
 
-impl<T> PyValue for Value<T>
+impl<T> PyValue for Value<T, NonEnumType>
 where
     T: WriteValue + Clone + ToPython + for<'py> FromPyObject<'py>,
 {
@@ -88,16 +96,51 @@ where
     }
 }
 
-impl<T> ProccesValue for Value<T>
+impl<T> PyValue for Value<T, EnumType>
+where
+    T: EnumInt,
+{
+    fn get_py<'py>(&self, py: Python<'py>) -> Bound<'py, PyAny> {
+        self.value
+            .read()
+            .unwrap()
+            .0
+            .as_int()
+            .into_pyobject(py)
+            .unwrap()
+            .into_any()
+    }
+
+    fn set_py(&self, value: &Bound<PyAny>, set_signal: bool, update: bool) -> PyResult<()> {
+        let int_val = value.getattr("value")?.extract::<u64>()?;
+        let value =
+            T::from_int(int_val).map_err(|_| PyValueError::new_err("Invalid enum value"))?;
+        if self.connected.load(Ordering::Relaxed) {
+            let message = WriteMessage::Value(self.id, update, ValueMessage::U64(int_val));
+            let mut w = self.value.write().unwrap();
+            w.0 = value.clone();
+            w.1 += 1;
+            self.channel.send(message).unwrap();
+            if set_signal {
+                self.signals.set(self.id, int_val);
+            }
+        } else {
+            let mut w = self.value.write().unwrap();
+            w.0 = value.clone();
+            if set_signal {
+                self.signals.set(self.id, int_val);
+            }
+        }
+
+        Ok(())
+    }
+}
+
+impl<T> ProccesValue for Value<T, NonEnumType>
 where
     T: ReadValue + WriteValue + ToPython,
 {
-    fn process_value(
-        &self,
-        head: &[u8],
-        data: Option<Vec<u8>>,
-        siganl: bool,
-    ) -> Result<(), String> {
+    fn read_value(&self, head: &[u8], data: Option<Vec<u8>>, signal: bool) -> Result<(), String> {
         let value = T::read_message(head, data)?;
 
         let mut w = self.value.write().unwrap();
@@ -105,14 +148,34 @@ where
             w.0 = value.clone();
         }
 
-        if siganl {
+        if signal {
             self.signals.set(self.id, value);
         }
         Ok(())
     }
 }
 
-impl<T: Sync + Send> Acknowledge for Value<T> {
+impl<T> ProccesValue for Value<T, EnumType>
+where
+    T: EnumInt,
+{
+    fn read_value(&self, head: &[u8], data: Option<Vec<u8>>, signal: bool) -> Result<(), String> {
+        let int_val = u64::read_message(head, data)?;
+        let value = T::from_int(int_val).map_err(|_| "Invalid enum format".to_string())?;
+
+        let mut w = self.value.write().unwrap();
+        if w.1 == 0 {
+            w.0 = value.clone();
+        }
+
+        if signal {
+            self.signals.set(self.id, int_val);
+        }
+        Ok(())
+    }
+}
+
+impl<T: Sync + Send, M: Send + Sync> Acknowledge for Value<T, M> {
     fn acknowledge(&self) {
         let mut w = self.value.write().unwrap();
         if w.1 > 0 {
@@ -121,7 +184,7 @@ impl<T: Sync + Send> Acknowledge for Value<T> {
     }
 }
 
-impl<T: Sync + Send> SyncTrait for Value<T>
+impl<T: Sync + Send, M: Send + Sync> SyncTrait for Value<T, M>
 where
     T: WriteValue + Clone,
 {
@@ -137,14 +200,15 @@ where
 }
 
 // ValueStatic ---------------------------------------------------
-pub struct ValueStatic<T> {
+pub struct ValueStatic<T, M> {
     id: u32,
     value: RwLock<T>,
     channel: Sender<WriteMessage>,
     connected: Arc<AtomicBool>,
+    marker: PhantomData<M>,
 }
 
-impl<T> ValueStatic<T> {
+impl<T, M> ValueStatic<T, M> {
     pub(crate) fn new(
         id: u32,
         value: T,
@@ -156,11 +220,12 @@ impl<T> ValueStatic<T> {
             value: RwLock::new(value),
             channel,
             connected,
+            marker: PhantomData,
         })
     }
 }
 
-impl<T> PyValueStatic for ValueStatic<T>
+impl<T> PyValueStatic for ValueStatic<T, NonEnumType>
 where
     T: WriteValue + Clone + for<'py> FromPyObject<'py> + ToPython,
 {
@@ -183,7 +248,38 @@ where
     }
 }
 
-impl<T: Sync + Send> SyncTrait for ValueStatic<T>
+impl<T> PyValueStatic for ValueStatic<T, EnumType>
+where
+    T: EnumInt,
+{
+    fn get_py<'a, 'py>(&'a self, py: Python<'py>) -> Bound<'py, PyAny> {
+        self.value
+            .read()
+            .unwrap()
+            .as_int()
+            .into_pyobject(py)
+            .unwrap()
+            .into_any()
+    }
+
+    fn set_py(&self, value: &Bound<PyAny>, update: bool) -> PyResult<()> {
+        let int_val = value.getattr("value")?.extract::<u64>()?;
+        let value: T =
+            T::from_int(int_val).map_err(|_| PyValueError::new_err("Invalid enum value"))?;
+        if self.connected.load(Ordering::Relaxed) {
+            let message = WriteMessage::Static(self.id, update, ValueMessage::U64(int_val));
+            let mut v = self.value.write().unwrap();
+            *v = value;
+            self.channel.send(message).unwrap();
+        } else {
+            *self.value.write().unwrap() = value;
+        }
+
+        Ok(())
+    }
+}
+
+impl<T: Sync + Send, M: Send + Sync> SyncTrait for ValueStatic<T, M>
 where
     T: WriteValue + Clone,
 {
@@ -194,154 +290,66 @@ where
     }
 }
 
-// ValueEnum ---------------------------------------------------
-pub struct ValueEnum<T> {
-    id: u32,
-    value: RwLock<(T, usize)>,
-    channel: Sender<WriteMessage>,
-    connected: Arc<AtomicBool>,
-    signals: ChangedValues,
-}
-
-impl<T> ValueEnum<T> {
-    pub(crate) fn new(
-        id: u32,
-        value: T,
-        channel: Sender<WriteMessage>,
-        connected: Arc<AtomicBool>,
-        signals: ChangedValues,
-    ) -> Arc<Self> {
-        Arc::new(Self {
-            id,
-            value: RwLock::new((value, 0)),
-            channel,
-            connected,
-            signals,
-        })
-    }
-}
-
-impl<T> PyValue for ValueEnum<T>
-where
-    T: EnumInt,
-{
-    fn get_py<'py>(&self, py: Python<'py>) -> Bound<'py, PyAny> {
-        let res = self
-            .value
-            .read()
-            .unwrap()
-            .0
-            .as_int()
-            .into_pyobject(py)
-            .unwrap();
-
-        res.into_any()
-    }
-
-    fn set_py(&self, value: &Bound<PyAny>, set_signal: bool, update: bool) -> PyResult<()> {
-        let int_val = value.extract::<u64>()?;
-        let value =
-            T::from_int(int_val).map_err(|_| PyValueError::new_err("Invalid enum value"))?;
-
-        if self.connected.load(Ordering::Relaxed) {
-            let message = WriteMessage::Value(self.id, update, ValueMessage::U64(int_val));
-            let mut w = self.value.write().unwrap();
-            w.0 = value.clone();
-            w.1 += 1;
-            self.channel.send(message).unwrap();
-            if set_signal {
-                self.signals.set(self.id, int_val);
-            }
-        } else {
-            let mut w = self.value.write().unwrap();
-            w.0 = value.clone();
-            if set_signal {
-                self.signals.set(self.id, int_val);
-            }
-        }
-
-        Ok(())
-    }
-}
-
-impl<T> ProccesValue for ValueEnum<T>
-where
-    T: EnumInt,
-{
-    fn process_value(
-        &self,
-        head: &[u8],
-        data: Option<Vec<u8>>,
-        siganl: bool,
-    ) -> Result<(), String> {
-        let value_int = u64::read_message(head, data)?;
-        let value = T::from_int(value_int).map_err(|_| "Invalid enum format".to_string())?;
-
-        let mut w = self.value.write().unwrap();
-        if w.1 == 0 {
-            w.0 = value.clone();
-        }
-
-        if siganl {
-            self.signals.set(self.id, value_int);
-        }
-        Ok(())
-    }
-}
-
-impl<T: Sync + Send> Acknowledge for ValueEnum<T> {
-    fn acknowledge(&self) {
-        let mut w = self.value.write().unwrap();
-        if w.1 > 0 {
-            w.1 -= 1;
-        }
-    }
-}
-
-impl<T: Sync + Send> SyncTrait for ValueEnum<T>
-where
-    T: EnumInt,
-{
-    fn sync(&self) {
-        let mut w = self.value.write().unwrap();
-        w.1 = 1;
-        let val_int = w.0.as_int();
-        drop(w);
-
-        let message = WriteMessage::Value(self.id, false, ValueMessage::U64(val_int));
-        self.channel.send(message).unwrap();
-    }
-}
-
 // Signal ---------------------------------------------------
-pub struct Signal<T> {
+pub struct Signal<T, M> {
     id: u32,
     signals: ChangedValues,
     phantom: PhantomData<T>,
+    marker: PhantomData<M>,
 }
 
-impl<T: WriteValue + Clone> Signal<T> {
+impl<T, M> Signal<T, M> {
     pub(crate) fn new(id: u32, signals: ChangedValues) -> Arc<Self> {
         Arc::new(Self {
             id,
             signals,
             phantom: PhantomData,
+            marker: PhantomData,
         })
     }
 }
 
-impl<T> ProccesValue for Signal<T>
+impl<T> ProccesValue for Signal<T, NonEnumType>
 where
     T: ReadValue + WriteValue + ToPython,
 {
-    fn process_value(
-        &self,
-        head: &[u8],
-        data: Option<Vec<u8>>,
-        _signal: bool,
-    ) -> Result<(), String> {
+    fn read_value(&self, head: &[u8], data: Option<Vec<u8>>, _: bool) -> Result<(), String> {
         let value = T::read_message(head, data)?;
         self.signals.set(self.id, value);
+        Ok(())
+    }
+}
+
+impl<T> ProccesValue for Signal<T, EnumType>
+where
+    T: EnumInt,
+{
+    fn read_value(&self, head: &[u8], data: Option<Vec<u8>>, _: bool) -> Result<(), String> {
+        let int_val = u64::read_message(head, data)?;
+        self.signals.set(self.id, int_val);
+        Ok(())
+    }
+}
+
+impl<T> PySignal for Signal<T, NonEnumType>
+where
+    T: for<'py> FromPyObject<'py> + ToPython + Send + Sync + 'static,
+{
+    fn set_py(&self, value: &Bound<PyAny>) -> PyResult<()> {
+        let value: T = value.extract()?;
+        self.signals.set(self.id, value);
+        Ok(())
+    }
+}
+
+impl<T> PySignal for Signal<T, EnumType>
+where
+    T: EnumInt,
+{
+    fn set_py(&self, value: &Bound<PyAny>) -> PyResult<()> {
+        let int_val = value.getattr("value")?.extract::<u64>()?;
+        T::from_int(int_val).map_err(|_| PyValueError::new_err("Invalid enum value"))?;
+        self.signals.set(self.id, int_val);
         Ok(())
     }
 }

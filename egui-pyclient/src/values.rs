@@ -3,8 +3,7 @@ use std::sync::mpsc::Sender;
 use std::sync::{Arc, RwLock};
 
 use egui_pysync::transport::WriteMessage;
-use egui_pysync::values::{ReadValue, ValueMessage, WriteValue};
-use egui_pysync::EnumInt;
+use egui_pysync::values::{ReadValue, WriteValue};
 
 pub(crate) trait ValueUpdate: Send + Sync {
     fn update_value(&self, head: &[u8], data: Option<Vec<u8>>) -> Result<(), String>;
@@ -18,30 +17,6 @@ pub struct Diff<'a, T> {
 
 impl<'a, T: WriteValue + Clone + PartialEq> Diff<'a, T> {
     pub fn new(value: &'a Value<T>) -> Self {
-        let v = value.get();
-        Self {
-            v: v.clone(),
-            original: v,
-            value,
-        }
-    }
-
-    #[inline]
-    pub fn set(self, signal: bool) {
-        if self.v != self.original {
-            self.value.set(self.v, signal);
-        }
-    }
-}
-
-pub struct DiffEnum<'a, T> {
-    pub v: T,
-    original: T,
-    value: &'a ValueEnum<T>,
-}
-
-impl<'a, T: EnumInt + Clone + PartialEq> DiffEnum<'a, T> {
-    pub fn new(value: &'a ValueEnum<T>) -> Self {
         let v = value.get();
         Self {
             v: v.clone(),
@@ -126,48 +101,6 @@ impl<T: ReadValue> ValueUpdate for ValueStatic<T> {
             .map_err(|e| format!("Parse error: {} for value id: {}", e, self.id))?;
 
         *self.value.write().unwrap() = value;
-        Ok(())
-    }
-}
-
-// ValueEnum --------------------------------------------
-pub struct ValueEnum<T> {
-    id: u32,
-    value: RwLock<T>,
-    channel: Sender<WriteMessage>,
-}
-
-impl<T: EnumInt> ValueEnum<T> {
-    pub(crate) fn new(id: u32, value: T, channel: Sender<WriteMessage>) -> Arc<Self> {
-        Arc::new(Self {
-            id,
-            value: RwLock::new(value),
-            channel,
-        })
-    }
-
-    pub fn get(&self) -> T {
-        self.value.read().unwrap().clone()
-    }
-
-    pub fn set(&self, value: T, signal: bool) {
-        let val = value.as_int();
-        let message = WriteMessage::Value(self.id, signal, ValueMessage::U64(val));
-        let mut w = self.value.write().unwrap();
-        *w = value;
-        self.channel.send(message).unwrap();
-    }
-}
-
-impl<T: EnumInt> ValueUpdate for ValueEnum<T> {
-    fn update_value(&self, head: &[u8], data: Option<Vec<u8>>) -> Result<(), String> {
-        let int_val = u64::read_message(&head, data)?;
-        let value = T::from_int(int_val)
-            .map_err(|_| format!("Invalid enum format for enum id: {}", self.id))?;
-
-        let mut w = self.value.write().unwrap();
-        *w = value;
-        self.channel.send(WriteMessage::ack(self.id)).unwrap();
         Ok(())
     }
 }

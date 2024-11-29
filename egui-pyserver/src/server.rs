@@ -101,12 +101,12 @@ impl StatesTransfer {
                     let res = match message {
                         ReadMessage::Value(id, siganl, head, data) => match values.updated.get(&id)
                         {
-                            Some(val) => val.process_value(head, data, siganl),
+                            Some(val) => val.read_value(head, data, siganl),
                             None => Err(format!("Value with id {} not found", id)),
                         },
 
                         ReadMessage::Signal(id, head, data) => match values.updated.get(&id) {
-                            Some(val) => val.process_value(head, data, true),
+                            Some(val) => val.read_value(head, data, true),
                             None => Err(format!("Value with id {} not found", id)),
                         },
 
