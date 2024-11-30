@@ -142,7 +142,7 @@ class ValueStatic[T](_StaticBase):
         Returns:
             T: The static value.
         """
-        val = self._server.value_get(self._value_id)
+        val = self._server.static_get(self._value_id)
         if callable(self._arg_parser):
             return self._arg_parser(val)
         else:
