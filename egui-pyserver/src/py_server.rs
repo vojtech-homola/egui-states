@@ -232,6 +232,16 @@ impl StateServerCore {
         }
     }
 
+    fn image_size(&self, value_id: u32) -> PyResult<[usize; 2]> {
+        match self.values.images.get(&value_id) {
+            Some(image) => Ok(image.get_size_py()),
+            None => Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "Image with id {} is not available.",
+                value_id
+            ))),
+        }
+    }
+
     // dicts ------------------------------------------------------------------
     fn dict_get<'py>(&self, py: Python<'py>, value_id: u32) -> PyResult<Bound<'py, PyDict>> {
         match self.values.dicts.get(&value_id) {

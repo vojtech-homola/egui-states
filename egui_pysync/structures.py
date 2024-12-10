@@ -247,6 +247,14 @@ class ValueImage(_StaticBase):
 
         return np.frombuffer(data, dtype=np.uint8).reshape(shape)
 
+    def size(self) -> tuple[int, int]:
+        """Get the size of the image.
+
+        Returns:
+            tuple[int, int]: The size of the image (height, width).
+        """
+        return self._server.image_size(self._value_id)
+
 
 class ValueDict[K, V](_StaticBase):
     """Dict UI element."""

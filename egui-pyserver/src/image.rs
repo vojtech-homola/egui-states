@@ -41,6 +41,10 @@ impl ValueImage {
         })
     }
 
+    pub(crate) fn get_size_py(&self) -> [usize; 2] {
+        self.image.read().unwrap().size
+    }
+
     pub(crate) fn get_image_py<'py>(
         &self,
         py: Python<'py>,
