@@ -7,13 +7,83 @@ use std::sync::{Arc, RwLock};
 use pyo3::exceptions::PyKeyError;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
+use serde::{Deserialize, Serialize};
 
-use egui_pysync::collections::CollectionItem;
-use egui_pysync::dict::DictMessage;
-use egui_pysync::transport::WriteMessage;
+use crate::python_convert::ToPython;
+use crate::transport::{deserealize, serialize, MessageData, WriteMessage};
+use crate::SyncTrait;
 
-use crate::{SyncTrait, ToPython};
+pub(crate) trait DictUpdate: Sync + Send {
+    fn update_dict(&self, data: MessageData) -> Result<(), String>;
+}
 
+#[derive(Serialize, Deserialize)]
+pub enum DictMessage<K, V>
+where
+    K: Eq + Hash,
+{
+    All(HashMap<K, V>),
+    Set(K, V),
+    Remove(K),
+}
+
+pub struct ValueDict<K, V> {
+    _id: u32,
+    dict: RwLock<HashMap<K, V>>,
+}
+
+impl<K, V> ValueDict<K, V>
+where
+    K: Clone + Hash + Eq,
+    V: Clone,
+{
+    pub(crate) fn new(id: u32) -> Arc<Self> {
+        Arc::new(Self {
+            _id: id,
+            dict: RwLock::new(HashMap::new()),
+        })
+    }
+
+    #[inline]
+    pub fn get(&self) -> HashMap<K, V> {
+        self.dict.read().unwrap().clone()
+    }
+
+    #[inline]
+    pub fn get_item(&self, key: &K) -> Option<V> {
+        self.dict.read().unwrap().get(key).cloned()
+    }
+
+    pub fn process<R>(&self, op: impl Fn(&HashMap<K, V>) -> R) -> R {
+        let d = self.dict.read().unwrap();
+        op(&*d)
+    }
+}
+
+impl<K, V> DictUpdate for ValueDict<K, V>
+where
+    K: Eq + Hash + Send + Sync,
+    V: Send + Sync,
+{
+    fn update_dict(&self, data: MessageData) -> Result<(), String> {
+        let message = deserealize(data).map_err(|e| e.to_string())?;
+        match message {
+            DictMessage::All(dict) => {
+                *self.dict.write().unwrap() = dict;
+            }
+            DictMessage::Set(key, value) => {
+                self.dict.write().unwrap().insert(key, value);
+            }
+            DictMessage::Remove(key) => {
+                self.dict.write().unwrap().remove(&key);
+            }
+        }
+        Ok(())
+    }
+}
+
+// SERVER ---------------------------------------------------
+// ----------------------------------------------------------
 pub(crate) trait PyDictTrait: Send + Sync {
     fn get_py<'py>(&self, py: Python<'py>) -> Bound<'py, PyDict>;
     fn get_item_py<'py>(&self, key: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>>;
@@ -23,14 +93,14 @@ pub(crate) trait PyDictTrait: Send + Sync {
     fn len_py(&self) -> usize;
 }
 
-pub struct ValueDict<K, V> {
+pub struct PyValueDict<K, V> {
     id: u32,
     dict: RwLock<HashMap<K, V>>,
     channel: Sender<WriteMessage>,
     connected: Arc<AtomicBool>,
 }
 
-impl<K, V> ValueDict<K, V> {
+impl<K, V> PyValueDict<K, V> {
     pub(crate) fn new(
         id: u32,
         channel: Sender<WriteMessage>,
@@ -47,8 +117,8 @@ impl<K, V> ValueDict<K, V> {
 
 impl<K, V> PyDictTrait for ValueDict<K, V>
 where
-    K: CollectionItem + ToPython + for<'py> FromPyObject<'py> + Eq + Hash,
-    V: CollectionItem + ToPython + for<'py> FromPyObject<'py>,
+    K: ToPython + for<'py> FromPyObject<'py> + Eq + Hash,
+    V: ToPython + for<'py> FromPyObject<'py>,
 {
     fn get_py<'py>(&self, py: Python<'py>) -> Bound<'py, PyDict> {
         let dict = self.dict.read().unwrap();
@@ -76,14 +146,15 @@ where
         let dict_key: K = key.extract()?;
 
         let mut d = self.dict.write().unwrap();
+        d.remove(&dict_key);
 
         if self.connected.load(Ordering::Relaxed) {
-            let message: DictMessage<K, V> = DictMessage::Remove(dict_key.clone());
-            let message = WriteMessage::dict(self.id, update, message);
+            let message: DictMessage<K, V> = DictMessage::Remove(dict_key);
+            let data = serialize(&message);
+            let message = WriteMessage::Dict(self.id, update, data);
             self.channel.send(message).unwrap();
         }
 
-        d.remove(&dict_key);
         Ok(())
     }
 
@@ -95,7 +166,8 @@ where
 
         if self.connected.load(Ordering::Relaxed) {
             let message: DictMessage<K, V> = DictMessage::Set(dict_key.clone(), dict_value.clone());
-            let message = WriteMessage::dict(self.id, update, message);
+            let data = serialize(&message);
+            let message = WriteMessage::Dict(self.id, update, data);
             self.channel.send(message).unwrap();
         }
 
@@ -117,8 +189,9 @@ where
             let mut d = self.dict.write().unwrap();
 
             if self.connected.load(Ordering::Relaxed) {
-                let message: DictMessage<K, V> = DictMessage::All(new_dict.clone());
-                let message = WriteMessage::dict(self.id, update, message);
+                let message: DictMessage<K, V> = DictMessage::All(new_dict.clone()); // TODO: could be done without clone
+                let data = serialize(&message);
+                let message = WriteMessage::Dict(self.id, update, data);
                 self.channel.send(message).unwrap();
             }
 
@@ -133,14 +206,16 @@ where
     }
 }
 
-impl<K, V> SyncTrait for ValueDict<K, V>
+impl<K, V> SyncTrait for PyValueDict<K, V>
 where
-    K: CollectionItem,
-    V: CollectionItem,
+    K: Send + Sync,
+    V: Send + Sync,
 {
     fn sync(&self) {
         let dict = self.dict.read().unwrap().clone();
-        let message = WriteMessage::dict(self.id, false, DictMessage::All(dict));
+        let dict_message = DictMessage::All(dict);
+        let data = serialize(&dict_message);
+        let message = WriteMessage::Dict(self.id, false, data);
         self.channel.send(message).unwrap();
     }
 }

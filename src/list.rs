@@ -1,5 +1,4 @@
-use crate::collections::CollectionItem;
-use crate::transport::{WriteMessageDyn, MESS_SIZE};
+use crate::transport::WriteMessageDyn;
 
 // list -----------------------------------------------------------------------
 

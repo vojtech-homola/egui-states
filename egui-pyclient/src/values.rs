@@ -3,7 +3,7 @@ use std::sync::mpsc::Sender;
 use std::sync::{Arc, RwLock};
 
 use egui_pysync::transport::WriteMessage;
-use egui_pysync::values::{ReadValue, WriteValue};
+use egui_pysync::values::{UpdateValue, WriteValue};
 
 pub(crate) trait ValueUpdate: Send + Sync {
     fn update_value(&self, head: &[u8], data: Option<Vec<u8>>) -> Result<(), String>;
@@ -64,9 +64,9 @@ where
     }
 }
 
-impl<T: ReadValue> ValueUpdate for Value<T> {
+impl<T: UpdateValue> ValueUpdate for Value<T> {
     fn update_value(&self, head: &[u8], data: Option<Vec<u8>>) -> Result<(), String> {
-        let value = T::read_message(head, data)
+        let value = T::update_value(head, data)
             .map_err(|e| format!("Parse error: {} for value id: {}", e, self.id))?;
 
         let mut w = self.value.write().unwrap();
@@ -95,9 +95,9 @@ impl<T: Clone> ValueStatic<T> {
     }
 }
 
-impl<T: ReadValue> ValueUpdate for ValueStatic<T> {
+impl<T: UpdateValue> ValueUpdate for ValueStatic<T> {
     fn update_value(&self, head: &[u8], data: Option<Vec<u8>>) -> Result<(), String> {
-        let value = T::read_message(head, data)
+        let value = T::update_value(head, data)
             .map_err(|e| format!("Parse error: {} for value id: {}", e, self.id))?;
 
         *self.value.write().unwrap() = value;

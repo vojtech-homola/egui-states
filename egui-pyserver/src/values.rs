@@ -8,28 +8,28 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 use egui_pysync::transport::WriteMessage;
-use egui_pysync::values::{ReadValue, ValueMessage, WriteValue};
+use egui_pysync::values::{UpdateValue, ValueMessage, WriteValue};
 use egui_pysync::EnumInt;
 
 use crate::signals::ChangedValues;
 use crate::ToPython;
 use crate::{Acknowledge, SyncTrait};
 
-pub(crate) trait ProccesValue: Send + Sync {
-    fn read_value(&self, head: &[u8], data: Option<Vec<u8>>, signal: bool) -> Result<(), String>;
+pub(crate) trait UpdateValueServer: Send + Sync {
+    fn update_value(&self, head: &[u8], data: Option<Vec<u8>>, signal: bool) -> Result<(), String>;
 }
 
-pub(crate) trait PyValue: Send + Sync {
+pub(crate) trait PyValueTrait: Send + Sync {
     fn get_py<'py>(&self, py: Python<'py>) -> Bound<'py, PyAny>;
     fn set_py(&self, value: &Bound<PyAny>, set_signal: bool, update: bool) -> PyResult<()>;
 }
 
-pub(crate) trait PyValueStatic: Send + Sync {
+pub(crate) trait PyValueStaticTrait: Send + Sync {
     fn get_py<'py>(&self, py: Python<'py>) -> Bound<'py, PyAny>;
     fn set_py(&self, value: &Bound<PyAny>, update: bool) -> PyResult<()>;
 }
 
-pub(crate) trait PySignal: Send + Sync {
+pub(crate) trait PySignalTrait: Send + Sync {
     fn set_py(&self, value: &Bound<PyAny>) -> PyResult<()>;
 }
 
@@ -65,7 +65,7 @@ impl<T, M> Value<T, M> {
     }
 }
 
-impl<T> PyValue for Value<T, NonEnumType>
+impl<T> PyValueTrait for Value<T, NonEnumType>
 where
     T: WriteValue + Clone + ToPython + for<'py> FromPyObject<'py>,
 {
@@ -96,7 +96,7 @@ where
     }
 }
 
-impl<T> PyValue for Value<T, EnumType>
+impl<T> PyValueTrait for Value<T, EnumType>
 where
     T: EnumInt,
 {
@@ -136,12 +136,12 @@ where
     }
 }
 
-impl<T> ProccesValue for Value<T, NonEnumType>
+impl<T> UpdateValueServer for Value<T, NonEnumType>
 where
-    T: ReadValue + WriteValue + ToPython,
+    T: UpdateValue + WriteValue + ToPython,
 {
-    fn read_value(&self, head: &[u8], data: Option<Vec<u8>>, signal: bool) -> Result<(), String> {
-        let value = T::read_message(head, data)?;
+    fn update_value(&self, head: &[u8], data: Option<Vec<u8>>, signal: bool) -> Result<(), String> {
+        let value = T::update_value(head, data)?;
 
         let mut w = self.value.write().unwrap();
         if w.1 == 0 {
@@ -155,11 +155,11 @@ where
     }
 }
 
-impl<T> ProccesValue for Value<T, EnumType>
+impl<T> UpdateValueServer for Value<T, EnumType>
 where
     T: EnumInt,
 {
-    fn read_value(&self, head: &[u8], data: Option<Vec<u8>>, signal: bool) -> Result<(), String> {
+    fn update_value(&self, head: &[u8], data: Option<Vec<u8>>, signal: bool) -> Result<(), String> {
         let int_val = u64::read_message(head, data)?;
         let value = T::from_int(int_val).map_err(|_| "Invalid enum format".to_string())?;
 
@@ -225,7 +225,7 @@ impl<T, M> ValueStatic<T, M> {
     }
 }
 
-impl<T> PyValueStatic for ValueStatic<T, NonEnumType>
+impl<T> PyValueStaticTrait for ValueStatic<T, NonEnumType>
 where
     T: WriteValue + Clone + for<'py> FromPyObject<'py> + ToPython,
 {
@@ -248,7 +248,7 @@ where
     }
 }
 
-impl<T> PyValueStatic for ValueStatic<T, EnumType>
+impl<T> PyValueStaticTrait for ValueStatic<T, EnumType>
 where
     T: EnumInt,
 {
@@ -309,29 +309,29 @@ impl<T, M> Signal<T, M> {
     }
 }
 
-impl<T> ProccesValue for Signal<T, NonEnumType>
+impl<T> UpdateValueServer for Signal<T, NonEnumType>
 where
-    T: ReadValue + WriteValue + ToPython,
+    T: UpdateValue + WriteValue + ToPython,
 {
-    fn read_value(&self, head: &[u8], data: Option<Vec<u8>>, _: bool) -> Result<(), String> {
-        let value = T::read_message(head, data)?;
+    fn update_value(&self, head: &[u8], data: Option<Vec<u8>>, _: bool) -> Result<(), String> {
+        let value = T::update_value(head, data)?;
         self.signals.set(self.id, value);
         Ok(())
     }
 }
 
-impl<T> ProccesValue for Signal<T, EnumType>
+impl<T> UpdateValueServer for Signal<T, EnumType>
 where
     T: EnumInt,
 {
-    fn read_value(&self, head: &[u8], data: Option<Vec<u8>>, _: bool) -> Result<(), String> {
+    fn update_value(&self, head: &[u8], data: Option<Vec<u8>>, _: bool) -> Result<(), String> {
         let int_val = u64::read_message(head, data)?;
         self.signals.set(self.id, int_val);
         Ok(())
     }
 }
 
-impl<T> PySignal for Signal<T, NonEnumType>
+impl<T> PySignalTrait for Signal<T, NonEnumType>
 where
     T: for<'py> FromPyObject<'py> + ToPython + Send + Sync + 'static,
 {
@@ -342,7 +342,7 @@ where
     }
 }
 
-impl<T> PySignal for Signal<T, EnumType>
+impl<T> PySignalTrait for Signal<T, EnumType>
 where
     T: EnumInt,
 {

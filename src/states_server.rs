@@ -9,7 +9,7 @@ use pyo3::prelude::*;
 use egui_pysync::collections::CollectionItem;
 use egui_pysync::graphs::GraphElement;
 use egui_pysync::transport::WriteMessage;
-use egui_pysync::values::{ReadValue, WriteValue};
+use egui_pysync::values::{UpdateValue, WriteValue};
 use egui_pysync::{EnumInt, NoHashMap};
 
 use crate::dict::{PyDictTrait, ValueDict};
@@ -17,15 +17,15 @@ use crate::graphs::{PyGraph, ValueGraphs};
 use crate::image::ValueImage;
 use crate::list::{PyListTrait, ValueList};
 use crate::signals::ChangedValues;
-use crate::values::{EnumType, NonEnumType, ProccesValue, PySignal, PyValue, PyValueStatic};
+use crate::values::{EnumType, NonEnumType, UpdateValueServer, PySignalTrait, PyValueTrait, PyValueStaticTrait};
 use crate::values::{Signal, Value, ValueStatic};
 use crate::{Acknowledge, SyncTrait, ToPython};
 
 #[derive(Clone)]
 pub(crate) struct PyValuesList {
-    pub(crate) values: NoHashMap<u32, Arc<dyn PyValue>>,
-    pub(crate) static_values: NoHashMap<u32, Arc<dyn PyValueStatic>>,
-    pub(crate) signals: NoHashMap<u32, Arc<dyn PySignal>>,
+    pub(crate) values: NoHashMap<u32, Arc<dyn PyValueTrait>>,
+    pub(crate) static_values: NoHashMap<u32, Arc<dyn PyValueStaticTrait>>,
+    pub(crate) signals: NoHashMap<u32, Arc<dyn PySignalTrait>>,
     pub(crate) images: NoHashMap<u32, Arc<ValueImage>>,
     pub(crate) dicts: NoHashMap<u32, Arc<dyn PyDictTrait>>,
     pub(crate) lists: NoHashMap<u32, Arc<dyn PyListTrait>>,
@@ -57,7 +57,7 @@ impl PyValuesList {
 
 #[derive(Clone)]
 pub(crate) struct ValuesList {
-    pub(crate) updated: NoHashMap<u32, Arc<dyn ProccesValue>>,
+    pub(crate) updated: NoHashMap<u32, Arc<dyn UpdateValueServer>>,
     pub(crate) ack: NoHashMap<u32, Arc<dyn Acknowledge>>,
     pub(crate) sync: NoHashMap<u32, Arc<dyn SyncTrait>>,
 }
@@ -133,7 +133,7 @@ impl ValuesCreator {
 
     pub fn add_value<T>(&mut self, value: T)
     where
-        T: ReadValue + WriteValue + ToPython + for<'py> FromPyObject<'py>,
+        T: UpdateValue + WriteValue + ToPython + for<'py> FromPyObject<'py>,
     {
         let id = self.get_id();
         let value = Value::new(
@@ -192,7 +192,7 @@ impl ValuesCreator {
     }
 
     pub fn add_signal<
-        T: WriteValue + ReadValue + Clone + ToPython + for<'py> FromPyObject<'py> + 'static,
+        T: WriteValue + UpdateValue + Clone + ToPython + for<'py> FromPyObject<'py> + 'static,
     >(
         &mut self,
     ) {

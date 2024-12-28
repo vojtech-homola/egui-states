@@ -1,25 +1,51 @@
+use heapless;
+use serde::{Deserialize, Serialize};
 use std::io::{self, Read, Write};
 use std::net::TcpStream;
 
 use crate::commands::CommandMessage;
 use crate::graphs::WriteGraphMessage;
 use crate::image::ImageMessage;
-use crate::values::ValueMessage;
 
-pub const HEAD_SIZE: usize = 32;
-pub(crate) const MESS_SIZE: usize = 28;
-
-const SIZE_START: usize = HEAD_SIZE - 4;
+pub(crate) const HEAPLESS_SIZE: usize = 32;
 
 // message types
-const TYPE_VALUE: i8 = 4;
-const TYPE_STATIC: i8 = 8;
-const TYPE_SIGNAL: i8 = 10;
-const TYPE_COMMAND: i8 = 12;
-const TYPE_IMAGE: i8 = 14;
-const TYPE_DICT: i8 = 16;
-const TYPE_LIST: i8 = 18;
-const TYPE_GRAPH: i8 = 20;
+const TYPE_VALUE: u8 = 4;
+const TYPE_STATIC: u8 = 8;
+const TYPE_SIGNAL: u8 = 10;
+const TYPE_COMMAND: u8 = 12;
+const TYPE_IMAGE: u8 = 14;
+const TYPE_DICT: u8 = 16;
+const TYPE_LIST: u8 = 18;
+const TYPE_GRAPH: u8 = 20;
+
+pub(crate) enum MessageData {
+    Heap(Vec<u8>),
+    Stack(heapless::Vec<u8, HEAPLESS_SIZE>),
+}
+
+#[inline]
+pub(crate) fn serialize(value: impl Serialize) -> MessageData {
+    match postcard::to_vec(&value) {
+        Ok(data) => MessageData::Stack(data),
+        Err(postcard::Error::SerializeBufferFull) => {
+            let data = postcard::to_stdvec(&value).unwrap();
+            MessageData::Heap(data)
+        }
+        Err(e) => panic!("Serialize error: {}", e),
+    }
+}
+
+#[inline]
+pub(crate) fn deserealize<'a, T>(data: MessageData) -> Result<T, postcard::Error>
+where
+    T: Deserialize<'a>,
+{
+    match data {
+        MessageData::Heap(data) => postcard::from_bytes(&data),
+        MessageData::Stack(data) => postcard::from_bytes(&data),
+    }
+}
 
 /*
 Head of the message:
@@ -43,7 +69,45 @@ Command:
 |1B - type | 1B - command |
 */
 
-pub fn write_message(
+fn write_data(head: &mut [u8], data: &MessageData, stream: &mut TcpStream) -> std::io::Result<()> {
+    match data {
+        MessageData::Heap(data) => {
+            head[0..4].copy_from_slice(&(data.len() as u32).to_le_bytes());
+            stream.write_all(head)?;
+            stream.write_all(data)
+        }
+        MessageData::Stack(data) => {
+            head[0..4].copy_from_slice(&(data.len() as u32).to_le_bytes());
+            stream.write_all(head)?;
+            stream.write_all(data)
+        }
+    }
+}
+
+pub(crate) fn write_message(message: WriteMessage, stream: &mut TcpStream) -> std::io::Result<()> {
+    let mut head = [0u8; 10];
+    match message {
+        WriteMessage::Value(id, flag, data) => {
+            head[4] = TYPE_VALUE;
+            head[5] = flag as u8;
+            head[6..9].copy_from_slice(&id.to_le_bytes());
+            write_data(&mut head, &data, stream)
+        }
+        WriteMessage::Signal(id, data) => {
+            head[4] = TYPE_SIGNAL;
+            head[5..8].copy_from_slice(&id.to_le_bytes());
+            write_data(&mut head, &data, stream)
+        }
+        WriteMessage::Static(id, flag, data) => {
+            head[4] = TYPE_STATIC;
+            head[5] = flag as u8;
+            head[6..9].copy_from_slice(&id.to_le_bytes());
+            write_data(&mut head, &data, stream)
+        }
+    }
+}
+
+pub fn write_message_old(
     head: &[u8],
     data: Option<Vec<u8>>,
     stream: &mut TcpStream,
@@ -55,7 +119,7 @@ pub fn write_message(
     Ok(())
 }
 
-pub fn read_message(
+pub fn read_message_old(
     head: &mut [u8],
     stream: &mut TcpStream,
 ) -> Result<(i8, Option<Vec<u8>>), io::Error> {
@@ -78,16 +142,16 @@ pub fn read_message(
 }
 
 pub trait WriteMessageDyn: Send + Sync + 'static {
-    fn write_message(&self, head: &mut [u8]) -> Option<Vec<u8>>;
+    fn write_message(&self) -> MessageData;
 }
 
 pub enum WriteMessage {
-    Value(u32, bool, ValueMessage),
-    Static(u32, bool, ValueMessage),
-    Signal(u32, ValueMessage),
+    Value(u32, bool, MessageData),
+    Static(u32, bool, MessageData),
+    Signal(u32, MessageData),
     Image(u32, bool, ImageMessage),
-    Dict(u32, bool, Box<dyn WriteMessageDyn>),
-    List(u32, bool, Box<dyn WriteMessageDyn>),
+    Dict(u32, bool, MessageData),
+    List(u32, bool, MessageData),
     Graph(u32, bool, Box<dyn WriteGraphMessage>),
     Command(CommandMessage),
     Terminate,
@@ -100,10 +164,6 @@ impl WriteMessage {
 
     pub fn list(id: u32, update: bool, list: impl WriteMessageDyn) -> Self {
         WriteMessage::List(id, update, Box::new(list))
-    }
-
-    pub fn dict(id: u32, update: bool, dict: impl WriteMessageDyn) -> Self {
-        WriteMessage::Dict(id, update, Box::new(dict))
     }
 
     pub fn parse(self, head: &mut [u8]) -> Option<Vec<u8>> {
@@ -178,12 +238,12 @@ impl WriteMessage {
 }
 
 pub enum ReadMessage<'a> {
-    Value(u32, bool, &'a [u8], Option<Vec<u8>>),
-    Static(u32, bool, &'a [u8], Option<Vec<u8>>),
-    Signal(u32, &'a [u8], Option<Vec<u8>>),
+    Value(u32, bool, MessageData),
+    Static(u32, bool, MessageData),
+    Signal(u32, MessageData),
     Image(u32, bool, ImageMessage),
-    Dict(u32, bool, &'a [u8], Option<Vec<u8>>),
-    List(u32, bool, &'a [u8], Option<Vec<u8>>),
+    Dict(u32, bool, MessageData),
+    List(u32, bool, MessageData),
     Graph(u32, bool, &'a [u8], Option<Vec<u8>>),
     Command(CommandMessage),
 }
@@ -191,12 +251,12 @@ pub enum ReadMessage<'a> {
 impl<'a> ReadMessage<'a> {
     pub fn to_str(&self) -> &'static str {
         match self {
-            Self::Value(_, _, _, _) => "Value",
-            Self::Static(_, _, _, _) => "Static",
-            Self::Signal(_, _, _) => "Signal",
+            Self::Value(_, _, _) => "Value",
+            Self::Static(_, _, _) => "Static",
+            Self::Signal(_, _) => "Signal",
             Self::Image(_, _, _) => "Image",
-            Self::Dict(_, _, _, _) => "Dict",
-            Self::List(_, _, _, _) => "List",
+            Self::Dict(_, _, _) => "Dict",
+            Self::List(_, _, _) => "List",
             Self::Graph(_, _, _, _) => "Graph",
             Self::Command(_) => "Command",
         }
