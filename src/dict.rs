@@ -13,18 +13,18 @@ use crate::python_convert::ToPython;
 use crate::transport::{deserealize, serialize, MessageData, WriteMessage};
 use crate::SyncTrait;
 
-pub(crate) trait DictUpdate: Sync + Send {
-    fn update_dict(&self, data: MessageData) -> Result<(), String>;
-}
-
 #[derive(Serialize, Deserialize)]
-pub enum DictMessage<K, V>
+pub(crate) enum DictMessage<'a, K, V>
 where
     K: Eq + Hash,
 {
-    All(HashMap<K, V>),
-    Set(K, V),
-    Remove(K),
+    All(&'a HashMap<K, V>),
+    Set(&'a K, &'a V),
+    Remove(&'a K),
+}
+
+pub(crate) trait DictUpdate: Sync + Send {
+    fn update_dict(&self, data: MessageData) -> Result<(), String>;
 }
 
 pub struct ValueDict<K, V> {
@@ -66,7 +66,7 @@ where
     V: Send + Sync,
 {
     fn update_dict(&self, data: MessageData) -> Result<(), String> {
-        let message = deserealize(data).map_err(|e| e.to_string())?;
+        let message: DictMessage<'_, K, V> = deserealize(data).map_err(|e| e.to_string())?;
         match message {
             DictMessage::All(dict) => {
                 *self.dict.write().unwrap() = dict;
@@ -146,14 +146,12 @@ where
         let dict_key: K = key.extract()?;
 
         let mut d = self.dict.write().unwrap();
-        d.remove(&dict_key);
-
         if self.connected.load(Ordering::Relaxed) {
-            let message: DictMessage<K, V> = DictMessage::Remove(dict_key);
-            let data = serialize(&message);
+            let data = serialize(DictMessage::Remove(&dict_key));
             let message = WriteMessage::Dict(self.id, update, data);
             self.channel.send(message).unwrap();
         }
+        d.remove(&dict_key);
 
         Ok(())
     }
@@ -165,8 +163,8 @@ where
         let mut d = self.dict.write().unwrap();
 
         if self.connected.load(Ordering::Relaxed) {
-            let message: DictMessage<K, V> = DictMessage::Set(dict_key.clone(), dict_value.clone());
-            let data = serialize(&message);
+            let message: DictMessage<K, V> = DictMessage::Set(&dict_key, &dict_value);
+            let data = serialize(message);
             let message = WriteMessage::Dict(self.id, update, data);
             self.channel.send(message).unwrap();
         }
@@ -189,7 +187,7 @@ where
             let mut d = self.dict.write().unwrap();
 
             if self.connected.load(Ordering::Relaxed) {
-                let message: DictMessage<K, V> = DictMessage::All(new_dict.clone()); // TODO: could be done without clone
+                let message: DictMessage<K, V> = DictMessage::All(&new_dict);
                 let data = serialize(&message);
                 let message = WriteMessage::Dict(self.id, update, data);
                 self.channel.send(message).unwrap();
@@ -212,8 +210,8 @@ where
     V: Send + Sync,
 {
     fn sync(&self) {
-        let dict = self.dict.read().unwrap().clone();
-        let dict_message = DictMessage::All(dict);
+        let dict = self.dict.read().unwrap();
+        let dict_message = DictMessage::All(&dict);
         let data = serialize(&dict_message);
         let message = WriteMessage::Dict(self.id, false, data);
         self.channel.send(message).unwrap();

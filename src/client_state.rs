@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use egui::{mutex::RwLock, Context};
 
-use egui_pysync::event::Event;
-use egui_pysync::transport::WriteMessage;
+use crate::event::Event;
+use crate::transport::WriteMessage;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ConnectionState {

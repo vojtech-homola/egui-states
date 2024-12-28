@@ -107,6 +107,38 @@ pub(crate) fn write_message(message: WriteMessage, stream: &mut TcpStream) -> st
     }
 }
 
+pub(crate) fn read_message(stream: &mut TcpStream) -> Result<ReadMessage, io::Error> {
+    let mut head = [0u8; 10];
+    stream.read_exact(&mut head)?;
+
+    let message_size = u32::from_le_bytes(head[0..4]) as usize;
+    let message_type = head[4];
+    let flag = head[5] != 0;
+    let id = u32::from_le_bytes(head[6..9]);
+
+    let data = if message_size > HEAPLESS_SIZE {
+        let mut data = Vec::with_capacity(message_size);
+        unsafe { data.set_len(message_size) };
+        stream.read_exact(&mut data)?;
+        MessageData::Heap(data)
+    } else {
+        let mut data: heapless::Vec<u8, HEAPLESS_SIZE> = heapless::Vec::new();
+        unsafe { data.set_len(message_size) };
+        stream.read_exact(&mut data)?;
+        MessageData::Stack(data)
+    };
+
+    match message_type {
+        TYPE_VALUE => Ok(ReadMessage::Value(id, flag, data)),
+        TYPE_STATIC => Ok(ReadMessage::Static(id, flag, data)),
+        TYPE_SIGNAL => Ok(ReadMessage::Signal(id, data)),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Unknown message type",
+        )),
+    }
+}
+
 pub fn write_message_old(
     head: &[u8],
     data: Option<Vec<u8>>,
@@ -160,10 +192,6 @@ pub enum WriteMessage {
 impl WriteMessage {
     pub fn ack(id: u32) -> Self {
         WriteMessage::Command(CommandMessage::Ack(id))
-    }
-
-    pub fn list(id: u32, update: bool, list: impl WriteMessageDyn) -> Self {
-        WriteMessage::List(id, update, Box::new(list))
     }
 
     pub fn parse(self, head: &mut [u8]) -> Option<Vec<u8>> {

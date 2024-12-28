@@ -104,30 +104,3 @@ impl ImageMessage {
         Ok(image_data)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::transport::HEAD_SIZE;
-
-    #[test]
-    fn test_image_message() {
-        let mut head = [0u8; HEAD_SIZE];
-        let data = vec![0u8; 5 * 10 * 3];
-
-        let message = ImageMessage {
-            image_size: [10, 15],
-            rect: Some([0, 5, 5, 10]),
-            data,
-            image_type: ImageType::Color,
-        };
-
-        let data = message.write_message(&mut head[6..]);
-        let message = ImageMessage::read_message(&mut head[6..], Some(data)).unwrap();
-
-        assert_eq!(message.image_size, [10, 15]);
-        assert_eq!(message.rect, Some([0, 5, 5, 10]));
-        assert_eq!(message.data.len(), 5 * 10 * 3);
-        assert_eq!(message.image_type, ImageType::Color);
-    }
-}

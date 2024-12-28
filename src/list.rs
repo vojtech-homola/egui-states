@@ -1,343 +1,228 @@
-use crate::transport::WriteMessageDyn;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::Sender;
+use std::sync::{Arc, RwLock};
 
-// list -----------------------------------------------------------------------
+use pyo3::exceptions::PyIndexError;
+use pyo3::prelude::*;
+use pyo3::types::PyList;
+use serde::{Deserialize, Serialize};
 
-const LIST_ALL: u8 = 100;
-const LIST_SET: u8 = 101;
-const LIST_ADD: u8 = 102;
-const LIST_REMOVE: u8 = 103;
+use crate::python_convert::ToPython;
+use crate::transport::{deserealize, serialize, MessageData, WriteMessage};
+use crate::SyncTrait;
 
-pub enum ListMessage<T> {
-    All(Vec<T>),
-    Set(usize, T),
-    Add(T),
+#[derive(Serialize, Deserialize)]
+pub enum ListMessage<'a, T> {
+    All(&'a Vec<T>),
+    Set(usize, &'a T),
+    Add(&'a T),
     Remove(usize),
 }
 
-impl<T: CollectionItem> WriteMessageDyn for ListMessage<T> {
-    fn write_message(&self, head: &mut [u8]) -> Option<Vec<u8>> {
-        match self {
+pub(crate) trait ListUpdate: Sync + Send {
+    fn update_list(&self, data: MessageData) -> Result<(), String>;
+}
+
+pub struct ValueList<T> {
+    id: u32,
+    list: RwLock<Vec<T>>,
+}
+
+impl<T: Clone> ValueList<T> {
+    pub(crate) fn new(id: u32) -> Arc<Self> {
+        Arc::new(Self {
+            id,
+            list: RwLock::new(Vec::new()),
+        })
+    }
+
+    pub fn get(&self) -> Vec<T> {
+        self.list.read().unwrap().clone()
+    }
+
+    pub fn get_item(&self, idx: usize) -> Option<T> {
+        self.list.read().unwrap().get(idx).cloned()
+    }
+
+    pub fn process<R>(&self, op: impl Fn(&Vec<T>) -> R) -> R {
+        let l = self.list.read().unwrap();
+        op(&*l)
+    }
+}
+
+impl<T: Send + Sync> ListUpdate for ValueList<T> {
+    fn update_list(&self, data: MessageData) -> Result<(), String> {
+        let message: ListMessage<'_, T> = deserealize(data)
+            .map_err(|e| format!("Error deserializing message {} with id {}", e, self.id))?;
+
+        match message {
             ListMessage::All(list) => {
-                head[0] = LIST_ALL;
-
-                let count = list.len();
-                head[1..9].copy_from_slice(&(count as u64).to_le_bytes());
-
-                // empty list
-                if count == 0 {
-                    None
-                }
-                // static items
-                else if T::SIZE > 0 {
-                    let mut data = vec![0; count * T::SIZE];
-                    for (i, val) in list.iter().enumerate() {
-                        val.write_static(data[i * T::SIZE..].as_mut());
-                    }
-                    Some(data)
-                // dynamic items
-                } else {
-                    let mut sizes = vec![0u8; count * size_of::<u16>()];
-                    let mut data = Vec::new();
-                    for (i, val) in list.iter().enumerate() {
-                        let dat = val.get_dynamic();
-                        let p = (dat.len() as u16).to_le_bytes();
-                        sizes[i * 2] = p[0];
-                        sizes[i * 2 + 1] = p[1];
-
-                        data.extend_from_slice(&dat);
-                    }
-
-                    sizes.extend_from_slice(&data);
-                    Some(sizes)
-                }
+                *self.list.write().unwrap() = list;
             }
-
             ListMessage::Set(idx, value) => {
-                head[0] = LIST_SET;
-                head[1..9].copy_from_slice(&(*idx as u64).to_le_bytes());
-
-                // dynamic value
-                if T::SIZE == 0 {
-                    let data = value.get_dynamic();
-                    Some(data)
-                // small static value
-                } else if T::SIZE + 8 < MESS_SIZE {
-                    value.write_static(head[9..].as_mut());
-                    None
-                // big static value
-                } else {
-                    let mut data = vec![0; T::SIZE];
-                    value.write_static(data[0..].as_mut());
-                    Some(data)
+                let mut list = self.list.write().unwrap();
+                if idx < list.len() {
+                    list[idx] = value;
                 }
             }
-
             ListMessage::Add(value) => {
-                head[0] = LIST_ADD;
-
-                // dynamic value
-                if T::SIZE == 0 {
-                    Some(value.get_dynamic())
-                // small static value
-                } else if T::SIZE < MESS_SIZE {
-                    value.write_static(head[1..].as_mut());
-                    None
-                // big static value
-                } else {
-                    let mut data = vec![0; T::SIZE];
-                    value.write_static(data[0..].as_mut());
-                    Some(data)
-                }
+                self.list.write().unwrap().push(value);
             }
-
             ListMessage::Remove(idx) => {
-                head[0] = LIST_REMOVE;
-                head[1..9].copy_from_slice(&(*idx as u64).to_le_bytes());
-                None
+                let mut list = self.list.write().unwrap();
+                if idx < list.len() {
+                    list.remove(idx);
+                }
             }
         }
+        Ok(())
     }
 }
 
-impl<T: CollectionItem> ListMessage<T> {
-    pub fn read_message(head: &[u8], data: Option<Vec<u8>>) -> Result<ListMessage<T>, String> {
-        let subtype = head[0];
-        match subtype {
-            LIST_ALL => {
-                let count = u64::from_le_bytes(head[1..9].try_into().unwrap()) as usize;
+// SERVER ---------------------------------------------------
+// ----------------------------------------------------------
+pub(crate) trait PyListTrait: Send + Sync {
+    fn get_py<'py>(&self, py: Python<'py>) -> Bound<'py, PyList>;
+    fn get_item_py<'py>(&self, py: Python<'py>, idx: usize) -> PyResult<Bound<'py, PyAny>>;
+    fn set_py(&self, list: &Bound<PyAny>, update: bool) -> PyResult<()>;
+    fn set_item_py(&self, idx: usize, value: &Bound<PyAny>, update: bool) -> PyResult<()>;
+    fn add_item_py(&self, value: &Bound<PyAny>, update: bool) -> PyResult<()>;
+    fn del_item_py(&self, idx: usize, update: bool) -> PyResult<()>;
+    fn len_py(&self) -> usize;
+}
 
-                let list = if count > 0 {
-                    let data = data.ok_or("List data is missing.".to_string())?;
-                    let mut list = Vec::new();
+pub struct PyValueList<T> {
+    id: u32,
+    list: RwLock<Vec<T>>,
+    channel: Sender<WriteMessage>,
+    connected: Arc<AtomicBool>,
+}
 
-                    // static items
-                    if T::SIZE > 0 {
-                        if T::SIZE * count != data.len() {
-                            return Err("List data size is incorrect.".to_string());
-                        }
-
-                        for i in 0..count {
-                            let value = T::read_item(&data[i * T::SIZE..]);
-                            list.push(value);
-                        }
-                    // dynamic items
-                    } else {
-                        let mut data_pos = count * size_of::<u16>();
-                        if data.len() < data_pos {
-                            return Err("List data is corrupted.".to_string());
-                        }
-
-                        for i in 0..count {
-                            let size = u16::from_le_bytes([data[i * 2], data[i * 2 + 1]]) as usize;
-                            if data_pos + size > data.len() {
-                                return Err("List data is corrupted.".to_string());
-                            }
-
-                            let value = T::read_item(&data[data_pos..data_pos + size]);
-                            list.push(value);
-                            data_pos += size;
-                        }
-                    }
-                    list
-                } else {
-                    if data.is_some() {
-                        return Err("List get data but should be empty.".to_string());
-                    }
-
-                    Vec::new()
-                };
-
-                Ok(ListMessage::All(list))
-            }
-
-            LIST_SET => match data {
-                Some(data) => {
-                    let idx = u64::from_le_bytes(head[1..9].try_into().unwrap()) as usize;
-
-                    if T::SIZE > 0 && T::SIZE != data.len() {
-                        return Err("List data size is incorrect.".to_string());
-                    }
-
-                    let value = T::read_item(&data[0..]);
-                    Ok(ListMessage::Set(idx, value))
-                }
-                None => {
-                    let idx = u64::from_le_bytes(head[1..9].try_into().unwrap()) as usize;
-
-                    if T::SIZE == 0 || T::SIZE + 9 > MESS_SIZE {
-                        return Err("List set failed to parse.".to_string());
-                    }
-
-                    let value = T::read_item(&head[9..]);
-                    Ok(ListMessage::Set(idx, value))
-                }
-            },
-
-            LIST_ADD => match data {
-                Some(data) => {
-                    if T::SIZE > 0 && T::SIZE != data.len() {
-                        return Err("List data size is incorrect.".to_string());
-                    }
-
-                    let value = T::read_item(&data[0..]);
-                    return Ok(ListMessage::Add(value));
-                }
-                None => {
-                    if T::SIZE == 0 || T::SIZE + 1 > MESS_SIZE {
-                        return Err("List add failed to parse.".to_string());
-                    }
-
-                    let value = T::read_item(&head[1..]);
-                    return Ok(ListMessage::Add(value));
-                }
-            },
-
-            LIST_REMOVE => {
-                if data.is_some() {
-                    return Err("List remove get data but should be empty.".to_string());
-                }
-
-                let idx = u64::from_le_bytes(head[1..9].try_into().unwrap()) as usize;
-                Ok(ListMessage::Remove(idx))
-            }
-
-            _ => Err(format!("Unknown type of the dict message: {}", subtype,)),
-        }
+impl<T> PyValueList<T> {
+    pub(crate) fn new(
+        id: u32,
+        channel: Sender<WriteMessage>,
+        connected: Arc<AtomicBool>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            id,
+            list: RwLock::new(Vec::new()),
+            channel,
+            connected,
+        })
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::transport::HEAD_SIZE;
-
-    #[test]
-    fn test_dynamic_list_all() {
-        let mut list = Vec::new();
-        list.push("test 1".to_string());
-        list.push("test 48".to_string());
-        list.push("test 1234".to_string());
-        list.push("test 123456".to_string());
-
-        let mut head = [0u8; HEAD_SIZE];
-
-        let message = ListMessage::All(list.clone());
-
-        let data = message.write_message(&mut head[6..]);
-        assert!(data.is_some());
-        let new_list = ListMessage::<String>::read_message(&head[6..], data).unwrap();
-
-        match new_list {
-            ListMessage::All(new_list) => assert_eq!(list, new_list),
-            _ => panic!("Wrong message type."),
+impl<T> PyListTrait for ValueList<T>
+where
+    T: ToPython + for<'py> FromPyObject<'py>,
+{
+    fn get_py<'py>(&self, py: Python<'py>) -> Bound<'py, PyList> {
+        let list = self.list.read().unwrap().clone();
+        let py_list = PyList::empty(py);
+        for val in list.iter() {
+            let val = val.to_python(py);
+            py_list.append(val).unwrap();
         }
+        py_list
     }
 
-    #[test]
-    fn test_dynamic_list_set() {
-        let value = "test 123456".to_string();
-
-        let mut head = [0u8; HEAD_SIZE];
-
-        let message = ListMessage::Set(1, value.clone());
-
-        let data = message.write_message(&mut head[6..]);
-        assert!(data.is_some());
-        let new_message = ListMessage::<String>::read_message(&head[6..], data).unwrap();
-
-        match new_message {
-            ListMessage::Set(idx, new_value) => {
-                assert_eq!(1, idx);
-                assert_eq!(value, new_value);
-            }
-            _ => panic!("Wrong message type."),
+    fn get_item_py<'py>(&self, py: Python<'py>, idx: usize) -> PyResult<Bound<'py, PyAny>> {
+        let list = self.list.read().unwrap();
+        if idx >= list.len() {
+            return Err(PyIndexError::new_err("list index out of range"));
         }
+
+        Ok(list[idx].to_python(py))
     }
 
-    #[test]
-    fn test_list_all() {
-        let list: Vec<u64> = vec![1, 2, 3, 4, 5];
-        let mut head = [0u8; HEAD_SIZE];
-
-        let message = ListMessage::All(list.clone());
-
-        let data = message.write_message(&mut head[6..]);
-        assert!(data.is_some());
-        let new_list = ListMessage::<u64>::read_message(&head[6..], data).unwrap();
-
-        match new_list {
-            ListMessage::All(new_list) => assert_eq!(list, new_list),
-            _ => panic!("Wrong message type."),
+    fn set_py(&self, list: &Bound<PyAny>, update: bool) -> PyResult<()> {
+        let list = list.downcast::<pyo3::types::PyList>()?;
+        let mut data = Vec::new();
+        for val in list {
+            data.push(val.extract()?);
         }
+
+        let mut l = self.list.write().unwrap();
+
+        if self.connected.load(Ordering::Relaxed) {
+            let message = ListMessage::All(&data);
+            let data = serialize(&message);
+            let message = WriteMessage::list(self.id, update, data);
+
+            self.channel.send(message).unwrap();
+        }
+
+        *l = data;
+
+        Ok(())
     }
 
-    #[test]
-    fn test_list_all_empty() {
-        let list: Vec<u64> = Vec::new();
-        let mut head = [0u8; HEAD_SIZE];
-
-        let message = ListMessage::All(list.clone());
-
-        let data = message.write_message(&mut head[6..]);
-        assert!(data.is_none());
-        let new_list = ListMessage::<u64>::read_message(&head[6..], data).unwrap();
-
-        match new_list {
-            ListMessage::All(new_list) => assert_eq!(list, new_list),
-            _ => panic!("Wrong message type."),
+    fn set_item_py(&self, idx: usize, value: &Bound<PyAny>, update: bool) -> PyResult<()> {
+        let value: T = value.extract()?;
+        let mut list = self.list.write().unwrap();
+        if idx >= list.len() {
+            return Err(PyIndexError::new_err("list index out of range"));
         }
+
+        if self.connected.load(Ordering::Relaxed) {
+            let message = ListMessage::Set(idx, &value);
+            let data = serialize(&message);
+            let message = WriteMessage::list(self.id, update, data);
+            self.channel.send(message).unwrap();
+        }
+
+        list[idx] = value;
+
+        Ok(())
     }
 
-    #[test]
-    fn test_list_set() {
-        let value = 1234567890;
-        let mut head = [0u8; HEAD_SIZE];
-
-        let message = ListMessage::Set(1, value);
-
-        let data = message.write_message(&mut head[6..]);
-        assert!(data.is_none());
-        let new_message = ListMessage::<u64>::read_message(&head[6..], data).unwrap();
-
-        match new_message {
-            ListMessage::Set(idx, new_value) => {
-                assert_eq!(1, idx);
-                assert_eq!(value, new_value);
-            }
-            _ => panic!("Wrong message type."),
+    fn del_item_py(&self, idx: usize, update: bool) -> PyResult<()> {
+        let mut list = self.list.write().unwrap();
+        if idx >= list.len() {
+            return Err(PyIndexError::new_err("list index out of range"));
         }
+
+        if self.connected.load(Ordering::Relaxed) {
+            let message = ListMessage::Remove::<T>(idx);
+            let data = serialize(&message);
+            let message = WriteMessage::list(self.id, update, message);
+            self.channel.send(message).unwrap();
+        }
+
+        list.remove(idx);
+
+        Ok(())
     }
 
-    #[test]
-    fn test_list_add() {
-        let value = 1234567890;
-        let mut head = [0u8; HEAD_SIZE];
+    fn add_item_py(&self, value: &Bound<PyAny>, update: bool) -> PyResult<()> {
+        let value: T = value.extract()?;
 
-        let message = ListMessage::Add(value);
+        let mut list = self.list.write().unwrap();
+        if self.connected.load(Ordering::Relaxed) {
+            let message = ListMessage::Add(&value);
+            let data = serialize(&message);
+            let message = WriteMessage::list(self.id, update, data);
 
-        let data = message.write_message(&mut head[6..]);
-        assert!(data.is_none());
-        let new_message = ListMessage::<u64>::read_message(&head[6..], data).unwrap();
-
-        match new_message {
-            ListMessage::Add(new_value) => assert_eq!(value, new_value),
-            _ => panic!("Wrong message type."),
+            self.channel.send(message).unwrap();
         }
+
+        list.push(value);
+
+        Ok(())
     }
 
-    #[test]
-    fn test_list_remove() {
-        let mut head = [0u8; HEAD_SIZE];
+    fn len_py(&self) -> usize {
+        self.list.read().unwrap().len()
+    }
+}
 
-        let message = ListMessage::<u64>::Remove(1);
-
-        let data = message.write_message(&mut head[6..]);
-        assert!(data.is_none());
-        let new_message = ListMessage::<u64>::read_message(&head[6..], data).unwrap();
-
-        match new_message {
-            ListMessage::Remove(idx) => assert_eq!(1, idx),
-            _ => panic!("Wrong message type."),
-        }
+impl<T: Send + Sync> SyncTrait for PyValueList<T> {
+    fn sync(&self) {
+        let list = self.list.read().unwrap();
+        let message = ListMessage::All(&list);
+        let data = serialize(&message);
+        let message = WriteMessage::List(self.id, false, data);
+        self.channel.send(message).unwrap();
     }
 }

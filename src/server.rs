@@ -7,10 +7,9 @@ use std::sync::{
 };
 use std::thread::{self, JoinHandle};
 
-use egui_pysync::commands::CommandMessage;
-use egui_pysync::event::Event;
-use egui_pysync::transport::HEAD_SIZE;
-use egui_pysync::transport::{read_message, write_message, ReadMessage, WriteMessage};
+use crate::commands::CommandMessage;
+use crate::event::Event;
+use crate::transport::{read_message, write_message, ReadMessage, WriteMessage};
 
 use crate::signals::ChangedValues;
 use crate::states_creator::ValuesList;
