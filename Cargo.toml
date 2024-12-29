@@ -1,5 +1,6 @@
 [workspace]
-members = ["egui-pysync-macros"]
+# members = ["egui-pysync-macros"]
+members = []
 resolver = "2"
 
 [workspace.package]
@@ -18,7 +19,7 @@ name = "force-build"
 path = "main.rs"
 
 [dependencies]
-egui_pymacros = { path = "egui-pysync-macros" }
+# egui_pymacros = { path = "egui-pysync-macros" }
 postcard = { version = "1.1.1", features = ["use-std"] }
 egui = "*"
 serde = "*"

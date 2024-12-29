@@ -6,27 +6,25 @@ use std::sync::Arc;
 use pyo3::buffer::Element;
 use pyo3::prelude::*;
 
-use egui_pysync::collections::CollectionItem;
-use egui_pysync::graphs::GraphElement;
-use egui_pysync::transport::WriteMessage;
-use egui_pysync::values::{UpdateValue, WriteValue};
-use egui_pysync::{EnumInt, NoHashMap};
-
 use crate::dict::{PyDictTrait, ValueDict};
+use crate::graphs::GraphElement;
 use crate::graphs::{PyGraph, ValueGraphs};
-use crate::image::ValueImage;
-use crate::list::{PyListTrait, ValueList};
+use crate::image::PyValueImage;
+use crate::list::{PyListTrait, PyValueList};
+use crate::python_convert::ToPython;
 use crate::signals::ChangedValues;
-use crate::values::{EnumType, NonEnumType, UpdateValueServer, PySignalTrait, PyValueTrait, PyValueStaticTrait};
-use crate::values::{Signal, Value, ValueStatic};
-use crate::{Acknowledge, SyncTrait, ToPython};
+use crate::transport::WriteMessage;
+use crate::values::{PySignal, PyValue, PyValueStatic};
+use crate::values::{PySignalTrait, PyValueStaticTrait, PyValueTrait, UpdateValueServer};
+use crate::NoHashMap;
+use crate::{Acknowledge, SyncTrait};
 
 #[derive(Clone)]
 pub(crate) struct PyValuesList {
     pub(crate) values: NoHashMap<u32, Arc<dyn PyValueTrait>>,
     pub(crate) static_values: NoHashMap<u32, Arc<dyn PyValueStaticTrait>>,
     pub(crate) signals: NoHashMap<u32, Arc<dyn PySignalTrait>>,
-    pub(crate) images: NoHashMap<u32, Arc<ValueImage>>,
+    pub(crate) images: NoHashMap<u32, Arc<PyValueImage>>,
     pub(crate) dicts: NoHashMap<u32, Arc<dyn PyDictTrait>>,
     pub(crate) lists: NoHashMap<u32, Arc<dyn PyListTrait>>,
     pub(crate) graphs: NoHashMap<u32, Arc<dyn PyGraph>>,
@@ -133,29 +131,10 @@ impl ValuesCreator {
 
     pub fn add_value<T>(&mut self, value: T)
     where
-        T: UpdateValue + WriteValue + ToPython + for<'py> FromPyObject<'py>,
+        T: ToPython + for<'py> FromPyObject<'py>,
     {
         let id = self.get_id();
-        let value = Value::new(
-            id,
-            value,
-            self.channel.clone(),
-            self.connected.clone(),
-            self.signals.clone(),
-        );
-
-        self.py_val.values.insert(id, value.clone());
-        self.val.updated.insert(id, value.clone());
-        self.val.sync.insert(id, value.clone());
-        self.val.ack.insert(id, value);
-    }
-
-    pub fn add_value_en<T>(&mut self, value: T)
-    where
-        T: EnumInt + WriteValue + PartialEq + 'static,
-    {
-        let id = self.get_id();
-        let value = Value::new(
+        let value = PyValue::new(
             id,
             value,
             self.channel.clone(),
@@ -171,41 +150,18 @@ impl ValuesCreator {
 
     pub fn add_static<T>(&mut self, value: T)
     where
-        T: WriteValue + ToPython + for<'py> FromPyObject<'py> + Clone + 'static,
+        T: ToPython + for<'py> FromPyObject<'py> + Clone + 'static,
     {
         let id = self.get_id();
-        let value = ValueStatic::new(id, value, self.channel.clone(), self.connected.clone());
+        let value = PyValueStatic::new(id, value, self.channel.clone(), self.connected.clone());
 
         self.py_val.static_values.insert(id, value.clone());
         self.val.sync.insert(id, value);
     }
 
-    pub fn add_static_en<T>(&mut self, value: T)
-    where
-        T: WriteValue + EnumInt + 'static,
-    {
+    pub fn add_signal<T: Clone + ToPython + for<'py> FromPyObject<'py> + 'static>(&mut self) {
         let id = self.get_id();
-        let value = ValueStatic::new(id, value, self.channel.clone(), self.connected.clone());
-
-        self.py_val.static_values.insert(id, value.clone());
-        self.val.sync.insert(id, value);
-    }
-
-    pub fn add_signal<
-        T: WriteValue + UpdateValue + Clone + ToPython + for<'py> FromPyObject<'py> + 'static,
-    >(
-        &mut self,
-    ) {
-        let id = self.get_id();
-        let signal = Signal::<T, NonEnumType>::new(id, self.signals.clone());
-
-        self.py_val.signals.insert(id, signal.clone());
-        self.val.updated.insert(id, signal);
-    }
-
-    pub fn add_signal_en<T: EnumInt + 'static>(&mut self) {
-        let id = self.get_id();
-        let signal = Signal::<T, EnumType>::new(id, self.signals.clone());
+        let signal = PySignal::<T>::new(id, self.signals.clone());
 
         self.py_val.signals.insert(id, signal.clone());
         self.val.updated.insert(id, signal);
@@ -213,7 +169,7 @@ impl ValuesCreator {
 
     pub fn add_image(&mut self) {
         let id = self.get_id();
-        let image = ValueImage::new(id, self.channel.clone(), self.connected.clone());
+        let image = PyValueImage::new(id, self.channel.clone(), self.connected.clone());
 
         self.py_val.images.insert(id, image.clone());
         self.val.sync.insert(id, image);
@@ -221,8 +177,8 @@ impl ValuesCreator {
 
     pub fn add_dict<K, V>(&mut self)
     where
-        K: CollectionItem + ToPython + for<'py> FromPyObject<'py> + Eq + Hash + 'static,
-        V: CollectionItem + ToPython + for<'py> FromPyObject<'py> + 'static,
+        K: ToPython + for<'py> FromPyObject<'py> + Eq + Hash + 'static,
+        V: ToPython + for<'py> FromPyObject<'py> + 'static,
     {
         let id = self.get_id();
         let dict = ValueDict::<K, V>::new(id, self.channel.clone(), self.connected.clone());
@@ -233,10 +189,10 @@ impl ValuesCreator {
 
     pub fn add_list<T>(&mut self)
     where
-        T: CollectionItem + ToPython + for<'py> FromPyObject<'py> + 'static,
+        T: ToPython + for<'py> FromPyObject<'py> + 'static,
     {
         let id = self.get_id();
-        let list = ValueList::<T>::new(id, self.channel.clone(), self.connected.clone());
+        let list = PyValueList::<T>::new(id, self.channel.clone(), self.connected.clone());
 
         self.py_val.lists.insert(id, list.clone());
         self.val.sync.insert(id, list);

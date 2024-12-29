@@ -2,22 +2,19 @@ use std::hash::Hash;
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
 
-use egui_pysync::collections::CollectionItem;
-use egui_pysync::graphs::GraphElement;
-use egui_pysync::transport::WriteMessage;
-use egui_pysync::values::{UpdateValue, WriteValue};
-use egui_pysync::NoHashMap;
-
 use crate::dict::{DictUpdate, ValueDict};
+use crate::graphs::GraphElement;
 use crate::graphs::{GraphUpdate, ValueGraphs};
 use crate::image::{ImageUpdate, ValueImage};
 use crate::list::{ListUpdate, ValueList};
-use crate::values::{Signal, Value, ValueStatic, ValueUpdate};
+use crate::transport::WriteMessage;
+use crate::values::{Signal, UpdateValueClient, Value, ValueStatic};
+use crate::NoHashMap;
 
 #[derive(Clone)]
 pub(crate) struct ValuesList {
-    pub(crate) values: NoHashMap<u32, Arc<dyn ValueUpdate>>,
-    pub(crate) static_values: NoHashMap<u32, Arc<dyn ValueUpdate>>,
+    pub(crate) values: NoHashMap<u32, Arc<dyn UpdateValueClient>>,
+    pub(crate) static_values: NoHashMap<u32, Arc<dyn UpdateValueClient>>,
     pub(crate) images: NoHashMap<u32, Arc<dyn ImageUpdate>>,
     pub(crate) dicts: NoHashMap<u32, Arc<dyn DictUpdate>>,
     pub(crate) lists: NoHashMap<u32, Arc<dyn ListUpdate>>,
@@ -83,7 +80,7 @@ impl ValuesCreator {
 
     pub fn add_value<T>(&mut self, value: T) -> Arc<Value<T>>
     where
-        T: WriteValue + UpdateValue + 'static,
+        T: 'static,
     {
         let id = self.get_id();
         let value = Value::new(id, value, self.channel.clone());
@@ -94,7 +91,7 @@ impl ValuesCreator {
 
     pub fn add_static<T>(&mut self, value: T) -> Arc<ValueStatic<T>>
     where
-        T: UpdateValue + 'static,
+        T: 'static,
     {
         let id = self.get_id();
         let value = ValueStatic::new(id, value);
@@ -111,7 +108,7 @@ impl ValuesCreator {
         value
     }
 
-    pub fn add_signal<T: WriteValue + Clone + 'static>(&mut self) -> Arc<Signal<T>> {
+    pub fn add_signal<T: Clone + 'static>(&mut self) -> Arc<Signal<T>> {
         let id = self.get_id();
         let signal = Signal::new(id, self.channel.clone());
 
@@ -120,8 +117,8 @@ impl ValuesCreator {
 
     pub fn add_dict<K, V>(&mut self) -> Arc<ValueDict<K, V>>
     where
-        K: CollectionItem + Hash + Eq,
-        V: CollectionItem,
+        K: Hash + Eq,
+        V:,
     {
         let id = self.get_id();
         let value = ValueDict::new(id);
@@ -132,7 +129,7 @@ impl ValuesCreator {
 
     pub fn add_list<T>(&mut self) -> Arc<ValueList<T>>
     where
-        T: CollectionItem,
+        T:,
     {
         let id = self.get_id();
         let value = ValueList::new(id);

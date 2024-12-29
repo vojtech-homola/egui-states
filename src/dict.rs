@@ -183,18 +183,18 @@ where
             new_dict.insert(key, value);
         }
 
-        dict.py().allow_threads(|| {
-            let mut d = self.dict.write().unwrap();
+        let mut d = self.dict.write().unwrap();
 
-            if self.connected.load(Ordering::Relaxed) {
+        if self.connected.load(Ordering::Relaxed) {
+            dict.py().allow_threads(|| {
                 let message: DictMessage<K, V> = DictMessage::All(&new_dict);
                 let data = serialize(&message);
                 let message = WriteMessage::Dict(self.id, update, data);
                 self.channel.send(message).unwrap();
-            }
+            });
+        }
 
-            *d = new_dict;
-        });
+        *d = new_dict;
 
         Ok(())
     }

@@ -24,7 +24,7 @@ use pyo3::prelude::*;
 pub use values::{Signal, Value, ValueStatic};
 
 // traints for EnumValue -------------------------------------------------------
-pub use egui_pymacros::{EnumImpl, EnumStr};
+// pub use egui_pymacros::{EnumImpl, EnumStr};
 
 pub trait EnumStr: Send + Sync + Copy {
     fn as_str(&self) -> &'static str;

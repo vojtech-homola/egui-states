@@ -9,13 +9,12 @@ use pyo3::buffer::PyBuffer;
 use pyo3::prelude::*;
 use pyo3::types::{PyByteArray, PyDict, PyList, PyTuple};
 
-use egui_pysync::commands::CommandMessage;
-use egui_pysync::transport::WriteMessage;
-use egui_pysync::NoHashSet;
-
+use crate::commands::CommandMessage;
 use crate::server::Server;
 use crate::signals::ChangedValues;
-use crate::states_creator::{PyValuesList, ValuesCreator};
+use crate::states_server::{PyValuesList, ValuesCreator};
+use crate::transport::WriteMessage;
+use crate::NoHashSet;
 
 // To be able to create all values outside this crate
 pub(crate) static CREATE_HOOK: OnceLock<fn(&mut ValuesCreator)> = OnceLock::new();

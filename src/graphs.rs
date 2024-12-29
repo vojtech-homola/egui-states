@@ -1,22 +1,22 @@
 use std::mem::size_of;
 
 // graph ----------------------------------------------------------------------
-const GRAPH_F32: u8 = 5;
-const GRAPH_F64: u8 = 10;
+// const GRAPH_F32: u8 = 5;
+// const GRAPH_F64: u8 = 10;
 
-const GRAPH_SET: u8 = 201;
-const GRAPH_ADD_POINTS: u8 = 202;
-const GRAPH_REMOVE: u8 = 203;
-const GRAPH_RESET: u8 = 204;
+// const GRAPH_SET: u8 = 201;
+// const GRAPH_ADD_POINTS: u8 = 202;
+// const GRAPH_REMOVE: u8 = 203;
+// const GRAPH_RESET: u8 = 204;
 
 pub trait WriteGraphMessage: Send + Sync {
     fn write_message(self: Box<Self>, head: &mut [u8]) -> Option<Vec<u8>>;
 }
 pub trait GraphElement: Clone + Copy + Send + Sync + 'static {
-    const DOUBLE: bool;
+    // const DOUBLE: bool;
 
-    fn to_le_bytes(self) -> [u8; 8];
-    fn from_le_bytes(bytes: &[u8]) -> Self;
+    // fn to_le_bytes(self) -> [u8; 8];
+    // fn from_le_bytes(bytes: &[u8]) -> Self;
     fn zero() -> Self;
 }
 
@@ -190,6 +190,12 @@ impl<T> GraphData<T> {
     }
 }
 
+pub(crate) struct GraphDataInfo<T> {
+    phantom: std::marker::PhantomData<T>,
+    is_linear: bool,
+    points: usize,
+}
+
 pub enum GraphMessage<T> {
     Set(u16, GraphData<T>),
     AddPoints(u16, GraphData<T>),
@@ -197,113 +203,113 @@ pub enum GraphMessage<T> {
     Reset,
 }
 
-fn write_head<T: GraphElement>(head: &mut [u8], graph_data: &GraphData<T>) {
-    head[1] = if T::DOUBLE { GRAPH_F64 } else { GRAPH_F32 };
+// fn write_head<T: GraphElement>(head: &mut [u8], graph_data: &GraphData<T>) {
+//     head[1] = if T::DOUBLE { GRAPH_F64 } else { GRAPH_F32 };
 
-    match graph_data.is_linear {
-        true => head[2] = 255,
-        false => head[2] = 0,
-    }
+//     match graph_data.is_linear {
+//         true => head[2] = 255,
+//         false => head[2] = 0,
+//     }
 
-    head[3..7].copy_from_slice(&(graph_data.points as u32).to_le_bytes());
-}
+//     head[3..7].copy_from_slice(&(graph_data.points as u32).to_le_bytes());
+// }
 
-impl<T: GraphElement> WriteGraphMessage for GraphMessage<T> {
-    fn write_message(self: Box<Self>, head: &mut [u8]) -> Option<Vec<u8>> {
-        match *self {
-            GraphMessage::Set(id, graph_data) => {
-                head[0] = GRAPH_SET;
-                write_head(head, &graph_data);
-                head[7..9].copy_from_slice(&id.to_le_bytes());
-                Some(graph_data.data)
-            }
-            GraphMessage::AddPoints(id, graph_data) => {
-                head[0] = GRAPH_ADD_POINTS;
-                write_head(head, &graph_data);
-                head[7..9].copy_from_slice(&id.to_le_bytes());
-                Some(graph_data.data)
-            }
+// impl<T: GraphElement> WriteGraphMessage for GraphMessage<T> {
+//     fn write_message(self: Box<Self>, head: &mut [u8]) -> Option<Vec<u8>> {
+//         match *self {
+//             GraphMessage::Set(id, graph_data) => {
+//                 head[0] = GRAPH_SET;
+//                 write_head(head, &graph_data);
+//                 head[7..9].copy_from_slice(&id.to_le_bytes());
+//                 Some(graph_data.data)
+//             }
+//             GraphMessage::AddPoints(id, graph_data) => {
+//                 head[0] = GRAPH_ADD_POINTS;
+//                 write_head(head, &graph_data);
+//                 head[7..9].copy_from_slice(&id.to_le_bytes());
+//                 Some(graph_data.data)
+//             }
 
-            GraphMessage::Remove(id) => {
-                head[0] = GRAPH_REMOVE;
-                head[7..9].copy_from_slice(&id.to_le_bytes());
-                None
-            }
-            GraphMessage::Reset => {
-                head[0] = GRAPH_RESET;
-                None
-            }
-        }
-    }
-}
+//             GraphMessage::Remove(id) => {
+//                 head[0] = GRAPH_REMOVE;
+//                 head[7..9].copy_from_slice(&id.to_le_bytes());
+//                 None
+//             }
+//             GraphMessage::Reset => {
+//                 head[0] = GRAPH_RESET;
+//                 None
+//             }
+//         }
+//     }
+// }
 
-fn read_head<T: GraphElement>(
-    head: &[u8],
-    data: Option<Vec<u8>>,
-) -> Result<(bool, usize, Vec<u8>), String> {
-    let data_type = head[1];
-    let is_linear = head[2] != 0;
+// fn read_head<T: GraphElement>(
+//     head: &[u8],
+//     data: Option<Vec<u8>>,
+// ) -> Result<(bool, usize, Vec<u8>), String> {
+//     let data_type = head[1];
+//     let is_linear = head[2] != 0;
 
-    if T::DOUBLE && data_type != GRAPH_F64 || !T::DOUBLE && data_type != GRAPH_F32 {
-        return Err(format!("Wrong precision for graph message: {}", data_type));
-    }
+//     if T::DOUBLE && data_type != GRAPH_F64 || !T::DOUBLE && data_type != GRAPH_F32 {
+//         return Err(format!("Wrong precision for graph message: {}", data_type));
+//     }
 
-    let points = u32::from_le_bytes([head[3], head[4], head[5], head[6]]) as usize;
-    let data = data.ok_or("No data for graph message.")?;
+//     let points = u32::from_le_bytes([head[3], head[4], head[5], head[6]]) as usize;
+//     let data = data.ok_or("No data for graph message.")?;
 
-    Ok((is_linear, points, data))
-}
+//     Ok((is_linear, points, data))
+// }
 
-impl<T: GraphElement> GraphMessage<T> {
-    pub fn read_message(head: &[u8], data: Option<Vec<u8>>) -> Result<Self, String> {
-        let graph_type = head[0];
+// impl<T: GraphElement> GraphMessage<T> {
+//     pub fn read_message(head: &[u8], data: Option<Vec<u8>>) -> Result<Self, String> {
+//         let graph_type = head[0];
 
-        match graph_type {
-            GRAPH_SET => {
-                let (is_linear, points, data) = read_head::<T>(head, data)?;
-                let id = u16::from_le_bytes([head[7], head[8]]);
+//         match graph_type {
+//             GRAPH_SET => {
+//                 let (is_linear, points, data) = read_head::<T>(head, data)?;
+//                 let id = u16::from_le_bytes([head[7], head[8]]);
 
-                Ok(GraphMessage::Set(
-                    id,
-                    GraphData::new(points, data, is_linear),
-                ))
-            }
+//                 Ok(GraphMessage::Set(
+//                     id,
+//                     GraphData::new(points, data, is_linear),
+//                 ))
+//             }
 
-            GRAPH_ADD_POINTS => {
-                let (is_linear, points, data) = read_head::<T>(head, data)?;
-                let id = u16::from_le_bytes([head[7], head[8]]);
+//             GRAPH_ADD_POINTS => {
+//                 let (is_linear, points, data) = read_head::<T>(head, data)?;
+//                 let id = u16::from_le_bytes([head[7], head[8]]);
 
-                Ok(GraphMessage::AddPoints(
-                    id,
-                    GraphData::new(points, data, is_linear),
-                ))
-            }
+//                 Ok(GraphMessage::AddPoints(
+//                     id,
+//                     GraphData::new(points, data, is_linear),
+//                 ))
+//             }
 
-            GRAPH_REMOVE => {
-                let id = u16::from_le_bytes([head[7], head[8]]);
-                Ok(GraphMessage::Remove(id))
-            }
+//             GRAPH_REMOVE => {
+//                 let id = u16::from_le_bytes([head[7], head[8]]);
+//                 Ok(GraphMessage::Remove(id))
+//             }
 
-            GRAPH_RESET => Ok(GraphMessage::Reset),
+//             GRAPH_RESET => Ok(GraphMessage::Reset),
 
-            _ => Err(format!("Unknown graph message type: {}", graph_type)),
-        }
-    }
-}
+//             _ => Err(format!("Unknown graph message type: {}", graph_type)),
+//         }
+//     }
+// }
 
 impl GraphElement for f32 {
-    const DOUBLE: bool = false;
+    // const DOUBLE: bool = false;
 
-    #[inline]
-    fn to_le_bytes(self) -> [u8; 8] {
-        let bytes = self.to_le_bytes();
-        [bytes[0], bytes[1], bytes[2], bytes[3], 0, 0, 0, 0]
-    }
+    // #[inline]
+    // fn to_le_bytes(self) -> [u8; 8] {
+    //     let bytes = self.to_le_bytes();
+    //     [bytes[0], bytes[1], bytes[2], bytes[3], 0, 0, 0, 0]
+    // }
 
-    #[inline]
-    fn from_le_bytes(bytes: &[u8]) -> Self {
-        f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
-    }
+    // #[inline]
+    // fn from_le_bytes(bytes: &[u8]) -> Self {
+    //     f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+    // }
 
     #[inline]
     fn zero() -> Self {
@@ -312,19 +318,19 @@ impl GraphElement for f32 {
 }
 
 impl GraphElement for f64 {
-    const DOUBLE: bool = true;
+    // const DOUBLE: bool = true;
 
-    #[inline]
-    fn to_le_bytes(self) -> [u8; 8] {
-        self.to_le_bytes()
-    }
+    // #[inline]
+    // fn to_le_bytes(self) -> [u8; 8] {
+    //     self.to_le_bytes()
+    // }
 
-    #[inline]
-    fn from_le_bytes(bytes: &[u8]) -> Self {
-        f64::from_le_bytes([
-            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
-        ])
-    }
+    // #[inline]
+    // fn from_le_bytes(bytes: &[u8]) -> Self {
+    //     f64::from_le_bytes([
+    //         bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+    //     ])
+    // }
 
     #[inline]
     fn zero() -> Self {
