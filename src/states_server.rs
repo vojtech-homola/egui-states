@@ -5,10 +5,11 @@ use std::sync::Arc;
 
 use pyo3::buffer::Element;
 use pyo3::prelude::*;
+use serde::{Deserialize, Serialize};
 
-use crate::dict::{PyDictTrait, ValueDict};
+use crate::dict::{PyDictTrait, PyValueDict};
 use crate::graphs::GraphElement;
-use crate::graphs::{PyGraphTrait, ValueGraphs};
+use crate::graphs::{PyGraphTrait, PyValueGraphs};
 use crate::image::PyValueImage;
 use crate::list::{PyListTrait, PyValueList};
 use crate::python_convert::ToPython;
@@ -131,7 +132,12 @@ impl ValuesCreator {
 
     pub fn add_value<T>(&mut self, value: T)
     where
-        T: ToPython + for<'py> FromPyObject<'py>,
+        T: ToPython
+            + for<'py> FromPyObject<'py>
+            + Serialize
+            + for<'a> Deserialize<'a>
+            + Clone
+            + 'static,
     {
         let id = self.get_id();
         let value = PyValue::new(
@@ -150,7 +156,7 @@ impl ValuesCreator {
 
     pub fn add_static<T>(&mut self, value: T)
     where
-        T: ToPython + for<'py> FromPyObject<'py> + Clone + 'static,
+        T: ToPython + for<'py> FromPyObject<'py> + Serialize + Clone + 'static,
     {
         let id = self.get_id();
         let value = PyValueStatic::new(id, value, self.channel.clone(), self.connected.clone());
@@ -159,7 +165,11 @@ impl ValuesCreator {
         self.val.sync.insert(id, value);
     }
 
-    pub fn add_signal<T: Clone + ToPython + for<'py> FromPyObject<'py> + 'static>(&mut self) {
+    pub fn add_signal<
+        T: Clone + ToPython + for<'py> FromPyObject<'py> + for<'a> Deserialize<'a> + 'static,
+    >(
+        &mut self,
+    ) {
         let id = self.get_id();
         let signal = PySignal::<T>::new(id, self.signals.clone());
 
@@ -177,11 +187,11 @@ impl ValuesCreator {
 
     pub fn add_dict<K, V>(&mut self)
     where
-        K: ToPython + for<'py> FromPyObject<'py> + Eq + Hash + 'static,
-        V: ToPython + for<'py> FromPyObject<'py> + 'static,
+        K: ToPython + for<'py> FromPyObject<'py> + Serialize + Eq + Hash + 'static,
+        V: ToPython + for<'py> FromPyObject<'py> + Serialize + 'static,
     {
         let id = self.get_id();
-        let dict = ValueDict::<K, V>::new(id, self.channel.clone(), self.connected.clone());
+        let dict = PyValueDict::<K, V>::new(id, self.channel.clone(), self.connected.clone());
 
         self.py_val.dicts.insert(id, dict.clone());
         self.val.sync.insert(id, dict);
@@ -189,7 +199,7 @@ impl ValuesCreator {
 
     pub fn add_list<T>(&mut self)
     where
-        T: ToPython + for<'py> FromPyObject<'py> + 'static,
+        T: ToPython + for<'py> FromPyObject<'py> + Serialize + Clone + 'static,
     {
         let id = self.get_id();
         let list = PyValueList::<T>::new(id, self.channel.clone(), self.connected.clone());
@@ -204,7 +214,7 @@ impl ValuesCreator {
         &mut self,
     ) {
         let id = self.get_id();
-        let graph = ValueGraphs::<T>::new(id, self.channel.clone(), self.connected.clone());
+        let graph = PyValueGraphs::<T>::new(id, self.channel.clone(), self.connected.clone());
 
         self.py_val.graphs.insert(id, graph.clone());
         self.val.sync.insert(id, graph);

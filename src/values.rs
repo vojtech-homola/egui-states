@@ -9,7 +9,7 @@ use pyo3::prelude::*;
 
 use crate::python_convert::ToPython;
 use crate::signals::ChangedValues;
-use crate::transport::{deserealize, serialize, MessageData, WriteMessage};
+use crate::transport::{deserialize, serialize, MessageData, WriteMessage};
 use crate::{Acknowledge, SyncTrait};
 
 pub struct Diff<'a, T> {
@@ -184,7 +184,7 @@ impl<T> PyValue<T> {
 
 impl<T> PyValueTrait for PyValue<T>
 where
-    T: Serialize + Clone + ToPython + for<'py> FromPyObject<'py>,
+    T: Serialize + Clone + ToPython + for<'py> FromPyObject<'py> + 'static,
 {
     fn get_py<'py>(&self, py: Python<'py>) -> Bound<'py, PyAny> {
         self.value.read().unwrap().0.to_python(py)
@@ -216,10 +216,10 @@ where
 
 impl<T> UpdateValueServer for PyValue<T>
 where
-    T: ToPython + for<'a> Deserialize<'a>,
+    T: ToPython + for<'a> Deserialize<'a> + Clone + 'static,
 {
     fn update_value(&self, data: MessageData, signal: bool) -> Result<(), String> {
-        let value = deserealize(data)
+        let value: T = deserialize(data)
             .map_err(|e| format!("Parse error: {} for value id: {}", e, self.id))?;
 
         let mut w = self.value.write().unwrap();
@@ -250,7 +250,7 @@ where
     fn sync(&self) {
         let mut w = self.value.write().unwrap();
         w.1 = 1;
-        let data = serialize(w.0);
+        let data = serialize(&w.0);
         drop(w);
 
         let message = WriteMessage::Value(self.id, false, data);
@@ -312,7 +312,7 @@ where
 {
     fn sync(&self) {
         let w = self.value.read().unwrap();
-        let data = serialize(&w);
+        let data = serialize(&(*w));
         let message = WriteMessage::Static(self.id, false, data);
         self.channel.send(message).unwrap();
     }
@@ -335,19 +335,19 @@ impl<T> PySignal<T> {
     }
 }
 
-impl<T> UpdateValueServer for Signal<T>
+impl<T> UpdateValueServer for PySignal<T>
 where
-    T: for<'a> Deserialize<'a> + ToPython,
+    T: for<'a> Deserialize<'a> + ToPython + 'static,
 {
     fn update_value(&self, data: MessageData, _: bool) -> Result<(), String> {
-        let value = deserealize(data)
+        let value: T = deserialize(data)
             .map_err(|e| format!("Parse error: {} for signal id: {}", e, self.id))?;
         self.signals.set(self.id, value);
         Ok(())
     }
 }
 
-impl<T> PySignalTrait for Signal<T>
+impl<T> PySignalTrait for PySignal<T>
 where
     T: for<'py> FromPyObject<'py> + ToPython + Send + Sync + 'static,
 {

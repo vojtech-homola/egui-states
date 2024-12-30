@@ -10,7 +10,7 @@ use pyo3::types::PyDict;
 use serde::{Deserialize, Serialize};
 
 use crate::python_convert::ToPython;
-use crate::transport::{deserealize, serialize, MessageData, WriteMessage};
+use crate::transport::{deserialize, serialize, MessageData, WriteMessage};
 use crate::SyncTrait;
 
 #[derive(Serialize)]
@@ -76,7 +76,7 @@ where
     V: for<'a> Deserialize<'a> + Send + Sync,
 {
     fn update_dict(&self, data: MessageData) -> Result<(), String> {
-        let message: DictMessage<K, V> = deserealize(data).map_err(|e| e.to_string())?;
+        let message: DictMessage<K, V> = deserialize(data).map_err(|e| e.to_string())?;
         match message {
             DictMessage::All(dict) => {
                 *self.dict.write().unwrap() = dict;

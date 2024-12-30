@@ -2,6 +2,8 @@ use std::hash::Hash;
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
 
+use serde::{Deserialize, Serialize};
+
 use crate::dict::{DictUpdate, ValueDict};
 use crate::graphs::GraphElement;
 use crate::graphs::{GraphUpdate, ValueGraphs};
@@ -80,7 +82,7 @@ impl ValuesCreator {
 
     pub fn add_value<T>(&mut self, value: T) -> Arc<Value<T>>
     where
-        T: 'static,
+        T: for<'a> Deserialize<'a> + Serialize + Send + Sync + Clone + 'static,
     {
         let id = self.get_id();
         let value = Value::new(id, value, self.channel.clone());
@@ -91,7 +93,7 @@ impl ValuesCreator {
 
     pub fn add_static<T>(&mut self, value: T) -> Arc<ValueStatic<T>>
     where
-        T: 'static,
+        T: for<'a> Deserialize<'a> + Serialize + Clone + Send + Sync + 'static,
     {
         let id = self.get_id();
         let value = ValueStatic::new(id, value);
@@ -108,7 +110,10 @@ impl ValuesCreator {
         value
     }
 
-    pub fn add_signal<T: Clone + 'static>(&mut self) -> Arc<Signal<T>> {
+    pub fn add_signal<T>(&mut self) -> Arc<Signal<T>>
+    where
+        T: Serialize + Clone + Send + Sync + 'static,
+    {
         let id = self.get_id();
         let signal = Signal::new(id, self.channel.clone());
 
@@ -117,8 +122,8 @@ impl ValuesCreator {
 
     pub fn add_dict<K, V>(&mut self) -> Arc<ValueDict<K, V>>
     where
-        K: Hash + Eq,
-        V:,
+        K: Hash + Eq + Clone + for<'a> Deserialize<'a> + Send + Sync + 'static,
+        V: Clone + for<'a> Deserialize<'a> + Send + Sync + 'static,
     {
         let id = self.get_id();
         let value = ValueDict::new(id);
@@ -129,7 +134,7 @@ impl ValuesCreator {
 
     pub fn add_list<T>(&mut self) -> Arc<ValueList<T>>
     where
-        T:,
+        T: Clone + for<'a> Deserialize<'a> + Send + Sync + 'static,
     {
         let id = self.get_id();
         let value = ValueList::new(id);

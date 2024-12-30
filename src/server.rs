@@ -9,9 +9,9 @@ use std::thread::{self, JoinHandle};
 
 use crate::commands::CommandMessage;
 use crate::event::Event;
-use crate::transport::{read_message, write_message, ReadMessage, WriteMessage};
 use crate::signals::ChangedValues;
-use crate::states_creator::ValuesList;
+use crate::states_server::ValuesList;
+use crate::transport::{read_message, write_message, ReadMessage, WriteMessage};
 
 struct StatesTransfer {
     thread: JoinHandle<Receiver<WriteMessage>>,

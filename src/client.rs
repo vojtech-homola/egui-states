@@ -8,7 +8,7 @@ use egui::Context;
 use crate::client_state::{ConnectionState, UIState};
 use crate::commands::CommandMessage;
 use crate::states_creator::{ValuesCreator, ValuesList};
-use crate::transport::{read_message, write_message, ReadMessage, WriteMessage};
+use crate::transport::{read_message, write_message, MessageData, ReadMessage, WriteMessage};
 
 fn handle_message(
     message: ReadMessage,
@@ -26,55 +26,64 @@ fn handle_message(
     }
 
     let update = match message {
-        ReadMessage::Value(id, updata, head, data) => match vals.values.get(&id) {
+        ReadMessage::Value(id, updata, data) => match vals.values.get(&id) {
             Some(value) => {
-                value.update_value(head, data)?;
+                match data {
+                    MessageData::Stack(data) => value.update_value(&data),
+                    MessageData::Heap(data) => value.update_value(&data),
+                }?;
                 updata
             }
             None => return Err(format!("Value with id {} not found", id)),
         },
 
-        ReadMessage::Static(id, updata, head, data) => match vals.static_values.get(&id) {
+        ReadMessage::Static(id, updata, data) => match vals.static_values.get(&id) {
             Some(value) => {
-                value.update_value(head, data)?;
+                match data {
+                    MessageData::Stack(data) => value.update_value(&data),
+                    MessageData::Heap(data) => value.update_value(&data),
+                }?;
                 updata
             }
             None => return Err(format!("Static with id {} not found", id)),
         },
 
-        ReadMessage::Image(id, updata, image) => match vals.images.get(&id) {
+        ReadMessage::Image(id, updata, data) => match vals.images.get(&id) {
             Some(value) => {
-                value.update_image(image)?;
+                match data {
+                    MessageData::Stack(data) => value.update_image(&data),
+                    MessageData::Heap(data) => value.update_image(&data),
+                }?;
                 updata
             }
             None => return Err(format!("Image with id {} not found", id)),
         },
 
-        ReadMessage::Dict(id, updata, head, data) => match vals.dicts.get(&id) {
+        ReadMessage::Dict(id, updata, data) => match vals.dicts.get(&id) {
             Some(value) => {
-                value.update_dict(head, data)?;
+                value.update_dict(data)?;
                 updata
             }
             None => return Err(format!("Dict with id {} not found", id)),
         },
 
-        ReadMessage::List(id, updata, head, data) => match vals.lists.get(&id) {
+        ReadMessage::List(id, updata, data) => match vals.lists.get(&id) {
             Some(value) => {
-                value.update_list(head, data)?;
+                value.update_list(data)?;
                 updata
             }
             None => return Err(format!("List with id {} not found", id)),
         },
 
-        ReadMessage::Graph(id, updata, head, data) => match vals.graphs.get(&id) {
+        ReadMessage::Graph(id, updata, data) => match vals.graphs.get(&id) {
             Some(value) => {
-                value.update_graph(head, data)?;
+                value.update_graph(data)?;
                 updata
             }
             None => return Err(format!("Graph with id {} not found", id)),
         },
 
-        ReadMessage::Signal(_, _, _) => {
+        ReadMessage::Signal(_, _) => {
             return Err("Signal message should not be handled in the client".to_string());
         }
 

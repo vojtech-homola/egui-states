@@ -1,4 +1,5 @@
 use heapless;
+use heapless::Vec as HVec;
 use serde::{Deserialize, Serialize};
 use std::io::{self, Read, Write};
 use std::net::TcpStream;
@@ -19,13 +20,13 @@ const TYPE_GRAPH: u8 = 20;
 
 pub(crate) enum MessageData {
     Heap(Vec<u8>),
-    Stack(heapless::Vec<u8, HEAPLESS_SIZE>),
+    Stack(HVec<u8, HEAPLESS_SIZE>),
 }
 
 #[inline]
-pub(crate) fn serialize(value: impl Serialize) -> MessageData {
-    match postcard::to_vec(&value) {
-        Ok(data) => MessageData::Stack(data),
+pub(crate) fn serialize<T: Serialize>(value: T) -> MessageData {
+    match postcard::to_vec::<T, HEAPLESS_SIZE>(&value) {
+        Ok(d) => MessageData::Stack(d),
         Err(postcard::Error::SerializeBufferFull) => {
             let data = postcard::to_stdvec(&value).unwrap();
             MessageData::Heap(data)
@@ -35,9 +36,9 @@ pub(crate) fn serialize(value: impl Serialize) -> MessageData {
 }
 
 #[inline]
-pub(crate) fn deserealize<'a, T>(data: MessageData) -> Result<T, postcard::Error>
+pub(crate) fn deserialize<T>(data: MessageData) -> Result<T, postcard::Error>
 where
-    T: Deserialize<'a>,
+    T: for<'a> Deserialize<'a>,
 {
     match data {
         MessageData::Heap(data) => postcard::from_bytes(&data),
@@ -322,7 +323,7 @@ pub(crate) fn write_message(message: WriteMessage, stream: &mut TcpStream) -> st
         WriteMessage::Command(command) => {
             head[4] = TYPE_COMMAND;
             let data = serialize(&command);
-            write_data(&mut head, &data, stream)?;
+            write_data(&mut head, &data, stream)
         }
         WriteMessage::Terminate => {
             unreachable!("Terminate message should not be written");
@@ -334,10 +335,10 @@ pub(crate) fn read_message(stream: &mut TcpStream) -> Result<ReadMessage, io::Er
     let mut head = [0u8; 10];
     stream.read_exact(&mut head)?;
 
-    let message_size = u32::from_le_bytes(head[0..4]) as usize;
+    let message_size = u32::from_le_bytes([head[0], head[1], head[2], head[3]]) as usize;
     let message_type = head[4];
     let flag = head[5] != 0;
-    let id = u32::from_le_bytes(head[6..9]);
+    let id = u32::from_le_bytes([head[6], head[7], head[8], head[9]]);
 
     let data = if message_size > HEAPLESS_SIZE {
         let mut data = Vec::with_capacity(message_size);
@@ -355,6 +356,14 @@ pub(crate) fn read_message(stream: &mut TcpStream) -> Result<ReadMessage, io::Er
         TYPE_VALUE => Ok(ReadMessage::Value(id, flag, data)),
         TYPE_STATIC => Ok(ReadMessage::Static(id, flag, data)),
         TYPE_SIGNAL => Ok(ReadMessage::Signal(id, data)),
+        TYPE_LIST => Ok(ReadMessage::List(id, flag, data)),
+        TYPE_DICT => Ok(ReadMessage::Dict(id, flag, data)),
+        TYPE_GRAPH => Ok(ReadMessage::Graph(id, flag, data)),
+        TYPE_IMAGE => Ok(ReadMessage::Image(id, flag, data)),
+        TYPE_COMMAND => {
+            let command = deserialize(data).unwrap(); // TODO: handle error
+            Ok(ReadMessage::Command(command))
+        }
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "Unknown message type",

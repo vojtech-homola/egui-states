@@ -8,7 +8,7 @@ use pyo3::types::PyList;
 use serde::{Deserialize, Serialize};
 
 use crate::python_convert::ToPython;
-use crate::transport::{deserealize, serialize, MessageData, WriteMessage};
+use crate::transport::{deserialize, serialize, MessageData, WriteMessage};
 use crate::SyncTrait;
 
 #[derive(Serialize)]
@@ -60,7 +60,7 @@ impl<T: Clone> ValueList<T> {
 
 impl<T: for<'a> Deserialize<'a> + Send + Sync> ListUpdate for ValueList<T> {
     fn update_list(&self, data: MessageData) -> Result<(), String> {
-        let message = deserealize(data)
+        let message = deserialize(data)
             .map_err(|e| format!("Error deserializing message {} with id {}", e, self.id))?;
 
         match message {
