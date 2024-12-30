@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize)]
-pub enum CommandMessage {
+pub(crate) enum CommandMessage {
     Error(String),
     Ack(u32),
     Handshake(u64, u64),

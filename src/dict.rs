@@ -13,14 +13,24 @@ use crate::python_convert::ToPython;
 use crate::transport::{deserealize, serialize, MessageData, WriteMessage};
 use crate::SyncTrait;
 
-#[derive(Serialize, Deserialize)]
-pub(crate) enum DictMessage<'a, K, V>
+#[derive(Serialize)]
+enum DictMessageRef<'a, K, V>
 where
     K: Eq + Hash,
 {
     All(&'a HashMap<K, V>),
     Set(&'a K, &'a V),
     Remove(&'a K),
+}
+
+#[derive(Deserialize)]
+enum DictMessage<K, V>
+where
+    K: Eq + Hash,
+{
+    All(HashMap<K, V>),
+    Set(K, V),
+    Remove(K),
 }
 
 pub(crate) trait DictUpdate: Sync + Send {
@@ -62,11 +72,11 @@ where
 
 impl<K, V> DictUpdate for ValueDict<K, V>
 where
-    K: Eq + Hash + Send + Sync,
-    V: Send + Sync,
+    K: for<'a> Deserialize<'a> + Eq + Hash + Send + Sync,
+    V: for<'a> Deserialize<'a> + Send + Sync,
 {
     fn update_dict(&self, data: MessageData) -> Result<(), String> {
-        let message: DictMessage<'_, K, V> = deserealize(data).map_err(|e| e.to_string())?;
+        let message: DictMessage<K, V> = deserealize(data).map_err(|e| e.to_string())?;
         match message {
             DictMessage::All(dict) => {
                 *self.dict.write().unwrap() = dict;
@@ -115,10 +125,10 @@ impl<K, V> PyValueDict<K, V> {
     }
 }
 
-impl<K, V> PyDictTrait for ValueDict<K, V>
+impl<K, V> PyDictTrait for PyValueDict<K, V>
 where
-    K: ToPython + for<'py> FromPyObject<'py> + Eq + Hash,
-    V: ToPython + for<'py> FromPyObject<'py>,
+    K: Serialize + ToPython + for<'py> FromPyObject<'py> + Eq + Hash,
+    V: Serialize + ToPython + for<'py> FromPyObject<'py>,
 {
     fn get_py<'py>(&self, py: Python<'py>) -> Bound<'py, PyDict> {
         let dict = self.dict.read().unwrap();
@@ -147,7 +157,7 @@ where
 
         let mut d = self.dict.write().unwrap();
         if self.connected.load(Ordering::Relaxed) {
-            let data = serialize(DictMessage::Remove(&dict_key));
+            let data = serialize(DictMessageRef::Remove::<K, V>(&dict_key));
             let message = WriteMessage::Dict(self.id, update, data);
             self.channel.send(message).unwrap();
         }
@@ -163,8 +173,7 @@ where
         let mut d = self.dict.write().unwrap();
 
         if self.connected.load(Ordering::Relaxed) {
-            let message: DictMessage<K, V> = DictMessage::Set(&dict_key, &dict_value);
-            let data = serialize(message);
+            let data = serialize(DictMessageRef::Set::<K, V>(&dict_key, &dict_value));
             let message = WriteMessage::Dict(self.id, update, data);
             self.channel.send(message).unwrap();
         }
@@ -187,8 +196,7 @@ where
 
         if self.connected.load(Ordering::Relaxed) {
             dict.py().allow_threads(|| {
-                let message: DictMessage<K, V> = DictMessage::All(&new_dict);
-                let data = serialize(&message);
+                let data = serialize(DictMessageRef::All(&new_dict));
                 let message = WriteMessage::Dict(self.id, update, data);
                 self.channel.send(message).unwrap();
             });
@@ -206,13 +214,12 @@ where
 
 impl<K, V> SyncTrait for PyValueDict<K, V>
 where
-    K: Send + Sync,
-    V: Send + Sync,
+    K: Serialize + Send + Sync + Eq + Hash,
+    V: Serialize + Send + Sync,
 {
     fn sync(&self) {
         let dict = self.dict.read().unwrap();
-        let dict_message = DictMessage::All(&dict);
-        let data = serialize(&dict_message);
+        let data = serialize(DictMessageRef::All(&dict));
         let message = WriteMessage::Dict(self.id, false, data);
         self.channel.send(message).unwrap();
     }

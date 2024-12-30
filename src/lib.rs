@@ -48,7 +48,7 @@ pub(crate) trait Acknowledge: Sync + Send {
 
 pub fn init_module(
     m: &Bound<PyModule>,
-    create_function: fn(&mut states_creator::ValuesCreator),
+    create_function: fn(&mut states_server::ValuesCreator),
 ) -> PyResult<()> {
     py_server::CREATE_HOOK.set(create_function).map_err(|_| {
         pyo3::exceptions::PyRuntimeError::new_err("Failed to inicialize state server module.")

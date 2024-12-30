@@ -11,11 +11,11 @@ use pyo3::prelude::*;
 use pyo3::types::PyByteArray;
 use serde::{Deserialize, Serialize};
 
-use crate::transport::{serialize, MessageData, WriteMessage};
+use crate::transport::{serialize, WriteMessage};
 use crate::SyncTrait;
 
-#[derive(Clone, Copy)]
-pub enum ImageType {
+#[derive(Clone, Copy, Serialize, Deserialize)]
+enum ImageType {
     Color,
     ColorAlpha,
     Gray,
@@ -23,14 +23,14 @@ pub enum ImageType {
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct ImageInfo {
+struct ImageInfo {
     pub image_size: [usize; 2],   // [y, x]
     pub rect: Option<[usize; 4]>, // [y, x, h, w]
     pub image_type: ImageType,
 }
 
 pub(crate) trait ImageUpdate: Send + Sync {
-    fn update_image(&self, data: MessageData) -> Result<(), String>;
+    fn update_image(&self, data: &[u8]) -> Result<(), String>;
 }
 
 const TEXTURE_OPTIONS: egui::TextureOptions = egui::TextureOptions {
@@ -88,12 +88,8 @@ impl ValueImage {
 }
 
 impl ImageUpdate for ValueImage {
-    fn update_image(&self, data: MessageData) -> Result<(), String> {
-        let (info, image_data) = match data {
-            MessageData::Heap(data) => postcard::take_from_bytes(&data),
-            MessageData::Stack(data) => postcard::take_from_bytes(&data),
-        }
-        .map_err(|e| {
+    fn update_image(&self, data: &[u8]) -> Result<(), String> {
+        let (info, image_data) = postcard::take_from_bytes(data).map_err(|e| {
             format!(
                 "Failed to deserialize image message: {} for image of id {}",
                 e, self.id
@@ -345,7 +341,7 @@ impl PyValueImage {
     }
 }
 
-impl SyncTrait for ValueImage {
+impl SyncTrait for PyValueImage {
     fn sync(&self) {
         let w = self.image.read().unwrap();
         if w.size[0] == 0 || w.size[1] == 0 {

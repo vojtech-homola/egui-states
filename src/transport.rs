@@ -4,7 +4,6 @@ use std::io::{self, Read, Write};
 use std::net::TcpStream;
 
 use crate::commands::CommandMessage;
-use crate::graphs::WriteGraphMessage;
 
 pub(crate) const HEAPLESS_SIZE: usize = 32;
 
@@ -113,7 +112,7 @@ pub enum WriteMessage {
     Image(u32, bool, MessageData, Vec<u8>),
     Dict(u32, bool, MessageData),
     List(u32, bool, MessageData),
-    Graph(u32, bool, Box<dyn WriteGraphMessage>),
+    Graph(u32, bool, MessageData, Option<Vec<u8>>),
     Command(CommandMessage),
     Terminate,
 }
@@ -289,6 +288,44 @@ pub(crate) fn write_message(message: WriteMessage, stream: &mut TcpStream) -> st
             head[5] = flag as u8;
             head[6..9].copy_from_slice(&id.to_le_bytes());
             write_data(&mut head, &data, stream)
+        }
+        WriteMessage::Dict(id, flag, data) => {
+            head[4] = TYPE_DICT;
+            head[5] = flag as u8;
+            head[6..9].copy_from_slice(&id.to_le_bytes());
+            write_data(&mut head, &data, stream)
+        }
+        WriteMessage::List(id, flag, data) => {
+            head[4] = TYPE_LIST;
+            head[5] = flag as u8;
+            head[6..9].copy_from_slice(&id.to_le_bytes());
+            write_data(&mut head, &data, stream)
+        }
+        WriteMessage::Image(id, flag, info, data) => {
+            head[4] = TYPE_IMAGE;
+            head[5] = flag as u8;
+            head[6..9].copy_from_slice(&id.to_le_bytes());
+            write_data(&mut head, &info, stream)?;
+            write_data(&mut head, &MessageData::Heap(data), stream)
+        }
+        WriteMessage::Graph(id, flag, data, graph_data) => {
+            head[4] = TYPE_GRAPH;
+            head[5] = flag as u8;
+            head[6..9].copy_from_slice(&id.to_le_bytes());
+            write_data(&mut head, &data, stream)?;
+            if let Some(graph_data) = graph_data {
+                write_data(&mut head, &MessageData::Heap(graph_data), stream)
+            } else {
+                Ok(())
+            }
+        }
+        WriteMessage::Command(command) => {
+            head[4] = TYPE_COMMAND;
+            let data = serialize(&command);
+            write_data(&mut head, &data, stream)?;
+        }
+        WriteMessage::Terminate => {
+            unreachable!("Terminate message should not be written");
         }
     }
 }

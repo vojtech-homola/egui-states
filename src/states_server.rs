@@ -8,7 +8,7 @@ use pyo3::prelude::*;
 
 use crate::dict::{PyDictTrait, ValueDict};
 use crate::graphs::GraphElement;
-use crate::graphs::{PyGraph, ValueGraphs};
+use crate::graphs::{PyGraphTrait, ValueGraphs};
 use crate::image::PyValueImage;
 use crate::list::{PyListTrait, PyValueList};
 use crate::python_convert::ToPython;
@@ -27,7 +27,7 @@ pub(crate) struct PyValuesList {
     pub(crate) images: NoHashMap<u32, Arc<PyValueImage>>,
     pub(crate) dicts: NoHashMap<u32, Arc<dyn PyDictTrait>>,
     pub(crate) lists: NoHashMap<u32, Arc<dyn PyListTrait>>,
-    pub(crate) graphs: NoHashMap<u32, Arc<dyn PyGraph>>,
+    pub(crate) graphs: NoHashMap<u32, Arc<dyn PyGraphTrait>>,
 }
 
 impl PyValuesList {

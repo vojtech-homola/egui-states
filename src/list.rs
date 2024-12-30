@@ -11,11 +11,19 @@ use crate::python_convert::ToPython;
 use crate::transport::{deserealize, serialize, MessageData, WriteMessage};
 use crate::SyncTrait;
 
-#[derive(Serialize, Deserialize)]
-pub enum ListMessage<'a, T> {
+#[derive(Serialize)]
+enum ListMessageRef<'a, T> {
     All(&'a Vec<T>),
     Set(usize, &'a T),
     Add(&'a T),
+    Remove(usize),
+}
+
+#[derive(Deserialize)]
+enum ListMessage<T> {
+    All(Vec<T>),
+    Set(usize, T),
+    Add(T),
     Remove(usize),
 }
 
@@ -50,9 +58,9 @@ impl<T: Clone> ValueList<T> {
     }
 }
 
-impl<T: Send + Sync> ListUpdate for ValueList<T> {
+impl<T: for<'a> Deserialize<'a> + Send + Sync> ListUpdate for ValueList<T> {
     fn update_list(&self, data: MessageData) -> Result<(), String> {
-        let message: ListMessage<'_, T> = deserealize(data)
+        let message = deserealize(data)
             .map_err(|e| format!("Error deserializing message {} with id {}", e, self.id))?;
 
         match message {
@@ -113,9 +121,9 @@ impl<T> PyValueList<T> {
     }
 }
 
-impl<T> PyListTrait for ValueList<T>
+impl<T> PyListTrait for PyValueList<T>
 where
-    T: ToPython + for<'py> FromPyObject<'py>,
+    T: Serialize + ToPython + for<'py> FromPyObject<'py> + Clone,
 {
     fn get_py<'py>(&self, py: Python<'py>) -> Bound<'py, PyList> {
         let list = self.list.read().unwrap().clone();
@@ -146,9 +154,8 @@ where
         let mut l = self.list.write().unwrap();
 
         if self.connected.load(Ordering::Relaxed) {
-            let message = ListMessage::All(&data);
-            let data = serialize(&message);
-            let message = WriteMessage::list(self.id, update, data);
+            let data = serialize(ListMessageRef::All(&data));
+            let message = WriteMessage::List(self.id, update, data);
 
             self.channel.send(message).unwrap();
         }
@@ -158,21 +165,22 @@ where
         Ok(())
     }
 
-    fn set_item_py(&self, idx: usize, value: &Bound<PyAny>, update: bool) -> PyResult<()> {
-        let value: T = value.extract()?;
-        let mut list = self.list.write().unwrap();
-        if idx >= list.len() {
+    fn set_item_py(&self, idx: usize, list: &Bound<PyAny>, update: bool) -> PyResult<()> {
+        let value: T = list.extract()?;
+        let mut new_list = self.list.write().unwrap();
+        if idx >= new_list.len() {
             return Err(PyIndexError::new_err("list index out of range"));
         }
 
         if self.connected.load(Ordering::Relaxed) {
-            let message = ListMessage::Set(idx, &value);
-            let data = serialize(&message);
-            let message = WriteMessage::list(self.id, update, data);
-            self.channel.send(message).unwrap();
+            list.py().allow_threads(|| {
+                let data = serialize(ListMessageRef::Set(idx, &value));
+                let message = WriteMessage::List(self.id, update, data);
+                self.channel.send(message).unwrap();
+            });
         }
 
-        list[idx] = value;
+        new_list[idx] = value;
 
         Ok(())
     }
@@ -184,9 +192,8 @@ where
         }
 
         if self.connected.load(Ordering::Relaxed) {
-            let message = ListMessage::Remove::<T>(idx);
-            let data = serialize(&message);
-            let message = WriteMessage::list(self.id, update, message);
+            let data = serialize(ListMessageRef::Remove::<T>(idx));
+            let message = WriteMessage::List(self.id, update, data);
             self.channel.send(message).unwrap();
         }
 
@@ -200,9 +207,8 @@ where
 
         let mut list = self.list.write().unwrap();
         if self.connected.load(Ordering::Relaxed) {
-            let message = ListMessage::Add(&value);
-            let data = serialize(&message);
-            let message = WriteMessage::list(self.id, update, data);
+            let data = serialize(ListMessageRef::Add(&value));
+            let message = WriteMessage::List(self.id, update, data);
 
             self.channel.send(message).unwrap();
         }
@@ -217,11 +223,10 @@ where
     }
 }
 
-impl<T: Send + Sync> SyncTrait for PyValueList<T> {
+impl<T: Serialize + Send + Sync> SyncTrait for PyValueList<T> {
     fn sync(&self) {
         let list = self.list.read().unwrap();
-        let message = ListMessage::All(&list);
-        let data = serialize(&message);
+        let data = serialize(ListMessageRef::All(&list));
         let message = WriteMessage::List(self.id, false, data);
         self.channel.send(message).unwrap();
     }
