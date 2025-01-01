@@ -143,7 +143,10 @@ impl ValuesCreator {
         value
     }
 
-    pub fn add_graphs<T: GraphElement + 'static>(&mut self) -> Arc<ValueGraphs<T>> {
+    pub fn add_graphs<T>(&mut self) -> Arc<ValueGraphs<T>>
+    where
+        T: for<'a> Deserialize<'a> + GraphElement + 'static,
+    {
         let id = self.get_id();
         let value = ValueGraphs::new(id);
 

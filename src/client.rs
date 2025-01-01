@@ -77,7 +77,10 @@ fn handle_message(
 
         ReadMessage::Graph(id, updata, data) => match vals.graphs.get(&id) {
             Some(value) => {
-                value.update_graph(data)?;
+                match data {
+                    MessageData::Stack(data) => value.update_graph(&data),
+                    MessageData::Heap(data) => value.update_graph(&data),
+                }?;
                 updata
             }
             None => return Err(format!("Graph with id {} not found", id)),

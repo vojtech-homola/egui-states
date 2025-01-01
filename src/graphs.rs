@@ -1,4 +1,5 @@
 use std::mem::size_of;
+use std::ptr::copy_nonoverlapping;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, RwLock};
@@ -7,20 +8,17 @@ use pyo3::buffer::{Element, PyBuffer};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyByteArray, PyTuple};
+use serde::{Deserialize, Serialize};
 
 use crate::nohash::NoHashMap;
 use crate::python_convert::ToPython;
-use crate::transport::WriteMessage;
+use crate::transport::{serialize, WriteMessage};
 use crate::SyncTrait;
 
 pub trait WriteGraphMessage: Send + Sync {
     fn write_message(self: Box<Self>, head: &mut [u8]) -> Option<Vec<u8>>;
 }
 pub trait GraphElement: Clone + Copy + Send + Sync + 'static {
-    // const DOUBLE: bool;
-
-    // fn to_le_bytes(self) -> [u8; 8];
-    // fn from_le_bytes(bytes: &[u8]) -> Self;
     fn zero() -> Self;
 }
 
@@ -31,7 +29,7 @@ pub struct Graph<T> {
 }
 
 impl<T: GraphElement> Graph<T> {
-    pub fn to_graph_data(&self, points: Option<usize>) -> GraphData<T> {
+    pub fn to_graph_data(&self, points: Option<usize>) -> (GraphDataInfo<T>, Vec<u8>) {
         let (bytes_size, ptr_pos, points) = match points {
             Some(points) => {
                 if points > self.y.len() {
@@ -67,7 +65,7 @@ impl<T: GraphElement> Graph<T> {
                     unimplemented!("Big endian not implemented yet.");
                 }
 
-                GraphData::new(points, data, false)
+                (GraphDataInfo::new(points, false), data)
             }
 
             None => {
@@ -87,18 +85,19 @@ impl<T: GraphElement> Graph<T> {
                     unimplemented!("Big endian not implemented yet.");
                 }
 
-                GraphData::new(points, data, true)
+                (GraphDataInfo::new(points, true), data)
             }
         }
     }
 
-    pub fn add_points_from_data(&mut self, graph_data: GraphData<T>) -> Result<(), String> {
-        let GraphData {
-            points,
-            data,
-            is_linear,
-            ..
-        } = graph_data;
+    pub fn add_points_from_data(
+        &mut self,
+        info: GraphDataInfo<T>,
+        data: &[u8],
+    ) -> Result<(), String> {
+        let GraphDataInfo {
+            points, is_linear, ..
+        } = info;
 
         #[cfg(target_endian = "little")]
         {
@@ -140,13 +139,10 @@ impl<T: GraphElement> Graph<T> {
         }
     }
 
-    pub fn from_graph_data(graph_data: GraphData<T>) -> Self {
-        let GraphData {
-            is_linear,
-            points,
-            data,
-            ..
-        } = graph_data;
+    pub fn from_graph_data(info: GraphDataInfo<T>, data: &[u8]) -> Self {
+        let GraphDataInfo {
+            is_linear, points, ..
+        } = info;
 
         #[cfg(target_endian = "little")]
         {
@@ -175,32 +171,44 @@ impl<T: GraphElement> Graph<T> {
     }
 }
 
-#[derive(Clone)]
-pub struct GraphData<T> {
-    _phantom: std::marker::PhantomData<T>,
-    is_linear: bool,
-    points: usize,
-    data: Vec<u8>,
-}
+// #[derive(Clone)]
+// pub struct GraphData<T> {
+//     _phantom: std::marker::PhantomData<T>,
+//     is_linear: bool,
+//     points: usize,
+//     data: Vec<u8>,
+// }
 
-impl<T> GraphData<T> {
-    fn new(points: usize, data: Vec<u8>, is_linear: bool) -> Self {
-        Self {
-            _phantom: std::marker::PhantomData,
-            is_linear,
-            points,
-            data,
-        }
-    }
-}
+// impl<T> GraphData<T> {
+//     fn new(points: usize, data: Vec<u8>, is_linear: bool) -> Self {
+//         Self {
+//             _phantom: std::marker::PhantomData,
+//             is_linear,
+//             points,
+//             data,
+//         }
+//     }
+// }
 
-pub(crate) struct GraphDataInfo<T> {
+#[derive(Serialize, Deserialize)]
+struct GraphDataInfo<T> {
     phantom: std::marker::PhantomData<T>,
     is_linear: bool,
     points: usize,
 }
 
-pub enum GraphMessage<T> {
+impl<T> GraphDataInfo<T> {
+    fn new(points: usize, is_linear: bool) -> Self {
+        Self {
+            phantom: std::marker::PhantomData,
+            is_linear,
+            points,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+enum GraphMessage<T> {
     Set(u16, GraphDataInfo<T>),
     AddPoints(u16, GraphDataInfo<T>),
     Remove(u16),
@@ -210,7 +218,7 @@ pub enum GraphMessage<T> {
 // CLIENT --------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 pub(crate) trait GraphUpdate: Sync + Send {
-    fn update_graph(&self, head: &[u8], data: Option<Vec<u8>>) -> Result<(), String>;
+    fn update_graph(&self, data: &[u8]) -> Result<(), String>;
 }
 
 pub struct ValueGraphs<T> {
@@ -249,18 +257,22 @@ impl<T: Clone + Copy> ValueGraphs<T> {
     }
 }
 
-impl<T: GraphElement> GraphUpdate for ValueGraphs<T> {
-    fn update_graph(&self, head: &[u8], data: Option<Vec<u8>>) -> Result<(), String> {
-        let message: GraphMessage<T> = GraphMessage::read_message(head, data)?;
+impl<T: GraphElement> GraphUpdate for ValueGraphs<T>
+where
+    T: for<'a> Deserialize<'a>,
+{
+    fn update_graph(&self, data: &[u8]) -> Result<(), String> {
+        let (message, data) = postcard::take_from_bytes(data)
+            .map_err(|e| format!("failed to deserialize graph message: {}", e))?;
 
         match message {
-            GraphMessage::Set(idx, graph_data) => {
-                let graph = Graph::from_graph_data(graph_data);
+            GraphMessage::Set(idx, info) => {
+                let graph = Graph::from_graph_data(info, data);
                 self.graphs.write().unwrap().insert(idx, (graph, true));
             }
-            GraphMessage::AddPoints(idx, graph_data) => {
+            GraphMessage::AddPoints(idx, info) => {
                 if let Some((graph, changed)) = self.graphs.write().unwrap().get_mut(&idx) {
-                    graph.add_points_from_data(graph_data)?;
+                    graph.add_points_from_data(info, data)?;
                     *changed = true;
                 }
             }
@@ -316,7 +328,7 @@ impl<T> PyValueGraphs<T> {
 
 impl<T> PyGraphTrait for PyValueGraphs<T>
 where
-    T: GraphElement + Element + for<'py> FromPyObject<'py> + ToPython,
+    T: GraphElement + Element + for<'py> FromPyObject<'py> + ToPython + Serialize,
 {
     fn set_py(&self, idx: u16, object: &Bound<PyAny>, update: bool) -> PyResult<()> {
         let buffer = PyBuffer::<T>::extract_bound(object)?;
@@ -324,10 +336,10 @@ where
 
         let mut w = self.graphs.write().unwrap();
         if self.connected.load(Ordering::Relaxed) {
-            let graph_data = graph.to_graph_data(None);
-            let message = GraphMessage::Set(idx, graph_data);
+            let (info, data) = graph.to_graph_data(None);
+            let message = serialize(GraphMessage::Set(idx, info));
             self.channel
-                .send(WriteMessage::Graph(self.id, update, Box::new(message)))
+                .send(WriteMessage::Graph(self.id, update, message, Some(data)))
                 .unwrap();
         }
         w.insert(idx, graph);
@@ -344,9 +356,10 @@ where
         buffer_to_graph_add(&buffer, graph)?;
 
         if self.connected.load(Ordering::Relaxed) {
-            let message = GraphMessage::AddPoints(idx, graph.to_graph_data(None));
+            let (info, data) = graph.to_graph_data(None);
+            let message = serialize(GraphMessage::AddPoints(idx, info));
             self.channel
-                .send(WriteMessage::Graph(self.id, update, Box::new(message)))
+                .send(WriteMessage::Graph(self.id, update, message, Some(data)))
                 .unwrap();
         }
 
@@ -404,9 +417,9 @@ where
     fn remove_py(&self, idx: u16, update: bool) {
         let mut w = self.graphs.write().unwrap();
         if self.connected.load(Ordering::Relaxed) {
-            let message = GraphMessage::<T>::Remove(idx);
+            let message = serialize(GraphMessage::<T>::Remove(idx));
             self.channel
-                .send(WriteMessage::Graph(self.id, update, Box::new(message)))
+                .send(WriteMessage::Graph(self.id, update, message, None))
                 .unwrap();
         }
         w.remove(&idx);
@@ -430,31 +443,32 @@ where
         let mut w = self.graphs.write().unwrap();
 
         if self.connected.load(Ordering::Relaxed) {
-            let message = GraphMessage::<T>::Reset;
+            let message = serialize(GraphMessage::<T>::Reset);
             self.channel
-                .send(WriteMessage::Graph(self.id, update, Box::new(message)))
+                .send(WriteMessage::Graph(self.id, update, message, None))
                 .unwrap();
         }
         w.clear();
     }
 }
 
-impl<T: GraphElement> SyncTrait for PyValueGraphs<T> {
+impl<T: GraphElement> SyncTrait for PyValueGraphs<T>
+where
+    T: Serialize,
+{
     fn sync(&self) {
         let w = self.graphs.read().unwrap();
 
+        let message = serialize(GraphMessage::<T>::Reset);
         self.channel
-            .send(WriteMessage::Graph(
-                self.id,
-                false,
-                Box::new(GraphMessage::<T>::Reset),
-            ))
+            .send(WriteMessage::Graph(self.id, false, message, None))
             .unwrap();
 
         for (idx, graph) in w.iter() {
-            let message = GraphMessage::Set(*idx, graph.to_graph_data(None));
+            let (info, data) = graph.to_graph_data(None);
+            let message = serialize(GraphMessage::Set(*idx, info));
             self.channel
-                .send(WriteMessage::Graph(self.id, false, Box::new(message)))
+                .send(WriteMessage::Graph(self.id, false, message, Some(data)))
                 .unwrap();
         }
     }
@@ -587,19 +601,6 @@ where
 // GraphElement --------------------------------------------------------------
 // ---------------------------------------------------------------------------
 impl GraphElement for f32 {
-    // const DOUBLE: bool = false;
-
-    // #[inline]
-    // fn to_le_bytes(self) -> [u8; 8] {
-    //     let bytes = self.to_le_bytes();
-    //     [bytes[0], bytes[1], bytes[2], bytes[3], 0, 0, 0, 0]
-    // }
-
-    // #[inline]
-    // fn from_le_bytes(bytes: &[u8]) -> Self {
-    //     f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
-    // }
-
     #[inline]
     fn zero() -> Self {
         0.0
@@ -607,20 +608,6 @@ impl GraphElement for f32 {
 }
 
 impl GraphElement for f64 {
-    // const DOUBLE: bool = true;
-
-    // #[inline]
-    // fn to_le_bytes(self) -> [u8; 8] {
-    //     self.to_le_bytes()
-    // }
-
-    // #[inline]
-    // fn from_le_bytes(bytes: &[u8]) -> Self {
-    //     f64::from_le_bytes([
-    //         bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
-    //     ])
-    // }
-
     #[inline]
     fn zero() -> Self {
         0.0

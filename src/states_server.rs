@@ -209,7 +209,7 @@ impl ValuesCreator {
     }
 
     pub fn add_graphs<
-        T: GraphElement + Element + for<'py> FromPyObject<'py> + ToPython + 'static,
+        T: GraphElement + Element + Serialize + for<'py> FromPyObject<'py> + ToPython + 'static,
     >(
         &mut self,
     ) {
