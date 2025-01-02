@@ -99,7 +99,7 @@ pub(crate) trait PyListTrait: Send + Sync {
     fn len_py(&self) -> usize;
 }
 
-pub struct PyValueList<T> {
+pub(crate) struct PyValueList<T> {
     id: u32,
     list: RwLock<Vec<T>>,
     channel: Sender<WriteMessage>,

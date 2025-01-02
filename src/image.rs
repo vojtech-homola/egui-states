@@ -188,12 +188,14 @@ impl ImageUpdate for ValueImage {
     }
 }
 
+// SERVER -----------------------------------------------------
+// ------------------------------------------------------------
 struct ImageDataInner {
     data: Vec<u8>,
     size: [usize; 2],
 }
 
-pub struct PyValueImage {
+pub(crate) struct PyValueImage {
     id: u32,
     image: RwLock<ImageDataInner>,
     channel: Sender<WriteMessage>,

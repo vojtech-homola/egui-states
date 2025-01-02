@@ -67,35 +67,35 @@ pub(crate) fn enum_impl_derive_impl(input: TokenStream) -> TokenStream {
         let variants = d.variants.into_iter().map(|v| v.ident);
 
         let out = quote!(
-            impl EnumInt for #name {
-                fn as_int(&self) -> u64 {
-                    *self as u64
-                }
+            // impl EnumInt for #name {
+            //     fn as_int(&self) -> u64 {
+            //         *self as u64
+            //     }
 
-                fn from_int(value: u64) -> Result<Self, ()> {
-                    match value {
-                        #( #vals => Ok(Self::#variants), )*
-                        _ => Err(()),
-                    }
-                }
-            }
+            //     fn from_int(value: u64) -> Result<Self, ()> {
+            //         match value {
+            //             #( #vals => Ok(Self::#variants), )*
+            //             _ => Err(()),
+            //         }
+            //     }
+            // }
 
-            impl ReadValue for #name {
-                fn read_message(head: &[u8], data: Option<Vec<u8>>) -> Result<Self, String> {
-                    let value = u64::read_message(head, data)?;
-                    #name::from_int(value).map_err(|_| format!("Invalid enum format for enum"))
-                }
-            }
+            // impl ReadValue for #name {
+            //     fn read_message(head: &[u8], data: Option<Vec<u8>>) -> Result<Self, String> {
+            //         let value = u64::read_message(head, data)?;
+            //         #name::from_int(value).map_err(|_| format!("Invalid enum format for enum"))
+            //     }
+            // }
 
-            impl WriteValue for #name {
-                fn write_message(&self, head: &mut [u8]) -> Option<Vec<u8>> {
-                    unreachable!("Enum should not be written directly")
-                }
+            // impl WriteValue for #name {
+            //     fn write_message(&self, head: &mut [u8]) -> Option<Vec<u8>> {
+            //         unreachable!("Enum should not be written directly")
+            //     }
 
-                fn into_message(self) -> ValueMessage {
-                    ValueMessage::U64(self.as_int())
-                }
-            }
+            //     fn into_message(self) -> ValueMessage {
+            //         ValueMessage::U64(self.as_int())
+            //     }
+            // }
         );
 
         return out.into();

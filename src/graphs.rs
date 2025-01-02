@@ -29,7 +29,7 @@ pub struct Graph<T> {
 }
 
 impl<T: GraphElement> Graph<T> {
-    pub fn to_graph_data(&self, points: Option<usize>) -> (GraphDataInfo<T>, Vec<u8>) {
+    fn to_graph_data(&self, points: Option<usize>) -> (GraphDataInfo<T>, Vec<u8>) {
         let (bytes_size, ptr_pos, points) = match points {
             Some(points) => {
                 if points > self.y.len() {
@@ -90,11 +90,7 @@ impl<T: GraphElement> Graph<T> {
         }
     }
 
-    pub fn add_points_from_data(
-        &mut self,
-        info: GraphDataInfo<T>,
-        data: &[u8],
-    ) -> Result<(), String> {
+    fn add_points_from_data(&mut self, info: GraphDataInfo<T>, data: &[u8]) -> Result<(), String> {
         let GraphDataInfo {
             points, is_linear, ..
         } = info;
@@ -139,7 +135,7 @@ impl<T: GraphElement> Graph<T> {
         }
     }
 
-    pub fn from_graph_data(info: GraphDataInfo<T>, data: &[u8]) -> Self {
+    fn from_graph_data(info: GraphDataInfo<T>, data: &[u8]) -> Self {
         let GraphDataInfo {
             is_linear, points, ..
         } = info;
@@ -170,25 +166,6 @@ impl<T: GraphElement> Graph<T> {
         }
     }
 }
-
-// #[derive(Clone)]
-// pub struct GraphData<T> {
-//     _phantom: std::marker::PhantomData<T>,
-//     is_linear: bool,
-//     points: usize,
-//     data: Vec<u8>,
-// }
-
-// impl<T> GraphData<T> {
-//     fn new(points: usize, data: Vec<u8>, is_linear: bool) -> Self {
-//         Self {
-//             _phantom: std::marker::PhantomData,
-//             is_linear,
-//             points,
-//             data,
-//         }
-//     }
-// }
 
 #[derive(Serialize, Deserialize)]
 struct GraphDataInfo<T> {
@@ -301,7 +278,7 @@ pub(crate) trait PyGraphTrait: Send + Sync {
     fn clear_py(&self, update: bool);
 }
 
-pub struct PyValueGraphs<T> {
+pub(crate) struct PyValueGraphs<T> {
     id: u32,
     graphs: RwLock<NoHashMap<u16, Graph<T>>>,
 

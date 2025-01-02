@@ -136,23 +136,11 @@ fn start_gui_client(
         let read_thread = thread::Builder::new().name("Read".to_string());
         let recv_tread = read_thread
             .spawn(move || {
-                let mut head = [0u8; HEAD_SIZE];
                 loop {
                     // read the message
-                    let res = read_message(&mut head, &mut stream_read);
+                    let res = read_message(&mut stream_read);
                     if let Err(e) = res {
                         println!("Error reading message: {:?}", e); // TODO: log error
-                        break;
-                    }
-                    let (type_, data) = res.unwrap();
-
-                    // parse message
-                    let res = ReadMessage::parse(&head, type_, data);
-                    if let Err(res) = res {
-                        let error = format!("Error parsing message: {:?}", res);
-                        th_channel
-                            .send(WriteMessage::Command(CommandMessage::Error(error)))
-                            .unwrap();
                         break;
                     }
                     let message = res.unwrap();
@@ -174,13 +162,10 @@ fn start_gui_client(
         let write_thread = thread::Builder::new().name("Write".to_string());
         let send_thread = write_thread
             .spawn(move || {
-                // preallocate buffer
-                let mut head = [0u8; HEAD_SIZE];
-
                 // send handshake
                 let handshake = CommandMessage::Handshake(version, handshake);
-                let data = WriteMessage::Command(handshake).parse(&mut head);
-                let res = write_message(&mut head, data, &mut stream_write);
+                let message = WriteMessage::Command(handshake);
+                let res = write_message(message, &mut stream_write);
                 if let Err(e) = res {
                     println!("Error for sending hadnskae: {:?}", e); // TODO: log error
                     return rx;
@@ -196,11 +181,8 @@ fn start_gui_client(
                         break;
                     }
 
-                    // parse the message
-                    let data = message.parse(&mut head);
-
                     // write the message
-                    let res = write_message(&head, data, &mut stream_write);
+                    let res = write_message(message, &mut stream_write);
                     if let Err(e) = res {
                         println!("Error for sending message: {:?}", e); // TODO: log error
                         break;

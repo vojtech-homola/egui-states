@@ -5,7 +5,7 @@ from typing import Any
 
 import numpy as np
 
-from egui_pysync.signals import ArgParser, _SignalsManager
+from egui_pysync.signals import SignalsManager
 from egui_pysync.typing import SteteServerCoreBase
 
 
@@ -31,11 +31,10 @@ class _MainStatesBase(_StatesBase, ABC):
 class ErrorSignal:
     """Error signal for processing errors from the state server."""
 
-    def __init__(self, siganls_manager: _SignalsManager):
+    def __init__(self, siganls_manager: SignalsManager):
         """Initialize the ErrorSignal."""
         self._value_id = 0
         self._signals_manager = siganls_manager
-        self._signals_manager.register_value(0)
 
     def connect(self, callback: Callable[[str], None]) -> None:
         """Connect a callback to the value.
@@ -61,21 +60,20 @@ class ErrorSignal:
 class _StaticBase:
     _server: SteteServerCoreBase
 
-    def __init__(self, counter: _Counter, arg_parser: ArgParser = False) -> None:
+    def __init__(self, counter: _Counter) -> None:
         self._value_id = counter.get_id()
-        self._arg_parser = arg_parser
 
     def _initialize(self, server: SteteServerCoreBase):
         self._server = server
 
 
 class _ValueBase(_StaticBase):
-    _signals_manager: _SignalsManager
+    _signals_manager: SignalsManager
 
-    def _initialize(self, server: SteteServerCoreBase, signals_manager: _SignalsManager):
+    def _initialize(self, server: SteteServerCoreBase, signals_manager: SignalsManager):
         self._server = server
         self._signals_manager = signals_manager
-        signals_manager.register_value(self._value_id, arg_parser=self._arg_parser)
+        # signals_manager.register_value(self._value_id)
 
 
 class Value[T](_ValueBase):
@@ -97,11 +95,7 @@ class Value[T](_ValueBase):
         Returns:
             T: The value of the UI element.
         """
-        val = self._server.value_get(self._value_id)
-        if callable(self._arg_parser):
-            return self._arg_parser(val)
-        else:
-            return val
+        return self._server.value_get(self._value_id)
 
     def connect(self, callback: Callable[[T], Any]) -> None:
         """Connect a callback to the value.
@@ -142,11 +136,7 @@ class ValueStatic[T](_StaticBase):
         Returns:
             T: The static value.
         """
-        val = self._server.static_get(self._value_id)
-        if callable(self._arg_parser):
-            return self._arg_parser(val)
-        else:
-            return val
+        return self._server.static_get(self._value_id)
 
 
 class Signal[T](_ValueBase):
@@ -185,9 +175,6 @@ class Signal[T](_ValueBase):
 
 class SignalEmpty(_ValueBase):
     """Empty Signal from UI."""
-
-    def __init__(self, counter: _Counter) -> None:
-        super().__init__(counter, arg_parser=True)
 
     def set(self) -> None:
         """Set the signal value.

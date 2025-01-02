@@ -12,12 +12,12 @@ use pyo3::types::{PyByteArray, PyDict, PyList, PyTuple};
 use crate::commands::CommandMessage;
 use crate::server::Server;
 use crate::signals::ChangedValues;
-use crate::states_server::{PyValuesList, ValuesCreator};
+use crate::states_server::{PyValuesList, ServerValuesCreator};
 use crate::transport::WriteMessage;
 use crate::NoHashSet;
 
 // To be able to create all values outside this crate
-pub(crate) static CREATE_HOOK: OnceLock<fn(&mut ValuesCreator)> = OnceLock::new();
+pub(crate) static CREATE_HOOK: OnceLock<fn(&mut ServerValuesCreator)> = OnceLock::new();
 
 #[pyclass]
 pub(crate) struct StateServerCore {
@@ -46,7 +46,7 @@ impl StateServerCore {
 
         let signals = ChangedValues::new();
         let mut values_creator =
-            ValuesCreator::new(channel.clone(), connected.clone(), signals.clone());
+            ServerValuesCreator::new(channel.clone(), connected.clone(), signals.clone());
 
         let creator = CREATE_HOOK.get();
         match creator {

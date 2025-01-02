@@ -103,7 +103,7 @@ pub(crate) trait PyDictTrait: Send + Sync {
     fn len_py(&self) -> usize;
 }
 
-pub struct PyValueDict<K, V> {
+pub(crate) struct PyValueDict<K, V> {
     id: u32,
     dict: RwLock<HashMap<K, V>>,
     channel: Sender<WriteMessage>,

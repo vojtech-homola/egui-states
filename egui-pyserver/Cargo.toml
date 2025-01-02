@@ -1,8 +1,0 @@
-[package]
-name = "egui_pyserver"
-version.workspace = true
-edition.workspace = true
-
-[dependencies]
-pyo3 = { version = "0.23.*" }
-egui_pysync = { workspace = true }

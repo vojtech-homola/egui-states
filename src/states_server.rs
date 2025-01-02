@@ -77,7 +77,7 @@ impl ValuesList {
     }
 }
 
-pub struct ValuesCreator {
+pub struct ServerValuesCreator {
     channel: Sender<WriteMessage>,
     connected: Arc<AtomicBool>,
     signals: ChangedValues,
@@ -88,7 +88,7 @@ pub struct ValuesCreator {
     py_val: PyValuesList,
 }
 
-impl ValuesCreator {
+impl ServerValuesCreator {
     pub(crate) fn new(
         channel: Sender<WriteMessage>,
         connected: Arc<AtomicBool>,

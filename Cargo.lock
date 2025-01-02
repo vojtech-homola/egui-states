@@ -98,6 +98,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "egui_pysync"
+version = "0.0.0"
+dependencies = [
+ "egui",
+ "egui_pysync_macros",
+ "heapless",
+ "postcard",
+ "pyo3",
+ "serde",
+]
+
+[[package]]
+name = "egui_pysync_macros"
+version = "0.4.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "emath"
 version = "0.30.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -136,17 +157,6 @@ name = "epaint_default_fonts"
 version = "0.30.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "66f6ddac3e6ac6fd4c3d48bb8b1943472f8da0f43a4303bcd8a18aa594401c80"
-
-[[package]]
-name = "force-build"
-version = "0.0.0"
-dependencies = [
- "egui",
- "heapless",
- "postcard",
- "pyo3",
- "serde",
-]
 
 [[package]]
 name = "hash32"

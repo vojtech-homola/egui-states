@@ -36,10 +36,9 @@ impl StatesTransfer {
         let read_thread = thread::Builder::new().name("Reader".to_string());
         let thread = read_thread
             .spawn(move || {
-                let mut head = [0u8; HEAD_SIZE];
                 loop {
                     // read the message
-                    let res = read_message(&mut head, &mut stream);
+                    let res = read_message(&mut stream);
 
                     // check if not connected
                     if !connected.load(atomic::Ordering::Relaxed) {
@@ -52,15 +51,6 @@ impl StatesTransfer {
                         signals.set(0, error);
                         connected.store(false, atomic::Ordering::Relaxed);
                         break;
-                    }
-                    let (type_, data) = res.unwrap();
-
-                    // parse the message
-                    let res = ReadMessage::parse(&head, type_, data);
-                    if let Err(res) = res {
-                        let error = format!("Error parsing message: {:?}", res);
-                        signals.set(0, error);
-                        continue;
                     }
                     let message = res.unwrap();
 
@@ -97,14 +87,13 @@ impl StatesTransfer {
 
                     // process message
                     let res = match message {
-                        ReadMessage::Value(id, siganl, head, data) => match values.updated.get(&id)
-                        {
-                            Some(val) => val.update_value(head, data, siganl),
+                        ReadMessage::Value(id, signal, data) => match values.updated.get(&id) {
+                            Some(val) => val.update_value(data, signal),
                             None => Err(format!("Value with id {} not found", id)),
                         },
 
-                        ReadMessage::Signal(id, head, data) => match values.updated.get(&id) {
-                            Some(val) => val.update_value(head, data, true),
+                        ReadMessage::Signal(id, data) => match values.updated.get(&id) {
+                            Some(val) => val.update_value(data, true),
                             None => Err(format!("Value with id {} not found", id)),
                         },
 
@@ -140,8 +129,6 @@ impl StatesTransfer {
         let thread = thread::Builder::new().name("Writer".to_string());
         thread
             .spawn(move || {
-                let mut head = [0u8; HEAD_SIZE];
-
                 loop {
                     // get message from channel
                     let message = rx.recv().unwrap();
@@ -158,11 +145,8 @@ impl StatesTransfer {
                         break;
                     }
 
-                    //parse message
-                    let data = message.parse(&mut head);
-
                     // send message
-                    let res = write_message(&mut head, data, &mut stream);
+                    let res = write_message(message, &mut stream);
                     if let Err(e) = res {
                         let error = format!("Error writing message: {:?}", e);
                         signals.set(0, error);
@@ -253,21 +237,11 @@ impl Server {
                 let mut stream = stream.unwrap().0;
 
                 // read the message
-                let mut head = [0u8; HEAD_SIZE];
-                let res = read_message(&mut head, &mut stream);
+                let res = read_message(&mut stream);
                 if let Err(e) = res {
                     let error = format!("Error reading initial message: {:?}", e);
                     signals.set(0, error);
                     connected.store(false, atomic::Ordering::Relaxed);
-                    continue;
-                }
-                let (type_, data) = res.unwrap();
-
-                // parse the message
-                let res = ReadMessage::parse(&head, type_, data);
-                if let Err(res) = res {
-                    let error = format!("Error parsing initial message: {:?}", res);
-                    signals.set(0, error);
                     continue;
                 }
 

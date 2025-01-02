@@ -1,6 +1,6 @@
 [workspace]
-# members = ["egui-pysync-macros"]
-members = []
+members = ["egui-pysync-macros"]
+# members = []
 resolver = "2"
 
 [workspace.package]
@@ -11,15 +11,15 @@ edition = "2021"
 # egui_pysync = { path = "egui-pysync" }
 
 [package]
-name = "force-build"
+name = "egui_pysync"
 edition.workspace = true
 
-[[bin]]
-name = "force-build"
-path = "main.rs"
+# [[bin]]
+# name = "force-build"
+# path = "main.rs"
 
 [dependencies]
-# egui_pymacros = { path = "egui-pysync-macros" }
+egui_pysync_macros = { path = "egui-pysync-macros" }
 postcard = { version = "1.1.1", features = ["use-std"] }
 egui = "*"
 serde = "*"

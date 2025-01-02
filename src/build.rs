@@ -235,25 +235,11 @@ impl State {
                     let text = match value.typ {
                         ValueType::Value => {
                             let val_type = parse_types(&value.annotation, custom).unwrap();
-                            if val_type.contains("enums.") {
-                                format!(
-                                    "        self.{} = sc.Value[{}](c, {})\n",
-                                    name, val_type, val_type,
-                                )
-                            } else {
-                                format!("        self.{} = sc.Value[{}](c)\n", name, val_type)
-                            }
+                            format!("        self.{} = sc.Value[{}](c)\n", name, val_type)
                         }
                         ValueType::ValueStatic => {
                             let val_type = parse_types(&value.annotation, custom).unwrap();
-                            if val_type.contains("enums.") {
-                                format!(
-                                    "        self.{} = sc.ValueStatic[{}](c, {})\n",
-                                    name, val_type, val_type,
-                                )
-                            } else {
-                                format!("        self.{} = sc.ValueStatic[{}](c)\n", name, val_type)
-                            }
+                            format!("        self.{} = sc.ValueStatic[{}](c)\n", name, val_type)
                         }
                         ValueType::ValueImage => {
                             format!("        self.{} = sc.ValueImage(c)\n", name)
@@ -262,11 +248,6 @@ impl State {
                             let val_type = parse_types(&value.annotation, custom).unwrap();
                             if value.annotation == "()" {
                                 format!("        self.{} = sc.SignalEmpty(c)\n", name)
-                            } else if val_type.contains("enums.") {
-                                format!(
-                                    "        self.{} = sc.Signal[{}](c, {})\n",
-                                    name, val_type, val_type
-                                )
                             } else {
                                 format!("        self.{} = sc.Signal[{}](c)\n", name, val_type)
                             }
@@ -459,9 +440,9 @@ pub fn parse_states_for_server(
         file.write_all(format!("use {};\n", import).as_bytes())
             .unwrap();
     }
-    file.write_all(b"\nuse egui_pyserver::ValuesCreator;\n\n")
+    file.write_all(b"\nuse egui_pysync::ServerValuesCreator;\n\n")
         .unwrap();
-    file.write_all(b"pub(crate) fn create_states(c: &mut ValuesCreator) {\n")
+    file.write_all(b"pub(crate) fn create_states(c: &mut ServerValuesCreator) {\n")
         .unwrap();
 
     fn write_values(file: &mut fs::File, items: &Vec<Item>) {
@@ -472,13 +453,6 @@ pub fn parse_states_for_server(
 
                     let text = if value.annotation.is_empty() {
                         format!("    c.{}({});\n", add_str, value.default)
-                    } else if value.annotation.contains("enums::")
-                        && (add_str == "add_value" || add_str == "add_static")
-                    {
-                        format!(
-                            "    c.{}_en::<{}>({});\n",
-                            add_str, value.annotation, value.default
-                        )
                     } else if add_str == "add_signal" {
                         if value.annotation.contains("enums::") {
                             format!("    c.{}_en::<{}>();\n", add_str, value.annotation)

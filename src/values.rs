@@ -156,7 +156,7 @@ pub(crate) trait PySignalTrait: Send + Sync {
 }
 
 // PyValue --------------------------------------------------
-pub struct PyValue<T> {
+pub(crate) struct PyValue<T> {
     id: u32,
     value: RwLock<(T, usize)>,
     channel: Sender<WriteMessage>,
@@ -259,7 +259,7 @@ where
 }
 
 // PyValueStatic --------------------------------------------
-pub struct PyValueStatic<T> {
+pub(crate) struct PyValueStatic<T> {
     id: u32,
     value: RwLock<T>,
     channel: Sender<WriteMessage>,
@@ -319,7 +319,7 @@ where
 }
 
 // PySignal --------------------------------------------------
-pub struct PySignal<T> {
+pub(crate) struct PySignal<T> {
     id: u32,
     signals: ChangedValues,
     phantom: PhantomData<T>,

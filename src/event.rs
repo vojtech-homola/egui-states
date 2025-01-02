@@ -1,7 +1,8 @@
+#![allow(dead_code)]
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
-pub struct Event {
+pub(crate) struct Event {
     cond: Arc<Condvar>,
     flag: Arc<Mutex<bool>>,
 }
