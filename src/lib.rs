@@ -19,8 +19,6 @@ mod states_creator;
 mod states_server;
 mod transport;
 
-use pyo3::prelude::*;
-
 pub use dict::ValueDict;
 pub use graphs::ValueGraphs;
 pub use image::ValueImage;
@@ -29,13 +27,12 @@ pub use states_creator::ValuesCreator;
 pub use states_server::ServerValuesCreator;
 pub use values::{Diff, Signal, Value, ValueStatic};
 
+pub use serde;
+
 // traits for EnumValue -------------------------------------------------------
 pub use egui_pysync_macros::EnumImpl;
 
-pub trait EnumInt: Sized + Send + Sync + Copy {
-    fn as_int(&self) -> u64;
-    fn from_int(value: u64) -> Result<Self, ()>;
-}
+// pub trait EnumImpl: Serialize + for<'a> Deserialize<'a> {}
 
 // python -----------------------------------------------------------------------
 pub use python_convert::ToPython;
@@ -53,6 +50,9 @@ pub(crate) trait Acknowledge: Sync + Send {
 }
 
 // server -----------------------------------------------------------------------
+use pyo3::prelude::*;
+
+#[cfg(feature = "server")]
 pub fn init_module(
     m: &Bound<PyModule>,
     create_function: fn(&mut states_server::ServerValuesCreator),
