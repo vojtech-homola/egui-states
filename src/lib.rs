@@ -32,6 +32,9 @@ pub use serde;
 // traits for EnumValue -------------------------------------------------------
 pub use egui_pysync_macros::{pyenum, EnumImpl};
 
+#[cfg(feature = "server")]
+pub use crate::python_convert::EnumInit;
+
 // pub trait EnumImpl: Serialize + for<'a> Deserialize<'a> {}
 
 // python -----------------------------------------------------------------------

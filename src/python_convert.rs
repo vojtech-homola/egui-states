@@ -4,6 +4,12 @@ pub trait ToPython: Send + Sync {
     fn to_python<'py>(&self, py: Python<'py>) -> Bound<'py, PyAny>;
 }
 
+#[derive(FromPyObject)]
+pub enum EnumInit {
+    Value(i64),
+    Name(String),
+}
+
 // macro_rules! impl_allow_basic {
 //     ($($t:ty),*) => {
 //         $(

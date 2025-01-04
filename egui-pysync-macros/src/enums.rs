@@ -118,7 +118,8 @@ pub(crate) fn impl_pyenum(input: TokenStream) -> TokenStream {
         ..
     } = input;
 
-    let variants = variants.into_iter().map(|v| v);
+    let variants = variants.iter().map(|v| v);
+    // let var_0 = variants.clone();
 
     #[cfg(not(feature = "server"))]
     let out = quote!(
@@ -130,11 +131,14 @@ pub(crate) fn impl_pyenum(input: TokenStream) -> TokenStream {
 
     #[cfg(feature = "server")]
     let out = quote!(
-        #[pyo3::pyclass(eq, eq_int)]
+        #[egui_pysync::pyo3::pyclass(eq, eq_int)]
         #(#attrs)*
         #vis #enum_token #ident #generics {
             #(#variants),*
         }
+
+        #[egui_pysync::pyo3::pymethods]
+        impl #ident #generics {}
     );
 
     out.into()
