@@ -30,7 +30,7 @@ pub use values::{Diff, Signal, Value, ValueStatic};
 pub use serde;
 
 // traits for EnumValue -------------------------------------------------------
-pub use egui_pysync_macros::EnumImpl;
+pub use egui_pysync_macros::{pyenum, EnumImpl};
 
 // pub trait EnumImpl: Serialize + for<'a> Deserialize<'a> {}
 
@@ -50,13 +50,17 @@ pub(crate) trait Acknowledge: Sync + Send {
 }
 
 // server -----------------------------------------------------------------------
+#[cfg(feature = "server")]
+pub use pyo3;
+
+#[cfg(feature = "server")]
 use pyo3::prelude::*;
 
 #[cfg(feature = "server")]
 pub fn init_module(
-    m: &Bound<PyModule>,
+    m: &pyo3::Bound<pyo3::types::PyModule>,
     create_function: fn(&mut states_server::ServerValuesCreator),
-) -> PyResult<()> {
+) -> pyo3::PyResult<()> {
     py_server::CREATE_HOOK.set(create_function).map_err(|_| {
         pyo3::exceptions::PyRuntimeError::new_err("Failed to inicialize state server module.")
     })?;

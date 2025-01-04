@@ -1,6 +1,7 @@
 use proc_macro::TokenStream;
+use proc_macro2::Ident;
 use quote::quote;
-use syn::{parse_macro_input, Data, DeriveInput, Expr, ExprLit, Lit};
+use syn::{self, parse_macro_input, Data, DeriveInput, Expr, ExprLit, Lit};
 
 pub(crate) fn enum_str_derive_impl(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -102,4 +103,39 @@ pub(crate) fn enum_impl_derive_impl(input: TokenStream) -> TokenStream {
     }
 
     panic!("EnumInt can only be derived for enums");
+}
+
+pub(crate) fn impl_pyenum(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as syn::ItemEnum);
+
+    let syn::ItemEnum {
+        attrs,
+        vis,
+        enum_token,
+        ident,
+        generics,
+        variants,
+        ..
+    } = input;
+
+    let variants = variants.into_iter().map(|v| v);
+
+    #[cfg(not(feature = "server"))]
+    let out = quote!(
+        #(#attrs)*
+        #vis #enum_token #ident #generics {
+            #(#variants),*
+        }
+    );
+
+    #[cfg(feature = "server")]
+    let out = quote!(
+        #[pyo3::pyclass(eq, eq_int)]
+        #(#attrs)*
+        #vis #enum_token #ident #generics {
+            #(#variants),*
+        }
+    );
+
+    out.into()
 }

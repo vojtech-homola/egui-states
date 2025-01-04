@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 resolver = "2"
 
+[features]
+server = []
+
 [lib]
 proc-macro = true
 

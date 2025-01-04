@@ -16,3 +16,8 @@ mod enums;
 pub fn enum_impl_derive(input: TokenStream) -> TokenStream {
     enums::enum_impl_derive_impl(input)
 }
+
+#[proc_macro_attribute]
+pub fn pyenum(_: TokenStream, input: TokenStream) -> TokenStream {
+    enums::impl_pyenum(input)
+}

@@ -11,7 +11,7 @@ name = "egui_pysync"
 edition.workspace = true
 
 [features]
-server = []
+server = ["egui_pysync_macros/server"]
 
 [dependencies]
 egui_pysync_macros = { path = "egui-pysync-macros" }
