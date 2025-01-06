@@ -8,6 +8,7 @@ pub trait ToPython: Send + Sync {
     fn to_python<'py>(&self, py: Python<'py>) -> Bound<'py, PyAny>;
 }
 
+#[cfg(feature = "server")]
 #[derive(FromPyObject)]
 pub enum EnumInit {
     Value(i64),
@@ -20,7 +21,6 @@ macro_rules! impl_topython_basic {
             impl ToPython for $t {
                 fn to_python<'py>(&self, py: Python<'py>) -> Bound<'py, PyAny> {
                     self.into_bound_py_any(py).unwrap()
-                    // self.into_pyobject(py).unwrap().to_owned().into_any()
                 }
             }
         )*
@@ -28,14 +28,6 @@ macro_rules! impl_topython_basic {
 }
 
 impl_topython_basic!(i8, i16, i32, i64, u8, u16, u32, u64, f32, f64, bool);
-
-// impl ToPython for bool {
-//     fn to_python<'py>(&self, py: Python<'py>) -> Bound<'py, PyAny> {
-//         use pyo3::conversion::IntoPyObjectExt;
-
-//         self.into_bound_py_any(py).unwrap()
-//     }
-// }
 
 // None ---------------------------------------------------
 impl ToPython for () {

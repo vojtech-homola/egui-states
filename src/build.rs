@@ -2,63 +2,9 @@ use std::collections::{HashMap, VecDeque};
 use std::string::ToString;
 use std::{fs, io::Write};
 
-use egui::epaint::text;
-
-// enums -----------------------------------------------------------------------
-pub fn parse_enum(enum_path: impl ToString, output_path: impl ToString) -> Result<(), String> {
-    let mut lines: VecDeque<String> = fs::read_to_string(enum_path.to_string())
-        .map_err(|e| format!("Failed to read file: {}", e))?
-        .lines()
-        .map(String::from)
-        .collect();
-
-    let mut file = fs::File::create(output_path.to_string())
-        .map_err(|e| format!("Failed to create file: {}", e))?;
-
-    file.write_all(b"# Ganerated by build.rs, do not edit\n")
-        .unwrap();
-    file.write_all(b"# ruff: noqa: D101\n").unwrap();
-    file.write_all(b"from enum import Enum\n").unwrap();
-
-    while lines.len() > 0 {
-        let line = lines.pop_front().unwrap();
-
-        if line.contains("pub enum") || line.contains("pub(crate) enum") {
-            file.write_all(b"\n\n").unwrap();
-            let enum_name = line.split(" ").collect::<Vec<&str>>()[2];
-            file.write_all(format!("class {}(Enum):\n", enum_name).as_bytes())
-                .unwrap();
-
-            let mut counter = 0;
-            loop {
-                let line = lines.pop_front().unwrap();
-
-                if line.contains("#") {
-                    continue;
-                } else if line.contains("}") {
-                    break;
-                } else {
-                    let line = line.replace(",", "").trim().to_string();
-                    if line.contains("=") {
-                        file.write_all(format!("    {}\n", line).as_bytes())
-                            .unwrap();
-                    } else {
-                        file.write_all(format!("    {} = {}\n", line, counter).as_bytes())
-                            .unwrap();
-                        counter += 1;
-                    }
-                }
-            }
-        }
-    }
-
-    file.flush().unwrap();
-    Ok(())
-}
-
 pub struct EnumParse {
-    pub name: String,
-    pub variants: Vec<(String, i64)>,
+    name: String,
+    variants: Vec<(String, i64)>,
 }
 
 pub fn read_enums(file_path: impl ToString) -> Vec<EnumParse> {
@@ -113,66 +59,57 @@ pub fn read_enums(file_path: impl ToString) -> Vec<EnumParse> {
 }
 
 // custem types ----------------------------------------------------------------
-pub fn parse_custom_types(
-    custom_types_path: impl ToString,
-    output_path: impl ToString,
-) -> Result<(), String> {
-    let lines: Vec<String> = fs::read_to_string(custom_types_path.to_string())
-        .map_err(|e| format!("Failed to read file: {}", e))?
+pub struct StructParse {
+    name: String,
+    fields: Vec<(String, String)>,
+}
+
+pub fn read_structs(file_path: impl ToString) -> Vec<StructParse> {
+    let mut lines: VecDeque<String> = fs::read_to_string(file_path.to_string())
+        .unwrap()
         .lines()
         .map(String::from)
         .collect();
 
-    let mut to_write: Vec<String> = Vec::new();
+    let mut result = Vec::new();
+    while lines.len() > 0 {
+        let line = lines.pop_front().unwrap();
 
-    fn parse_types(lines: &[String], to_write: &mut Vec<String>) {
-        let line = lines[0].clone();
+        if line.contains("pub struct") || line.contains("pub(crate) struct") {
+            let struct_name = line.split(" ").collect::<Vec<&str>>()[2];
+            let mut struct_parse = StructParse {
+                name: struct_name.to_string(),
+                fields: Vec::new(),
+            };
 
-        if line.contains("//") {
-            if line.contains("class") {
-                let text = line.replace("//", "").trim().to_string();
-                to_write.push(format!("\n{}\n", text));
-                let mut i = 1;
-                loop {
-                    if lines[i].contains("//") {
-                        let text = lines[i].replace("//", "").trim().to_string();
-                        to_write.push(format!("    {}\n", text));
-                        i += 1;
-                    } else {
-                        break;
-                    }
+            loop {
+                let line = lines.pop_front().unwrap();
+
+                if line.contains("#") {
+                    continue;
+                } else if line.contains("}") {
+                    break;
+                } else {
+                    let line = line.replace(",", "").trim().to_string();
+                    let name = line.split(": ").collect::<Vec<&str>>()[0].trim().to_string();
+                    let name = name
+                        .split(" ")
+                        .collect::<Vec<&str>>()
+                        .last()
+                        .unwrap()
+                        .trim()
+                        .to_string();
+                    let item_type = line.split(": ").collect::<Vec<&str>>()[1].trim().to_string();
+                    let item_type = parse_types(&item_type, &None).unwrap();
+                    struct_parse.fields.push((name, item_type));
                 }
-            } else {
-                let text = line.replace("//", "").trim().to_string();
-                to_write.push(format!("\n{}\n", text));
             }
+
+            result.push(struct_parse);
         }
     }
 
-    for (i, line) in lines.iter().enumerate() {
-        if line.contains("#[derive") && !line.contains("//") {
-            parse_types(&lines[i + 1..], &mut to_write);
-        }
-    }
-
-    let mut file = fs::File::create(output_path.to_string())
-        .map_err(|e| format!("Failed to create file: {}", e))?;
-
-    file.write_all(b"# Ganerated by build.rs, do not edit\n")
-        .unwrap();
-    file.write_all(b"# ruff: noqa: UP013 F403 F405 D101 E302 E305\n")
-        .unwrap();
-    file.write_all(b"from typing import *  # type: ignore\n")
-        .unwrap();
-    file.write_all(b"from collections.abc import *  # type: ignore\n\n")
-        .unwrap();
-
-    for line in to_write {
-        file.write_all(line.as_bytes()).unwrap();
-    }
-
-    file.flush().unwrap();
-    Ok(())
+    result
 }
 
 // states -----------------------------------------------------------------------
@@ -405,23 +342,24 @@ impl State {
             return;
         }
 
+        let core = Some(core.clone());
         for item in &self.items {
             match item {
                 Item::Value(name, value) => {
                     let text = match value.typ {
                         ValueType::Value => {
-                            let val_type = parse_types(&value.annotation, core).unwrap();
+                            let val_type = parse_types(&value.annotation, &core).unwrap();
                             format!("        self.{} = sc.Value[{}](c)\n", name, val_type)
                         }
                         ValueType::ValueStatic => {
-                            let val_type = parse_types(&value.annotation, core).unwrap();
+                            let val_type = parse_types(&value.annotation, &core).unwrap();
                             format!("        self.{} = sc.ValueStatic[{}](c)\n", name, val_type)
                         }
                         ValueType::ValueImage => {
                             format!("        self.{} = sc.ValueImage(c)\n", name)
                         }
                         ValueType::Signal => {
-                            let val_type = parse_types(&value.annotation, core).unwrap();
+                            let val_type = parse_types(&value.annotation, &core).unwrap();
                             if value.annotation == "()" {
                                 format!("        self.{} = sc.SignalEmpty(c)\n", name)
                             } else {
@@ -432,15 +370,15 @@ impl State {
                             let key_type = value.annotation.split(",").collect::<Vec<&str>>()[0];
                             let val_type =
                                 value.annotation.split(",").collect::<Vec<&str>>()[1].trim();
-                            let key_type = parse_types(key_type, core).unwrap();
-                            let val_type = parse_types(val_type, core).unwrap();
+                            let key_type = parse_types(key_type, &core).unwrap();
+                            let val_type = parse_types(val_type, &core).unwrap();
                             format!(
                                 "        self.{} = sc.ValueDict[{}, {}](c)\n",
                                 name, key_type, val_type
                             )
                         }
                         ValueType::ValueList => {
-                            let val_type = parse_types(&value.annotation, core).unwrap();
+                            let val_type = parse_types(&value.annotation, &core).unwrap();
                             format!("        self.{} = sc.ValueList[{}](c)\n", name, val_type)
                         }
                         ValueType::ValueGraphs => {
@@ -477,8 +415,8 @@ pub fn parse_states_for_server(
     states_file: impl ToString,
     output_file: impl ToString,
     root_state: &'static str,
-    imports: Vec<&'static str>,
     enums: &Option<(Vec<EnumParse>, String, String)>,
+    structs: &Option<(Vec<StructParse>, String, String)>,
 ) -> Result<(), String> {
     let lines: Vec<String> = fs::read_to_string(states_file.to_string())
         .map_err(|e| format!("Failed to read file: {}", e))?
@@ -494,12 +432,13 @@ pub fn parse_states_for_server(
     file.write_all(b"// Ganerated by build.rs, do not edit\n")
         .unwrap();
 
-    for import in imports {
+    // enums imports
+    if let Some((_, _, import)) = enums {
         file.write_all(format!("use {};\n", import).as_bytes())
             .unwrap();
     }
-    // enums imports
-    if let Some((_, _, import)) = enums {
+    // structs imports
+    if let Some((_, _, import)) = structs {
         file.write_all(format!("use {};\n", import).as_bytes())
             .unwrap();
     }
@@ -545,13 +484,13 @@ pub fn parse_states_for_server(
 
     file.write_all(b"}\n\n").unwrap();
 
+    // register types
     file.write_all(
         b"pub(crate) fn register_types(m: &egui_pysync::pyo3::Bound<egui_pysync::pyo3::types::PyModule>) -> egui_pysync::pyo3::PyResult<()> {\n",
     )
     .unwrap();
     file.write_all(b"    use egui_pysync::pyo3::prelude::*;\n\n")
         .unwrap();
-
     if let Some((enums, path, _)) = enums {
         for en in enums {
             let text = format!("    m.add_class::<{}::{}>()?;\n", path, en.name);
@@ -559,6 +498,12 @@ pub fn parse_states_for_server(
         }
     }
 
+    if let Some((structs, path, _)) = structs {
+        for st in structs {
+            let text = format!("    m.add_class::<{}::{}>()?;\n", path, st.name);
+            file.write_all(text.as_bytes()).unwrap();
+        }
+    }
     file.write_all(b"\n    Ok(())\n").unwrap();
     file.write_all(b"}").unwrap();
 
@@ -585,7 +530,7 @@ fn type_map() -> HashMap<&'static str, &'static str> {
     map
 }
 
-fn parse_types(value: &str, core: &String) -> Result<String, String> {
+fn parse_types(value: &str, core: &Option<String>) -> Result<String, String> {
     let map = type_map();
 
     if let Some(v) = map.get(value) {
@@ -640,8 +585,18 @@ fn parse_types(value: &str, core: &String) -> Result<String, String> {
     }
 
     if value.contains("::") {
-        let val = value.split("::").collect::<Vec<&str>>().last().unwrap().to_string() ;
-        let val = format!("{}.{}", core, val);
+        let val = value
+            .split("::")
+            .collect::<Vec<&str>>()
+            .last()
+            .unwrap()
+            .to_string();
+
+        let val = match core {
+            Some(core) => format!("{}.{}", core, val),
+            None => val,
+        };
+
         return Ok(val);
     }
 
@@ -681,4 +636,60 @@ pub fn parse_states_for_client(
     state.write_python(&mut file, &core, &mut written_classes, true);
 
     Ok(())
+}
+
+pub fn write_annotation(
+    core: String,
+    enums: Option<Vec<EnumParse>>,
+    structs: Option<Vec<StructParse>>,
+) {
+    let mut file = fs::File::create(core)
+        .map_err(|e| format!("Failed to create file: {}", e))
+        .unwrap();
+
+    file.write_all(b"# Ganerated by build.rs, do not edit\n")
+        .unwrap();
+    file.write_all(b"from egui_pysync.typing import SteteServerCoreBase, PySyncEnum\n\n")
+        .unwrap();
+    file.write_all(b"class StatesServerCore(SteteServerCoreBase):\n")
+        .unwrap();
+    file.write_all(b"    pass\n").unwrap();
+
+    if let Some(enums) = enums {
+        file.write_all(
+            b"\n# enums ----------------------------------------------------------------",
+        )
+        .unwrap();
+        for en in enums {
+            file.write_all(format!("\nclass {}(PySyncEnum):\n", en.name).as_bytes())
+                .unwrap();
+            for item in en.variants {
+                let text = format!("    {} = {}\n", item.0, item.1);
+                file.write_all(text.as_bytes()).unwrap();
+            }
+        }
+    }
+
+    if let Some(structs) = structs {
+        file.write_all(
+            b"\n# structs ----------------------------------------------------------------",
+        )
+        .unwrap();
+        for st in structs {
+            file.write_all(format!("\nclass {}:\n", st.name).as_bytes())
+                .unwrap();
+            let mut init = Vec::new();
+            for item in st.fields {
+                let text = format!("    {}: {}\n", item.0, item.1);
+                file.write_all(text.as_bytes()).unwrap();
+                init.push(format!("{}: {}", item.0, item.1));
+            }
+            let t = init.join(", ");
+            file.write_all(format!("\n    def __init__(self, {}):\n", t).as_bytes())
+                .unwrap();
+            file.write_all(b"        pass\n").unwrap();
+        }
+    }
+
+    file.flush().unwrap();
 }
