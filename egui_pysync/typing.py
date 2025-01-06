@@ -1,6 +1,7 @@
 # ruff: noqa: D101, D102, D107
 from collections.abc import Buffer
-from typing import Any, Self
+from enum import Enum
+from typing import Any
 
 
 class SteteServerCoreBase:
@@ -68,9 +69,8 @@ class SteteServerCoreBase:
     def graphs_clear(self, value_id: int, update: bool) -> None: ...
 
 
-class PysyncEnum:
-    def __init__(self, value: int) -> None: ...
-    def from_name(self, name: str) -> Self: ...
+class PysyncEnum(Enum):
+    def __init__(self, value: int | str) -> None: ...
     @property
     def value(self) -> int: ...
     @property

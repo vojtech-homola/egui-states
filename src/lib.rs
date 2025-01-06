@@ -30,12 +30,10 @@ pub use values::{Diff, Signal, Value, ValueStatic};
 pub use serde;
 
 // traits for EnumValue -------------------------------------------------------
-pub use egui_pysync_macros::{pyenum, EnumImpl};
+pub use egui_pysync_macros::{pyenum, pystruct};
 
 #[cfg(feature = "server")]
 pub use crate::python_convert::EnumInit;
-
-// pub trait EnumImpl: Serialize + for<'a> Deserialize<'a> {}
 
 // python -----------------------------------------------------------------------
 pub use python_convert::ToPython;

@@ -12,9 +12,14 @@ mod enums;
 //     enums::enum_int_derive_impl(input)
 // }
 
-#[proc_macro_derive(EnumImpl)]
-pub fn enum_impl_derive(input: TokenStream) -> TokenStream {
-    enums::enum_impl_derive_impl(input)
+// #[proc_macro_derive(EnumImpl)]
+// pub fn enum_impl_derive(input: TokenStream) -> TokenStream {
+//     enums::enum_impl_derive_impl(input)
+// }
+
+#[proc_macro_attribute]
+pub fn pystruct(_: TokenStream, input: TokenStream) -> TokenStream {
+    enums::impl_pystruct(input)
 }
 
 #[proc_macro_attribute]

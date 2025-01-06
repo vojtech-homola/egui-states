@@ -2,6 +2,8 @@ use std::collections::{HashMap, VecDeque};
 use std::string::ToString;
 use std::{fs, io::Write};
 
+use egui::epaint::text;
+
 // enums -----------------------------------------------------------------------
 pub fn parse_enum(enum_path: impl ToString, output_path: impl ToString) -> Result<(), String> {
     let mut lines: VecDeque<String> = fs::read_to_string(enum_path.to_string())
@@ -52,6 +54,62 @@ pub fn parse_enum(enum_path: impl ToString, output_path: impl ToString) -> Resul
 
     file.flush().unwrap();
     Ok(())
+}
+
+pub struct EnumParse {
+    pub name: String,
+    pub variants: Vec<(String, i64)>,
+}
+
+pub fn read_enums(file_path: impl ToString) -> Vec<EnumParse> {
+    let mut lines: VecDeque<String> = fs::read_to_string(file_path.to_string())
+        .unwrap()
+        .lines()
+        .map(String::from)
+        .collect();
+
+    let mut result = Vec::new();
+    while lines.len() > 0 {
+        let line = lines.pop_front().unwrap();
+
+        if line.contains("pub enum") || line.contains("pub(crate) enum") {
+            let enum_name = line.split(" ").collect::<Vec<&str>>()[2];
+            let mut enum_parse = EnumParse {
+                name: enum_name.to_string(),
+                variants: Vec::new(),
+            };
+
+            let mut counter = 0i64;
+            loop {
+                let line = lines.pop_front().unwrap();
+
+                if line.contains("#") {
+                    continue;
+                } else if line.contains("}") {
+                    break;
+                } else {
+                    let line = line.replace(",", "").trim().to_string();
+                    if line.contains("=") {
+                        let name = line.split("=").collect::<Vec<&str>>()[0].trim().to_string();
+                        let value = line.split("=").collect::<Vec<&str>>()[1]
+                            .trim()
+                            .parse::<i64>()
+                            .unwrap();
+                        enum_parse.variants.push((name, value));
+                        counter = value;
+                    } else {
+                        let name = line.trim().to_string();
+                        enum_parse.variants.push((name, counter));
+                    }
+                    counter += 1;
+                }
+            }
+
+            result.push(enum_parse);
+        }
+    }
+
+    result
 }
 
 // custem types ----------------------------------------------------------------
@@ -193,109 +251,6 @@ enum Item {
     State(String, State),
 }
 
-struct State {
-    name: String,
-    items: Vec<Item>,
-}
-
-impl State {
-    fn write_python(
-        &self,
-        file: &mut fs::File,
-        custom: &Option<(String, String)>,
-        written: &mut Vec<String>,
-        root: bool,
-    ) {
-        for item in &self.items {
-            if let Item::State(_, state) = item {
-                state.write_python(file, custom, written, false);
-            }
-        }
-
-        if root {
-            file.write_all(format!("\n\nclass {}(sc._MainStatesBase):\n", self.name).as_bytes())
-                .unwrap();
-            file.write_all(b"    def __init__(self, update: Callable[[float | None], None]):\n")
-                .unwrap();
-            file.write_all(b"        self._update = update\n").unwrap();
-            file.write_all(b"        c = sc._Counter()\n\n").unwrap();
-        } else if !written.contains(&self.name) {
-            file.write_all(format!("\n\nclass {}(sc._StatesBase):\n", self.name).as_bytes())
-                .unwrap();
-            file.write_all(b"    def __init__(self, c: sc._Counter):\n")
-                .unwrap();
-            written.push(self.name.clone());
-        } else {
-            return;
-        }
-
-        for item in &self.items {
-            match item {
-                Item::Value(name, value) => {
-                    let text = match value.typ {
-                        ValueType::Value => {
-                            let val_type = parse_types(&value.annotation, custom).unwrap();
-                            format!("        self.{} = sc.Value[{}](c)\n", name, val_type)
-                        }
-                        ValueType::ValueStatic => {
-                            let val_type = parse_types(&value.annotation, custom).unwrap();
-                            format!("        self.{} = sc.ValueStatic[{}](c)\n", name, val_type)
-                        }
-                        ValueType::ValueImage => {
-                            format!("        self.{} = sc.ValueImage(c)\n", name)
-                        }
-                        ValueType::Signal => {
-                            let val_type = parse_types(&value.annotation, custom).unwrap();
-                            if value.annotation == "()" {
-                                format!("        self.{} = sc.SignalEmpty(c)\n", name)
-                            } else {
-                                format!("        self.{} = sc.Signal[{}](c)\n", name, val_type)
-                            }
-                        }
-                        ValueType::ValueDict => {
-                            let key_type = value.annotation.split(",").collect::<Vec<&str>>()[0];
-                            let val_type =
-                                value.annotation.split(",").collect::<Vec<&str>>()[1].trim();
-                            let key_type = parse_types(key_type, custom).unwrap();
-                            let val_type = parse_types(val_type, custom).unwrap();
-                            format!(
-                                "        self.{} = sc.ValueDict[{}, {}](c)\n",
-                                name, key_type, val_type
-                            )
-                        }
-                        ValueType::ValueList => {
-                            let val_type = parse_types(&value.annotation, custom).unwrap();
-                            format!("        self.{} = sc.ValueList[{}](c)\n", name, val_type)
-                        }
-                        ValueType::ValueGraphs => {
-                            format!("        self.{} = sc.ValueGraphs(c)\n", name)
-                        }
-                    };
-
-                    file.write_all(text.as_bytes()).unwrap();
-                }
-                Item::State(name, state) => {
-                    let text = format!("        self.{} = {}(c)\n", name, state.name);
-                    file.write_all(text.as_bytes()).unwrap();
-                }
-            }
-        }
-
-        if root {
-            file.write_all(b"\n    def update(self, duration: float | None = None) -> None:\n")
-                .unwrap();
-            file.write_all(b"        \"\"\"Update the UI.\n\n").unwrap();
-            file.write_all(b"        Args:\n").unwrap();
-            file.write_all(b"            duration (float | None): The duration of the update.\n")
-                .unwrap();
-            file.write_all(b"        \"\"\"\n").unwrap();
-            file.write_all(b"        self._update(duration)\n").unwrap();
-        }
-
-        // file.write_all(b"\n").unwrap();
-    }
-}
-
 #[inline]
 fn test_if_value(line: &str) -> bool {
     line.contains("Arc<Value<")
@@ -305,6 +260,11 @@ fn test_if_value(line: &str) -> bool {
         || line.contains("Arc<Signal<")
         || line.contains("Arc<ValueDict<")
         || line.contains("Arc<ValueList<")
+}
+
+struct State {
+    name: String,
+    items: Vec<Item>,
 }
 
 impl State {
@@ -414,6 +374,102 @@ impl State {
 
         Ok(Self { name, items })
     }
+
+    fn write_python(
+        &self,
+        file: &mut fs::File,
+        core: &String,
+        written: &mut Vec<String>,
+        root: bool,
+    ) {
+        for item in &self.items {
+            if let Item::State(_, state) = item {
+                state.write_python(file, core, written, false);
+            }
+        }
+
+        if root {
+            file.write_all(format!("\n\nclass {}(sc._MainStatesBase):\n", self.name).as_bytes())
+                .unwrap();
+            file.write_all(b"    def __init__(self, update: Callable[[float | None], None]):\n")
+                .unwrap();
+            file.write_all(b"        self._update = update\n").unwrap();
+            file.write_all(b"        c = sc._Counter()\n\n").unwrap();
+        } else if !written.contains(&self.name) {
+            file.write_all(format!("\n\nclass {}(sc._StatesBase):\n", self.name).as_bytes())
+                .unwrap();
+            file.write_all(b"    def __init__(self, c: sc._Counter):\n")
+                .unwrap();
+            written.push(self.name.clone());
+        } else {
+            return;
+        }
+
+        for item in &self.items {
+            match item {
+                Item::Value(name, value) => {
+                    let text = match value.typ {
+                        ValueType::Value => {
+                            let val_type = parse_types(&value.annotation, core).unwrap();
+                            format!("        self.{} = sc.Value[{}](c)\n", name, val_type)
+                        }
+                        ValueType::ValueStatic => {
+                            let val_type = parse_types(&value.annotation, core).unwrap();
+                            format!("        self.{} = sc.ValueStatic[{}](c)\n", name, val_type)
+                        }
+                        ValueType::ValueImage => {
+                            format!("        self.{} = sc.ValueImage(c)\n", name)
+                        }
+                        ValueType::Signal => {
+                            let val_type = parse_types(&value.annotation, core).unwrap();
+                            if value.annotation == "()" {
+                                format!("        self.{} = sc.SignalEmpty(c)\n", name)
+                            } else {
+                                format!("        self.{} = sc.Signal[{}](c)\n", name, val_type)
+                            }
+                        }
+                        ValueType::ValueDict => {
+                            let key_type = value.annotation.split(",").collect::<Vec<&str>>()[0];
+                            let val_type =
+                                value.annotation.split(",").collect::<Vec<&str>>()[1].trim();
+                            let key_type = parse_types(key_type, core).unwrap();
+                            let val_type = parse_types(val_type, core).unwrap();
+                            format!(
+                                "        self.{} = sc.ValueDict[{}, {}](c)\n",
+                                name, key_type, val_type
+                            )
+                        }
+                        ValueType::ValueList => {
+                            let val_type = parse_types(&value.annotation, core).unwrap();
+                            format!("        self.{} = sc.ValueList[{}](c)\n", name, val_type)
+                        }
+                        ValueType::ValueGraphs => {
+                            format!("        self.{} = sc.ValueGraphs(c)\n", name)
+                        }
+                    };
+
+                    file.write_all(text.as_bytes()).unwrap();
+                }
+                Item::State(name, state) => {
+                    let text = format!("        self.{} = {}(c)\n", name, state.name);
+                    file.write_all(text.as_bytes()).unwrap();
+                }
+            }
+        }
+
+        if root {
+            file.write_all(b"\n    def update(self, duration: float | None = None) -> None:\n")
+                .unwrap();
+            file.write_all(b"        \"\"\"Update the UI.\n\n").unwrap();
+            file.write_all(b"        Args:\n").unwrap();
+            file.write_all(b"            duration (float | None): The duration of the update.\n")
+                .unwrap();
+            file.write_all(b"        \"\"\"\n").unwrap();
+            file.write_all(b"        self._update(duration)\n").unwrap();
+        }
+
+        // file.write_all(b"\n").unwrap();
+    }
 }
 
 // states for server -----------------------------------------------------------
@@ -422,6 +478,7 @@ pub fn parse_states_for_server(
     output_file: impl ToString,
     root_state: &'static str,
     imports: Vec<&'static str>,
+    enums: &Option<(Vec<EnumParse>, String, String)>,
 ) -> Result<(), String> {
     let lines: Vec<String> = fs::read_to_string(states_file.to_string())
         .map_err(|e| format!("Failed to read file: {}", e))?
@@ -436,10 +493,17 @@ pub fn parse_states_for_server(
 
     file.write_all(b"// Ganerated by build.rs, do not edit\n")
         .unwrap();
+
     for import in imports {
         file.write_all(format!("use {};\n", import).as_bytes())
             .unwrap();
     }
+    // enums imports
+    if let Some((_, _, import)) = enums {
+        file.write_all(format!("use {};\n", import).as_bytes())
+            .unwrap();
+    }
+
     file.write_all(b"\nuse egui_pysync::ServerValuesCreator;\n\n")
         .unwrap();
     file.write_all(b"pub(crate) fn create_states(c: &mut ServerValuesCreator) {\n")
@@ -479,7 +543,24 @@ pub fn parse_states_for_server(
 
     write_values(&mut file, &state.items);
 
-    file.write_all(b"}\n").unwrap();
+    file.write_all(b"}\n\n").unwrap();
+
+    file.write_all(
+        b"pub(crate) fn register_types(m: &egui_pysync::pyo3::Bound<egui_pysync::pyo3::types::PyModule>) -> egui_pysync::pyo3::PyResult<()> {\n",
+    )
+    .unwrap();
+    file.write_all(b"    use egui_pysync::pyo3::prelude::*;\n\n")
+        .unwrap();
+
+    if let Some((enums, path, _)) = enums {
+        for en in enums {
+            let text = format!("    m.add_class::<{}::{}>()?;\n", path, en.name);
+            file.write_all(text.as_bytes()).unwrap();
+        }
+    }
+
+    file.write_all(b"\n    Ok(())\n").unwrap();
+    file.write_all(b"}").unwrap();
 
     Ok(())
 }
@@ -491,13 +572,11 @@ fn type_map() -> HashMap<&'static str, &'static str> {
     map.insert("u16", "int");
     map.insert("u32", "int");
     map.insert("u64", "int");
-    map.insert("u128", "int");
     map.insert("usize", "int");
     map.insert("i8", "int");
     map.insert("i16", "int");
     map.insert("i32", "int");
     map.insert("i64", "int");
-    map.insert("i128", "int");
     map.insert("isize", "int");
     map.insert("f32", "float");
     map.insert("f64", "float");
@@ -506,7 +585,7 @@ fn type_map() -> HashMap<&'static str, &'static str> {
     map
 }
 
-fn parse_types(value: &str, custom: &Option<(String, String)>) -> Result<String, String> {
+fn parse_types(value: &str, core: &String) -> Result<String, String> {
     let map = type_map();
 
     if let Some(v) = map.get(value) {
@@ -517,36 +596,36 @@ fn parse_types(value: &str, custom: &Option<(String, String)>) -> Result<String,
         return Ok("".to_string());
     }
 
-    if let Some((origin, python)) = custom {
-        let origin = format!("{}::", origin);
-        let python = format!("{}.", python);
-        if value.contains(&origin) {
-            return Ok(value.replace(&origin, &python));
-        }
-    }
+    // if let Some((origin, python)) = core {
+    //     let origin = format!("{}::", origin);
+    //     let python = format!("{}.", python);
+    //     if value.contains(&origin) {
+    //         return Ok(value.replace(&origin, &python));
+    //     }
+    // }
 
-    if value.contains("enums::") {
-        return Ok(value.replace("::", "."));
-    }
+    // if value.contains("enums::") {
+    //     return Ok(value.replace("::", "."));
+    // }
 
     if value.starts_with("[") && value.ends_with("]") {
         let val = value[1..value.len() - 1].to_string();
-        if val.contains(";") {
-            let typ_val = val.split(";").collect::<Vec<&str>>()[0].trim();
-            let nums = val.split(";").collect::<Vec<&str>>()[1].trim();
-            let typ_val = parse_types(typ_val, custom)?;
-            let typ_vals = vec![typ_val; nums.parse::<usize>().unwrap()];
-            let text = typ_vals.join(", ");
-            return Ok(format!("tuple[{}]", text));
-        } else {
-            let vals = val.split(",").collect::<Vec<&str>>();
-            let vals_array = vals
-                .iter()
-                .map(|val| parse_types(val.trim(), custom))
-                .collect::<Result<Vec<String>, String>>()?;
-            let text = vals_array.join(", ");
-            return Ok(format!("tuple[{}]", text));
-        }
+        // if val.contains(";") {
+        let typ_val = val.split(";").collect::<Vec<&str>>()[0].trim();
+        // let nums = val.split(";").collect::<Vec<&str>>()[1].trim();
+        let typ_val = parse_types(typ_val, core)?;
+        // let typ_vals = vec![typ_val; nums.parse::<usize>().unwrap()];
+        // let text = typ_vals.join(", ");
+        return Ok(format!("list[{}]", typ_val));
+        // } else {
+        //     let vals = val.split(",").collect::<Vec<&str>>();
+        //     let vals_array = vals
+        //         .iter()
+        //         .map(|val| parse_types(val.trim(), core))
+        //         .collect::<Result<Vec<String>, String>>()?;
+        //     let text = vals_array.join(", ");
+        //     return Ok(format!("tuple[{}]", text));
+        // }
     }
 
     if value.starts_with("(") && value.ends_with(")") {
@@ -554,10 +633,16 @@ fn parse_types(value: &str, custom: &Option<(String, String)>) -> Result<String,
         let vals = val.split(",").collect::<Vec<&str>>();
         let vals_array = vals
             .iter()
-            .map(|val| parse_types(val.trim(), custom))
+            .map(|val| parse_types(val.trim(), core))
             .collect::<Result<Vec<String>, String>>()?;
         let text = vals_array.join(", ");
         return Ok(format!("tuple[{}]", text));
+    }
+
+    if value.contains("::") {
+        let val = value.split("::").collect::<Vec<&str>>().last().unwrap().to_string() ;
+        let val = format!("{}.{}", core, val);
+        return Ok(val);
     }
 
     Err(format!("Unknown type: {}", value))
@@ -567,8 +652,8 @@ pub fn parse_states_for_client(
     state_file: impl ToString,
     output_file: impl ToString,
     root_state: &'static str,
-    imports: Vec<&'static str>,
-    custom: Option<(String, String)>,
+    package_name: String,
+    core: String,
 ) -> Result<(), String> {
     let lines: Vec<String> = fs::read_to_string(state_file.to_string())
         .map_err(|e| format!("Failed to read file: {}", e))?
@@ -588,13 +673,12 @@ pub fn parse_states_for_client(
         .unwrap();
     file.write_all(b"from egui_pysync import structures as sc\n\n")
         .unwrap();
-    for import in imports {
-        file.write_all(import.as_bytes()).unwrap();
-    }
+    let text = format!("from {} import {}", package_name, core);
+    file.write_all(text.as_bytes()).unwrap();
     file.write_all(b"\n").unwrap();
 
     let mut written_classes = Vec::new();
-    state.write_python(&mut file, &custom, &mut written_classes, true);
+    state.write_python(&mut file, &core, &mut written_classes, true);
 
     Ok(())
 }

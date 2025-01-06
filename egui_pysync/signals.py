@@ -67,9 +67,9 @@ class SignalsManager:
         """Add a callback to a signal."""
         if value_id in self._callbacks:
             self._callbacks[value_id][0].append(callback)
-            self._server.value_set_register(value_id, True)
         else:
-            raise RuntimeError(f"Signal with index {value_id} not found.")
+            self._callbacks[value_id] = [callback]
+        self._server.value_set_register(value_id, True)
 
     def remove_callback(self, value_id: int, callback: Callable) -> None:
         """Remove a callback from a signal."""
@@ -78,8 +78,6 @@ class SignalsManager:
                 self._callbacks[value_id][0].remove(callback)
                 if not self._callbacks[value_id]:
                     self._server.value_set_register(value_id, False)
-        else:
-            raise RuntimeError(f"Signal with index {value_id} not found.")
 
     def clear_callbacks(self, value_id: int) -> None:
         """Clear all callbacks from a signal."""

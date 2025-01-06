@@ -73,7 +73,7 @@ class _ValueBase(_StaticBase):
     def _initialize(self, server: SteteServerCoreBase, signals_manager: SignalsManager):
         self._server = server
         self._signals_manager = signals_manager
-        # signals_manager.register_value(self._value_id)
+        # signals_manager.register_signal(self._value_id)
 
 
 class Value[T](_ValueBase):
