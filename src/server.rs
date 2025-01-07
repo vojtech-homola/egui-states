@@ -329,3 +329,12 @@ impl Server {
         self.enabled.load(atomic::Ordering::Relaxed)
     }
 }
+
+// server traits --------------------------------------------------------------
+pub(crate) trait SyncTrait: Sync + Send {
+    fn sync(&self);
+}
+
+pub(crate) trait Acknowledge: Sync + Send {
+    fn acknowledge(&self);
+}

@@ -11,44 +11,44 @@ pub mod values;
 mod commands;
 mod event;
 mod nohash;
-mod py_server;
-mod python_convert;
-mod server;
-mod signals;
 mod states_creator;
-mod states_server;
 mod transport;
+
+#[cfg(feature = "server")]
+mod py_server;
+#[cfg(feature = "server")]
+mod python_convert;
+#[cfg(feature = "server")]
+mod server;
+#[cfg(feature = "server")]
+mod signals;
+#[cfg(feature = "server")]
+mod states_server;
 
 pub use dict::ValueDict;
 pub use graphs::ValueGraphs;
 pub use image::ValueImage;
 pub use list::ValueList;
 pub use states_creator::ValuesCreator;
-pub use states_server::ServerValuesCreator;
-pub use values::{Diff, Signal, Value, ValueStatic};
+pub use values::{Diff, Empty, Signal, Value, ValueStatic};
 
 pub use serde;
 
 // traits for EnumValue -------------------------------------------------------
 pub use egui_pysync_macros::{pyenum, pystruct};
 
+// python -----------------------------------------------------------------------
+#[cfg(feature = "server")]
+pub use states_server::ServerValuesCreator;
+
+#[cfg(feature = "server")]
+pub use python_convert::ToPython;
+
 #[cfg(feature = "server")]
 pub use crate::python_convert::EnumInit;
 
-// python -----------------------------------------------------------------------
-pub use python_convert::ToPython;
-
 // nohash -----------------------------------------------------------------------
 pub use nohash::{NoHashMap, NoHashSet};
-
-// general traits --------------------------------------------------------------
-pub(crate) trait SyncTrait: Sync + Send {
-    fn sync(&self);
-}
-
-pub(crate) trait Acknowledge: Sync + Send {
-    fn acknowledge(&self);
-}
 
 // server -----------------------------------------------------------------------
 #[cfg(feature = "server")]

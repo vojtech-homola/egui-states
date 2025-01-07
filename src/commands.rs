@@ -8,6 +8,7 @@ pub(crate) enum CommandMessage {
     Update(f32),
 }
 
+#[cfg(feature = "server")]
 impl CommandMessage {
     pub fn as_str(&self) -> &str {
         match self {

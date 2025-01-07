@@ -11,7 +11,7 @@ name = "egui_pysync"
 edition.workspace = true
 
 [features]
-server = ["egui_pysync_macros/server"]
+server = ["egui_pysync_macros/server", "dep:pyo3"]
 
 [dependencies]
 egui_pysync_macros = { path = "egui-pysync-macros" }
@@ -19,4 +19,4 @@ postcard = { version = "1.1.1", features = ["use-std"] }
 egui = "*"
 serde = "1"
 heapless = "0.7"
-pyo3 = { version = "0.23.3", features = ["extension-module"] }
+pyo3 = { version = "0.23", optional = true }

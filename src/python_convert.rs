@@ -4,6 +4,8 @@ use pyo3::{
     types::{PyList, PyNone, PyString, PyTuple},
 };
 
+use crate::values::Empty;
+
 pub trait ToPython: Send + Sync {
     fn to_python<'py>(&self, py: Python<'py>) -> Bound<'py, PyAny>;
 }
@@ -29,12 +31,12 @@ macro_rules! impl_topython_basic {
 
 impl_topython_basic!(i8, i16, i32, i64, u8, u16, u32, u64, f32, f64, bool);
 
-// None ---------------------------------------------------
-impl ToPython for () {
-    fn to_python<'py>(&self, py: Python<'py>) -> Bound<'py, PyAny> {
-        PyNone::get(py).to_owned().into_any()
-    }
-}
+// // None ---------------------------------------------------
+// impl ToPython for () {
+//     fn to_python<'py>(&self, py: Python<'py>) -> Bound<'py, PyAny> {
+//         PyNone::get(py).to_owned().into_any()
+//     }
+// }
 
 // strings ---------------------------------------------------
 impl ToPython for String {
@@ -79,3 +81,16 @@ impl_to_python_tuple!(0: T0, 1: T1, 2: T2, 3: T3, 4: T4, 5: T5, 6: T6);
 impl_to_python_tuple!(0: T0, 1: T1, 2: T2, 3: T3, 4: T4, 5: T5, 6: T6, 7: T7);
 impl_to_python_tuple!(0: T0, 1: T1, 2: T2, 3: T3, 4: T4, 5: T5, 6: T6, 7: T7, 8: T8);
 impl_to_python_tuple!(0: T0, 1: T1, 2: T2, 3: T3, 4: T4, 5: T5, 6: T6, 7: T7, 8: T8, 9: T9);
+
+// EmptyValue ---------------------------------------------------
+impl ToPython for Empty {
+    fn to_python<'py>(&self, py: Python<'py>) -> Bound<'py, PyAny> {
+        PyNone::get(py).to_owned().into_any()
+    }
+}
+
+impl<'py> FromPyObject<'py> for Empty {
+    fn extract_bound(_: &Bound<'py, PyAny>) -> PyResult<Self> {
+        Ok(Empty)
+    }
+}

@@ -7,18 +7,18 @@ use pyo3::buffer::Element;
 use pyo3::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::dict::{PyDictTrait, PyValueDict};
+use crate::dict::server::{PyDictTrait, PyValueDict};
+use crate::graphs::server::{PyGraphTrait, PyValueGraphs};
 use crate::graphs::GraphElement;
-use crate::graphs::{PyGraphTrait, PyValueGraphs};
-use crate::image::PyValueImage;
-use crate::list::{PyListTrait, PyValueList};
+use crate::image::server::PyValueImage;
+use crate::list::server::{PyListTrait, PyValueList};
 use crate::python_convert::ToPython;
+use crate::server::{Acknowledge, SyncTrait};
 use crate::signals::ChangedValues;
 use crate::transport::WriteMessage;
-use crate::values::{PySignal, PyValue, PyValueStatic};
-use crate::values::{PySignalTrait, PyValueStaticTrait, PyValueTrait, UpdateValueServer};
+use crate::values::server::{PySignal, PyValue, PyValueStatic};
+use crate::values::server::{PySignalTrait, PyValueStaticTrait, PyValueTrait, UpdateValueServer};
 use crate::NoHashMap;
-use crate::{Acknowledge, SyncTrait};
 
 #[derive(Clone)]
 pub(crate) struct PyValuesList {

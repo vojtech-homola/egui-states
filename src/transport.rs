@@ -48,11 +48,16 @@ where
 
 pub(crate) enum WriteMessage {
     Value(u32, bool, MessageData),
+    #[cfg_attr(not(feature = "server"), allow(dead_code))]
     Static(u32, bool, MessageData),
     Signal(u32, MessageData),
+    #[cfg_attr(not(feature = "server"), allow(dead_code))]
     Image(u32, bool, MessageData, Vec<u8>),
+    #[cfg_attr(not(feature = "server"), allow(dead_code))]
     Dict(u32, bool, MessageData),
+    #[cfg_attr(not(feature = "server"), allow(dead_code))]
     List(u32, bool, MessageData),
+    #[cfg_attr(not(feature = "server"), allow(dead_code))]
     Graph(u32, bool, MessageData, Option<Vec<u8>>),
     Command(CommandMessage),
     Terminate,
@@ -67,6 +72,7 @@ impl WriteMessage {
 pub(crate) enum ReadMessage {
     Value(u32, bool, MessageData),
     Static(u32, bool, MessageData),
+    #[cfg_attr(not(feature = "server"), allow(dead_code))]
     Signal(u32, MessageData),
     Image(u32, bool, MessageData),
     Dict(u32, bool, MessageData),
@@ -75,6 +81,7 @@ pub(crate) enum ReadMessage {
     Command(CommandMessage),
 }
 
+#[cfg(feature = "server")]
 impl ReadMessage {
     pub fn to_str(&self) -> &'static str {
         match self {
@@ -90,15 +97,34 @@ impl ReadMessage {
     }
 }
 
-fn write_data(head: &mut [u8], data: &MessageData, stream: &mut TcpStream) -> std::io::Result<()> {
+fn write_data(
+    head: &mut [u8],
+    data: &MessageData,
+    stream: &mut TcpStream,
+    add_size: Option<usize>,
+) -> std::io::Result<()> {
     match data {
         MessageData::Heap(data) => {
-            head[0..4].copy_from_slice(&(data.len() as u32).to_le_bytes());
+            match add_size {
+                Some(size) => {
+                    head[0..4].copy_from_slice(&((data.len() + size) as u32).to_le_bytes());
+                }
+                None => {
+                    head[0..4].copy_from_slice(&(data.len() as u32).to_le_bytes());
+                }
+            }
             stream.write_all(head)?;
             stream.write_all(data)
         }
         MessageData::Stack(data) => {
-            head[0..4].copy_from_slice(&(data.len() as u32).to_le_bytes());
+            match add_size {
+                Some(size) => {
+                    head[0..4].copy_from_slice(&((data.len() + size) as u32).to_le_bytes());
+                }
+                None => {
+                    head[0..4].copy_from_slice(&(data.len() as u32).to_le_bytes());
+                }
+            }
             stream.write_all(head)?;
             stream.write_all(data)
         }
@@ -111,46 +137,50 @@ pub(crate) fn write_message(message: WriteMessage, stream: &mut TcpStream) -> st
         WriteMessage::Value(id, flag, data) => {
             head[4] = TYPE_VALUE;
             head[5] = flag as u8;
-            head[6..9].copy_from_slice(&id.to_le_bytes());
-            write_data(&mut head, &data, stream)
+            head[6..10].copy_from_slice(&id.to_le_bytes());
+            write_data(&mut head, &data, stream, None)
         }
         WriteMessage::Signal(id, data) => {
             head[4] = TYPE_SIGNAL;
-            head[5..8].copy_from_slice(&id.to_le_bytes());
-            write_data(&mut head, &data, stream)
+            head[6..10].copy_from_slice(&id.to_le_bytes());
+            write_data(&mut head, &data, stream, None)
         }
         WriteMessage::Static(id, flag, data) => {
             head[4] = TYPE_STATIC;
             head[5] = flag as u8;
-            head[6..9].copy_from_slice(&id.to_le_bytes());
-            write_data(&mut head, &data, stream)
+            head[6..10].copy_from_slice(&id.to_le_bytes());
+            write_data(&mut head, &data, stream, None)
         }
         WriteMessage::Dict(id, flag, data) => {
             head[4] = TYPE_DICT;
             head[5] = flag as u8;
-            head[6..9].copy_from_slice(&id.to_le_bytes());
-            write_data(&mut head, &data, stream)
+            head[6..10].copy_from_slice(&id.to_le_bytes());
+            write_data(&mut head, &data, stream, None)
         }
         WriteMessage::List(id, flag, data) => {
             head[4] = TYPE_LIST;
             head[5] = flag as u8;
-            head[6..9].copy_from_slice(&id.to_le_bytes());
-            write_data(&mut head, &data, stream)
+            head[6..10].copy_from_slice(&id.to_le_bytes());
+            write_data(&mut head, &data, stream, None)
         }
         WriteMessage::Image(id, flag, info, data) => {
             head[4] = TYPE_IMAGE;
             head[5] = flag as u8;
-            head[6..9].copy_from_slice(&id.to_le_bytes());
-            write_data(&mut head, &info, stream)?;
-            write_data(&mut head, &MessageData::Heap(data), stream)
+            head[6..10].copy_from_slice(&id.to_le_bytes());
+            write_data(&mut head, &info, stream, Some(data.len()))?;
+            stream.write_all(&data)
         }
         WriteMessage::Graph(id, flag, data, graph_data) => {
             head[4] = TYPE_GRAPH;
             head[5] = flag as u8;
-            head[6..9].copy_from_slice(&id.to_le_bytes());
-            write_data(&mut head, &data, stream)?;
+            head[6..10].copy_from_slice(&id.to_le_bytes());
+            let size = match &graph_data {
+                Some(data) => Some(data.len()),
+                None => None,
+            };
+            write_data(&mut head, &data, stream, size)?;
             if let Some(graph_data) = graph_data {
-                write_data(&mut head, &MessageData::Heap(graph_data), stream)
+                stream.write_all(&graph_data)
             } else {
                 Ok(())
             }
@@ -158,7 +188,7 @@ pub(crate) fn write_message(message: WriteMessage, stream: &mut TcpStream) -> st
         WriteMessage::Command(command) => {
             head[4] = TYPE_COMMAND;
             let data = serialize(&command);
-            write_data(&mut head, &data, stream)
+            write_data(&mut head, &data, stream, None)
         }
         WriteMessage::Terminate => {
             unreachable!("Terminate message should not be written");

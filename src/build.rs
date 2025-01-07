@@ -91,7 +91,9 @@ pub fn read_structs(file_path: impl ToString) -> Vec<StructParse> {
                     break;
                 } else {
                     let line = line.replace(",", "").trim().to_string();
-                    let name = line.split(": ").collect::<Vec<&str>>()[0].trim().to_string();
+                    let name = line.split(": ").collect::<Vec<&str>>()[0]
+                        .trim()
+                        .to_string();
                     let name = name
                         .split(" ")
                         .collect::<Vec<&str>>()
@@ -99,7 +101,9 @@ pub fn read_structs(file_path: impl ToString) -> Vec<StructParse> {
                         .unwrap()
                         .trim()
                         .to_string();
-                    let item_type = line.split(": ").collect::<Vec<&str>>()[1].trim().to_string();
+                    let item_type = line.split(": ").collect::<Vec<&str>>()[1]
+                        .trim()
+                        .to_string();
                     let item_type = parse_types(&item_type, &None).unwrap();
                     struct_parse.fields.push((name, item_type));
                 }
@@ -360,7 +364,7 @@ impl State {
                         }
                         ValueType::Signal => {
                             let val_type = parse_types(&value.annotation, &core).unwrap();
-                            if value.annotation == "()" {
+                            if value.annotation == "Empty" {
                                 format!("        self.{} = sc.SignalEmpty(c)\n", name)
                             } else {
                                 format!("        self.{} = sc.Signal[{}](c)\n", name, val_type)
@@ -443,8 +447,24 @@ pub fn parse_states_for_server(
             .unwrap();
     }
 
-    file.write_all(b"\nuse egui_pysync::ServerValuesCreator;\n\n")
+    file.write_all(b"\nuse egui_pysync::ServerValuesCreator;\n")
         .unwrap();
+
+    let mut has_empty = false;
+    for item in &state.items {
+        if let Item::Value(_, value) = item {
+            if value.annotation == "Empty" {
+                has_empty = true;
+                break;
+            }
+        }
+    }
+    if has_empty {
+        file.write_all(b"use egui_pysync::Empty;\n\n").unwrap();
+    } else {
+        file.write_all(b"\n").unwrap();
+    }
+
     file.write_all(b"pub(crate) fn create_states(c: &mut ServerValuesCreator) {\n")
         .unwrap();
 
@@ -459,9 +479,9 @@ pub fn parse_states_for_server(
                     } else if add_str == "add_signal" {
                         if value.annotation.contains("enums::") {
                             format!("    c.{}_en::<{}>();\n", add_str, value.annotation)
-                        } else if value.annotation == "()" {
-                            // use u8 which is not actually used, only for python -> rust conversion
-                            format!("    c.{}::<u8>();\n", add_str)
+                        // } else if value.annotation == "()" {
+                        //     // use u8 which is not actually used, only for python -> rust conversion
+                        //     format!("    c.{}::<u8>();\n", add_str)
                         } else {
                             format!("    c.{}::<{}>();\n", add_str, value.annotation)
                         }
@@ -527,6 +547,7 @@ fn type_map() -> HashMap<&'static str, &'static str> {
     map.insert("f64", "float");
     map.insert("bool", "bool");
     map.insert("String", "str");
+    map.insert("Empty", "Empty");
     map
 }
 
@@ -655,7 +676,7 @@ pub fn write_annotation(
         .unwrap();
     file.write_all(b"    pass\n").unwrap();
 
-    if let Some(enums) = enums {
+    if let Some(ref enums) = enums {
         file.write_all(
             b"\n# enums ----------------------------------------------------------------",
         )
@@ -663,14 +684,14 @@ pub fn write_annotation(
         for en in enums {
             file.write_all(format!("\nclass {}(PySyncEnum):\n", en.name).as_bytes())
                 .unwrap();
-            for item in en.variants {
+            for item in &en.variants {
                 let text = format!("    {} = {}\n", item.0, item.1);
                 file.write_all(text.as_bytes()).unwrap();
             }
         }
     }
 
-    if let Some(structs) = structs {
+    if let Some(ref structs) = structs {
         file.write_all(
             b"\n# structs ----------------------------------------------------------------",
         )
@@ -679,7 +700,7 @@ pub fn write_annotation(
             file.write_all(format!("\nclass {}:\n", st.name).as_bytes())
                 .unwrap();
             let mut init = Vec::new();
-            for item in st.fields {
+            for item in &st.fields {
                 let text = format!("    {}: {}\n", item.0, item.1);
                 file.write_all(text.as_bytes()).unwrap();
                 init.push(format!("{}: {}", item.0, item.1));
@@ -689,6 +710,26 @@ pub fn write_annotation(
                 .unwrap();
             file.write_all(b"        pass\n").unwrap();
         }
+    }
+
+    if structs.is_some() || enums.is_some() {
+        file.write_all(b"\n__all__ = [\n").unwrap();
+
+        if let Some(ref enums) = enums {
+            for en in enums {
+                file.write_all(format!("    \"{}\",\n", en.name).as_bytes())
+                    .unwrap();
+            }
+        }
+
+        if let Some(ref structs) = structs {
+            for st in structs {
+                file.write_all(format!("    \"{}\",\n", st.name).as_bytes())
+                    .unwrap();
+            }
+        }
+
+        file.write_all(b"]\n").unwrap();
     }
 
     file.flush().unwrap();
