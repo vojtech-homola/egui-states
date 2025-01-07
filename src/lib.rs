@@ -34,10 +34,10 @@ pub use values::{Diff, Empty, Signal, Value, ValueStatic};
 
 pub use serde;
 
-// traits for EnumValue -------------------------------------------------------
+// python -----------------------------------------------------------------------
+#[cfg(feature = "server")]
 pub use egui_pysync_macros::{pyenum, pystruct};
 
-// python -----------------------------------------------------------------------
 #[cfg(feature = "server")]
 pub use states_server::ServerValuesCreator;
 

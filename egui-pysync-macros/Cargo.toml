@@ -4,13 +4,10 @@ version.workspace = true
 edition.workspace = true
 resolver = "2"
 
-[features]
-server = []
-
 [lib]
 proc-macro = true
 
 [dependencies]
 proc-macro2 = "1.0"
-syn = {version = "2.0", features = ["full", "extra-traits"]}
+syn = { version = "2.0", features = ["full", "extra-traits"] }
 quote = "1.0"

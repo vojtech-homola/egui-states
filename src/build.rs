@@ -61,7 +61,7 @@ pub fn read_enums(file_path: impl ToString) -> Vec<EnumParse> {
 // custem types ----------------------------------------------------------------
 pub struct StructParse {
     name: String,
-    fields: Vec<(String, String)>,
+    fields: Vec<(String, (String, String))>,
 }
 
 pub fn read_structs(file_path: impl ToString) -> Vec<StructParse> {
@@ -104,8 +104,10 @@ pub fn read_structs(file_path: impl ToString) -> Vec<StructParse> {
                     let item_type = line.split(": ").collect::<Vec<&str>>()[1]
                         .trim()
                         .to_string();
-                    let item_type = parse_types(&item_type, &None).unwrap();
-                    struct_parse.fields.push((name, item_type));
+                    let item_type_parse = parse_types(&item_type, &None).unwrap();
+                    struct_parse
+                        .fields
+                        .push((name, (item_type, item_type_parse)));
                 }
             }
 
@@ -419,8 +421,9 @@ pub fn parse_states_for_server(
     states_file: impl ToString,
     output_file: impl ToString,
     root_state: &'static str,
-    enums: &Option<(Vec<EnumParse>, String, String)>,
-    structs: &Option<(Vec<StructParse>, String, String)>,
+    enums: &Option<Vec<EnumParse>>,
+    structs: &Option<Vec<StructParse>>,
+    replace: Vec<String>,
 ) -> Result<(), String> {
     let lines: Vec<String> = fs::read_to_string(states_file.to_string())
         .map_err(|e| format!("Failed to read file: {}", e))?
@@ -436,19 +439,21 @@ pub fn parse_states_for_server(
     file.write_all(b"// Ganerated by build.rs, do not edit\n")
         .unwrap();
 
-    // enums imports
-    if let Some((_, _, import)) = enums {
-        file.write_all(format!("use {};\n", import).as_bytes())
-            .unwrap();
-    }
-    // structs imports
-    if let Some((_, _, import)) = structs {
-        file.write_all(format!("use {};\n", import).as_bytes())
+    if enums.is_some() || structs.is_some() {
+        file.write_all(b"use serde::{Deserialize, Serialize};\n")
             .unwrap();
     }
 
     file.write_all(b"\nuse egui_pysync::ServerValuesCreator;\n")
         .unwrap();
+
+    if enums.is_some() {
+        file.write_all(b"use egui_pysync::pyenum;\n").unwrap();
+    }
+
+    if structs.is_some() {
+        file.write_all(b"use egui_pysync::pystruct;\n").unwrap();
+    }
 
     let mut has_empty = false;
     for item in &state.items {
@@ -468,39 +473,41 @@ pub fn parse_states_for_server(
     file.write_all(b"pub(crate) fn create_states(c: &mut ServerValuesCreator) {\n")
         .unwrap();
 
-    fn write_values(file: &mut fs::File, items: &Vec<Item>) {
+    fn write_values(file: &mut fs::File, items: &Vec<Item>, replace: &Vec<String>) {
         for item in items {
             match item {
                 Item::Value(_, value) => {
                     let add_str = value.typ.as_add_str();
 
-                    let text = if value.annotation.is_empty() {
-                        format!("    c.{}({});\n", add_str, value.default)
+                    let mut default = value.default.clone();
+                    let mut annotation = value.annotation.clone();
+
+                    for rep in replace {
+                        let to_replcae = format!("{}::", rep);
+                        default = default.replace(&to_replcae, "");
+                    }
+                    for rep in replace {
+                        let to_replcae = format!("{}::", rep);
+                        annotation = annotation.replace(&to_replcae, "");
+                    }
+
+                    let text = if annotation.is_empty() {
+                        format!("    c.{}({});\n", add_str, default)
                     } else if add_str == "add_signal" {
-                        if value.annotation.contains("enums::") {
-                            format!("    c.{}_en::<{}>();\n", add_str, value.annotation)
-                        // } else if value.annotation == "()" {
-                        //     // use u8 which is not actually used, only for python -> rust conversion
-                        //     format!("    c.{}::<u8>();\n", add_str)
-                        } else {
-                            format!("    c.{}::<{}>();\n", add_str, value.annotation)
-                        }
+                        format!("    c.{}::<{}>();\n", add_str, annotation)
                     } else {
-                        format!(
-                            "    c.{}::<{}>({});\n",
-                            add_str, value.annotation, value.default
-                        )
+                        format!("    c.{}::<{}>({});\n", add_str, annotation, default)
                     };
                     file.write_all(text.as_bytes()).unwrap();
                 }
                 Item::State(_, state) => {
-                    write_values(file, &state.items);
+                    write_values(file, &state.items, replace);
                 }
             }
         }
     }
 
-    write_values(&mut file, &state.items);
+    write_values(&mut file, &state.items, &replace);
 
     file.write_all(b"}\n\n").unwrap();
 
@@ -511,21 +518,58 @@ pub fn parse_states_for_server(
     .unwrap();
     file.write_all(b"    use egui_pysync::pyo3::prelude::*;\n\n")
         .unwrap();
-    if let Some((enums, path, _)) = enums {
+    if let Some(enums) = enums {
         for en in enums {
-            let text = format!("    m.add_class::<{}::{}>()?;\n", path, en.name);
+            let text = format!("    m.add_class::<{}>()?;\n", en.name);
             file.write_all(text.as_bytes()).unwrap();
         }
     }
 
-    if let Some((structs, path, _)) = structs {
+    if let Some(structs) = structs {
         for st in structs {
-            let text = format!("    m.add_class::<{}::{}>()?;\n", path, st.name);
+            let text = format!("    m.add_class::<{}>()?;\n", st.name);
             file.write_all(text.as_bytes()).unwrap();
         }
     }
     file.write_all(b"\n    Ok(())\n").unwrap();
-    file.write_all(b"}").unwrap();
+    file.write_all(b"}\n\n").unwrap();
+
+    if let Some(enums) = enums {
+        for en in enums {
+            file.write_all(b"#[pyenum]\n").unwrap();
+            file.write_all(b"#[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]\n")
+                .unwrap();
+            file.write_all(format!("enum {} ", en.name).as_bytes())
+                .unwrap();
+            file.write_all(b"{\n").unwrap();
+
+            for (name, value) in &en.variants {
+                let text = format!("    {} = {},\n", name, value);
+                file.write_all(text.as_bytes()).unwrap();
+            }
+            file.write_all(b"}\n\n").unwrap();
+        }
+    }
+
+    if let Some(structs) = structs {
+        for st in structs {
+            file.write_all(b"#[pystruct]\n").unwrap();
+            file.write_all(b"#[derive(Clone, Serialize, Deserialize)]\n")
+                .unwrap();
+            file.write_all(format!("struct {} {{\n", st.name).as_bytes())
+                .unwrap();
+            for (name, typ) in &st.fields {
+                let mut typ = typ.0.clone();
+                for rep in &replace {
+                    let to_replcae = format!("{}::", rep);
+                    typ = typ.replace(&to_replcae, "");
+                }
+                let text = format!("    pub {}: {},\n", name, typ);
+                file.write_all(text.as_bytes()).unwrap();
+            }
+            file.write_all(b"}\n\n").unwrap();
+        }
+    }
 
     Ok(())
 }
@@ -701,9 +745,9 @@ pub fn write_annotation(
                 .unwrap();
             let mut init = Vec::new();
             for item in &st.fields {
-                let text = format!("    {}: {}\n", item.0, item.1);
+                let text = format!("    {}: {}\n", item.0, item.1 .1);
                 file.write_all(text.as_bytes()).unwrap();
-                init.push(format!("{}: {}", item.0, item.1));
+                init.push(format!("{}: {}", item.0, item.1 .1));
             }
             let t = init.join(", ");
             file.write_all(format!("\n    def __init__(self, {}):\n", t).as_bytes())

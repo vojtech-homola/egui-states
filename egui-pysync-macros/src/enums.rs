@@ -122,13 +122,13 @@ pub(crate) fn impl_pystruct(input: TokenStream) -> TokenStream {
         panic!("Structs with generics are not supported");
     }
 
-    #[cfg(not(feature = "server"))]
-    let out = quote!(
-        #(#attrs)*
-        #vis #struct_token #ident #fields #semi_token
-    );
+    // #[cfg(not(feature = "server"))]
+    // let out = quote!(
+    //     #(#attrs)*
+    //     #vis #struct_token #ident #fields #semi_token
+    // );
 
-    #[cfg(feature = "server")]
+    // #[cfg(feature = "server")]
     let out = if let syn::Fields::Named(mut fields) = fields {
         for field in fields.named.iter_mut() {
             let attr: syn::Attribute = syn::parse_quote!(#[pyo3(get, set)]);
@@ -209,15 +209,15 @@ pub(crate) fn impl_pyenum(input: TokenStream) -> TokenStream {
         actual += 1;
     }
 
-    #[cfg(not(feature = "server"))]
-    let out = quote!(
-        #(#attrs)*
-        #vis #enum_token #ident {
-            #(#variants),*
-        }
-    );
+    // #[cfg(not(feature = "server"))]
+    // let out = quote!(
+    //     #(#attrs)*
+    //     #vis #enum_token #ident {
+    //         #(#variants),*
+    //     }
+    // );
 
-    #[cfg(feature = "server")]
+    // #[cfg(feature = "server")]
     let out = quote!(
         #[egui_pysync::pyo3::pyclass(eq, eq_int)]
         #(#attrs)*
