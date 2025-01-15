@@ -66,7 +66,7 @@ class SignalsManager:
     def add_callback(self, value_id: int, callback: Callable) -> None:
         """Add a callback to a signal."""
         if value_id in self._callbacks:
-            self._callbacks[value_id][0].append(callback)
+            self._callbacks[value_id].append(callback)
         else:
             self._callbacks[value_id] = [callback]
         self._server.value_set_register(value_id, True)
@@ -75,12 +75,12 @@ class SignalsManager:
         """Remove a callback from a signal."""
         if value_id in self._callbacks:
             if callback in self._callbacks[value_id]:
-                self._callbacks[value_id][0].remove(callback)
+                self._callbacks[value_id].remove(callback)
                 if not self._callbacks[value_id]:
                     self._server.value_set_register(value_id, False)
 
     def clear_callbacks(self, value_id: int) -> None:
         """Clear all callbacks from a signal."""
         if value_id in self._callbacks:
-            self._callbacks[value_id][0].clear()
+            self._callbacks[value_id].clear()
             self._server.value_set_register(value_id, False)
