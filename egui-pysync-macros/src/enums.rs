@@ -219,7 +219,8 @@ pub(crate) fn impl_pyenum(input: TokenStream) -> TokenStream {
 
     // #[cfg(feature = "server")]
     let out = quote!(
-        #[egui_pysync::pyo3::pyclass(eq, eq_int)]
+        #[egui_pysync::pyo3::pyclass(eq, hash, frozen)]
+        #[derive(Hash)]
         #(#attrs)*
         #vis #enum_token #ident {
             #(#variants),*
