@@ -1,5 +1,5 @@
 use std::io::Write;
-use std::net::{SocketAddrV4, TcpStream};
+use std::net::{Ipv4Addr, SocketAddrV4, TcpStream};
 use std::sync::mpsc::{Receiver, Sender};
 use std::thread;
 
@@ -227,14 +227,14 @@ impl ClientBuilder {
         &mut self.creator
     }
 
-    pub fn build(self, context: Context, addr: [u8; 4], port: u16, handshake: u64) -> UIState {
+    pub fn build(self, context: Context, addr: Ipv4Addr, port: u16, handshake: u64) -> UIState {
         let Self {
             creator,
             channel,
             rx,
         } = self;
 
-        let addr = SocketAddrV4::new(addr.into(), port);
+        let addr = SocketAddrV4::new(addr, port);
         let (values, version) = creator.get_values();
         let ui_state = UIState::new(context, channel.clone());
         start_gui_client(
