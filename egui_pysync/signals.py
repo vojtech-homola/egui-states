@@ -1,3 +1,4 @@
+import inspect
 import threading
 import traceback
 from collections.abc import Callable
@@ -45,7 +46,9 @@ class SignalsManager:
             if callbacks:
                 for callback in callbacks:
                     try:
-                        if callback.__code__.co_argcount == 0:
+                        if inspect.ismethod(callback) and callback.__code__.co_argcount == 1:
+                            callback()
+                        elif callback.__code__.co_argcount == 0:
                             callback()
                         else:
                             callback(arg)
