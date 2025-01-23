@@ -119,6 +119,7 @@ pub fn read_structs(file_path: impl ToString) -> Vec<StructParse> {
 }
 
 // states -----------------------------------------------------------------------
+#[derive(PartialEq)]
 enum ValueType {
     Value,
     ValueStatic,
@@ -180,6 +181,12 @@ impl Value {
         let default = declaration[first + 1..].to_string();
         let last = default.rfind(")").unwrap();
         let default = default[..last].to_string();
+
+        let default = if typ == ValueType::ValueList || typ == ValueType::ValueDict {
+            "".to_string()
+        } else {
+            default
+        };
 
         Self {
             typ,
@@ -606,36 +613,11 @@ fn parse_types(value: &str, core: &Option<String>) -> Result<String, String> {
         return Ok("".to_string());
     }
 
-    // if let Some((origin, python)) = core {
-    //     let origin = format!("{}::", origin);
-    //     let python = format!("{}.", python);
-    //     if value.contains(&origin) {
-    //         return Ok(value.replace(&origin, &python));
-    //     }
-    // }
-
-    // if value.contains("enums::") {
-    //     return Ok(value.replace("::", "."));
-    // }
-
     if value.starts_with("[") && value.ends_with("]") {
         let val = value[1..value.len() - 1].to_string();
-        // if val.contains(";") {
         let typ_val = val.split(";").collect::<Vec<&str>>()[0].trim();
-        // let nums = val.split(";").collect::<Vec<&str>>()[1].trim();
         let typ_val = parse_types(typ_val, core)?;
-        // let typ_vals = vec![typ_val; nums.parse::<usize>().unwrap()];
-        // let text = typ_vals.join(", ");
         return Ok(format!("list[{}]", typ_val));
-        // } else {
-        //     let vals = val.split(",").collect::<Vec<&str>>();
-        //     let vals_array = vals
-        //         .iter()
-        //         .map(|val| parse_types(val.trim(), core))
-        //         .collect::<Result<Vec<String>, String>>()?;
-        //     let text = vals_array.join(", ");
-        //     return Ok(format!("tuple[{}]", text));
-        // }
     }
 
     if value.starts_with("(") && value.ends_with(")") {
