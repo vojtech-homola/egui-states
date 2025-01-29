@@ -99,7 +99,7 @@ dependencies = [
 
 [[package]]
 name = "egui_pysync"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "egui",
  "egui_pysync_macros",
@@ -111,7 +111,7 @@ dependencies = [
 
 [[package]]
 name = "egui_pysync_macros"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "proc-macro2",
  "quote",

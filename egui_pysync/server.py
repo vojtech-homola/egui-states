@@ -9,9 +9,9 @@ from egui_pysync.structures import ErrorSignal, _MainStatesBase, _StatesBase, _S
 def _initialize_states(obj, server: SteteServerCoreBase, signals_manager: SignalsManager) -> None:
     for o in obj.__dict__.values():
         if isinstance(o, _ValueBase):
-            o._initialize(server, signals_manager)
+            o._initialize_value(server, signals_manager)
         elif isinstance(o, _StaticBase):
-            o._initialize(server)
+            o._initialize_base(server)
         elif isinstance(o, _StatesBase):
             _initialize_states(o, server, signals_manager)
 
