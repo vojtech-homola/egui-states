@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "egui-pysync"
 description = "A Python library for egui-pysync project."
 authors = [{ name = "Vojtech Homola", email = "vojhom@outlook.cz" }]
-requires-python = ">=3.12"
+requires-python = ">=3.11"
 license = { file = "LICENSE" }
 dynamic = ["version"]
 readme = "README.md"
