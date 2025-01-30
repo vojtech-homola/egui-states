@@ -1,7 +1,7 @@
 use std::ptr::copy_nonoverlapping;
 use std::sync::{Arc, RwLock};
 
-use egui::{Color32, ColorImage, ImageData, TextureHandle};
+use egui::{ColorImage, ImageData, TextureHandle};
 use postcard;
 use serde::{Deserialize, Serialize};
 
@@ -33,45 +33,46 @@ const TEXTURE_OPTIONS: egui::TextureOptions = egui::TextureOptions {
 
 pub struct ValueImage {
     id: u32,
-    texture_handle: RwLock<(Option<TextureHandle>, [usize; 2])>,
+    texture_handle: RwLock<Option<(TextureHandle, [usize; 2])>>,
 }
 
 impl ValueImage {
     pub fn new(id: u32) -> Arc<Self> {
         Arc::new(Self {
             id,
-            texture_handle: RwLock::new((None, [0, 0])),
+            texture_handle: RwLock::new(None),
         })
     }
 
     pub fn get_id(&self) -> egui::TextureId {
-        self.texture_handle.read().unwrap().0.as_ref().unwrap().id()
+        self.texture_handle
+            .read()
+            .unwrap()
+            .as_ref()
+            .expect("image is not initialized")
+            .0
+            .id()
     }
 
     pub fn get_size(&self) -> [usize; 2] {
-        self.texture_handle.read().unwrap().1
+        self.texture_handle
+            .read()
+            .unwrap()
+            .as_ref()
+            .expect("image is not initialized")
+            .1
     }
 
-    pub fn initialize(&self, ctx: &egui::Context) {
-        const SIZE: usize = 512;
-        let mut color_image = ColorImage::new([SIZE, SIZE], Color32::BLACK);
-        for i in 0..SIZE {
-            for j in 0..SIZE {
-                let pixel = (i + j) as u8;
-                color_image.pixels[i * SIZE + j] = egui::Color32::from_gray(pixel);
-            }
-        }
-
-        let image_data = ImageData::Color(Arc::new(color_image));
+    pub fn initialize(&self, ctx: &egui::Context, image: ColorImage) {
+        let image_data = ImageData::Color(Arc::new(image));
         let name = format!("image_{}", self.id);
         let texture_handle = ctx.load_texture(name, image_data, TEXTURE_OPTIONS);
 
         let mut w = self.texture_handle.write().unwrap();
         let size = texture_handle.size();
         match *w {
-            (None, _) => {
-                w.0 = Some(texture_handle);
-                w.1 = size;
+            None => {
+                *w = Some((texture_handle, size));
             }
             _ => {}
         }
@@ -156,11 +157,10 @@ impl ImageUpdate for ValueImage {
         }
 
         let mut w = self.texture_handle.write().unwrap();
-        let previous_size = w.1;
-        if let Some(ref mut texture_handle) = w.0 {
+        if let Some((ref mut texture_handle, ref mut save_size)) = *w {
             match rect {
                 Some(rec) => {
-                    if previous_size[0] != image_size[1] || previous_size[1] != image_size[0] {
+                    if save_size[0] != image_size[1] || save_size[1] != image_size[0] {
                         return Err(
                             "Rectangle is set but the image size is different from texture"
                                 .to_string(),
@@ -170,7 +170,7 @@ impl ImageUpdate for ValueImage {
                 }
                 None => {
                     texture_handle.set(c_image, TEXTURE_OPTIONS);
-                    w.1 = size;
+                    *save_size = size;
                 }
             }
         }
