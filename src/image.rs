@@ -194,7 +194,7 @@ pub(crate) mod server {
     use pyo3::types::PyByteArray;
 
     use crate::server::SyncTrait;
-    use crate::transport::{serialize, WriteMessage};
+    use crate::transport::{WriteMessage, serialize};
 
     struct ImageDataInner {
         data: Vec<u8>,
@@ -417,18 +417,18 @@ pub(crate) mod server {
         let new_data = new_data_vec.as_mut_ptr();
 
         match image_type {
-            ImageType::ColorAlpha => {
+            ImageType::ColorAlpha => unsafe {
                 std::ptr::copy_nonoverlapping(data, new_data, all_size * 4);
-            }
-            ImageType::Color => {
+            },
+            ImageType::Color => unsafe {
                 for i in 0..all_size {
                     *new_data.add(i * 4) = *data.add(i * 3);
                     *new_data.add(i * 4 + 1) = *data.add(i * 3 + 1);
                     *new_data.add(i * 4 + 2) = *data.add(i * 3 + 2);
                     *new_data.add(i * 4 + 3) = 255;
                 }
-            }
-            ImageType::Gray => {
+            },
+            ImageType::Gray => unsafe {
                 for i in 0..all_size {
                     let p = *data.add(i);
                     *new_data.add(i * 4) = p;
@@ -436,9 +436,9 @@ pub(crate) mod server {
                     *new_data.add(i * 4 + 2) = p;
                     *new_data.add(i * 4 + 3) = 255;
                 }
-            }
+            },
 
-            ImageType::GrayAlpha => {
+            ImageType::GrayAlpha => unsafe {
                 for i in 0..all_size {
                     let p = *data.add(i * 2);
                     *new_data.add(i * 4) = p;
@@ -446,9 +446,9 @@ pub(crate) mod server {
                     *new_data.add(i * 4 + 2) = p;
                     *new_data.add(i * 4 + 3) = *data.add(i * 2 + 1);
                 }
-            }
+            },
         }
-        new_data_vec.set_len(all_size * 4);
+        unsafe { new_data_vec.set_len(all_size * 4) };
         new_data_vec
     }
 
@@ -463,14 +463,14 @@ pub(crate) mod server {
         let new_data = new_data_vec.as_mut_ptr();
 
         match image_type {
-            ImageType::ColorAlpha => {
+            ImageType::ColorAlpha => unsafe {
                 for i in 0..size[0] {
                     let buffer = data.add(i * stride);
                     let data_buffer = new_data.add(i * size[1] * 4);
                     std::ptr::copy_nonoverlapping(buffer, data_buffer, size[1] * 4);
                 }
-            }
-            ImageType::Color => {
+            },
+            ImageType::Color => unsafe {
                 for i in 0..size[0] {
                     let buffer = data.add(i * stride);
                     let data_buffer = new_data.add(i * size[1] * 4);
@@ -481,8 +481,8 @@ pub(crate) mod server {
                         *data_buffer.add(j * 4 + 3) = 255;
                     }
                 }
-            }
-            ImageType::Gray => {
+            },
+            ImageType::Gray => unsafe {
                 for i in 0..size[0] {
                     let buffer = data.add(i * stride);
                     let data_buffer = new_data.add(i * size[1] * 4);
@@ -494,8 +494,8 @@ pub(crate) mod server {
                         *data_buffer.add(j * 4 + 3) = 255;
                     }
                 }
-            }
-            ImageType::GrayAlpha => {
+            },
+            ImageType::GrayAlpha => unsafe {
                 for i in 0..size[0] {
                     let buffer = data.add(i * stride);
                     let data_buffer = new_data.add(i * size[1] * 4);
@@ -507,9 +507,9 @@ pub(crate) mod server {
                         *data_buffer.add(j * 4 + 3) = *buffer.add(j * 2 + 1);
                     }
                 }
-            }
+            },
         }
-        new_data_vec.set_len(all_size * 4);
+        unsafe { new_data_vec.set_len(all_size * 4) };
         new_data_vec
     }
 
@@ -526,7 +526,7 @@ pub(crate) mod server {
         let left = origin[1];
 
         match image_type {
-            ImageType::ColorAlpha => {
+            ImageType::ColorAlpha => unsafe {
                 if stride == 0 {
                     stride = size[1] * 4;
                 }
@@ -540,8 +540,8 @@ pub(crate) mod server {
                         *old_data.add(index * 4 + 3) = *data.add(d_index + 3);
                     }
                 }
-            }
-            ImageType::Color => {
+            },
+            ImageType::Color => unsafe {
                 if stride == 0 {
                     stride = size[1] * 3;
                 }
@@ -555,8 +555,8 @@ pub(crate) mod server {
                         *old_data.add(index * 4 + 3) = 255;
                     }
                 }
-            }
-            ImageType::Gray => {
+            },
+            ImageType::Gray => unsafe {
                 if stride == 0 {
                     stride = size[1];
                 }
@@ -570,8 +570,8 @@ pub(crate) mod server {
                         *old_data.add(index * 4 + 3) = 255;
                     }
                 }
-            }
-            ImageType::GrayAlpha => {
+            },
+            ImageType::GrayAlpha => unsafe {
                 if stride == 0 {
                     stride = size[1] * 2;
                 }
@@ -586,7 +586,7 @@ pub(crate) mod server {
                         *old_data.add(index * 4 + 3) = *data.add(d_index + 1);
                     }
                 }
-            }
+            },
         }
     }
 }
