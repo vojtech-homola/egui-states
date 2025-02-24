@@ -81,7 +81,7 @@ impl<T: GraphElement> Graph<T> {
         #[cfg(target_endian = "little")]
         {
             match (&mut self.x, is_linear) {
-                (Some(ref mut x), false) => {
+                (Some(x), false) => {
                     let old_size = x.len();
                     x.resize(old_size + points, T::zero());
                     let mut ptr = data.as_ptr() as *const T;
