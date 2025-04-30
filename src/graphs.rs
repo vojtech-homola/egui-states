@@ -139,19 +139,19 @@ impl<T: GraphElement> Graph<T> {
                 }
                 false => {
                     let bytes = points * size_of::<T>();
-                    let mut y: Vec<T> = Vec::with_capacity(points);
-                    let ptr = y.as_mut_ptr() as *mut u8;
+                    let mut x: Vec<T> = Vec::with_capacity(points);
+                    let ptr = x.as_mut_ptr() as *mut u8;
                     let mut data_ptr = data.as_ptr();
                     unsafe {
                         std::ptr::copy_nonoverlapping(data_ptr, ptr, bytes);
-                        y.set_len(points);
+                        x.set_len(points);
                     }
-                    let mut x: Vec<T> = Vec::with_capacity(points);
-                    let ptr = x.as_mut_ptr() as *mut u8;
+                    let mut y: Vec<T> = Vec::with_capacity(points);
+                    let ptr = y.as_mut_ptr() as *mut u8;
                     unsafe {
                         data_ptr = data_ptr.add(bytes);
                         std::ptr::copy_nonoverlapping(data_ptr, ptr, bytes);
-                        x.set_len(points);
+                        y.set_len(points);
                     }
 
                     Graph { x: Some(x), y }
