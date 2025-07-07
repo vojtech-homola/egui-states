@@ -104,7 +104,6 @@ impl ImageUpdate for ValueImage {
             None => [image_size[1], image_size[0]],
         };
 
-        // TODO: cache the color image
         let mut c_image = egui::ColorImage::new(size, egui::Color32::WHITE);
         let pixel_count = size[0] * size[1];
 
@@ -237,6 +236,31 @@ pub(crate) mod server {
             let size = w.size;
             let data = PyByteArray::new(py, &w.data);
             (data, size)
+        }
+
+        pub(crate) fn set_image_chunk_py(
+            &self,
+            image: &PyBuffer<u8>,
+            origin: [usize; 2],
+            width: Option<usize>,
+            update: bool,
+        ) -> PyResult<()> {
+            let shape = image.shape();
+            let strides = image.strides();
+            if !image.is_c_contiguous() {
+                return Err(PyValueError::new_err("Chunk must be C contiguous"));
+            }
+            let image_type = check_chunk_type(shape, strides)?;
+
+            let mut w = self.image.write().unwrap();
+
+            match width {
+                Some(width) => {}
+
+                None => {}
+            }
+
+            Ok(())
         }
 
         // Function is complex because it needs to handle different image types and also not contiguous
@@ -372,13 +396,49 @@ pub(crate) mod server {
         }
     }
 
-    fn check_image_type(shape: &[usize], strides: &[isize]) -> PyResult<ImageType> {
+    fn check_chunk_type(shape: &[usize], strides: &[isize]) -> PyResult<ImageType> {
         match shape.len() {
+            1 => Ok(ImageType::Gray),
+
             2 => {
                 if strides[1] != 1 {
                     return Err(PyValueError::new_err("Invalid strides"));
                 }
-                Ok(ImageType::Gray)
+                match shape[1] {
+                    2 => {
+                        if strides[1] != 2 {
+                            return Err(PyValueError::new_err("Invalid strides"));
+                        }
+                        Ok(ImageType::GrayAlpha)
+                    }
+                    3 => {
+                        if strides[1] != 3 {
+                            return Err(PyValueError::new_err("Invalid strides"));
+                        }
+
+                        Ok(ImageType::Color)
+                    }
+                    4 => {
+                        if strides[1] != 4 {
+                            return Err(PyValueError::new_err("Invalid strides"));
+                        }
+                        Ok(ImageType::ColorAlpha)
+                    }
+                    _ => Err(PyValueError::new_err("Invalid image dimensions")),
+                }
+            }
+
+            _ => Err(PyValueError::new_err("Invalid image dimensions")),
+        }
+    }
+
+    fn check_image_type(shape: &[usize], strides: &[isize]) -> PyResult<ImageType> {
+        match shape.len() {
+            2 => {
+                if strides[1] == 1 {
+                    return Ok(ImageType::Gray);
+                }
+                Err(PyValueError::new_err("Invalid strides"))
             }
             3 => {
                 if strides[2] != 1 {
@@ -408,6 +468,60 @@ pub(crate) mod server {
                 }
             }
             _ => Err(PyValueError::new_err("Invalid image dimensions")),
+        }
+    }
+
+    // Function writes a flat chunk of data to the image of size [height, width]. Chunk starts
+    // at the start origin [top, left].
+    unsafe fn write_chunk(
+        chunk: *const u8,
+        chunk_size: usize,
+        image: *mut u8,
+        origin: &[usize; 2],
+        size: &[usize; 2],
+        image_type: ImageType,
+    ) {
+        let start_position = origin[0] * size[1] + origin[1];
+        let image_ptr = unsafe { image.add(start_position * 4) };
+
+        match image_type {
+            ImageType::ColorAlpha => {
+                unsafe {
+                    copy_nonoverlapping(chunk, image.add(start_position * 4), chunk_size * 4)
+                };
+            }
+            ImageType::Color => {
+                for i in 0..chunk_size {
+                    unsafe {
+                        *image_ptr.add(i * 4) = *chunk.add(i * 3);
+                        *image_ptr.add(i * 4 + 1) = *chunk.add(i * 3 + 1);
+                        *image_ptr.add(i * 4 + 2) = *chunk.add(i * 3 + 2);
+                        *image_ptr.add(i * 4 + 3) = 255;
+                    }
+                }
+            }
+            ImageType::Gray => {
+                for i in 0..chunk_size {
+                    let p = unsafe { *chunk.add(i) };
+                    unsafe {
+                        *image_ptr.add(i * 4) = p;
+                        *image_ptr.add(i * 4 + 1) = p;
+                        *image_ptr.add(i * 4 + 2) = p;
+                        *image_ptr.add(i * 4 + 3) = 255;
+                    }
+                }
+            }
+            ImageType::GrayAlpha => {
+                for i in 0..chunk_size {
+                    let p = unsafe { *chunk.add(i * 2) };
+                    unsafe {
+                        *image_ptr.add(i * 4) = p;
+                        *image_ptr.add(i * 4 + 1) = p;
+                        *image_ptr.add(i * 4 + 2) = p;
+                        *image_ptr.add(i * 4 + 3) = *chunk.add(i * 2 + 1);
+                    }
+                }
+            }
         }
     }
 
