@@ -472,22 +472,20 @@ pub(crate) mod server {
     }
 
     // Function writes a flat chunk of data to the image of size [height, width]. Chunk starts
-    // at the start origin [top, left].
+    // at the start (position of flattened image).
     unsafe fn write_chunk(
         chunk: *const u8,
         chunk_size: usize,
         image: *mut u8,
-        origin: &[usize; 2],
-        size: &[usize; 2],
+        start: usize,
         image_type: ImageType,
     ) {
-        let start_position = origin[0] * size[1] + origin[1];
-        let image_ptr = unsafe { image.add(start_position * 4) };
+        let image_ptr = unsafe { image.add(start * 4) };
 
         match image_type {
             ImageType::ColorAlpha => {
                 unsafe {
-                    copy_nonoverlapping(chunk, image.add(start_position * 4), chunk_size * 4)
+                    copy_nonoverlapping(chunk, image.add(start * 4), chunk_size * 4)
                 };
             }
             ImageType::Color => {
@@ -520,6 +518,33 @@ pub(crate) mod server {
                         *image_ptr.add(i * 4 + 2) = p;
                         *image_ptr.add(i * 4 + 3) = *chunk.add(i * 2 + 1);
                     }
+                }
+            }
+        }
+    }
+
+    // Function writes a flat chunk of data to the image of size [height, width]. Chunk starts
+    // at the start (position of flattened image) but in recrtangle insede the image.
+    unsafe fn write_chunk_rectangle(
+        chunk: *mut u8,
+        chunk_size: usize,
+        start: usize,
+        rectangle: &[usize; 4], // [y, x, h, w]
+        image: *mut u8,
+        image_stride: usize,
+        image_type: ImageType,
+    ) {
+
+        let mut lines_count = (chunk_size + start) / rectangle[3];
+
+        let mut remains = chunk_size;
+        let mut to_write = rectangle[3] - start;
+        let mut buffer_image
+        match image_type {
+            ImageType::ColorAlpha => {
+
+                while remains > 0 {
+
                 }
             }
         }
@@ -644,15 +669,20 @@ pub(crate) mod server {
                 if stride == 0 {
                     stride = size[1] * 4;
                 }
+                let x = size[1] * 4;
                 for i in 0..size[0] {
-                    for j in 0..size[1] {
-                        let index = (top + i) * old_stride + left + j;
-                        let d_index = i * stride + j * 4;
-                        *old_data.add(index * 4) = *data.add(d_index);
-                        *old_data.add(index * 4 + 1) = *data.add(d_index + 1);
-                        *old_data.add(index * 4 + 2) = *data.add(d_index + 2);
-                        *old_data.add(index * 4 + 3) = *data.add(d_index + 3);
-                    }
+                    // for j in 0..size[1] {
+                    //     let index = (top + i) * old_stride + left + j;
+                    //     let d_index = i * stride + j * 4;
+                    //     *old_data.add(index * 4) = *data.add(d_index);
+                    //     *old_data.add(index * 4 + 1) = *data.add(d_index + 1);
+                    //     *old_data.add(index * 4 + 2) = *data.add(d_index + 2);
+                    //     *old_data.add(index * 4 + 3) = *data.add(d_index + 3);
+                    // }
+                    let index = (top + i) * old_stride + left * 4;
+                    let buffer = data.add(i * stride);
+                    let data_buffer = old_data.add(index);
+                    std::ptr::copy_nonoverlapping(buffer, data_buffer, x);
                 }
             },
             ImageType::Color => unsafe {
