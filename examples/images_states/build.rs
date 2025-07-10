@@ -27,5 +27,5 @@ fn main() {
     )
     .unwrap();
 
-    build::write_annotation("images/state_server.pyi".to_string(), None, None);
+    build::write_annotation("images/core.pyi".to_string(), None, None);
 }
