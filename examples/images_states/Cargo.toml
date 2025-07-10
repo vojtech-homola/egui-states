@@ -1,0 +1,15 @@
+[package]
+name = "example_images_states"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "core"
+crate-type = ["cdylib"]
+
+[dependencies]
+egui_pysync = { path = "../.." }
+pyo3 = { version = "0.25.1", features = ["extension-module"] }
+
+[build-dependencies]
+egui_pysync = { path = "../.." }

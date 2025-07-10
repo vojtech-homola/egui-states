@@ -217,19 +217,19 @@ impl StateServerCore {
         }
     }
 
-    #[pyo3(signature = (value_id, image, update, origin, width=None))]
+    #[pyo3(signature = (value_id, image, update, start, rectangle=None))]
     fn image_set_chunk(
         &self,
         py: Python,
         value_id: u32,
         image: PyBuffer<u8>,
         update: bool,
-        origin: [usize; 2],
-        width: Option<usize>,
+        start: usize,
+        rectangle: Option<[usize; 4]>,
     ) -> PyResult<()> {
         match self.values.images.get(&value_id) {
             Some(image_val) => py.allow_threads(|| {
-                image_val.set_image_chunk_py(&image, origin, width, update)
+                image_val.set_image_chunk_py(&image, start, rectangle, update)
             }),
             None => Err(pyo3::exceptions::PyValueError::new_err(format!(
                 "Image with id {} is not available.",

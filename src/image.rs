@@ -240,24 +240,98 @@ pub(crate) mod server {
 
         pub(crate) fn set_image_chunk_py(
             &self,
-            image: &PyBuffer<u8>,
-            origin: [usize; 2],
-            width: Option<usize>,
+            chunk: &PyBuffer<u8>,
+            start: usize,
+            rectangle: Option<[usize; 4]>, // [y, x, h, w]
             update: bool,
         ) -> PyResult<()> {
-            let shape = image.shape();
-            let strides = image.strides();
-            if !image.is_c_contiguous() {
+            let shape = chunk.shape();
+            let strides = chunk.strides();
+            if !chunk.is_c_contiguous() {
                 return Err(PyValueError::new_err("Chunk must be C contiguous"));
             }
             let image_type = check_chunk_type(shape, strides)?;
 
             let mut w = self.image.write().unwrap();
+            match rectangle {
+                Some(rectangle) => {
+                    // check if the rectangle fits in the original image
+                    if rectangle[0] + rectangle[2] > w.size[0]
+                        || rectangle[1] + rectangle[3] > w.size[1]
+                    {
+                        return Err(PyValueError::new_err(format!(
+                            "rectangle {:?} does not fit in the original image with size {:?}",
+                            rectangle, w.size
+                        )));
+                    }
 
-            match width {
-                Some(width) => {}
+                    let chunk_size = chunk.item_count();
+                    if start + chunk_size > rectangle[2] * rectangle[3] {
+                        return Err(PyValueError::new_err(
+                            "Chunk is too large for the rectangle",
+                        ));
+                    }
 
-                None => {}
+                    unsafe {
+                        write_chunk_rectangle(
+                            chunk.buf_ptr() as *mut u8,
+                            chunk_size,
+                            start,
+                            &rectangle,
+                            w.data.as_mut_ptr(),
+                            w.size[1],
+                            image_type,
+                        );
+                    }
+                }
+
+                None => {
+                    if start + chunk.item_count() > w.data.len() {
+                        return Err(PyValueError::new_err("Chunk is too large for the image"));
+                    }
+                    unsafe {
+                        write_chunk(
+                            chunk.buf_ptr() as *const u8,
+                            chunk.item_count(),
+                            w.data.as_mut_ptr(),
+                            start,
+                            image_type,
+                        );
+                    }
+                }
+            }
+
+            if self.connected.load(Ordering::Relaxed) {
+                let (data, rect) = match rectangle {
+                    Some(rectangle) => unsafe {
+                        copy_data_chunk_rectangle(
+                            chunk.buf_ptr() as *const u8,
+                            chunk.item_count(),
+                            &w,
+                            start,
+                            &rectangle,
+                            image_type,
+                        )
+                    },
+                    None => unsafe {
+                        copy_data_chunk(
+                            chunk.buf_ptr() as *const u8,
+                            chunk.item_count(),
+                            &w,
+                            start,
+                            image_type,
+                        )
+                    },
+                };
+
+                let image_info = ImageInfo {
+                    image_size: w.size,
+                    rect: Some(rect),
+                    image_type,
+                };
+                let info = serialize(&image_info);
+                let message = WriteMessage::Image(self.id, update, info, data);
+                self.channel.send(message).unwrap();
             }
 
             Ok(())
@@ -471,6 +545,292 @@ pub(crate) mod server {
         }
     }
 
+    unsafe fn copy_data_chunk(
+        chunk: *const u8,
+        chunk_size: usize,
+        image: &ImageDataInner,
+        start: usize,
+        image_type: ImageType,
+    ) -> (Vec<u8>, [usize; 4]) {
+        let top = start / image.size[1];
+        let bottom = (start + chunk_size) / image.size[1];
+
+        let rectangle = if top == bottom {
+            let left = start % image.size[1];
+            [top, left, 1, chunk_size]
+        } else {
+            [top, 0, bottom - top + 1, image.size[1]]
+        };
+
+        let head_size = start % image.size[1];
+        let tail_size = (head_size + chunk_size) % image.size[1];
+        let all_size = head_size + chunk_size + tail_size;
+
+        let mut image_ptr = unsafe { image.data.as_ptr().add((start - head_size) * 4) };
+        let data = match image_type {
+            ImageType::ColorAlpha => {
+                let mut data: Vec<u8> = Vec::with_capacity(all_size * 4);
+                unsafe { data.set_len(all_size * 4) };
+                if head_size > 0 {
+                    unsafe {
+                        copy_nonoverlapping(image_ptr, data.as_mut_ptr(), head_size * 4);
+                    }
+                }
+                unsafe {
+                    copy_nonoverlapping(chunk, data.as_mut_ptr().add(head_size * 4), chunk_size * 4)
+                };
+                if tail_size > 0 {
+                    unsafe {
+                        copy_nonoverlapping(
+                            image_ptr.add((head_size + chunk_size) * 4),
+                            data.as_mut_ptr().add(head_size * 4 + chunk_size * 4),
+                            tail_size * 4,
+                        );
+                    }
+                }
+                data
+            }
+            ImageType::Color => {
+                let mut data: Vec<u8> = Vec::with_capacity(all_size * 3);
+                unsafe { data.set_len(all_size * 3) };
+                if head_size > 0 {
+                    for i in 0..head_size {
+                        unsafe {
+                            *data.as_mut_ptr().add(i * 3) = *image_ptr.add(i * 4);
+                            *data.as_mut_ptr().add(i * 3 + 1) = *image_ptr.add(i * 4 + 1);
+                            *data.as_mut_ptr().add(i * 3 + 2) = *image_ptr.add(i * 4 + 2);
+                        }
+                    }
+                }
+                unsafe {
+                    copy_nonoverlapping(
+                        chunk,
+                        data.as_mut_ptr().add(head_size * 3),
+                        chunk_size * 3,
+                    );
+                }
+                if tail_size > 0 {
+                    image_ptr = unsafe { image_ptr.add((head_size + chunk_size) * 4) };
+                    let data_ptr = unsafe { data.as_mut_ptr().add(head_size * 3 + chunk_size * 3) };
+                    for i in 0..tail_size {
+                        unsafe {
+                            *data_ptr.add(i * 3) = *image_ptr.add(i * 4);
+                            *data_ptr.add(i * 3 + 1) = *image_ptr.add(i * 4 + 1);
+                            *data_ptr.add(i * 3 + 2) = *image_ptr.add(i * 4 + 2);
+                        }
+                    }
+                }
+
+                data
+            }
+
+            ImageType::GrayAlpha => {
+                let mut data: Vec<u8> = Vec::with_capacity(all_size * 2);
+                unsafe { data.set_len(all_size * 2) };
+                if head_size > 0 {
+                    for i in 0..head_size {
+                        unsafe {
+                            *data.as_mut_ptr().add(i * 2) = *image_ptr.add(i * 4);
+                            *data.as_mut_ptr().add(i * 2 + 1) = *image_ptr.add(i * 4 + 3);
+                        }
+                    }
+                }
+                unsafe {
+                    copy_nonoverlapping(
+                        chunk,
+                        data.as_mut_ptr().add(head_size * 2),
+                        chunk_size * 2,
+                    );
+                }
+                if tail_size > 0 {
+                    image_ptr = unsafe { image_ptr.add((head_size + chunk_size) * 4) };
+                    let data_ptr = unsafe { data.as_mut_ptr().add(head_size * 2 + chunk_size * 2) };
+                    for i in 0..tail_size {
+                        unsafe {
+                            *data_ptr.add(i * 2) = *image_ptr.add(i * 4);
+                            *data_ptr.add(i * 2 + 1) = *image_ptr.add(i * 4 + 3);
+                        }
+                    }
+                }
+                data
+            }
+
+            ImageType::Gray => {
+                let mut data: Vec<u8> = Vec::with_capacity(all_size);
+                unsafe { data.set_len(all_size) };
+                if head_size > 0 {
+                    for i in 0..head_size {
+                        unsafe {
+                            *data.as_mut_ptr().add(i) = *image_ptr.add(i * 4);
+                        }
+                    }
+                }
+                unsafe {
+                    copy_nonoverlapping(chunk, data.as_mut_ptr().add(head_size), chunk_size);
+                }
+                if tail_size > 0 {
+                    image_ptr = unsafe { image_ptr.add((head_size + chunk_size) * 4) };
+                    let data_ptr = unsafe { data.as_mut_ptr().add(head_size + chunk_size) };
+                    for i in 0..tail_size {
+                        unsafe {
+                            *data_ptr.add(i) = *image_ptr.add(i * 4);
+                        }
+                    }
+                }
+
+                data
+            }
+        };
+
+        (data, rectangle)
+    }
+
+    unsafe fn copy_data_chunk_rectangle(
+        chunk: *const u8,
+        chunk_size: usize,
+        image: &ImageDataInner,
+        start: usize,
+        rectangle: &[usize; 4], // [y, x, h, w]
+        image_type: ImageType,
+    ) -> (Vec<u8>, [usize; 4]) {
+        let lines_count = (start + chunk_size) / rectangle[3];
+        let new_rectangle = [rectangle[0], rectangle[1], lines_count, rectangle[3]];
+
+        let head_size = start % rectangle[3];
+        let tail_size = (start + chunk_size) % rectangle[3];
+        // let all_size = head_size + chunk_size + tail_size;
+
+        let image_position = rectangle[0] * image.size[1] + rectangle[1];
+        let mut image_ptr = unsafe { image.data.as_ptr().add(image_position * 4) };
+
+        let data = match image_type {
+            ImageType::ColorAlpha => {
+                let mut data: Vec<u8> = Vec::with_capacity(rectangle[2] * rectangle[3] * 4);
+                unsafe { data.set_len(rectangle[2] * rectangle[3] * 4) };
+
+                if head_size > 0 {
+                    unsafe {
+                        copy_nonoverlapping(image_ptr, data.as_mut_ptr(), head_size * 4);
+                    }
+                }
+                unsafe {
+                    copy_nonoverlapping(
+                        chunk,
+                        data.as_mut_ptr().add(head_size * 4),
+                        chunk_size * 4,
+                    );
+                }
+                if tail_size > 0 {
+                    unsafe {
+                        copy_nonoverlapping(
+                            image_ptr.add((head_size + chunk_size) * 4),
+                            data.as_mut_ptr().add(head_size * 4 + chunk_size * 4),
+                            tail_size * 4,
+                        );
+                    }
+                }
+
+                data
+            }
+            ImageType::Color => {
+                let mut data: Vec<u8> = Vec::with_capacity(rectangle[2] * rectangle[3] * 3);
+                unsafe { data.set_len(rectangle[2] * rectangle[3] * 3) };
+
+                if head_size > 0 {
+                    for i in 0..head_size {
+                        unsafe {
+                            *data.as_mut_ptr().add(i * 3) = *image_ptr.add(i * 4);
+                            *data.as_mut_ptr().add(i * 3 + 1) = *image_ptr.add(i * 4 + 1);
+                            *data.as_mut_ptr().add(i * 3 + 2) = *image_ptr.add(i * 4 + 2);
+                        }
+                    }
+                }
+                unsafe {
+                    copy_nonoverlapping(
+                        chunk,
+                        data.as_mut_ptr().add(head_size * 3),
+                        chunk_size * 3,
+                    );
+                }
+                if tail_size > 0 {
+                    image_ptr = unsafe { image_ptr.add((head_size + chunk_size) * 4) };
+                    let data_ptr = unsafe { data.as_mut_ptr().add(head_size * 3 + chunk_size * 3) };
+                    for i in 0..tail_size {
+                        unsafe {
+                            *data_ptr.add(i * 3) = *image_ptr.add(i * 4);
+                            *data_ptr.add(i * 3 + 1) = *image_ptr.add(i * 4 + 1);
+                            *data_ptr.add(i * 3 + 2) = *image_ptr.add(i * 4 + 2);
+                        }
+                    }
+                }
+
+                data
+            }
+
+            ImageType::GrayAlpha => {
+                let mut data: Vec<u8> = Vec::with_capacity(rectangle[2] * rectangle[3] * 2);
+                unsafe { data.set_len(rectangle[2] * rectangle[3] * 2) };
+
+                if head_size > 0 {
+                    for i in 0..head_size {
+                        unsafe {
+                            *data.as_mut_ptr().add(i * 2) = *image_ptr.add(i * 4);
+                            *data.as_mut_ptr().add(i * 2 + 1) = *image_ptr.add(i * 4 + 3);
+                        }
+                    }
+                }
+                unsafe {
+                    copy_nonoverlapping(
+                        chunk,
+                        data.as_mut_ptr().add(head_size * 2),
+                        chunk_size * 2,
+                    );
+                }
+                if tail_size > 0 {
+                    image_ptr = unsafe { image_ptr.add((head_size + chunk_size) * 4) };
+                    let data_ptr = unsafe { data.as_mut_ptr().add(head_size * 2 + chunk_size * 2) };
+                    for i in 0..tail_size {
+                        unsafe {
+                            *data_ptr.add(i * 2) = *image_ptr.add(i * 4);
+                            *data_ptr.add(i * 2 + 1) = *image_ptr.add(i * 4 + 3);
+                        }
+                    }
+                }
+
+                data
+            }
+
+            ImageType::Gray => {
+                let mut data: Vec<u8> = Vec::with_capacity(rectangle[2] * rectangle[3]);
+                unsafe { data.set_len(rectangle[2] * rectangle[3]) };
+
+                if head_size > 0 {
+                    for i in 0..head_size {
+                        unsafe {
+                            *data.as_mut_ptr().add(i) = *image_ptr.add(i * 4);
+                        }
+                    }
+                }
+                unsafe {
+                    copy_nonoverlapping(chunk, data.as_mut_ptr().add(head_size), chunk_size);
+                }
+                if tail_size > 0 {
+                    image_ptr = unsafe { image_ptr.add((head_size + chunk_size) * 4) };
+                    let data_ptr = unsafe { data.as_mut_ptr().add(head_size + chunk_size) };
+                    for i in 0..tail_size {
+                        unsafe {
+                            *data_ptr.add(i) = *image_ptr.add(i * 4);
+                        }
+                    }
+                }
+
+                data
+            }
+        };
+
+        (data, new_rectangle)
+    }
+
     // Function writes a flat chunk of data to the image of size [height, width]. Chunk starts
     // at the start (position of flattened image).
     unsafe fn write_chunk(
@@ -484,9 +844,7 @@ pub(crate) mod server {
 
         match image_type {
             ImageType::ColorAlpha => {
-                unsafe {
-                    copy_nonoverlapping(chunk, image.add(start * 4), chunk_size * 4)
-                };
+                unsafe { copy_nonoverlapping(chunk, image.add(start * 4), chunk_size * 4) };
             }
             ImageType::Color => {
                 for i in 0..chunk_size {
@@ -531,20 +889,94 @@ pub(crate) mod server {
         start: usize,
         rectangle: &[usize; 4], // [y, x, h, w]
         image: *mut u8,
-        image_stride: usize,
+        image_width: usize,
         image_type: ImageType,
     ) {
-
-        let mut lines_count = (chunk_size + start) / rectangle[3];
-
+        let w = rectangle[3];
         let mut remains = chunk_size;
-        let mut to_write = rectangle[3] - start;
-        let mut buffer_image
+        let mut to_write = w - start;
+        if to_write > remains {
+            to_write = remains;
+        }
+        let mut buffer_image =
+            unsafe { image.add((rectangle[0] * image_width + rectangle[1] + start) * 4) };
+        let mut buffer_chunk = chunk;
         match image_type {
             ImageType::ColorAlpha => {
-
                 while remains > 0 {
-
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(buffer_chunk, buffer_image, to_write * 4);
+                    }
+                    buffer_image = unsafe { buffer_image.add((image_width + to_write - w) * 4) };
+                    buffer_chunk = unsafe { buffer_chunk.add(to_write * 4) };
+                    remains -= to_write;
+                    if remains < w {
+                        to_write = remains;
+                    } else {
+                        to_write = w;
+                    }
+                }
+            }
+            ImageType::Color => {
+                while remains > 0 {
+                    for i in 0..to_write {
+                        unsafe {
+                            *buffer_image.add(i * 4) = *buffer_chunk.add(i * 3);
+                            *buffer_image.add(i * 4 + 1) = *buffer_chunk.add(i * 3 + 1);
+                            *buffer_image.add(i * 4 + 2) = *buffer_chunk.add(i * 3 + 2);
+                            *buffer_image.add(i * 4 + 3) = 255;
+                        }
+                    }
+                    buffer_image = unsafe { buffer_image.add((image_width + to_write - w) * 4) };
+                    buffer_chunk = unsafe { buffer_chunk.add(to_write * 3) };
+                    remains -= to_write;
+                    if remains < w {
+                        to_write = remains;
+                    } else {
+                        to_write = w;
+                    }
+                }
+            }
+            ImageType::GrayAlpha => {
+                while remains > 0 {
+                    for i in 0..to_write {
+                        let p = unsafe { *buffer_chunk.add(i * 2) };
+                        unsafe {
+                            *buffer_image.add(i * 4) = p;
+                            *buffer_image.add(i * 4 + 1) = p;
+                            *buffer_image.add(i * 4 + 2) = p;
+                            *buffer_image.add(i * 4 + 3) = *buffer_chunk.add(i * 2 + 1);
+                        }
+                    }
+                    buffer_image = unsafe { buffer_image.add((image_width + to_write - w) * 4) };
+                    buffer_chunk = unsafe { buffer_chunk.add(to_write * 2) };
+                    remains -= to_write;
+                    if remains < w {
+                        to_write = remains;
+                    } else {
+                        to_write = w;
+                    }
+                }
+            }
+            ImageType::Gray => {
+                while remains > 0 {
+                    for i in 0..to_write {
+                        let p = unsafe { *buffer_chunk.add(i * 2) };
+                        unsafe {
+                            *buffer_image.add(i * 4) = p;
+                            *buffer_image.add(i * 4 + 1) = p;
+                            *buffer_image.add(i * 4 + 2) = p;
+                            *buffer_image.add(i * 4 + 3) = 255;
+                        }
+                    }
+                    buffer_image = unsafe { buffer_image.add((image_width + to_write - w) * 4) };
+                    buffer_chunk = unsafe { buffer_chunk.add(to_write) };
+                    remains -= to_write;
+                    if remains < w {
+                        to_write = remains;
+                    } else {
+                        to_write = w;
+                    }
                 }
             }
         }
