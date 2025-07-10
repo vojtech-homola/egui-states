@@ -1,23 +1,11 @@
 [workspace]
-members = ["egui-pysync-macros", "examples/*"]
-resolver = "2"
+members = ["crates/egui-pysync", "crates/egui-pysync-macros", "examples/*"]
+resolver = "3"
 
 [workspace.package]
-version = "0.5.3"
+version = "0.6.0"
 edition = "2024"
 
-[package]
-name = "egui_pysync"
-version.workspace = true
-edition.workspace = true
-
-[features]
-server = ["dep:pyo3"]
-
-[dependencies]
-egui_pysync_macros = { path = "egui-pysync-macros" }
-postcard = { version = "1.1.2", features = ["use-std"] }
-egui = "*"
-serde = "1"
-heapless = "0.7"
-pyo3 = { version = ">=0.24", optional = true }
+[workspace.dependencies]
+egui_pysync_macros = { path = "crates/egui-pysync-macros" }
+egui_pysync = { path = "crates/egui-pysync" }

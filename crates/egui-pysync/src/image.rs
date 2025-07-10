@@ -555,12 +555,17 @@ pub(crate) mod server {
         let top = start / image.size[1];
         let bottom = (start + chunk_size) / image.size[1];
 
+        println!("start: {}, chunk_size: {}, top: {}, bottom: {}", start, chunk_size, top, bottom);
+        println!("image size: {:?}", image.size);
+
         let rectangle = if top == bottom {
             let left = start % image.size[1];
             [top, left, 1, chunk_size]
         } else {
             [top, 0, bottom - top + 1, image.size[1]]
         };
+
+        println!("top: {}, bottom: {}, rectangle: {:?}", top, bottom, rectangle);
 
         let head_size = start % image.size[1];
         let tail_size = (head_size + chunk_size) % image.size[1];

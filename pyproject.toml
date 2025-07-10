@@ -1,6 +1,6 @@
 [build-system]
-requires = ["setuptools", "numpy"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [project]
 name = "egui-pysync"
@@ -13,9 +13,18 @@ readme = "README.md"
 
 dependencies = ["numpy"]
 
-[tool.setuptools]
+[dependency-groups]
+dev = ["ipython", "matplotlib"]
+
+[tool.hatch.version]
+path = "egui_pysync/version.py"
+
+[tool.hatch.build]
 packages = ["egui_pysync"]
-dynamic.version = { attr = "egui_pysync.__version__" }
+ignore-vcs = true
+
+[tool.uv]
+workspace.members = ["examples/images_states"]
 
 [tool.ruff]
 line-length = 120

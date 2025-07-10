@@ -2,7 +2,7 @@ __pycache__
 /target
 /.venv
 /venv
-/.vscode
+/.vscode/settings.json
 
 *.pyd
 *.so

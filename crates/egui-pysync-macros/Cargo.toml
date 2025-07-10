@@ -2,7 +2,7 @@
 name = "egui_pysync_macros"
 version.workspace = true
 edition.workspace = true
-resolver = "2"
+resolver = "3"
 
 [lib]
 proc-macro = true

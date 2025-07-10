@@ -22,7 +22,7 @@ fn main() {
         "../images_gui/src/states.rs",
         "images/states.py",
         "States",
-        "images._core".to_string(),
+        "images".to_string(),
         "core".to_string(),
     )
     .unwrap();

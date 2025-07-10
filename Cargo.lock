@@ -954,7 +954,7 @@ dependencies = [
 
 [[package]]
 name = "egui_pysync"
-version = "0.5.3"
+version = "0.6.0"
 dependencies = [
  "egui",
  "egui_pysync_macros",
@@ -966,7 +966,7 @@ dependencies = [
 
 [[package]]
 name = "egui_pysync_macros"
-version = "0.5.3"
+version = "0.6.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1097,7 +1097,7 @@ dependencies = [
 
 [[package]]
 name = "example_images_gui"
-version = "0.5.3"
+version = "0.6.0"
 dependencies = [
  "eframe",
  "egui",
@@ -1106,7 +1106,7 @@ dependencies = [
 
 [[package]]
 name = "example_images_states"
-version = "0.5.3"
+version = "0.6.0"
 dependencies = [
  "egui_pysync",
  "pyo3",
