@@ -328,7 +328,7 @@ impl State {
     fn write_python(
         &self,
         file: &mut fs::File,
-        core: &String,
+        core: &Option<String>,
         written: &mut Vec<String>,
         root: bool,
     ) {
@@ -355,7 +355,7 @@ impl State {
             return;
         }
 
-        let core = Some(core.clone());
+        let core = core.clone();
         for item in &self.items {
             match item {
                 Item::Value(name, value) => {
@@ -656,8 +656,8 @@ pub fn parse_states_for_client(
     state_file: impl ToString,
     output_file: impl ToString,
     root_state: &'static str,
-    package_name: String,
-    core: String,
+    package_name: Option<String>,
+    core: Option<String>,
 ) -> Result<(), String> {
     let lines: Vec<String> = fs::read_to_string(state_file.to_string())
         .map_err(|e| format!("Failed to read file: {}", e))?
@@ -675,11 +675,16 @@ pub fn parse_states_for_client(
     file.write_all(b"# ruff: noqa: D107 D101\n").unwrap();
     file.write_all(b"from collections.abc import Callable\n\n")
         .unwrap();
-    file.write_all(b"from egui_pysync import structures as sc\n\n")
+    file.write_all(b"from egui_pysync import structures as sc\n")
         .unwrap();
-    let text = format!("from {} import {}", package_name, core);
-    file.write_all(text.as_bytes()).unwrap();
-    file.write_all(b"\n").unwrap();
+
+    if let Some(package_name) = package_name
+        && let Some(core) = &core
+    {
+        let text = format!("\nfrom {} import {}", package_name, core);
+        file.write_all(text.as_bytes()).unwrap();
+        file.write_all(b"\n").unwrap();
+    }
 
     let mut written_classes = Vec::new();
     state.write_python(&mut file, &core, &mut written_classes, true);

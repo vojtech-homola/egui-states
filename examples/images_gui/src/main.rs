@@ -1,8 +1,10 @@
 use gui::main_app::MainApp;
 
 fn main() {
+    let viewport = egui::ViewportBuilder::default().with_inner_size([700., 730.]);
+
     let native_options = eframe::NativeOptions {
-        // viewport,
+        viewport,
         ..Default::default()
     };
 

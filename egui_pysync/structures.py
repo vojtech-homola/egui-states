@@ -223,25 +223,6 @@ class ValueImage(_StaticBase):
         """
         self._server.image_set(self._value_id, image, update, origin)
 
-    def set_chunk(
-        self,
-        image: Buffer,
-        start: int,
-        rectangle: tuple[int, int, int, int] | None = None,
-        update: bool = False,
-    ) -> None:
-        """Set a chunk of the image in the UI image.
-
-        Args:
-            image(Buffer): 1D image chunk to set. Chunk has to be c-contiguous.
-            start(int): The start index inside flattened image.
-            rectangle(tuple[int, int, int, int] | None, optional): Rectangle inside chunk is set. If rectangle
-                                                                   is provided, start index show at the position inside
-                                                                   the rectangle.
-            update(bool, optional): Whether to update the UI. Defaults to False.
-        """
-        self._server.image_set_chunk(self._value_id, image, update, start, rectangle)
-
     def get(self) -> np.ndarray:
         """Get the image in the UI image.
 

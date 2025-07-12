@@ -13,5 +13,5 @@ path = "src/main.rs"
 [dependencies]
 egui_pysync = { workspace = true}
 
-eframe = "0.31.1"
-egui = { version = "0.31.1", features = ["rayon"] }
+eframe = "0.32.0"
+egui = { version = "0.32.0", features = ["rayon"] }

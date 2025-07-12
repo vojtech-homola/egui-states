@@ -22,8 +22,8 @@ fn main() {
         "../images_gui/src/states.rs",
         "images/states.py",
         "States",
-        "images".to_string(),
-        "core".to_string(),
+        None,
+        None,
     )
     .unwrap();
 
