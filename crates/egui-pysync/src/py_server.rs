@@ -1,20 +1,19 @@
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::{
-    atomic,
+    Arc, OnceLock, RwLock, atomic,
     mpsc::{self, Sender},
-    Arc, OnceLock, RwLock,
 };
 
 use pyo3::buffer::PyBuffer;
 use pyo3::prelude::*;
 use pyo3::types::{PyByteArray, PyDict, PyList, PyTuple};
 
+use crate::NoHashSet;
 use crate::commands::CommandMessage;
 use crate::server::Server;
 use crate::signals::ChangedValues;
 use crate::states_server::{PyValuesList, ServerValuesCreator};
 use crate::transport::WriteMessage;
-use crate::NoHashSet;
 
 // To be able to create all values outside this crate
 pub(crate) static CREATE_HOOK: OnceLock<fn(&mut ServerValuesCreator)> = OnceLock::new();
@@ -56,7 +55,7 @@ impl StateServerCore {
             None => {
                 return Err(pyo3::exceptions::PyRuntimeError::new_err(
                     "Failed to inicialize state server object.",
-                ))
+                ));
             }
         }
 
@@ -129,10 +128,12 @@ impl StateServerCore {
     }
 
     fn value_get_signal<'py>(&self, py: Python<'py>, thread_id: u32) -> (u32, Bound<'py, PyAny>) {
-        let (value_id, value) = py.allow_threads(|| loop {
-            let res = self.changed_values.wait_changed_value(thread_id);
-            if self.registed_values.read().unwrap().contains(&res.0) {
-                break res;
+        let (value_id, value) = py.allow_threads(|| {
+            loop {
+                let res = self.changed_values.wait_changed_value(thread_id);
+                if self.registed_values.read().unwrap().contains(&res.0) {
+                    break res;
+                }
             }
         });
         let arg = value.to_python(py);

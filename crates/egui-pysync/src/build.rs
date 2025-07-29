@@ -328,7 +328,7 @@ impl State {
     fn write_python(
         &self,
         file: &mut fs::File,
-        core: &String,
+        core: &Option<String>,
         written: &mut Vec<String>,
         root: bool,
     ) {
@@ -355,7 +355,7 @@ impl State {
             return;
         }
 
-        let core = Some(core.clone());
+        let core = core.clone();
         for item in &self.items {
             match item {
                 Item::Value(name, value) => {
@@ -516,65 +516,67 @@ pub fn parse_states_for_server(
 
     write_values(&mut file, &state.items, &replace);
 
-    file.write_all(b"}\n\n").unwrap();
+    file.write_all(b"}\n").unwrap();
 
-    // register types
-    file.write_all(
-        b"pub(crate) fn register_types(m: &egui_pysync::pyo3::Bound<egui_pysync::pyo3::types::PyModule>) -> egui_pysync::pyo3::PyResult<()> {\n",
+    if enums.is_some() || structs.is_some() {
+        // register types
+        file.write_all(
+        b"\npub(crate) fn register_types(m: &egui_pysync::pyo3::Bound<egui_pysync::pyo3::types::PyModule>) -> egui_pysync::pyo3::PyResult<()> {\n",
     )
     .unwrap();
-    file.write_all(b"    use egui_pysync::pyo3::prelude::*;\n\n")
-        .unwrap();
-    if let Some(enums) = enums {
-        for en in enums {
-            let text = format!("    m.add_class::<{}>()?;\n", en.name);
-            file.write_all(text.as_bytes()).unwrap();
-        }
-    }
-
-    if let Some(structs) = structs {
-        for st in structs {
-            let text = format!("    m.add_class::<{}>()?;\n", st.name);
-            file.write_all(text.as_bytes()).unwrap();
-        }
-    }
-    file.write_all(b"\n    Ok(())\n").unwrap();
-    file.write_all(b"}\n\n").unwrap();
-
-    if let Some(enums) = enums {
-        for en in enums {
-            file.write_all(b"#[pyenum]\n").unwrap();
-            file.write_all(b"#[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]\n")
-                .unwrap();
-            file.write_all(format!("enum {} ", en.name).as_bytes())
-                .unwrap();
-            file.write_all(b"{\n").unwrap();
-
-            for (name, value) in &en.variants {
-                let text = format!("    {} = {},\n", name, value);
+        file.write_all(b"    use egui_pysync::pyo3::prelude::*;\n\n")
+            .unwrap();
+        if let Some(enums) = enums {
+            for en in enums {
+                let text = format!("    m.add_class::<{}>()?;\n", en.name);
                 file.write_all(text.as_bytes()).unwrap();
             }
-            file.write_all(b"}\n\n").unwrap();
         }
-    }
 
-    if let Some(structs) = structs {
-        for st in structs {
-            file.write_all(b"#[pystruct]\n").unwrap();
-            file.write_all(b"#[derive(Clone, Serialize, Deserialize)]\n")
-                .unwrap();
-            file.write_all(format!("struct {} {{\n", st.name).as_bytes())
-                .unwrap();
-            for (name, typ) in &st.fields {
-                let mut typ = typ.0.clone();
-                for rep in &replace {
-                    let to_replcae = format!("{}::", rep);
-                    typ = typ.replace(&to_replcae, "");
+        if let Some(structs) = structs {
+            for st in structs {
+                let text = format!("    m.add_class::<{}>()?;\n", st.name);
+                file.write_all(text.as_bytes()).unwrap();
+            }
+        }
+        file.write_all(b"\n    Ok(())\n").unwrap();
+        file.write_all(b"}\n\n").unwrap();
+
+        if let Some(enums) = enums {
+            for en in enums {
+                file.write_all(b"#[pyenum]\n").unwrap();
+                file.write_all(b"#[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]\n")
+                    .unwrap();
+                file.write_all(format!("enum {} ", en.name).as_bytes())
+                    .unwrap();
+                file.write_all(b"{\n").unwrap();
+
+                for (name, value) in &en.variants {
+                    let text = format!("    {} = {},\n", name, value);
+                    file.write_all(text.as_bytes()).unwrap();
                 }
-                let text = format!("    pub {}: {},\n", name, typ);
-                file.write_all(text.as_bytes()).unwrap();
+                file.write_all(b"}\n\n").unwrap();
             }
-            file.write_all(b"}\n\n").unwrap();
+        }
+
+        if let Some(structs) = structs {
+            for st in structs {
+                file.write_all(b"#[pystruct]\n").unwrap();
+                file.write_all(b"#[derive(Clone, Serialize, Deserialize)]\n")
+                    .unwrap();
+                file.write_all(format!("struct {} {{\n", st.name).as_bytes())
+                    .unwrap();
+                for (name, typ) in &st.fields {
+                    let mut typ = typ.0.clone();
+                    for rep in &replace {
+                        let to_replcae = format!("{}::", rep);
+                        typ = typ.replace(&to_replcae, "");
+                    }
+                    let text = format!("    pub {}: {},\n", name, typ);
+                    file.write_all(text.as_bytes()).unwrap();
+                }
+                file.write_all(b"}\n\n").unwrap();
+            }
         }
     }
 
@@ -654,8 +656,8 @@ pub fn parse_states_for_client(
     state_file: impl ToString,
     output_file: impl ToString,
     root_state: &'static str,
-    package_name: String,
-    core: String,
+    package_name: Option<String>,
+    core: Option<String>,
 ) -> Result<(), String> {
     let lines: Vec<String> = fs::read_to_string(state_file.to_string())
         .map_err(|e| format!("Failed to read file: {}", e))?
@@ -673,11 +675,16 @@ pub fn parse_states_for_client(
     file.write_all(b"# ruff: noqa: D107 D101\n").unwrap();
     file.write_all(b"from collections.abc import Callable\n\n")
         .unwrap();
-    file.write_all(b"from egui_pysync import structures as sc\n\n")
+    file.write_all(b"from egui_pysync import structures as sc\n")
         .unwrap();
-    let text = format!("from {} import {}", package_name, core);
-    file.write_all(text.as_bytes()).unwrap();
-    file.write_all(b"\n").unwrap();
+
+    if let Some(package_name) = package_name
+        && let Some(core) = &core
+    {
+        let text = format!("\nfrom {} import {}", package_name, core);
+        file.write_all(text.as_bytes()).unwrap();
+        file.write_all(b"\n").unwrap();
+    }
 
     let mut written_classes = Vec::new();
     state.write_python(&mut file, &core, &mut written_classes, true);
@@ -696,8 +703,15 @@ pub fn write_annotation(
 
     file.write_all(b"# Ganerated by build.rs, do not edit\n")
         .unwrap();
-    file.write_all(b"from egui_pysync.typing import SteteServerCoreBase, PySyncEnum\n\n")
+    file.write_all(b"from egui_pysync.typing import SteteServerCoreBase")
         .unwrap();
+
+    if enums.is_some() {
+        file.write_all(b", PySyncEnum\n\n").unwrap();
+    } else {
+        file.write_all(b"\n\n").unwrap();
+    }
+
     file.write_all(b"class StatesServerCore(SteteServerCoreBase):\n")
         .unwrap();
     file.write_all(b"    pass\n").unwrap();
@@ -727,9 +741,9 @@ pub fn write_annotation(
                 .unwrap();
             let mut init = Vec::new();
             for item in &st.fields {
-                let text = format!("    {}: {}\n", item.0, item.1 .1);
+                let text = format!("    {}: {}\n", item.0, item.1.1);
                 file.write_all(text.as_bytes()).unwrap();
-                init.push(format!("{}: {}", item.0, item.1 .1));
+                init.push(format!("{}: {}", item.0, item.1.1));
             }
             let t = init.join(", ");
             file.write_all(format!("\n    def __init__(self, {}):\n", t).as_bytes())
