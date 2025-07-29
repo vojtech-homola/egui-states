@@ -65,7 +65,7 @@ impl StateServerCore {
             Some(addr) => {
                 SocketAddrV4::new(Ipv4Addr::new(addr[0], addr[1], addr[2], addr[3]), port)
             }
-            None => SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), port),
+            None => SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), port),
         };
         let server = Server::new(
             channel.clone(),
