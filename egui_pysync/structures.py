@@ -4,6 +4,7 @@ from collections.abc import Buffer, Callable
 from typing import Any
 
 import numpy as np
+import numpy.typing as npt
 
 from egui_pysync.signals import SignalsManager
 from egui_pysync.typing import SteteServerCoreBase
@@ -223,22 +224,22 @@ class ValueImage(_StaticBase):
         """
         self._server.image_set(self._value_id, image, update, origin)
 
-    def get(self) -> np.ndarray:
+    def get(self) -> npt.NDArray[np.uint8]:
         """Get the image in the UI image.
 
         Returns:
-            np.ndarray: The image in the UI image. Stape is (height, width, 4). 4 is for RGBA.
+            npt.NDArray[np.uint8]: The image in the UI image. Stape is (height, width, 4). 4 is for RGBA.
         """
         data, shape = self._server.image_get(self._value_id)
         shape = (shape[0], shape[1], 4)
 
         return np.frombuffer(data, dtype=np.uint8).reshape(shape)
 
-    def size(self) -> tuple[int, int]:
-        """Get the size of the image.
+    def shape(self) -> tuple[int, int]:
+        """Get the shape of the image.
 
         Returns:
-            tuple[int, int]: The size of the image (height, width).
+            tuple[int, int]: The shape of the image (height, width) or (y, x).
         """
         return self._server.image_size(self._value_id)
 
@@ -429,11 +430,11 @@ class Graph:
         self._check()
         self._server.graphs_set(self._value_id, self._idx, graph, update)
 
-    def get(self) -> np.ndarray:
+    def get(self) -> npt.NDArray[np.float32 | np.float64]:
         """Get the graph from the UI graphs.
 
         Returns:
-            np.ndarray: The graph.
+            npt.NDArray[np.float32 | np.float64]: The graph.
         """
         data, shape = self._server.graphs_get(self._value_id, self._idx)
 

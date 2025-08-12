@@ -224,18 +224,19 @@ pub(crate) mod server {
             })
         }
 
-        pub(crate) fn get_size_py(&self) -> [usize; 2] {
-            self.image.read().unwrap().size
+        pub(crate) fn get_size_py(&self) -> (usize, usize) {
+            let size = self.image.read().unwrap().size;
+            (size[0], size[1])
         }
 
         pub(crate) fn get_image_py<'py>(
             &self,
             py: Python<'py>,
-        ) -> (Bound<'py, PyByteArray>, [usize; 2]) {
+        ) -> (Bound<'py, PyByteArray>, (usize, usize)) {
             let w = self.image.read().unwrap();
             let size = w.size;
             let data = PyByteArray::new(py, &w.data);
-            (data, size)
+            (data, (size[0], size[1]))
         }
 
         // Function is complex because it needs to handle different image types and also not contiguous

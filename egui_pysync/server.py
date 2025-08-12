@@ -38,8 +38,6 @@ class StateServer[T: _MainStatesBase]:
         _initialize_states(self._states, self._server, self._signals_manager)
         self.error = ErrorSignal(self._signals_manager)
 
-        self._signals_manager.start_manager()
-
     @property
     def states(self) -> T:
         """Get the state."""
@@ -55,6 +53,7 @@ class StateServer[T: _MainStatesBase]:
 
     def start(self) -> None:
         """Start the state server."""
+        self._signals_manager.start_manager()
         self._server.start()
 
     def stop(self) -> None:

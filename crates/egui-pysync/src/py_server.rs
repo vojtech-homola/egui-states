@@ -222,7 +222,7 @@ impl StateServerCore {
         &self,
         py: Python<'py>,
         value_id: u32,
-    ) -> PyResult<(Bound<'py, PyByteArray>, [usize; 2])> {
+    ) -> PyResult<(Bound<'py, PyByteArray>, (usize, usize))> {
         match self.values.images.get(&value_id) {
             Some(image) => Ok(image.get_image_py(py)),
             None => Err(pyo3::exceptions::PyValueError::new_err(format!(
@@ -232,7 +232,7 @@ impl StateServerCore {
         }
     }
 
-    fn image_size(&self, value_id: u32) -> PyResult<[usize; 2]> {
+    fn image_size(&self, value_id: u32) -> PyResult<(usize, usize)> {
         match self.values.images.get(&value_id) {
             Some(image) => Ok(image.get_size_py()),
             None => Err(pyo3::exceptions::PyValueError::new_err(format!(
