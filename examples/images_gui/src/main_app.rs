@@ -2,14 +2,13 @@ use std::error::Error;
 
 use eframe::{App, CreationContext};
 use egui::{Color32, ColorImage, Rect};
-use egui_pysync::client::ClientBuilder;
-use egui_pysync::client_state;
+use egui_pysync::{ClientBuilder, ConnectionState, UIState};
 
 use crate::states::States;
 
 pub struct MainApp {
     states: States,
-    ui_state: client_state::UIState,
+    ui_state: UIState,
 }
 
 impl MainApp {
@@ -33,11 +32,11 @@ impl eframe::App for MainApp {
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     let button = match self.ui_state.get_state() {
-                        client_state::ConnectionState::NotConnected => egui::Button::new("Connect"),
-                        client_state::ConnectionState::Connected => {
+                        ConnectionState::NotConnected => egui::Button::new("Connect"),
+                        ConnectionState::Connected => {
                             egui::Button::new("Connected").fill(egui::Color32::LIGHT_GREEN)
                         }
-                        client_state::ConnectionState::Disconnected => {
+                        ConnectionState::Disconnected => {
                             egui::Button::new("Reconnect").fill(egui::Color32::LIGHT_RED)
                         }
                     };

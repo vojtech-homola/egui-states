@@ -48,16 +48,11 @@ where
 
 pub(crate) enum WriteMessage {
     Value(u32, bool, MessageData),
-    #[cfg_attr(not(feature = "server"), allow(dead_code))]
     Static(u32, bool, MessageData),
     Signal(u32, MessageData),
-    #[cfg_attr(not(feature = "server"), allow(dead_code))]
     Image(u32, bool, MessageData, Vec<u8>),
-    #[cfg_attr(not(feature = "server"), allow(dead_code))]
     Dict(u32, bool, MessageData),
-    #[cfg_attr(not(feature = "server"), allow(dead_code))]
     List(u32, bool, MessageData),
-    #[cfg_attr(not(feature = "server"), allow(dead_code))]
     Graph(u32, bool, MessageData, Option<Vec<u8>>),
     Command(CommandMessage),
     Terminate,
@@ -72,7 +67,7 @@ impl WriteMessage {
 pub(crate) enum ReadMessage {
     Value(u32, bool, MessageData),
     Static(u32, bool, MessageData),
-    #[cfg_attr(not(feature = "server"), allow(dead_code))]
+    // #[cfg_attr(not(feature = "server"), allow(dead_code))]
     Signal(u32, MessageData),
     Image(u32, bool, MessageData),
     Dict(u32, bool, MessageData),

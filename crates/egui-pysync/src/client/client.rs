@@ -5,9 +5,9 @@ use std::thread;
 
 use egui::Context;
 
-use crate::client_state::{ConnectionState, UIState};
+use crate::client::client_state::{ConnectionState, UIState};
 use crate::commands::CommandMessage;
-use crate::states_creator::{ValuesCreator, ValuesList};
+use crate::client::states_creator::{ValuesCreator, ValuesList};
 use crate::transport::{read_message, write_message, MessageData, ReadMessage, WriteMessage};
 
 fn handle_message(

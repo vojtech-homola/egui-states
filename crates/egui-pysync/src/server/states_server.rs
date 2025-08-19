@@ -1,24 +1,26 @@
 use std::hash::Hash;
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::Sender;
-use std::sync::Arc;
 
 use pyo3::buffer::Element;
 use pyo3::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::dict::server::{PyDictTrait, PyValueDict};
-use crate::graphs::server::{PyGraphTrait, PyValueGraphs};
-use crate::graphs::GraphElement;
-use crate::image::server::PyValueImage;
-use crate::list::server::{PyListTrait, PyValueList};
-use crate::python_convert::ToPython;
-use crate::server::{Acknowledge, SyncTrait};
-use crate::signals::ChangedValues;
-use crate::transport::WriteMessage;
-use crate::values::server::{PySignal, PyValue, PyValueStatic};
-use crate::values::server::{PySignalTrait, PyValueStaticTrait, PyValueTrait, UpdateValueServer};
 use crate::NoHashMap;
+use crate::server::python_convert::ToPython;
+use crate::pyvalues::pydict::{PyDictTrait, PyValueDict};
+use crate::pyvalues::pygraphs::{PyGraphTrait, PyValueGraphs};
+use crate::pyvalues::pyimage::PyValueImage;
+use crate::pyvalues::pylist::{PyListTrait, PyValueList};
+use crate::pyvalues::pyvalues::{PySignal, PyValue, PyValueStatic};
+use crate::pyvalues::pyvalues::{
+    PySignalTrait, PyValueStaticTrait, PyValueTrait, UpdateValueServer,
+};
+use crate::server::server::{Acknowledge, SyncTrait};
+use crate::server::signals::ChangedValues;
+use crate::transport::WriteMessage;
+use crate::values_common::GraphElement;
 
 #[derive(Clone)]
 pub(crate) struct PyValuesList {

@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use crate::event::Event;
-use crate::python_convert::ToPython;
+use crate::server::python_convert::ToPython;
 use crate::{NoHashMap, NoHashSet};
 
 struct OrderedMap {

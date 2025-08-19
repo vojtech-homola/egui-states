@@ -1,8 +1,9 @@
-use std::sync::mpsc::Sender;
 use std::sync::Arc;
+use std::sync::RwLock;
+use std::sync::mpsc::Sender;
 use std::time::Duration;
 
-use egui::{mutex::RwLock, Context};
+use egui::Context;
 
 use crate::event::Event;
 use crate::transport::WriteMessage;
@@ -55,11 +56,11 @@ impl UIState {
     }
 
     pub(crate) fn set_state(&self, state: ConnectionState) {
-        *self.state.write() = state;
+        *self.state.write().unwrap() = state;
         self.context.request_repaint();
     }
 
     pub fn get_state(&self) -> ConnectionState {
-        *self.state.read()
+        *self.state.read().unwrap()
     }
 }
