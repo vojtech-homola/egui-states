@@ -86,10 +86,6 @@ fn handle_message(
             None => return Err(format!("Graph with id {} not found", id)),
         },
 
-        ReadMessage::Signal(_, _) => {
-            return Err("Signal message should not be handled in the client".to_string());
-        }
-
         ReadMessage::Command(_) => unreachable!("should not parse Command message"),
     };
 

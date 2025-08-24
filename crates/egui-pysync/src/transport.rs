@@ -48,16 +48,23 @@ where
 
 pub(crate) enum WriteMessage {
     Value(u32, bool, MessageData),
+    #[cfg(feature = "server")]
     Static(u32, bool, MessageData),
+    #[cfg(feature = "client")]
     Signal(u32, MessageData),
+    #[cfg(feature = "server")]
     Image(u32, bool, MessageData, Vec<u8>),
+    #[cfg(feature = "server")]
     Dict(u32, bool, MessageData),
+    #[cfg(feature = "server")]
     List(u32, bool, MessageData),
+    #[cfg(feature = "server")]
     Graph(u32, bool, MessageData, Option<Vec<u8>>),
     Command(CommandMessage),
     Terminate,
 }
 
+#[cfg(feature = "client")]
 impl WriteMessage {
     pub fn ack(id: u32) -> Self {
         WriteMessage::Command(CommandMessage::Ack(id))
@@ -66,12 +73,17 @@ impl WriteMessage {
 
 pub(crate) enum ReadMessage {
     Value(u32, bool, MessageData),
+    #[cfg(feature = "client")]
     Static(u32, bool, MessageData),
-    // #[cfg_attr(not(feature = "server"), allow(dead_code))]
+    #[cfg(feature = "server")]
     Signal(u32, MessageData),
+    #[cfg(feature = "client")]
     Image(u32, bool, MessageData),
+    #[cfg(feature = "client")]
     Dict(u32, bool, MessageData),
+    #[cfg(feature = "client")]
     List(u32, bool, MessageData),
+    #[cfg(feature = "client")]
     Graph(u32, bool, MessageData),
     Command(CommandMessage),
 }
@@ -81,11 +93,16 @@ impl ReadMessage {
     pub fn to_str(&self) -> &'static str {
         match self {
             Self::Value(_, _, _) => "Value",
+            #[cfg(feature = "client")]
             Self::Static(_, _, _) => "Static",
             Self::Signal(_, _) => "Signal",
+            #[cfg(feature = "client")]
             Self::Image(_, _, _) => "Image",
+            #[cfg(feature = "client")]
             Self::Dict(_, _, _) => "Dict",
+            #[cfg(feature = "client")]
             Self::List(_, _, _) => "List",
+            #[cfg(feature = "client")]
             Self::Graph(_, _, _) => "Graph",
             Self::Command(_) => "Command",
         }
@@ -135,29 +152,34 @@ pub(crate) fn write_message(message: WriteMessage, stream: &mut TcpStream) -> st
             head[6..10].copy_from_slice(&id.to_le_bytes());
             write_data(&mut head, &data, stream, None)
         }
+        #[cfg(feature = "client")]
         WriteMessage::Signal(id, data) => {
             head[4] = TYPE_SIGNAL;
             head[6..10].copy_from_slice(&id.to_le_bytes());
             write_data(&mut head, &data, stream, None)
         }
+        #[cfg(feature = "server")]
         WriteMessage::Static(id, flag, data) => {
             head[4] = TYPE_STATIC;
             head[5] = flag as u8;
             head[6..10].copy_from_slice(&id.to_le_bytes());
             write_data(&mut head, &data, stream, None)
         }
+        #[cfg(feature = "server")]
         WriteMessage::Dict(id, flag, data) => {
             head[4] = TYPE_DICT;
             head[5] = flag as u8;
             head[6..10].copy_from_slice(&id.to_le_bytes());
             write_data(&mut head, &data, stream, None)
         }
+        #[cfg(feature = "server")]
         WriteMessage::List(id, flag, data) => {
             head[4] = TYPE_LIST;
             head[5] = flag as u8;
             head[6..10].copy_from_slice(&id.to_le_bytes());
             write_data(&mut head, &data, stream, None)
         }
+        #[cfg(feature = "server")]
         WriteMessage::Image(id, flag, info, data) => {
             head[4] = TYPE_IMAGE;
             head[5] = flag as u8;
@@ -165,6 +187,7 @@ pub(crate) fn write_message(message: WriteMessage, stream: &mut TcpStream) -> st
             write_data(&mut head, &info, stream, Some(data.len()))?;
             stream.write_all(&data)
         }
+        #[cfg(feature = "server")]
         WriteMessage::Graph(id, flag, data, graph_data) => {
             head[4] = TYPE_GRAPH;
             head[5] = flag as u8;
@@ -214,11 +237,17 @@ pub(crate) fn read_message(stream: &mut TcpStream) -> Result<ReadMessage, io::Er
 
     match message_type {
         TYPE_VALUE => Ok(ReadMessage::Value(id, flag, data)),
+        #[cfg(feature = "client")]
         TYPE_STATIC => Ok(ReadMessage::Static(id, flag, data)),
+        #[cfg(feature = "server")]
         TYPE_SIGNAL => Ok(ReadMessage::Signal(id, data)),
+        #[cfg(feature = "client")]
         TYPE_LIST => Ok(ReadMessage::List(id, flag, data)),
+        #[cfg(feature = "client")]
         TYPE_DICT => Ok(ReadMessage::Dict(id, flag, data)),
+        #[cfg(feature = "client")]
         TYPE_GRAPH => Ok(ReadMessage::Graph(id, flag, data)),
+        #[cfg(feature = "client")]
         TYPE_IMAGE => Ok(ReadMessage::Image(id, flag, data)),
         TYPE_COMMAND => {
             let command = deserialize(data).unwrap(); // TODO: handle error

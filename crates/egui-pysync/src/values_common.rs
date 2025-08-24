@@ -66,6 +66,7 @@ impl<T: GraphElement> Graph<T> {
         }
     }
 
+    #[cfg(feature = "client")]
     pub(crate) fn add_points_from_data(
         &mut self,
         info: GraphDataInfo<T>,
@@ -115,6 +116,7 @@ impl<T: GraphElement> Graph<T> {
         }
     }
 
+    #[cfg(feature = "client")]
     pub(crate) fn from_graph_data(info: GraphDataInfo<T>, data: &[u8]) -> Self {
         let GraphDataInfo {
             is_linear, points, ..

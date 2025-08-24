@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/egui-pysync", "crates/egui-pysync-macros", "examples/*"]
+members = ["crates/egui-pysync", "crates/egui-pysync-macros"]
 resolver = "3"
 
 [workspace.package]

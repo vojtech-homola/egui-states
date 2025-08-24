@@ -1,6 +1,7 @@
 pub mod build;
 
 mod commands;
+mod parsing;
 mod event;
 mod nohash;
 mod transport;
