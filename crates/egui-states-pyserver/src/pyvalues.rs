@@ -9,7 +9,7 @@ use tungstenite::Bytes;
 
 use egui_states_core::serialization::{TYPE_VALUE, deserialize, serialize_vec};
 
-use crate::python_convert::ToPython;
+use crate::python_convert::{FromPython, ToPython};
 use crate::server::{Acknowledge, SyncTrait};
 use crate::signals::ChangedValues;
 
@@ -35,7 +35,7 @@ pub(crate) trait PySignalTrait: Send + Sync {
 pub(crate) struct PyValue<T> {
     id: u32,
     value: RwLock<(T, usize)>,
-    channel: Sender<Bytes>,
+    channel: Sender<Option<Bytes>>,
     connected: Arc<AtomicBool>,
     signals: ChangedValues,
 }
@@ -44,7 +44,7 @@ impl<T> PyValue<T> {
     pub(crate) fn new(
         id: u32,
         value: T,
-        channel: Sender<Bytes>,
+        channel: Sender<Option<Bytes>>,
         connected: Arc<AtomicBool>,
         signals: ChangedValues,
     ) -> Arc<Self> {
@@ -73,7 +73,7 @@ where
             let mut w = self.value.write().unwrap();
             w.0 = value.clone();
             w.1 += 1;
-            self.channel.send(Bytes::from(data)).unwrap();
+            self.channel.send(Some(Bytes::from(data))).unwrap();
             if set_signal {
                 self.signals.set(self.id, value);
             }
@@ -128,8 +128,7 @@ where
         let data = serialize_vec(self.id, (false, &w.0), TYPE_VALUE);
         drop(w);
 
-        let message = Bytes::from(data);
-        self.channel.send(message).unwrap();
+        self.channel.send(Some(Bytes::from(data))).unwrap();
     }
 }
 
@@ -137,7 +136,7 @@ where
 pub(crate) struct PyValueStatic<T> {
     id: u32,
     value: RwLock<T>,
-    channel: Sender<Bytes>,
+    channel: Sender<Option<Bytes>>,
     connected: Arc<AtomicBool>,
 }
 
@@ -145,7 +144,7 @@ impl<T> PyValueStatic<T> {
     pub(crate) fn new(
         id: u32,
         value: T,
-        channel: Sender<Bytes>,
+        channel: Sender<Option<Bytes>>,
         connected: Arc<AtomicBool>,
     ) -> Arc<Self> {
         Arc::new(Self {
@@ -171,7 +170,7 @@ where
             let data = serialize_vec(self.id, (update, &value), TYPE_VALUE);
             let mut v = self.value.write().unwrap();
             *v = value;
-            self.channel.send(Bytes::from(data)).unwrap();
+            self.channel.send(Some(Bytes::from(data))).unwrap();
         } else {
             *self.value.write().unwrap() = value;
         }
@@ -187,7 +186,7 @@ where
     fn sync(&self) {
         let w = self.value.read().unwrap();
         let data = serialize_vec(self.id, (false, &(*w)), TYPE_VALUE);
-        self.channel.send(Bytes::from(data)).unwrap();
+        self.channel.send(Some(Bytes::from(data))).unwrap();
     }
 }
 
@@ -222,10 +221,10 @@ where
 
 impl<T> PySignalTrait for PySignal<T>
 where
-    T: for<'py> FromPyObject<'py> + ToPython + Send + Sync + 'static,
+    T: FromPython + ToPython + Send + Sync + 'static,
 {
     fn set_py(&self, value: &Bound<PyAny>) -> PyResult<()> {
-        let value: T = value.extract()?;
+        let value: T = T::from_python(value)?;
         self.signals.set(self.id, value);
         Ok(())
     }

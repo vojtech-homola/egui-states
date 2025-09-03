@@ -11,14 +11,12 @@ use pyo3::types::{PyByteArray, PyTuple};
 use serde::Serialize;
 use tungstenite::Bytes;
 
-use egui_states_core::graphs::{Graph, GraphElement};
+use egui_states_core::graphs::{Graph, GraphElement, GraphMessage};
 use egui_states_core::nohash::NoHashMap;
-use egui_states_core::serialization::{TYPE_GRAPH, serialize_vec};
+use egui_states_core::serialization::{TYPE_GRAPH, serialize};
 
 use crate::python_convert::ToPython;
 use crate::server::SyncTrait;
-// use crate::transport::{WriteMessage, serialize};
-// use crate::values_common::{Graph, GraphElement, GraphMessage};
 
 pub(crate) trait PyGraphTrait: Send + Sync {
     fn set_py(&self, idx: u16, object: &Bound<PyAny>, update: bool) -> PyResult<()>;
@@ -35,14 +33,14 @@ pub(crate) struct PyValueGraphs<T> {
     id: u32,
     graphs: RwLock<NoHashMap<u16, Graph<T>>>,
 
-    channel: Sender<Bytes>,
+    channel: Sender<Option<Bytes>>,
     connected: Arc<AtomicBool>,
 }
 
 impl<T> PyValueGraphs<T> {
     pub(crate) fn new(
         id: u32,
-        channel: Sender<Bytes>,
+        channel: Sender<Option<Bytes>>,
         connected: Arc<AtomicBool>,
     ) -> Arc<Self> {
         let graphs = RwLock::new(NoHashMap::default());
@@ -66,11 +64,8 @@ where
 
         let mut w = self.graphs.write().unwrap();
         if self.connected.load(Ordering::Relaxed) {
-            let (info, data) = graph.to_graph_data();
-            let message = serialize(GraphMessage::Set(idx, info));
-            self.channel
-                .send(WriteMessage::Graph(self.id, update, message, Some(data)))
-                .unwrap();
+            let data = graph.to_data(self.id, idx, update, None);
+            self.channel.send(Some(Bytes::from(data))).unwrap();
         }
         w.insert(idx, graph);
         Ok(())
@@ -83,14 +78,11 @@ where
         let graph = w
             .get_mut(&idx)
             .ok_or_else(|| PyValueError::new_err("Graph not found"))?;
-        buffer_to_graph_add(&buffer, graph)?;
+        let points = buffer_to_graph_add(&buffer, graph)?;
 
         if self.connected.load(Ordering::Relaxed) {
-            let (info, data) = graph.to_graph_data();
-            let message = serialize(GraphMessage::AddPoints(idx, info));
-            self.channel
-                .send(WriteMessage::Graph(self.id, update, message, Some(data)))
-                .unwrap();
+            let data = graph.to_data(self.id, idx, update, Some(points));
+            self.channel.send(Some(Bytes::from(data))).unwrap();
         }
 
         Ok(())
@@ -147,10 +139,9 @@ where
     fn remove_py(&self, idx: u16, update: bool) {
         let mut w = self.graphs.write().unwrap();
         if self.connected.load(Ordering::Relaxed) {
-            let message = serialize(GraphMessage::<T>::Remove(idx));
-            self.channel
-                .send(WriteMessage::Graph(self.id, update, message, None))
-                .unwrap();
+            let message = serialize(self.id, GraphMessage::<T>::Remove(update, idx), TYPE_GRAPH);
+            let bytes = Bytes::from(message.to_vec());
+            self.channel.send(Some(bytes)).unwrap();
         }
         w.remove(&idx);
     }
@@ -173,10 +164,9 @@ where
         let mut w = self.graphs.write().unwrap();
 
         if self.connected.load(Ordering::Relaxed) {
-            let message = serialize(GraphMessage::<T>::Reset);
-            self.channel
-                .send(WriteMessage::Graph(self.id, update, message, None))
-                .unwrap();
+            let message = serialize(self.id, GraphMessage::<T>::Reset(update), TYPE_GRAPH);
+            let bytes = Bytes::from(message.to_vec());
+            self.channel.send(Some(bytes)).unwrap();
         }
         w.clear();
     }
@@ -189,22 +179,20 @@ where
     fn sync(&self) {
         let w = self.graphs.read().unwrap();
 
-        let message = serialize(GraphMessage::<T>::Reset);
+        let message = serialize(self.id, GraphMessage::<T>::Reset(false), TYPE_GRAPH);
         self.channel
-            .send(WriteMessage::Graph(self.id, false, message, None))
+            .send(Bytes::from(message.to_vec()).into())
             .unwrap();
 
         for (idx, graph) in w.iter() {
-            let (info, data) = graph.to_graph_data();
-            let message = serialize(GraphMessage::Set(*idx, info));
-            self.channel
-                .send(WriteMessage::Graph(self.id, false, message, Some(data)))
-                .unwrap();
+            let data = graph.to_data(self.id, *idx, false, None);
+            let message = Bytes::from(data);
+            self.channel.send(Some(message)).unwrap();
         }
     }
 }
 
-fn buffer_to_graph_add<'py, T>(buffer: &PyBuffer<T>, graph: &mut Graph<T>) -> PyResult<()>
+fn buffer_to_graph_add<'py, T>(buffer: &PyBuffer<T>, graph: &mut Graph<T>) -> PyResult<usize>
 where
     T: GraphElement + Element + FromPyObject<'py>,
 {
@@ -232,6 +220,8 @@ where
         let original_len = graph.y.len();
         graph.y.resize(original_len + points, T::zero());
         unsafe { copy_nonoverlapping(ptr, graph.y[original_len..].as_mut_ptr(), points) };
+
+        return Ok(points);
     } else if shape.len() == 2 {
         if graph.x.is_none() {
             return Err(PyValueError::new_err(
@@ -260,13 +250,13 @@ where
         let original_len = graph.y.len();
         graph.y.resize(original_len + points, T::zero());
         unsafe { copy_nonoverlapping(ptr, graph.y[original_len..].as_mut_ptr(), points) };
+
+        return Ok(points);
     } else {
         return Err(PyValueError::new_err(
             "Graph data must have 1 or 2 dimensions.",
         ));
     }
-
-    Ok(())
 }
 
 fn buffer_to_graph<'py, T>(buffer: &PyBuffer<T>) -> PyResult<Graph<T>>

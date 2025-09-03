@@ -1,21 +1,23 @@
 use std::net::{SocketAddrV4, TcpListener, TcpStream};
 use std::sync::atomic::AtomicBool;
 use std::sync::{
-    atomic,
+    Arc, atomic,
     mpsc::{Receiver, Sender},
-    Arc,
 };
 use std::thread::{self, JoinHandle};
 
-use egui_states_core::event::Event;
+use tungstenite::{self, Bytes, Message};
+
 use egui_states_core::controls::ControlMessage;
+use egui_states_core::event::Event;
+use egui_states_core::serialization;
 
 use crate::signals::ChangedValues;
 use crate::states_server::ValuesList;
-use crate::transport::{read_message, write_message, ReadMessage, WriteMessage};
+// use crate::transport::{ReadMessage, WriteMessage, read_message, write_message};
 
 struct StatesTransfer {
-    thread: JoinHandle<Receiver<WriteMessage>>,
+    thread: JoinHandle<Receiver<Option<Bytes>>>,
 }
 
 impl StatesTransfer {
@@ -23,9 +25,9 @@ impl StatesTransfer {
         connected: Arc<AtomicBool>,
         values: ValuesList,
         signals: ChangedValues,
-        mut stream: TcpStream,
-        rx: Receiver<WriteMessage>,
-        channel: Sender<WriteMessage>,
+        stream: TcpStream,
+        rx: Receiver<Option<Bytes>>,
+        channel: Sender<Option<Bytes>>,
     ) -> Self {
         let writer = Self::writer(
             rx,
@@ -37,9 +39,14 @@ impl StatesTransfer {
         let read_thread = thread::Builder::new().name("Reader".to_string());
         let thread = read_thread
             .spawn(move || {
+                let mut websocket = tungstenite::WebSocket::from_raw_socket(
+                    stream.try_clone().unwrap(),
+                    tungstenite::protocol::Role::Server,
+                    None,
+                );
                 loop {
                     // read the message
-                    let res = read_message(&mut stream);
+                    let res = websocket.read();
 
                     // check if not connected
                     if !connected.load(atomic::Ordering::Relaxed) {
@@ -55,53 +62,56 @@ impl StatesTransfer {
                     }
                     let message = res.unwrap();
 
-                    // process posible command message
-                    if let ReadMessage::Command(command) = message {
-                        match command {
-                            ControlMessage::Ack(v) => {
-                                let val_res = values.ack.get(&v);
-                                match val_res {
-                                    Some(val) => val.acknowledge(),
-                                    None => {
-                                        let error = format!(
-                                            "Value with id {} not found for Ack command",
-                                            v
-                                        );
-                                        signals.set(0, error);
+                    let res = match message {
+                        Message::Binary(m) => {
+                            let data = m.as_ref();
+                            match data[0] {
+                                serialization::TYPE_CONTROL => {
+                                    let control = ControlMessage::deserialize(data).unwrap(); //TODO handle error
+                                    match control {
+                                        ControlMessage::Ack(v) => {
+                                            let val_res = values.ack.get(&v);
+                                            match val_res {
+                                                Some(val) => {
+                                                    val.acknowledge();
+                                                    Ok(())
+                                                }
+                                                None => Err(format!(
+                                                    "Value with id {} not found for Ack command",
+                                                    v
+                                                )),
+                                            }
+                                        }
+                                        ControlMessage::Error(err) => {
+                                            Err(format!("Error message from UI client: {}", err))
+                                        }
+                                        _ => Err(format!(
+                                            "Command {} should not be processed here",
+                                            control.as_str()
+                                        )),
+                                    }
+                                    // continue;
+                                }
+                                serialization::TYPE_VALUE => {
+                                    let id =
+                                        u32::from_le_bytes([data[1], data[2], data[3], data[4]]);
+                                    match values.updated.get(&id) {
+                                        Some(val) => val.update_value(&data[5..]),
+                                        None => Err(format!("Value with id {} not found", id)),
                                     }
                                 }
-                            }
-                            ControlMessage::Error(err) => {
-                                let error = format!("Error message from UI client: {}", err);
-                                signals.set(0, error);
-                            }
-                            _ => {
-                                let err = format!(
-                                    "Command {} should not be processed here",
-                                    command.as_str()
-                                );
-                                signals.set(0, err);
+                                serialization::TYPE_SIGNAL => {
+                                    let id =
+                                        u32::from_le_bytes([data[1], data[2], data[3], data[4]]);
+                                    match values.updated.get(&id) {
+                                        Some(val) => val.update_value(&data[5..]),
+                                        None => Err(format!("Value with id {} not found", id)),
+                                    }
+                                }
+                                _ => Err(format!("Unexpected message type: {}", data[0])),
                             }
                         }
-                        continue;
-                    }
-
-                    // process message
-                    let res = match message {
-                        ReadMessage::Value(id, signal, data) => match values.updated.get(&id) {
-                            Some(val) => val.update_value(data, signal),
-                            None => Err(format!("Value with id {} not found", id)),
-                        },
-
-                        ReadMessage::Signal(id, data) => match values.updated.get(&id) {
-                            Some(val) => val.update_value(data, true),
-                            None => Err(format!("Value with id {} not found", id)),
-                        },
-
-                        _ => Err(format!(
-                            "Message {} should not be processed here",
-                            message.to_str()
-                        )),
+                        _ => Err("Unexpected message format".to_string()),
                     };
 
                     if let Err(e) = res {
@@ -111,7 +121,7 @@ impl StatesTransfer {
                 }
 
                 // send close signal to writing thread if reading fails
-                channel.send(WriteMessage::Terminate).unwrap();
+                channel.send(None).unwrap();
 
                 // wait for writing thread to finish and return the receiver
                 writer.join().unwrap()
@@ -122,32 +132,34 @@ impl StatesTransfer {
     }
 
     fn writer(
-        rx: Receiver<WriteMessage>,
+        rx: Receiver<Option<Bytes>>,
         connected: Arc<AtomicBool>,
-        mut stream: TcpStream,
+        stream: TcpStream,
         signals: ChangedValues,
-    ) -> JoinHandle<Receiver<WriteMessage>> {
+    ) -> JoinHandle<Receiver<Option<Bytes>>> {
         let thread = thread::Builder::new().name("Writer".to_string());
         thread
             .spawn(move || {
+                let mut websocket = tungstenite::accept(stream).unwrap();
                 loop {
                     // get message from channel
                     let message = rx.recv().unwrap();
 
                     // check if message is terminate signal
-                    if let WriteMessage::Terminate = message {
-                        let _ = stream.shutdown(std::net::Shutdown::Both);
+                    if message.is_none() {
+                        let _ = websocket.get_mut().shutdown(std::net::Shutdown::Both);
                         break;
                     }
+                    let message = message.unwrap();
 
                     // if not connected, stop thread
                     if !connected.load(atomic::Ordering::Relaxed) {
-                        let _ = stream.shutdown(std::net::Shutdown::Both);
+                        let _ = websocket.get_mut().shutdown(std::net::Shutdown::Both);
                         break;
                     }
 
                     // send message
-                    let res = write_message(message, &mut stream);
+                    let res = websocket.write(Message::Binary(message));
                     if let Err(e) = res {
                         let error = format!("Error writing message: {:?}", e);
                         signals.set(0, error);
@@ -160,7 +172,7 @@ impl StatesTransfer {
             .unwrap()
     }
 
-    fn join(self) -> Receiver<WriteMessage> {
+    fn join(self) -> Receiver<Option<Bytes>> {
         self.thread.join().unwrap()
     }
 }
@@ -168,21 +180,21 @@ impl StatesTransfer {
 // server -------------------------------------------------------
 enum ChannelHolder {
     Transfer(StatesTransfer),
-    Rx(Receiver<WriteMessage>),
+    Rx(Receiver<Option<Bytes>>),
 }
 
 pub(crate) struct Server {
     connected: Arc<atomic::AtomicBool>,
     enabled: Arc<atomic::AtomicBool>,
-    channel: Sender<WriteMessage>,
+    channel: Sender<Option<Bytes>>,
     start_event: Event,
     addr: SocketAddrV4,
 }
 
 impl Server {
     pub(crate) fn new(
-        channel: Sender<WriteMessage>,
-        rx: Receiver<WriteMessage>,
+        channel: Sender<Option<Bytes>>,
+        rx: Receiver<Option<Bytes>>,
         connected: Arc<atomic::AtomicBool>,
         values: ValuesList,
         signals: ChangedValues,
@@ -235,20 +247,24 @@ impl Server {
                     signals.set(0, error);
                     continue;
                 }
-                let mut stream = stream.unwrap().0;
+                let stream = stream.unwrap().0;
+                let mut websocket = tungstenite::accept(stream.try_clone().unwrap()).unwrap(); //TODO: handle errors
 
                 // read the message
-                let res = read_message(&mut stream);
+                let res = websocket.read();
                 if let Err(e) = res {
                     let error = format!("Error reading initial message: {:?}", e);
                     signals.set(0, error);
                     connected.store(false, atomic::Ordering::Relaxed);
                     continue;
                 }
-
-                // check if message is handshake
-                if let ReadMessage::Command(ControlMessage::Handshake(v, h)) = res.unwrap() {
-                    if v != version {
+                let res = res.unwrap();
+                if let Message::Binary(message) = res {
+                    let data = message.as_ref();
+                    if data[0] == serialization::TYPE_CONTROL {
+                        let control = ControlMessage::deserialize(data).unwrap(); //TODO handle error
+                        if let ControlMessage::Handshake(v, h) = control {
+                            if v != version {
                         let error = format!("Attempted to connect with different version: {}, version {} is required.", v, version);
                         signals.set(0, error);
                         continue;
@@ -266,7 +282,7 @@ impl Server {
                         // disconnect previous client
                         ChannelHolder::Transfer(st) => {
                             connected.store(false, atomic::Ordering::Relaxed);
-                            channel.send(WriteMessage::Terminate).unwrap();
+                            channel.send(None).unwrap();
                             st.join()
                         }
                         ChannelHolder::Rx(rx) => rx,
@@ -290,7 +306,55 @@ impl Server {
                         channel.clone(),
                     );
                     holder = ChannelHolder::Transfer(st_transfer);
+                        }
+                    }
                 }
+
+                // check if message is handshake
+                // if let ReadMessage::Command(ControlMessage::Handshake(v, h)) = res.unwrap() {
+                //     if v != version {
+                //         let error = format!("Attempted to connect with different version: {}, version {} is required.", v, version);
+                //         signals.set(0, error);
+                //         continue;
+                //     }
+
+                //     if let Some(ref hash) = handshake {
+                //         if !hash.contains(&h) {
+                //             let error = "Attempted to connect with wrong hash".to_string();
+                //             signals.set(0, error);
+                //             continue;
+                //         }
+                //     }
+
+                //     let rx = match holder {
+                //         // disconnect previous client
+                //         ChannelHolder::Transfer(st) => {
+                //             connected.store(false, atomic::Ordering::Relaxed);
+                //             channel.send(None).unwrap();
+                //             st.join()
+                //         }
+                //         ChannelHolder::Rx(rx) => rx,
+                //     };
+
+                //     connected.store(true, atomic::Ordering::Relaxed);
+
+                //     // clean mesage queue and send sync signals
+                //     for _v in rx.try_iter() {}
+                //     for (_, v) in values.sync.iter() {
+                //         v.sync();
+                //     }
+
+                //     // start transfer thread
+                //     let st_transfer = StatesTransfer::start(
+                //         connected.clone(),
+                //         values.clone(),
+                //         signals.clone(),
+                //         stream,
+                //         rx,
+                //         channel.clone(),
+                //     );
+                //     holder = ChannelHolder::Transfer(st_transfer);
+                // }
             }
         });
 
@@ -316,13 +380,13 @@ impl Server {
         self.disconnect_client();
 
         // try to connect to the server to unblock the accept call
-        let _ = TcpStream::connect(self.addr);
+        let _ = TcpStream::connect(self.addr); // TODO: use localhost?
     }
 
     pub(crate) fn disconnect_client(&mut self) {
         if self.connected.load(atomic::Ordering::Relaxed) {
             self.connected.store(false, atomic::Ordering::Relaxed);
-            self.channel.send(WriteMessage::Terminate).unwrap();
+            self.channel.send(None).unwrap();
         }
     }
 

@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 pub const TYPE_VALUE: u8 = 4;
 pub const TYPE_STATIC: u8 = 8;
 pub const TYPE_SIGNAL: u8 = 10;
-pub const TYPE_COMMAND: u8 = 12;
+pub const TYPE_CONTROL: u8 = 12;
 pub const TYPE_IMAGE: u8 = 14;
 pub const TYPE_DICT: u8 = 16;
 pub const TYPE_LIST: u8 = 18;
@@ -19,6 +19,17 @@ pub const HEAPLESS_SIZE: usize = 32;
 pub enum MessageData {
     Heap(Vec<u8>),
     Stack([u8; HEAPLESS_SIZE], usize),
+}
+
+impl MessageData {
+    pub fn to_vec(self) -> Vec<u8> {
+        match self {
+            MessageData::Heap(vec) => vec,
+            MessageData::Stack(arr, len) => {
+                arr[0..len].to_vec()
+            }
+        }
+    }
 }
 
 #[inline]

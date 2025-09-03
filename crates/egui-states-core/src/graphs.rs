@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::serialization::TYPE_GRAPH;
+
 // graphs -------------------------------------------------------------
 pub trait GraphElement: Clone + Copy + Send + Sync + 'static {
     fn zero() -> Self;
@@ -11,60 +13,95 @@ pub struct Graph<T> {
     pub x: Option<Vec<T>>,
 }
 
-impl<T: GraphElement> Graph<T> {
-    pub fn to_graph_data(&self) -> (GraphDataInfo<T>, Vec<u8>) {
-        let bytes_size = std::mem::size_of::<T>() * self.y.len();
-        let points = self.y.len();
+impl<T: GraphElement + Serialize> Graph<T> {
+    pub fn to_data(
+        &self,
+        id: u32,
+        graph_id: u16,
+        update: bool,
+        add_points: Option<usize>,
+    ) -> Vec<u8> {
+        // let bytes_size = std::mem::size_of::<T>() * self.y.len();
+        let mut head_buffer = [0u8; 32];
+
+        head_buffer[0] = TYPE_GRAPH;
+        head_buffer[1..5].copy_from_slice(&id.to_le_bytes());
+
+        let mut size = self.y.len();
+        let mut data_offset = 0;
+        let message = match add_points {
+            Some(points) => {
+                let info = GraphDataInfo::new(points, self.x.is_none());
+                let message = GraphMessage::<T>::AddPoints(update, graph_id, info);
+                data_offset = size - points;
+                size = points;
+                message
+            }
+            None => {
+                let points = self.y.len();
+                let info = GraphDataInfo::new(points, self.x.is_none());
+                let message = GraphMessage::<T>::Set(update, graph_id, info);
+                message
+            }
+        };
+        let offset = postcard::to_slice(&message, head_buffer[5..].as_mut())
+            .expect("Failed to serialize graph data info")
+            .len()
+            + 5;
+
+        size *= std::mem::size_of::<T>();
+        data_offset *= std::mem::size_of::<T>();
 
         match self.x {
             Some(ref x) => {
-                let mut data = vec![0u8; bytes_size * 2];
+                let mut data = vec![0u8; size * 2 + offset];
+                data[..offset].copy_from_slice(&head_buffer[..offset]);
                 #[cfg(target_endian = "little")]
                 {
                     let dat_slice = unsafe {
-                        let ptr = x.as_ptr() as *const u8;
-                        std::slice::from_raw_parts(ptr, bytes_size)
+                        let ptr = (x.as_ptr() as *const u8).add(data_offset);
+                        std::slice::from_raw_parts(ptr, size)
                     };
-                    data[..bytes_size].copy_from_slice(dat_slice);
+                    data[offset..offset + size].copy_from_slice(dat_slice);
 
                     let dat_slice = unsafe {
-                        let ptr = self.y.as_ptr() as *const u8;
-                        std::slice::from_raw_parts(ptr, bytes_size)
+                        let ptr = (self.y.as_ptr() as *const u8).add(data_offset);
+                        std::slice::from_raw_parts(ptr, size)
                     };
-                    data[bytes_size..].copy_from_slice(dat_slice);
+                    data[offset + size..].copy_from_slice(dat_slice);
                 }
 
-                // TODO: implement big endian
                 #[cfg(target_endian = "big")]
                 {
-                    unimplemented!("Big endian not implemented yet.");
+                    unimplemented!("Big endian not implemented.");
                 }
 
-                (GraphDataInfo::new(points, false), data)
+                data
             }
 
             None => {
-                let mut data = vec![0u8; bytes_size];
+                let mut data = vec![0u8; size + offset];
                 #[cfg(target_endian = "little")]
                 {
                     let dat_slice = unsafe {
-                        let ptr = self.y.as_ptr() as *const u8;
-                        std::slice::from_raw_parts(ptr, bytes_size)
+                        let ptr = (self.y.as_ptr() as *const u8).add(data_offset);
+                        std::slice::from_raw_parts(ptr, size)
                     };
-                    data.copy_from_slice(dat_slice);
+                    data[offset..].copy_from_slice(dat_slice);
                 }
 
-                // TODO: implement big endian
                 #[cfg(target_endian = "big")]
                 {
-                    unimplemented!("Big endian not implemented yet.");
+                    unimplemented!("Big endian not implemented.");
                 }
 
-                (GraphDataInfo::new(points, true), data)
+                data
             }
         }
     }
+}
 
+impl<T: GraphElement> Graph<T> {
     pub fn add_points_from_data(
         &mut self,
         info: GraphDataInfo<T>,
@@ -110,7 +147,7 @@ impl<T: GraphElement> Graph<T> {
 
         #[cfg(target_endian = "big")]
         {
-            unimplemented!("Big endian not implemented yet.");
+            unimplemented!("Big endian not implemented.");
         }
     }
 
@@ -157,7 +194,7 @@ impl<T: GraphElement> Graph<T> {
 
         #[cfg(target_endian = "big")]
         {
-            unimplemented!("Big endian not implemented yet.");
+            unimplemented!("Big endian not implemented.");
         }
     }
 }
@@ -181,8 +218,14 @@ impl<T> GraphDataInfo<T> {
 
 #[derive(Serialize, Deserialize)]
 pub enum GraphMessage<T> {
-    Set(u16, GraphDataInfo<T>),
-    AddPoints(u16, GraphDataInfo<T>),
-    Remove(u16),
-    Reset,
+    Set(bool, u16, GraphDataInfo<T>),
+    AddPoints(bool, u16, GraphDataInfo<T>),
+    Remove(bool, u16),
+    Reset(bool),
+}
+
+impl<'a, T: Deserialize<'a>> GraphMessage<T> {
+    pub fn deserialize(data: &'a [u8]) -> Result<(Self, &'a [u8]), String> {
+        postcard::take_from_bytes(data).map_err(|e| e.to_string())
+    }
 }

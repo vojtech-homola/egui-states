@@ -4,7 +4,7 @@ use postcard::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::serialization::{HEAPLESS_SIZE, MessageData, TYPE_COMMAND};
+use crate::serialization::{HEAPLESS_SIZE, MessageData, TYPE_CONTROL};
 
 #[derive(Serialize, Deserialize)]
 pub enum ControlMessage {
@@ -25,14 +25,17 @@ impl ControlMessage {
     }
 
     pub fn serialize(&self) -> Vec<u8> {
-        let mut data = StdVec::new();
-        data.try_push(TYPE_COMMAND).unwrap();
-        serialize_with_flavor(&self, data).unwrap()
+        let mut buffer = [0u8; HEAPLESS_SIZE];
+        buffer[0] = TYPE_CONTROL;
+        let len = postcard::to_slice(self, buffer[1..].as_mut())
+            .unwrap()
+            .len();
+        buffer[0..len + 1].to_vec()
     }
 
     pub fn to_data(&self) -> MessageData {
         let mut stack_data: [u8; HEAPLESS_SIZE] = [0; HEAPLESS_SIZE];
-        stack_data[0] = TYPE_COMMAND;
+        stack_data[0] = TYPE_CONTROL;
 
         let len = match postcard::to_slice(self, stack_data[1..].as_mut()) {
             Ok(d) => Some(d.len() + 1),
@@ -50,5 +53,18 @@ impl ControlMessage {
                 MessageData::Heap(data)
             }
         }
+    }
+
+    pub fn deserialize(data: &[u8]) -> Result<Self, String> {
+        postcard::from_bytes(&data[1..]).unwrap()
+    }
+
+    pub fn ack(id: u32) -> MessageData {
+        let mut buffer = [0u8; HEAPLESS_SIZE];
+        buffer[0] = TYPE_CONTROL;
+        let len = postcard::to_slice(&ControlMessage::Ack(id), buffer[1..].as_mut())
+            .unwrap()
+            .len();
+        MessageData::Stack(buffer, len + 1)
     }
 }

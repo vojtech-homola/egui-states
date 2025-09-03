@@ -15,7 +15,7 @@ use crate::pydict::{PyDictTrait, PyValueDict};
 use crate::pygraphs::{PyGraphTrait, PyValueGraphs};
 use crate::pyimage::PyValueImage;
 use crate::pylist::{PyListTrait, PyValueList};
-use crate::python_convert::ToPython;
+use crate::python_convert::{FromPython, ToPython};
 use crate::pyvalues::{PySignal, PyValue, PyValueStatic};
 use crate::pyvalues::{PySignalTrait, PyValueStaticTrait, PyValueTrait, UpdateValueServer};
 use crate::server::{Acknowledge, SyncTrait};
@@ -79,7 +79,7 @@ impl ValuesList {
 }
 
 pub struct ServerValuesCreator {
-    channel: Sender<Bytes>,
+    channel: Sender<Option<Bytes>>,
     connected: Arc<AtomicBool>,
     signals: ChangedValues,
 
@@ -91,7 +91,7 @@ pub struct ServerValuesCreator {
 
 impl ServerValuesCreator {
     pub(crate) fn new(
-        channel: Sender<Bytes>,
+        channel: Sender<Option<Bytes>>,
         connected: Arc<AtomicBool>,
         signals: ChangedValues,
     ) -> Self {
@@ -108,9 +108,6 @@ impl ServerValuesCreator {
     }
 
     fn get_id(&mut self) -> u32 {
-        if self.counter > 16777215 {
-            panic!("id counter overflow, id is 24bit long");
-        }
         self.counter += 1;
         self.counter
     }
@@ -166,9 +163,7 @@ impl ServerValuesCreator {
         self.val.sync.insert(id, value);
     }
 
-    pub fn add_signal<
-        T: Clone + ToPython + for<'py> FromPyObject<'py> + for<'a> Deserialize<'a> + 'static,
-    >(
+    pub fn add_signal<T: Clone + ToPython + FromPython + for<'a> Deserialize<'a> + 'static>(
         &mut self,
     ) {
         let id = self.get_id();

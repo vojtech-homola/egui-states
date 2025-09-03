@@ -24,7 +24,7 @@ pub struct StateServerCore {
     changed_values: ChangedValues,
     values: PyValuesList,
 
-    channel: Sender<Bytes>,
+    channel: Sender<Option<Bytes>>,
     connected: Arc<atomic::AtomicBool>,
     server: RwLock<Server>,
     registed_values: RwLock<NoHashSet<u32>>,
@@ -116,7 +116,7 @@ impl StateServerCore {
         if self.connected.load(atomic::Ordering::Relaxed) {
             let message = ControlMessage::Update(duration.unwrap_or(0.0)).serialize();
             let data = Bytes::from(message);
-            self.channel.send(data).unwrap();
+            self.channel.send(Some(data)).unwrap();
         }
     }
 

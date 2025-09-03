@@ -181,6 +181,11 @@ dependencies = [
 [[package]]
 name = "egui-states"
 version = "0.7.0"
+dependencies = [
+ "egui",
+ "egui_states_core",
+ "serde",
+]
 
 [[package]]
 name = "egui_pysync"
@@ -216,6 +221,7 @@ dependencies = [
 name = "egui_states_pyserver"
 version = "0.7.0"
 dependencies = [
+ "egui_pysync_macros",
  "egui_states_core",
  "pyo3",
  "serde",

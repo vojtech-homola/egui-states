@@ -8,12 +8,9 @@ use pyo3::prelude::*;
 use pyo3::types::PyByteArray;
 use tungstenite::Bytes;
 
-use egui_states_core::serialization::TYPE_IMAGE;
 use egui_states_core::image::{ImageInfo, ImageType};
 
 use crate::server::SyncTrait;
-// use crate::transport::{WriteMessage, serialize};
-// use crate::values_common::{ImageInfo, ImageType};
 
 struct ImageDataInner {
     data: Vec<u8>,
@@ -23,14 +20,14 @@ struct ImageDataInner {
 pub(crate) struct PyValueImage {
     id: u32,
     image: RwLock<ImageDataInner>,
-    channel: Sender<Bytes>,
+    channel: Sender<Option<Bytes>>,
     connected: Arc<AtomicBool>,
 }
 
 impl PyValueImage {
     pub(crate) fn new(
         id: u32,
-        channel: Sender<Bytes>,
+        channel: Sender<Option<Bytes>>,
         connected: Arc<AtomicBool>,
     ) -> Arc<Self> {
         Arc::new(Self {
@@ -85,17 +82,37 @@ impl PyValueImage {
 
         // get data pointer and prepare data
         let data_ptr;
+        let mut w = self.image.write().unwrap();
         let data = if self.connected.load(Ordering::Relaxed) {
+            let new_size = match origin {
+                Some(_) => w.size, // keep the old size
+                None => size,      // use the new size
+            };
+
+            let message = ImageInfo {
+                image_size: new_size,
+                rect: origin.map(|o| [o[0], o[1], size[0], size[1]]),
+                image_type,
+                update,
+            };
+            let mut head_buff = [0u8; 64];
+            let buff = message.serialize(self.id, &mut head_buff);
+            let offset = buff.len();
             let data_size = image.item_count();
-            let mut data = Vec::with_capacity(data_size);
+
+            let mut data = Vec::with_capacity(data_size + offset);
+            unsafe { data.set_len(data_size + offset) };
+            data[..offset].copy_from_slice(&head_buff);
+
             if contiguous {
                 let buffer = image.buf_ptr() as *const u8;
+                let data_ptr = unsafe { data.as_mut_ptr().add(offset) };
                 unsafe {
-                    std::ptr::copy_nonoverlapping(buffer, data.as_mut_ptr(), data_size);
+                    std::ptr::copy_nonoverlapping(buffer, data_ptr, data_size);
                 }
             } else {
                 let image_ptr = image.buf_ptr() as *const u8;
-                let data_ptr = data.as_mut_ptr();
+                let data_ptr = unsafe { data.as_mut_ptr().add(offset) };
                 let line_size = size[1] * strides[1] as usize;
                 for i in 0..size[0] {
                     let buffer = unsafe { image_ptr.add(i * stride) };
@@ -105,7 +122,7 @@ impl PyValueImage {
                 contiguous = true;
                 stride = 0;
             }
-            unsafe { data.set_len(data_size) };
+
             data_ptr = data.as_ptr();
             Some(data)
         } else {
@@ -114,7 +131,6 @@ impl PyValueImage {
         };
 
         // write data to the image
-        let mut w = self.image.write().unwrap();
         match origin {
             Some(origin) => {
                 let original_size = w.size;
@@ -150,18 +166,10 @@ impl PyValueImage {
                 w.size = size;
             }
         }
-        let new_size = w.size;
 
         // send the image to the server
         if let Some(data) = data {
-            let rect = origin.map(|o| [o[0], o[1], size[0], size[1]]);
-            let image_info = ImageInfo {
-                image_size: new_size,
-                rect,
-                image_type,
-            };
-            let info = serialize(&image_info);
-            let message = WriteMessage::Image(self.id, update, info, data);
+            let message = Some(Bytes::from(data));
             self.channel.send(message).unwrap();
         }
 
@@ -176,16 +184,22 @@ impl SyncTrait for PyValueImage {
             return;
         }
 
+        let mut head_buff = [0u8; 32];
         let image_info = ImageInfo {
             image_size: w.size,
             rect: None,
             image_type: ImageType::ColorAlpha,
+            update: false,
         };
-        let info = serialize(&image_info);
-        let image_data = w.data.clone();
+        let buff = image_info.serialize(self.id, &mut head_buff);
+
+        let mut data = Vec::with_capacity(buff.len() + w.data.len());
+        unsafe { data.set_len(buff.len() + w.data.len()) };
+        data[..buff.len()].copy_from_slice(buff);
+        data[buff.len()..].copy_from_slice(&w.data);
         drop(w);
 
-        let message = WriteMessage::Image(self.id, false, info, image_data);
+        let message = Some(Bytes::from(data));
         self.channel.send(message).unwrap();
     }
 }

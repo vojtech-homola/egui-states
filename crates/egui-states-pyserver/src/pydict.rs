@@ -38,12 +38,16 @@ pub(crate) trait PyDictTrait: Send + Sync {
 pub(crate) struct PyValueDict<K, V> {
     id: u32,
     dict: RwLock<HashMap<K, V>>,
-    channel: Sender<Bytes>,
+    channel: Sender<Option<Bytes>>,
     connected: Arc<AtomicBool>,
 }
 
 impl<K, V> PyValueDict<K, V> {
-    pub(crate) fn new(id: u32, channel: Sender<Bytes>, connected: Arc<AtomicBool>) -> Arc<Self> {
+    pub(crate) fn new(
+        id: u32,
+        channel: Sender<Option<Bytes>>,
+        connected: Arc<AtomicBool>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             id,
             dict: RwLock::new(HashMap::new()),
@@ -87,8 +91,7 @@ where
         if self.connected.load(Ordering::Relaxed) {
             let to_send = (update, DictMessageRef::Remove::<K, V>(&dict_key));
             let data = serialize_vec(self.id, to_send, TYPE_DICT);
-            let message = Bytes::from(data);
-            self.channel.send(message).unwrap();
+            self.channel.send(Some(Bytes::from(data))).unwrap();
         }
         d.remove(&dict_key);
 
@@ -104,8 +107,7 @@ where
         if self.connected.load(Ordering::Relaxed) {
             let to_send = (update, DictMessageRef::Set::<K, V>(&dict_key, &dict_value));
             let data = serialize_vec(self.id, to_send, TYPE_DICT);
-            let message = Bytes::from(data);
-            self.channel.send(message).unwrap();
+            self.channel.send(Some(Bytes::from(data))).unwrap();
         }
 
         d.insert(dict_key, dict_value);
@@ -128,8 +130,7 @@ where
             dict.py().detach(|| {
                 let to_send = (update, DictMessageRef::All(&new_dict));
                 let data = serialize_vec(self.id, to_send, TYPE_DICT);
-                let message = Bytes::from(data);
-                self.channel.send(message).unwrap();
+                self.channel.send(Some(Bytes::from(data))).unwrap();
             });
         }
 
@@ -153,6 +154,6 @@ where
         let to_send = DictMessageRef::All(&dict);
         let data = serialize_vec(self.id, to_send, TYPE_DICT);
         let message = Bytes::from(data);
-        self.channel.send(message).unwrap();
+        self.channel.send(Some(message)).unwrap();
     }
 }

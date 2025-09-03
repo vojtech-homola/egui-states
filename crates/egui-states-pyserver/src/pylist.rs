@@ -12,7 +12,6 @@ use egui_states_core::serialization::{TYPE_LIST, serialize_vec};
 
 use crate::python_convert::ToPython;
 use crate::server::SyncTrait;
-// use crate::transport::{WriteMessage, serialize};
 
 #[derive(Serialize)]
 enum ListMessageRef<'a, T> {
@@ -35,12 +34,16 @@ pub(crate) trait PyListTrait: Send + Sync {
 pub(crate) struct PyValueList<T> {
     id: u32,
     list: RwLock<Vec<T>>,
-    channel: Sender<Bytes>,
+    channel: Sender<Option<Bytes>>,
     connected: Arc<AtomicBool>,
 }
 
 impl<T> PyValueList<T> {
-    pub(crate) fn new(id: u32, channel: Sender<Bytes>, connected: Arc<AtomicBool>) -> Arc<Self> {
+    pub(crate) fn new(
+        id: u32,
+        channel: Sender<Option<Bytes>>,
+        connected: Arc<AtomicBool>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             id,
             list: RwLock::new(Vec::new()),
@@ -83,10 +86,8 @@ where
         let mut l = self.list.write().unwrap();
 
         if self.connected.load(Ordering::Relaxed) {
-            let data = serialize(ListMessageRef::All(&data));
-            let message = WriteMessage::List(self.id, update, data);
-
-            self.channel.send(message).unwrap();
+            let data = serialize_vec(self.id, (update, ListMessageRef::All(&data)), TYPE_LIST);
+            self.channel.send(Some(Bytes::from(data))).unwrap();
         }
 
         *l = data;
@@ -103,9 +104,12 @@ where
 
         if self.connected.load(Ordering::Relaxed) {
             list.py().detach(|| {
-                let data = serialize(ListMessageRef::Set(idx, &value));
-                let message = WriteMessage::List(self.id, update, data);
-                self.channel.send(message).unwrap();
+                let data = serialize_vec(
+                    self.id,
+                    (update, ListMessageRef::Set(idx, &value)),
+                    TYPE_LIST,
+                );
+                self.channel.send(Some(Bytes::from(data))).unwrap();
             });
         }
 
@@ -121,9 +125,12 @@ where
         }
 
         if self.connected.load(Ordering::Relaxed) {
-            let data = serialize(ListMessageRef::Remove::<T>(idx));
-            let message = WriteMessage::List(self.id, update, data);
-            self.channel.send(message).unwrap();
+            let data = serialize_vec(
+                self.id,
+                (update, ListMessageRef::Remove::<T>(idx)),
+                TYPE_LIST,
+            );
+            self.channel.send(Some(Bytes::from(data))).unwrap();
         }
 
         list.remove(idx);
@@ -136,10 +143,8 @@ where
 
         let mut list = self.list.write().unwrap();
         if self.connected.load(Ordering::Relaxed) {
-            let data = serialize(ListMessageRef::Add(&value));
-            let message = WriteMessage::List(self.id, update, data);
-
-            self.channel.send(message).unwrap();
+            let data = serialize_vec(self.id, (update, ListMessageRef::Add(&value)), TYPE_LIST);
+            self.channel.send(Some(Bytes::from(data))).unwrap();
         }
 
         list.push(value);
@@ -156,6 +161,6 @@ impl<T: Serialize + Send + Sync> SyncTrait for PyValueList<T> {
     fn sync(&self) {
         let list = self.list.read().unwrap();
         let data = serialize_vec(self.id, (false, ListMessageRef::All(&list)), TYPE_LIST);
-        self.channel.send(Bytes::from(data)).unwrap();
+        self.channel.send(Some(Bytes::from(data))).unwrap();
     }
 }
