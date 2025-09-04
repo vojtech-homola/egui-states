@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use egui_pysync::{ValueImage, ValuesCreator};
+use egui_states::{ValueImage, ValuesCreator};
 
 pub(crate) struct States {
     pub(crate) image: Arc<ValueImage>,

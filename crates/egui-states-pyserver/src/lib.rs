@@ -9,7 +9,9 @@ mod server;
 mod signals;
 mod states_server;
 
-pub use egui_pysync_macros::{pyenum, pystruct};
+pub mod build;
+
+pub use egui_states_macros::{pyenum, pystruct};
 pub use pyo3;
 pub use python_convert::{EnumInit, FromPython, ToPython};
 pub use states_server::ServerValuesCreator;

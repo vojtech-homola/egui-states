@@ -2,7 +2,7 @@ use std::error::Error;
 
 use eframe::{App, CreationContext};
 use egui::{Color32, ColorImage, Rect};
-use egui_pysync::{ClientBuilder, ConnectionState, UIState};
+use egui_states::{ClientBuilder, ConnectionState, UIState};
 
 use crate::states::States;
 

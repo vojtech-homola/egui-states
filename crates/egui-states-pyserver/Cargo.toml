@@ -5,8 +5,8 @@ edition.workspace = true
 
 [dependencies]
 pyo3 = ">=0.26"
-tungstenite = "0.27"
+tungstenite = { workspace = true }
 serde = { workspace = true }
 
 egui_states_core = { workspace = true }
-egui_pysync_macros = { workspace = true }
+egui_states_macros = { workspace = true }

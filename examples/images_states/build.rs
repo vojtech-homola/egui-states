@@ -1,4 +1,4 @@
-use egui_pysync::build::{self, parse_states_for_client, parse_states_for_server};
+use egui_states_pyserver::build::{self, parse_states_for_client, parse_states_for_server};
 
 fn main() {
     println!("cargo:rerun-if-changed=../images_gui/src/states.rs");

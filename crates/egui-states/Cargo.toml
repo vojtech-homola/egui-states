@@ -1,10 +1,11 @@
 [package]
-name = "egui-states"
+name = "egui_states"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
 serde = { workspace = true }
+tungstenite = { workspace = true }
 egui = { version = ">= 0.32", features = ["rayon"] }
 
 egui_states_core = { workspace = true }

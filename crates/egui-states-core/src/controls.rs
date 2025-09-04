@@ -67,4 +67,13 @@ impl ControlMessage {
             .len();
         MessageData::Stack(buffer, len + 1)
     }
+
+    pub fn error(msg: String) -> MessageData {
+        let mut buffer = [0u8; HEAPLESS_SIZE];
+        buffer[0] = TYPE_CONTROL;
+        let len = postcard::to_slice(&ControlMessage::Error(msg), buffer[1..].as_mut())
+            .unwrap()
+            .len();
+        MessageData::Stack(buffer, len + 1)
+    }
 }

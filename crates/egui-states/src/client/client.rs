@@ -1,16 +1,17 @@
-use std::io::Write;
-use std::net::{Ipv4Addr, SocketAddrV4, TcpStream};
+use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
 use std::thread;
 
 use egui::Context;
+use tungstenite::{Bytes, Message};
 
-use egui_states_core::serialization::MessageData;
+use egui_states_core::controls::ControlMessage;
+use egui_states_core::serialization::{self, MessageData};
 
 use crate::channel::ChannelMessage;
 use crate::client::client_state::{ConnectionState, UIState};
-use crate::client::states_creator::{ValuesCreator, ValuesList};
+use crate::states_creator::{ValuesCreator, ValuesList};
 
 struct ClientChannel {
     sender: Sender<Option<MessageData>>,
@@ -36,83 +37,64 @@ impl ChannelMessage for ClientChannel {
     }
 }
 
-fn handle_message(
-    message: ReadMessage,
-    vals: &ValuesList,
-    ui_state: &UIState,
-) -> Result<(), String> {
-    if let ReadMessage::Command(ref command) = message {
-        match command {
-            CommandMessage::Update(t) => {
-                ui_state.update(*t);
+fn handle_message(message: Bytes, vals: &ValuesList, ui_state: &UIState) -> Result<(), String> {
+    let data = message.as_ref();
+    let message_type = data[0];
+
+    if message_type == serialization::TYPE_CONTROL {
+        let control = ControlMessage::deserialize(data)?;
+        match control {
+            ControlMessage::Update(t) => {
+                ui_state.update(t);
             }
             _ => {}
         }
         return Ok(());
     }
 
-    let update = match message {
-        ReadMessage::Value(id, updata, data) => match vals.values.get(&id) {
-            Some(value) => {
-                match data {
-                    MessageData::Stack(data) => value.update_value(&data),
-                    MessageData::Heap(data) => value.update_value(&data),
-                }?;
-                updata
-            }
+    // if let ReadMessage::Command(ref command) = message {
+    //     match command {
+    //         CommandMessage::Update(t) => {
+    //             ui_state.update(*t);
+    //         }
+    //         _ => {}
+    //     }
+    //     return Ok(());
+    // }
+
+    let id = u32::from_le_bytes(data[1..5].try_into().unwrap());
+    let update = match message_type {
+        serialization::TYPE_VALUE => match vals.values.get(&id) {
+            Some(value) => value.update_value(&data[5..])?,
             None => return Err(format!("Value with id {} not found", id)),
         },
 
-        ReadMessage::Static(id, updata, data) => match vals.static_values.get(&id) {
-            Some(value) => {
-                match data {
-                    MessageData::Stack(data) => value.update_value(&data),
-                    MessageData::Heap(data) => value.update_value(&data),
-                }?;
-                updata
-            }
+        serialization::TYPE_STATIC => match vals.static_values.get(&id) {
+            Some(value) => value.update_value(&data[5..])?,
             None => return Err(format!("Static with id {} not found", id)),
         },
 
-        ReadMessage::Image(id, updata, data) => match vals.images.get(&id) {
-            Some(value) => {
-                match data {
-                    MessageData::Stack(data) => value.update_image(&data),
-                    MessageData::Heap(data) => value.update_image(&data),
-                }?;
-                updata
-            }
+        serialization::TYPE_IMAGE => match vals.images.get(&id) {
+            Some(value) => value.update_value(&data[5..])?,
             None => return Err(format!("Image with id {} not found", id)),
         },
 
-        ReadMessage::Dict(id, updata, data) => match vals.dicts.get(&id) {
-            Some(value) => {
-                value.update_dict(data)?;
-                updata
-            }
+        serialization::TYPE_DICT => match vals.dicts.get(&id) {
+            Some(value) => value.update_value(&data[5..])?,
             None => return Err(format!("Dict with id {} not found", id)),
         },
 
-        ReadMessage::List(id, updata, data) => match vals.lists.get(&id) {
-            Some(value) => {
-                value.update_list(data)?;
-                updata
-            }
+        serialization::TYPE_LIST => match vals.lists.get(&id) {
+            Some(value) => value.update_value(&data[5..])?,
             None => return Err(format!("List with id {} not found", id)),
         },
 
-        ReadMessage::Graph(id, updata, data) => match vals.graphs.get(&id) {
-            Some(value) => {
-                match data {
-                    MessageData::Stack(data) => value.update_graph(&data),
-                    MessageData::Heap(data) => value.update_graph(&data),
-                }?;
-                updata
-            }
+        serialization::TYPE_GRAPH => match vals.graphs.get(&id) {
+            Some(value) => value.update_value(&data[5..])?,
             None => return Err(format!("Graph with id {} not found", id)),
         },
 
-        ReadMessage::Command(_) => unreachable!("should not parse Command message"),
+        _ => return Err(format!("Unknown message type: {}", message_type)),
     };
 
     if update {
@@ -139,14 +121,24 @@ fn start_gui_client(
             ui_state.set_state(ConnectionState::NotConnected);
 
             // try to connect to the server
-            let res = TcpStream::connect(addr);
+            let address = format!("ws://{}/socket", addr);
+            let res = tungstenite::connect(address);
             if res.is_err() {
                 continue;
             }
 
             // get the stream
-            let mut stream_write = res.unwrap();
-            let mut stream_read = stream_write.try_clone().unwrap();
+            let (mut socket_write, _) = res.unwrap();
+            let stream = match socket_write.get_mut() {
+                tungstenite::stream::MaybeTlsStream::Plain(s) => s,
+                _ => panic!("TLS is not supported"),
+            };
+
+            let mut socket_read = tungstenite::WebSocket::from_raw_socket(
+                stream.try_clone().unwrap(),
+                tungstenite::protocol::Role::Client,
+                None,
+            );
 
             // clean mesage queue before starting
             for _v in rx.try_iter() {}
@@ -161,20 +153,26 @@ fn start_gui_client(
                 .spawn(move || {
                     loop {
                         // read the message
-                        let res = read_message(&mut stream_read);
+                        let res = socket_read.read();
                         if let Err(e) = res {
                             println!("Error reading message: {:?}", e); // TODO: log error
                             break;
                         }
                         let message = res.unwrap();
+                        let mess = match message {
+                            tungstenite::Message::Binary(d) => d,
+                            tungstenite::Message::Close(_) => break,
+                            _ => {
+                                println!("Wrong type of message received: {:?}", message); // TODO: log error
+                                break;
+                            }
+                        };
 
                         // handle the message
-                        let res = handle_message(message, &th_vals, &th_ui_state);
+                        let res = handle_message(mess, &th_vals, &th_ui_state);
                         if let Err(e) = res {
                             let error = format!("Error handling message: {:?}", e);
-                            th_channel
-                                .send(WriteMessage::Command(CommandMessage::Error(error)))
-                                .unwrap();
+                            th_channel.send(Some(ControlMessage::error(error))).unwrap();
                             break;
                         }
                     }
@@ -186,9 +184,9 @@ fn start_gui_client(
             let send_thread = write_thread
                 .spawn(move || {
                     // send handshake
-                    let handshake = CommandMessage::Handshake(version, handshake);
-                    let message = WriteMessage::Command(handshake);
-                    let res = write_message(message, &mut stream_write);
+                    let handshake = ControlMessage::Handshake(version, handshake);
+                    let message = Message::Binary(Bytes::from(handshake.serialize()));
+                    let res = socket_write.send(message);
                     if let Err(e) = res {
                         println!("Error for sending hadnskae: {:?}", e); // TODO: log error
                         return rx;
@@ -199,13 +197,18 @@ fn start_gui_client(
                         let message = rx.recv().unwrap();
 
                         // check if the message is terminate
-                        if let WriteMessage::Terminate = message {
-                            stream_write.flush().unwrap();
+                        if message.is_none() {
+                            socket_write.flush().unwrap();
                             break;
                         }
+                        let message = message.unwrap();
+                        let data = match message {
+                            MessageData::Stack(data, len) => Bytes::copy_from_slice(&data[0..len]),
+                            MessageData::Heap(data) => Bytes::from(data),
+                        };
 
                         // write the message
-                        let res = write_message(message, &mut stream_write);
+                        let res = socket_write.send(Message::Binary(data));
                         if let Err(e) = res {
                             println!("Error for sending message: {:?}", e); // TODO: log error
                             break;
@@ -221,7 +224,7 @@ fn start_gui_client(
             recv_tread.join().unwrap();
 
             // terminate the send thread
-            channel.send(WriteMessage::Terminate).unwrap();
+            channel.send(None).unwrap();
             rx = send_thread.join().unwrap();
 
             ui_state.set_state(ConnectionState::Disconnected);
