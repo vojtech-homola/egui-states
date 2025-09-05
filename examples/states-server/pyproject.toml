@@ -3,12 +3,12 @@ requires = ["maturin>=1.9"]
 build-backend = "maturin"
 
 [project]
-name = "examples-images"
+name = "states-server"
 dynamic = ["version"]
 dependencies = ["numpy"]
 
 [tool.maturin]
 bindings = "pyo3"
-python-packages = ["images"]
-module-name = "images.core"
+python-packages = ["states_server"]
+module-name = "states_server.core"
 manifest-path = "Cargo.toml"

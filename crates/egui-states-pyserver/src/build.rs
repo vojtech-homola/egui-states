@@ -451,31 +451,31 @@ pub fn parse_states_for_server(
             .unwrap();
     }
 
-    file.write_all(b"\nuse egui_pysync::ServerValuesCreator;\n")
+    file.write_all(b"\nuse egui_states_pyserver::ServerValuesCreator;\n")
         .unwrap();
 
     if enums.is_some() {
-        file.write_all(b"use egui_pysync::pyenum;\n").unwrap();
+        file.write_all(b"use egui_states_pyserver::pyenum;\n").unwrap();
     }
 
     if structs.is_some() {
-        file.write_all(b"use egui_pysync::pystruct;\n").unwrap();
+        file.write_all(b"use egui_states_pyserver::pystruct;\n").unwrap();
     }
 
-    let mut has_empty = false;
-    for item in &state.items {
-        if let Item::Value(_, value) = item {
-            if value.annotation == "Empty" {
-                has_empty = true;
-                break;
-            }
-        }
-    }
-    if has_empty {
-        file.write_all(b"use egui_pysync::Empty;\n\n").unwrap();
-    } else {
-        file.write_all(b"\n").unwrap();
-    }
+    // let mut has_empty = false;
+    // for item in &state.items {
+    //     if let Item::Value(_, value) = item {
+    //         if value.annotation == "Empty" {
+    //             has_empty = true;
+    //             break;
+    //         }
+    //     }
+    // }
+    // if has_empty {
+    //     file.write_all(b"use egui_pysync::Empty;\n\n").unwrap();
+    // } else {
+    file.write_all(b"\n").unwrap();
+    // }
 
     file.write_all(b"pub(crate) fn create_states(c: &mut ServerValuesCreator) {\n")
         .unwrap();
@@ -521,10 +521,10 @@ pub fn parse_states_for_server(
     if enums.is_some() || structs.is_some() {
         // register types
         file.write_all(
-        b"\npub(crate) fn register_types(m: &egui_pysync::pyo3::Bound<egui_pysync::pyo3::types::PyModule>) -> egui_pysync::pyo3::PyResult<()> {\n",
+        b"\npub(crate) fn register_types(m: &egui_states_pyserver::pyo3::Bound<egui_states_pyserver::pyo3::types::PyModule>) -> egui_states_pyserver::pyo3::PyResult<()> {\n",
     )
     .unwrap();
-        file.write_all(b"    use egui_pysync::pyo3::prelude::*;\n\n")
+        file.write_all(b"    use egui_states_pyserver::pyo3::prelude::*;\n\n")
             .unwrap();
         if let Some(enums) = enums {
             for en in enums {

@@ -1,5 +1,5 @@
 [package]
-name = "example_images_states"
+name = "states_server"
 version.workspace = true
 edition.workspace = true
 resolver = "3"

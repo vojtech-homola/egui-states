@@ -18,8 +18,8 @@ impl MainApp {
         let host = std::net::Ipv4Addr::new(127, 0, 0, 1);
         let ui_state = builder.build(cc.egui_ctx.clone(), host, 8081, 0);
 
-        let image = ColorImage::filled([1024, 1024], Color32::BLACK);
-        states.image.initialize(&cc.egui_ctx, image);
+        // let image = ColorImage::filled([1024, 1024], Color32::BLACK);
+        // states.image.initialize(&cc.egui_ctx, image);
 
         Ok(Box::new(Self { states, ui_state }))
     }
@@ -47,16 +47,26 @@ impl eframe::App for MainApp {
             });
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            let texture_id = self.states.image.get_id();
-            const UV: Rect = Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
-            let (response, painter) =
-                ui.allocate_painter([1024.0, 1024.0].into(), egui::Sense::HOVER);
-            painter.image(
-                texture_id,
-                response.rect.translate(egui::vec2(15.0, 50.0)) / 1.5,
-                UV,
-                Color32::WHITE,
-            );
+            // image --------------------------------------------------
+            // let texture_id = self.states.image.get_id();
+            // const UV: Rect = Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+            // let (response, painter) =
+            //     ui.allocate_painter([1024.0, 1024.0].into(), egui::Sense::HOVER);
+            // painter.image(
+            //     texture_id,
+            //     response.rect.translate(egui::vec2(15.0, 50.0)) / 1.5,
+            //     UV,
+            //     Color32::WHITE,
+            // );
+
+            // value --------------------------------------------------
+            let mut value = self.states.value.get();
+            if ui
+                .add(egui::Slider::new(&mut value, 0.0..=1.0).text("value"))
+                .changed()
+            {
+                self.states.value.set(value, false);
+            }
         });
     }
 }
