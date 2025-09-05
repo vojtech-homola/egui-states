@@ -38,7 +38,7 @@ pub fn serialize<T: Serialize>(id: u32, value: T, value_type: u8) -> MessageData
     stack_data[0] = value_type;
     stack_data[1..5].copy_from_slice(&id.to_le_bytes());
 
-    let len = match postcard::to_slice(&value, stack_data[4..].as_mut()) {
+    let len = match postcard::to_slice(&value, stack_data[5..].as_mut()) {
         Ok(d) => Some(d.len() + 5),
         Err(postcard::Error::SerializeBufferFull) => None,
         Err(e) => panic!("Serialize error: {}", e),

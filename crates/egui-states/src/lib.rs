@@ -18,6 +18,6 @@ pub use list::ValueList;
 pub use states_creator::ValuesCreator;
 pub use values::{Diff, Signal, Value, ValueStatic};
 
-pub(crate) trait UpdateValue: Sync + Send {
+pub trait UpdateValue: Sync + Send {
     fn update_value(&self, data: &[u8]) -> Result<bool, String>;
 }

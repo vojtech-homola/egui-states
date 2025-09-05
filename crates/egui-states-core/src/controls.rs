@@ -56,8 +56,7 @@ impl ControlMessage {
     }
 
     pub fn deserialize(data: &[u8]) -> Result<Self, String> {
-        println!("data len: {}", data.len());
-        postcard::from_bytes(&data[1..]).unwrap()
+        postcard::from_bytes(&data[1..]).map_err(|e| e.to_string())
     }
 
     pub fn ack(id: u32) -> MessageData {

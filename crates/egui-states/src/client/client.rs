@@ -121,26 +121,34 @@ fn start_gui_client(
             ui_state.set_state(ConnectionState::NotConnected);
 
             // try to connect to the server
-            let address = format!("ws://{}/socket", addr);
+            let address = format!("ws://{}", addr);
             let res = tungstenite::connect(address);
             if res.is_err() {
                 continue;
             }
 
             // get the stream
-            let (mut socket_write, _) = res.unwrap();
-            let stream = match socket_write.get_mut() {
-                tungstenite::stream::MaybeTlsStream::Plain(s) => s,
-                _ => panic!("TLS is not supported"),
-            };
+            let (mut socket_read, _) = res.unwrap();
+            // let stream = match socket_read.get_mut() {
+            //     tungstenite::stream::MaybeTlsStream::Plain(s) => s,
+            //     _ => panic!("TLS is not supported"),
+            // };
 
-            let mut socket_read = tungstenite::WebSocket::from_raw_socket(
-                stream.try_clone().unwrap(),
-                tungstenite::protocol::Role::Client,
-                None,
-            );
+            // let mut socket_write = tungstenite::WebSocket::from_raw_socket(
+            //     stream.try_clone().unwrap(),
+            //     tungstenite::protocol::Role::Client,
+            //     None,
+            // );
 
-            // clean mesage queue before starting
+            let handshake = ControlMessage::Handshake(version, handshake);
+            let message = Message::Binary(Bytes::from(handshake.serialize()));
+            let res = socket_read.send(message);
+            if let Err(e) = res {
+                println!("Error for sending handshake: {:?}", e); // TODO: log error
+                return rx;
+            }
+
+            // clean message queue before starting
             for _v in rx.try_iter() {}
 
             // read thread -----------------------------------------
@@ -153,6 +161,7 @@ fn start_gui_client(
                 .spawn(move || {
                     loop {
                         // read the message
+                        println!("can read {}", socket_read.can_read());
                         let res = socket_read.read();
                         if let Err(e) = res {
                             println!("Error reading message: {:?}", e); // TODO: log error
@@ -184,35 +193,35 @@ fn start_gui_client(
             let send_thread = write_thread
                 .spawn(move || {
                     // send handshake
-                    let handshake = ControlMessage::Handshake(version, handshake);
-                    let message = Message::Binary(Bytes::from(handshake.serialize()));
-                    let res = socket_write.send(message);
-                    if let Err(e) = res {
-                        println!("Error for sending hadnskae: {:?}", e); // TODO: log error
-                        return rx;
-                    }
+                    // let handshake = ControlMessage::Handshake(version, handshake);
+                    // let message = Message::Binary(Bytes::from(handshake.serialize()));
+                    // let res = socket_write.send(message);
+                    // if let Err(e) = res {
+                    //     println!("Error for sending hadnskae: {:?}", e); // TODO: log error
+                    //     return rx;
+                    // }
 
                     loop {
-                        // wait for the message from the channel
-                        let message = rx.recv().unwrap();
+                        // // wait for the message from the channel
+                        // let message = rx.recv().unwrap();
 
-                        // check if the message is terminate
-                        if message.is_none() {
-                            socket_write.flush().unwrap();
-                            break;
-                        }
-                        let message = message.unwrap();
-                        let data = match message {
-                            MessageData::Stack(data, len) => Bytes::copy_from_slice(&data[0..len]),
-                            MessageData::Heap(data) => Bytes::from(data),
-                        };
+                        // // check if the message is terminate
+                        // if message.is_none() {
+                        //     socket_write.flush().unwrap();
+                        //     break;
+                        // }
+                        // let message = message.unwrap();
+                        // let data = match message {
+                        //     MessageData::Stack(data, len) => Bytes::copy_from_slice(&data[0..len]),
+                        //     MessageData::Heap(data) => Bytes::from(data),
+                        // };
 
-                        // write the message
-                        let res = socket_write.send(Message::Binary(data));
-                        if let Err(e) = res {
-                            println!("Error for sending message: {:?}", e); // TODO: log error
-                            break;
-                        }
+                        // // write the message
+                        // let res = socket_write.send(Message::Binary(data));
+                        // if let Err(e) = res {
+                        //     println!("Error for sending message: {:?}", e); // TODO: log error
+                        //     break;
+                        // }
                     }
                     rx
                 })

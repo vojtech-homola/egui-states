@@ -6,7 +6,7 @@ use std::sync::{
 };
 use std::thread::{self, JoinHandle};
 
-use tungstenite::{self, Bytes, Message};
+use tungstenite::{self, Bytes, Message, WebSocket};
 
 use egui_states_core::controls::ControlMessage;
 use egui_states_core::event::Event;
@@ -14,7 +14,6 @@ use egui_states_core::serialization;
 
 use crate::signals::ChangedValues;
 use crate::states_server::ValuesList;
-// use crate::transport::{ReadMessage, WriteMessage, read_message, write_message};
 
 struct StatesTransfer {
     thread: JoinHandle<Receiver<Option<Bytes>>>,
@@ -25,32 +24,29 @@ impl StatesTransfer {
         connected: Arc<AtomicBool>,
         values: ValuesList,
         signals: ChangedValues,
-        stream: TcpStream,
+        mut websocket: WebSocket<TcpStream>,
         rx: Receiver<Option<Bytes>>,
         channel: Sender<Option<Bytes>>,
     ) -> Self {
-        let writer = Self::writer(
-            rx,
-            connected.clone(),
-            stream.try_clone().unwrap(),
-            signals.clone(),
+        let stream = websocket.get_mut().try_clone().unwrap();
+        let writer = Self::writer(rx, connected.clone(), websocket, signals.clone());
+
+        let mut websocket = tungstenite::WebSocket::from_raw_socket(
+            stream,
+            tungstenite::protocol::Role::Server,
+            None,
         );
 
         let read_thread = thread::Builder::new().name("Reader".to_string());
         let thread = read_thread
             .spawn(move || {
-                let mut websocket = tungstenite::WebSocket::from_raw_socket(
-                    stream.try_clone().unwrap(),
-                    tungstenite::protocol::Role::Server,
-                    None,
-                );
                 loop {
                     // read the message
                     let res = websocket.read();
 
                     // check if not connected
                     if !connected.load(atomic::Ordering::Relaxed) {
-                        let _ = stream.shutdown(std::net::Shutdown::Both);
+                        let _ = websocket.get_mut().shutdown(std::net::Shutdown::Both);
                         break;
                     }
 
@@ -70,6 +66,7 @@ impl StatesTransfer {
                                     let control = ControlMessage::deserialize(data).unwrap(); //TODO handle error
                                     match control {
                                         ControlMessage::Ack(v) => {
+                                            println!("Ack command for id: {}", v);
                                             let val_res = values.ack.get(&v);
                                             match val_res {
                                                 Some(val) => {
@@ -134,13 +131,12 @@ impl StatesTransfer {
     fn writer(
         rx: Receiver<Option<Bytes>>,
         connected: Arc<AtomicBool>,
-        stream: TcpStream,
+        mut websocket: tungstenite::WebSocket<TcpStream>,
         signals: ChangedValues,
     ) -> JoinHandle<Receiver<Option<Bytes>>> {
         let thread = thread::Builder::new().name("Writer".to_string());
         thread
             .spawn(move || {
-                let mut websocket = tungstenite::accept(stream).unwrap();
                 loop {
                     // get message from channel
                     let message = rx.recv().unwrap();
@@ -248,7 +244,7 @@ impl Server {
                     continue;
                 }
                 let stream = stream.unwrap().0;
-                let mut websocket = tungstenite::accept(stream.try_clone().unwrap()).unwrap(); //TODO: handle errors
+                let mut websocket = tungstenite::accept(stream).unwrap(); //TODO: handle errors
 
                 // read the message
                 let res = websocket.read();
@@ -301,7 +297,7 @@ impl Server {
                         connected.clone(),
                         values.clone(),
                         signals.clone(),
-                        stream,
+                        websocket,
                         rx,
                         channel.clone(),
                     );

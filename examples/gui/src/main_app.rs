@@ -65,7 +65,7 @@ impl eframe::App for MainApp {
                 .add(egui::Slider::new(&mut value, 0.0..=1.0).text("value"))
                 .changed()
             {
-                self.states.value.set(value, false);
+                self.states.value.set(value, true);
             }
         });
     }
