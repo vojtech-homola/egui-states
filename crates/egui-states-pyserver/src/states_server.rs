@@ -1,12 +1,10 @@
 use std::hash::Hash;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
-use std::sync::mpsc::Sender;
 
 use pyo3::buffer::Element;
 use pyo3::prelude::*;
 use serde::{Deserialize, Serialize};
-use tungstenite::Bytes;
 
 use egui_states_core::graphs::GraphElement;
 use egui_states_core::nohash::NoHashMap;
@@ -18,6 +16,7 @@ use crate::pylist::{PyListTrait, PyValueList};
 use crate::python_convert::{FromPython, ToPython};
 use crate::pyvalues::{PySignal, PyValue, PyValueStatic};
 use crate::pyvalues::{PySignalTrait, PyValueStaticTrait, PyValueTrait, UpdateValueServer};
+use crate::sender::MessageSender;
 use crate::server::{Acknowledge, SyncTrait};
 use crate::signals::ChangedValues;
 
@@ -79,7 +78,7 @@ impl ValuesList {
 }
 
 pub struct ServerValuesCreator {
-    channel: Sender<Option<Bytes>>,
+    sender: MessageSender,
     connected: Arc<AtomicBool>,
     signals: ChangedValues,
 
@@ -91,12 +90,12 @@ pub struct ServerValuesCreator {
 
 impl ServerValuesCreator {
     pub(crate) fn new(
-        channel: Sender<Option<Bytes>>,
+        sender: MessageSender,
         connected: Arc<AtomicBool>,
         signals: ChangedValues,
     ) -> Self {
         Self {
-            channel,
+            sender,
             connected,
             signals,
 
@@ -141,7 +140,7 @@ impl ServerValuesCreator {
         let value = PyValue::new(
             id,
             value,
-            self.channel.clone(),
+            self.sender.clone(),
             self.connected.clone(),
             self.signals.clone(),
         );
@@ -157,7 +156,7 @@ impl ServerValuesCreator {
         T: ToPython + for<'py> FromPyObject<'py> + Serialize + Clone + 'static,
     {
         let id = self.get_id();
-        let value = PyValueStatic::new(id, value, self.channel.clone(), self.connected.clone());
+        let value = PyValueStatic::new(id, value, self.sender.clone(), self.connected.clone());
 
         self.py_val.static_values.insert(id, value.clone());
         self.val.sync.insert(id, value);
@@ -175,7 +174,7 @@ impl ServerValuesCreator {
 
     pub fn add_image(&mut self) {
         let id = self.get_id();
-        let image = PyValueImage::new(id, self.channel.clone(), self.connected.clone());
+        let image = PyValueImage::new(id, self.sender.clone(), self.connected.clone());
 
         self.py_val.images.insert(id, image.clone());
         self.val.sync.insert(id, image);
@@ -187,7 +186,7 @@ impl ServerValuesCreator {
         V: ToPython + for<'py> FromPyObject<'py> + Serialize + 'static,
     {
         let id = self.get_id();
-        let dict = PyValueDict::<K, V>::new(id, self.channel.clone(), self.connected.clone());
+        let dict = PyValueDict::<K, V>::new(id, self.sender.clone(), self.connected.clone());
 
         self.py_val.dicts.insert(id, dict.clone());
         self.val.sync.insert(id, dict);
@@ -198,7 +197,7 @@ impl ServerValuesCreator {
         T: ToPython + for<'py> FromPyObject<'py> + Serialize + Clone + 'static,
     {
         let id = self.get_id();
-        let list = PyValueList::<T>::new(id, self.channel.clone(), self.connected.clone());
+        let list = PyValueList::<T>::new(id, self.sender.clone(), self.connected.clone());
 
         self.py_val.lists.insert(id, list.clone());
         self.val.sync.insert(id, list);
@@ -210,7 +209,7 @@ impl ServerValuesCreator {
         &mut self,
     ) {
         let id = self.get_id();
-        let graph = PyValueGraphs::<T>::new(id, self.channel.clone(), self.connected.clone());
+        let graph = PyValueGraphs::<T>::new(id, self.sender.clone(), self.connected.clone());
 
         self.py_val.graphs.insert(id, graph.clone());
         self.val.sync.insert(id, graph);

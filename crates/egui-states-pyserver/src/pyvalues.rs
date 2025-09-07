@@ -1,15 +1,15 @@
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::Sender;
 use std::sync::{Arc, RwLock};
 
 use pyo3::prelude::*;
 use serde::{Deserialize, Serialize};
-use tungstenite::Bytes;
+use tokio_tungstenite::tungstenite::Bytes;
 
 use egui_states_core::serialization::{TYPE_VALUE, deserialize, serialize_vec};
 
 use crate::python_convert::{FromPython, ToPython};
+use crate::sender::MessageSender;
 use crate::server::{Acknowledge, SyncTrait};
 use crate::signals::ChangedValues;
 
@@ -35,7 +35,7 @@ pub(crate) trait PySignalTrait: Send + Sync {
 pub(crate) struct PyValue<T> {
     id: u32,
     value: RwLock<(T, usize)>,
-    channel: Sender<Option<Bytes>>,
+    sender: MessageSender,
     connected: Arc<AtomicBool>,
     signals: ChangedValues,
 }
@@ -44,14 +44,14 @@ impl<T> PyValue<T> {
     pub(crate) fn new(
         id: u32,
         value: T,
-        channel: Sender<Option<Bytes>>,
+        sender: MessageSender,
         connected: Arc<AtomicBool>,
         signals: ChangedValues,
     ) -> Arc<Self> {
         Arc::new(Self {
             id,
             value: RwLock::new((value, 0)),
-            channel,
+            sender,
             connected,
             signals,
         })
@@ -73,7 +73,7 @@ where
             let mut w = self.value.write().unwrap();
             w.0 = value.clone();
             w.1 += 1;
-            self.channel.send(Some(Bytes::from(data))).unwrap();
+            self.sender.send(Bytes::from(data));
             if set_signal {
                 self.signals.set(self.id, value);
             }
@@ -128,7 +128,7 @@ where
         let data = serialize_vec(self.id, (false, &w.0), TYPE_VALUE);
         drop(w);
 
-        self.channel.send(Some(Bytes::from(data))).unwrap();
+        self.sender.send(Bytes::from(data));
     }
 }
 
@@ -136,7 +136,7 @@ where
 pub(crate) struct PyValueStatic<T> {
     id: u32,
     value: RwLock<T>,
-    channel: Sender<Option<Bytes>>,
+    sender: MessageSender,
     connected: Arc<AtomicBool>,
 }
 
@@ -144,13 +144,13 @@ impl<T> PyValueStatic<T> {
     pub(crate) fn new(
         id: u32,
         value: T,
-        channel: Sender<Option<Bytes>>,
+        sender: MessageSender,
         connected: Arc<AtomicBool>,
     ) -> Arc<Self> {
         Arc::new(Self {
             id,
             value: RwLock::new(value),
-            channel,
+            sender,
             connected,
         })
     }
@@ -170,7 +170,7 @@ where
             let data = serialize_vec(self.id, (update, &value), TYPE_VALUE);
             let mut v = self.value.write().unwrap();
             *v = value;
-            self.channel.send(Some(Bytes::from(data))).unwrap();
+            self.sender.send(Bytes::from(data));
         } else {
             *self.value.write().unwrap() = value;
         }
@@ -186,7 +186,7 @@ where
     fn sync(&self) {
         let w = self.value.read().unwrap();
         let data = serialize_vec(self.id, (false, &(*w)), TYPE_VALUE);
-        self.channel.send(Some(Bytes::from(data))).unwrap();
+        self.sender.send(Bytes::from(data));
     }
 }
 

@@ -1,7 +1,6 @@
 use std::mem::size_of;
 use std::ptr::copy_nonoverlapping;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::Sender;
 use std::sync::{Arc, RwLock};
 
 use pyo3::buffer::{Element, PyBuffer};
@@ -9,13 +8,14 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyByteArray, PyTuple};
 use serde::Serialize;
-use tungstenite::Bytes;
+use tokio_tungstenite::tungstenite::Bytes;
 
 use egui_states_core::graphs::{Graph, GraphElement, GraphMessage};
 use egui_states_core::nohash::NoHashMap;
 use egui_states_core::serialization::{TYPE_GRAPH, serialize};
 
 use crate::python_convert::ToPython;
+use crate::sender::MessageSender;
 use crate::server::SyncTrait;
 
 pub(crate) trait PyGraphTrait: Send + Sync {
@@ -33,22 +33,18 @@ pub(crate) struct PyValueGraphs<T> {
     id: u32,
     graphs: RwLock<NoHashMap<u16, Graph<T>>>,
 
-    channel: Sender<Option<Bytes>>,
+    sender: MessageSender,
     connected: Arc<AtomicBool>,
 }
 
 impl<T> PyValueGraphs<T> {
-    pub(crate) fn new(
-        id: u32,
-        channel: Sender<Option<Bytes>>,
-        connected: Arc<AtomicBool>,
-    ) -> Arc<Self> {
+    pub(crate) fn new(id: u32, sender: MessageSender, connected: Arc<AtomicBool>) -> Arc<Self> {
         let graphs = RwLock::new(NoHashMap::default());
 
         Arc::new(Self {
             id,
             graphs,
-            channel,
+            sender,
             connected,
         })
     }
@@ -65,7 +61,7 @@ where
         let mut w = self.graphs.write().unwrap();
         if self.connected.load(Ordering::Relaxed) {
             let data = graph.to_data(self.id, idx, update, None);
-            self.channel.send(Some(Bytes::from(data))).unwrap();
+            self.sender.send(Bytes::from(data));
         }
         w.insert(idx, graph);
         Ok(())
@@ -82,7 +78,7 @@ where
 
         if self.connected.load(Ordering::Relaxed) {
             let data = graph.to_data(self.id, idx, update, Some(points));
-            self.channel.send(Some(Bytes::from(data))).unwrap();
+            self.sender.send(Bytes::from(data));
         }
 
         Ok(())
@@ -140,8 +136,7 @@ where
         let mut w = self.graphs.write().unwrap();
         if self.connected.load(Ordering::Relaxed) {
             let message = serialize(self.id, GraphMessage::<T>::Remove(update, idx), TYPE_GRAPH);
-            let bytes = Bytes::from(message.to_vec());
-            self.channel.send(Some(bytes)).unwrap();
+            self.sender.send(Bytes::from(message.to_vec()));
         }
         w.remove(&idx);
     }
@@ -165,8 +160,7 @@ where
 
         if self.connected.load(Ordering::Relaxed) {
             let message = serialize(self.id, GraphMessage::<T>::Reset(update), TYPE_GRAPH);
-            let bytes = Bytes::from(message.to_vec());
-            self.channel.send(Some(bytes)).unwrap();
+            self.sender.send(Bytes::from(message.to_vec()));
         }
         w.clear();
     }
@@ -180,14 +174,11 @@ where
         let w = self.graphs.read().unwrap();
 
         let message = serialize(self.id, GraphMessage::<T>::Reset(false), TYPE_GRAPH);
-        self.channel
-            .send(Bytes::from(message.to_vec()).into())
-            .unwrap();
+        self.sender.send(Bytes::from(message.to_vec()));
 
         for (idx, graph) in w.iter() {
             let data = graph.to_data(self.id, *idx, false, None);
-            let message = Bytes::from(data);
-            self.channel.send(Some(message)).unwrap();
+            self.sender.send(Bytes::from(data));
         }
     }
 }

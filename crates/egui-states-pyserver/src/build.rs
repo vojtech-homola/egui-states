@@ -277,7 +277,9 @@ impl State {
         let mut finished = false;
 
         for line in lines {
-            if line.contains(format!("impl {}", name).as_str()) {
+            if line.contains(format!("impl {}", name).as_str())
+                || line.contains(format!("impl State for {}", name).as_str())
+            {
                 started = true;
                 continue;
             }
@@ -455,11 +457,13 @@ pub fn parse_states_for_server(
         .unwrap();
 
     if enums.is_some() {
-        file.write_all(b"use egui_states_pyserver::pyenum;\n").unwrap();
+        file.write_all(b"use egui_states_pyserver::pyenum;\n")
+            .unwrap();
     }
 
     if structs.is_some() {
-        file.write_all(b"use egui_states_pyserver::pystruct;\n").unwrap();
+        file.write_all(b"use egui_states_pyserver::pystruct;\n")
+            .unwrap();
     }
 
     // let mut has_empty = false;

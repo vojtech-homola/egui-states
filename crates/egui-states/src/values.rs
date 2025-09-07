@@ -6,7 +6,7 @@ use egui_states_core::controls::ControlMessage;
 use egui_states_core::serialization::{TYPE_SIGNAL, TYPE_VALUE, deserialize, serialize};
 
 use crate::UpdateValue;
-use crate::channel::ChannelMessage;
+use crate::sender::MessageSender;
 
 pub struct Diff<'a, T> {
     pub v: T,
@@ -36,18 +36,18 @@ impl<'a, T: Serialize + Clone + PartialEq> Diff<'a, T> {
 pub struct Value<T> {
     id: u32,
     value: RwLock<T>,
-    channel: Arc<dyn ChannelMessage>,
+    sender: MessageSender,
 }
 
 impl<T> Value<T>
 where
     T: Serialize + Clone,
 {
-    pub(crate) fn new(id: u32, value: T, channel: Arc<dyn ChannelMessage>) -> Arc<Self> {
+    pub(crate) fn new(id: u32, value: T, sender: MessageSender) -> Arc<Self> {
         Arc::new(Self {
             id,
             value: RwLock::new(value),
-            channel,
+            sender,
         })
     }
 
@@ -58,7 +58,7 @@ where
     pub fn set(&self, value: T, signal: bool) {
         let data = serialize(self.id, (signal, &value), TYPE_VALUE);
         let mut w = self.value.write().unwrap();
-        self.channel.send(data);
+        self.sender.send(data);
         *w = value;
     }
 }
@@ -70,7 +70,7 @@ impl<T: for<'a> Deserialize<'a> + Send + Sync> UpdateValue for Value<T> {
 
         let mut w = self.value.write().unwrap();
         *w = value;
-        self.channel.send(ControlMessage::ack(self.id));
+        self.sender.send(ControlMessage::ack(self.id));
         Ok(update)
     }
 }
@@ -106,21 +106,21 @@ impl<T: for<'a> Deserialize<'a> + Send + Sync> UpdateValue for ValueStatic<T> {
 // Signal --------------------------------------------
 pub struct Signal<T> {
     id: u32,
-    channel: Arc<dyn ChannelMessage>,
+    sender: MessageSender,
     phantom: PhantomData<T>,
 }
 
 impl<T: Serialize + Clone> Signal<T> {
-    pub(crate) fn new(id: u32, channel: Arc<dyn ChannelMessage>) -> Arc<Self> {
+    pub(crate) fn new(id: u32, sender: MessageSender) -> Arc<Self> {
         Arc::new(Self {
             id,
-            channel,
+            sender,
             phantom: PhantomData,
         })
     }
 
     pub fn set(&self, value: impl Into<T>) {
         let message = serialize(self.id, &value.into(), TYPE_SIGNAL);
-        self.channel.send(message);
+        self.sender.send(message);
     }
 }

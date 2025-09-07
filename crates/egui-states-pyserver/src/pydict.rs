@@ -1,20 +1,19 @@
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::Sender;
 use std::sync::{Arc, RwLock};
 
 use pyo3::exceptions::PyKeyError;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use serde::Serialize;
-use tungstenite::Bytes;
+use tokio_tungstenite::tungstenite::Bytes;
 
 use egui_states_core::serialization::{TYPE_DICT, serialize_vec};
 
 use crate::python_convert::ToPython;
+use crate::sender::MessageSender;
 use crate::server::SyncTrait;
-// use crate::transport::{WriteMessage, serialize};
 
 #[derive(Serialize)]
 enum DictMessageRef<'a, K, V>
@@ -38,20 +37,16 @@ pub(crate) trait PyDictTrait: Send + Sync {
 pub(crate) struct PyValueDict<K, V> {
     id: u32,
     dict: RwLock<HashMap<K, V>>,
-    channel: Sender<Option<Bytes>>,
+    sender: MessageSender,
     connected: Arc<AtomicBool>,
 }
 
 impl<K, V> PyValueDict<K, V> {
-    pub(crate) fn new(
-        id: u32,
-        channel: Sender<Option<Bytes>>,
-        connected: Arc<AtomicBool>,
-    ) -> Arc<Self> {
+    pub(crate) fn new(id: u32, sender: MessageSender, connected: Arc<AtomicBool>) -> Arc<Self> {
         Arc::new(Self {
             id,
             dict: RwLock::new(HashMap::new()),
-            channel,
+            sender,
             connected,
         })
     }
@@ -91,7 +86,7 @@ where
         if self.connected.load(Ordering::Relaxed) {
             let to_send = (update, DictMessageRef::Remove::<K, V>(&dict_key));
             let data = serialize_vec(self.id, to_send, TYPE_DICT);
-            self.channel.send(Some(Bytes::from(data))).unwrap();
+            self.sender.send(Bytes::from(data));
         }
         d.remove(&dict_key);
 
@@ -107,7 +102,7 @@ where
         if self.connected.load(Ordering::Relaxed) {
             let to_send = (update, DictMessageRef::Set::<K, V>(&dict_key, &dict_value));
             let data = serialize_vec(self.id, to_send, TYPE_DICT);
-            self.channel.send(Some(Bytes::from(data))).unwrap();
+            self.sender.send(Bytes::from(data));
         }
 
         d.insert(dict_key, dict_value);
@@ -130,7 +125,7 @@ where
             dict.py().detach(|| {
                 let to_send = (update, DictMessageRef::All(&new_dict));
                 let data = serialize_vec(self.id, to_send, TYPE_DICT);
-                self.channel.send(Some(Bytes::from(data))).unwrap();
+                self.sender.send(Bytes::from(data));
             });
         }
 
@@ -153,7 +148,6 @@ where
         let dict = self.dict.read().unwrap();
         let to_send = DictMessageRef::All(&dict);
         let data = serialize_vec(self.id, to_send, TYPE_DICT);
-        let message = Bytes::from(data);
-        self.channel.send(Some(message)).unwrap();
+        self.sender.send(Bytes::from(data));
     }
 }

@@ -2,12 +2,6 @@ version = 1
 revision = 3
 requires-python = ">=3.12"
 
-[manifest]
-members = [
-    "egui-pysync",
-    "examples-images",
-]
-
 [[package]]
 name = "asttokens"
 version = "3.0.0"
@@ -131,16 +125,6 @@ dev = [
     { name = "ipython" },
     { name = "matplotlib" },
 ]
-
-[[package]]
-name = "examples-images"
-source = { editable = "examples/images_states" }
-dependencies = [
-    { name = "numpy" },
-]
-
-[package.metadata]
-requires-dist = [{ name = "numpy" }]
 
 [[package]]
 name = "executing"

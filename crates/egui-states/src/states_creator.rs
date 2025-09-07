@@ -7,11 +7,11 @@ use egui_states_core::graphs::GraphElement;
 use egui_states_core::nohash::NoHashMap;
 
 use crate::UpdateValue;
-use crate::channel::ChannelMessage;
 use crate::dict::ValueDict;
 use crate::graphs::ValueGraphs;
 use crate::image::ValueImage;
 use crate::list::ValueList;
+use crate::sender::MessageSender;
 use crate::values::{Signal, Value, ValueStatic};
 
 #[derive(Clone)]
@@ -50,16 +50,16 @@ pub struct ValuesCreator {
     counter: u32,
     val: ValuesList,
     version: u64,
-    channel: Arc<dyn ChannelMessage>,
+    sender: MessageSender,
 }
 
 impl ValuesCreator {
-    pub(crate) fn new(channel: Arc<dyn ChannelMessage>) -> Self {
+    pub(crate) fn new(sender: MessageSender) -> Self {
         Self {
             counter: 9, // first 10 values are reserved for special values
             val: ValuesList::new(),
             version: 0,
-            channel,
+            sender,
         }
     }
 
@@ -86,7 +86,7 @@ impl ValuesCreator {
         T: for<'a> Deserialize<'a> + Serialize + Send + Sync + Clone + 'static,
     {
         let id = self.get_id();
-        let value = Value::new(id, value, self.channel.clone());
+        let value = Value::new(id, value, self.sender.clone());
 
         self.val.values.insert(id, value.clone());
         value
@@ -116,7 +116,7 @@ impl ValuesCreator {
         T: Serialize + Clone + Send + Sync + 'static,
     {
         let id = self.get_id();
-        let signal = Signal::new(id, self.channel.clone());
+        let signal = Signal::new(id, self.sender.clone());
 
         signal
     }

@@ -1,15 +1,15 @@
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::Sender;
 use std::sync::{Arc, RwLock};
 
 use pyo3::buffer::PyBuffer;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyByteArray;
-use tungstenite::Bytes;
+use tokio_tungstenite::tungstenite::Bytes;
 
 use egui_states_core::image::{ImageInfo, ImageType};
 
+use crate::sender::MessageSender;
 use crate::server::SyncTrait;
 
 struct ImageDataInner {
@@ -20,14 +20,14 @@ struct ImageDataInner {
 pub(crate) struct PyValueImage {
     id: u32,
     image: RwLock<ImageDataInner>,
-    channel: Sender<Option<Bytes>>,
+    sender: MessageSender,
     connected: Arc<AtomicBool>,
 }
 
 impl PyValueImage {
     pub(crate) fn new(
         id: u32,
-        channel: Sender<Option<Bytes>>,
+        sender: MessageSender,
         connected: Arc<AtomicBool>,
     ) -> Arc<Self> {
         Arc::new(Self {
@@ -36,7 +36,7 @@ impl PyValueImage {
                 data: Vec::with_capacity(0),
                 size: [0, 0],
             }),
-            channel,
+            sender,
             connected,
         })
     }
@@ -169,8 +169,7 @@ impl PyValueImage {
 
         // send the image to the server
         if let Some(data) = data {
-            let message = Some(Bytes::from(data));
-            self.channel.send(message).unwrap();
+            self.sender.send(Bytes::from(data));
         }
 
         Ok(())
@@ -199,8 +198,7 @@ impl SyncTrait for PyValueImage {
         data[buff.len()..].copy_from_slice(&w.data);
         drop(w);
 
-        let message = Some(Bytes::from(data));
-        self.channel.send(message).unwrap();
+        self.sender.send(Bytes::from(data));
     }
 }
 

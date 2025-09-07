@@ -6,7 +6,7 @@ use egui::Context;
 
 use egui_states_core::event::Event;
 
-use crate::channel::ChannelMessage;
+use crate::sender::MessageSender;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ConnectionState {
@@ -20,16 +20,16 @@ pub struct UIState {
     context: Context,
     connect_signal: Event,
     state: Arc<RwLock<ConnectionState>>,
-    channel: Arc<dyn ChannelMessage>,
+    sender: MessageSender,
 }
 
 impl UIState {
-    pub(crate) fn new(context: Context, channel: Arc<dyn ChannelMessage>) -> Self {
+    pub(crate) fn new(context: Context, sender: MessageSender) -> Self {
         Self {
             context,
             connect_signal: Event::new(),
             state: Arc::new(RwLock::new(ConnectionState::NotConnected)),
-            channel,
+            sender,
         }
     }
 
@@ -52,7 +52,7 @@ impl UIState {
     }
 
     pub fn disconnect(&self) {
-        self.channel.close();
+        self.sender.close();
     }
 
     pub(crate) fn set_state(&self, state: ConnectionState) {

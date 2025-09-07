@@ -5,7 +5,9 @@ mod pyimage;
 mod pylist;
 mod python_convert;
 mod pyvalues;
+mod sender;
 mod server;
+mod server_core;
 mod signals;
 mod states_server;
 

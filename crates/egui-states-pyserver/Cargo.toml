@@ -5,8 +5,10 @@ edition.workspace = true
 
 [dependencies]
 pyo3 = ">=0.26"
-tungstenite = { workspace = true }
+tokio-tungstenite = { workspace = true }
 serde = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "net", "sync"] }
+futures-util = { workspace = true }
 
 egui_states_core = { workspace = true }
 egui_states_macros = { workspace = true }

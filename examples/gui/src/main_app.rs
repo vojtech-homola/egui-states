@@ -13,10 +13,9 @@ pub struct MainApp {
 
 impl MainApp {
     pub fn new(cc: &CreationContext) -> Result<Box<dyn App>, Box<dyn Error + Send + Sync>> {
-        let mut builder = ClientBuilder::new();
-        let states = States::new(builder.creator());
-        let host = std::net::Ipv4Addr::new(127, 0, 0, 1);
-        let ui_state = builder.build(cc.egui_ctx.clone(), host, 8081, 0);
+        let builder = ClientBuilder::new();
+        // let host = std::net::Ipv4Addr::new(127, 0, 0, 1);
+        let (states, ui_state) = builder.build(cc.egui_ctx.clone(), 8081, 0);
 
         // let image = ColorImage::filled([1024, 1024], Color32::BLACK);
         // states.image.initialize(&cc.egui_ctx, image);

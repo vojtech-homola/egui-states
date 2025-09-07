@@ -1,17 +1,15 @@
 use std::net::{Ipv4Addr, SocketAddrV4};
-use std::sync::{
-    Arc, OnceLock, RwLock, atomic,
-    mpsc::{self, Sender},
-};
+use std::sync::{Arc, OnceLock, RwLock, atomic};
 
 use pyo3::buffer::PyBuffer;
 use pyo3::prelude::*;
 use pyo3::types::{PyByteArray, PyDict, PyList, PyTuple};
-use tungstenite::Bytes;
+use tokio_tungstenite::tungstenite::Bytes;
 
 use egui_states_core::controls::ControlMessage;
 use egui_states_core::nohash::NoHashSet;
 
+use crate::sender::MessageSender;
 use crate::server::Server;
 use crate::signals::ChangedValues;
 use crate::states_server::{PyValuesList, ServerValuesCreator};
@@ -24,7 +22,7 @@ pub struct StateServerCore {
     changed_values: ChangedValues,
     values: PyValuesList,
 
-    channel: Sender<Option<Bytes>>,
+    sender: MessageSender,
     connected: Arc<atomic::AtomicBool>,
     server: RwLock<Server>,
     registed_values: RwLock<NoHashSet<u32>>,
@@ -41,12 +39,13 @@ impl StateServerCore {
     #[new]
     #[pyo3(signature = (port, ip_addr=None, handshake=None))]
     fn new(port: u16, ip_addr: Option<[u8; 4]>, handshake: Option<Vec<u64>>) -> PyResult<Self> {
-        let (channel, rx) = mpsc::channel();
+        // let (channel, rx) = unbounded_channel();
         let connected = Arc::new(atomic::AtomicBool::new(false));
+        let (sender, rx) = MessageSender::new();
 
         let signals = ChangedValues::new();
         let mut values_creator =
-            ServerValuesCreator::new(channel.clone(), connected.clone(), signals.clone());
+            ServerValuesCreator::new(sender.clone(), connected.clone(), signals.clone());
 
         let creator = CREATE_HOOK.get();
         match creator {
@@ -69,7 +68,7 @@ impl StateServerCore {
             None => SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), port),
         };
         let server = Server::new(
-            channel.clone(),
+            sender.clone(),
             rx,
             connected.clone(),
             values,
@@ -82,7 +81,7 @@ impl StateServerCore {
         let obj = Self {
             changed_values: signals,
             values: py_values,
-            channel,
+            sender,
             connected,
             server: RwLock::new(server),
             registed_values: RwLock::new(NoHashSet::default()),
@@ -115,8 +114,7 @@ impl StateServerCore {
     fn update(&self, duration: Option<f32>) {
         if self.connected.load(atomic::Ordering::Relaxed) {
             let message = ControlMessage::Update(duration.unwrap_or(0.0)).serialize();
-            let data = Bytes::from(message);
-            self.channel.send(Some(data)).unwrap();
+            self.sender.send(Bytes::from(message));
         }
     }
 
