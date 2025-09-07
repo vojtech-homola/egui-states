@@ -1,4 +1,3 @@
-mod client;
 mod client_state;
 mod dict;
 mod graphs;
@@ -9,7 +8,18 @@ mod sender;
 mod states_creator;
 mod values;
 
+#[cfg(not(target_arch = "wasm32"))]
+mod client;
+
+#[cfg(not(target_arch = "wasm32"))]
 pub use client::ClientBuilder;
+
+#[cfg(target_arch = "wasm32")]
+mod client_wasm;
+
+#[cfg(target_arch = "wasm32")]
+pub use client_wasm::ClientBuilder;
+
 pub use client_state::{ConnectionState, UIState};
 pub use dict::ValueDict;
 pub use graphs::ValueGraphs;

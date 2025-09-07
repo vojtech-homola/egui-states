@@ -1,12 +1,9 @@
 use std::net::{Ipv4Addr, SocketAddrV4};
-use std::thread;
 
 use egui::Context;
 use futures_util::{SinkExt, StreamExt};
-use tokio::runtime::Builder;
 use tokio::sync::mpsc::UnboundedReceiver;
-use tokio_tungstenite::connect_async;
-use tokio_tungstenite::tungstenite::{Bytes, Message};
+use ws_stream_wasm::{WsMessage, WsMeta, WsStream};
 
 use egui_states_core::controls::ControlMessage;
 use egui_states_core::serialization::MessageData;
@@ -33,13 +30,13 @@ async fn start_gui_client(
 
         // try to connect to the server
         let address = format!("ws://{}", addr);
-        let res = connect_async(address).await;
+        let res = WsMeta::connect(&address, None).await;
         if res.is_err() {
             continue;
         }
 
         // get the socket
-        let socket = res.unwrap().0;
+        let socket = res.unwrap().1;
 
         // clean message queue before starting
         while !rx.is_empty() {
@@ -54,7 +51,8 @@ async fn start_gui_client(
         let th_ui_state = ui_state.clone();
         let th_sender = sender.clone();
 
-        let recv_future = tokio::spawn(async move {
+        // let recv_future = wasm_bindgen_futures::spawn_local(async move {
+        let recv_future = async move {
             loop {
                 // read the message
                 let res = socket_read.next().await.unwrap();
@@ -64,8 +62,7 @@ async fn start_gui_client(
                 }
                 let message = res.unwrap();
                 let mess = match message {
-                    Message::Binary(d) => d,
-                    Message::Close(_) => break,
+                    WsMessage::Binary(d) => d,
                     _ => {
                         println!("Wrong type of message received: {:?}", message); // TODO: log error
                         break;
@@ -73,19 +70,22 @@ async fn start_gui_client(
                 };
 
                 // handle the message
-                let res = handle_message(mess, &th_vals, &th_ui_state);
+                let res = handle_message(&mess, &th_vals, &th_ui_state);
                 if let Err(e) = res {
                     let error = format!("Error handling message: {:?}", e);
                     th_sender.send(ControlMessage::error(error));
                     break;
                 }
             }
-        });
+            th_sender.close();
+            // });
+        };
 
         // send -----------------------------------------
-        let send_future = tokio::spawn(async move {
+        // let send_future = wasm_bindgen_futures::spawn_local(async move {
+        let send_future = async move {
             let handshake = ControlMessage::Handshake(version, handshake);
-            let message = Message::Binary(Bytes::from(handshake.serialize()));
+            let message = WsMessage::Binary(handshake.serialize());
             let res = socket_write.send(message).await;
             if let Err(e) = res {
                 println!("Error for sending handshake: {:?}", e); // TODO: log error
@@ -102,29 +102,31 @@ async fn start_gui_client(
                     break;
                 }
                 let message = message.unwrap();
-                let data = match message {
-                    MessageData::Stack(data, len) => Bytes::copy_from_slice(&data[0..len]),
-                    MessageData::Heap(data) => Bytes::from(data),
+                let message = match message {
+                    MessageData::Stack(data, len) => WsMessage::Binary((&data[0..len]).to_vec()),
+                    MessageData::Heap(data) => WsMessage::Binary(data),
                 };
 
                 // write the message
-                let res = socket_write.send(Message::Binary(data)).await;
+                let res = socket_write.send(message).await;
                 if let Err(e) = res {
                     println!("Error for sending message: {:?}", e); // TODO: log error
                     break;
                 }
             }
             rx
-        });
+            // });
+        };
 
         ui_state.set_state(ConnectionState::Connected);
 
-        // wait for the read thread to finish
-        recv_future.await.unwrap();
+        // // wait for the read thread to finish
+        // recv_future.await.unwrap();
 
-        // terminate the send thread
-        sender.close();
-        rx = send_future.await.unwrap();
+        // // terminate the send thread
+        // rx = send_future.await.unwrap();
+        let (_, rx_) = tokio::join!(recv_future, send_future);
+        rx = rx_;
 
         ui_state.set_state(ConnectionState::Disconnected);
     }
@@ -169,26 +171,18 @@ impl ClientBuilder {
         let (values, version) = creator.get_values();
         let ui_state = UIState::new(context, sender.clone());
 
-        let runtime = Builder::new_current_thread()
-            .thread_name("Client Runtime")
-            .enable_io()
-            .worker_threads(2)
-            .build()
-            .unwrap();
+        // let runtime = Builder::new_current_thread()
+        //     .thread_name("Client Runtime")
+        //     .enable_io()
+        //     .worker_threads(2)
+        //     .build()
+        //     .unwrap();
 
         let ui_state_cl = ui_state.clone();
         let thread = thread::Builder::new().name("Client".to_string());
 
-        let _ = thread.spawn(move || {
-            runtime.block_on(start_gui_client(
-                addr,
-                values,
-                version,
-                rx,
-                sender,
-                ui_state_cl,
-                handshake,
-            ))
+        wasm_bindgen_futures::spawn_local(async move {
+            start_gui_client(addr, values, version, rx, sender, ui_state_cl, handshake).await;
         });
 
         (states, ui_state)

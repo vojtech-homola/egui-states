@@ -7,7 +7,7 @@ edition.workspace = true
 name = "gui"
 
 [[bin]]
-name = "ImagesTest"
+name = "GuiTest"
 path = "src/main.rs"
 
 [dependencies]

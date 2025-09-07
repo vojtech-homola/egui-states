@@ -3,8 +3,8 @@ name = "egui_states"
 version.workspace = true
 edition.workspace = true
 
-[features]
-wasm = []
+# [features]
+# wasm = []
 
 [dependencies]
 serde = { workspace = true }
@@ -18,5 +18,6 @@ egui_states_core = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "net", "sync"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-tokio = { workspace = true, features = ["rt-multi-thread", "net", "sync"] }
+tokio = { workspace = true, features = ["rt", "net", "sync", "macros"] }
+ws_stream_wasm = "0.7"
 wasm-bindgen-futures = "0.4"

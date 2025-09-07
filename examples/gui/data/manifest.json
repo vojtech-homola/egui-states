@@ -1,0 +1,11 @@
+{
+    "name": "Test gui",
+    "short_name": "Test-ui",
+    "icons": [],
+    "lang": "en-US",
+    "id": "/index.html",
+    "start_url": "./index.html",
+    "display": "standalone",
+    "background_color": "white",
+    "theme_color": "white"
+}
