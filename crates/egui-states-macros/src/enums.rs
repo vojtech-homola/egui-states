@@ -1,6 +1,6 @@
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{self, parse_macro_input, Lit};
+use syn::{self, Lit, parse_macro_input};
 // use syn::{self, parse_macro_input, Data, DeriveInput, Expr, ExprLit, Lit};
 
 // pub(crate) fn enum_str_derive_impl(input: TokenStream) -> TokenStream {
@@ -139,11 +139,11 @@ pub(crate) fn impl_pystruct(input: TokenStream) -> TokenStream {
         let field_types: Vec<_> = fields.named.iter().map(|f| &f.ty).collect();
 
         quote!(
-            #[egui_pysync::pyo3::pyclass]
+            #[egui_states_pyserver::pyo3::pyclass]
             #(#attrs)*
             #vis #struct_token #ident #fields #semi_token
 
-            #[egui_pysync::pyo3::pymethods]
+            #[egui_states_pyserver::pyo3::pymethods]
             impl #ident {
                 #[new]
                 fn new(#(#field_names: #field_types),*) -> Self {
@@ -151,10 +151,17 @@ pub(crate) fn impl_pystruct(input: TokenStream) -> TokenStream {
                 }
             }
 
-            impl egui_pysync::ToPython for #ident {
-                fn to_python<'py>(&self, py: egui_pysync::pyo3::Python<'py>) -> egui_pysync::pyo3::Bound<'py, egui_pysync::pyo3::types::PyAny> {
-                    use egui_pysync::pyo3::conversion::IntoPyObjectExt;
+            impl egui_states_pyserver::ToPython for #ident {
+                fn to_python<'py>(&self, py: egui_states_pyserver::pyo3::Python<'py>) -> egui_states_pyserver::pyo3::Bound<'py, egui_states_pyserver::pyo3::types::PyAny> {
+                    use egui_states_pyserver::pyo3::conversion::IntoPyObjectExt;
                     self.clone().into_bound_py_any(py).unwrap()
+                }
+            }
+
+            impl egui_states_pyserver::FromPython for #ident {
+                fn from_python(obj: &egui_states_pyserver::pyo3::Bound<egui_states_pyserver::pyo3::PyAny>) -> egui_states_pyserver::pyo3::PyResult<Self> {
+                    use egui_states_pyserver::pyo3::types::PyAnyMethods;
+                    obj.extract()
                 }
             }
         )
@@ -219,25 +226,25 @@ pub(crate) fn impl_pyenum(input: TokenStream) -> TokenStream {
 
     // #[cfg(feature = "server")]
     let out = quote!(
-        #[egui_pysync::pyo3::pyclass(eq, hash, frozen)]
+        #[egui_states_pyserver::pyo3::pyclass(eq, hash, frozen)]
         #[derive(Hash)]
         #(#attrs)*
         #vis #enum_token #ident {
             #(#variants),*
         }
 
-        #[egui_pysync::pyo3::pymethods]
+        #[egui_states_pyserver::pyo3::pymethods]
         impl #ident {
             #[new]
-            fn new(value: egui_pysync::EnumInit) -> egui_pysync::pyo3::PyResult<Self> {
+            fn new(value: egui_states_pyserver::EnumInit) -> egui_states_pyserver::pyo3::PyResult<Self> {
                 match value {
-                    egui_pysync::EnumInit::Value(v) => match v {
+                    egui_states_pyserver::EnumInit::Value(v) => match v {
                         #(#values => Ok(Self::#names),)*
-                        _ => Err(egui_pysync::pyo3::exceptions::PyValueError::new_err("Invalid enum value")),
+                        _ => Err(egui_states_pyserver::pyo3::exceptions::PyValueError::new_err("Invalid enum value")),
                     },
-                    egui_pysync::EnumInit::Name(n) => match n.as_str() {
+                    egui_states_pyserver::EnumInit::Name(n) => match n.as_str() {
                         #(stringify!(#names) => Ok(Self::#names),)*
-                        _ => Err(egui_pysync::pyo3::exceptions::PyValueError::new_err("Invalid enum name")),
+                        _ => Err(egui_states_pyserver::pyo3::exceptions::PyValueError::new_err("Invalid enum name")),
                     },
                 }
             }
@@ -257,10 +264,17 @@ pub(crate) fn impl_pyenum(input: TokenStream) -> TokenStream {
             }
         }
 
-        impl egui_pysync::ToPython for #ident {
-            fn to_python<'py>(&self, py: egui_pysync::pyo3::Python<'py>) -> egui_pysync::pyo3::Bound<'py, egui_pysync::pyo3::types::PyAny> {
-                use egui_pysync::pyo3::conversion::IntoPyObjectExt;
+        impl egui_states_pyserver::ToPython for #ident {
+            fn to_python<'py>(&self, py: egui_states_pyserver::pyo3::Python<'py>) -> egui_states_pyserver::pyo3::Bound<'py, egui_states_pyserver::pyo3::types::PyAny> {
+                use egui_states_pyserver::pyo3::conversion::IntoPyObjectExt;
                 self.into_bound_py_any(py).unwrap()
+            }
+        }
+
+        impl egui_states_pyserver::FromPython for #ident {
+            fn from_python(obj: &egui_states_pyserver::pyo3::Bound<egui_states_pyserver::pyo3::PyAny>) -> egui_states_pyserver::pyo3::PyResult<Self> {
+                use egui_states_pyserver::pyo3::types::PyAnyMethods;
+                obj.extract()
             }
         }
     );

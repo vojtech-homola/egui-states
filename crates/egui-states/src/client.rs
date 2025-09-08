@@ -28,7 +28,7 @@ async fn start_gui_client(
 ) {
     loop {
         // wait for the connection signal
-        ui_state.wait_connection();
+        ui_state.wait_connection().await;
         ui_state.set_state(ConnectionState::NotConnected);
 
         // try to connect to the server
@@ -73,7 +73,7 @@ async fn start_gui_client(
                 };
 
                 // handle the message
-                let res = handle_message(mess, &th_vals, &th_ui_state);
+                let res = handle_message(mess.as_ref(), &th_vals, &th_ui_state);
                 if let Err(e) = res {
                     let error = format!("Error handling message: {:?}", e);
                     th_sender.send(ControlMessage::error(error));

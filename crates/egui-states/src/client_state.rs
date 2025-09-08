@@ -4,8 +4,7 @@ use std::time::Duration;
 
 use egui::Context;
 
-use egui_states_core::event::Event;
-
+use crate::event::Event;
 use crate::sender::MessageSender;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -42,9 +41,9 @@ impl UIState {
         }
     }
 
-    pub(crate) fn wait_connection(&self) {
+    pub(crate) async fn wait_connection(&self) {
         self.connect_signal.clear();
-        self.connect_signal.wait_lock();
+        self.connect_signal.wait_lock().await;
     }
 
     pub fn connect(&self) {

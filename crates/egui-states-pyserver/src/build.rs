@@ -375,7 +375,7 @@ impl State {
                         }
                         ValueType::Signal => {
                             let val_type = parse_types(&value.annotation, &core).unwrap();
-                            if value.annotation == "Empty" {
+                            if value.annotation == "()" {
                                 format!("        self.{} = sc.SignalEmpty(c)\n", name)
                             } else {
                                 format!("        self.{} = sc.Signal[{}](c)\n", name, val_type)

@@ -3,7 +3,7 @@ use std::net::{Ipv4Addr, SocketAddrV4};
 use egui::Context;
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc::UnboundedReceiver;
-use ws_stream_wasm::{WsMessage, WsMeta, WsStream};
+use ws_stream_wasm::{WsMessage, WsMeta};
 
 use egui_states_core::controls::ControlMessage;
 use egui_states_core::serialization::MessageData;
@@ -51,13 +51,13 @@ async fn start_gui_client(
         let th_ui_state = ui_state.clone();
         let th_sender = sender.clone();
 
-        // let recv_future = wasm_bindgen_futures::spawn_local(async move {
         let recv_future = async move {
             loop {
                 // read the message
-                let res = socket_read.next().await.unwrap();
-                if let Err(e) = res {
-                    println!("Error reading message: {:?}", e); // TODO: log error
+                let res = socket_read.next().await;
+                if res.is_none() {
+                    // println!("Error reading message: {:?}", e); // TODO: log error
+                    println!("Error reading message: Connection closed by server");
                     break;
                 }
                 let message = res.unwrap();
@@ -78,11 +78,9 @@ async fn start_gui_client(
                 }
             }
             th_sender.close();
-            // });
         };
 
         // send -----------------------------------------
-        // let send_future = wasm_bindgen_futures::spawn_local(async move {
         let send_future = async move {
             let handshake = ControlMessage::Handshake(version, handshake);
             let message = WsMessage::Binary(handshake.serialize());
@@ -115,16 +113,10 @@ async fn start_gui_client(
                 }
             }
             rx
-            // });
         };
 
         ui_state.set_state(ConnectionState::Connected);
 
-        // // wait for the read thread to finish
-        // recv_future.await.unwrap();
-
-        // // terminate the send thread
-        // rx = send_future.await.unwrap();
         let (_, rx_) = tokio::join!(recv_future, send_future);
         rx = rx_;
 
@@ -171,15 +163,7 @@ impl ClientBuilder {
         let (values, version) = creator.get_values();
         let ui_state = UIState::new(context, sender.clone());
 
-        // let runtime = Builder::new_current_thread()
-        //     .thread_name("Client Runtime")
-        //     .enable_io()
-        //     .worker_threads(2)
-        //     .build()
-        //     .unwrap();
-
         let ui_state_cl = ui_state.clone();
-        let thread = thread::Builder::new().name("Client".to_string());
 
         wasm_bindgen_futures::spawn_local(async move {
             start_gui_client(addr, values, version, rx, sender, ui_state_cl, handshake).await;

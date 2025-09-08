@@ -7,6 +7,20 @@ pub trait GraphElement: Clone + Copy + Send + Sync + 'static {
     fn zero() -> Self;
 }
 
+impl GraphElement for f32 {
+    #[inline]
+    fn zero() -> Self {
+        0.0
+    }
+}
+
+impl GraphElement for f64 {
+    #[inline]
+    fn zero() -> Self {
+        0.0
+    }
+}
+
 #[derive(Clone)]
 pub struct Graph<T> {
     pub y: Vec<T>,

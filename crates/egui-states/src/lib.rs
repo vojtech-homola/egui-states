@@ -1,5 +1,6 @@
 mod client_state;
 mod dict;
+mod event;
 mod graphs;
 mod handle_message;
 mod image;
@@ -8,16 +9,18 @@ mod sender;
 mod states_creator;
 mod values;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "client")]
+// #[cfg(not(feature = "client-wasm"))]
 mod client;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "client")]
+// #[cfg(not(feature = "client-wasm"))]
 pub use client::ClientBuilder;
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(feature = "client-wasm")]
 mod client_wasm;
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(feature = "client-wasm")]
 pub use client_wasm::ClientBuilder;
 
 pub use client_state::{ConnectionState, UIState};
