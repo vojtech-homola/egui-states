@@ -95,6 +95,7 @@ impl<T: GraphElement + Serialize> Graph<T> {
 
             None => {
                 let mut data = vec![0u8; size + offset];
+                data[..offset].copy_from_slice(&head_buffer[..offset]);
                 #[cfg(target_endian = "little")]
                 {
                     let dat_slice = unsafe {

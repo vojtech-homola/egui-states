@@ -6,7 +6,7 @@ use pyo3::prelude::*;
 use serde::{Deserialize, Serialize};
 use tokio_tungstenite::tungstenite::Bytes;
 
-use egui_states_core::serialization::{TYPE_VALUE, deserialize, serialize_vec};
+use egui_states_core::serialization::{TYPE_STATIC, TYPE_VALUE, deserialize, serialize_vec};
 
 use crate::python_convert::{FromPython, ToPython};
 use crate::sender::MessageSender;
@@ -167,7 +167,7 @@ where
     fn set_py(&self, value: &Bound<PyAny>, update: bool) -> PyResult<()> {
         let value: T = value.extract()?;
         if self.connected.load(Ordering::Relaxed) {
-            let data = serialize_vec(self.id, (update, &value), TYPE_VALUE);
+            let data = serialize_vec(self.id, (update, &value), TYPE_STATIC);
             let mut v = self.value.write().unwrap();
             *v = value;
             self.sender.send(Bytes::from(data));
@@ -185,7 +185,7 @@ where
 {
     fn sync(&self) {
         let w = self.value.read().unwrap();
-        let data = serialize_vec(self.id, (false, &(*w)), TYPE_VALUE);
+        let data = serialize_vec(self.id, (false, &(*w)), TYPE_STATIC);
         self.sender.send(Bytes::from(data));
     }
 }

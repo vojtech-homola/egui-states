@@ -119,12 +119,12 @@ pub(crate) async fn start(
                         ChannelHolder::Rx(rx) => rx,
                     };
 
-                    connected.store(true, atomic::Ordering::Relaxed);
-
                     // clean mesage queue and send sync signals
                     while !rx.is_empty() {
                         rx.recv().await;
                     }
+
+                    connected.store(true, atomic::Ordering::Relaxed);
                     for (_, v) in values.sync.iter() {
                         v.sync();
                     }

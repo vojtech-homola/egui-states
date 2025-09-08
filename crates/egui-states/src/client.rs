@@ -82,6 +82,7 @@ async fn start_gui_client(
                 let res = handle_message(mess.as_ref(), &th_vals, &th_ui_state);
                 if let Err(e) = res {
                     let error = format!("Error handling message: {:?}", e);
+                    println!("{error}");
                     th_sender.send(ControlMessage::error(error));
                     break;
                 }

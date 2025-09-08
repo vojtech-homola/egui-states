@@ -14,3 +14,6 @@ __pycache__
 
 # version
 /egui_pysync/version.py
+
+/examples/states-server/states_server/core.pyi
+/examples/states-server/states_server/states.py

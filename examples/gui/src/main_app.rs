@@ -15,10 +15,10 @@ impl MainApp {
     pub fn new(cc: &CreationContext) -> Result<Box<dyn App>, Box<dyn Error + Send + Sync>> {
         let builder = ClientBuilder::new();
         // let host = std::net::Ipv4Addr::new(127, 0, 0, 1);
-        let (states, ui_state) = builder.build(cc.egui_ctx.clone(), 8081, 0);
+        let (states, ui_state) = builder.build::<States>(cc.egui_ctx.clone(), 8081, 0);
 
-        // let image = ColorImage::filled([1024, 1024], Color32::BLACK);
-        // states.image.initialize(&cc.egui_ctx, image);
+        let image = ColorImage::filled([1024, 1024], Color32::BLACK);
+        states.image.initialize(&cc.egui_ctx, image);
 
         Ok(Box::new(Self { states, ui_state }))
     }
@@ -47,16 +47,23 @@ impl eframe::App for MainApp {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             // image --------------------------------------------------
-            // let texture_id = self.states.image.get_id();
-            // const UV: Rect = Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
-            // let (response, painter) =
-            //     ui.allocate_painter([1024.0, 1024.0].into(), egui::Sense::HOVER);
-            // painter.image(
-            //     texture_id,
-            //     response.rect.translate(egui::vec2(15.0, 50.0)) / 1.5,
-            //     UV,
-            //     Color32::WHITE,
-            // );
+            let texture_id = self.states.image.get_id();
+            const UV: Rect = Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+            let (response, painter) =
+                ui.allocate_painter([1024.0, 1024.0].into(), egui::Sense::HOVER);
+            painter.image(
+                texture_id,
+                response.rect.translate(egui::vec2(15.0, 50.0)) / 1.5,
+                UV,
+                Color32::WHITE,
+            );
+
+            let g = self.states.graphs.get(0);
+            if let Some(g) = g {
+                ui.label(format!("Graph points: {}", g.y.len()));
+            } else {
+                ui.label("No graph");
+            }
 
             // value --------------------------------------------------
             let mut value = self.states.value.get();
