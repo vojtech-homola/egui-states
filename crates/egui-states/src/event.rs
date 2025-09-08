@@ -2,7 +2,7 @@ use std::sync::{Arc, RwLock};
 
 use tokio::sync::Notify;
 
-pub struct Event {
+pub(crate) struct Event {
     notify: Arc<Notify>,
     flag: Arc<RwLock<bool>>,
 }

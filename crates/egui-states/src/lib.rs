@@ -1,6 +1,5 @@
 mod client_state;
 mod dict;
-mod event;
 mod graphs;
 mod handle_message;
 mod image;
@@ -10,15 +9,15 @@ mod states_creator;
 mod values;
 
 #[cfg(feature = "client")]
-// #[cfg(not(feature = "client-wasm"))]
 mod client;
 
 #[cfg(feature = "client")]
-// #[cfg(not(feature = "client-wasm"))]
 pub use client::ClientBuilder;
 
 #[cfg(feature = "client-wasm")]
 mod client_wasm;
+#[cfg(feature = "client-wasm")]
+mod event;
 
 #[cfg(feature = "client-wasm")]
 pub use client_wasm::ClientBuilder;

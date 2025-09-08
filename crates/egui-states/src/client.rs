@@ -28,7 +28,7 @@ async fn start_gui_client(
 ) {
     loop {
         // wait for the connection signal
-        ui_state.wait_connection().await;
+        ui_state.wait_connection();
         ui_state.set_state(ConnectionState::NotConnected);
 
         // try to connect to the server

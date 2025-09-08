@@ -4,8 +4,12 @@ use std::time::Duration;
 
 use egui::Context;
 
+#[cfg(feature = "client-wasm")]
 use crate::event::Event;
 use crate::sender::MessageSender;
+
+#[cfg(feature = "client")]
+use egui_states_core::event::Event;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ConnectionState {
@@ -41,9 +45,16 @@ impl UIState {
         }
     }
 
+    #[cfg(feature = "client-wasm")]
     pub(crate) async fn wait_connection(&self) {
         self.connect_signal.clear();
         self.connect_signal.wait_lock().await;
+    }
+
+    #[cfg(feature = "client")]
+    pub(crate) fn wait_connection(&self) {
+        self.connect_signal.clear();        
+        self.connect_signal.wait_lock();
     }
 
     pub fn connect(&self) {
