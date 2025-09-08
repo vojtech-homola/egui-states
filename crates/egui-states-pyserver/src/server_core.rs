@@ -68,7 +68,14 @@ pub(crate) async fn start(
             continue;
         }
         let stream = stream.unwrap().0;
-        let mut websocket = tokio_tungstenite::accept_async(stream).await.unwrap(); //TODO: handle errors
+        let websocket_res = tokio_tungstenite::accept_async(stream).await;
+        if let Err(e) = websocket_res {
+            let error = format!("Error during the websocket handshake: {:?}", e);
+            signals.set(0, error);
+            connected.store(false, atomic::Ordering::Relaxed);
+            continue;
+        }
+        let mut websocket = websocket_res.unwrap();
 
         // read the message
         let res = websocket.next().await.unwrap();
@@ -79,6 +86,7 @@ pub(crate) async fn start(
             continue;
         }
         let res = res.unwrap();
+
         if let Message::Binary(message) = res {
             let data = message.as_ref();
             if data[0] == serialization::TYPE_CONTROL {
@@ -103,10 +111,10 @@ pub(crate) async fn start(
 
                     let mut rx = match holder {
                         // disconnect previous client
-                        ChannelHolder::Transfer(st) => {
+                        ChannelHolder::Transfer(handler) => {
                             connected.store(false, atomic::Ordering::Relaxed);
                             sender.close();
-                            st.await.unwrap()
+                            handler.await.unwrap()
                         }
                         ChannelHolder::Rx(rx) => rx,
                     };
@@ -156,12 +164,20 @@ async fn communication_handler(
     let handler = tokio::spawn(async move {
         loop {
             // read the message
-            let res = socket_rx.next().await.unwrap();
+            let res = socket_rx.next().await;
 
             // check if not connected
             if !connected.load(atomic::Ordering::Relaxed) {
                 break;
             }
+
+            if res.is_none() {
+                let error = "Connection closed".to_string();
+                signals.set(0, error);
+                connected.store(false, atomic::Ordering::Relaxed);
+                break;
+            }
+            let res = res.unwrap();
 
             if let Err(e) = res {
                 let error = format!("Error reading message: {:?}", e);

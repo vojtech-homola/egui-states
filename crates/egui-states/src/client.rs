@@ -57,7 +57,13 @@ async fn start_gui_client(
         let recv_future = tokio::spawn(async move {
             loop {
                 // read the message
-                let res = socket_read.next().await.unwrap();
+                let res = socket_read.next().await;
+                if res.is_none() {
+                    println!("Connection closed by server"); // TODO: log error
+                    break;
+                }
+                let res = res.unwrap();
+
                 if let Err(e) = res {
                     println!("Error reading message: {:?}", e); // TODO: log error
                     break;
@@ -120,7 +126,7 @@ async fn start_gui_client(
         ui_state.set_state(ConnectionState::Connected);
 
         // wait for the read thread to finish
-        recv_future.await.unwrap();
+        let _ = recv_future.await;
 
         // terminate the send thread
         sender.close();
