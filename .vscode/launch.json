@@ -5,27 +5,27 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "images",
+            "name": "server",
             "type": "debugpy",
             "request": "launch",
             "module": "IPython",
             "console": "integratedTerminal",
             "args": [
                 "-i",
-                "examples/images_states/example_images.py",
+                "examples/states-server/server.py",
                 "--matplotlib"
             ],
-            "preLaunchTask": "build images",
+            "preLaunchTask": "build server",
         },
         {
             "type": "lldb",
             "request": "launch",
-            "name": "images gui",
+            "name": "gui",
             "cargo": {
                 "args": [
                     "build",
                     "-p",
-                    "example_images_gui",
+                    "gui",
                 ]
             },
         },

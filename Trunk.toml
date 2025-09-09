@@ -1,0 +1,4 @@
+[build]
+target = "./examples/gui/index.html"
+dist = "./examples/gui/web/"
+filehash = false

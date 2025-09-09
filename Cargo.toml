@@ -1,11 +1,25 @@
 [workspace]
-members = ["crates/egui-pysync", "crates/egui-pysync-macros", "examples/*"]
+members = [
+    "crates/egui-states-macros",
+    "crates/egui-states",
+    "crates/egui-states-core",
+    "crates/egui-states-pyserver",
+    "examples/*",
+]
 resolver = "3"
 
 [workspace.package]
-version = "0.6.1"
+version = "0.7.0"
 edition = "2024"
 
 [workspace.dependencies]
-egui_pysync_macros = { path = "crates/egui-pysync-macros" }
-egui_pysync = { path = "crates/egui-pysync" }
+egui_states_macros = { path = "crates/egui-states-macros" }
+egui_states_core = { path = "crates/egui-states-core" }
+egui_states = { path = "crates/egui-states" }
+egui_states_pyserver = { path = "crates/egui-states-pyserver" }
+
+serde = "1"
+tokio-tungstenite = "0.27"
+tokio = "1"
+futures-util = "0.3"
+parking_lot = "0.12"

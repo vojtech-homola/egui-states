@@ -1,0 +1,25 @@
+[package]
+name = "egui_states"
+version.workspace = true
+edition.workspace = true
+
+[features]
+client = ["dep:tokio-tungstenite", "tokio/rt-multi-thread", "tokio/net"]
+client-wasm = ["dep:ws_stream_wasm", "dep:wasm-bindgen-futures", "tokio/macros"]
+
+[dependencies]
+serde = { workspace = true }
+egui = { version = ">= 0.32", features = ["rayon"] }
+futures-util = { workspace = true }
+parking_lot = { workspace = true }
+
+egui_states_core = { workspace = true }
+
+# [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { workspace = true, features = ["sync"] }
+tokio-tungstenite = { workspace = true, optional = true }
+
+# [target.'cfg(target_arch = "wasm32")'.dependencies]
+# tokio = { workspace = true, features = ["rt", "sync", "macros"] }
+ws_stream_wasm = { version = "0.7", optional = true }
+wasm-bindgen-futures = { version = "0.4", optional = true }
