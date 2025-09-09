@@ -11,6 +11,7 @@ client-wasm = ["dep:ws_stream_wasm", "dep:wasm-bindgen-futures", "tokio/macros"]
 serde = { workspace = true }
 egui = { version = ">= 0.32", features = ["rayon"] }
 futures-util = { workspace = true }
+parking_lot = { workspace = true }
 
 egui_states_core = { workspace = true }
 

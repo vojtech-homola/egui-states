@@ -21,3 +21,4 @@ egui_states = { workspace = true, features = ["client"] }
 egui_states = { workspace = true, features = ["client-wasm"] }
 wasm-bindgen-futures = "0.4"
 web-sys = "0.3"
+log = "0.4"

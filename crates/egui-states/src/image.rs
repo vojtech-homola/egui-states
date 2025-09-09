@@ -1,5 +1,6 @@
+use parking_lot::RwLock;
 use std::ptr::copy_nonoverlapping;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use egui::{ColorImage, ImageData, TextureHandle};
 
@@ -30,7 +31,6 @@ impl ValueImage {
     pub fn get_id(&self) -> egui::TextureId {
         self.texture_handle
             .read()
-            .unwrap()
             .as_ref()
             .expect("image is not initialized")
             .0
@@ -40,7 +40,6 @@ impl ValueImage {
     pub fn get_size(&self) -> [usize; 2] {
         self.texture_handle
             .read()
-            .unwrap()
             .as_ref()
             .expect("image is not initialized")
             .1
@@ -51,7 +50,7 @@ impl ValueImage {
         let name = format!("image_{}", self.id);
         let texture_handle = ctx.load_texture(name, image_data, TEXTURE_OPTIONS);
 
-        let mut w = self.texture_handle.write().unwrap();
+        let mut w = self.texture_handle.write();
         let size = texture_handle.size();
         match *w {
             None => {
@@ -139,7 +138,7 @@ impl UpdateValue for ValueImage {
             }
         }
 
-        let mut w = self.texture_handle.write().unwrap();
+        let mut w = self.texture_handle.write();
         if let Some((ref mut texture_handle, ref mut save_size)) = *w {
             match rect {
                 Some(rec) => {

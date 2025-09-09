@@ -1,5 +1,6 @@
+use parking_lot::RwLock;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, RwLock};
 
 use pyo3::exceptions::PyIndexError;
 use pyo3::prelude::*;
@@ -39,11 +40,7 @@ pub(crate) struct PyValueList<T> {
 }
 
 impl<T> PyValueList<T> {
-    pub(crate) fn new(
-        id: u32,
-        sender: MessageSender,
-        connected: Arc<AtomicBool>,
-    ) -> Arc<Self> {
+    pub(crate) fn new(id: u32, sender: MessageSender, connected: Arc<AtomicBool>) -> Arc<Self> {
         Arc::new(Self {
             id,
             list: RwLock::new(Vec::new()),
@@ -58,7 +55,7 @@ where
     T: Serialize + ToPython + for<'py> FromPyObject<'py> + Clone,
 {
     fn get_py<'py>(&self, py: Python<'py>) -> Bound<'py, PyList> {
-        let list = self.list.read().unwrap().clone();
+        let list = self.list.read().clone();
         let py_list = PyList::empty(py);
         for val in list.iter() {
             let val = val.to_python(py);
@@ -68,7 +65,7 @@ where
     }
 
     fn get_item_py<'py>(&self, py: Python<'py>, idx: usize) -> PyResult<Bound<'py, PyAny>> {
-        let list = self.list.read().unwrap();
+        let list = self.list.read();
         if idx >= list.len() {
             return Err(PyIndexError::new_err("list index out of range"));
         }
@@ -83,7 +80,7 @@ where
             data.push(val.extract()?);
         }
 
-        let mut l = self.list.write().unwrap();
+        let mut l = self.list.write();
 
         if self.connected.load(Ordering::Relaxed) {
             let data = serialize_vec(self.id, (update, ListMessageRef::All(&data)), TYPE_LIST);
@@ -97,7 +94,7 @@ where
 
     fn set_item_py(&self, idx: usize, list: &Bound<PyAny>, update: bool) -> PyResult<()> {
         let value: T = list.extract()?;
-        let mut new_list = self.list.write().unwrap();
+        let mut new_list = self.list.write();
         if idx >= new_list.len() {
             return Err(PyIndexError::new_err("list index out of range"));
         }
@@ -119,7 +116,7 @@ where
     }
 
     fn del_item_py(&self, idx: usize, update: bool) -> PyResult<()> {
-        let mut list = self.list.write().unwrap();
+        let mut list = self.list.write();
         if idx >= list.len() {
             return Err(PyIndexError::new_err("list index out of range"));
         }
@@ -141,7 +138,7 @@ where
     fn add_item_py(&self, value: &Bound<PyAny>, update: bool) -> PyResult<()> {
         let value: T = value.extract()?;
 
-        let mut list = self.list.write().unwrap();
+        let mut list = self.list.write();
         if self.connected.load(Ordering::Relaxed) {
             let data = serialize_vec(self.id, (update, ListMessageRef::Add(&value)), TYPE_LIST);
             self.sender.send(Bytes::from(data));
@@ -153,13 +150,13 @@ where
     }
 
     fn len_py(&self) -> usize {
-        self.list.read().unwrap().len()
+        self.list.read().len()
     }
 }
 
-impl<T: Serialize + Send + Sync> SyncTrait for PyValueList<T> {
+impl<T: Serialize + Send + Sync + Clone> SyncTrait for PyValueList<T> {
     fn sync(&self) {
-        let list = self.list.read().unwrap();
+        let list = self.list.read().clone();
         let data = serialize_vec(self.id, (false, ListMessageRef::All(&list)), TYPE_LIST);
         self.sender.send(Bytes::from(data));
     }

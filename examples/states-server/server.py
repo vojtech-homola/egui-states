@@ -2,7 +2,7 @@ import numpy as np
 from states_server import core
 from states_server.states import States
 
-from egui_pysync import StateServer
+from egui_states import StateServer
 
 state_server = StateServer(States, core, port=8081)
 state_server.start()

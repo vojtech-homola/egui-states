@@ -3,7 +3,7 @@ import threading
 import traceback
 from collections.abc import Callable
 
-from egui_pysync.typing import SteteServerCoreBase
+from egui_states.typing import SteteServerCoreBase
 
 
 class SignalsManager:

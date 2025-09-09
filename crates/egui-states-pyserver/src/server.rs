@@ -6,7 +6,7 @@ use tokio::runtime::Builder;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio_tungstenite::tungstenite::Bytes;
 
-use egui_states_core::event::Event;
+use egui_states_core::event_async::Event;
 
 use crate::sender::MessageSender;
 use crate::server_core::start;

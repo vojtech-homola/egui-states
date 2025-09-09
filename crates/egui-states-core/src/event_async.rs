@@ -1,10 +1,11 @@
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use tokio::sync::Notify;
 
-pub(crate) struct Event {
+pub struct Event {
     notify: Arc<Notify>,
-    flag: Arc<RwLock<bool>>,
+    flag: Arc<AtomicBool>,
 }
 
 impl Clone for Event {
@@ -20,23 +21,32 @@ impl Event {
     pub fn new() -> Self {
         Self {
             notify: Arc::new(Notify::new()),
-            flag: Arc::new(RwLock::new(false)),
+            flag: Arc::new(AtomicBool::new(false)),
         }
     }
 
     pub fn set(&self) {
-        *self.flag.write().unwrap() = true;
+        self.flag.store(true, Ordering::Relaxed);
         self.notify.notify_waiters();
     }
 
     pub fn clear(&self) {
-        *self.flag.write().unwrap() = false;
+        self.flag.store(false, Ordering::Relaxed);
+    }
+
+    pub async fn wait(&self) {
+        loop {
+            if self.flag.load(Ordering::Relaxed) {
+                return;
+            }
+            self.notify.notified().await;
+        }
     }
 
     pub async fn wait_lock(&self) {
         loop {
-            if *self.flag.read().unwrap() {
-                *self.flag.write().unwrap() = false;
+            if self.flag.load(Ordering::Relaxed) {
+                self.flag.store(false, Ordering::Relaxed);
                 return;
             }
             self.notify.notified().await;

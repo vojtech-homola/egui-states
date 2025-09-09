@@ -10,7 +10,7 @@ fn create_version_file() {
 
     for line in lines {
         if line.contains("version") {
-            let mut version_file = fs::File::create("../../egui_pysync/version.py").unwrap();
+            let mut version_file = fs::File::create("../../egui_states/version.py").unwrap();
             let version = line.replace("version", "VERSION");
             version_file.write_all(version.as_bytes()).unwrap();
             version_file.write_all(b"\n").unwrap();
@@ -22,7 +22,7 @@ fn create_version_file() {
 
 fn main() {
     println!("cargo:rerun-if-changed=../../Cargo.toml");
-    println!("cargo:rerun-if-changed=../../egui_pysync/version.py");
+    println!("cargo:rerun-if-changed=../../egui_states/version.py");
 
     create_version_file();
 }

@@ -2,6 +2,12 @@ version = 1
 revision = 3
 requires-python = ">=3.12"
 
+[manifest]
+members = [
+    "egui-states",
+    "states-server",
+]
+
 [[package]]
 name = "asttokens"
 version = "3.0.0"
@@ -105,7 +111,7 @@ wheels = [
 ]
 
 [[package]]
-name = "egui-pysync"
+name = "egui-states"
 source = { editable = "." }
 dependencies = [
     { name = "numpy" },
@@ -600,6 +606,16 @@ sdist = { url = "https://files.pythonhosted.org/packages/28/e3/55dcc2cfbc3ca9c29
 wheels = [
     { url = "https://files.pythonhosted.org/packages/f1/7b/ce1eafaf1a76852e2ec9b22edecf1daa58175c090266e9f6c64afcd81d91/stack_data-0.6.3-py3-none-any.whl", hash = "sha256:d5558e0c25a4cb0853cddad3d77da9891a08cb85dd9f9f91b9f8cd66e511e695", size = 24521, upload-time = "2023-09-30T13:58:03.53Z" },
 ]
+
+[[package]]
+name = "states-server"
+source = { editable = "examples/states-server" }
+dependencies = [
+    { name = "numpy" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "numpy" }]
 
 [[package]]
 name = "traitlets"

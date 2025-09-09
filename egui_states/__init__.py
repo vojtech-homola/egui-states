@@ -1,8 +1,8 @@
 """TODO: Doc string."""
 
-from egui_pysync import structures, version
-from egui_pysync.server import StateServer
-from egui_pysync.structures import (
+from egui_states import structures, version
+from egui_states.server import StateServer
+from egui_states.structures import (
     Graph,
     Signal,
     SignalEmpty,
@@ -13,7 +13,7 @@ from egui_pysync.structures import (
     ValueList,
     ValueStatic,
 )
-from egui_pysync.version import __version__
+from egui_states.version import __version__
 
 __all__ = [
     "version",

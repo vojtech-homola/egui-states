@@ -1,15 +1,12 @@
+use parking_lot::RwLock;
 use std::sync::Arc;
-use std::sync::RwLock;
 use std::time::Duration;
 
 use egui::Context;
 
-#[cfg(feature = "client-wasm")]
-use crate::event::Event;
-use crate::sender::MessageSender;
+use egui_states_core::event_async::Event;
 
-#[cfg(feature = "client")]
-use egui_states_core::event::Event;
+use crate::sender::MessageSender;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ConnectionState {
@@ -45,16 +42,9 @@ impl UIState {
         }
     }
 
-    #[cfg(feature = "client-wasm")]
     pub(crate) async fn wait_connection(&self) {
         self.connect_signal.clear();
         self.connect_signal.wait_lock().await;
-    }
-
-    #[cfg(feature = "client")]
-    pub(crate) fn wait_connection(&self) {
-        self.connect_signal.clear();        
-        self.connect_signal.wait_lock();
     }
 
     pub fn connect(&self) {
@@ -66,11 +56,11 @@ impl UIState {
     }
 
     pub(crate) fn set_state(&self, state: ConnectionState) {
-        *self.state.write().unwrap() = state;
+        *self.state.write() = state;
         self.context.request_repaint();
     }
 
     pub fn get_state(&self) -> ConnectionState {
-        *self.state.read().unwrap()
+        *self.state.read()
     }
 }

@@ -1,9 +1,10 @@
+use parking_lot::Mutex;
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use egui_states_core::event::Event;
 use egui_states_core::nohash::{NoHashMap, NoHashSet};
 
+use crate::event::Event;
 use crate::python_convert::ToPython;
 
 struct OrderedMap {
@@ -122,12 +123,12 @@ impl ChangedValues {
 
     pub fn set(&self, id: u32, value: impl ToPython + Sync + Send + 'static) {
         let value = Box::new(value);
-        self.values.lock().unwrap().set(id, value, &self.event);
+        self.values.lock().set(id, value, &self.event);
     }
 
     pub fn wait_changed_value(&self, thread_id: u32) -> (u32, Box<dyn ToPython + Send + Sync>) {
         loop {
-            if let Some(val) = self.values.lock().unwrap().get(thread_id) {
+            if let Some(val) = self.values.lock().get(thread_id) {
                 return val;
             }
             self.event.wait_lock();

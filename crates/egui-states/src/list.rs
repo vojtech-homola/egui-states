@@ -1,4 +1,5 @@
-use std::sync::{Arc, RwLock};
+use parking_lot::RwLock;
+use std::sync::Arc;
 
 use serde::Deserialize;
 
@@ -28,15 +29,15 @@ impl<T: Clone> ValueList<T> {
     }
 
     pub fn get(&self) -> Vec<T> {
-        self.list.read().unwrap().clone()
+        self.list.read().clone()
     }
 
     pub fn get_item(&self, idx: usize) -> Option<T> {
-        self.list.read().unwrap().get(idx).cloned()
+        self.list.read().get(idx).cloned()
     }
 
     pub fn process<R>(&self, op: impl Fn(&Vec<T>) -> R) -> R {
-        let l = self.list.read().unwrap();
+        let l = self.list.read();
         op(&*l)
     }
 }
@@ -48,19 +49,19 @@ impl<T: for<'a> Deserialize<'a> + Send + Sync> UpdateValue for ValueList<T> {
 
         match message {
             ListMessage::All(list) => {
-                *self.list.write().unwrap() = list;
+                *self.list.write() = list;
             }
             ListMessage::Set(idx, value) => {
-                let mut list = self.list.write().unwrap();
+                let mut list = self.list.write();
                 if idx < list.len() {
                     list[idx] = value;
                 }
             }
             ListMessage::Add(value) => {
-                self.list.write().unwrap().push(value);
+                self.list.write().push(value);
             }
             ListMessage::Remove(idx) => {
-                let mut list = self.list.write().unwrap();
+                let mut list = self.list.write();
                 if idx < list.len() {
                     list.remove(idx);
                 }

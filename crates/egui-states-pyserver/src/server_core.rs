@@ -11,7 +11,7 @@ use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::{Bytes, Message};
 
 use egui_states_core::controls::ControlMessage;
-use egui_states_core::event::Event;
+use egui_states_core::event_async::Event;
 use egui_states_core::serialization;
 
 use crate::sender::MessageSender;
@@ -39,7 +39,7 @@ pub(crate) async fn start(
 
     loop {
         // wait for start control event
-        start_event.wait();
+        start_event.wait().await;
 
         // listen to incoming connections
         let listener = TcpListener::bind(addr).await;

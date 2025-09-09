@@ -216,15 +216,6 @@ pub(crate) fn impl_pyenum(input: TokenStream) -> TokenStream {
         actual += 1;
     }
 
-    // #[cfg(not(feature = "server"))]
-    // let out = quote!(
-    //     #(#attrs)*
-    //     #vis #enum_token #ident {
-    //         #(#variants),*
-    //     }
-    // );
-
-    // #[cfg(feature = "server")]
     let out = quote!(
         #[egui_states_pyserver::pyo3::pyclass(eq, hash, frozen)]
         #[derive(Hash)]

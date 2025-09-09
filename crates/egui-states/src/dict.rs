@@ -1,6 +1,7 @@
+use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::hash::Hash;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use serde::Deserialize;
 
@@ -37,16 +38,16 @@ where
 
     #[inline]
     pub fn get(&self) -> HashMap<K, V> {
-        self.dict.read().unwrap().clone()
+        self.dict.read().clone()
     }
 
     #[inline]
     pub fn get_item(&self, key: &K) -> Option<V> {
-        self.dict.read().unwrap().get(key).cloned()
+        self.dict.read().get(key).cloned()
     }
 
     pub fn process<R>(&self, op: impl Fn(&HashMap<K, V>) -> R) -> R {
-        let d = self.dict.read().unwrap();
+        let d = self.dict.read();
         op(&*d)
     }
 }
@@ -60,13 +61,13 @@ where
         let (update, message) = deserialize(data).map_err(|e| e.to_string())?;
         match message {
             DictMessage::All(dict) => {
-                *self.dict.write().unwrap() = dict;
+                *self.dict.write() = dict;
             }
             DictMessage::Set(key, value) => {
-                self.dict.write().unwrap().insert(key, value);
+                self.dict.write().insert(key, value);
             }
             DictMessage::Remove(key) => {
-                self.dict.write().unwrap().remove(&key);
+                self.dict.write().remove(&key);
             }
         }
         Ok(update)

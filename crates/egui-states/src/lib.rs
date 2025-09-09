@@ -16,8 +16,6 @@ pub use client::ClientBuilder;
 
 #[cfg(feature = "client-wasm")]
 mod client_wasm;
-#[cfg(feature = "client-wasm")]
-mod event;
 
 #[cfg(feature = "client-wasm")]
 pub use client_wasm::ClientBuilder;

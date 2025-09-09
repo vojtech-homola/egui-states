@@ -1,3 +1,4 @@
+mod event;
 mod py_server;
 mod pydict;
 mod pygraphs;

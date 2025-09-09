@@ -1,7 +1,8 @@
+use parking_lot::RwLock;
 use std::mem::size_of;
 use std::ptr::copy_nonoverlapping;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, RwLock};
 
 use pyo3::buffer::{Element, PyBuffer};
 use pyo3::exceptions::PyValueError;
@@ -58,7 +59,7 @@ where
         let buffer = PyBuffer::<T>::extract_bound(object)?;
         let graph = buffer_to_graph(&buffer)?;
 
-        let mut w = self.graphs.write().unwrap();
+        let mut w = self.graphs.write();
         if self.connected.load(Ordering::Relaxed) {
             let data = graph.to_data(self.id, idx, update, None);
             self.sender.send(Bytes::from(data));
@@ -70,7 +71,7 @@ where
     fn add_points_py(&self, idx: u16, object: &Bound<PyAny>, update: bool) -> PyResult<()> {
         let buffer = PyBuffer::<T>::extract_bound(object)?;
 
-        let mut w = self.graphs.write().unwrap();
+        let mut w = self.graphs.write();
         let graph = w
             .get_mut(&idx)
             .ok_or_else(|| PyValueError::new_err("Graph not found"))?;
@@ -85,7 +86,7 @@ where
     }
 
     fn get_py<'py>(&self, py: Python<'py>, idx: u16) -> PyResult<Bound<'py, PyTuple>> {
-        let w = self.graphs.read().unwrap();
+        let w = self.graphs.read();
         let graph = w
             .get(&idx)
             .ok_or_else(|| PyValueError::new_err(format!("Graph with id {} not found", idx)))?;
@@ -120,7 +121,6 @@ where
         let size = self
             .graphs
             .read()
-            .unwrap()
             .get(&idx)
             .ok_or(PyValueError::new_err(format!(
                 "Graph with id {} not found",
@@ -133,7 +133,7 @@ where
     }
 
     fn remove_py(&self, idx: u16, update: bool) {
-        let mut w = self.graphs.write().unwrap();
+        let mut w = self.graphs.write();
         if self.connected.load(Ordering::Relaxed) {
             let message = serialize(self.id, GraphMessage::<T>::Remove(update, idx), TYPE_GRAPH);
             self.sender.send(Bytes::from(message.to_vec()));
@@ -142,11 +142,11 @@ where
     }
 
     fn count_py(&self) -> u16 {
-        self.graphs.read().unwrap().len() as u16
+        self.graphs.read().len() as u16
     }
 
     fn is_linear_py(&self, idx: u16) -> PyResult<bool> {
-        self.graphs.read().unwrap().get(&idx).map_or(
+        self.graphs.read().get(&idx).map_or(
             Err(PyValueError::new_err(format!(
                 "Graph with id {} not found",
                 idx
@@ -156,7 +156,7 @@ where
     }
 
     fn clear_py(&self, update: bool) {
-        let mut w = self.graphs.write().unwrap();
+        let mut w = self.graphs.write();
 
         if self.connected.load(Ordering::Relaxed) {
             let message = serialize(self.id, GraphMessage::<T>::Reset(update), TYPE_GRAPH);
@@ -171,7 +171,7 @@ where
     T: Serialize,
 {
     fn sync(&self) {
-        let w = self.graphs.read().unwrap();
+        let w = self.graphs.read();
 
         let message = serialize(self.id, GraphMessage::<T>::Reset(false), TYPE_GRAPH);
         self.sender.send(Bytes::from(message.to_vec()));

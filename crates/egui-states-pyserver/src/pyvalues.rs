@@ -1,6 +1,7 @@
+use parking_lot::RwLock;
 use std::marker::PhantomData;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, RwLock};
 
 use pyo3::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -63,14 +64,14 @@ where
     T: Serialize + Clone + ToPython + for<'py> FromPyObject<'py> + 'static,
 {
     fn get_py<'py>(&self, py: Python<'py>) -> Bound<'py, PyAny> {
-        self.value.read().unwrap().0.to_python(py)
+        self.value.read().0.to_python(py)
     }
 
     fn set_py(&self, value: &Bound<PyAny>, set_signal: bool, update: bool) -> PyResult<()> {
         let value: T = value.extract()?;
         if self.connected.load(Ordering::Relaxed) {
             let data = serialize_vec(self.id, (update, &value), TYPE_VALUE);
-            let mut w = self.value.write().unwrap();
+            let mut w = self.value.write();
             w.0 = value.clone();
             w.1 += 1;
             self.sender.send(Bytes::from(data));
@@ -78,7 +79,7 @@ where
                 self.signals.set(self.id, value);
             }
         } else {
-            let mut w = self.value.write().unwrap();
+            let mut w = self.value.write();
             w.0 = value.clone();
             if set_signal {
                 self.signals.set(self.id, value);
@@ -97,7 +98,7 @@ where
         let (signal, value): (bool, T) = deserialize(data)
             .map_err(|e| format!("Parse error: {} for value id: {}", e, self.id))?;
 
-        let mut w = self.value.write().unwrap();
+        let mut w = self.value.write();
         if w.1 == 0 {
             w.0 = value.clone();
         }
@@ -111,7 +112,7 @@ where
 
 impl<T: Sync + Send> Acknowledge for PyValue<T> {
     fn acknowledge(&self) {
-        let mut w = self.value.write().unwrap();
+        let mut w = self.value.write();
         if w.1 > 0 {
             w.1 -= 1;
         }
@@ -123,7 +124,7 @@ where
     T: Serialize + Clone,
 {
     fn sync(&self) {
-        let mut w = self.value.write().unwrap();
+        let mut w = self.value.write();
         w.1 = 1;
         let data = serialize_vec(self.id, (false, &w.0), TYPE_VALUE);
         drop(w);
@@ -161,18 +162,18 @@ where
     T: Serialize + Clone + for<'py> FromPyObject<'py> + ToPython,
 {
     fn get_py<'a, 'py>(&'a self, py: Python<'py>) -> Bound<'py, PyAny> {
-        self.value.read().unwrap().to_python(py)
+        self.value.read().to_python(py)
     }
 
     fn set_py(&self, value: &Bound<PyAny>, update: bool) -> PyResult<()> {
         let value: T = value.extract()?;
         if self.connected.load(Ordering::Relaxed) {
             let data = serialize_vec(self.id, (update, &value), TYPE_STATIC);
-            let mut v = self.value.write().unwrap();
+            let mut v = self.value.write();
             *v = value;
             self.sender.send(Bytes::from(data));
         } else {
-            *self.value.write().unwrap() = value;
+            *self.value.write() = value;
         }
 
         Ok(())
@@ -184,7 +185,7 @@ where
     T: Serialize + Clone,
 {
     fn sync(&self) {
-        let w = self.value.read().unwrap();
+        let w = self.value.read();
         let data = serialize_vec(self.id, (false, &(*w)), TYPE_STATIC);
         self.sender.send(Bytes::from(data));
     }

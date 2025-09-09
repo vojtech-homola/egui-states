@@ -476,7 +476,7 @@ pub fn parse_states_for_server(
     //     }
     // }
     // if has_empty {
-    //     file.write_all(b"use egui_pysync::Empty;\n\n").unwrap();
+    //     file.write_all(b"use egui_states::Empty;\n\n").unwrap();
     // } else {
     file.write_all(b"\n").unwrap();
     // }
@@ -679,7 +679,7 @@ pub fn parse_states_for_client(
     file.write_all(b"# ruff: noqa: D107 D101\n").unwrap();
     file.write_all(b"from collections.abc import Callable\n\n")
         .unwrap();
-    file.write_all(b"from egui_pysync import structures as sc\n")
+    file.write_all(b"from egui_states import structures as sc\n")
         .unwrap();
 
     if let Some(package_name) = package_name
@@ -707,7 +707,7 @@ pub fn write_annotation(
 
     file.write_all(b"# Ganerated by build.rs, do not edit\n")
         .unwrap();
-    file.write_all(b"from egui_pysync.typing import SteteServerCoreBase")
+    file.write_all(b"from egui_states.typing import SteteServerCoreBase")
         .unwrap();
 
     if enums.is_some() {

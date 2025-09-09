@@ -1,6 +1,7 @@
+use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use egui_states_core::controls::ControlMessage;
 use egui_states_core::serialization::{TYPE_SIGNAL, TYPE_VALUE, deserialize, serialize};
@@ -52,12 +53,12 @@ where
     }
 
     pub fn get(&self) -> T {
-        self.value.read().unwrap().clone()
+        self.value.read().clone()
     }
 
     pub fn set(&self, value: T, signal: bool) {
         let data = serialize(self.id, (signal, &value), TYPE_VALUE);
-        let mut w = self.value.write().unwrap();
+        let mut w = self.value.write();
         self.sender.send(data);
         *w = value;
     }
@@ -68,7 +69,7 @@ impl<T: for<'a> Deserialize<'a> + Send + Sync> UpdateValue for Value<T> {
         let (update, value) = deserialize::<(bool, T)>(data)
             .map_err(|e| format!("Parse error: {} for value id: {}", e, self.id))?;
 
-        let mut w = self.value.write().unwrap();
+        let mut w = self.value.write();
         *w = value;
         self.sender.send(ControlMessage::ack(self.id));
         Ok(update)
@@ -90,7 +91,7 @@ impl<T: Clone> ValueStatic<T> {
     }
 
     pub fn get(&self) -> T {
-        self.value.read().unwrap().clone()
+        self.value.read().clone()
     }
 }
 
@@ -98,7 +99,7 @@ impl<T: for<'a> Deserialize<'a> + Send + Sync> UpdateValue for ValueStatic<T> {
     fn update_value(&self, data: &[u8]) -> Result<bool, String> {
         let (update, value) = deserialize::<(bool, T)>(data)
             .map_err(|e| format!("Parse error: {} for value id: {}", e, self.id))?;
-        *self.value.write().unwrap() = value;
+        *self.value.write() = value;
         Ok(update)
     }
 }

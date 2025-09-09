@@ -6,8 +6,8 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 
-from egui_pysync.signals import SignalsManager
-from egui_pysync.typing import SteteServerCoreBase
+from egui_states.signals import SignalsManager
+from egui_states.typing import SteteServerCoreBase
 
 
 class _Counter:

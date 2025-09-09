@@ -12,10 +12,12 @@ pub struct MainApp {
 }
 
 impl MainApp {
-    pub fn new(cc: &CreationContext) -> Result<Box<dyn App>, Box<dyn Error + Send + Sync>> {
+    pub fn new(
+        cc: &CreationContext,
+        port: u16,
+    ) -> Result<Box<dyn App>, Box<dyn Error + Send + Sync>> {
         let builder = ClientBuilder::new();
-        // let host = std::net::Ipv4Addr::new(127, 0, 0, 1);
-        let (states, ui_state) = builder.build::<States>(cc.egui_ctx.clone(), 8081, 0);
+        let (states, ui_state) = builder.build::<States>(cc.egui_ctx.clone(), port, 0);
 
         let image = ColorImage::filled([1024, 1024], Color32::BLACK);
         states.image.initialize(&cc.egui_ctx, image);

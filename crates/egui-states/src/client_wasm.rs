@@ -29,7 +29,7 @@ async fn start_gui_client(
         ui_state.set_state(ConnectionState::NotConnected);
 
         // try to connect to the server
-        let address = format!("ws://{}", addr);
+        let address = format!("ws://{}/ws", addr);
         let res = WsMeta::connect(&address, None).await;
         if res.is_err() {
             continue;

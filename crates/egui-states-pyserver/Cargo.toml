@@ -9,6 +9,7 @@ tokio-tungstenite = { workspace = true }
 serde = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "net", "sync"] }
 futures-util = { workspace = true }
+parking_lot = { workspace = true }
 
 egui_states_core = { workspace = true }
 egui_states_macros = { workspace = true }

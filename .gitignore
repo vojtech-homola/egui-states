@@ -13,7 +13,8 @@ __pycache__
 /build
 
 # version
-/egui_pysync/version.py
+/egui_states/version.py
 
 /examples/states-server/states_server/core.pyi
 /examples/states-server/states_server/states.py
+/examples/states-server/src/states.rs

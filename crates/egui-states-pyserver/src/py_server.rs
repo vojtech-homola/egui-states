@@ -1,5 +1,6 @@
+use parking_lot::RwLock;
 use std::net::{Ipv4Addr, SocketAddrV4};
-use std::sync::{Arc, OnceLock, RwLock, atomic};
+use std::sync::{Arc, OnceLock, atomic};
 
 use pyo3::buffer::PyBuffer;
 use pyo3::prelude::*;
@@ -30,7 +31,7 @@ pub struct StateServerCore {
 
 impl Drop for StateServerCore {
     fn drop(&mut self) {
-        self.server.write().unwrap().stop();
+        self.server.write().stop();
     }
 }
 
@@ -95,19 +96,19 @@ impl StateServerCore {
     }
 
     fn is_running(&self) -> bool {
-        self.server.read().unwrap().is_running()
+        self.server.read().is_running()
     }
 
     fn start(&self) {
-        self.server.write().unwrap().start();
+        self.server.write().start();
     }
 
     fn stop(&self) {
-        self.server.write().unwrap().stop();
+        self.server.write().stop();
     }
 
     fn disconnect_client(&self) {
-        self.server.write().unwrap().disconnect_client();
+        self.server.write().disconnect_client();
     }
 
     #[pyo3(signature=(duration=None))]
@@ -121,9 +122,9 @@ impl StateServerCore {
     // signals ----------------------------------------------------------------
     fn value_set_register(&self, value_id: u32, register: bool) {
         if register {
-            self.registed_values.write().unwrap().insert(value_id);
+            self.registed_values.write().insert(value_id);
         } else {
-            self.registed_values.write().unwrap().remove(&value_id);
+            self.registed_values.write().remove(&value_id);
         }
     }
 
@@ -131,7 +132,7 @@ impl StateServerCore {
         let (value_id, value) = py.detach(|| {
             loop {
                 let res = self.changed_values.wait_changed_value(thread_id);
-                if self.registed_values.read().unwrap().contains(&res.0) {
+                if self.registed_values.read().contains(&res.0) {
                     break res;
                 }
             }

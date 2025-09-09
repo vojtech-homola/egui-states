@@ -1,7 +1,8 @@
+use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::hash::Hash;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, RwLock};
 
 use pyo3::exceptions::PyKeyError;
 use pyo3::prelude::*;
@@ -58,7 +59,7 @@ where
     V: Serialize + ToPython + for<'py> FromPyObject<'py>,
 {
     fn get_py<'py>(&self, py: Python<'py>) -> Bound<'py, PyDict> {
-        let dict = self.dict.read().unwrap();
+        let dict = self.dict.read();
 
         let py_dict = pyo3::types::PyDict::new(py);
         for (key, value) in dict.iter() {
@@ -71,7 +72,7 @@ where
 
     fn get_item_py<'py>(&self, key: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
         let dict_key = key.extract()?;
-        let dict = self.dict.read().unwrap();
+        let dict = self.dict.read();
 
         match dict.get(&dict_key) {
             Some(value) => Ok(value.to_python(key.py())),
@@ -82,7 +83,7 @@ where
     fn del_item_py(&self, key: &Bound<PyAny>, update: bool) -> PyResult<()> {
         let dict_key: K = key.extract()?;
 
-        let mut d = self.dict.write().unwrap();
+        let mut d = self.dict.write();
         if self.connected.load(Ordering::Relaxed) {
             let to_send = (update, DictMessageRef::Remove::<K, V>(&dict_key));
             let data = serialize_vec(self.id, to_send, TYPE_DICT);
@@ -97,7 +98,7 @@ where
         let dict_key: K = key.extract()?;
         let dict_value: V = value.extract()?;
 
-        let mut d = self.dict.write().unwrap();
+        let mut d = self.dict.write();
 
         if self.connected.load(Ordering::Relaxed) {
             let to_send = (update, DictMessageRef::Set::<K, V>(&dict_key, &dict_value));
@@ -119,7 +120,7 @@ where
             new_dict.insert(key, value);
         }
 
-        let mut d = self.dict.write().unwrap();
+        let mut d = self.dict.write();
 
         if self.connected.load(Ordering::Relaxed) {
             dict.py().detach(|| {
@@ -135,7 +136,7 @@ where
     }
 
     fn len_py(&self) -> usize {
-        self.dict.read().unwrap().len()
+        self.dict.read().len()
     }
 }
 
@@ -145,7 +146,7 @@ where
     V: Serialize + Send + Sync,
 {
     fn sync(&self) {
-        let dict = self.dict.read().unwrap();
+        let dict = self.dict.read();
         let to_send = DictMessageRef::All(&dict);
         let data = serialize_vec(self.id, to_send, TYPE_DICT);
         self.sender.send(Bytes::from(data));

@@ -9,10 +9,12 @@ fn main() {
         ..Default::default()
     };
 
+    let port = 8081;
+
     eframe::run_native(
         "ImagesTest",
         native_options,
-        Box::new(|cc| MainApp::new(cc)),
+        Box::new(|cc| MainApp::new(cc, port)),
     )
     .unwrap();
 }
@@ -21,8 +23,7 @@ fn main() {
 fn main() {
     use eframe::wasm_bindgen::JsCast as _;
 
-    // Redirect `log` message to `console.log` and friends:
-    // eframe::WebLogger::init(log::LevelFilter::Debug).ok();
+    eframe::WebLogger::init(log::LevelFilter::Debug).ok();
 
     let web_options = eframe::WebOptions::default();
 
@@ -38,8 +39,26 @@ fn main() {
             .dyn_into::<web_sys::HtmlCanvasElement>()
             .expect("the_canvas_id was not a HtmlCanvasElement");
 
+        // let location = web_sys::window().unwrap().location();
+        // let hostname = location.hostname().unwrap_or_default();
+        // let port_str = location.port().unwrap_or_default();
+        // let mut port: u16 = if port_str.is_empty() {
+        //     8080
+        // } else {
+        //     port_str.parse().unwrap_or(8080)
+        // };
+        // port += 1;
+
+        // log::info!("Hostname: {hostname}");
+        // log::info!("Starting eframe WebRunner with port {}", port);
+        let port = 8081;
+
         eframe::WebRunner::new()
-            .start(canvas, web_options, Box::new(|cc| MainApp::new(cc)))
+            .start(
+                canvas,
+                web_options,
+                Box::new(move |cc| MainApp::new(cc, port)),
+            )
             .await
             .expect("Failed to start eframe WebRunner");
     });

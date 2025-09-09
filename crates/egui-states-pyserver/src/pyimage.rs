@@ -1,5 +1,6 @@
+use parking_lot::RwLock;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, RwLock};
 
 use pyo3::buffer::PyBuffer;
 use pyo3::exceptions::PyValueError;
@@ -25,11 +26,7 @@ pub(crate) struct PyValueImage {
 }
 
 impl PyValueImage {
-    pub(crate) fn new(
-        id: u32,
-        sender: MessageSender,
-        connected: Arc<AtomicBool>,
-    ) -> Arc<Self> {
+    pub(crate) fn new(id: u32, sender: MessageSender, connected: Arc<AtomicBool>) -> Arc<Self> {
         Arc::new(Self {
             id,
             image: RwLock::new(ImageDataInner {
@@ -42,7 +39,7 @@ impl PyValueImage {
     }
 
     pub(crate) fn get_size_py(&self) -> (usize, usize) {
-        let size = self.image.read().unwrap().size;
+        let size = self.image.read().size;
         (size[0], size[1])
     }
 
@@ -50,7 +47,7 @@ impl PyValueImage {
         &self,
         py: Python<'py>,
     ) -> (Bound<'py, PyByteArray>, (usize, usize)) {
-        let w = self.image.read().unwrap();
+        let w = self.image.read();
         let size = w.size;
         let data = PyByteArray::new(py, &w.data);
         (data, (size[0], size[1]))
@@ -82,7 +79,7 @@ impl PyValueImage {
 
         // get data pointer and prepare data
         let data_ptr;
-        let mut w = self.image.write().unwrap();
+        let mut w = self.image.write();
         let data = if self.connected.load(Ordering::Relaxed) {
             let new_size = match origin {
                 Some(_) => w.size, // keep the old size
@@ -178,7 +175,7 @@ impl PyValueImage {
 
 impl SyncTrait for PyValueImage {
     fn sync(&self) {
-        let w = self.image.read().unwrap();
+        let w = self.image.read();
         if w.size[0] == 0 || w.size[1] == 0 {
             return;
         }

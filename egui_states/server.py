@@ -1,9 +1,9 @@
 from collections.abc import Callable
 from types import ModuleType
 
-from egui_pysync.signals import SignalsManager
-from egui_pysync.typing import SteteServerCoreBase
-from egui_pysync.structures import ErrorSignal, _MainStatesBase, _StatesBase, _StaticBase, _ValueBase
+from egui_states.signals import SignalsManager
+from egui_states.typing import SteteServerCoreBase
+from egui_states.structures import ErrorSignal, _MainStatesBase, _StatesBase, _StaticBase, _ValueBase
 
 
 def _initialize_states(obj, server: SteteServerCoreBase, signals_manager: SignalsManager) -> None:
