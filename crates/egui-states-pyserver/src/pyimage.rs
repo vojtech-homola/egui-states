@@ -99,7 +99,7 @@ impl PyValueImage {
 
             let mut data = Vec::with_capacity(data_size + offset);
             unsafe { data.set_len(data_size + offset) };
-            data[..offset].copy_from_slice(&head_buff);
+            data[..offset].copy_from_slice(&buff);
 
             if contiguous {
                 let buffer = image.buf_ptr() as *const u8;
