@@ -10,15 +10,6 @@ from egui_states.signals import SignalsManager
 from egui_states.typing import SteteServerCoreBase
 
 
-class _Counter:
-    def __init__(self) -> None:
-        self._counter = 9  # first 10 values are reserved for system signals
-
-    def get_id(self) -> int:
-        self._counter += 1
-        return self._counter
-
-
 class _StatesBase:
     pass
 
@@ -61,8 +52,8 @@ class ErrorSignal:
 class _StaticBase:
     _server: SteteServerCoreBase
 
-    def __init__(self, counter: _Counter) -> None:
-        self._value_id = counter.get_id()
+    def __init__(self, value_id: int) -> None:
+        self._value_id = value_id
 
     def _initialize_base(self, server: SteteServerCoreBase):
         self._server = server
@@ -464,8 +455,8 @@ class Graph:
 class ValueGraphs(_StaticBase):
     """Graph UI element."""
 
-    def __init__(self, counter: _Counter):  # noqa: D107
-        super().__init__(counter)
+    def __init__(self, value_id: int):  # noqa: D107
+        super().__init__(value_id)
 
         self._graphs: dict[int, Graph] = {}
         self.__getitem__ = self.get

@@ -12,10 +12,10 @@ use egui_states_core::controls::ControlMessage;
 use egui_states_core::serialization::MessageData;
 
 use crate::State;
-use crate::client_state::{ConnectionState, UIState};
+use crate::client_base::{Client, ConnectionState};
 use crate::handle_message::handle_message;
 use crate::sender::MessageSender;
-use crate::states_creator::{ValuesCreator, ValuesList};
+use crate::values_creator::{ClientValuesCreator, ValuesList};
 
 async fn start_gui_client(
     addr: SocketAddrV4,
@@ -23,7 +23,7 @@ async fn start_gui_client(
     version: u64,
     mut rx: UnboundedReceiver<Option<MessageData>>,
     sender: MessageSender,
-    ui_state: UIState,
+    ui_state: Client,
     handshake: u64,
 ) {
     loop {
@@ -138,17 +138,18 @@ async fn start_gui_client(
 }
 
 pub struct ClientBuilder {
-    creator: ValuesCreator,
+    creator: ClientValuesCreator,
     sender: MessageSender,
     rx: UnboundedReceiver<Option<MessageData>>,
     addr: Ipv4Addr,
+    context: Option<Context>,
 }
 
 impl ClientBuilder {
     pub fn new() -> Self {
         let (sender, rx) = MessageSender::new();
 
-        let creator = ValuesCreator::new(sender.clone());
+        let creator = ClientValuesCreator::new(sender.clone());
         let addr = Ipv4Addr::new(127, 0, 0, 1);
 
         Self {
@@ -156,6 +157,7 @@ impl ClientBuilder {
             sender,
             rx,
             addr,
+            context: None,
         }
     }
 
@@ -163,18 +165,26 @@ impl ClientBuilder {
         Self { addr, ..self }
     }
 
-    pub fn build<T: State>(self, context: Context, port: u16, handshake: u64) -> (T, UIState) {
+    pub fn context(self, context: Context) -> Self {
+        Self {
+            context: Some(context),
+            ..self
+        }
+    }
+
+    pub fn build<T: State>(self, port: u16, handshake: u64) -> (T, Client) {
         let Self {
             mut creator,
             sender,
             rx,
             addr,
+            context,
         } = self;
 
         let addr = SocketAddrV4::new(addr, port);
         let states = T::new(&mut creator);
         let (values, version) = creator.get_values();
-        let ui_state = UIState::new(context, sender.clone());
+        let client = Client::new(context, sender.clone());
 
         let runtime = Builder::new_current_thread()
             .thread_name("Client Runtime")
@@ -183,21 +193,15 @@ impl ClientBuilder {
             .build()
             .unwrap();
 
-        let ui_state_cl = ui_state.clone();
+        let client_out = client.clone();
         let thread = thread::Builder::new().name("Client".to_string());
 
         let _ = thread.spawn(move || {
             runtime.block_on(start_gui_client(
-                addr,
-                values,
-                version,
-                rx,
-                sender,
-                ui_state_cl,
-                handshake,
+                addr, values, version, rx, sender, client, handshake,
             ))
         });
 
-        (states, ui_state)
+        (states, client_out)
     }
 }

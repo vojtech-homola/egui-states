@@ -16,15 +16,15 @@ pub enum ConnectionState {
 }
 
 #[derive(Clone)]
-pub struct UIState {
-    context: Context,
+pub struct Client {
+    context: Option<Context>,
     connect_signal: Event,
     state: Arc<RwLock<ConnectionState>>,
     sender: MessageSender,
 }
 
-impl UIState {
-    pub(crate) fn new(context: Context, sender: MessageSender) -> Self {
+impl Client {
+    pub(crate) fn new(context: Option<Context>, sender: MessageSender) -> Self {
         Self {
             context,
             connect_signal: Event::new(),
@@ -33,12 +33,17 @@ impl UIState {
         }
     }
 
+    pub fn set_context(&mut self, context: Context) {
+        self.context = Some(context);
+    }
+
     pub fn update(&self, time: f32) {
-        if time > 0.0 {
-            self.context
-                .request_repaint_after(Duration::from_secs_f32(time));
-        } else {
-            self.context.request_repaint();
+        if let Some(ctx) = &self.context {
+            if time > 0.0 {
+                ctx.request_repaint_after(Duration::from_secs_f32(time));
+            } else {
+                ctx.request_repaint();
+            }
         }
     }
 
@@ -57,7 +62,9 @@ impl UIState {
 
     pub(crate) fn set_state(&self, state: ConnectionState) {
         *self.state.write() = state;
-        self.context.request_repaint();
+        if let Some(ctx) = &self.context {
+            ctx.request_repaint();
+        }
     }
 
     pub fn get_state(&self) -> ConnectionState {

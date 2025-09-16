@@ -126,6 +126,7 @@ macro_rules! impl_to_python_tuple {
     };
 }
 
+impl_to_python_tuple!(0: T0);
 impl_to_python_tuple!(0: T0, 1: T1);
 impl_to_python_tuple!(0: T0, 1: T1, 2: T2);
 impl_to_python_tuple!(0: T0, 1: T1, 2: T2, 3: T3);
@@ -150,6 +151,7 @@ macro_rules! impl_from_python_tuple {
     };
 }
 
+impl_from_python_tuple!(0: T0);
 impl_from_python_tuple!(0: T0, 1: T1);
 impl_from_python_tuple!(0: T0, 1: T1, 2: T2);
 impl_from_python_tuple!(0: T0, 1: T1, 2: T2, 3: T3);

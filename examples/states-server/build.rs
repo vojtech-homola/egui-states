@@ -1,28 +1,14 @@
-use egui_states_pyserver::build::{self, parse_states_for_client, parse_states_for_server};
+use egui_states::build_scripts::{generate_python_wrapper, generate_pytypes, generate_rust_server};
+use gui::States;
 
 fn main() {
     println!("cargo:rerun-if-changed=../gui/src/states.rs");
     println!("cargo:rerun-if-changed=../gui/src/enums.rs");
     println!("cargo:rerun-if-changed=../gui/src/custom.rs");
 
-    parse_states_for_server(
-        "../gui/src/states.rs",
-        "src/states.rs",
-        "State",
-        &None,
-        &None,
-        Vec::new(),
-    )
-    .unwrap();
+    generate_rust_server::<States>("./src/states.rs").unwrap();
 
-    parse_states_for_client(
-        "../gui/src/states.rs",
-        "states_server/states.py",
-        "States",
-        None,
-        None,
-    )
-    .unwrap();
+    generate_python_wrapper::<States>("states_server/states.py", None::<(String, String)>).unwrap();
 
-    build::write_annotation("states_server/core.pyi".to_string(), None, None);
+    generate_pytypes::<States>("states_server/core.pyi").unwrap();
 }

@@ -83,7 +83,6 @@ pub struct ServerValuesCreator {
     signals: ChangedValues,
 
     version: u64,
-    counter: u32,
     val: ValuesList,
     py_val: PyValuesList,
 }
@@ -100,15 +99,9 @@ impl ServerValuesCreator {
             signals,
 
             version: 0,
-            counter: 9, // first 10 values are reserved for special values
             val: ValuesList::new(),
             py_val: PyValuesList::new(),
         }
-    }
-
-    fn get_id(&mut self) -> u32 {
-        self.counter += 1;
-        self.counter
     }
 
     pub(crate) fn get_values(self) -> (ValuesList, PyValuesList, u64) {
@@ -127,7 +120,7 @@ impl ServerValuesCreator {
         self.version = version;
     }
 
-    pub fn add_value<T>(&mut self, value: T)
+    pub fn add_value<T>(&mut self, id: u32, value: T)
     where
         T: ToPython
             + for<'py> FromPyObject<'py>
@@ -136,7 +129,6 @@ impl ServerValuesCreator {
             + Clone
             + 'static,
     {
-        let id = self.get_id();
         let value = PyValue::new(
             id,
             value,
@@ -151,11 +143,10 @@ impl ServerValuesCreator {
         self.val.ack.insert(id, value);
     }
 
-    pub fn add_static<T>(&mut self, value: T)
+    pub fn add_static<T>(&mut self, id: u32, value: T)
     where
         T: ToPython + for<'py> FromPyObject<'py> + Serialize + Clone + 'static,
     {
-        let id = self.get_id();
         let value = PyValueStatic::new(id, value, self.sender.clone(), self.connected.clone());
 
         self.py_val.static_values.insert(id, value.clone());
@@ -164,39 +155,36 @@ impl ServerValuesCreator {
 
     pub fn add_signal<T: Clone + ToPython + FromPython + for<'a> Deserialize<'a> + 'static>(
         &mut self,
+        id: u32,
     ) {
-        let id = self.get_id();
         let signal = PySignal::<T>::new(id, self.signals.clone());
 
         self.py_val.signals.insert(id, signal.clone());
         self.val.updated.insert(id, signal);
     }
 
-    pub fn add_image(&mut self) {
-        let id = self.get_id();
+    pub fn add_image(&mut self, id: u32) {
         let image = PyValueImage::new(id, self.sender.clone(), self.connected.clone());
 
         self.py_val.images.insert(id, image.clone());
         self.val.sync.insert(id, image);
     }
 
-    pub fn add_dict<K, V>(&mut self)
+    pub fn add_dict<K, V>(&mut self, id: u32)
     where
         K: ToPython + for<'py> FromPyObject<'py> + Serialize + Eq + Hash + 'static,
         V: ToPython + for<'py> FromPyObject<'py> + Serialize + 'static,
     {
-        let id = self.get_id();
         let dict = PyValueDict::<K, V>::new(id, self.sender.clone(), self.connected.clone());
 
         self.py_val.dicts.insert(id, dict.clone());
         self.val.sync.insert(id, dict);
     }
 
-    pub fn add_list<T>(&mut self)
+    pub fn add_list<T>(&mut self, id: u32)
     where
         T: ToPython + for<'py> FromPyObject<'py> + Serialize + Clone + 'static,
     {
-        let id = self.get_id();
         let list = PyValueList::<T>::new(id, self.sender.clone(), self.connected.clone());
 
         self.py_val.lists.insert(id, list.clone());
@@ -207,8 +195,8 @@ impl ServerValuesCreator {
         T: GraphElement + Element + Serialize + for<'py> FromPyObject<'py> + ToPython + 'static,
     >(
         &mut self,
+        id: u32,
     ) {
-        let id = self.get_id();
         let graph = PyValueGraphs::<T>::new(id, self.sender.clone(), self.connected.clone());
 
         self.py_val.graphs.insert(id, graph.clone());

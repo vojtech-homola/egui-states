@@ -6,13 +6,63 @@ use serde::{Deserialize, Serialize};
 use egui_states_core::graphs::GraphElement;
 use egui_states_core::nohash::NoHashMap;
 
-use crate::UpdateValue;
 use crate::dict::ValueDict;
 use crate::graphs::ValueGraphs;
 use crate::image::ValueImage;
 use crate::list::ValueList;
 use crate::sender::MessageSender;
 use crate::values::{Signal, Value, ValueStatic};
+use crate::{GetInitValue, GetTypeInfo, State, UpdateValue};
+
+pub trait ValuesCreator {
+    fn add_value<T>(&mut self, state: &'static str, name: &'static str, value: T) -> Arc<Value<T>>
+    where
+        T: for<'a> Deserialize<'a>
+            + Serialize
+            + GetTypeInfo
+            + GetInitValue
+            + Send
+            + Sync
+            + Clone
+            + 'static;
+
+    fn add_static<T>(
+        &mut self,
+        state: &'static str,
+        name: &'static str,
+        value: T,
+    ) -> Arc<ValueStatic<T>>
+    where
+        T: for<'a> Deserialize<'a>
+            + Serialize
+            + GetInitValue
+            + GetTypeInfo
+            + Clone
+            + Send
+            + Sync
+            + 'static;
+
+    fn add_image(&mut self, state: &'static str, name: &'static str) -> Arc<ValueImage>;
+
+    fn add_signal<T>(&mut self, state: &'static str, name: &'static str) -> Arc<Signal<T>>
+    where
+        T: Serialize + Clone + Send + Sync + GetTypeInfo + 'static;
+
+    fn add_dict<K, V>(&mut self, state: &'static str, name: &'static str) -> Arc<ValueDict<K, V>>
+    where
+        K: Hash + Eq + Clone + for<'a> Deserialize<'a> + Send + GetTypeInfo + Sync + 'static,
+        V: Clone + for<'a> Deserialize<'a> + Send + GetTypeInfo + Sync + 'static;
+
+    fn add_list<T>(&mut self, state: &'static str, name: &'static str) -> Arc<ValueList<T>>
+    where
+        T: Clone + for<'a> Deserialize<'a> + Send + Sync + GetTypeInfo + 'static;
+
+    fn add_graphs<T>(&mut self, state: &'static str, name: &'static str) -> Arc<ValueGraphs<T>>
+    where
+        T: for<'a> Deserialize<'a> + GraphElement + GetTypeInfo + 'static;
+
+    fn add_substate<S: State>(&mut self, state: &'static str, name: &'static str) -> S;
+}
 
 #[derive(Clone)]
 pub(crate) struct ValuesList {
@@ -46,14 +96,14 @@ impl ValuesList {
     }
 }
 
-pub struct ValuesCreator {
+pub struct ClientValuesCreator {
     counter: u32,
     val: ValuesList,
     version: u64,
     sender: MessageSender,
 }
 
-impl ValuesCreator {
+impl ClientValuesCreator {
     pub(crate) fn new(sender: MessageSender) -> Self {
         Self {
             counter: 9, // first 10 values are reserved for special values
@@ -80,8 +130,10 @@ impl ValuesCreator {
     pub fn set_version(&mut self, version: u64) {
         self.version = version;
     }
+}
 
-    pub fn add_value<T>(&mut self, value: T) -> Arc<Value<T>>
+impl ValuesCreator for ClientValuesCreator {
+    fn add_value<T>(&mut self, _: &'static str, _: &'static str, value: T) -> Arc<Value<T>>
     where
         T: for<'a> Deserialize<'a> + Serialize + Send + Sync + Clone + 'static,
     {
@@ -92,7 +144,7 @@ impl ValuesCreator {
         value
     }
 
-    pub fn add_static<T>(&mut self, value: T) -> Arc<ValueStatic<T>>
+    fn add_static<T>(&mut self, _: &'static str, _: &'static str, value: T) -> Arc<ValueStatic<T>>
     where
         T: for<'a> Deserialize<'a> + Serialize + Clone + Send + Sync + 'static,
     {
@@ -103,7 +155,7 @@ impl ValuesCreator {
         value
     }
 
-    pub fn add_image(&mut self) -> Arc<ValueImage> {
+    fn add_image(&mut self, _: &'static str, _: &'static str) -> Arc<ValueImage> {
         let id = self.get_id();
         let value = ValueImage::new(id);
 
@@ -111,7 +163,7 @@ impl ValuesCreator {
         value
     }
 
-    pub fn add_signal<T>(&mut self) -> Arc<Signal<T>>
+    fn add_signal<T>(&mut self, _: &'static str, _: &'static str) -> Arc<Signal<T>>
     where
         T: Serialize + Clone + Send + Sync + 'static,
     {
@@ -121,7 +173,7 @@ impl ValuesCreator {
         signal
     }
 
-    pub fn add_dict<K, V>(&mut self) -> Arc<ValueDict<K, V>>
+    fn add_dict<K, V>(&mut self, _: &'static str, _: &'static str) -> Arc<ValueDict<K, V>>
     where
         K: Hash + Eq + Clone + for<'a> Deserialize<'a> + Send + Sync + 'static,
         V: Clone + for<'a> Deserialize<'a> + Send + Sync + 'static,
@@ -133,7 +185,7 @@ impl ValuesCreator {
         value
     }
 
-    pub fn add_list<T>(&mut self) -> Arc<ValueList<T>>
+    fn add_list<T>(&mut self, _: &'static str, _: &'static str) -> Arc<ValueList<T>>
     where
         T: Clone + for<'a> Deserialize<'a> + Send + Sync + 'static,
     {
@@ -144,7 +196,7 @@ impl ValuesCreator {
         value
     }
 
-    pub fn add_graphs<T>(&mut self) -> Arc<ValueGraphs<T>>
+    fn add_graphs<T>(&mut self, _: &'static str, _: &'static str) -> Arc<ValueGraphs<T>>
     where
         T: for<'a> Deserialize<'a> + GraphElement + 'static,
     {
@@ -153,5 +205,9 @@ impl ValuesCreator {
 
         self.val.graphs.insert(id, value.clone());
         value
+    }
+
+    fn add_substate<S: State>(&mut self, _: &'static str, _: &'static str) -> S {
+        S::new(self)
     }
 }

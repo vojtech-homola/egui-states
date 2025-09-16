@@ -14,6 +14,7 @@ futures-util = { workspace = true }
 parking_lot = { workspace = true }
 
 egui_states_core = { workspace = true }
+egui_states_macros = { workspace = true }
 
 # [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { workspace = true, features = ["sync"] }

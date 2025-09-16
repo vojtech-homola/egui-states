@@ -2,13 +2,13 @@ use std::error::Error;
 
 use eframe::{App, CreationContext};
 use egui::{Color32, ColorImage, Rect};
-use egui_states::{ClientBuilder, ConnectionState, UIState};
+use egui_states::{Client, ClientBuilder, ConnectionState};
 
 use crate::states::States;
 
 pub struct MainApp {
     states: States,
-    ui_state: UIState,
+    client: Client,
 }
 
 impl MainApp {
@@ -16,13 +16,13 @@ impl MainApp {
         cc: &CreationContext,
         port: u16,
     ) -> Result<Box<dyn App>, Box<dyn Error + Send + Sync>> {
-        let builder = ClientBuilder::new();
-        let (states, ui_state) = builder.build::<States>(cc.egui_ctx.clone(), port, 0);
+        let builder = ClientBuilder::new().context(cc.egui_ctx.clone());
+        let (states, client) = builder.build::<States>(port, 0);
 
         let image = ColorImage::filled([1024, 1024], Color32::BLACK);
         states.image.initialize(&cc.egui_ctx, image);
 
-        Ok(Box::new(Self { states, ui_state }))
+        Ok(Box::new(Self { states, client }))
     }
 }
 
@@ -32,7 +32,7 @@ impl eframe::App for MainApp {
             .show_separator_line(false)
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    let button = match self.ui_state.get_state() {
+                    let button = match self.client.get_state() {
                         ConnectionState::NotConnected => egui::Button::new("Connect"),
                         ConnectionState::Connected => {
                             egui::Button::new("Connected").fill(egui::Color32::LIGHT_GREEN)
@@ -42,7 +42,7 @@ impl eframe::App for MainApp {
                         }
                     };
                     if ui.add(button).clicked() {
-                        self.ui_state.connect();
+                        self.client.connect();
                     }
                 });
             });

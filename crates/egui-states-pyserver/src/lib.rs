@@ -12,8 +12,6 @@ mod server_core;
 mod signals;
 mod states_server;
 
-pub mod build;
-
 pub use egui_states_macros::{pyenum, pystruct};
 pub use pyo3;
 pub use python_convert::{EnumInit, FromPython, ToPython};

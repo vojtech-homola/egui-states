@@ -1,17 +1,17 @@
 use egui_states_core::controls::ControlMessage;
 use egui_states_core::serialization;
 
-use crate::client_state::UIState;
-use crate::states_creator::ValuesList;
+use crate::client_base::Client;
+use crate::values_creator::ValuesList;
 
-pub(crate) fn handle_message(data: &[u8], vals: &ValuesList, ui_state: &UIState) -> Result<(), String> {
+pub(crate) fn handle_message(data: &[u8], vals: &ValuesList, client: &Client) -> Result<(), String> {
     let message_type = data[0];
 
     if message_type == serialization::TYPE_CONTROL {
         let control = ControlMessage::deserialize(data)?;
         match control {
             ControlMessage::Update(t) => {
-                ui_state.update(t);
+                client.update(t);
             }
             _ => {}
         }
@@ -54,7 +54,7 @@ pub(crate) fn handle_message(data: &[u8], vals: &ValuesList, ui_state: &UIState)
     };
 
     if update {
-        ui_state.update(0.);
+        client.update(0.);
     }
 
     Ok(())

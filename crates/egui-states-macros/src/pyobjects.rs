@@ -105,6 +105,51 @@ use syn::{self, Lit, parse_macro_input};
 //     panic!("EnumInt can only be derived for enums");
 // }
 
+// pub(crate) fn impl_state_struct(input: TokenStream) -> TokenStream {
+//     let input = parse_macro_input!(input as syn::ItemStruct);
+
+//     let syn::ItemStruct {
+//         attrs,
+//         vis,
+//         struct_token,
+//         ident,
+//         generics,
+//         fields,
+//         semi_token,
+//     } = input;
+
+//     if generics.lt_token.is_some() {
+//         panic!("Structs with generics are not supported");
+//     }
+
+//     let mut values = Vec::new();
+//     let out = if let syn::Fields::Named(mut fields) = fields {
+//         for field in fields.named.iter() {
+            
+//         }
+
+//         quote!(
+//             #(#attrs)*
+//             #vis #struct_token #ident #fields #semi_token
+
+//             impl egui_states::State for #ident {
+//                 fn new(c: &mut egui_states::ValuesCreator) -> Self {
+//                     Self {
+//                         #(
+//                             #fields: None,
+//                         )*
+//                     }
+//                 }
+
+//             }
+//         )
+//     } else {
+//         panic!("Only named fields are supported")
+//     };
+
+//     out.into()
+// }
+
 pub(crate) fn impl_pystruct(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as syn::ItemStruct);
 
@@ -122,13 +167,6 @@ pub(crate) fn impl_pystruct(input: TokenStream) -> TokenStream {
         panic!("Structs with generics are not supported");
     }
 
-    // #[cfg(not(feature = "server"))]
-    // let out = quote!(
-    //     #(#attrs)*
-    //     #vis #struct_token #ident #fields #semi_token
-    // );
-
-    // #[cfg(feature = "server")]
     let out = if let syn::Fields::Named(mut fields) = fields {
         for field in fields.named.iter_mut() {
             let attr: syn::Attribute = syn::parse_quote!(#[pyo3(get, set)]);
@@ -140,6 +178,7 @@ pub(crate) fn impl_pystruct(input: TokenStream) -> TokenStream {
 
         quote!(
             #[egui_states_pyserver::pyo3::pyclass]
+            #[derive(Clone, serde::Serialize, serde::Deserialize)]
             #(#attrs)*
             #vis #struct_token #ident #fields #semi_token
 
@@ -218,7 +257,7 @@ pub(crate) fn impl_pyenum(input: TokenStream) -> TokenStream {
 
     let out = quote!(
         #[egui_states_pyserver::pyo3::pyclass(eq, hash, frozen)]
-        #[derive(Hash)]
+        #[derive(Hash, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
         #(#attrs)*
         #vis #enum_token #ident {
             #(#variants),*

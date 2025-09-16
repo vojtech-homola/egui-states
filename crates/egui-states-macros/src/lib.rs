@@ -1,6 +1,7 @@
 use proc_macro::TokenStream;
 
-mod enums;
+mod objects;
+mod pyobjects;
 
 // #[proc_macro_derive(EnumStr)]
 // pub fn enum_str_derive(input: TokenStream) -> TokenStream {
@@ -19,10 +20,20 @@ mod enums;
 
 #[proc_macro_attribute]
 pub fn pystruct(_: TokenStream, input: TokenStream) -> TokenStream {
-    enums::impl_pystruct(input)
+    pyobjects::impl_pystruct(input)
 }
 
 #[proc_macro_attribute]
 pub fn pyenum(_: TokenStream, input: TokenStream) -> TokenStream {
-    enums::impl_pyenum(input)
+    pyobjects::impl_pyenum(input)
+}
+
+#[proc_macro_attribute]
+pub fn state_enum(_: TokenStream, input: TokenStream) -> TokenStream {
+    objects::impl_enum(input)
+}
+
+#[proc_macro_attribute]
+pub fn state_struct(_: TokenStream, input: TokenStream) -> TokenStream {
+    objects::impl_struct(input)
 }
