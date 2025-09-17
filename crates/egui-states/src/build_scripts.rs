@@ -312,7 +312,11 @@ pub fn generate_rust_server<S: State>(path: impl ToString) -> Result<(), String>
     Ok(())
 }
 
-fn type_info_to_python_type(info: &TypeInfo, import: Option<&impl ToString>) -> String {
+fn type_info_to_python_type(
+    info: &TypeInfo,
+    import: Option<&impl ToString>,
+    list_comment: bool,
+) -> String {
     match info {
         TypeInfo::Basic(name) => match *name {
             "String" => "str".to_string(),
@@ -325,16 +329,20 @@ fn type_info_to_python_type(info: &TypeInfo, import: Option<&impl ToString>) -> 
         TypeInfo::Tuple(elements) => {
             let elems: Vec<String> = elements
                 .iter()
-                .map(|e| type_info_to_python_type(e, import))
+                .map(|e| type_info_to_python_type(e, import, list_comment))
                 .collect();
             format!("tuple[{}]", elems.join(", "))
         }
-        TypeInfo::Array(element, _) => {
-            let elem_str = type_info_to_python_type(element, import);
-            format!("list[{}]", elem_str)
+        TypeInfo::Array(element, size) => {
+            let elem_str = type_info_to_python_type(element, import, list_comment);
+            if list_comment {
+                format!("list[{}]  # size: {}", elem_str, size)
+            } else {
+                format!("list[{}]", elem_str)
+            }
         }
         TypeInfo::Option(element) => {
-            let elem_str = type_info_to_python_type(element, import);
+            let elem_str = type_info_to_python_type(element, import, list_comment);
             format!("{} | None", elem_str)
         }
         TypeInfo::Struct(name, _) => match import {
@@ -409,7 +417,7 @@ pub fn generate_python_wrapper<S: State>(
             for value in values {
                 match value {
                     ValueType::Value(name, id, info, _) => {
-                        let py_type = type_info_to_python_type(&info, import_path);
+                        let py_type = type_info_to_python_type(&info, import_path, false);
                         file.write_all(
                             format!(
                                 "        self.{}: sc.Value[{}] = sc.Value({})\n",
@@ -420,7 +428,7 @@ pub fn generate_python_wrapper<S: State>(
                         .unwrap();
                     }
                     ValueType::Static(name, id, info, _) => {
-                        let py_type = type_info_to_python_type(&info, import_path);
+                        let py_type = type_info_to_python_type(&info, import_path, false);
                         file.write_all(
                             format!(
                                 "        self.{}: sc.ValueStatic[{}] = sc.ValueStatic({})\n",
@@ -441,8 +449,9 @@ pub fn generate_python_wrapper<S: State>(
                         .unwrap();
                     }
                     ValueType::Dict(name, id, key_info, value_info) => {
-                        let py_key_type = type_info_to_python_type(&key_info, import_path);
-                        let py_value_type = type_info_to_python_type(&value_info, import_path);
+                        let py_key_type = type_info_to_python_type(&key_info, import_path, false);
+                        let py_value_type =
+                            type_info_to_python_type(&value_info, import_path, false);
                         file.write_all(
                             format!(
                                 "        self.{}: sc.ValueDict[{}, {}] = sc.ValueDict({})\n",
@@ -453,7 +462,7 @@ pub fn generate_python_wrapper<S: State>(
                         .unwrap();
                     }
                     ValueType::List(name, id, info) => {
-                        let py_type = type_info_to_python_type(&info, import_path);
+                        let py_type = type_info_to_python_type(&info, import_path, false);
                         file.write_all(
                             format!(
                                 "        self.{}: sc.ValueList[{}] = sc.ValueList({})\n",
@@ -474,7 +483,7 @@ pub fn generate_python_wrapper<S: State>(
                         .unwrap();
                     }
                     ValueType::Signal(name, id, info) => {
-                        let py_type = type_info_to_python_type(&info, import_path);
+                        let py_type = type_info_to_python_type(&info, import_path, false);
                         let line = if py_type.is_empty() {
                             format!(
                                 "        self.{}: sc.SignalEmpty = sc.SignalEmpty({})\n",
@@ -585,7 +594,7 @@ pub fn generate_pytypes<S: State>(path: impl ToString) -> Result<(), String> {
             continue;
         }
         for (name, typ) in fields {
-            let py_type = type_info_to_python_type(typ, None::<&String>);
+            let py_type = type_info_to_python_type(typ, None::<&String>, true);
             let text = format!("    {}: {}\n", name, py_type);
             file.write_all(text.as_bytes()).unwrap();
         }
@@ -594,7 +603,7 @@ pub fn generate_pytypes<S: State>(path: impl ToString) -> Result<(), String> {
         let elems: Vec<String> = fields
             .iter()
             .map(|(name, typ)| {
-                let py_type = type_info_to_python_type(typ, None::<&String>);
+                let py_type = type_info_to_python_type(typ, None::<&String>, false);
                 format!("{}: {}", name, py_type)
             })
             .collect();
