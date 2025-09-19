@@ -8,7 +8,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::task::JoinHandle;
 use tokio_tungstenite::WebSocketStream;
-use tokio_tungstenite::tungstenite::{Bytes, Message};
+use tokio_tungstenite::tungstenite::{Bytes, Message, protocol::WebSocketConfig};
 
 use egui_states_core::controls::ControlMessage;
 use egui_states_core::event_async::Event;
@@ -68,7 +68,12 @@ pub(crate) async fn start(
             continue;
         }
         let stream = stream.unwrap().0;
-        let websocket_res = tokio_tungstenite::accept_async(stream).await;
+
+        let mut websocket_config = WebSocketConfig::default();
+        websocket_config.max_message_size = Some(536870912); // 512 MB
+        websocket_config.max_frame_size = Some(536870912); // 512 MB
+        let websocket_res =
+            tokio_tungstenite::accept_async_with_config(stream, Some(websocket_config)).await;
         if let Err(e) = websocket_res {
             let error = format!("Error during the websocket handshake: {:?}", e);
             signals.set(0, error);

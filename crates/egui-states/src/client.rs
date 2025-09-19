@@ -5,8 +5,8 @@ use egui::Context;
 use futures_util::{SinkExt, StreamExt};
 use tokio::runtime::Builder;
 use tokio::sync::mpsc::UnboundedReceiver;
-use tokio_tungstenite::connect_async;
-use tokio_tungstenite::tungstenite::{Bytes, Message};
+use tokio_tungstenite::connect_async_with_config;
+use tokio_tungstenite::tungstenite::{Bytes, Message, protocol::WebSocketConfig};
 
 use egui_states_core::controls::ControlMessage;
 use egui_states_core::serialization::MessageData;
@@ -33,7 +33,10 @@ async fn start_gui_client(
 
         // try to connect to the server
         let address = format!("ws://{}/ws", addr);
-        let res = connect_async(address).await;
+        let mut websocket_config = WebSocketConfig::default();
+        websocket_config.max_message_size = Some(536870912); // 512 MB
+        websocket_config.max_frame_size = Some(536870912); // 512 MB
+        let res = connect_async_with_config(address, Some(websocket_config), false).await;
         if res.is_err() {
             continue;
         }

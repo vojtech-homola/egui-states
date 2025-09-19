@@ -82,9 +82,9 @@ impl UpdateValue for ValueImage {
                 if r[0] + r[2] > image_size[0] || r[1] + r[3] > image_size[1] {
                     return Err("Rectangle is out of bounds".to_string());
                 }
-                [r[3], r[2]]
+                [r[3] as usize, r[2] as usize]
             }
-            None => [image_size[1], image_size[0]],
+            None => [image_size[1] as usize, image_size[0] as usize],
         };
 
         let mut c_image = egui::ColorImage::filled(size, egui::Color32::WHITE);
@@ -142,13 +142,19 @@ impl UpdateValue for ValueImage {
         if let Some((ref mut texture_handle, ref mut save_size)) = *w {
             match rect {
                 Some(rec) => {
-                    if save_size[0] != image_size[1] || save_size[1] != image_size[0] {
+                    if save_size[0] != image_size[1] as usize
+                        || save_size[1] != image_size[0] as usize
+                    {
                         return Err(
                             "Rectangle is set but the image size is different from texture"
                                 .to_string(),
                         );
                     }
-                    texture_handle.set_partial([rec[1], rec[0]], c_image, TEXTURE_OPTIONS);
+                    texture_handle.set_partial(
+                        [rec[1] as usize, rec[0] as usize],
+                        c_image,
+                        TEXTURE_OPTIONS,
+                    );
                 }
                 None => {
                     texture_handle.set(c_image, TEXTURE_OPTIONS);

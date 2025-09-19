@@ -58,7 +58,7 @@ impl PyValueImage {
     pub(crate) fn set_image_py(
         &self,
         image: &PyBuffer<u8>,
-        origin: Option<[usize; 2]>,
+        origin: Option<[u32; 2]>,
         update: bool,
     ) -> PyResult<()> {
         let shape = image.shape();
@@ -87,8 +87,8 @@ impl PyValueImage {
             };
 
             let message = ImageInfo {
-                image_size: new_size,
-                rect: origin.map(|o| [o[0], o[1], size[0], size[1]]),
+                image_size: [new_size[0] as u32, new_size[1] as u32],
+                rect: origin.map(|o| [o[0], o[1], size[0] as u32, size[1] as u32]),
                 image_type,
                 update,
             };
@@ -120,7 +120,7 @@ impl PyValueImage {
                 stride = 0;
             }
 
-            data_ptr = data.as_ptr();
+            data_ptr = unsafe { data.as_ptr().add(offset) };
             Some(data)
         } else {
             data_ptr = image.buf_ptr() as *const u8;
@@ -130,6 +130,7 @@ impl PyValueImage {
         // write data to the image
         match origin {
             Some(origin) => {
+                let origin = [origin[0] as usize, origin[1] as usize];
                 let original_size = w.size;
 
                 // check if the rectangle fits in the original image
@@ -180,9 +181,9 @@ impl SyncTrait for PyValueImage {
             return;
         }
 
-        let mut head_buff = [0u8; 32];
+        let mut head_buff = [0u8; 64];
         let image_info = ImageInfo {
-            image_size: w.size,
+            image_size: [w.size[0] as u32, w.size[1] as u32],
             rect: None,
             image_type: ImageType::ColorAlpha,
             update: false,

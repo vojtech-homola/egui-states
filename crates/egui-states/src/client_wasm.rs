@@ -56,15 +56,14 @@ async fn start_gui_client(
                 // read the message
                 let res = socket_read.next().await;
                 if res.is_none() {
-                    // println!("Error reading message: {:?}", e); // TODO: log error
-                    println!("Error reading message: Connection closed by server");
+                    log::error!("Error reading message: Connection closed by server");
                     break;
                 }
                 let message = res.unwrap();
                 let mess = match message {
                     WsMessage::Binary(d) => d,
                     _ => {
-                        println!("Wrong type of message received: {:?}", message); // TODO: log error
+                        log::error!("Wrong type of message received: {:?}", message);
                         break;
                     }
                 };
@@ -73,6 +72,7 @@ async fn start_gui_client(
                 let res = handle_message(&mess, &th_vals, &th_ui_state);
                 if let Err(e) = res {
                     let error = format!("Error handling message: {:?}", e);
+                    log::error!("Error handling message: {}", error);
                     th_sender.send(ControlMessage::error(error));
                     break;
                 }
@@ -86,7 +86,7 @@ async fn start_gui_client(
             let message = WsMessage::Binary(handshake.serialize());
             let res = socket_write.send(message).await;
             if let Err(e) = res {
-                println!("Error for sending handshake: {:?}", e); // TODO: log error
+                log::error!("Error for sending handshake: {:?}", e);
                 return rx;
             }
 
@@ -97,6 +97,7 @@ async fn start_gui_client(
                 // check if the message is terminate
                 if message.is_none() {
                     socket_write.flush().await.unwrap();
+                    log::info!("Connection closed by client");
                     break;
                 }
                 let message = message.unwrap();
@@ -108,7 +109,7 @@ async fn start_gui_client(
                 // write the message
                 let res = socket_write.send(message).await;
                 if let Err(e) = res {
-                    println!("Error for sending message: {:?}", e); // TODO: log error
+                    log::error!("Error for sending message: {:?}", e);
                     break;
                 }
             }

@@ -214,7 +214,7 @@ impl StateServerCore {
         value_id: u32,
         image: PyBuffer<u8>,
         update: bool,
-        origin: Option<[usize; 2]>,
+        origin: Option<[u32; 2]>,
     ) -> PyResult<()> {
         match self.values.images.get(&value_id) {
             Some(image_val) => py.detach(|| image_val.set_image_py(&image, origin, update)),
