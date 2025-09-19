@@ -10,7 +10,7 @@ pub enum ValueType {
     SubState(&'static str, &'static str),
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub enum TypeInfo {
     Basic(&'static str),
     Tuple(Vec<TypeInfo>),

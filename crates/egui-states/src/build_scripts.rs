@@ -6,10 +6,10 @@ use std::{fs, io::Write};
 use crate::parser::{InitValue, TypeInfo, ValueType};
 use crate::{ParseValuesCreator, State};
 
-fn parse_states<S: State>() -> (BTreeMap<&'static str, Vec<ValueType>>, &'static str) {
-    let mut creator = ParseValuesCreator::new();
+fn parse_states<S: State>() -> Vec<(&'static str, Vec<ValueType>)> {
+    let mut creator = ParseValuesCreator::new::<S>();
     S::new(&mut creator);
-    (creator.get_map(), S::N)
+    creator.get_map()
 }
 
 fn type_info_to_type_string(info: &TypeInfo) -> String {
@@ -63,6 +63,15 @@ fn collect_enums(
 ) {
     match type_info {
         TypeInfo::Enum(name, variants) => {
+            if enums.contains_key(name) {
+                if enums[name] != *variants {
+                    panic!(
+                        "Enum {} defined multiple times with different variants",
+                        name
+                    );
+                }
+            }
+
             enums.insert(name, variants.clone());
         }
         TypeInfo::Struct(_, fields) => {
@@ -91,6 +100,15 @@ fn collect_structs(
 ) {
     match type_info {
         TypeInfo::Struct(name, fields) => {
+            if structs.contains_key(name) {
+                if structs[name] != *fields {
+                    panic!(
+                        "Struct {} defined multiple times with different fields",
+                        name
+                    );
+                }
+            }
+
             structs.insert(name, fields.clone());
             for (_, field_type) in fields {
                 collect_structs(field_type, structs);
@@ -157,7 +175,7 @@ fn get_all_enums_struct(
 }
 
 pub fn generate_rust_server<S: State>(path: impl ToString) -> Result<(), String> {
-    let (map, _) = parse_states::<S>();
+    let map = parse_states::<S>();
 
     let mut values_list = Vec::new();
     for (_, values) in map.iter() {
@@ -364,7 +382,8 @@ pub fn generate_python_wrapper<S: State>(
     path: impl ToString,
     import: Option<(impl ToString, impl ToString)>,
 ) -> Result<(), String> {
-    let (map, root) = parse_states::<S>();
+    let map = parse_states::<S>();
+    let root = map.last().unwrap().0;
 
     let mut values_list = Vec::new();
     for (_, values) in map.iter() {
@@ -395,19 +414,26 @@ pub fn generate_python_wrapper<S: State>(
         .unwrap();
     }
 
+    let mut used_names = Vec::new();
     let import_path = import.as_ref().map(|(_, p)| p);
     for (class_name, values) in map {
+        if used_names.contains(&class_name) {
+            continue;
+        }
+        used_names.push(class_name);
+
         if class_name == root {
             file.write_all(format!("\n\nclass {}(sc._MainStatesBase):\n", class_name).as_bytes())
                 .unwrap();
             file.write_all(b"    def __init__(self, update: Callable[[float | None], None]):\n")
                 .unwrap();
-            file.write_all(b"        self._update = update\n\n")
-                .unwrap();
+            file.write_all(b"        self._update = update\n").unwrap();
+            file.write_all(b"        c = sc._Counter()\n\n").unwrap();
         } else {
             file.write_all(format!("\n\nclass {}(sc._StatesBase):\n", class_name).as_bytes())
                 .unwrap();
-            file.write_all(b"    def __init__(self):\n").unwrap();
+            file.write_all(b"    def __init__(self, c: sc._Counter):\n")
+                .unwrap();
         }
 
         if values.len() == 0 {
@@ -416,83 +442,83 @@ pub fn generate_python_wrapper<S: State>(
         } else {
             for value in values {
                 match value {
-                    ValueType::Value(name, id, info, _) => {
+                    ValueType::Value(name, _, info, _) => {
                         let py_type = type_info_to_python_type(&info, import_path, false);
                         file.write_all(
                             format!(
-                                "        self.{}: sc.Value[{}] = sc.Value({})\n",
-                                name, py_type, id
+                                "        self.{}: sc.Value[{}] = sc.Value(c)\n",
+                                name, py_type
                             )
                             .as_bytes(),
                         )
                         .unwrap();
                     }
-                    ValueType::Static(name, id, info, _) => {
+                    ValueType::Static(name, _, info, _) => {
                         let py_type = type_info_to_python_type(&info, import_path, false);
                         file.write_all(
                             format!(
-                                "        self.{}: sc.ValueStatic[{}] = sc.ValueStatic({})\n",
-                                name, py_type, id
+                                "        self.{}: sc.ValueStatic[{}] = sc.ValueStatic(c)\n",
+                                name, py_type
                             )
                             .as_bytes(),
                         )
                         .unwrap();
                     }
-                    ValueType::Image(name, id) => {
+                    ValueType::Image(name, _) => {
                         file.write_all(
                             format!(
-                                "        self.{}: sc.ValueImage = sc.ValueImage({})\n",
-                                name, id
+                                "        self.{}: sc.ValueImage = sc.ValueImage(c)\n",
+                                name
                             )
                             .as_bytes(),
                         )
                         .unwrap();
                     }
-                    ValueType::Dict(name, id, key_info, value_info) => {
+                    ValueType::Dict(name, _, key_info, value_info) => {
                         let py_key_type = type_info_to_python_type(&key_info, import_path, false);
                         let py_value_type =
                             type_info_to_python_type(&value_info, import_path, false);
                         file.write_all(
                             format!(
-                                "        self.{}: sc.ValueDict[{}, {}] = sc.ValueDict({})\n",
-                                name, py_key_type, py_value_type, id
+                                "        self.{}: sc.ValueDict[{}, {}] = sc.ValueDict(c)\n",
+                                name, py_key_type, py_value_type
                             )
                             .as_bytes(),
                         )
                         .unwrap();
                     }
-                    ValueType::List(name, id, info) => {
+                    ValueType::List(name, _, info) => {
                         let py_type = type_info_to_python_type(&info, import_path, false);
                         file.write_all(
                             format!(
-                                "        self.{}: sc.ValueList[{}] = sc.ValueList({})\n",
-                                name, py_type, id
+                                "        self.{}: sc.ValueList[{}] = sc.ValueList(c)\n",
+                                name, py_type
                             )
                             .as_bytes(),
                         )
                         .unwrap();
                     }
-                    ValueType::Graphs(name, id, _) => {
+                    ValueType::Graphs(name, _, _) => {
                         file.write_all(
                             format!(
-                                "        self.{}: sc.ValueGraphs = sc.ValueGraphs({})\n",
-                                name, id
+                                "        self.{}: sc.ValueGraphs = sc.ValueGraphs(c)\n",
+                                name
                             )
                             .as_bytes(),
                         )
                         .unwrap();
                     }
-                    ValueType::Signal(name, id, info) => {
+                    ValueType::Signal(name, _, info) => {
                         let py_type = type_info_to_python_type(&info, import_path, false);
                         let line = if py_type.is_empty() {
                             format!(
-                                "        self.{}: sc.SignalEmpty = sc.SignalEmpty({})\n",
-                                name, id
+                                "        self.{}: sc.SignalEmpty = sc.SignalEmpty(c)\n",
+                                name
                             )
                         } else {
                             format!(
-                                "        self.{}: sc.Signal[{}] = sc.Signal({})\n",
-                                name, py_type, id
+                                "        self.{}: sc.Signal[{}] = sc.Signal(c)\n",
+                                name, py_type
                             )
                         };
 
@@ -500,7 +526,7 @@ pub fn generate_python_wrapper<S: State>(
                     }
                     ValueType::SubState(name, substate) => {
                         file.write_all(
-                            format!("        self.{}: {} = {}()\n", name, substate, substate)
+                            format!("        self.{}: {} = {}(c)\n", name, substate, substate)
                                 .as_bytes(),
                         )
                         .unwrap();
@@ -536,7 +562,7 @@ fn order_structs(items: &Vec<(&'static str, TypeInfo)>, order: &mut VecDeque<&'s
 }
 
 pub fn generate_pytypes<S: State>(path: impl ToString) -> Result<(), String> {
-    let (map, _) = parse_states::<S>();
+    let map = parse_states::<S>();
     let mut values_list = Vec::new();
     for (_, values) in map.iter() {
         for value in values {

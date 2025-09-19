@@ -114,9 +114,6 @@ impl ClientValuesCreator {
     }
 
     fn get_id(&mut self) -> u32 {
-        if self.counter > 16777215 {
-            panic!("id counter overflow, id is 24bit long");
-        }
         self.counter += 1;
         self.counter
     }

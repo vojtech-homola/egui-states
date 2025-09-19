@@ -25,6 +25,10 @@ class SignalsManager:
 
     def start_manager(self) -> None:
         """Start the signals manager."""
+        if self._workers:
+            self.check_workers()
+            return
+
         for i in range(self._workers_count):
             worker = threading.Thread(target=self._run, args=(i,), daemon=True, name=f"signals_worker_{i}")
             self._workers.append(worker)

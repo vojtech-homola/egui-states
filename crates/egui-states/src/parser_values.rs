@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::Arc;
 
@@ -17,35 +17,48 @@ use crate::{State, ValuesCreator};
 
 pub struct ParseValuesCreator {
     counter: u32,
-    val: BTreeMap<&'static str, Vec<ValueType>>,
+    states: Vec<(&'static str, Vec<ValueType>)>,
+    opened_states: HashMap<&'static str, Vec<ValueType>>,
     sender: MessageSender,
 }
 
 impl ParseValuesCreator {
-    pub fn new() -> Self {
+    pub fn new<S: State>() -> Self {
         let (sender, _) = MessageSender::new();
+        let mut opened_states = HashMap::new();
+        opened_states.insert(S::N, Vec::new());
 
         Self {
             counter: 9, // first 10 values are reserved for special values
-            val: BTreeMap::new(),
+            states: Vec::new(),
+            opened_states,
             sender,
         }
     }
 
-    pub fn get_map(self) -> BTreeMap<&'static str, Vec<ValueType>> {
-        self.val
+    pub fn get_map(mut self) -> Vec<(&'static str, Vec<ValueType>)> {
+        if self.opened_states.len() > 1 {
+            panic!("Not all substates were closed");
+        }
+        let main_state = self
+            .opened_states
+            .into_iter()
+            .next()
+            .expect("No main state opened");
+        self.states.push(main_state);
+        self.states
     }
 
     fn get_id(&mut self) -> u32 {
-        if self.counter > 16777215 {
-            panic!("id counter overflow, id is 24bit long");
-        }
         self.counter += 1;
         self.counter
     }
 
     fn add_value_type(&mut self, state: &'static str, value_type: ValueType) {
-        self.val.entry(state).or_default().push(value_type);
+        self.opened_states
+            .get_mut(state)
+            .expect("State not opened")
+            .push(value_type);
     }
 }
 
@@ -143,6 +156,13 @@ impl ValuesCreator for ParseValuesCreator {
 
     fn add_substate<S: State>(&mut self, state: &'static str, name: &'static str) -> S {
         self.add_value_type(state, ValueType::SubState(name, S::N));
-        S::new(self)
+        if self.opened_states.contains_key(S::N) {
+            panic!("Substate {} already opened", S::N);
+        }
+        self.opened_states.insert(S::N, Vec::new());
+        let substate = S::new(self);
+        let actual = self.opened_states.remove(S::N).unwrap();
+        self.states.push((S::N, actual));
+        substate
     }
 }
