@@ -20,18 +20,19 @@ async fn start_gui_client(
     version: u64,
     mut rx: UnboundedReceiver<Option<MessageData>>,
     sender: MessageSender,
-    ui_state: Client,
+    client: Client,
     handshake: u64,
 ) {
     loop {
         // wait for the connection signal
-        ui_state.wait_connection().await;
-        ui_state.set_state(ConnectionState::NotConnected);
+        client.wait_connection().await;
+        client.set_state(ConnectionState::NotConnected);
 
         // try to connect to the server
         let address = format!("ws://{}/ws", addr);
         let res = WsMeta::connect(&address, None).await;
         if res.is_err() {
+            log::error!("Error connecting to server at {}: {:?}", address, res.err());
             continue;
         }
 
@@ -48,12 +49,14 @@ async fn start_gui_client(
 
         // read -----------------------------------------
         let th_vals = vals.clone();
-        let th_ui_state = ui_state.clone();
+        let th_client = client.clone();
         let th_sender = sender.clone();
 
         let recv_future = async move {
             loop {
                 // read the message
+                #[cfg(debug_assertions)]
+                log::debug!("Waiting for message...");
                 let res = socket_read.next().await;
                 if res.is_none() {
                     log::error!("Error reading message: Connection closed by server");
@@ -68,8 +71,11 @@ async fn start_gui_client(
                     }
                 };
 
+                #[cfg(debug_assertions)]
+                log::debug!("Message received: {} bytes", mess.len());
+
                 // handle the message
-                let res = handle_message(&mess, &th_vals, &th_ui_state);
+                let res = handle_message(&mess, &th_vals, &th_client);
                 if let Err(e) = res {
                     let error = format!("Error handling message: {:?}", e);
                     log::error!("Error handling message: {}", error);
@@ -97,7 +103,8 @@ async fn start_gui_client(
                 // check if the message is terminate
                 if message.is_none() {
                     socket_write.flush().await.unwrap();
-                    log::info!("Connection closed by client");
+                    #[cfg(debug_assertions)]
+                    log::debug!("Connection closed by client");
                     break;
                 }
                 let message = message.unwrap();
@@ -116,12 +123,12 @@ async fn start_gui_client(
             rx
         };
 
-        ui_state.set_state(ConnectionState::Connected);
+        client.set_state(ConnectionState::Connected);
 
         let (_, rx_) = tokio::join!(recv_future, send_future);
         rx = rx_;
 
-        ui_state.set_state(ConnectionState::Disconnected);
+        client.set_state(ConnectionState::Disconnected);
     }
 }
 

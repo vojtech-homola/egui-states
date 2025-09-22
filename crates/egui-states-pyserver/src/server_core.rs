@@ -44,8 +44,7 @@ pub(crate) async fn start(
         // listen to incoming connections
         let listener = TcpListener::bind(addr).await;
         if let Err(e) = listener {
-            let error = format!("Error binding: {:?}", e);
-            signals.set(0, error);
+            signals.error(&format!("binding failed: {:?}", e));
             continue;
         }
         let listener = listener.unwrap();
@@ -63,8 +62,7 @@ pub(crate) async fn start(
 
         // check if error accepting connection
         if let Err(e) = stream {
-            let error = format!("Error accepting connection: {:?}", e);
-            signals.set(0, error);
+            signals.error(&format!("accepting connection failed: {:?}", e));
             continue;
         }
         let stream = stream.unwrap().0;
@@ -75,41 +73,50 @@ pub(crate) async fn start(
         let websocket_res =
             tokio_tungstenite::accept_async_with_config(stream, Some(websocket_config)).await;
         if let Err(e) = websocket_res {
-            let error = format!("Error during the websocket handshake: {:?}", e);
-            signals.set(0, error);
+            signals.error(&format!("websocket handshake failed: {:?}", e));
             connected.store(false, atomic::Ordering::Relaxed);
             continue;
         }
         let mut websocket = websocket_res.unwrap();
 
         // read the message
-        let res = websocket.next().await.unwrap();
-        if let Err(e) = res {
-            let error = format!("Error reading initial message: {:?}", e);
-            signals.set(0, error);
+        let res = websocket.next().await;
+        if res.is_none() {
+            signals.error("reading initial message failed");
             connected.store(false, atomic::Ordering::Relaxed);
             continue;
         }
-        let res = res.unwrap();
 
-        if let Message::Binary(message) = res {
+        let res = res.unwrap();
+        if let Err(e) = res {
+            signals.error(&format!("reading initial message failed: {:?}", e));
+            connected.store(false, atomic::Ordering::Relaxed);
+            continue;
+        }
+
+        if let Message::Binary(message) = res.unwrap() {
             let data = message.as_ref();
             if data[0] == serialization::TYPE_CONTROL {
-                let control = ControlMessage::deserialize(data).unwrap(); //TODO handle error
+                let control = ControlMessage::deserialize(data);
+                if control.is_err() {
+                    signals.error(&format!("deserializing initial message failed"));
+                    continue;
+                }
+                let control = control.unwrap();
+
                 if let ControlMessage::Handshake(v, h) = control {
                     if v != version {
-                        let error = format!(
-                            "Attempted to connect with different version: {}, version {} is required.",
+                        let message = format!(
+                            "attempted to connect with different version: {}, version {} is required.",
                             v, version
                         );
-                        signals.set(0, error);
+                        signals.warning(&message);
                         continue;
                     }
 
                     if let Some(ref hash) = handshake {
                         if !hash.contains(&h) {
-                            let error = "Attempted to connect with wrong hash".to_string();
-                            signals.set(0, error);
+                            signals.warning("attempted to connect with wrong hash");
                             continue;
                         }
                     }
@@ -117,9 +124,12 @@ pub(crate) async fn start(
                     let mut rx = match holder {
                         // disconnect previous client
                         ChannelHolder::Transfer(handler) => {
+                            #[cfg(debug_assertions)]
+                            signals.debug("terminating previous connection");
                             connected.store(false, atomic::Ordering::Relaxed);
                             sender.close();
-                            handler.await.unwrap()
+                            let rx = handler.await.unwrap();
+                            rx
                         }
                         ChannelHolder::Rx(rx) => rx,
                     };
@@ -159,40 +169,39 @@ async fn communication_handler(
     rx: UnboundedReceiver<Option<Bytes>>,
     sender: MessageSender,
 ) -> JoinHandle<UnboundedReceiver<Option<Bytes>>> {
-    let connect_w = connected.clone();
-    let signals_w = signals.clone();
     let (socket_tx, mut socket_rx) = websocket.split();
 
-    let writer_handle =
-        tokio::spawn(async move { writer(rx, connect_w, socket_tx, signals_w).await });
+    let read_connected = connected.clone();
+    let read_signals = signals.clone();
+    let read_values = values.clone();
+    let read_sender = sender.clone();
 
-    let handler = tokio::spawn(async move {
+    let reader_handler = tokio::spawn(async move {
         loop {
             // read the message
             let res = socket_rx.next().await;
 
             // check if not connected
-            if !connected.load(atomic::Ordering::Relaxed) {
-                break;
+            if !read_connected.load(atomic::Ordering::Relaxed) {
+                #[cfg(debug_assertions)]
+                read_signals.debug("read thread is closing");
+                return;
             }
 
             if res.is_none() {
-                let error = "Connection closed".to_string();
-                signals.set(0, error);
-                connected.store(false, atomic::Ordering::Relaxed);
+                read_signals.info("connection was closed by the client");
+                read_connected.store(false, atomic::Ordering::Relaxed);
                 break;
             }
             let res = res.unwrap();
 
             if let Err(e) = res {
-                let error = format!("Error reading message: {:?}", e);
-                signals.set(0, error);
-                connected.store(false, atomic::Ordering::Relaxed);
+                read_signals.error(&format!("reading message from client failed: {:?}", e));
+                read_connected.store(false, atomic::Ordering::Relaxed);
                 break;
             }
-            let message = res.unwrap();
 
-            let res = match message {
+            match res.unwrap() {
                 Message::Binary(m) => {
                     let data = m.as_ref();
                     match data[0] {
@@ -200,62 +209,73 @@ async fn communication_handler(
                             let control = ControlMessage::deserialize(data).unwrap(); //TODO handle error
                             match control {
                                 ControlMessage::Ack(v) => {
-                                    let val_res = values.ack.get(&v);
+                                    let val_res = read_values.ack.get(&v);
                                     match val_res {
                                         Some(val) => {
                                             val.acknowledge();
-                                            Ok(())
                                         }
-                                        None => Err(format!(
-                                            "Value with id {} not found for Ack command",
+                                        None => read_signals.error(&format!(
+                                            "value with id {} not found for Acknowledge",
                                             v
                                         )),
                                     }
                                 }
                                 ControlMessage::Error(err) => {
-                                    Err(format!("Error message from UI client: {}", err))
+                                    read_signals
+                                        .error(&format!("Error message from client: {}", err));
                                 }
-                                _ => Err(format!(
+                                _ => read_signals.error(&format!(
                                     "Command {} should not be processed here",
                                     control.as_str()
                                 )),
                             }
-                            // continue;
                         }
                         serialization::TYPE_VALUE => {
                             let id = u32::from_le_bytes([data[1], data[2], data[3], data[4]]);
-                            match values.updated.get(&id) {
-                                Some(val) => val.update_value(&data[5..]),
-                                None => Err(format!("Value with id {} not found", id)),
+                            match read_values.updated.get(&id) {
+                                Some(val) => {
+                                    if let Err(e) = val.update_value(&data[5..]) {
+                                        read_signals.error(&format!(
+                                            "updating value with id {} failed: {}",
+                                            id, e
+                                        ));
+                                    }
+                                }
+                                None => {
+                                    read_signals.error(&format!("value with id {} not found", id))
+                                }
                             }
                         }
                         serialization::TYPE_SIGNAL => {
                             let id = u32::from_le_bytes([data[1], data[2], data[3], data[4]]);
-                            match values.updated.get(&id) {
-                                Some(val) => val.update_value(&data[5..]),
-                                None => Err(format!("Value with id {} not found", id)),
+                            match read_values.updated.get(&id) {
+                                Some(val) => {
+                                    if let Err(e) = val.update_value(&data[5..]) {
+                                        read_signals.error(&format!(
+                                            "updating signal with id {} failed: {}",
+                                            id, e
+                                        ));
+                                    }
+                                }
+                                None => {
+                                    read_signals.error(&format!("value with id {} not found", id))
+                                }
                             }
                         }
-                        _ => Err(format!("Unexpected message type: {}", data[0])),
+                        _ => read_signals.error(&format!("Unexpected message type: {}", data[0])),
                     }
                 }
-                _ => Err("Unexpected message format".to_string()),
+                _ => read_signals.error("Unexpected message format"),
             };
-
-            if let Err(e) = res {
-                let text = format!("Error processing message: {}", e);
-                signals.set(0, text);
-            }
         }
 
         // send close signal to writing thread if reading fails
-        sender.close();
-
-        // wait for writing thread to finish and return the receiver
-        writer_handle.await.unwrap()
+        #[cfg(debug_assertions)]
+        read_signals.debug("terminating write thread");
+        read_sender.close();
     });
 
-    handler
+    tokio::spawn(writer(rx, connected, socket_tx, signals, reader_handler))
 }
 
 async fn writer(
@@ -263,6 +283,7 @@ async fn writer(
     connected: Arc<AtomicBool>,
     mut websocket: SplitSink<WebSocketStream<TcpStream>, Message>,
     signals: ChangedValues,
+    reader_handle: tokio::task::JoinHandle<()>,
 ) -> UnboundedReceiver<Option<Bytes>> {
     loop {
         // get message from channel
@@ -270,23 +291,27 @@ async fn writer(
 
         // check if message is terminate signal
         if message.is_none() {
+            signals.info("writer is closing connection");
             let _ = websocket.close().await;
+            reader_handle.abort();
+            let _ = reader_handle.await;
             break;
         }
-        let message = message.unwrap();
 
         // if not connected, stop thread
         if !connected.load(atomic::Ordering::Relaxed) {
             let _ = websocket.close().await;
+            reader_handle.abort();
+            let _ = reader_handle.await;
             break;
         }
 
         // send message
-        let res = websocket.send(Message::Binary(message)).await;
+        let res = websocket.send(Message::Binary(message.unwrap())).await;
         if let Err(e) = res {
-            let error = format!("Error writing message: {:?}", e);
-            signals.set(0, error);
-            connected.store(false, atomic::Ordering::Relaxed);
+            signals.error(&format!("sending message to client failed: {:?}", e));
+            reader_handle.abort();
+            let _ = reader_handle.await;
             break;
         }
     }

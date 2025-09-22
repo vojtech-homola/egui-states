@@ -1,6 +1,8 @@
 # ruff: noqa: D107
+import json
 from abc import ABC, abstractmethod
 from collections.abc import Buffer, Callable
+from enum import StrEnum
 from typing import Any
 
 import numpy as np
@@ -29,33 +31,65 @@ class _MainStatesBase(_StatesBase, ABC):
         pass
 
 
-class ErrorSignal:
-    """Error signal for processing errors from the state server."""
+class LogLevel(StrEnum):
+    """Logging levels."""
 
-    def __init__(self, siganls_manager: SignalsManager):
-        """Initialize the ErrorSignal."""
-        self._value_id = 0
-        self._signals_manager = siganls_manager
+    Debug = "debug"
+    Info = "info"
+    Warning = "warning"
+    Error = "error"
 
-    def connect(self, callback: Callable[[str], None]) -> None:
-        """Connect a callback to the value.
+
+class LoggingSignal:
+    """Logging signal for processing log messages from the state server."""
+
+    def __init__(self, signals_manager: SignalsManager):
+        """Initialize the LoggingSignal."""
+        self._loggers: dict[str, list[Callable[[str], None]]] = {"debug": [], "info": [], "warning": [], "error": []}
+        signals_manager.add_callback(0, self._callback)
+
+    def _callback(self, message: str) -> None:
+        log = json.loads(message)
+        level = log["level"]
+        if level == "debug":
+            for logger in self._loggers["debug"]:
+                logger(log["message"])
+        elif level == "info":
+            for logger in self._loggers["info"]:
+                logger(log["message"])
+        elif level == "warning":
+            for logger in self._loggers["warning"]:
+                logger(log["message"])
+        elif level == "error":
+            for logger in self._loggers["error"]:
+                logger(log["message"])
+
+    def add_logger(self, level: LogLevel, logger: Callable[[str], None]):
+        """Add logger for a specific level.
 
         Args:
-            callback(Callable[[str], None]): The callback to connect.
+            level(Level): The logging level.
+            logger(Callable[[str], None]): The logger to add.
         """
-        self._signals_manager.add_callback(self._value_id, callback)
+        self._loggers[level.value].append(logger)
 
-    def disconnect(self, callback: Callable[[str], None]) -> None:
-        """Disconnect a callback from the value.
+    def remove_logger(self, level: LogLevel, logger: Callable[[str], None]):
+        """Remove logger for a specific level.
 
         Args:
-            callback(Callable[[T], None]): The callback to disconnect.
+            level(Level): The logging level.
+            logger(Callable[[str], None]): The logger to remove.
         """
-        self._signals_manager.remove_callback(self._value_id, callback)
+        if logger in self._loggers[level.value]:
+            self._loggers[level.value].remove(logger)
 
-    def disconnect_all(self) -> None:
-        """Disconnect all callbacks from the value."""
-        self._signals_manager.clear_callbacks(self._value_id)
+    def remove_all_loggers(self, level: LogLevel):
+        """Remove all loggers for a specific level.
+
+        Args:
+            level(Level): The logging level.
+        """
+        self._loggers[level.value].clear()
 
 
 class _StaticBase:

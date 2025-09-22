@@ -4,6 +4,7 @@ from egui_states import structures, version
 from egui_states.server import StateServer
 from egui_states.structures import (
     Graph,
+    LogLevel,
     Signal,
     SignalEmpty,
     Value,
@@ -29,4 +30,5 @@ __all__ = [
     "ValueList",
     "ValueStatic",
     "Graph",
+    "LogLevel",
 ]

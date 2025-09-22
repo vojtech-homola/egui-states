@@ -16,12 +16,11 @@ parking_lot = { workspace = true }
 egui_states_core = { workspace = true }
 egui_states_macros = { workspace = true }
 
-# [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# client
 tokio = { workspace = true, features = ["sync"] }
 tokio-tungstenite = { workspace = true, optional = true }
 
-# [target.'cfg(target_arch = "wasm32")'.dependencies]
-# tokio = { workspace = true, features = ["rt", "sync", "macros"] }
+# client-wasm
 ws_stream_wasm = { version = "0.7", optional = true }
 wasm-bindgen-futures = { version = "0.4", optional = true }
 log = { version = "0.4", optional = true }

@@ -2,7 +2,7 @@ import numpy as np
 from states_server import core
 from states_server.states import States
 
-from egui_states import StateServer
+from egui_states import LogLevel, StateServer
 
 state_server = StateServer(States, core, port=8081)
 state_server.start()
@@ -16,11 +16,26 @@ graph = np.ones((100,), dtype=np.float32)
 states.graphs.set(graph, 0)
 
 
+def print_debug(d: str):
+    print("Debug:", d)
+
+
+def print_info(i: str):
+    print("Info:", i)
+
+
+def print_warning(w: str):
+    print("Warning:", w)
+
+
 def print_error(e: str):
     print("Error:", e)
 
 
-state_server.error.connect(print_error)
+state_server.logging.add_logger(LogLevel.Debug, print_debug)
+state_server.logging.add_logger(LogLevel.Info, print_info)
+state_server.logging.add_logger(LogLevel.Warning, print_warning)
+state_server.logging.add_logger(LogLevel.Error, print_error)
 
 
 def on_value(value: float):

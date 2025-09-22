@@ -2,8 +2,8 @@ from collections.abc import Callable
 from types import ModuleType
 
 from egui_states.signals import SignalsManager
+from egui_states.structures import LoggingSignal, _MainStatesBase, _StatesBase, _StaticBase, _ValueBase
 from egui_states.typing import SteteServerCoreBase
-from egui_states.structures import ErrorSignal, _MainStatesBase, _StatesBase, _StaticBase, _ValueBase
 
 
 def _initialize_states(obj, server: SteteServerCoreBase, signals_manager: SignalsManager) -> None:
@@ -36,7 +36,7 @@ class StateServer[T: _MainStatesBase]:
         self._states: T = state_class(self._server.update)
 
         _initialize_states(self._states, self._server, self._signals_manager)
-        self.error = ErrorSignal(self._signals_manager)
+        self.logging = LoggingSignal(self._signals_manager)
 
     @property
     def states(self) -> T:

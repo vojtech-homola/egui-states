@@ -108,7 +108,7 @@ async fn start_gui_client(
 
                 // check if the message is terminate
                 if message.is_none() {
-                    socket_write.flush().await.unwrap();
+                    let _ = socket_write.flush().await;
                     break;
                 }
                 let message = message.unwrap();

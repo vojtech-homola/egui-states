@@ -126,6 +126,26 @@ impl ChangedValues {
         self.values.lock().set(id, value, &self.event);
     }
 
+    pub(crate) fn debug(&self, value: &str) {
+        let message = format!(r#"{{"level": "debug", "message": "{}"}}"#, value);
+        self.set(0, message);
+    }
+
+    pub(crate) fn info(&self, value: &str) {
+        let message = format!(r#"{{"level": "info", "message": "{}"}}"#, value);
+        self.set(0, message);
+    }
+
+    pub(crate) fn warning(&self, value: &str) {
+        let message = format!(r#"{{"level": "warning", "message": "{}"}}"#, value);
+        self.set(0, message);
+    }
+
+    pub(crate) fn error(&self, value: &str) {
+        let message = format!(r#"{{"level": "error", "message": "{}"}}"#, value);
+        self.set(0, message);
+    }
+
     pub fn wait_changed_value(&self, thread_id: u32) -> (u32, Box<dyn ToPython + Send + Sync>) {
         loop {
             if let Some(val) = self.values.lock().get(thread_id) {
