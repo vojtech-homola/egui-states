@@ -26,27 +26,18 @@ class SignalsManager:
     def start_manager(self) -> None:
         """Start the signals manager."""
         if self._workers:
-            self.check_workers()
             return
 
         for i in range(self._workers_count):
-            worker = threading.Thread(target=self._run, args=(i,), daemon=True, name=f"signals_worker_{i}")
+            worker = threading.Thread(target=self._run, daemon=True, name=f"signals_worker_{i}")
             self._workers.append(worker)
             worker.start()
 
-    def check_workers(self) -> None:
-        """Check the workers. If a worker is not alive, restart it."""
-        for i, worker in enumerate(self._workers):
-            if not worker.is_alive():
-                self._workers[i] = threading.Thread(
-                    target=self._run, args=(i,), daemon=True, name=f"signals_worker_{i}"
-                )
-                self._workers[i].start()
-
-    def _run(self, thread_id) -> None:
+    def _run(self) -> None:
+        last_id: int | None = None
         while True:
-            ind, arg = self._server.value_get_signal(thread_id)
-            callbacks = self._callbacks.get(ind, None)
+            last_id, arg = self._server.value_get_signal(last_id)
+            callbacks = self._callbacks.get(last_id, None)
             if callbacks:
                 for callback in callbacks:
                     try:
@@ -57,9 +48,12 @@ class SignalsManager:
                         else:
                             callback(arg)
                     except Exception as e:
-                        self._error_handler(e)
+                        try:
+                            self._error_handler(e)
+                        except Exception:  # safety
+                            pass
             else:
-                error = IndexError(f"Signal with index {ind} not found.")
+                error = IndexError(f"Signal with index {last_id} not found.")
                 self._error_handler(error)
 
     @staticmethod

@@ -36,8 +36,10 @@ async fn start_gui_client(
         let mut websocket_config = WebSocketConfig::default();
         websocket_config.max_message_size = Some(536870912); // 512 MB
         websocket_config.max_frame_size = Some(536870912); // 512 MB
-        let res = connect_async_with_config(address, Some(websocket_config), false).await;
+        let res = connect_async_with_config(&address, Some(websocket_config), false).await;
         if res.is_err() {
+            #[cfg(debug_assertions)]
+            println!("connecting to server at {:?} failed: {:?}", address, res.err());
             continue;
         }
 
@@ -62,13 +64,15 @@ async fn start_gui_client(
                 // read the message
                 let res = socket_read.next().await;
                 if res.is_none() {
-                    println!("Connection closed by server"); // TODO: log error
+                    #[cfg(debug_assertions)]
+                    println!("Connection closed by server");
                     break;
                 }
                 let res = res.unwrap();
 
                 if let Err(e) = res {
-                    println!("Error reading message: {:?}", e); // TODO: log error
+                    #[cfg(debug_assertions)]
+                    println!("reading message from server failed: {:?}", e);
                     break;
                 }
                 let message = res.unwrap();
@@ -76,7 +80,9 @@ async fn start_gui_client(
                     Message::Binary(d) => d,
                     Message::Close(_) => break,
                     _ => {
-                        println!("Wrong type of message received: {:?}", message); // TODO: log error
+                        let error =
+                            format!("client received unexpected message type: {:?}", message);
+                        th_sender.send(ControlMessage::error(error));
                         break;
                     }
                 };
@@ -84,8 +90,7 @@ async fn start_gui_client(
                 // handle the message
                 let res = handle_message(mess.as_ref(), &th_vals, &th_ui_state);
                 if let Err(e) = res {
-                    let error = format!("Error handling message: {:?}", e);
-                    println!("{error}");
+                    let error = format!("handling message from server failed: {:?}", e);
                     th_sender.send(ControlMessage::error(error));
                     break;
                 }
@@ -98,7 +103,8 @@ async fn start_gui_client(
             let message = Message::Binary(Bytes::from(handshake.serialize()));
             let res = socket_write.send(message).await;
             if let Err(e) = res {
-                println!("Error for sending handshake: {:?}", e); // TODO: log error
+                #[cfg(debug_assertions)]
+                println!("sending handshake failed: {:?}", e);
                 return rx;
             }
 
@@ -120,7 +126,8 @@ async fn start_gui_client(
                 // write the message
                 let res = socket_write.send(Message::Binary(data)).await;
                 if let Err(e) = res {
-                    println!("Error for sending message: {:?}", e); // TODO: log error
+                    #[cfg(debug_assertions)]
+                    println!("sending message to socket failed: {:?}", e);
                     break;
                 }
             }

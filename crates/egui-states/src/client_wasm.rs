@@ -32,7 +32,8 @@ async fn start_gui_client(
         let address = format!("ws://{}/ws", addr);
         let res = WsMeta::connect(&address, None).await;
         if res.is_err() {
-            log::error!("Error connecting to server at {}: {:?}", address, res.err());
+            #[cfg(debug_assertions)]
+            log::warn!("connecting to server at {:?} failed: {:?}", address, res.err());
             continue;
         }
 
@@ -55,30 +56,26 @@ async fn start_gui_client(
         let recv_future = async move {
             loop {
                 // read the message
-                #[cfg(debug_assertions)]
-                log::debug!("Waiting for message...");
                 let res = socket_read.next().await;
                 if res.is_none() {
-                    log::error!("Error reading message: Connection closed by server");
+                    #[cfg(debug_assertions)]
+                    log::info!("Connection closed by server");
                     break;
                 }
                 let message = res.unwrap();
                 let mess = match message {
                     WsMessage::Binary(d) => d,
                     _ => {
-                        log::error!("Wrong type of message received: {:?}", message);
+                        #[cfg(debug_assertions)]
+                        log::error!("client received unexpected message type: {:?}", message);
                         break;
                     }
                 };
 
-                #[cfg(debug_assertions)]
-                log::debug!("Message received: {} bytes", mess.len());
-
                 // handle the message
                 let res = handle_message(&mess, &th_vals, &th_client);
                 if let Err(e) = res {
-                    let error = format!("Error handling message: {:?}", e);
-                    log::error!("Error handling message: {}", error);
+                    let error = format!("handling message from server failed: {:?}", e);
                     th_sender.send(ControlMessage::error(error));
                     break;
                 }
@@ -92,7 +89,8 @@ async fn start_gui_client(
             let message = WsMessage::Binary(handshake.serialize());
             let res = socket_write.send(message).await;
             if let Err(e) = res {
-                log::error!("Error for sending handshake: {:?}", e);
+                #[cfg(debug_assertions)]
+                log::error!("sending handshake failed: {:?}", e);
                 return rx;
             }
 
@@ -103,8 +101,6 @@ async fn start_gui_client(
                 // check if the message is terminate
                 if message.is_none() {
                     socket_write.flush().await.unwrap();
-                    #[cfg(debug_assertions)]
-                    log::debug!("Connection closed by client");
                     break;
                 }
                 let message = message.unwrap();
@@ -116,7 +112,8 @@ async fn start_gui_client(
                 // write the message
                 let res = socket_write.send(message).await;
                 if let Err(e) = res {
-                    log::error!("Error for sending message: {:?}", e);
+                    #[cfg(debug_assertions)]
+                    log::error!("sending message to socket failed: {:?}", e);
                     break;
                 }
             }

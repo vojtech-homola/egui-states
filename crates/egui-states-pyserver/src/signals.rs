@@ -1,5 +1,5 @@
 use parking_lot::Mutex;
-use std::collections::VecDeque;
+use std::collections::{VecDeque, hash_map::Entry};
 use std::sync::Arc;
 
 use egui_states_core::nohash::{NoHashMap, NoHashSet};
@@ -7,8 +7,13 @@ use egui_states_core::nohash::{NoHashMap, NoHashSet};
 use crate::event::Event;
 use crate::python_convert::ToPython;
 
+enum Signal {
+    Single(Box<dyn ToPython + Sync + Send>),
+    Multi(VecDeque<Box<dyn ToPython + Sync + Send>>),
+}
+
 struct OrderedMap {
-    values: NoHashMap<u32, Box<dyn ToPython + Sync + Send>>,
+    values: NoHashMap<u32, Signal>,
     indexes: VecDeque<u32>,
 }
 
@@ -21,75 +26,119 @@ impl OrderedMap {
     }
 
     fn insert(&mut self, id: u32, value: Box<dyn ToPython + Sync + Send>) {
-        self.values.insert(id, value);
+        let entry = self.values.entry(id);
+        match entry {
+            Entry::Vacant(e) => {
+                e.insert(Signal::Single(value));
+            }
+            Entry::Occupied(mut e) => match e.get_mut() {
+                Signal::Single(v) => *v = value,
+                Signal::Multi(v) => v.push_back(value),
+            },
+        }
         self.indexes.push_back(id);
     }
 
+    fn pop(&mut self, id: u32) -> Option<Box<dyn ToPython + Sync + Send>> {
+        match self.values.get_mut(&id) {
+            None => None,
+            Some(Signal::Single(_)) => match self.values.remove(&id).unwrap() {
+                Signal::Single(v) => Some(v),
+                _ => unreachable!(),
+            },
+            Some(Signal::Multi(queue)) => queue.pop_front(),
+        }
+    }
+
     fn pop_first(&mut self) -> Option<(u32, Box<dyn ToPython + Sync + Send>)> {
-        for _ in 0..self.indexes.len() {
-            let id = self.indexes.pop_front().unwrap();
-            if let Some(value) = self.values.remove(&id) {
+        while let Some(id) = self.indexes.pop_front() {
+            if let Some(value) = self.pop(id) {
                 return Some((id, value));
+            } else {
+                while self.indexes.front().map_or(false, |next| *next == id) {
+                    self.indexes.pop_front();
+                }
             }
         }
         None
     }
+
+    fn set_to_multi(&mut self, id: u32) {
+        if let Some(signal) = self.values.remove(&id) {
+            let res = match signal {
+                Signal::Single(v) => {
+                    let mut vec = VecDeque::new();
+                    vec.push_back(v);
+                    vec
+                }
+                Signal::Multi(vec) => vec,
+            };
+            self.values.insert(id, Signal::Multi(res));
+        } else {
+            self.values.insert(id, Signal::Multi(VecDeque::new()));
+        }
+    }
+
+    fn set_to_single(&mut self, id: u32) {
+        if let Some(signal) = self.values.remove(&id) {
+            let res = match signal {
+                Signal::Single(v) => Some(v),
+                Signal::Multi(mut vec) => vec.pop_back(),
+            };
+
+            if let Some(res) = res {
+                self.values.insert(id, Signal::Single(res));
+            }
+        }
+    }
 }
 
-struct ChnegedInner {
-    values: OrderedMap,                                       // values not blocked
-    blocked: NoHashMap<u32, Box<dyn ToPython + Sync + Send>>, // values blocked by some thread
-    block_list: NoHashSet<u32>,                               // ids blocked by some thread
-    threads_last: NoHashMap<u32, u32>,                        // cache last id for each thread
+struct ChangedInner {
+    values: OrderedMap,           // values not blocked
+    blocked_list: NoHashSet<u32>, // ids blocked by some thread
 }
 
 /*
-    Getting signals value in that way that if thare is new signal with the same id which is
-    currently processed, it will wait for the same thread. So on id is processed in order.
+    Getting signals value in that way that if there is new signal with the same id which is
+    currently processed, it will wait for the same thread. So id is processed in order.
 */
-impl ChnegedInner {
+impl ChangedInner {
     fn new() -> Self {
         Self {
             values: OrderedMap::new(),
-            blocked: NoHashMap::default(),
-            block_list: NoHashSet::default(),
-            threads_last: NoHashMap::default(),
+            blocked_list: NoHashSet::default(),
         }
     }
 
     fn set(&mut self, id: u32, value: Box<dyn ToPython + Sync + Send>, event: &Event) {
-        if self.block_list.contains(&id) {
-            self.blocked.insert(id, value);
-        } else {
-            self.values.insert(id, value);
+        self.values.insert(id, value);
+        if !self.blocked_list.contains(&id) {
             event.set_one();
         }
     }
 
-    fn get(&mut self, thread_id: u32) -> Option<(u32, Box<dyn ToPython + Send + Sync>)> {
-        match self.threads_last.get(&thread_id) {
+    fn get(&mut self, last_id: Option<u32>) -> Option<(u32, Box<dyn ToPython + Send + Sync>)> {
+        match last_id {
             // previous call was made
             Some(last_id) => {
-                if self.block_list.contains(last_id) {
-                    let val = self.blocked.remove(last_id);
+                if self.blocked_list.contains(&last_id) {
+                    let val = self.values.pop(last_id);
                     match val {
-                        Some(v) => Some((*last_id, v)),
+                        Some(v) => Some((last_id, v)),
                         None => {
                             let val = self.values.pop_first();
-                            self.block_list.remove(last_id);
+                            self.blocked_list.remove(&last_id);
 
-                            if let Some(ref v) = val {
-                                self.threads_last.insert(thread_id, v.0);
-                                self.block_list.insert(v.0);
+                            if let Some((id, _)) = val {
+                                self.blocked_list.insert(id);
                             }
                             val
                         }
                     }
                 } else {
                     let val = self.values.pop_first();
-                    if let Some(ref v) = val {
-                        self.threads_last.insert(thread_id, v.0);
-                        self.block_list.insert(v.0);
+                    if let Some((id, _)) = val {
+                        self.blocked_list.insert(id);
                     }
                     val
                 }
@@ -97,9 +146,8 @@ impl ChnegedInner {
             // this is first time
             None => {
                 let val = self.values.pop_first();
-                if let Some(ref v) = val {
-                    self.threads_last.insert(thread_id, v.0);
-                    self.block_list.insert(v.0);
+                if let Some((id, _)) = val {
+                    self.blocked_list.insert(id);
                 }
                 val
             }
@@ -110,14 +158,14 @@ impl ChnegedInner {
 #[derive(Clone)]
 pub(crate) struct ChangedValues {
     event: Event,
-    values: Arc<Mutex<ChnegedInner>>,
+    values: Arc<Mutex<ChangedInner>>,
 }
 
 impl ChangedValues {
     pub fn new() -> Self {
         Self {
             event: Event::new(),
-            values: Arc::new(Mutex::new(ChnegedInner::new())),
+            values: Arc::new(Mutex::new(ChangedInner::new())),
         }
     }
 
@@ -126,32 +174,39 @@ impl ChangedValues {
         self.values.lock().set(id, value, &self.event);
     }
 
-    pub(crate) fn debug(&self, value: &str) {
-        let message = format!(r#"{{"level": "debug", "message": "{}"}}"#, value);
-        self.set(0, message);
+    pub(crate) fn debug(&self, message: impl ToString) {
+        self.set(0, (0, message.to_string()));
     }
 
-    pub(crate) fn info(&self, value: &str) {
-        let message = format!(r#"{{"level": "info", "message": "{}"}}"#, value);
-        self.set(0, message);
+    pub(crate) fn info(&self, message: impl ToString) {
+        self.set(0, (1, message.to_string()));
     }
 
-    pub(crate) fn warning(&self, value: &str) {
-        let message = format!(r#"{{"level": "warning", "message": "{}"}}"#, value);
-        self.set(0, message);
+    pub(crate) fn warning(&self, message: impl ToString) {
+        self.set(0, (2, message.to_string()));
     }
 
-    pub(crate) fn error(&self, value: &str) {
-        let message = format!(r#"{{"level": "error", "message": "{}"}}"#, value);
-        self.set(0, message);
+    pub(crate) fn error(&self, message: impl ToString) {
+        self.set(0, (3, message.to_string()));
     }
 
-    pub fn wait_changed_value(&self, thread_id: u32) -> (u32, Box<dyn ToPython + Send + Sync>) {
+    pub fn wait_changed_value(
+        &self,
+        last_id: Option<u32>,
+    ) -> (u32, Box<dyn ToPython + Send + Sync>) {
         loop {
-            if let Some(val) = self.values.lock().get(thread_id) {
+            if let Some(val) = self.values.lock().get(last_id) {
                 return val;
             }
             self.event.wait_lock();
         }
+    }
+
+    pub fn set_to_multi(&self, id: u32) {
+        self.values.lock().values.set_to_multi(id);
+    }
+
+    pub fn set_to_single(&self, id: u32) {
+        self.values.lock().values.set_to_single(id);
     }
 }

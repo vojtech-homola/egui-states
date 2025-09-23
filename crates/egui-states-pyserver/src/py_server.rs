@@ -128,10 +128,10 @@ impl StateServerCore {
         }
     }
 
-    fn value_get_signal<'py>(&self, py: Python<'py>, thread_id: u32) -> (u32, Bound<'py, PyAny>) {
+    fn value_get_signal<'py>(&self, py: Python<'py>, last_id: Option<u32>) -> (u32, Bound<'py, PyAny>) {
         let (value_id, value) = py.detach(|| {
             loop {
-                let res = self.changed_values.wait_changed_value(thread_id);
+                let res = self.changed_values.wait_changed_value(last_id);
                 if self.registed_values.read().contains(&res.0) {
                     break res;
                 }
@@ -150,6 +150,14 @@ impl StateServerCore {
                 value_id
             ))),
         }
+    }
+
+    fn set_to_multi(&self, value_id: u32) {
+        self.changed_values.set_to_multi(value_id);
+    }
+
+    fn set_to_single(&self, value_id: u32) {
+        self.changed_values.set_to_single(value_id);
     }
 
     // values -----------------------------------------------------------------

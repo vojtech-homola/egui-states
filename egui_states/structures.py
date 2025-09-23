@@ -1,8 +1,7 @@
 # ruff: noqa: D107
-import json
 from abc import ABC, abstractmethod
 from collections.abc import Buffer, Callable
-from enum import StrEnum
+from enum import Enum
 from typing import Any
 
 import numpy as np
@@ -31,38 +30,38 @@ class _MainStatesBase(_StatesBase, ABC):
         pass
 
 
-class LogLevel(StrEnum):
+class LogLevel(Enum):
     """Logging levels."""
 
-    Debug = "debug"
-    Info = "info"
-    Warning = "warning"
-    Error = "error"
+    Debug = 0
+    Info = 1
+    Warning = 2
+    Error = 3
 
 
 class LoggingSignal:
     """Logging signal for processing log messages from the state server."""
 
-    def __init__(self, signals_manager: SignalsManager):
+    def __init__(self, signals_manager: SignalsManager, server: SteteServerCoreBase) -> None:
         """Initialize the LoggingSignal."""
-        self._loggers: dict[str, list[Callable[[str], None]]] = {"debug": [], "info": [], "warning": [], "error": []}
+        self._loggers: dict[int, list[Callable[[str], None]]] = {0: [], 1: [], 2: [], 3: []}
         signals_manager.add_callback(0, self._callback)
+        server.set_to_multi(0)
 
-    def _callback(self, message: str) -> None:
-        log = json.loads(message)
-        level = log["level"]
-        if level == "debug":
-            for logger in self._loggers["debug"]:
-                logger(log["message"])
-        elif level == "info":
-            for logger in self._loggers["info"]:
-                logger(log["message"])
-        elif level == "warning":
-            for logger in self._loggers["warning"]:
-                logger(log["message"])
-        elif level == "error":
-            for logger in self._loggers["error"]:
-                logger(log["message"])
+    def _callback(self, message: tuple[int, str]) -> None:
+        level = message[0]
+        if level == LogLevel.Debug.value:
+            for logger in self._loggers[0]:
+                logger(message[1])
+        elif level == LogLevel.Info.value:
+            for logger in self._loggers[1]:
+                logger(message[1])
+        elif level == LogLevel.Warning.value:
+            for logger in self._loggers[2]:
+                logger(message[1])
+        elif level == LogLevel.Error.value:
+            for logger in self._loggers[3]:
+                logger(message[1])
 
     def add_logger(self, level: LogLevel, logger: Callable[[str], None]):
         """Add logger for a specific level.
@@ -109,6 +108,20 @@ class _ValueBase(_StaticBase):
         self._server = server
         self._signals_manager = signals_manager
         # signals_manager.register_signal(self._value_id)
+
+    def set_to_multi(self) -> None:
+        """Set the value to multi mode.
+
+        In multi mode, changes of the value are queued and are all processed with single thread.
+        """
+        self._server.set_to_multi(self._value_id)
+
+    def set_to_single(self) -> None:
+        """Set the value to single mode. It is the default mode.
+
+        In single mode, only the last change of the value is processed.
+        """
+        self._server.set_to_single(self._value_id)
 
 
 class Value[T](_ValueBase):

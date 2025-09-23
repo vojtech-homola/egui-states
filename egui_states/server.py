@@ -36,7 +36,7 @@ class StateServer[T: _MainStatesBase]:
         self._states: T = state_class(self._server.update)
 
         _initialize_states(self._states, self._server, self._signals_manager)
-        self.logging = LoggingSignal(self._signals_manager)
+        self.logging = LoggingSignal(self._signals_manager, self._server)
 
     @property
     def states(self) -> T:
