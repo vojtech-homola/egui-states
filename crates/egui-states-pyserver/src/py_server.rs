@@ -128,7 +128,11 @@ impl StateServerCore {
         }
     }
 
-    fn value_get_signal<'py>(&self, py: Python<'py>, last_id: Option<u32>) -> (u32, Bound<'py, PyAny>) {
+    fn value_get_signal<'py>(
+        &self,
+        py: Python<'py>,
+        last_id: Option<u32>,
+    ) -> (u32, Bound<'py, PyAny>) {
         let (value_id, value) = py.detach(|| {
             loop {
                 let res = self.changed_values.wait_changed_value(last_id);

@@ -5,27 +5,26 @@ use std::sync::{Arc, atomic};
 use futures_util::{SinkExt, StreamExt, stream::SplitSink};
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::task::JoinHandle;
 use tokio_tungstenite::WebSocketStream;
-use tokio_tungstenite::tungstenite::{Bytes, Message, protocol::WebSocketConfig};
+use tokio_tungstenite::tungstenite::{Message, protocol::WebSocketConfig};
 
 use egui_states_core::controls::ControlMessage;
 use egui_states_core::event_async::Event;
 use egui_states_core::serialization;
 
-use crate::sender::MessageSender;
+use crate::sender::{MessageReceiver, MessageSender};
 use crate::signals::ChangedValues;
 use crate::states_server::ValuesList;
 
 enum ChannelHolder {
-    Transfer(JoinHandle<UnboundedReceiver<Option<Bytes>>>),
-    Rx(UnboundedReceiver<Option<Bytes>>),
+    Transfer(JoinHandle<MessageReceiver>),
+    Rx(MessageReceiver),
 }
 
 pub(crate) async fn start(
     sender: MessageSender,
-    rx: UnboundedReceiver<Option<Bytes>>,
+    rx: MessageReceiver,
     connected: Arc<atomic::AtomicBool>,
     enabled: Arc<atomic::AtomicBool>,
     values: ValuesList,
@@ -136,9 +135,15 @@ pub(crate) async fn start(
 
                     // clean mesage queue and send sync signals
                     while !rx.is_empty() {
-                        rx.recv().await;
+                        let message = rx.recv().await;
+                        if let Some(Some(msg)) = message {
+                            if let Some(event) = msg.1 {
+                                event.set(); // notify the sender that the message was "sent"
+                            }
+                        }
                     }
 
+                    std::thread::sleep(std::time::Duration::from_millis(100));
                     connected.store(true, atomic::Ordering::Relaxed);
                     for (_, v) in values.sync.iter() {
                         v.sync();
@@ -166,9 +171,9 @@ async fn communication_handler(
     values: ValuesList,
     signals: ChangedValues,
     websocket: WebSocketStream<TcpStream>,
-    rx: UnboundedReceiver<Option<Bytes>>,
+    rx: MessageReceiver,
     sender: MessageSender,
-) -> JoinHandle<UnboundedReceiver<Option<Bytes>>> {
+) -> JoinHandle<MessageReceiver> {
     let (socket_tx, mut socket_rx) = websocket.split();
 
     let read_connected = connected.clone();
@@ -279,12 +284,12 @@ async fn communication_handler(
 }
 
 async fn writer(
-    mut rx: UnboundedReceiver<Option<Bytes>>,
+    mut rx: MessageReceiver,
     connected: Arc<AtomicBool>,
     mut websocket: SplitSink<WebSocketStream<TcpStream>, Message>,
     signals: ChangedValues,
     reader_handle: tokio::task::JoinHandle<()>,
-) -> UnboundedReceiver<Option<Bytes>> {
+) -> MessageReceiver {
     loop {
         // get message from channel
         let message = rx.recv().await.unwrap();
@@ -298,8 +303,13 @@ async fn writer(
             break;
         }
 
+        let (msg, event) = message.unwrap().get();
+
         // if not connected, stop thread
         if !connected.load(atomic::Ordering::Relaxed) {
+            if let Some(event) = event {
+                event.set();
+            }
             let _ = websocket.close().await;
             reader_handle.abort();
             let _ = reader_handle.await;
@@ -307,7 +317,10 @@ async fn writer(
         }
 
         // send message
-        let res = websocket.send(Message::Binary(message.unwrap())).await;
+        let res = websocket.send(msg).await;
+        if let Some(event) = event {
+            event.set();
+        }
         if let Err(e) = res {
             signals.error(&format!("sending message to client failed: {:?}", e));
             reader_handle.abort();

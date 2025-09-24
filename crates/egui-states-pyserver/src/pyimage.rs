@@ -12,6 +12,7 @@ use egui_states_core::image::{ImageInfo, ImageType};
 
 use crate::sender::MessageSender;
 use crate::server::SyncTrait;
+use crate::event::Event;
 
 struct ImageDataInner {
     data: Vec<u8>,
@@ -23,6 +24,7 @@ pub(crate) struct PyValueImage {
     image: RwLock<ImageDataInner>,
     sender: MessageSender,
     connected: Arc<AtomicBool>,
+    event: Event,
 }
 
 impl PyValueImage {
@@ -35,6 +37,7 @@ impl PyValueImage {
             }),
             sender,
             connected,
+            event: Event::new(),
         })
     }
 
@@ -165,9 +168,13 @@ impl PyValueImage {
             }
         }
 
+        self.event.wait_lock();
+        if !self.connected.load(Ordering::Relaxed) {
+            return Ok(());
+        }
         // send the image to the server
         if let Some(data) = data {
-            self.sender.send(Bytes::from(data));
+            self.sender.send_with_event(Bytes::from(data), self.event.clone());
         }
 
         Ok(())
@@ -178,6 +185,7 @@ impl SyncTrait for PyValueImage {
     fn sync(&self) {
         let w = self.image.read();
         if w.size[0] == 0 || w.size[1] == 0 {
+            self.event.set();
             return;
         }
 
@@ -197,6 +205,7 @@ impl SyncTrait for PyValueImage {
         drop(w);
 
         self.sender.send(Bytes::from(data));
+        self.event.set();
     }
 }
 
