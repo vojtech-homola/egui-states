@@ -96,7 +96,7 @@ impl ValuesCreator for ParseValuesCreator {
 
     fn add_image(&mut self, state: &'static str, name: &'static str) -> Arc<ValueImage> {
         let id = self.get_id();
-        let value = ValueImage::new(id);
+        let value = ValueImage::new(id, self.sender.clone());
 
         self.add_value_type(state, ValueType::Image(name, id));
 

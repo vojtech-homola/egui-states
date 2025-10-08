@@ -174,6 +174,7 @@ impl ChangedValues {
         self.values.lock().set(id, value, &self.event);
     }
 
+    #[allow(dead_code)]
     pub(crate) fn debug(&self, message: impl ToString) {
         self.set(0, (0, message.to_string()));
     }

@@ -28,6 +28,15 @@ impl Event {
         self.cond.notify_one();
     }
 
+    pub(crate) fn set(&self) {
+        *self.flag.lock() = true;
+        self.cond.notify_all();
+    }
+
+    pub(crate) fn clear(&self) {
+        *self.flag.lock() = false;
+    }
+
     pub(crate) fn wait_lock(&self) {
         self.cond.wait_while(&mut self.flag.lock(), |flag| {
             if *flag {

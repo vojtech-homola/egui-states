@@ -3,12 +3,10 @@ use std::sync::{Arc, atomic};
 use std::thread;
 
 use tokio::runtime::Builder;
-use tokio::sync::mpsc::UnboundedReceiver;
-use tokio_tungstenite::tungstenite::Bytes;
 
 use egui_states_core::event_async::Event;
 
-use crate::sender::MessageSender;
+use crate::sender::{MessageReceiver, MessageSender};
 use crate::server_core::start;
 use crate::signals::ChangedValues;
 use crate::states_server::ValuesList;
@@ -26,7 +24,7 @@ pub(crate) struct Server {
 impl Server {
     pub(crate) fn new(
         sender: MessageSender,
-        rx: UnboundedReceiver<Option<Bytes>>,
+        rx: MessageReceiver,
         connected: Arc<atomic::AtomicBool>,
         values: ValuesList,
         signals: ChangedValues,
