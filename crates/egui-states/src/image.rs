@@ -4,9 +4,11 @@ use std::sync::Arc;
 
 use egui::{ColorImage, ImageData, TextureHandle};
 
+use egui_states_core::controls::ControlMessage;
 use egui_states_core::image::{ImageInfo, ImageType};
 
 use crate::UpdateValue;
+use crate::sender::MessageSender;
 
 const TEXTURE_OPTIONS: egui::TextureOptions = egui::TextureOptions {
     magnification: egui::TextureFilter::Nearest,
@@ -18,13 +20,15 @@ const TEXTURE_OPTIONS: egui::TextureOptions = egui::TextureOptions {
 pub struct ValueImage {
     id: u32,
     texture_handle: RwLock<Option<(TextureHandle, [usize; 2])>>,
+    sender: MessageSender,
 }
 
 impl ValueImage {
-    pub fn new(id: u32) -> Arc<Self> {
+    pub(crate) fn new(id: u32, sender: MessageSender) -> Arc<Self> {
         Arc::new(Self {
             id,
             texture_handle: RwLock::new(None),
+            sender,
         })
     }
 
@@ -69,6 +73,9 @@ impl UpdateValue for ValueImage {
                 e, self.id
             )
         })?;
+
+        // TODO: not sure if this is the best place to send ack
+        self.sender.send(ControlMessage::ack(self.id));
 
         let ImageInfo {
             image_size,

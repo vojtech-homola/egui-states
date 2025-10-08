@@ -167,6 +167,7 @@ impl ServerValuesCreator {
         let image = PyValueImage::new(id, self.sender.clone(), self.connected.clone());
 
         self.py_val.images.insert(id, image.clone());
+        self.val.ack.insert(id, image.clone());
         self.val.sync.insert(id, image);
     }
 

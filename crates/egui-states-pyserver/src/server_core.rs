@@ -135,15 +135,10 @@ pub(crate) async fn start(
 
                     // clean mesage queue and send sync signals
                     while !rx.is_empty() {
-                        let message = rx.recv().await;
-                        if let Some(Some(msg)) = message {
-                            if let Some(event) = msg.1 {
-                                event.set(); // notify the sender that the message was "sent"
-                            }
-                        }
+                        let _ = rx.recv().await;
                     }
 
-                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    // std::thread::sleep(std::time::Duration::from_millis(100));
                     connected.store(true, atomic::Ordering::Relaxed);
                     for (_, v) in values.sync.iter() {
                         v.sync();
@@ -190,7 +185,7 @@ async fn communication_handler(
             if !read_connected.load(atomic::Ordering::Relaxed) {
                 #[cfg(debug_assertions)]
                 read_signals.debug("read thread is closing");
-                return;
+                break;
             }
 
             if res.is_none() {
@@ -274,6 +269,11 @@ async fn communication_handler(
             };
         }
 
+        // acknowledge all pending values
+        for v in values.ack.values() {
+            v.acknowledge();
+        }
+
         // send close signal to writing thread if reading fails
         #[cfg(debug_assertions)]
         read_signals.debug("terminating write thread");
@@ -302,14 +302,10 @@ async fn writer(
             let _ = reader_handle.await;
             break;
         }
-
-        let (msg, event) = message.unwrap().get();
+        let msg = message.unwrap();
 
         // if not connected, stop thread
         if !connected.load(atomic::Ordering::Relaxed) {
-            if let Some(event) = event {
-                event.set();
-            }
             let _ = websocket.close().await;
             reader_handle.abort();
             let _ = reader_handle.await;
@@ -318,9 +314,6 @@ async fn writer(
 
         // send message
         let res = websocket.send(msg).await;
-        if let Some(event) = event {
-            event.set();
-        }
         if let Err(e) = res {
             signals.error(&format!("sending message to client failed: {:?}", e));
             reader_handle.abort();

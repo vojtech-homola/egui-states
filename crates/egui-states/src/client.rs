@@ -70,6 +70,7 @@ async fn start_gui_client(
                 }
                 let res = res.unwrap();
 
+                #[allow(unused_variables)]
                 if let Err(e) = res {
                     #[cfg(debug_assertions)]
                     println!("reading message from server failed: {:?}", e);
@@ -102,6 +103,8 @@ async fn start_gui_client(
             let handshake = ControlMessage::Handshake(version, handshake);
             let message = Message::Binary(Bytes::from(handshake.serialize()));
             let res = socket_write.send(message).await;
+            
+            #[allow(unused_variables)]
             if let Err(e) = res {
                 #[cfg(debug_assertions)]
                 println!("sending handshake failed: {:?}", e);
@@ -125,6 +128,7 @@ async fn start_gui_client(
 
                 // write the message
                 let res = socket_write.send(Message::Binary(data)).await;
+                #[allow(unused_variables)]
                 if let Err(e) = res {
                     #[cfg(debug_assertions)]
                     println!("sending message to socket failed: {:?}", e);

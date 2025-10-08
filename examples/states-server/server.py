@@ -1,3 +1,4 @@
+# ruff: noqa: D103
 import numpy as np
 from states_server import core
 from states_server.states import States

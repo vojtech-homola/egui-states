@@ -10,9 +10,9 @@ use tokio_tungstenite::tungstenite::Bytes;
 
 use egui_states_core::image::{ImageInfo, ImageType};
 
-use crate::sender::MessageSender;
-use crate::server::SyncTrait;
 use crate::event::Event;
+use crate::sender::MessageSender;
+use crate::server::{Acknowledge, SyncTrait};
 
 struct ImageDataInner {
     data: Vec<u8>,
@@ -29,6 +29,9 @@ pub(crate) struct PyValueImage {
 
 impl PyValueImage {
     pub(crate) fn new(id: u32, sender: MessageSender, connected: Arc<AtomicBool>) -> Arc<Self> {
+        let event = Event::new();
+        event.set(); // initially set so the first send does not block
+
         Arc::new(Self {
             id,
             image: RwLock::new(ImageDataInner {
@@ -37,7 +40,7 @@ impl PyValueImage {
             }),
             sender,
             connected,
-            event: Event::new(),
+            event,
         })
     }
 
@@ -174,10 +177,16 @@ impl PyValueImage {
         }
         // send the image to the server
         if let Some(data) = data {
-            self.sender.send_with_event(Bytes::from(data), self.event.clone());
+            self.sender.send(Bytes::from(data));
         }
 
         Ok(())
+    }
+}
+
+impl Acknowledge for PyValueImage {
+    fn acknowledge(&self) {
+        self.event.set();
     }
 }
 
@@ -204,8 +213,8 @@ impl SyncTrait for PyValueImage {
         data[buff.len()..].copy_from_slice(&w.data);
         drop(w);
 
+        self.event.clear();
         self.sender.send(Bytes::from(data));
-        self.event.set();
     }
 }
 

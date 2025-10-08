@@ -154,7 +154,7 @@ impl ValuesCreator for ClientValuesCreator {
 
     fn add_image(&mut self, _: &'static str, _: &'static str) -> Arc<ValueImage> {
         let id = self.get_id();
-        let value = ValueImage::new(id);
+        let value = ValueImage::new(id, self.sender.clone());
 
         self.val.images.insert(id, value.clone());
         value
