@@ -4,7 +4,7 @@ use egui_states_core::serialization;
 use crate::client_base::Client;
 use crate::values_creator::ValuesList;
 
-pub(crate) fn handle_message(data: &[u8], vals: &ValuesList, client: &Client) -> Result<(), String> {
+pub(crate) async fn handle_message(data: &[u8], vals: &ValuesList, client: &Client) -> Result<(), String> {
     let message_type = data[0];
 
     if message_type == serialization::TYPE_CONTROL {
