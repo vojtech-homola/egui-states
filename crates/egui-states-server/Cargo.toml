@@ -1,5 +1,5 @@
 [package]
-name = "egui_states_pyserver"
+name = "egui_states_server"
 version.workspace = true
 edition.workspace = true
 

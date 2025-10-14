@@ -11,8 +11,8 @@ name = "GuiTest"
 path = "src/main.rs"
 
 [dependencies]
-eframe = "0.32.0"
-egui = { version = "0.32.0", features = ["rayon"] }
+eframe = "0.33.0"
+egui = { version = "0.33.0", features = ["rayon"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 egui_states = { workspace = true, features = ["client"] }
