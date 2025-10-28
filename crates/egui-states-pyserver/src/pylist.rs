@@ -10,7 +10,7 @@ use tokio_tungstenite::tungstenite::Bytes;
 
 use egui_states_core::serialization::{TYPE_LIST, serialize_vec};
 
-use crate::python_convert::ToPython;
+use crate::python_convert::{FromPython, ToPython};
 use crate::sender::MessageSender;
 use crate::server::SyncTrait;
 
@@ -52,7 +52,7 @@ impl<T> PyValueList<T> {
 
 impl<T> PyListTrait for PyValueList<T>
 where
-    T: Serialize + ToPython + for<'py> FromPyObject<'py> + Clone,
+    T: Serialize + ToPython + FromPython + Clone,
 {
     fn get_py<'py>(&self, py: Python<'py>) -> Bound<'py, PyList> {
         let list = self.list.read().clone();
@@ -74,10 +74,10 @@ where
     }
 
     fn set_py(&self, list: &Bound<PyAny>, update: bool) -> PyResult<()> {
-        let list = list.downcast::<pyo3::types::PyList>()?;
+        let list = list.cast::<pyo3::types::PyList>()?;
         let mut data = Vec::new();
         for val in list {
-            data.push(val.extract()?);
+            data.push(T::from_python(&val)?);
         }
 
         let mut l = self.list.write();
@@ -93,7 +93,7 @@ where
     }
 
     fn set_item_py(&self, idx: usize, list: &Bound<PyAny>, update: bool) -> PyResult<()> {
-        let value: T = list.extract()?;
+        let value: T = T::from_python(list)?;
         let mut new_list = self.list.write();
         if idx >= new_list.len() {
             return Err(PyIndexError::new_err("list index out of range"));
@@ -136,7 +136,7 @@ where
     }
 
     fn add_item_py(&self, value: &Bound<PyAny>, update: bool) -> PyResult<()> {
-        let value: T = value.extract()?;
+        let value: T = T::from_python(value)?;
 
         let mut list = self.list.write();
         if self.connected.load(Ordering::Relaxed) {

@@ -15,7 +15,7 @@ use egui_states_core::graphs::{Graph, GraphElement, GraphMessage};
 use egui_states_core::nohash::NoHashMap;
 use egui_states_core::serialization::{TYPE_GRAPH, serialize};
 
-use crate::python_convert::ToPython;
+use crate::python_convert::{ToPython, FromPython};
 use crate::sender::MessageSender;
 use crate::server::SyncTrait;
 
@@ -51,12 +51,12 @@ impl<T> PyValueGraphs<T> {
     }
 }
 
-impl<T> PyGraphTrait for PyValueGraphs<T>
+impl<'a, T> PyGraphTrait for PyValueGraphs<T>
 where
-    T: GraphElement + Element + for<'py> FromPyObject<'py> + ToPython + Serialize,
+    T: GraphElement + Element + FromPython + ToPython + Serialize,
 {
     fn set_py(&self, idx: u16, object: &Bound<PyAny>, update: bool) -> PyResult<()> {
-        let buffer = PyBuffer::<T>::extract_bound(object)?;
+        let buffer = PyBuffer::<T>::extract(object.as_borrowed())?;
         let graph = buffer_to_graph(&buffer)?;
 
         let mut w = self.graphs.write();
@@ -69,7 +69,7 @@ where
     }
 
     fn add_points_py(&self, idx: u16, object: &Bound<PyAny>, update: bool) -> PyResult<()> {
-        let buffer = PyBuffer::<T>::extract_bound(object)?;
+        let buffer = PyBuffer::<T>::extract(object.as_borrowed())?;
 
         let mut w = self.graphs.write();
         let graph = w
@@ -185,7 +185,7 @@ where
 
 fn buffer_to_graph_add<'py, T>(buffer: &PyBuffer<T>, graph: &mut Graph<T>) -> PyResult<usize>
 where
-    T: GraphElement + Element + FromPyObject<'py>,
+    T: GraphElement + Element + FromPython,
 {
     let shape = buffer.shape();
     let stride = buffer.strides().last().ok_or(PyValueError::new_err(
@@ -252,7 +252,7 @@ where
 
 fn buffer_to_graph<'py, T>(buffer: &PyBuffer<T>) -> PyResult<Graph<T>>
 where
-    T: GraphElement + Element + FromPyObject<'py>,
+    T: GraphElement + Element + FromPython,
 {
     let shape = buffer.shape();
     let stride = buffer.strides().last().ok_or(PyValueError::new_err(

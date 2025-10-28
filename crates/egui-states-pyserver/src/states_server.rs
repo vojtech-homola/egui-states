@@ -3,7 +3,6 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use pyo3::buffer::Element;
-use pyo3::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use egui_states_core::graphs::GraphElement;
@@ -122,12 +121,7 @@ impl ServerValuesCreator {
 
     pub fn add_value<T>(&mut self, id: u32, value: T)
     where
-        T: ToPython
-            + for<'py> FromPyObject<'py>
-            + Serialize
-            + for<'a> Deserialize<'a>
-            + Clone
-            + 'static,
+        T: ToPython + FromPython + Serialize + for<'a> Deserialize<'a> + Clone + 'static,
     {
         let value = PyValue::new(
             id,
@@ -145,7 +139,7 @@ impl ServerValuesCreator {
 
     pub fn add_static<T>(&mut self, id: u32, value: T)
     where
-        T: ToPython + for<'py> FromPyObject<'py> + Serialize + Clone + 'static,
+        T: ToPython + FromPython + Serialize + Clone + 'static,
     {
         let value = PyValueStatic::new(id, value, self.sender.clone(), self.connected.clone());
 
@@ -173,8 +167,8 @@ impl ServerValuesCreator {
 
     pub fn add_dict<K, V>(&mut self, id: u32)
     where
-        K: ToPython + for<'py> FromPyObject<'py> + Serialize + Eq + Hash + 'static,
-        V: ToPython + for<'py> FromPyObject<'py> + Serialize + 'static,
+        K: ToPython + FromPython + Serialize + Eq + Hash + 'static,
+        V: ToPython + FromPython + Serialize + 'static,
     {
         let dict = PyValueDict::<K, V>::new(id, self.sender.clone(), self.connected.clone());
 
@@ -184,7 +178,7 @@ impl ServerValuesCreator {
 
     pub fn add_list<T>(&mut self, id: u32)
     where
-        T: ToPython + for<'py> FromPyObject<'py> + Serialize + Clone + 'static,
+        T: ToPython + FromPython + Serialize + Clone + 'static,
     {
         let list = PyValueList::<T>::new(id, self.sender.clone(), self.connected.clone());
 
@@ -192,9 +186,7 @@ impl ServerValuesCreator {
         self.val.sync.insert(id, list);
     }
 
-    pub fn add_graphs<
-        T: GraphElement + Element + Serialize + for<'py> FromPyObject<'py> + ToPython + 'static,
-    >(
+    pub fn add_graphs<T: GraphElement + Element + Serialize + FromPython + ToPython + 'static>(
         &mut self,
         id: u32,
     ) {

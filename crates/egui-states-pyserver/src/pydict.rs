@@ -12,6 +12,7 @@ use tokio_tungstenite::tungstenite::Bytes;
 
 use egui_states_core::serialization::{TYPE_DICT, serialize_vec};
 
+use crate::FromPython;
 use crate::python_convert::ToPython;
 use crate::sender::MessageSender;
 use crate::server::SyncTrait;
@@ -55,8 +56,8 @@ impl<K, V> PyValueDict<K, V> {
 
 impl<K, V> PyDictTrait for PyValueDict<K, V>
 where
-    K: Serialize + ToPython + for<'py> FromPyObject<'py> + Eq + Hash,
-    V: Serialize + ToPython + for<'py> FromPyObject<'py>,
+    K: Serialize + ToPython + FromPython + Eq + Hash,
+    V: Serialize + ToPython + FromPython,
 {
     fn get_py<'py>(&self, py: Python<'py>) -> Bound<'py, PyDict> {
         let dict = self.dict.read();
@@ -71,7 +72,7 @@ where
     }
 
     fn get_item_py<'py>(&self, key: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
-        let dict_key = key.extract()?;
+        let dict_key = K::from_python(key)?;
         let dict = self.dict.read();
 
         match dict.get(&dict_key) {
@@ -81,7 +82,7 @@ where
     }
 
     fn del_item_py(&self, key: &Bound<PyAny>, update: bool) -> PyResult<()> {
-        let dict_key: K = key.extract()?;
+        let dict_key = K::from_python(key)?;
 
         let mut d = self.dict.write();
         if self.connected.load(Ordering::Relaxed) {
@@ -95,8 +96,8 @@ where
     }
 
     fn set_item_py(&self, key: &Bound<PyAny>, value: &Bound<PyAny>, update: bool) -> PyResult<()> {
-        let dict_key: K = key.extract()?;
-        let dict_value: V = value.extract()?;
+        let dict_key = K::from_python(key)?;
+        let dict_value = V::from_python(value)?;
 
         let mut d = self.dict.write();
 
@@ -111,12 +112,12 @@ where
     }
 
     fn set_py(&self, dict: &Bound<PyAny>, update: bool) -> PyResult<()> {
-        let dict = dict.downcast::<pyo3::types::PyDict>()?;
+        let dict = dict.cast::<pyo3::types::PyDict>()?;
         let mut new_dict = HashMap::new();
 
         for (key, value) in dict {
-            let key = key.extract()?;
-            let value = value.extract()?;
+            let key = K::from_python(&key)?;
+            let value = V::from_python(&value)?;
             new_dict.insert(key, value);
         }
 

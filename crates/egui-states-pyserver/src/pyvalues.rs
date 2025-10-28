@@ -61,14 +61,14 @@ impl<T> PyValue<T> {
 
 impl<T> PyValueTrait for PyValue<T>
 where
-    T: Serialize + Clone + ToPython + for<'py> FromPyObject<'py> + 'static,
+    T: Serialize + Clone + ToPython + FromPython + 'static,
 {
     fn get_py<'py>(&self, py: Python<'py>) -> Bound<'py, PyAny> {
         self.value.read().0.to_python(py)
     }
 
     fn set_py(&self, value: &Bound<PyAny>, set_signal: bool, update: bool) -> PyResult<()> {
-        let value: T = value.extract()?;
+        let value: T = T::from_python(value)?;
         if self.connected.load(Ordering::Relaxed) {
             let data = serialize_vec(self.id, (update, &value), TYPE_VALUE);
             let mut w = self.value.write();
@@ -159,14 +159,14 @@ impl<T> PyValueStatic<T> {
 
 impl<T> PyValueStaticTrait for PyValueStatic<T>
 where
-    T: Serialize + Clone + for<'py> FromPyObject<'py> + ToPython,
+    T: Serialize + Clone + FromPython + ToPython,
 {
     fn get_py<'a, 'py>(&'a self, py: Python<'py>) -> Bound<'py, PyAny> {
         self.value.read().to_python(py)
     }
 
     fn set_py(&self, value: &Bound<PyAny>, update: bool) -> PyResult<()> {
-        let value: T = value.extract()?;
+        let value: T = T::from_python(value)?;
         if self.connected.load(Ordering::Relaxed) {
             let data = serialize_vec(self.id, (update, &value), TYPE_STATIC);
             let mut v = self.value.write();

@@ -9,7 +9,7 @@ client-wasm = ["dep:ws_stream_wasm", "dep:log", "dep:wasm-bindgen-futures", "tok
 
 [dependencies]
 serde = { workspace = true }
-egui = { version = ">= 0.32", features = ["rayon"] }
+egui = { version = ">= 0.33", features = ["rayon"] }
 futures-util = { workspace = true }
 parking_lot = { workspace = true }
 
