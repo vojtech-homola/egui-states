@@ -125,7 +125,7 @@ use syn::{self, Lit, parse_macro_input};
 //     let mut values = Vec::new();
 //     let out = if let syn::Fields::Named(mut fields) = fields {
 //         for field in fields.named.iter() {
-            
+
 //         }
 
 //         quote!(
@@ -200,7 +200,9 @@ pub(crate) fn impl_pystruct(input: TokenStream) -> TokenStream {
             impl egui_states_pyserver::FromPython for #ident {
                 fn from_python(obj: &egui_states_pyserver::pyo3::Bound<egui_states_pyserver::pyo3::PyAny>) -> egui_states_pyserver::pyo3::PyResult<Self> {
                     use egui_states_pyserver::pyo3::types::PyAnyMethods;
-                    obj.extract()
+                    obj.extract().map_err(|e| {
+                        egui_states_pyserver::pyo3::exceptions::PyValueError::new_err(format!("Failed to convert to struct: {}", e))
+                    })
                 }
             }
         )
@@ -304,7 +306,9 @@ pub(crate) fn impl_pyenum(input: TokenStream) -> TokenStream {
         impl egui_states_pyserver::FromPython for #ident {
             fn from_python(obj: &egui_states_pyserver::pyo3::Bound<egui_states_pyserver::pyo3::PyAny>) -> egui_states_pyserver::pyo3::PyResult<Self> {
                 use egui_states_pyserver::pyo3::types::PyAnyMethods;
-                obj.extract()
+                obj.extract().map_err(|e| {
+                    egui_states_pyserver::pyo3::exceptions::PyValueError::new_err(format!("Failed to convert to enum: {}", e))
+                })
             }
         }
     );

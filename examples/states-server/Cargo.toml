@@ -9,8 +9,9 @@ name = "core"
 crate-type = ["cdylib"]
 
 [dependencies]
+serde = "*"
 egui_states_pyserver = { workspace = true }
-pyo3 = { version = "0.26", features = ["extension-module"] }
+pyo3 = { version = "0.27", features = ["extension-module"] }
 
 [build-dependencies]
 egui_states_pyserver = { workspace = true }

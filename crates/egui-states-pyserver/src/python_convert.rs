@@ -103,7 +103,7 @@ where
 
 impl<T, const N: usize> FromPython for [T; N]
 where
-    T: for<'py> FromPyObject<'py>,
+    T: for<'a, 'py> FromPyObject<'a, 'py>,
 {
     #[inline]
     fn from_python(obj: &Bound<PyAny>) -> PyResult<Self> {
@@ -141,7 +141,7 @@ macro_rules! impl_from_python_tuple {
     ($($idx:tt: $T:ident),*) => {
         impl<$($T),*> FromPython for ($($T,)*)
         where
-            $($T: for<'py> FromPyObject<'py>,)*
+            $($T: for<'a, 'py> FromPyObject<'a, 'py>,)*
         {
             #[inline]
             fn from_python(obj: &Bound<PyAny>) -> PyResult<Self> {
