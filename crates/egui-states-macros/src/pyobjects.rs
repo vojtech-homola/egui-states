@@ -199,7 +199,7 @@ pub(crate) fn impl_pystruct(input: TokenStream) -> TokenStream {
 
             impl egui_states_server::FromPython for #ident {
                 fn from_python(obj: &egui_states_server::pyo3::Bound<egui_states_server::pyo3::PyAny>) -> egui_states_server::pyo3::PyResult<Self> {
-                    use egui_states_pyserver::pyo3::types::PyAnyMethods;
+                    use egui_states_server::pyo3::types::PyAnyMethods;
                     obj.extract().map_err(|e| {
                         egui_states_server::pyo3::exceptions::PyValueError::new_err(format!("Failed to convert to struct: {}", e))
                     })
@@ -305,7 +305,7 @@ pub(crate) fn impl_pyenum(input: TokenStream) -> TokenStream {
 
         impl egui_states_server::FromPython for #ident {
             fn from_python(obj: &egui_states_server::pyo3::Bound<egui_states_server::pyo3::PyAny>) -> egui_states_server::pyo3::PyResult<Self> {
-                use egui_states_pyserver::pyo3::types::PyAnyMethods;
+                use egui_states_server::pyo3::types::PyAnyMethods;
                 obj.extract().map_err(|e| {
                     egui_states_server::pyo3::exceptions::PyValueError::new_err(format!("Failed to convert to enum: {}", e))
                 })
