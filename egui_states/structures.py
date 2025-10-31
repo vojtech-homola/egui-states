@@ -229,7 +229,7 @@ class SignalEmpty(_ValueBase):
 
         Signal is emitted to all connected callbacks.
         """
-        self._server.signal_set(self._value_id, None)
+        self._server.signal_set(self._value_id, ())
 
     def connect(self, callback: Callable[[], Any]) -> None:
         """Connect a callback to the signal.

@@ -3,7 +3,7 @@ members = [
     "crates/egui-states-macros",
     "crates/egui-states",
     "crates/egui-states-core",
-    "crates/egui-states-pyserver",
+    "crates/egui-states-server",
     "examples/gui",
     "examples/states-server",
 ]
@@ -17,7 +17,7 @@ edition = "2024"
 egui_states_macros = { path = "crates/egui-states-macros" }
 egui_states_core = { path = "crates/egui-states-core" }
 egui_states = { path = "crates/egui-states" }
-egui_states_pyserver = { path = "crates/egui-states-pyserver" }
+egui_states_server = { path = "crates/egui-states-server" }
 gui = { path = "examples/gui" }
 
 serde = "1"

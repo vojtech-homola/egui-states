@@ -255,20 +255,20 @@ pub fn generate_rust_server<S: State>(path: impl ToString) -> Result<(), String>
         .unwrap();
 
     if enums.len() > 0 || structs.len() > 0 {
-        file.write_all(b"\nuse egui_states_pyserver::pyo3::prelude::*;\n")
+        file.write_all(b"\nuse egui_states_server::pyo3::prelude::*;\n")
             .unwrap();
     }
 
-    file.write_all(b"use egui_states_pyserver::ServerValuesCreator;\n")
+    file.write_all(b"use egui_states_server::ServerValuesCreator;\n")
         .unwrap();
 
     if enums.len() > 0 {
-        file.write_all(b"use egui_states_pyserver::pyenum;\n")
+        file.write_all(b"use egui_states_server::pyenum;\n")
             .unwrap();
     }
 
     if structs.len() > 0 {
-        file.write_all(b"use egui_states_pyserver::pystruct;\n")
+        file.write_all(b"use egui_states_server::pystruct;\n")
             .unwrap();
     }
 

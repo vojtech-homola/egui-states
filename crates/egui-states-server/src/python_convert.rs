@@ -1,7 +1,7 @@
 use pyo3::{
     conversion::IntoPyObjectExt,
     prelude::*,
-    types::{PyList, PyNone, PyString, PyTuple},
+    types::{PyList, PyString, PyTuple},
 };
 
 // use egui_states_core::empty::Empty;
@@ -62,7 +62,7 @@ impl_frompython_basic!(i8, i16, i32, i64, u8, u16, u32, u64, f32, f64, bool);
 impl ToPython for () {
     #[inline]
     fn to_python<'py>(&self, py: Python<'py>) -> Bound<'py, PyAny> {
-        PyNone::get(py).to_owned().into_any()
+        PyTuple::empty(py).into_any()
     }
 }
 

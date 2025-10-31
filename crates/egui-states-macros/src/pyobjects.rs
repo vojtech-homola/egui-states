@@ -177,12 +177,12 @@ pub(crate) fn impl_pystruct(input: TokenStream) -> TokenStream {
         let field_types: Vec<_> = fields.named.iter().map(|f| &f.ty).collect();
 
         quote!(
-            #[egui_states_pyserver::pyo3::pyclass]
+            #[egui_states_server::pyo3::pyclass]
             #[derive(Clone, serde::Serialize, serde::Deserialize)]
             #(#attrs)*
             #vis #struct_token #ident #fields #semi_token
 
-            #[egui_states_pyserver::pyo3::pymethods]
+            #[egui_states_server::pyo3::pymethods]
             impl #ident {
                 #[new]
                 fn new(#(#field_names: #field_types),*) -> Self {
@@ -190,18 +190,18 @@ pub(crate) fn impl_pystruct(input: TokenStream) -> TokenStream {
                 }
             }
 
-            impl egui_states_pyserver::ToPython for #ident {
-                fn to_python<'py>(&self, py: egui_states_pyserver::pyo3::Python<'py>) -> egui_states_pyserver::pyo3::Bound<'py, egui_states_pyserver::pyo3::types::PyAny> {
-                    use egui_states_pyserver::pyo3::conversion::IntoPyObjectExt;
+            impl egui_states_server::ToPython for #ident {
+                fn to_python<'py>(&self, py: egui_states_server::pyo3::Python<'py>) -> egui_states_server::pyo3::Bound<'py, egui_states_server::pyo3::types::PyAny> {
+                    use egui_states_server::pyo3::conversion::IntoPyObjectExt;
                     self.clone().into_bound_py_any(py).unwrap()
                 }
             }
 
-            impl egui_states_pyserver::FromPython for #ident {
-                fn from_python(obj: &egui_states_pyserver::pyo3::Bound<egui_states_pyserver::pyo3::PyAny>) -> egui_states_pyserver::pyo3::PyResult<Self> {
+            impl egui_states_server::FromPython for #ident {
+                fn from_python(obj: &egui_states_server::pyo3::Bound<egui_states_server::pyo3::PyAny>) -> egui_states_server::pyo3::PyResult<Self> {
                     use egui_states_pyserver::pyo3::types::PyAnyMethods;
                     obj.extract().map_err(|e| {
-                        egui_states_pyserver::pyo3::exceptions::PyValueError::new_err(format!("Failed to convert to struct: {}", e))
+                        egui_states_server::pyo3::exceptions::PyValueError::new_err(format!("Failed to convert to struct: {}", e))
                     })
                 }
             }
@@ -258,25 +258,25 @@ pub(crate) fn impl_pyenum(input: TokenStream) -> TokenStream {
     }
 
     let out = quote!(
-        #[egui_states_pyserver::pyo3::pyclass(eq, hash, frozen)]
+        #[egui_states_server::pyo3::pyclass(eq, hash, frozen)]
         #[derive(Hash, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
         #(#attrs)*
         #vis #enum_token #ident {
             #(#variants),*
         }
 
-        #[egui_states_pyserver::pyo3::pymethods]
+        #[egui_states_server::pyo3::pymethods]
         impl #ident {
             #[new]
-            fn new(value: egui_states_pyserver::EnumInit) -> egui_states_pyserver::pyo3::PyResult<Self> {
+            fn new(value: egui_states_server::EnumInit) -> egui_states_server::pyo3::PyResult<Self> {
                 match value {
-                    egui_states_pyserver::EnumInit::Value(v) => match v {
+                    egui_states_server::EnumInit::Value(v) => match v {
                         #(#values => Ok(Self::#names),)*
-                        _ => Err(egui_states_pyserver::pyo3::exceptions::PyValueError::new_err("Invalid enum value")),
+                        _ => Err(egui_states_server::pyo3::exceptions::PyValueError::new_err("Invalid enum value")),
                     },
-                    egui_states_pyserver::EnumInit::Name(n) => match n.as_str() {
+                    egui_states_server::EnumInit::Name(n) => match n.as_str() {
                         #(stringify!(#names) => Ok(Self::#names),)*
-                        _ => Err(egui_states_pyserver::pyo3::exceptions::PyValueError::new_err("Invalid enum name")),
+                        _ => Err(egui_states_server::pyo3::exceptions::PyValueError::new_err("Invalid enum name")),
                     },
                 }
             }
@@ -296,18 +296,18 @@ pub(crate) fn impl_pyenum(input: TokenStream) -> TokenStream {
             }
         }
 
-        impl egui_states_pyserver::ToPython for #ident {
-            fn to_python<'py>(&self, py: egui_states_pyserver::pyo3::Python<'py>) -> egui_states_pyserver::pyo3::Bound<'py, egui_states_pyserver::pyo3::types::PyAny> {
-                use egui_states_pyserver::pyo3::conversion::IntoPyObjectExt;
+        impl egui_states_server::ToPython for #ident {
+            fn to_python<'py>(&self, py: egui_states_server::pyo3::Python<'py>) -> egui_states_server::pyo3::Bound<'py, egui_states_server::pyo3::types::PyAny> {
+                use egui_states_server::pyo3::conversion::IntoPyObjectExt;
                 self.into_bound_py_any(py).unwrap()
             }
         }
 
-        impl egui_states_pyserver::FromPython for #ident {
-            fn from_python(obj: &egui_states_pyserver::pyo3::Bound<egui_states_pyserver::pyo3::PyAny>) -> egui_states_pyserver::pyo3::PyResult<Self> {
+        impl egui_states_server::FromPython for #ident {
+            fn from_python(obj: &egui_states_server::pyo3::Bound<egui_states_server::pyo3::PyAny>) -> egui_states_server::pyo3::PyResult<Self> {
                 use egui_states_pyserver::pyo3::types::PyAnyMethods;
                 obj.extract().map_err(|e| {
-                    egui_states_pyserver::pyo3::exceptions::PyValueError::new_err(format!("Failed to convert to enum: {}", e))
+                    egui_states_server::pyo3::exceptions::PyValueError::new_err(format!("Failed to convert to enum: {}", e))
                 })
             }
         }
