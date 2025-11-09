@@ -998,6 +998,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "egui_states_core_2"
+version = "0.8.4"
+dependencies = [
+ "postcard",
+ "serde",
+ "tokio",
+]
+
+[[package]]
 name = "egui_states_macros"
 version = "0.8.4"
 dependencies = [
@@ -1011,6 +1020,20 @@ name = "egui_states_server"
 version = "0.8.4"
 dependencies = [
  "egui_states_core",
+ "egui_states_macros",
+ "futures-util",
+ "parking_lot",
+ "pyo3",
+ "serde",
+ "tokio",
+ "tokio-tungstenite",
+]
+
+[[package]]
+name = "egui_states_server_2"
+version = "0.8.4"
+dependencies = [
+ "egui_states_core_2",
  "egui_states_macros",
  "futures-util",
  "parking_lot",

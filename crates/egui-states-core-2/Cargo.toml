@@ -1,0 +1,9 @@
+[package]
+name = "egui_states_core_2"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+postcard = { version = "1.1", features = ["use-std"] }
+serde = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
