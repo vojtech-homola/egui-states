@@ -5,6 +5,8 @@ edition.workspace = true
 
 [dependencies]
 pyo3 = ">=0.27"
+
+bytes = { workspace = true }
 tokio-tungstenite = { workspace = true }
 serde = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "net", "sync"] }

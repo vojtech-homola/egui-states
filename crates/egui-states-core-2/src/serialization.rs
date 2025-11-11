@@ -4,7 +4,8 @@ use postcard::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::value_object::Object;
+// use crate::value_object::Object;
+use crate::collections::{ListMessageHeader, MapMessageHeader};
 use crate::controls::ControlMessage;
 use crate::image::ImageInfo;
 
@@ -18,13 +19,15 @@ pub const TYPE_DICT: u8 = 16;
 pub const TYPE_LIST: u8 = 18;
 pub const TYPE_GRAPH: u8 = 20;
 
-pub enum TransportMessage {
-    Value(u64, u64, Object),
-    Static(u64, u64, Object),
-    Signal(u64, u64, Object),
+pub enum TransportMessageHeader {
+    Value(u64, u64, bool),
+    Static(u64, u64),
+    Signal(u64, u64),
     Control(ControlMessage),
     Image(u64, ImageInfo),
-    Map(u64, Object),
+    Graph(u64),
+    List(u64, ListMessageHeader),
+    Map(u64, MapMessageHeader),
 }
 
 pub const HEAPLESS_SIZE: usize = 64;
@@ -38,9 +41,7 @@ impl MessageData {
     pub fn to_vec(self) -> Vec<u8> {
         match self {
             MessageData::Heap(vec) => vec,
-            MessageData::Stack(arr, len) => {
-                arr[0..len].to_vec()
-            }
+            MessageData::Stack(arr, len) => arr[0..len].to_vec(),
         }
     }
 }

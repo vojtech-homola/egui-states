@@ -9,7 +9,7 @@ use crate::serialization::{HEAPLESS_SIZE, MessageData, TYPE_CONTROL};
 #[derive(Serialize, Deserialize)]
 pub enum ControlMessage {
     Error(String),
-    Ack(u32),
+    Ack(u64),
     Handshake(u64, u64),
     Update(f32),
 }
@@ -59,7 +59,7 @@ impl ControlMessage {
         postcard::from_bytes(&data[1..]).map_err(|e| e.to_string())
     }
 
-    pub fn ack(id: u32) -> MessageData {
+    pub fn ack(id: u64) -> MessageData {
         let mut buffer = [0u8; HEAPLESS_SIZE];
         buffer[0] = TYPE_CONTROL;
         let len = postcard::to_slice(&ControlMessage::Ack(id), buffer[1..].as_mut())

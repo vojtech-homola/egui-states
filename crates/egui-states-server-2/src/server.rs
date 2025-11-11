@@ -9,9 +9,21 @@ use egui_states_core_2::event_async::Event;
 use crate::sender::{MessageReceiver, MessageSender};
 use crate::server_core::start;
 use crate::signals::ChangedValues;
-use crate::states_server::ValuesList;
+use crate::values::Value;
 
-// server -------------------------------------------------------
+pub(crate) struct StateValues {
+    pub values: Vec<Value>,
+}
+
+impl StateValues {
+    fn new() -> Self {
+        Self { values: Vec::new() }
+    }
+
+    fn shrink(&mut self) {
+        self.values.shrink_to_fit();
+    }
+}
 
 pub(crate) struct Server {
     connected: Arc<atomic::AtomicBool>,
@@ -19,6 +31,8 @@ pub(crate) struct Server {
     sender: MessageSender,
     start_event: Event,
     addr: SocketAddrV4,
+
+    states: Option<StateValues>,
 }
 
 impl Server {
@@ -36,12 +50,21 @@ impl Server {
         let enabled = Arc::new(atomic::AtomicBool::new(false));
 
         let obj = Self {
-            connected: connected.clone(),
-            enabled: enabled.clone(),
-            sender: sender.clone(),
-            start_event: start_event.clone(),
+            connected,
+            enabled,
+            sender,
+            start_event,
             addr,
+            states: Some(StateValues::new()),
         };
+
+        obj
+    }
+
+    pub(crate) fn initialize(&mut self) {
+        if self.states.is_none() {
+            return;
+        }
 
         let runtime = Builder::new_current_thread()
             .thread_name("Server Runtime")
@@ -68,8 +91,6 @@ impl Server {
                 .await;
             });
         });
-
-        obj
     }
 
     pub(crate) fn start(&mut self) {
