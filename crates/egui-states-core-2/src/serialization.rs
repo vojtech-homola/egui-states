@@ -5,29 +5,24 @@ use postcard::{
 use serde::{Deserialize, Serialize};
 
 // use crate::value_object::Object;
-use crate::collections::{ListMessageHeader, MapMessageHeader};
+use crate::collections::{ListHeader, MapHeader};
 use crate::controls::ControlMessage;
-use crate::image::ImageInfo;
+use crate::image::ImageHeader;
 
-// message types
-pub const TYPE_VALUE: u8 = 4;
-pub const TYPE_STATIC: u8 = 8;
-pub const TYPE_SIGNAL: u8 = 10;
-pub const TYPE_CONTROL: u8 = 12;
-pub const TYPE_IMAGE: u8 = 14;
-pub const TYPE_DICT: u8 = 16;
-pub const TYPE_LIST: u8 = 18;
-pub const TYPE_GRAPH: u8 = 20;
-
-pub enum TransportMessageHeader {
+pub enum ServerHeader {
     Value(u64, u64, bool),
     Static(u64, u64),
+    Image(u64, ImageHeader),
+    Graph(u64),
+    List(u64, ListHeader),
+    Map(u64, MapHeader),
+    Control(ControlMessage),
+}
+
+pub enum ClientHeader {
+    Value(u64, u64, bool),
     Signal(u64, u64),
     Control(ControlMessage),
-    Image(u64, ImageInfo),
-    Graph(u64),
-    List(u64, ListMessageHeader),
-    Map(u64, MapMessageHeader),
 }
 
 pub const HEAPLESS_SIZE: usize = 64;

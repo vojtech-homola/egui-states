@@ -8,7 +8,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyByteArray;
 use tokio_tungstenite::tungstenite::Bytes;
 
-use egui_states_core_2::image::{ImageInfo, ImageType};
+use egui_states_core_2::image::{ImageHeader, ImageType};
 
 use crate::event::Event;
 use crate::sender::MessageSender;
@@ -92,7 +92,7 @@ impl PyValueImage {
                 None => size,      // use the new size
             };
 
-            let message = ImageInfo {
+            let message = ImageHeader {
                 image_size: [new_size[0] as u32, new_size[1] as u32],
                 rect: origin.map(|o| [o[0], o[1], size[0] as u32, size[1] as u32]),
                 image_type,
@@ -199,7 +199,7 @@ impl SyncTrait for PyValueImage {
         }
 
         let mut head_buff = [0u8; 64];
-        let image_info = ImageInfo {
+        let image_info = ImageHeader {
             image_size: [w.size[0] as u32, w.size[1] as u32],
             rect: None,
             image_type: ImageType::ColorAlpha,
