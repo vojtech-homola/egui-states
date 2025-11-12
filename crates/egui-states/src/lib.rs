@@ -32,10 +32,6 @@ pub use parser_values::ParseValuesCreator;
 pub use values::{Diff, Signal, Value, ValueStatic};
 pub use values_creator::{ClientValuesCreator, ValuesCreator};
 
-pub trait UpdateValue: Sync + Send {
-    fn update_value(&self, data: &[u8]) -> Result<bool, String>;
-}
-
 pub trait State {
     const N: &'static str;
 

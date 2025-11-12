@@ -7,8 +7,8 @@ use pyo3::prelude::*;
 use pyo3::types::{PyByteArray, PyDict, PyList, PyTuple};
 use tokio_tungstenite::tungstenite::Bytes;
 
-use egui_states_core_2::controls::ControlMessage;
-use egui_states_core_2::nohash::NoHashSet;
+use egui_states_core_old::controls::ControlMessage;
+use egui_states_core_old::nohash::NoHashSet;
 
 use crate::sender::MessageSender;
 use crate::server::Server;

@@ -1,14 +1,14 @@
 [workspace]
 members = [
     "crates/egui-states-macros",
+    "crates/egui-states-old",
     "crates/egui-states",
-    "crates/egui-states-2",
+    "crates/egui-states-core-old",
     "crates/egui-states-core",
-    "crates/egui-states-core-2",
+    "crates/egui-states-server-old",
     "crates/egui-states-server",
-    "crates/egui-states-server-2",
-    "examples/gui",
-    "examples/states-server",
+    # "examples/gui",
+    # "examples/states-server",
 ]
 resolver = "3"
 
@@ -18,13 +18,13 @@ edition = "2024"
 
 [workspace.dependencies]
 egui_states_macros = { path = "crates/egui-states-macros" }
+egui_states_core_old = { path = "crates/egui-states-core-old" }
 egui_states_core = { path = "crates/egui-states-core" }
-egui_states_core_2 = { path = "crates/egui-states-core-2" }
+egui_states_old = { path = "crates/egui-states-old" }
 egui_states = { path = "crates/egui-states" }
-egui_states_2 = { path = "crates/egui-states-2" }
+egui_states_server_old = { path = "crates/egui-states-server-old" }
 egui_states_server = { path = "crates/egui-states-server" }
-egui_states_server_2 = { path = "crates/egui-states-server-2" }
-gui = { path = "examples/gui" }
+# gui = { path = "examples/gui" }
 
 serde = "1"
 tokio-tungstenite = "0.28"

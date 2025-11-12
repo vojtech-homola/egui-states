@@ -3,8 +3,8 @@ use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use egui_states_core::controls::ControlMessage;
-use egui_states_core::serialization::{deserialize, serialize};
+use egui_states_core_old::controls::ControlMessage;
+use egui_states_core_old::serialization::{TYPE_SIGNAL, TYPE_VALUE, deserialize, serialize};
 
 use crate::UpdateValue;
 use crate::sender::MessageSender;
@@ -33,14 +33,9 @@ impl<'a, T: Serialize + Clone + PartialEq> Diff<'a, T> {
     }
 }
 
-pub trait UpdateValue: Sync + Send {
-    fn update_value(&self, type_id: u64, data: &[u8]) -> Result<(), String>;
-}
-
 // Value --------------------------------------------
 pub struct Value<T> {
-    id: u64,
-    type_id: u64,
+    id: u32,
     value: RwLock<T>,
     sender: MessageSender,
 }
@@ -49,10 +44,9 @@ impl<T> Value<T>
 where
     T: Serialize + Clone,
 {
-    pub(crate) fn new(id: u64, type_id: u64, value: T, sender: MessageSender) -> Arc<Self> {
+    pub(crate) fn new(id: u32, value: T, sender: MessageSender) -> Arc<Self> {
         Arc::new(Self {
             id,
-            type_id,
             value: RwLock::new(value),
             sender,
         })

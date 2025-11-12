@@ -9,9 +9,9 @@ use tokio::task::JoinHandle;
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::{Message, protocol::WebSocketConfig};
 
-use egui_states_core_2::controls::ControlMessage;
-use egui_states_core_2::event_async::Event;
-use egui_states_core_2::serialization;
+use egui_states_core_old::controls::ControlMessage;
+use egui_states_core_old::event_async::Event;
+use egui_states_core_old::serialization;
 
 use crate::sender::{MessageReceiver, MessageSender};
 use crate::signals::ChangedValues;

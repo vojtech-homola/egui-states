@@ -10,7 +10,7 @@ use pyo3::types::PyDict;
 use serde::Serialize;
 use tokio_tungstenite::tungstenite::Bytes;
 
-use egui_states_core_2::serialization::{TYPE_DICT, serialize_vec};
+use egui_states_core_old::serialization::{TYPE_DICT, serialize_vec};
 
 use crate::FromPython;
 use crate::python_convert::ToPython;

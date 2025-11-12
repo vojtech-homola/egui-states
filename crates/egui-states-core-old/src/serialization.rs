@@ -1,34 +1,20 @@
-use bytes::{Buf, Bytes};
 use postcard::{
     ser_flavors::{Flavor, StdVec},
     serialize_with_flavor,
 };
 use serde::{Deserialize, Serialize};
 
-// use crate::value_object::Object;
-use crate::collections::{ListHeader, MapHeader};
-use crate::controls::ControlMessage;
-use crate::image::ImageHeader;
+// message types
+pub const TYPE_VALUE: u8 = 4;
+pub const TYPE_STATIC: u8 = 8;
+pub const TYPE_SIGNAL: u8 = 10;
+pub const TYPE_CONTROL: u8 = 12;
+pub const TYPE_IMAGE: u8 = 14;
+pub const TYPE_DICT: u8 = 16;
+pub const TYPE_LIST: u8 = 18;
+pub const TYPE_GRAPH: u8 = 20;
 
-#[derive(Serialize, Deserialize)]
-pub enum ServerHeader {
-    Value(u64, u64, bool),
-    Static(u64, u64, bool),
-    Image(u64, bool, ImageHeader),
-    Graph(u64, bool),
-    List(u64, bool, ListHeader),
-    Map(u64, bool, MapHeader),
-    Control(ControlMessage),
-}
-
-#[derive(Serialize, Deserialize)]
-pub enum ClientHeader {
-    Value(u64, u64, bool),
-    Signal(u64, u64),
-    Control(ControlMessage),
-}
-
-pub const HEAPLESS_SIZE: usize = 64;
+pub const HEAPLESS_SIZE: usize = 32;
 
 pub enum MessageData {
     Heap(Vec<u8>),
@@ -39,7 +25,9 @@ impl MessageData {
     pub fn to_vec(self) -> Vec<u8> {
         match self {
             MessageData::Heap(vec) => vec,
-            MessageData::Stack(arr, len) => arr[0..len].to_vec(),
+            MessageData::Stack(arr, len) => {
+                arr[0..len].to_vec()
+            }
         }
     }
 }
@@ -75,17 +63,6 @@ pub fn serialize_vec<T: Serialize>(id: u32, value: T, value_type: u8) -> Vec<u8>
     let mut data = StdVec::new();
     unsafe { data.try_extend(&head).unwrap_unchecked() };
     serialize_with_flavor::<T, StdVec, Vec<u8>>(&value, data).unwrap()
-}
-
-pub fn ser_server_value(header: ServerHeader, value: &Bytes) -> Bytes {
-    let head =
-        postcard::to_vec::<ServerHeader, 32>(&header).expect("Failed to serialize server header");
-
-    let mut data = Vec::with_capacity(head.len() + value.len());
-    data.extend_from_slice(&head);
-    data.extend_from_slice(value);
-
-    Bytes::from_owner(data)
 }
 
 #[inline]

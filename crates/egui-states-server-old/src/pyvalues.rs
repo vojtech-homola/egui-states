@@ -7,7 +7,7 @@ use pyo3::prelude::*;
 use serde::{Deserialize, Serialize};
 use tokio_tungstenite::tungstenite::Bytes;
 
-use egui_states_core_2::serialization::{TYPE_STATIC, TYPE_VALUE, deserialize, serialize_vec};
+use egui_states_core_old::serialization::{TYPE_STATIC, TYPE_VALUE, deserialize, serialize_vec};
 
 use crate::python_convert::{FromPython, ToPython};
 use crate::sender::MessageSender;

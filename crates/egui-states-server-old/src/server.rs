@@ -4,27 +4,14 @@ use std::thread;
 
 use tokio::runtime::Builder;
 
-use egui_states_core_2::event_async::Event;
-use egui_states_core_2::nohash::NoHashMap;
+use egui_states_core_old::event_async::Event;
 
 use crate::sender::{MessageReceiver, MessageSender};
 use crate::server_core::start;
 use crate::signals::ChangedValues;
-use crate::values::Value;
+use crate::states_server::ValuesList;
 
-pub(crate) struct StateValues {
-    pub values: NoHashMap<u64, Arc<Value>>,
-}
-
-impl StateValues {
-    fn new() -> Self {
-        Self { values: NoHashMap::default() }
-    }
-
-    fn shrink(&mut self) {
-        self.values.shrink_to_fit();
-    }
-}
+// server -------------------------------------------------------
 
 pub(crate) struct Server {
     connected: Arc<atomic::AtomicBool>,
@@ -32,8 +19,6 @@ pub(crate) struct Server {
     sender: MessageSender,
     start_event: Event,
     addr: SocketAddrV4,
-
-    states: Option<StateValues>,
 }
 
 impl Server {
@@ -51,21 +36,12 @@ impl Server {
         let enabled = Arc::new(atomic::AtomicBool::new(false));
 
         let obj = Self {
-            connected,
-            enabled,
-            sender,
-            start_event,
+            connected: connected.clone(),
+            enabled: enabled.clone(),
+            sender: sender.clone(),
+            start_event: start_event.clone(),
             addr,
-            states: Some(StateValues::new()),
         };
-
-        obj
-    }
-
-    pub(crate) fn initialize(&mut self) {
-        if self.states.is_none() {
-            return;
-        }
 
         let runtime = Builder::new_current_thread()
             .thread_name("Server Runtime")
@@ -92,6 +68,8 @@ impl Server {
                 .await;
             });
         });
+
+        obj
     }
 
     pub(crate) fn start(&mut self) {

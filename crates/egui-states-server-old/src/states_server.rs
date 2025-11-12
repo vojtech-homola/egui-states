@@ -5,8 +5,8 @@ use std::sync::atomic::AtomicBool;
 use pyo3::buffer::Element;
 use serde::{Deserialize, Serialize};
 
-use egui_states_core_2::graphs::GraphElement;
-use egui_states_core_2::nohash::NoHashMap;
+use egui_states_core_old::graphs::GraphElement;
+use egui_states_core_old::nohash::NoHashMap;
 
 use crate::pydict::{PyDictTrait, PyValueDict};
 use crate::pygraphs::{PyGraphTrait, PyValueGraphs};
