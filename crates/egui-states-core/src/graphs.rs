@@ -1,10 +1,15 @@
 use serde::{Deserialize, Serialize};
 
-use crate::serialization::TYPE_GRAPH;
-
 // graphs -------------------------------------------------------------
+#[derive(Serialize, Deserialize, PartialEq)]
+pub enum GraphType {
+    F32,
+    F64,
+}
+
 pub trait GraphElement: Clone + Copy + Send + Sync + 'static {
     fn zero() -> Self;
+    fn graph_type() -> GraphType;
 }
 
 impl GraphElement for f32 {
@@ -12,12 +17,19 @@ impl GraphElement for f32 {
     fn zero() -> Self {
         0.0
     }
+
+    fn graph_type() -> GraphType {
+        GraphType::F32
+    }
 }
 
 impl GraphElement for f64 {
     #[inline]
     fn zero() -> Self {
         0.0
+    }
+    fn graph_type() -> GraphType {
+        GraphType::F64
     }
 }
 
@@ -28,33 +40,26 @@ pub struct Graph<T> {
 }
 
 impl<T: GraphElement + Serialize> Graph<T> {
-    pub fn to_data(
-        &self,
-        id: u32,
-        graph_id: u16,
-        update: bool,
-        add_points: Option<usize>,
-    ) -> Vec<u8> {
+    pub fn to_data(&self, id: u32, graph_id: u16, add_points: Option<usize>) -> Vec<u8> {
         // let bytes_size = std::mem::size_of::<T>() * self.y.len();
         let mut head_buffer = [0u8; 32];
 
-        head_buffer[0] = TYPE_GRAPH;
         head_buffer[1..5].copy_from_slice(&id.to_le_bytes());
 
         let mut size = self.y.len();
         let mut data_offset = 0;
         let message = match add_points {
             Some(points) => {
-                let info = GraphDataInfo::new(points, self.x.is_none());
-                let message = GraphMessage::<T>::AddPoints(update, graph_id, info);
+                let info = GraphDataInfo::new::<T>(points, self.x.is_none());
+                let message = GraphHeader::AddPoints(graph_id, info);
                 data_offset = size - points;
                 size = points;
                 message
             }
             None => {
                 let points = self.y.len();
-                let info = GraphDataInfo::new(points, self.x.is_none());
-                let message = GraphMessage::<T>::Set(update, graph_id, info);
+                let info = GraphDataInfo::new::<T>(points, self.x.is_none());
+                let message = GraphHeader::Set(graph_id, info);
                 message
             }
         };
@@ -117,14 +122,16 @@ impl<T: GraphElement + Serialize> Graph<T> {
 }
 
 impl<T: GraphElement> Graph<T> {
-    pub fn add_points_from_data(
-        &mut self,
-        info: GraphDataInfo<T>,
-        data: &[u8],
-    ) -> Result<(), String> {
+    pub fn add_points_from_data(&mut self, info: GraphDataInfo, data: &[u8]) -> Result<(), String> {
         let GraphDataInfo {
-            points, is_linear, ..
+            graph_type,
+            points,
+            is_linear,
         } = info;
+
+        if graph_type != T::graph_type() {
+            return Err("Incoming Graph data type does not match.".to_string());
+        }
 
         #[cfg(target_endian = "little")]
         {
@@ -166,10 +173,16 @@ impl<T: GraphElement> Graph<T> {
         }
     }
 
-    pub fn from_graph_data(info: GraphDataInfo<T>, data: &[u8]) -> Self {
+    pub fn from_graph_data(info: GraphDataInfo, data: &[u8]) -> Result<Self, String> {
         let GraphDataInfo {
-            is_linear, points, ..
+            graph_type,
+            is_linear,
+            points,
         } = info;
+
+        if T::graph_type() != graph_type {
+            return Err("Incoming Graph data type does not match.".to_string());
+        }
 
         #[cfg(target_endian = "little")]
         {
@@ -183,7 +196,7 @@ impl<T: GraphElement> Graph<T> {
                         y.set_len(points);
                     }
 
-                    Graph { x: None, y }
+                    Ok(Graph { x: None, y })
                 }
                 false => {
                     let bytes = points * size_of::<T>();
@@ -202,7 +215,7 @@ impl<T: GraphElement> Graph<T> {
                         y.set_len(points);
                     }
 
-                    Graph { x: Some(x), y }
+                    Ok(Graph { x: Some(x), y })
                 }
             }
         }
@@ -215,16 +228,16 @@ impl<T: GraphElement> Graph<T> {
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct GraphDataInfo<T> {
-    phantom: std::marker::PhantomData<T>,
+pub struct GraphDataInfo {
+    graph_type: GraphType,
     is_linear: bool,
     points: usize,
 }
 
-impl<T> GraphDataInfo<T> {
-    pub fn new(points: usize, is_linear: bool) -> Self {
+impl GraphDataInfo {
+    pub fn new<T: GraphElement>(points: usize, is_linear: bool) -> Self {
         Self {
-            phantom: std::marker::PhantomData,
+            graph_type: T::graph_type(),
             is_linear,
             points,
         }
@@ -232,15 +245,15 @@ impl<T> GraphDataInfo<T> {
 }
 
 #[derive(Serialize, Deserialize)]
-pub enum GraphMessage<T> {
-    Set(bool, u16, GraphDataInfo<T>),
-    AddPoints(bool, u16, GraphDataInfo<T>),
-    Remove(bool, u16),
-    Reset(bool),
+pub enum GraphHeader {
+    Set(u16, GraphDataInfo),
+    AddPoints(u16, GraphDataInfo),
+    Remove(u16),
+    Reset,
 }
 
-impl<'a, T: Deserialize<'a>> GraphMessage<T> {
-    pub fn deserialize(data: &'a [u8]) -> Result<(Self, &'a [u8]), String> {
-        postcard::take_from_bytes(data).map_err(|e| e.to_string())
-    }
-}
+// impl<'a, T: Deserialize<'a>> GraphHeader<T> {
+//     pub fn deserialize(data: &'a [u8]) -> Result<(Self, &'a [u8]), String> {
+//         postcard::take_from_bytes(data).map_err(|e| e.to_string())
+//     }
+// }

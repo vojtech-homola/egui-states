@@ -12,6 +12,10 @@ impl<K: NoHashKey> Hasher for NoHashHasher<K> {
         panic!("Invalid use of NoHashHasher")
     }
 
+    fn write_u64(&mut self, i: u64) {
+        self.0 = i;
+    }
+
     fn write_u32(&mut self, i: u32) {
         self.0 = u64::from(i);
     }
@@ -40,4 +44,4 @@ macro_rules! impl_basic_item {
     };
 }
 
-impl_basic_item!(u32, u16, u8);
+impl_basic_item!(u64, u32, u16, u8);

@@ -5,18 +5,19 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use egui_states_core::graphs::GraphElement;
+use egui_states_core::values::GetType;
 
-use crate::dict::ValueDict;
 use crate::graphs::ValueGraphs;
 use crate::image::ValueImage;
 use crate::list::ValueList;
+use crate::map::ValueMap;
 use crate::parser::{GetInitValue, GetTypeInfo, ValueType};
 use crate::sender::MessageSender;
 use crate::values::{Signal, Value, ValueStatic};
 use crate::{State, ValuesCreator};
 
 pub struct ParseValuesCreator {
-    counter: u32,
+    counter: u64,
     states: Vec<(&'static str, Vec<ValueType>)>,
     opened_states: HashMap<&'static str, Vec<ValueType>>,
     sender: MessageSender,
@@ -49,7 +50,7 @@ impl ParseValuesCreator {
         self.states
     }
 
-    fn get_id(&mut self) -> u32 {
+    fn get_id(&mut self) -> u64 {
         self.counter += 1;
         self.counter
     }
@@ -65,7 +66,7 @@ impl ParseValuesCreator {
 impl ValuesCreator for ParseValuesCreator {
     fn add_value<T>(&mut self, state: &'static str, name: &'static str, value: T) -> Arc<Value<T>>
     where
-        T: for<'a> Deserialize<'a> + Serialize + Clone + GetInitValue + GetTypeInfo,
+        T: for<'a> Deserialize<'a> + GetType + Serialize + Clone + GetInitValue + GetTypeInfo,
     {
         let id = self.get_id();
         let init = value.init_value();
@@ -83,7 +84,7 @@ impl ValuesCreator for ParseValuesCreator {
         value: T,
     ) -> Arc<ValueStatic<T>>
     where
-        T: for<'a> Deserialize<'a> + Serialize + Clone + GetInitValue + GetTypeInfo,
+        T: for<'a> Deserialize<'a> + GetType + Serialize + Clone + GetInitValue + GetTypeInfo,
     {
         let id = self.get_id();
         let init = value.init_value();
@@ -105,7 +106,7 @@ impl ValuesCreator for ParseValuesCreator {
 
     fn add_signal<T>(&mut self, state: &'static str, name: &'static str) -> Arc<Signal<T>>
     where
-        T: Serialize + Clone + GetTypeInfo,
+        T: Serialize + Clone + GetTypeInfo + GetType,
     {
         let id = self.get_id();
         let signal = Signal::new(id, self.sender.clone());
@@ -115,13 +116,13 @@ impl ValuesCreator for ParseValuesCreator {
         signal
     }
 
-    fn add_dict<K, V>(&mut self, state: &'static str, name: &'static str) -> Arc<ValueDict<K, V>>
+    fn add_dict<K, V>(&mut self, state: &'static str, name: &'static str) -> Arc<ValueMap<K, V>>
     where
-        K: Hash + Eq + Clone + for<'a> Deserialize<'a> + GetTypeInfo,
-        V: Clone + for<'a> Deserialize<'a> + GetTypeInfo,
+        K: Hash + Eq + Clone + for<'a> Deserialize<'a> + GetTypeInfo + GetType,
+        V: Clone + for<'a> Deserialize<'a> + GetTypeInfo + GetType,
     {
         let id = self.get_id();
-        let value = ValueDict::new(id);
+        let value = ValueMap::new(id);
 
         self.add_value_type(
             state,
@@ -132,7 +133,7 @@ impl ValuesCreator for ParseValuesCreator {
 
     fn add_list<T>(&mut self, state: &'static str, name: &'static str) -> Arc<ValueList<T>>
     where
-        T: Clone + for<'a> Deserialize<'a> + GetTypeInfo,
+        T: Clone + for<'a> Deserialize<'a> + GetTypeInfo + GetType,
     {
         let id = self.get_id();
         let value = ValueList::new(id);

@@ -5,20 +5,19 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc::UnboundedReceiver;
 use ws_stream_wasm::{WsMessage, WsMeta};
 
-use egui_states_core::controls::ControlMessage;
-use egui_states_core::serialization::MessageData;
+use egui_states_core::serialization::ClientHeader;
 
 use crate::State;
 use crate::client_base::{Client, ConnectionState};
 use crate::handle_message::handle_message;
-use crate::sender::MessageSender;
+use crate::sender::{ChannelMessage, MessageSender};
 use crate::values_creator::{ClientValuesCreator, ValuesList};
 
 async fn start_gui_client(
     addr: SocketAddrV4,
     vals: ValuesList,
     version: u64,
-    mut rx: UnboundedReceiver<Option<MessageData>>,
+    mut rx: UnboundedReceiver<ChannelMessage>,
     sender: MessageSender,
     client: Client,
     handshake: u64,
@@ -33,7 +32,11 @@ async fn start_gui_client(
         let res = WsMeta::connect(&address, None).await;
         if res.is_err() {
             #[cfg(debug_assertions)]
-            log::warn!("connecting to server at {:?} failed: {:?}", address, res.err());
+            log::warn!(
+                "connecting to server at {:?} failed: {:?}",
+                address,
+                res.err()
+            );
             continue;
         }
 
@@ -76,7 +79,7 @@ async fn start_gui_client(
                 let res = handle_message(&mess, &th_vals, &th_client).await;
                 if let Err(e) = res {
                     let error = format!("handling message from server failed: {:?}", e);
-                    th_sender.send(ControlMessage::error(error));
+                    th_sender.send(ClientHeader::error(error));
                     break;
                 }
             }
@@ -85,8 +88,8 @@ async fn start_gui_client(
 
         // send -----------------------------------------
         let send_future = async move {
-            let handshake = ControlMessage::Handshake(version, handshake);
-            let message = WsMessage::Binary(handshake.serialize());
+            let message =
+                WsMessage::Binary(ClientHeader::serialize_handshake_vec(version, handshake));
             let res = socket_write.send(message).await;
             if let Err(e) = res {
                 #[cfg(debug_assertions)]
@@ -103,11 +106,8 @@ async fn start_gui_client(
                     socket_write.flush().await.unwrap();
                     break;
                 }
-                let message = message.unwrap();
-                let message = match message {
-                    MessageData::Stack(data, len) => WsMessage::Binary((&data[0..len]).to_vec()),
-                    MessageData::Heap(data) => WsMessage::Binary(data),
-                };
+                let (header, data) = message.unwrap();
+                let message = WsMessage::Binary(header.serialize_vec(data));
 
                 // write the message
                 let res = socket_write.send(message).await;
@@ -132,7 +132,7 @@ async fn start_gui_client(
 pub struct ClientBuilder {
     creator: ClientValuesCreator,
     sender: MessageSender,
-    rx: UnboundedReceiver<Option<MessageData>>,
+    rx: UnboundedReceiver<ChannelMessage>,
     addr: Ipv4Addr,
     context: Option<Context>,
 }

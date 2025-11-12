@@ -8,8 +8,8 @@ use tokio::sync::mpsc::UnboundedReceiver;
 use tokio_tungstenite::connect_async_with_config;
 use tokio_tungstenite::tungstenite::{Bytes, Message, protocol::WebSocketConfig};
 
-use egui_states_core::controls::ControlMessage;
-use egui_states_core::serialization::MessageData;
+use egui_states_core_old::controls::ControlMessage;
+use egui_states_core_old::serialization::MessageData;
 
 use crate::State;
 use crate::client_base::{Client, ConnectionState};

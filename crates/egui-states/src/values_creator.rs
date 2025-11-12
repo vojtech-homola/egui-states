@@ -5,14 +5,15 @@ use serde::{Deserialize, Serialize};
 
 use egui_states_core::graphs::GraphElement;
 use egui_states_core::nohash::NoHashMap;
+use egui_states_core::values::GetType;
 
-use crate::dict::ValueDict;
-use crate::graphs::ValueGraphs;
+use crate::graphs::{UpdateGraph, ValueGraphs};
 use crate::image::ValueImage;
-use crate::list::ValueList;
+use crate::list::{UpdateList, ValueList};
+use crate::map::{UpdateMap, ValueMap};
 use crate::sender::MessageSender;
-use crate::values::{Signal, Value, ValueStatic};
-use crate::{GetInitValue, GetTypeInfo, State, UpdateValue};
+use crate::values::{Signal, UpdateValue, Value, ValueStatic};
+use crate::{GetInitValue, GetTypeInfo, State};
 
 pub trait ValuesCreator {
     fn add_value<T>(&mut self, state: &'static str, name: &'static str, value: T) -> Arc<Value<T>>
@@ -21,6 +22,7 @@ pub trait ValuesCreator {
             + Serialize
             + GetTypeInfo
             + GetInitValue
+            + GetType
             + Send
             + Sync
             + Clone
@@ -37,6 +39,7 @@ pub trait ValuesCreator {
             + Serialize
             + GetInitValue
             + GetTypeInfo
+            + GetType
             + Clone
             + Send
             + Sync
@@ -46,16 +49,24 @@ pub trait ValuesCreator {
 
     fn add_signal<T>(&mut self, state: &'static str, name: &'static str) -> Arc<Signal<T>>
     where
-        T: Serialize + Clone + Send + Sync + GetTypeInfo + 'static;
+        T: Serialize + GetType + Clone + Send + Sync + GetTypeInfo + 'static;
 
-    fn add_dict<K, V>(&mut self, state: &'static str, name: &'static str) -> Arc<ValueDict<K, V>>
+    fn add_dict<K, V>(&mut self, state: &'static str, name: &'static str) -> Arc<ValueMap<K, V>>
     where
-        K: Hash + Eq + Clone + for<'a> Deserialize<'a> + Send + GetTypeInfo + Sync + 'static,
-        V: Clone + for<'a> Deserialize<'a> + Send + GetTypeInfo + Sync + 'static;
+        K: Hash
+            + Eq
+            + Clone
+            + for<'a> Deserialize<'a>
+            + GetType
+            + Send
+            + GetTypeInfo
+            + Sync
+            + 'static,
+        V: Clone + for<'a> Deserialize<'a> + Send + GetTypeInfo + GetType + Sync + 'static;
 
     fn add_list<T>(&mut self, state: &'static str, name: &'static str) -> Arc<ValueList<T>>
     where
-        T: Clone + for<'a> Deserialize<'a> + Send + Sync + GetTypeInfo + 'static;
+        T: Clone + for<'a> Deserialize<'a> + GetType + Send + Sync + GetTypeInfo + 'static;
 
     fn add_graphs<T>(&mut self, state: &'static str, name: &'static str) -> Arc<ValueGraphs<T>>
     where
@@ -66,12 +77,12 @@ pub trait ValuesCreator {
 
 #[derive(Clone)]
 pub(crate) struct ValuesList {
-    pub(crate) values: NoHashMap<u32, Arc<dyn UpdateValue>>,
-    pub(crate) static_values: NoHashMap<u32, Arc<dyn UpdateValue>>,
-    pub(crate) images: NoHashMap<u32, Arc<dyn UpdateValue>>,
-    pub(crate) dicts: NoHashMap<u32, Arc<dyn UpdateValue>>,
-    pub(crate) lists: NoHashMap<u32, Arc<dyn UpdateValue>>,
-    pub(crate) graphs: NoHashMap<u32, Arc<dyn UpdateValue>>,
+    pub(crate) values: NoHashMap<u64, Arc<dyn UpdateValue>>,
+    pub(crate) static_values: NoHashMap<u64, Arc<dyn UpdateValue>>,
+    pub(crate) images: NoHashMap<u64, Arc<ValueImage>>,
+    pub(crate) maps: NoHashMap<u64, Arc<dyn UpdateMap>>,
+    pub(crate) lists: NoHashMap<u64, Arc<dyn UpdateList>>,
+    pub(crate) graphs: NoHashMap<u64, Arc<dyn UpdateGraph>>,
 }
 
 impl ValuesList {
@@ -80,7 +91,7 @@ impl ValuesList {
             values: NoHashMap::default(),
             static_values: NoHashMap::default(),
             images: NoHashMap::default(),
-            dicts: NoHashMap::default(),
+            maps: NoHashMap::default(),
             lists: NoHashMap::default(),
             graphs: NoHashMap::default(),
         }
@@ -90,14 +101,14 @@ impl ValuesList {
         self.values.shrink_to_fit();
         self.static_values.shrink_to_fit();
         self.images.shrink_to_fit();
-        self.dicts.shrink_to_fit();
+        self.maps.shrink_to_fit();
         self.lists.shrink_to_fit();
         self.graphs.shrink_to_fit();
     }
 }
 
 pub struct ClientValuesCreator {
-    counter: u32,
+    counter: u64,
     val: ValuesList,
     version: u64,
     sender: MessageSender,
@@ -113,7 +124,7 @@ impl ClientValuesCreator {
         }
     }
 
-    fn get_id(&mut self) -> u32 {
+    fn get_id(&mut self) -> u64 {
         self.counter += 1;
         self.counter
     }
@@ -132,7 +143,7 @@ impl ClientValuesCreator {
 impl ValuesCreator for ClientValuesCreator {
     fn add_value<T>(&mut self, _: &'static str, _: &'static str, value: T) -> Arc<Value<T>>
     where
-        T: for<'a> Deserialize<'a> + Serialize + Send + Sync + Clone + 'static,
+        T: for<'a> Deserialize<'a> + Serialize + GetType + Send + Sync + Clone + 'static,
     {
         let id = self.get_id();
         let value = Value::new(id, value, self.sender.clone());
@@ -143,7 +154,7 @@ impl ValuesCreator for ClientValuesCreator {
 
     fn add_static<T>(&mut self, _: &'static str, _: &'static str, value: T) -> Arc<ValueStatic<T>>
     where
-        T: for<'a> Deserialize<'a> + Serialize + Clone + Send + Sync + 'static,
+        T: for<'a> Deserialize<'a> + Serialize + GetType + Clone + Send + Sync + 'static,
     {
         let id = self.get_id();
         let value = ValueStatic::new(id, value);
@@ -162,7 +173,7 @@ impl ValuesCreator for ClientValuesCreator {
 
     fn add_signal<T>(&mut self, _: &'static str, _: &'static str) -> Arc<Signal<T>>
     where
-        T: Serialize + Clone + Send + Sync + 'static,
+        T: Serialize + GetType + Clone + Send + Sync + 'static,
     {
         let id = self.get_id();
         let signal = Signal::new(id, self.sender.clone());
@@ -170,21 +181,21 @@ impl ValuesCreator for ClientValuesCreator {
         signal
     }
 
-    fn add_dict<K, V>(&mut self, _: &'static str, _: &'static str) -> Arc<ValueDict<K, V>>
+    fn add_dict<K, V>(&mut self, _: &'static str, _: &'static str) -> Arc<ValueMap<K, V>>
     where
-        K: Hash + Eq + Clone + for<'a> Deserialize<'a> + Send + Sync + 'static,
-        V: Clone + for<'a> Deserialize<'a> + Send + Sync + 'static,
+        K: Hash + Eq + Clone + for<'a> Deserialize<'a> + Send + Sync + GetType + 'static,
+        V: Clone + for<'a> Deserialize<'a> + Send + Sync + GetType + 'static,
     {
         let id = self.get_id();
-        let value = ValueDict::new(id);
+        let value = ValueMap::new(id);
 
-        self.val.dicts.insert(id, value.clone());
+        self.val.maps.insert(id, value.clone());
         value
     }
 
     fn add_list<T>(&mut self, _: &'static str, _: &'static str) -> Arc<ValueList<T>>
     where
-        T: Clone + for<'a> Deserialize<'a> + Send + Sync + 'static,
+        T: Clone + for<'a> Deserialize<'a> + Send + Sync + GetType + 'static,
     {
         let id = self.get_id();
         let value = ValueList::new(id);

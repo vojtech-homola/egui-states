@@ -1,10 +1,10 @@
 mod client_base;
 mod data;
-mod dict;
 mod graphs;
 mod handle_message;
 mod image;
 mod list;
+mod map;
 mod sender;
 mod values;
 mod values_creator;
@@ -24,10 +24,10 @@ mod client_wasm;
 pub use client_wasm::ClientBuilder;
 
 pub use client_base::{Client, ConnectionState};
-pub use dict::ValueDict;
 pub use graphs::ValueGraphs;
 pub use image::ValueImage;
 pub use list::ValueList;
+pub use map::ValueMap;
 pub use parser_values::ParseValuesCreator;
 pub use values::{Diff, Signal, Value, ValueStatic};
 pub use values_creator::{ClientValuesCreator, ValuesCreator};

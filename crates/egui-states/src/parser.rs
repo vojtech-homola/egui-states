@@ -1,12 +1,12 @@
 #[derive(Clone)]
 pub enum ValueType {
-    Value(&'static str, u32, TypeInfo, InitValue),
-    Static(&'static str, u32, TypeInfo, InitValue),
-    Image(&'static str, u32),
-    Dict(&'static str, u32, TypeInfo, TypeInfo),
-    List(&'static str, u32, TypeInfo),
-    Graphs(&'static str, u32, TypeInfo),
-    Signal(&'static str, u32, TypeInfo),
+    Value(&'static str, u64, TypeInfo, InitValue),
+    Static(&'static str, u64, TypeInfo, InitValue),
+    Image(&'static str, u64),
+    Dict(&'static str, u64, TypeInfo, TypeInfo),
+    List(&'static str, u64, TypeInfo),
+    Graphs(&'static str, u64, TypeInfo),
+    Signal(&'static str, u64, TypeInfo),
     SubState(&'static str, &'static str),
 }
 

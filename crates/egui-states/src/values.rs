@@ -3,10 +3,10 @@ use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use egui_states_core::controls::ControlMessage;
-use egui_states_core::serialization::{deserialize, serialize};
+// use egui_states_core::controls::ControlMessage;
+use egui_states_core::serialization::{ClientHeader, deserialize, serialize_value};
+use egui_states_core::values::GetType;
 
-use crate::UpdateValue;
 use crate::sender::MessageSender;
 
 pub struct Diff<'a, T> {
@@ -15,7 +15,7 @@ pub struct Diff<'a, T> {
     value: &'a Value<T>,
 }
 
-impl<'a, T: Serialize + Clone + PartialEq> Diff<'a, T> {
+impl<'a, T: Serialize + GetType + Clone + PartialEq> Diff<'a, T> {
     pub fn new(value: &'a Value<T>) -> Self {
         let v = value.get();
         Self {
@@ -47,12 +47,12 @@ pub struct Value<T> {
 
 impl<T> Value<T>
 where
-    T: Serialize + Clone,
+    T: Serialize + GetType + Clone,
 {
-    pub(crate) fn new(id: u64, type_id: u64, value: T, sender: MessageSender) -> Arc<Self> {
+    pub(crate) fn new(id: u64, value: T, sender: MessageSender) -> Arc<Self> {
         Arc::new(Self {
             id,
-            type_id,
+            type_id: T::get_type().get_hash(),
             value: RwLock::new(value),
             sender,
         })
@@ -63,35 +63,46 @@ where
     }
 
     pub fn set(&self, value: T, signal: bool) {
-        let data = serialize(self.id, (signal, &value), TYPE_VALUE);
+        let data = serialize_value(&value);
+        let header = ClientHeader::Value(self.id, self.type_id, signal);
         let mut w = self.value.write();
-        self.sender.send(data);
+        self.sender.send_data(header, data);
         *w = value;
     }
 }
 
 impl<T: for<'a> Deserialize<'a> + Send + Sync> UpdateValue for Value<T> {
-    fn update_value(&self, data: &[u8]) -> Result<bool, String> {
-        let (update, value) = deserialize::<(bool, T)>(data)
+    fn update_value(&self, type_id: u64, data: &[u8]) -> Result<(), String> {
+        if self.type_id != type_id {
+            return Err(format!(
+                "Type mismatch for value id: {} expected: {} got: {}",
+                self.id, self.type_id, type_id
+            ));
+        }
+
+        let value = deserialize(data)
             .map_err(|e| format!("Parse error: {} for value id: {}", e, self.id))?;
 
         let mut w = self.value.write();
         *w = value;
-        self.sender.send(ControlMessage::ack(self.id));
-        Ok(update)
+        self.sender
+            .send(ClientHeader::ack(self.id));
+        Ok(())
     }
 }
 
 // StaticValue --------------------------------------------
 pub struct ValueStatic<T> {
-    id: u32,
+    id: u64,
+    type_id: u64,
     value: RwLock<T>,
 }
 
-impl<T: Clone> ValueStatic<T> {
-    pub(crate) fn new(id: u32, value: T) -> Arc<Self> {
+impl<T: GetType + Clone> ValueStatic<T> {
+    pub(crate) fn new(id: u64, value: T) -> Arc<Self> {
         Arc::new(Self {
             id,
+            type_id: T::get_type().get_hash(),
             value: RwLock::new(value),
         })
     }
@@ -102,32 +113,41 @@ impl<T: Clone> ValueStatic<T> {
 }
 
 impl<T: for<'a> Deserialize<'a> + Send + Sync> UpdateValue for ValueStatic<T> {
-    fn update_value(&self, data: &[u8]) -> Result<bool, String> {
-        let (update, value) = deserialize::<(bool, T)>(data)
+    fn update_value(&self, type_id: u64, data: &[u8]) -> Result<(), String> {
+        if self.type_id != type_id {
+            return Err(format!(
+                "Type mismatch for static value id: {} expected: {} got: {}",
+                self.id, self.type_id, type_id
+            ));
+        }
+        let value = deserialize(data)
             .map_err(|e| format!("Parse error: {} for value id: {}", e, self.id))?;
         *self.value.write() = value;
-        Ok(update)
+        Ok(())
     }
 }
 
 // Signal --------------------------------------------
 pub struct Signal<T> {
-    id: u32,
+    id: u64,
+    type_id: u64,
     sender: MessageSender,
     phantom: PhantomData<T>,
 }
 
-impl<T: Serialize + Clone> Signal<T> {
-    pub(crate) fn new(id: u32, sender: MessageSender) -> Arc<Self> {
+impl<T: Serialize + GetType + Clone> Signal<T> {
+    pub(crate) fn new(id: u64, sender: MessageSender) -> Arc<Self> {
         Arc::new(Self {
             id,
+            type_id: T::get_type().get_hash(),
             sender,
             phantom: PhantomData,
         })
     }
 
     pub fn set(&self, value: impl Into<T>) {
-        let message = serialize(self.id, &value.into(), TYPE_SIGNAL);
-        self.sender.send(message);
+        let message = serialize_value(&value.into());
+        let header = ClientHeader::Signal(self.id, self.type_id);
+        self.sender.send_data(header, message);
     }
 }

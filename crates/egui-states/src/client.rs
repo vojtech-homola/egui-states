@@ -6,22 +6,21 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::runtime::Builder;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio_tungstenite::connect_async_with_config;
-use tokio_tungstenite::tungstenite::{Bytes, Message, protocol::WebSocketConfig};
+use tokio_tungstenite::tungstenite::{Message, protocol::WebSocketConfig};
 
-use egui_states_core::controls::ControlMessage;
-use egui_states_core::serialization::MessageData;
+use egui_states_core::serialization::ClientHeader;
 
 use crate::State;
 use crate::client_base::{Client, ConnectionState};
 use crate::handle_message::handle_message;
-use crate::sender::MessageSender;
+use crate::sender::{ChannelMessage, MessageSender};
 use crate::values_creator::{ClientValuesCreator, ValuesList};
 
 async fn start_gui_client(
     addr: SocketAddrV4,
     vals: ValuesList,
     version: u64,
-    mut rx: UnboundedReceiver<Option<MessageData>>,
+    mut rx: UnboundedReceiver<ChannelMessage>,
     sender: MessageSender,
     ui_state: Client,
     handshake: u64,
@@ -39,7 +38,11 @@ async fn start_gui_client(
         let res = connect_async_with_config(&address, Some(websocket_config), false).await;
         if res.is_err() {
             #[cfg(debug_assertions)]
-            println!("connecting to server at {:?} failed: {:?}", address, res.err());
+            println!(
+                "connecting to server at {:?} failed: {:?}",
+                address,
+                res.err()
+            );
             continue;
         }
 
@@ -70,7 +73,7 @@ async fn start_gui_client(
                 }
                 let res = res.unwrap();
 
-                #[allow(unused_variables)]
+                // #[allow(unused_variables)]
                 if let Err(e) = res {
                     #[cfg(debug_assertions)]
                     println!("reading message from server failed: {:?}", e);
@@ -83,7 +86,7 @@ async fn start_gui_client(
                     _ => {
                         let error =
                             format!("client received unexpected message type: {:?}", message);
-                        th_sender.send(ControlMessage::error(error));
+                        th_sender.send(ClientHeader::error(error));
                         break;
                     }
                 };
@@ -92,7 +95,7 @@ async fn start_gui_client(
                 let res = handle_message(mess.as_ref(), &th_vals, &th_ui_state).await;
                 if let Err(e) = res {
                     let error = format!("handling message from server failed: {:?}", e);
-                    th_sender.send(ControlMessage::error(error));
+                    th_sender.send(ClientHeader::error(error));
                     break;
                 }
             }
@@ -100,10 +103,9 @@ async fn start_gui_client(
 
         // send -----------------------------------------
         let send_future = tokio::spawn(async move {
-            let handshake = ControlMessage::Handshake(version, handshake);
-            let message = Message::Binary(Bytes::from(handshake.serialize()));
+            let message = Message::Binary(ClientHeader::serialize_handshake(version, handshake));
             let res = socket_write.send(message).await;
-            
+
             #[allow(unused_variables)]
             if let Err(e) = res {
                 #[cfg(debug_assertions)]
@@ -120,11 +122,8 @@ async fn start_gui_client(
                     let _ = socket_write.flush().await;
                     break;
                 }
-                let message = message.unwrap();
-                let data = match message {
-                    MessageData::Stack(data, len) => Bytes::copy_from_slice(&data[0..len]),
-                    MessageData::Heap(data) => Bytes::from(data),
-                };
+                let (header, data) = message.unwrap();
+                let data = header.serialize(data);
 
                 // write the message
                 let res = socket_write.send(Message::Binary(data)).await;
@@ -154,7 +153,7 @@ async fn start_gui_client(
 pub struct ClientBuilder {
     creator: ClientValuesCreator,
     sender: MessageSender,
-    rx: UnboundedReceiver<Option<MessageData>>,
+    rx: UnboundedReceiver<ChannelMessage>,
     addr: Ipv4Addr,
     context: Option<Context>,
 }
