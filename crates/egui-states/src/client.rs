@@ -123,7 +123,7 @@ async fn start_gui_client(
                     break;
                 }
                 let (header, data) = message.unwrap();
-                let data = header.serialize(data);
+                let data = header.serialize_message(data);
 
                 // write the message
                 let res = socket_write.send(Message::Binary(data)).await;

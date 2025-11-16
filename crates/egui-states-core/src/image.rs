@@ -10,6 +10,17 @@ pub enum ImageType {
     GrayAlpha,
 }
 
+impl ImageType {
+    pub fn bytes_per_pixel(&self) -> usize {
+        match self {
+            ImageType::Color => 3,
+            ImageType::ColorAlpha => 4,
+            ImageType::Gray => 1,
+            ImageType::GrayAlpha => 2,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct ImageHeader {
     pub image_size: [u32; 2],   // [y, x]

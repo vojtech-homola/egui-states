@@ -7,10 +7,8 @@ use bytes::Bytes;
 use pyo3::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use egui_states_core_2::serialization::{
-    ServerHeader, TYPE_STATIC, TYPE_VALUE, deserialize, ser_server_value, serialize_vec,
-};
-use egui_states_core_2::values::ObjectType;
+use egui_states_core::serialization::{ServerHeader, deserialize, ser_server_value};
+use egui_states_core::values::ObjectType;
 
 use crate::sender::MessageSender;
 use crate::server::{Acknowledge, SyncTrait};
@@ -20,8 +18,13 @@ pub(crate) trait UpdateValue: Send + Sync {
     fn update_value(&self, type_id: u64, signal: bool, value: Bytes) -> Result<(), String>;
 }
 
-pub(crate) trait GetValue: Send + Sync {
-    fn get_value(&self) -> (Bytes, ObjectType);
+pub(crate) trait GetValue: SetValue {
+    fn get_value(&self) -> Bytes;
+    fn get_type(&self) -> ObjectType;
+}
+
+pub(crate) trait SetValue: Send + Sync {
+    fn set_value(&self, value: Bytes);
 }
 
 // Value --------------------------------------------------
@@ -73,9 +76,21 @@ impl UpdateValue for Value {
 }
 
 impl GetValue for Value {
-    fn get_value(&self) -> (Bytes, ObjectType) {
-        let w = self.value.read();
-        (w.0.clone(), self.value_type.clone())
+    #[inline]
+    fn get_value(&self) -> Bytes {
+        self.value.read().0.clone()
+    }
+
+    #[inline]
+    fn get_type(&self) -> ObjectType {
+        self.value_type.clone()
+    }
+}
+
+impl SetValue for Value {
+    fn set_value(&self, value: Bytes) {
+        let mut w = self.value.write();
+        w.0 = value;
     }
 }
 
@@ -127,5 +142,29 @@ impl ValueStatic {
             sender,
             connected,
         })
+    }
+}
+
+// Signals --------------------------------------------
+pub(crate) struct Signal {
+    id: u64,
+    value_type: ObjectType,
+    type_id: u64,
+}
+
+impl Signal {
+    pub(crate) fn new(id: u64, value: Bytes, value_type: ObjectType) -> Arc<Self> {
+        let type_id = value_type.get_hash();
+        Arc::new(Self {
+            id,
+            value_type,
+            type_id,
+        })
+    }
+}
+
+impl UpdateValue for Signal {
+    fn update_value(&self, type_id: u64, _: bool, value: Bytes) -> Result<(), String> {
+        Ok(())
     }
 }

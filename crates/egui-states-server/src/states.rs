@@ -5,29 +5,34 @@ use std::sync::atomic::AtomicBool;
 use pyo3::buffer::Element;
 use serde::{Deserialize, Serialize};
 
-use egui_states_core_2::graphs::GraphElement;
-use egui_states_core_2::nohash::NoHashMap;
+use egui_states_core::graphs::GraphElement;
+use egui_states_core::nohash::NoHashMap;
 
-use crate::pydict::{PyDictTrait, PyValueDict};
-use crate::pygraphs::{PyGraphTrait, PyValueGraphs};
-use crate::pyimage::PyValueImage;
-use crate::pylist::{PyListTrait, PyValueList};
-use crate::python_convert::{FromPython, ToPython};
-use crate::pyvalues::{PySignal, PyValue, PyValueStatic};
-use crate::pyvalues::{PySignalTrait, PyValueStaticTrait, PyValueTrait, UpdateValueServer};
+use crate::graph::ValueGraphs;
+use crate::image::ValueImage;
+use crate::list::ValueList;
+use crate::map::ValueMap;
 use crate::sender::MessageSender;
-use crate::server::{Acknowledge, SyncTrait};
 use crate::signals::ChangedValues;
+use crate::values::{Signal, UpdateValueServer, Value, ValueStatic};
+
+pub(crate) trait SyncTrait: Sync + Send {
+    fn sync(&self);
+}
+
+pub(crate) trait Acknowledge: Sync + Send {
+    fn acknowledge(&self);
+}
 
 #[derive(Clone)]
 pub(crate) struct PyValuesList {
-    pub(crate) values: NoHashMap<u32, Arc<dyn PyValueTrait>>,
-    pub(crate) static_values: NoHashMap<u32, Arc<dyn PyValueStaticTrait>>,
-    pub(crate) signals: NoHashMap<u32, Arc<dyn PySignalTrait>>,
-    pub(crate) images: NoHashMap<u32, Arc<PyValueImage>>,
-    pub(crate) dicts: NoHashMap<u32, Arc<dyn PyDictTrait>>,
-    pub(crate) lists: NoHashMap<u32, Arc<dyn PyListTrait>>,
-    pub(crate) graphs: NoHashMap<u32, Arc<dyn PyGraphTrait>>,
+    pub(crate) values: NoHashMap<u64, Arc<Value>>,
+    pub(crate) static_values: NoHashMap<u64, Arc<ValueStatic>>,
+    pub(crate) signals: NoHashMap<u64, Arc<Signal>>,
+    pub(crate) images: NoHashMap<u64, Arc<ValueImage>>,
+    pub(crate) maps: NoHashMap<u64, Arc<ValueMap>>,
+    pub(crate) lists: NoHashMap<u64, Arc<ValueList>>,
+    pub(crate) graphs: NoHashMap<u64, Arc<ValueGraphs>>,
 }
 
 impl PyValuesList {
@@ -37,7 +42,7 @@ impl PyValuesList {
             static_values: NoHashMap::default(),
             signals: NoHashMap::default(),
             images: NoHashMap::default(),
-            dicts: NoHashMap::default(),
+            maps: NoHashMap::default(),
             lists: NoHashMap::default(),
             graphs: NoHashMap::default(),
         }
@@ -47,30 +52,30 @@ impl PyValuesList {
         self.values.shrink_to_fit();
         self.static_values.shrink_to_fit();
         self.images.shrink_to_fit();
-        self.dicts.shrink_to_fit();
+        self.maps.shrink_to_fit();
         self.lists.shrink_to_fit();
         self.graphs.shrink_to_fit();
     }
 }
 
 #[derive(Clone)]
-pub(crate) struct ValuesList {
-    pub(crate) updated: NoHashMap<u32, Arc<dyn UpdateValueServer>>,
-    pub(crate) ack: NoHashMap<u32, Arc<dyn Acknowledge>>,
-    pub(crate) sync: NoHashMap<u32, Arc<dyn SyncTrait>>,
+pub(crate) struct ServerStatesList {
+    pub(crate) update: NoHashMap<u64, Arc<dyn UpdateValueServer>>,
+    pub(crate) ack: NoHashMap<u64, Arc<dyn Acknowledge>>,
+    pub(crate) sync: NoHashMap<u64, Arc<dyn SyncTrait>>,
 }
 
-impl ValuesList {
+impl ServerStatesList {
     fn new() -> Self {
         Self {
-            updated: NoHashMap::default(),
+            update: NoHashMap::default(),
             ack: NoHashMap::default(),
             sync: NoHashMap::default(),
         }
     }
 
     fn shrink(&mut self) {
-        self.updated.shrink_to_fit();
+        self.update.shrink_to_fit();
         self.ack.shrink_to_fit();
         self.sync.shrink_to_fit();
     }
@@ -82,7 +87,7 @@ pub struct ServerValuesCreator {
     signals: ChangedValues,
 
     version: u64,
-    val: ValuesList,
+    val: ServerStatesList,
     py_val: PyValuesList,
 }
 
@@ -98,12 +103,12 @@ impl ServerValuesCreator {
             signals,
 
             version: 0,
-            val: ValuesList::new(),
+            val: ServerStatesList::new(),
             py_val: PyValuesList::new(),
         }
     }
 
-    pub(crate) fn get_values(self) -> (ValuesList, PyValuesList, u64) {
+    pub(crate) fn get_values(self) -> (ServerStatesList, PyValuesList, u64) {
         let Self {
             mut val,
             mut py_val,
@@ -132,7 +137,7 @@ impl ServerValuesCreator {
         );
 
         self.py_val.values.insert(id, value.clone());
-        self.val.updated.insert(id, value.clone());
+        self.val.update.insert(id, value.clone());
         self.val.sync.insert(id, value.clone());
         self.val.ack.insert(id, value);
     }
@@ -154,7 +159,7 @@ impl ServerValuesCreator {
         let signal = PySignal::<T>::new(id, self.signals.clone());
 
         self.py_val.signals.insert(id, signal.clone());
-        self.val.updated.insert(id, signal);
+        self.val.update.insert(id, signal);
     }
 
     pub fn add_image(&mut self, id: u32) {
@@ -172,7 +177,7 @@ impl ServerValuesCreator {
     {
         let dict = PyValueDict::<K, V>::new(id, self.sender.clone(), self.connected.clone());
 
-        self.py_val.dicts.insert(id, dict.clone());
+        self.py_val.maps.insert(id, dict.clone());
         self.val.sync.insert(id, dict);
     }
 

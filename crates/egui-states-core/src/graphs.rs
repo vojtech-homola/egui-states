@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 // graphs -------------------------------------------------------------
-#[derive(Serialize, Deserialize, PartialEq)]
+#[derive(Serialize, Deserialize, PartialEq, Clone, Copy, PartialOrd)]
 pub enum GraphType {
     F32,
     F64,
@@ -10,6 +10,9 @@ pub enum GraphType {
 pub trait GraphElement: Clone + Copy + Send + Sync + 'static {
     fn zero() -> Self;
     fn graph_type() -> GraphType;
+    fn bytes_size() -> usize {
+        std::mem::size_of::<Self>()
+    }
 }
 
 impl GraphElement for f32 {
@@ -37,6 +40,13 @@ impl GraphElement for f64 {
 pub struct Graph<T> {
     pub y: Vec<T>,
     pub x: Option<Vec<T>>,
+}
+
+#[derive(Clone)]
+pub struct GraphTyped {
+    pub y: Vec<u8>,
+    pub x: Option<Vec<u8>>,
+    pub graph_type: GraphType,
 }
 
 impl<T: GraphElement + Serialize> Graph<T> {

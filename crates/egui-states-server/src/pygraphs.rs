@@ -11,9 +11,9 @@ use pyo3::types::{PyByteArray, PyTuple};
 use serde::Serialize;
 use tokio_tungstenite::tungstenite::Bytes;
 
-use egui_states_core_2::graphs::{Graph, GraphElement, GraphMessage};
-use egui_states_core_2::nohash::NoHashMap;
-use egui_states_core_2::serialization::{TYPE_GRAPH, serialize};
+use egui_states_core::graphs::{Graph, GraphElement, GraphMessage};
+use egui_states_core::nohash::NoHashMap;
+use egui_states_core::serialization::{TYPE_GRAPH, serialize};
 
 use crate::python_convert::{ToPython, FromPython};
 use crate::sender::MessageSender;

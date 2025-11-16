@@ -5,8 +5,8 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc::UnboundedReceiver;
 use ws_stream_wasm::{WsMessage, WsMeta};
 
-use egui_states_core::controls::ControlMessage;
-use egui_states_core::serialization::MessageData;
+use egui_states_core_old::controls::ControlMessage;
+use egui_states_core_old::serialization::MessageData;
 
 use crate::State;
 use crate::client_base::{Client, ConnectionState};

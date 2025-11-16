@@ -7,13 +7,13 @@ use pyo3::prelude::*;
 use pyo3::types::{PyByteArray, PyDict, PyList, PyTuple};
 use tokio_tungstenite::tungstenite::Bytes;
 
-use egui_states_core_2::controls::ControlMessage;
-use egui_states_core_2::nohash::NoHashSet;
+use egui_states_core::controls::ControlMessage;
+use egui_states_core::nohash::NoHashSet;
 
 use crate::sender::MessageSender;
 use crate::server::Server;
 use crate::signals::ChangedValues;
-use crate::states_server::{PyValuesList, ServerValuesCreator};
+use crate::states::{PyValuesList, ServerValuesCreator};
 
 // To be able to create all values outside this crate
 pub(crate) static CREATE_HOOK: OnceLock<fn(&mut ServerValuesCreator)> = OnceLock::new();
@@ -263,7 +263,7 @@ impl StateServerCore {
 
     // dicts ------------------------------------------------------------------
     fn dict_get<'py>(&self, py: Python<'py>, value_id: u32) -> PyResult<Bound<'py, PyDict>> {
-        match self.values.dicts.get(&value_id) {
+        match self.values.maps.get(&value_id) {
             Some(dict) => Ok(dict.get_py(py)),
             None => Err(pyo3::exceptions::PyValueError::new_err(format!(
                 "Dict value with id {} is not available.",
@@ -277,7 +277,7 @@ impl StateServerCore {
         value_id: u32,
         key: &Bound<'py, PyAny>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        match self.values.dicts.get(&value_id) {
+        match self.values.maps.get(&value_id) {
             Some(dict) => dict.get_item_py(key),
             None => Err(pyo3::exceptions::PyValueError::new_err(format!(
                 "Dict value with id {} is not available.",
@@ -287,7 +287,7 @@ impl StateServerCore {
     }
 
     fn dict_set(&self, value_id: u32, dict: &Bound<PyAny>, update: bool) -> PyResult<()> {
-        match self.values.dicts.get(&value_id) {
+        match self.values.maps.get(&value_id) {
             Some(dict_) => dict_.set_py(dict, update),
             None => Err(pyo3::exceptions::PyValueError::new_err(format!(
                 "Dict value with id {} is not available.",
@@ -303,7 +303,7 @@ impl StateServerCore {
         value: &Bound<PyAny>,
         update: bool,
     ) -> PyResult<()> {
-        match self.values.dicts.get(&value_id) {
+        match self.values.maps.get(&value_id) {
             Some(dict) => dict.set_item_py(key, value, update),
             None => Err(pyo3::exceptions::PyValueError::new_err(format!(
                 "Dict value with id {} is not available.",
@@ -313,7 +313,7 @@ impl StateServerCore {
     }
 
     fn dict_item_del(&self, value_id: u32, key: &Bound<PyAny>, update: bool) -> PyResult<()> {
-        match self.values.dicts.get(&value_id) {
+        match self.values.maps.get(&value_id) {
             Some(dict) => dict.del_item_py(key, update),
             None => Err(pyo3::exceptions::PyValueError::new_err(format!(
                 "Dict value with id {} is not available.",
@@ -323,7 +323,7 @@ impl StateServerCore {
     }
 
     fn dict_len(&self, value_id: u32) -> PyResult<usize> {
-        match self.values.dicts.get(&value_id) {
+        match self.values.maps.get(&value_id) {
             Some(dict) => Ok(dict.len_py()),
             None => Err(pyo3::exceptions::PyValueError::new_err(format!(
                 "Dict value with id {} is not available.",

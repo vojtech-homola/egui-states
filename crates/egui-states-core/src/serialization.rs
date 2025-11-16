@@ -51,7 +51,30 @@ impl ClientHeader {
         data
     }
 
-    pub fn serialize(&self, data: Option<MessageData>) -> Bytes {
+    pub fn deserialize_header(message: &Bytes) -> Result<(Self, Option<Bytes>), &'static str> {
+        let (header, rest) = postcard::take_from_bytes::<ClientHeader>(&message)
+            .map_err(|_| "Failed to deserialize")?;
+
+        let l = rest.len();
+        let data = match header {
+            Self::Control(_) => {
+                if l != 0 {
+                    return Err("Control message should not have data");
+                }
+                None
+            }
+            _ => {
+                if l == 0 {
+                    return Err("Non-control message should have data");
+                }
+                Some(message.slice(message.len() - rest.len()..))
+            }
+        };
+
+        Ok((header, data))
+    }
+
+    pub fn serialize_message(&self, data: Option<MessageData>) -> Bytes {
         match data {
             Some(MessageData::Heap(vec)) => {
                 let head = postcard::to_vec::<ClientHeader, 32>(self)

@@ -2,7 +2,7 @@ use parking_lot::Mutex;
 use std::collections::{VecDeque, hash_map::Entry};
 use std::sync::Arc;
 
-use egui_states_core_2::nohash::{NoHashMap, NoHashSet};
+use egui_states_core::nohash::{NoHashMap, NoHashSet};
 
 use crate::event::Event;
 use crate::python_convert::ToPython;

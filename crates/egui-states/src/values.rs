@@ -26,9 +26,16 @@ impl<'a, T: Serialize + GetType + Clone + PartialEq> Diff<'a, T> {
     }
 
     #[inline]
-    pub fn set(self, signal: bool) {
+    pub fn set(self) {
         if self.v != self.original {
-            self.value.set(self.v, signal);
+            self.value.set(self.v);
+        }
+    }
+
+    #[inline]
+    pub fn set_signal(self) {
+        if self.v != self.original {
+            self.value.set_signal(self.v);
         }
     }
 }
@@ -62,9 +69,17 @@ where
         self.value.read().clone()
     }
 
-    pub fn set(&self, value: T, signal: bool) {
+    pub fn set(&self, value: T) {
         let data = serialize_value(&value);
-        let header = ClientHeader::Value(self.id, self.type_id, signal);
+        let header = ClientHeader::Value(self.id, self.type_id, false);
+        let mut w = self.value.write();
+        self.sender.send_data(header, data);
+        *w = value;
+    }
+
+    pub fn set_signal(&self, value: T) {
+        let data = serialize_value(&value);
+        let header = ClientHeader::Value(self.id, self.type_id, true);
         let mut w = self.value.write();
         self.sender.send_data(header, data);
         *w = value;
@@ -85,8 +100,7 @@ impl<T: for<'a> Deserialize<'a> + Send + Sync> UpdateValue for Value<T> {
 
         let mut w = self.value.write();
         *w = value;
-        self.sender
-            .send(ClientHeader::ack(self.id));
+        self.sender.send(ClientHeader::ack(self.id));
         Ok(())
     }
 }

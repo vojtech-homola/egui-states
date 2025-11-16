@@ -4,25 +4,80 @@ use std::thread;
 
 use tokio::runtime::Builder;
 
-use egui_states_core_2::event_async::Event;
-use egui_states_core_2::nohash::NoHashMap;
+use egui_states_core::event_async::Event;
+use egui_states_core::nohash::NoHashMap;
 
+use crate::graph::ValueGraphs;
+use crate::image::ValueImage;
+use crate::list::ValueList;
+use crate::map::ValueMap;
 use crate::sender::{MessageReceiver, MessageSender};
 use crate::server_core::start;
 use crate::signals::ChangedValues;
-use crate::values::Value;
+use crate::values::{Signal, UpdateValue, Value, ValueStatic};
 
-pub(crate) struct StateValues {
-    pub values: NoHashMap<u64, Arc<Value>>,
+pub(crate) trait SyncTrait: Sync + Send {
+    fn sync(&self);
 }
 
-impl StateValues {
+pub(crate) trait Acknowledge: Sync + Send {
+    fn acknowledge(&self);
+}
+
+#[derive(Clone)]
+pub(crate) struct StatesList {
+    pub(crate) values: NoHashMap<u64, Arc<Value>>,
+    pub(crate) static_values: NoHashMap<u64, Arc<ValueStatic>>,
+    pub(crate) signals: NoHashMap<u64, Arc<Signal>>,
+    pub(crate) images: NoHashMap<u64, Arc<ValueImage>>,
+    pub(crate) maps: NoHashMap<u64, Arc<ValueMap>>,
+    pub(crate) lists: NoHashMap<u64, Arc<ValueList>>,
+    pub(crate) graphs: NoHashMap<u64, Arc<ValueGraphs>>,
+}
+
+impl StatesList {
     fn new() -> Self {
-        Self { values: NoHashMap::default() }
+        Self {
+            values: NoHashMap::default(),
+            static_values: NoHashMap::default(),
+            signals: NoHashMap::default(),
+            images: NoHashMap::default(),
+            maps: NoHashMap::default(),
+            lists: NoHashMap::default(),
+            graphs: NoHashMap::default(),
+        }
     }
 
     fn shrink(&mut self) {
         self.values.shrink_to_fit();
+        self.static_values.shrink_to_fit();
+        self.images.shrink_to_fit();
+        self.maps.shrink_to_fit();
+        self.lists.shrink_to_fit();
+        self.graphs.shrink_to_fit();
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct ServerStatesList {
+    pub(crate) update: NoHashMap<u64, Arc<dyn UpdateValue>>,
+    pub(crate) ack: NoHashMap<u64, Arc<dyn Acknowledge>>,
+    pub(crate) sync: NoHashMap<u64, Arc<dyn SyncTrait>>,
+}
+
+impl ServerStatesList {
+    fn new() -> Self {
+        Self {
+            update: NoHashMap::default(),
+            ack: NoHashMap::default(),
+            sync: NoHashMap::default(),
+        }
+    }
+
+    fn shrink(&mut self) {
+        self.update.shrink_to_fit();
+        self.ack.shrink_to_fit();
+        self.sync.shrink_to_fit();
     }
 }
 
@@ -32,23 +87,21 @@ pub(crate) struct Server {
     sender: MessageSender,
     start_event: Event,
     addr: SocketAddrV4,
+    states: StatesList,
+    signals: ChangedValues,
+    handshake: Option<Vec<u64>>,
 
-    states: Option<StateValues>,
+    states_server: Option<ServerStatesList>,
+    rx: Option<MessageReceiver>,
 }
 
 impl Server {
-    pub(crate) fn new(
-        sender: MessageSender,
-        rx: MessageReceiver,
-        connected: Arc<atomic::AtomicBool>,
-        values: ValuesList,
-        signals: ChangedValues,
-        addr: SocketAddrV4,
-        version: u64,
-        handshake: Option<Vec<u64>>,
-    ) -> Self {
+    pub(crate) fn new(addr: SocketAddrV4, handshake: Option<Vec<u64>>) -> Self {
         let start_event = Event::new();
         let enabled = Arc::new(atomic::AtomicBool::new(false));
+        let connected = Arc::new(atomic::AtomicBool::new(false));
+        let (sender, rx) = MessageSender::new();
+        let signals = ChangedValues::new();
 
         let obj = Self {
             connected,
@@ -56,14 +109,18 @@ impl Server {
             sender,
             start_event,
             addr,
-            states: Some(StateValues::new()),
+            states: StatesList::new(),
+            signals,
+            handshake,
+            states_server: Some(ServerStatesList::new()),
+            rx: Some(rx),
         };
 
         obj
     }
 
     pub(crate) fn initialize(&mut self) {
-        if self.states.is_none() {
+        if self.states_server.is_none() {
             return;
         }
 
@@ -73,6 +130,17 @@ impl Server {
             .worker_threads(2)
             .build()
             .unwrap();
+
+        let sender = self.sender.clone();
+        let rx = self.rx.take().unwrap();
+        let connected = self.connected.clone();
+        let enabled = self.enabled.clone();
+        let values = self.states_server.take().unwrap();
+        let signals = self.signals.clone();
+        let start_event = self.start_event.clone();
+        let handshake = self.handshake.clone();
+        let addr = self.addr; 
+        let version = 0;
 
         let server_thread = thread::Builder::new().name("Server".to_string());
         let _ = server_thread.spawn(move || {
@@ -126,13 +194,4 @@ impl Server {
     pub(crate) fn is_running(&self) -> bool {
         self.enabled.load(atomic::Ordering::Relaxed)
     }
-}
-
-// server traits --------------------------------------------------------------
-pub(crate) trait SyncTrait: Sync + Send {
-    fn sync(&self);
-}
-
-pub(crate) trait Acknowledge: Sync + Send {
-    fn acknowledge(&self);
 }

@@ -9,13 +9,13 @@ use tokio::task::JoinHandle;
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::{Message, protocol::WebSocketConfig};
 
-use egui_states_core_2::controls::ControlMessage;
-use egui_states_core_2::event_async::Event;
-use egui_states_core_2::serialization;
+use egui_states_core::controls::ControlMessage;
+use egui_states_core::event_async::Event;
+use egui_states_core::serialization::ClientHeader;
 
 use crate::sender::{MessageReceiver, MessageSender};
+use crate::server::ServerStatesList;
 use crate::signals::ChangedValues;
-use crate::states_server::ValuesList;
 
 enum ChannelHolder {
     Transfer(JoinHandle<MessageReceiver>),
@@ -27,7 +27,7 @@ pub(crate) async fn start(
     rx: MessageReceiver,
     connected: Arc<atomic::AtomicBool>,
     enabled: Arc<atomic::AtomicBool>,
-    values: ValuesList,
+    values: ServerStatesList,
     signals: ChangedValues,
     start_event: Event,
     addr: SocketAddrV4,
@@ -94,68 +94,65 @@ pub(crate) async fn start(
         }
 
         if let Message::Binary(message) = res.unwrap() {
-            let data = message.as_ref();
-            if data[0] == serialization::TYPE_CONTROL {
-                let control = ControlMessage::deserialize(data);
-                if control.is_err() {
-                    signals.error(&format!("deserializing initial message failed"));
+            let res = ClientHeader::deserialize_header(&message);
+            if res.is_err() {
+                signals.error(&format!("deserializing initial message header failed"));
+                continue;
+            }
+            let (header, _) = res.unwrap();
+
+            if let ClientHeader::Control(ControlMessage::Handshake(v, h)) = header {
+                if v != version {
+                    let message = format!(
+                        "attempted to connect with different version: {}, version {} is required.",
+                        v, version
+                    );
+                    signals.warning(&message);
                     continue;
                 }
-                let control = control.unwrap();
 
-                if let ControlMessage::Handshake(v, h) = control {
-                    if v != version {
-                        let message = format!(
-                            "attempted to connect with different version: {}, version {} is required.",
-                            v, version
-                        );
-                        signals.warning(&message);
+                if let Some(ref hash) = handshake {
+                    if !hash.contains(&h) {
+                        signals.warning("attempted to connect with wrong hash");
                         continue;
                     }
-
-                    if let Some(ref hash) = handshake {
-                        if !hash.contains(&h) {
-                            signals.warning("attempted to connect with wrong hash");
-                            continue;
-                        }
-                    }
-
-                    let mut rx = match holder {
-                        // disconnect previous client
-                        ChannelHolder::Transfer(handler) => {
-                            #[cfg(debug_assertions)]
-                            signals.debug("terminating previous connection");
-                            connected.store(false, atomic::Ordering::Relaxed);
-                            sender.close();
-                            let rx = handler.await.unwrap();
-                            rx
-                        }
-                        ChannelHolder::Rx(rx) => rx,
-                    };
-
-                    // clean mesage queue and send sync signals
-                    while !rx.is_empty() {
-                        let _ = rx.recv().await;
-                    }
-
-                    // std::thread::sleep(std::time::Duration::from_millis(100));
-                    connected.store(true, atomic::Ordering::Relaxed);
-                    for (_, v) in values.sync.iter() {
-                        v.sync();
-                    }
-
-                    // start transfer thread
-                    let handler = communication_handler(
-                        connected.clone(),
-                        values.clone(),
-                        signals.clone(),
-                        websocket,
-                        rx,
-                        sender.clone(),
-                    )
-                    .await;
-                    holder = ChannelHolder::Transfer(handler);
                 }
+
+                let mut rx = match holder {
+                    // disconnect previous client
+                    ChannelHolder::Transfer(handler) => {
+                        #[cfg(debug_assertions)]
+                        signals.debug("terminating previous connection");
+                        connected.store(false, atomic::Ordering::Relaxed);
+                        sender.close();
+                        let rx = handler.await.unwrap();
+                        rx
+                    }
+                    ChannelHolder::Rx(rx) => rx,
+                };
+
+                // clean mesage queue and send sync signals
+                while !rx.is_empty() {
+                    let _ = rx.recv().await;
+                }
+
+                // std::thread::sleep(std::time::Duration::from_millis(100));
+                connected.store(true, atomic::Ordering::Relaxed);
+                for (_, v) in values.sync.iter() {
+                    v.sync();
+                }
+
+                // start transfer thread
+                let handler = communication_handler(
+                    connected.clone(),
+                    values.clone(),
+                    signals.clone(),
+                    websocket,
+                    rx,
+                    sender.clone(),
+                )
+                .await;
+                holder = ChannelHolder::Transfer(handler);
             }
         }
     }
@@ -163,7 +160,7 @@ pub(crate) async fn start(
 
 async fn communication_handler(
     connected: Arc<AtomicBool>,
-    values: ValuesList,
+    values: ServerStatesList,
     signals: ChangedValues,
     websocket: WebSocketStream<TcpStream>,
     rx: MessageReceiver,
@@ -203,38 +200,39 @@ async fn communication_handler(
 
             match res.unwrap() {
                 Message::Binary(m) => {
-                    let data = m.as_ref();
-                    match data[0] {
-                        serialization::TYPE_CONTROL => {
-                            let control = ControlMessage::deserialize(data).unwrap(); //TODO handle error
-                            match control {
-                                ControlMessage::Ack(v) => {
-                                    let val_res = read_values.ack.get(&v);
-                                    match val_res {
-                                        Some(val) => {
-                                            val.acknowledge();
-                                        }
-                                        None => read_signals.error(&format!(
-                                            "value with id {} not found for Acknowledge",
-                                            v
-                                        )),
+                    let res = ClientHeader::deserialize_header(&m);
+                    if res.is_err() {
+                        read_signals.error(&format!("deserializing message header failed"));
+                        continue;
+                    }
+                    let (header, data) = res.unwrap();
+                    match header {
+                        ClientHeader::Control(control) => match control {
+                            ControlMessage::Ack(v) => {
+                                let val_res = read_values.ack.get(&v);
+                                match val_res {
+                                    Some(val) => {
+                                        val.acknowledge();
                                     }
+                                    None => read_signals.error(&format!(
+                                        "value with id {} not found for Acknowledge",
+                                        v
+                                    )),
                                 }
-                                ControlMessage::Error(err) => {
-                                    read_signals
-                                        .error(&format!("Error message from client: {}", err));
-                                }
-                                _ => read_signals.error(&format!(
-                                    "Command {} should not be processed here",
-                                    control.as_str()
-                                )),
                             }
-                        }
-                        serialization::TYPE_VALUE => {
-                            let id = u32::from_le_bytes([data[1], data[2], data[3], data[4]]);
-                            match read_values.updated.get(&id) {
+                            ControlMessage::Error(err) => {
+                                read_signals.error(&format!("Error message from client: {}", err));
+                            }
+                            _ => read_signals.error(&format!(
+                                "Command {} should not be processed here",
+                                control.as_str()
+                            )),
+                        },
+                        ClientHeader::Value(id, type_id, signal) => {
+                            match read_values.update.get(&id) {
                                 Some(val) => {
-                                    if let Err(e) = val.update_value(&data[5..]) {
+                                    if let Err(e) = val.update_value(type_id, signal, data.unwrap())
+                                    {
                                         read_signals.error(&format!(
                                             "updating value with id {} failed: {}",
                                             id, e
@@ -246,23 +244,17 @@ async fn communication_handler(
                                 }
                             }
                         }
-                        serialization::TYPE_SIGNAL => {
-                            let id = u32::from_le_bytes([data[1], data[2], data[3], data[4]]);
-                            match read_values.updated.get(&id) {
-                                Some(val) => {
-                                    if let Err(e) = val.update_value(&data[5..]) {
-                                        read_signals.error(&format!(
-                                            "updating signal with id {} failed: {}",
-                                            id, e
-                                        ));
-                                    }
-                                }
-                                None => {
-                                    read_signals.error(&format!("value with id {} not found", id))
+                        ClientHeader::Signal(id, type_id) => match read_values.update.get(&id) {
+                            Some(val) => {
+                                if let Err(e) = val.update_value(type_id, true, data.unwrap()) {
+                                    read_signals.error(&format!(
+                                        "updating signal with id {} failed: {}",
+                                        id, e
+                                    ));
                                 }
                             }
-                        }
-                        _ => read_signals.error(&format!("Unexpected message type: {}", data[0])),
+                            None => read_signals.error(&format!("value with id {} not found", id)),
+                        },
                     }
                 }
                 _ => read_signals.error("Unexpected message format"),

@@ -8,7 +8,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyByteArray;
 use tokio_tungstenite::tungstenite::Bytes;
 
-use egui_states_core_2::image::{ImageHeader, ImageType};
+use egui_states_core::image::{ImageHeader, ImageType};
 
 use crate::event::Event;
 use crate::sender::MessageSender;
