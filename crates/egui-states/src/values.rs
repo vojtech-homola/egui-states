@@ -4,7 +4,7 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 // use egui_states_core::controls::ControlMessage;
-use egui_states_core::serialization::{ClientHeader, deserialize, serialize_value};
+use egui_states_core::serialization::{ClientHeader, deserialize, serialize_value_to_message};
 use egui_states_core::values::GetType;
 
 use crate::sender::MessageSender;
@@ -70,7 +70,7 @@ where
     }
 
     pub fn set(&self, value: T) {
-        let data = serialize_value(&value);
+        let data = serialize_value_to_message(&value);
         let header = ClientHeader::Value(self.id, self.type_id, false);
         let mut w = self.value.write();
         self.sender.send_data(header, data);
@@ -78,7 +78,7 @@ where
     }
 
     pub fn set_signal(&self, value: T) {
-        let data = serialize_value(&value);
+        let data = serialize_value_to_message(&value);
         let header = ClientHeader::Value(self.id, self.type_id, true);
         let mut w = self.value.write();
         self.sender.send_data(header, data);
@@ -160,7 +160,7 @@ impl<T: Serialize + GetType + Clone> Signal<T> {
     }
 
     pub fn set(&self, value: impl Into<T>) {
-        let message = serialize_value(&value.into());
+        let message = serialize_value_to_message(&value.into());
         let header = ClientHeader::Signal(self.id, self.type_id);
         self.sender.send_data(header, message);
     }

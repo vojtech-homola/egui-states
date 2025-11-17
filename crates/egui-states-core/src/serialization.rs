@@ -1,11 +1,6 @@
 use bytes::Bytes;
-// use postcard::{
-//     ser_flavors::{Flavor, StdVec},
-//     serialize_with_flavor,
-// };
 use serde::{Deserialize, Serialize};
 
-// use crate::value_object::Object;
 use crate::collections::{ListHeader, MapHeader};
 use crate::controls::ControlMessage;
 use crate::graphs::GraphHeader;
@@ -129,39 +124,7 @@ pub enum MessageData {
     Stack(heapless::Vec<u8, HEAPLESS_SIZE>),
 }
 
-// impl MessageData {
-//     pub fn to_vec(self) -> Vec<u8> {
-//         match self {
-//             MessageData::Heap(vec) => vec,
-//             MessageData::Stack(arr, len) => arr[0..len].to_vec(),
-//         }
-//     }
-// }
-
-// #[inline]
-// pub fn serialize<T: Serialize>(id: u32, value: T, value_type: u8) -> MessageData {
-//     let mut stack_data: [u8; HEAPLESS_SIZE] = [0; HEAPLESS_SIZE];
-//     stack_data[0] = value_type;
-//     stack_data[1..5].copy_from_slice(&id.to_le_bytes());
-
-//     let len = match postcard::to_slice(&value, stack_data[5..].as_mut()) {
-//         Ok(d) => Some(d.len() + 5),
-//         Err(postcard::Error::SerializeBufferFull) => None,
-//         Err(e) => panic!("Serialize error: {}", e),
-//     };
-
-//     match len {
-//         Some(l) => MessageData::Stack(stack_data, l),
-//         None => {
-//             let mut data = StdVec::new();
-//             unsafe { data.try_extend(&stack_data[0..5]).unwrap_unchecked() };
-//             let data = serialize_with_flavor::<T, StdVec, Vec<u8>>(&value, data).unwrap();
-//             MessageData::Heap(data)
-//         }
-//     }
-// }
-
-pub fn serialize_value<T: Serialize>(value: T) -> MessageData {
+pub fn serialize_value_to_message<T: Serialize>(value: T) -> MessageData {
     let result = postcard::to_vec::<T, HEAPLESS_SIZE>(&value);
     match result {
         Ok(vec) => MessageData::Stack(vec),
@@ -171,16 +134,6 @@ pub fn serialize_value<T: Serialize>(value: T) -> MessageData {
         Err(e) => panic!("Serialize error: {}", e),
     }
 }
-
-// #[inline]
-// pub fn serialize_vec<T: Serialize>(id: u32, value: T, value_type: u8) -> Vec<u8> {
-//     let mut head = [0; 5];
-//     head[0] = value_type;
-//     head[1..5].copy_from_slice(&id.to_le_bytes());
-//     let mut data = StdVec::new();
-//     unsafe { data.try_extend(&head).unwrap_unchecked() };
-//     serialize_with_flavor::<T, StdVec, Vec<u8>>(&value, data).unwrap()
-// }
 
 pub fn ser_server_value(header: ServerHeader, value: &Bytes) -> Bytes {
     let head = postcard::to_vec::<ServerHeader, HEAPLESS_SIZE>(&header)
@@ -207,4 +160,13 @@ where
     T: for<'a> Deserialize<'a>,
 {
     postcard::take_from_bytes(data).map_err(|e| e.to_string())
+}
+
+#[inline]
+pub fn deserialize_value<T>(data: &[u8]) -> Option<(T, usize)>
+where
+    T: for<'a> Deserialize<'a>,
+{
+    let (value, new_data) = postcard::take_from_bytes::<T>(data).ok()?;
+    Some((value, data.len() - new_data.len()))
 }

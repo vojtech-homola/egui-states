@@ -66,7 +66,7 @@ pub enum ObjectType {
     F32,
     String,
     Bool,
-    Object(Vec<ObjectType>),
+    Tuple(Vec<ObjectType>),
     List(u32, Box<ObjectType>),
     Vec(Box<ObjectType>),
     Map(Box<ObjectType>, Box<ObjectType>),
@@ -133,7 +133,7 @@ macro_rules! impl_get_type_tuple {
         {
             #[inline]
             fn get_type() -> ObjectType {
-                ObjectType::Object(vec![
+                ObjectType::Tuple(vec![
                     $($T::get_type(),)*
                 ])
             }
