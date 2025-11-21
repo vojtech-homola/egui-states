@@ -10,17 +10,11 @@ use egui_states_core::serialization::deserialize;
 use egui_states_core::values::GetType;
 
 pub(crate) trait UpdateMap: Sync + Send {
-    fn update_map(
-        &self,
-        type_ids: (u64, u64),
-        header: MapHeader,
-        data: &[u8],
-    ) -> Result<(), String>;
+    fn update_map(&self, header: MapHeader, data: &[u8]) -> Result<(), String>;
 }
 
 pub struct ValueMap<K, V> {
     _id: u64,
-    type_ids: (u64, u64),
     dict: RwLock<HashMap<K, V>>,
 }
 
@@ -32,7 +26,6 @@ where
     pub(crate) fn new(id: u64) -> Arc<Self> {
         Arc::new(Self {
             _id: id,
-            type_ids: (K::get_type().get_hash(), V::get_type().get_hash()),
             dict: RwLock::new(HashMap::new()),
         })
     }
@@ -58,19 +51,7 @@ where
     K: for<'a> Deserialize<'a> + Eq + Hash + Send + Sync,
     V: for<'a> Deserialize<'a> + Send + Sync,
 {
-    fn update_map(
-        &self,
-        type_ids: (u64, u64),
-        header: MapHeader,
-        data: &[u8],
-    ) -> Result<(), String> {
-        if self.type_ids != type_ids {
-            return Err(format!(
-                "Type mismatch for dict id: {} expected: {:?} got: {:?}",
-                self._id, self.type_ids, type_ids
-            ));
-        }
-
+    fn update_map(&self, header: MapHeader, data: &[u8]) -> Result<(), String> {
         match header {
             MapHeader::All => {
                 let map = deserialize::<HashMap<K, V>>(data)

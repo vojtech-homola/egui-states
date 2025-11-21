@@ -8,12 +8,11 @@ use egui_states_core::serialization::deserialize;
 use egui_states_core::values::GetType;
 
 pub(crate) trait UpdateList: Sync + Send {
-    fn update_list(&self, type_id: u64, header: ListHeader, data: &[u8]) -> Result<(), String>;
+    fn update_list(&self, header: ListHeader, data: &[u8]) -> Result<(), String>;
 }
 
 pub struct ValueList<T> {
     id: u64,
-    type_id: u64,
     list: RwLock<Vec<T>>,
 }
 
@@ -21,7 +20,6 @@ impl<T: GetType + Clone> ValueList<T> {
     pub(crate) fn new(id: u64) -> Arc<Self> {
         Arc::new(Self {
             id,
-            type_id: T::get_type().get_hash(),
             list: RwLock::new(Vec::new()),
         })
     }
@@ -41,14 +39,7 @@ impl<T: GetType + Clone> ValueList<T> {
 }
 
 impl<T: for<'a> Deserialize<'a> + Send + Sync> UpdateList for ValueList<T> {
-    fn update_list(&self, type_id: u64, header: ListHeader, data: &[u8]) -> Result<(), String> {
-        if self.type_id != type_id {
-            return Err(format!(
-                "Type mismatch for list id: {} expected: {} got: {}",
-                self.id, self.type_id, type_id
-            ));
-        }
-
+    fn update_list(&self, header: ListHeader, data: &[u8]) -> Result<(), String> {
         match header {
             ListHeader::All => {
                 let list: Vec<T> = deserialize(data)

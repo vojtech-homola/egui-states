@@ -83,6 +83,7 @@ pub(crate) struct ValuesList {
     pub(crate) maps: NoHashMap<u64, Arc<dyn UpdateMap>>,
     pub(crate) lists: NoHashMap<u64, Arc<dyn UpdateList>>,
     pub(crate) graphs: NoHashMap<u64, Arc<dyn UpdateGraph>>,
+    pub(crate) types: NoHashMap<u64, u64>,
 }
 
 impl ValuesList {
@@ -94,6 +95,7 @@ impl ValuesList {
             maps: NoHashMap::default(),
             lists: NoHashMap::default(),
             graphs: NoHashMap::default(),
+            types: NoHashMap::default(),
         }
     }
 
@@ -104,6 +106,7 @@ impl ValuesList {
         self.maps.shrink_to_fit();
         self.lists.shrink_to_fit();
         self.graphs.shrink_to_fit();
+        self.types.shrink_to_fit();
     }
 }
 
@@ -149,6 +152,7 @@ impl ValuesCreator for ClientValuesCreator {
         let value = Value::new(id, value, self.sender.clone());
 
         self.val.values.insert(id, value.clone());
+        self.val.types.insert(id, T::get_type().get_hash());
         value
     }
 
@@ -160,6 +164,7 @@ impl ValuesCreator for ClientValuesCreator {
         let value = ValueStatic::new(id, value);
 
         self.val.static_values.insert(id, value.clone());
+        self.val.types.insert(id, T::get_type().get_hash());
         value
     }
 
@@ -168,6 +173,7 @@ impl ValuesCreator for ClientValuesCreator {
         let value = ValueImage::new(id, self.sender.clone());
 
         self.val.images.insert(id, value.clone());
+        self.val.types.insert(id, 42);
         value
     }
 
@@ -177,6 +183,7 @@ impl ValuesCreator for ClientValuesCreator {
     {
         let id = self.get_id();
         let signal = Signal::new(id, self.sender.clone());
+        self.val.types.insert(id, T::get_type().get_hash());
 
         signal
     }
@@ -190,6 +197,7 @@ impl ValuesCreator for ClientValuesCreator {
         let value = ValueMap::new(id);
 
         self.val.maps.insert(id, value.clone());
+        self.val.types.insert(id, V::get_type().get_hash() + K::get_type().get_hash());
         value
     }
 
@@ -201,6 +209,7 @@ impl ValuesCreator for ClientValuesCreator {
         let value = ValueList::new(id);
 
         self.val.lists.insert(id, value.clone());
+        self.val.types.insert(id, T::get_type().get_hash());
         value
     }
 
@@ -212,6 +221,7 @@ impl ValuesCreator for ClientValuesCreator {
         let value = ValueGraphs::new(id);
 
         self.val.graphs.insert(id, value.clone());
+        self.val.types.insert(id, T::hash_type());
         value
     }
 

@@ -14,9 +14,9 @@ use crate::sender::MessageSender;
 use crate::server::{Acknowledge, SyncTrait};
 use crate::signals::ChangedValues;
 
-pub(crate) trait UpdateValue: Send + Sync {
-    fn update_value(&self, type_id: u64, signal: bool, value: Bytes) -> Result<(), String>;
-}
+// pub(crate) trait UpdateValue: Send + Sync {
+//     fn update_value(&self, signal: bool, value: Bytes) -> Result<(), String>;
+// }
 
 pub(crate) trait GetValue: SetValue {
     fn get_value(&self) -> Bytes;
@@ -55,17 +55,10 @@ impl Value {
             connected,
         })
     }
-}
+    // }
 
-impl UpdateValue for Value {
-    fn update_value(&self, type_id: u64, signal: bool, value: Bytes) -> Result<(), String> {
-        if type_id != self.type_id {
-            return Err(format!(
-                "Type ID mismatch for value {}: expected {}, got {}",
-                self.id, self.type_id, type_id
-            ));
-        }
-
+    // impl UpdateValue for Value {
+    pub(crate) fn update_value(&self, signal: bool, value: Bytes) -> Result<(), String> {
         let mut w = self.value.write();
         if w.1 == 0 {
             w.0 = value.clone();
@@ -107,7 +100,7 @@ impl SyncTrait for Value {
     fn sync(&self) {
         let mut w = self.value.write();
         w.1 = 1;
-        let header = ServerHeader::Value(self.id, self.type_id, false);
+        let header = ServerHeader::Value(self.id, false);
         let data = ser_server_value(header, &w.0);
         drop(w);
 
@@ -161,10 +154,10 @@ impl Signal {
             type_id,
         })
     }
-}
+// }
 
-impl UpdateValue for Signal {
-    fn update_value(&self, type_id: u64, _: bool, value: Bytes) -> Result<(), String> {
+// impl UpdateValue for Signal {
+    pub(crate) fn set_signal(&self, value: Bytes) -> Result<(), String> {
         Ok(())
     }
 }

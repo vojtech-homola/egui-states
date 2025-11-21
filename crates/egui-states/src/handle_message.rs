@@ -16,16 +16,16 @@ pub(crate) async fn handle_message(
             client.update(t);
             return Ok(());
         }
-        ServerHeader::Value(id, type_id, update) => {
+        ServerHeader::Value(id, update) => {
             match vals.values.get(&id) {
-                Some(value) => value.update_value(type_id, data)?,
+                Some(value) => value.update_value(data)?,
                 None => return Err(format!("Value with id {} not found", id)),
             }
             update
         }
-        ServerHeader::Static(id, type_id, update) => {
+        ServerHeader::Static(id, update) => {
             match vals.static_values.get(&id) {
-                Some(value) => value.update_value(type_id, data)?,
+                Some(value) => value.update_value(data)?,
                 None => return Err(format!("Static with id {} not found", id)),
             }
             update
@@ -37,16 +37,16 @@ pub(crate) async fn handle_message(
             }
             update
         }
-        ServerHeader::List(id, type_id, update, list_header) => {
+        ServerHeader::List(id, update, list_header) => {
             match vals.lists.get(&id) {
-                Some(value) => value.update_list(type_id, list_header, data)?,
+                Some(value) => value.update_list(list_header, data)?,
                 None => return Err(format!("List with id {} not found", id)),
             }
             update
         }
-        ServerHeader::Map(id, type_ids, update, map_header) => {
+        ServerHeader::Map(id, update, map_header) => {
             match vals.maps.get(&id) {
-                Some(value) => value.update_map(type_ids, map_header, data)?,
+                Some(value) => value.update_map(map_header, data)?,
                 None => return Err(format!("Map with id {} not found", id)),
             }
             update

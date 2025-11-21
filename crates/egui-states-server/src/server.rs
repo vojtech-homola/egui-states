@@ -14,7 +14,7 @@ use crate::map::ValueMap;
 use crate::sender::{MessageReceiver, MessageSender};
 use crate::server_core::start;
 use crate::signals::ChangedValues;
-use crate::values::{Signal, UpdateValue, Value, ValueStatic};
+use crate::values::{Signal, Value, ValueStatic};
 
 pub(crate) trait SyncTrait: Sync + Send {
     fn sync(&self);
@@ -60,24 +60,30 @@ impl StatesList {
 
 #[derive(Clone)]
 pub(crate) struct ServerStatesList {
-    pub(crate) update: NoHashMap<u64, Arc<dyn UpdateValue>>,
+    pub(crate) values: NoHashMap<u64, Arc<Value>>,
+    pub(crate) signals: NoHashMap<u64, Arc<Signal>>,
     pub(crate) ack: NoHashMap<u64, Arc<dyn Acknowledge>>,
     pub(crate) sync: NoHashMap<u64, Arc<dyn SyncTrait>>,
+    pub(crate) types: NoHashMap<u64, u64>,
 }
 
 impl ServerStatesList {
     fn new() -> Self {
         Self {
-            update: NoHashMap::default(),
+            values: NoHashMap::default(),
+            signals: NoHashMap::default(),
             ack: NoHashMap::default(),
             sync: NoHashMap::default(),
+            types: NoHashMap::default(),
         }
     }
 
     fn shrink(&mut self) {
-        self.update.shrink_to_fit();
+        self.values.shrink_to_fit();
+        self.signals.shrink_to_fit();
         self.ack.shrink_to_fit();
         self.sync.shrink_to_fit();
+        self.types.shrink_to_fit();
     }
 }
 

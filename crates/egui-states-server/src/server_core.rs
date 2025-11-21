@@ -228,25 +228,20 @@ async fn communication_handler(
                                 control.as_str()
                             )),
                         },
-                        ClientHeader::Value(id, type_id, signal) => {
-                            match read_values.update.get(&id) {
-                                Some(val) => {
-                                    if let Err(e) = val.update_value(type_id, signal, data.unwrap())
-                                    {
-                                        read_signals.error(&format!(
-                                            "updating value with id {} failed: {}",
-                                            id, e
-                                        ));
-                                    }
-                                }
-                                None => {
-                                    read_signals.error(&format!("value with id {} not found", id))
+                        ClientHeader::Value(id, signal) => match read_values.values.get(&id) {
+                            Some(val) => {
+                                if let Err(e) = val.update_value(signal, data.unwrap()) {
+                                    read_signals.error(&format!(
+                                        "updating value with id {} failed: {}",
+                                        id, e
+                                    ));
                                 }
                             }
-                        }
-                        ClientHeader::Signal(id, type_id) => match read_values.update.get(&id) {
+                            None => read_signals.error(&format!("value with id {} not found", id)),
+                        },
+                        ClientHeader::Signal(id) => match read_values.signals.get(&id) {
                             Some(val) => {
-                                if let Err(e) = val.update_value(type_id, true, data.unwrap()) {
+                                if let Err(e) = val.set_signal(data.unwrap()) {
                                     read_signals.error(&format!(
                                         "updating signal with id {} failed: {}",
                                         id, e

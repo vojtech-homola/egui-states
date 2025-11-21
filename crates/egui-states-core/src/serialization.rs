@@ -1,4 +1,5 @@
 use bytes::Bytes;
+use postcard::ser_flavors::Flavor;
 use serde::{Deserialize, Serialize};
 
 use crate::collections::{ListHeader, MapHeader};
@@ -8,19 +9,19 @@ use crate::image::ImageHeader;
 
 #[derive(Serialize, Deserialize)]
 pub enum ServerHeader {
-    Value(u64, u64, bool),
-    Static(u64, u64, bool),
+    Value(u64, bool),
+    Static(u64, bool),
     Image(u64, bool, ImageHeader),
     Graph(u64, bool, GraphHeader),
-    List(u64, u64, bool, ListHeader),
-    Map(u64, (u64, u64), bool, MapHeader),
+    List(u64, bool, ListHeader),
+    Map(u64, bool, MapHeader),
     Control(ControlMessage),
 }
 
 #[derive(Serialize, Deserialize)]
 pub enum ClientHeader {
-    Value(u64, u64, bool),
-    Signal(u64, u64),
+    Value(u64, bool),
+    Signal(u64),
     Control(ControlMessage),
 }
 
@@ -169,4 +170,62 @@ where
 {
     let (value, new_data) = postcard::take_from_bytes::<T>(data).ok()?;
     Some((value, data.len() - new_data.len()))
+}
+
+pub enum SerResult {
+    Ok(usize),
+    Heap(Vec<u8>),
+}
+
+pub fn serialize_value_slice<T>(value: &T, buffer: &mut [u8]) -> SerResult
+where
+    T: Serialize,
+{
+    let original_len = buffer.len();
+    match postcard::to_slice::<T>(value, buffer) {
+        Ok(slice) => SerResult::Ok(original_len - slice.len()),
+        Err(postcard::Error::SerializeBufferFull) => {
+            let vec = postcard::to_stdvec(value).expect("Failed to serialize value");
+            SerResult::Heap(vec)
+        }
+        Err(e) => panic!("Serialize error: {}", e),
+    }
+}
+
+struct VecFlavor<'a> {
+    buffer: &'a mut Vec<u8>,
+}
+
+impl<'a> VecFlavor<'a> {
+    fn new(buffer: &'a mut Vec<u8>) -> Self {
+        Self { buffer }
+    }
+}
+
+impl Flavor for VecFlavor<'_> {
+    type Output = ();
+
+    fn try_push(&mut self, data: u8) -> postcard::Result<()> {
+        self.buffer.push(data);
+        Ok(())
+    }
+
+    fn try_extend(&mut self, data: &[u8]) -> postcard::Result<()> {
+        self.buffer.extend_from_slice(data);
+        Ok(())
+    }
+
+    fn finalize(self) -> postcard::Result<Self::Output> {
+        Ok(())
+    }
+}
+
+pub fn serialize_value_vec<T>(value: &T, buffer: &mut Vec<u8>) -> bool
+where
+    T: Serialize,
+{
+    let buf = VecFlavor::new(buffer);
+    let result = postcard::serialize_with_flavor::<T, VecFlavor, ()>(value, buf);
+
+    result.is_ok()
 }

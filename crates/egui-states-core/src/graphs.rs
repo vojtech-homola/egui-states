@@ -1,3 +1,5 @@
+use std::hash::{DefaultHasher, Hasher};
+
 use serde::{Deserialize, Serialize};
 
 // graphs -------------------------------------------------------------
@@ -12,6 +14,11 @@ pub trait GraphElement: Clone + Copy + Send + Sync + 'static {
     fn graph_type() -> GraphType;
     fn bytes_size() -> usize {
         std::mem::size_of::<Self>()
+    }
+    fn hash_type() -> u64 {
+        let mut hasher = DefaultHasher::new();
+        hasher.write_usize(std::mem::size_of::<Self>());
+        hasher.finish()
     }
 }
 
