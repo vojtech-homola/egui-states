@@ -198,6 +198,7 @@ impl ClientBuilder {
         let states = T::new(&mut creator);
         let (values, version) = creator.get_values();
         let client = Client::new(context, sender.clone());
+        let client_out = client.clone();
 
         let runtime = Builder::new_current_thread()
             .thread_name("Client Runtime")
@@ -206,7 +207,6 @@ impl ClientBuilder {
             .build()
             .unwrap();
 
-        let client_out = client.clone();
         let thread = thread::Builder::new().name("Client".to_string());
 
         let _ = thread.spawn(move || {

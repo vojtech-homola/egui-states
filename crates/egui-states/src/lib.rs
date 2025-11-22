@@ -23,6 +23,12 @@ mod client_wasm;
 #[cfg(feature = "client-wasm")]
 pub use client_wasm::ClientBuilder;
 
+#[cfg(feature = "client")]
+mod websocket;
+
+#[cfg(feature = "client-wasm")]
+mod websocket_wasm;
+
 pub use client_base::{Client, ConnectionState};
 pub use graphs::ValueGraphs;
 pub use image::ValueImage;
