@@ -1,4 +1,4 @@
-use egui_states_core::controls::ControlMessage;
+use egui_states_core::controls::ControlServer;
 use egui_states_core::serialization::{ServerHeader, deserialize_from};
 
 use crate::client_base::Client;
@@ -12,7 +12,7 @@ pub(crate) async fn handle_message(
     let (header, data) = deserialize_from::<ServerHeader>(message_data)?;
 
     let update = match header {
-        ServerHeader::Control(ControlMessage::Update(t)) => {
+        ServerHeader::Control(ControlServer::Update(t)) => {
             client.update(t);
             return Ok(());
         }

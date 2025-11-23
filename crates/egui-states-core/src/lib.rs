@@ -6,3 +6,5 @@ pub mod image;
 pub mod nohash;
 pub mod serialization;
 pub mod values;
+
+pub use heapless;

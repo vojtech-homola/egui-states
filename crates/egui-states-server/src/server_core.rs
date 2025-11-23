@@ -9,7 +9,7 @@ use tokio::task::JoinHandle;
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::{Message, protocol::WebSocketConfig};
 
-use egui_states_core::controls::ControlMessage;
+use egui_states_core::controls::ControlClient;
 use egui_states_core::event_async::Event;
 use egui_states_core::serialization::ClientHeader;
 
@@ -101,7 +101,7 @@ pub(crate) async fn start(
             }
             let (header, _) = res.unwrap();
 
-            if let ClientHeader::Control(ControlMessage::Handshake(v, h)) = header {
+            if let ClientHeader::Control(ControlClient::Handshake(v, h)) = header {
                 if v != version {
                     let message = format!(
                         "attempted to connect with different version: {}, version {} is required.",
@@ -208,7 +208,7 @@ async fn communication_handler(
                     let (header, data) = res.unwrap();
                     match header {
                         ClientHeader::Control(control) => match control {
-                            ControlMessage::Ack(v) => {
+                            ControlClient::Ack(v) => {
                                 let val_res = read_values.ack.get(&v);
                                 match val_res {
                                     Some(val) => {
@@ -220,7 +220,7 @@ async fn communication_handler(
                                     )),
                                 }
                             }
-                            ControlMessage::Error(err) => {
+                            ControlClient::Error(err) => {
                                 read_signals.error(&format!("Error message from client: {}", err));
                             }
                             _ => read_signals.error(&format!(

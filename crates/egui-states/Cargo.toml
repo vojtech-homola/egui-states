@@ -12,6 +12,7 @@ serde = { workspace = true }
 egui = { version = ">= 0.33", features = ["rayon"] }
 futures-util = { workspace = true }
 parking_lot = { workspace = true }
+bytes = { workspace = true }
 
 egui_states_core = { workspace = true }
 egui_states_macros = { workspace = true }

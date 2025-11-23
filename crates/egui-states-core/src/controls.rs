@@ -3,24 +3,27 @@ use serde::{Deserialize, Serialize};
 use crate::nohash::NoHashMap;
 
 #[derive(Serialize, Deserialize)]
-pub enum ControlMessage {
+pub enum ControlServer {
     Error(String),
-    Ack(u64),
     TypesAsk(NoHashMap<u64, u64>),
-    TypesAnswer(NoHashMap<u64, bool>),
-    Handshake(u64, u64),
     Update(f32),
 }
 
-impl ControlMessage {
+#[derive(Serialize, Deserialize)]
+pub enum ControlClient {
+    Error(String),
+    Ack(u64),
+    TypesAnswer(NoHashMap<u64, bool>),
+    Handshake(u64, u64),
+}
+
+impl ControlClient {
     pub fn as_str(&self) -> &str {
         match self {
-            ControlMessage::Error(_) => "ErrorCommand",
-            ControlMessage::Ack(_) => "AckCommand",
-            ControlMessage::TypesAsk(_) => "TypesAskCommand",
-            ControlMessage::TypesAnswer(_) => "TypesAnswerCommand",
-            ControlMessage::Handshake(_, _) => "HandshakeCommand",
-            ControlMessage::Update(_) => "UpdateCommand",
+            ControlClient::Error(_) => "ErrorCommand",
+            ControlClient::Ack(_) => "AckCommand",
+            ControlClient::TypesAnswer(_) => "TypesAnswerCommand",
+            ControlClient::Handshake(_, _) => "HandshakeCommand",
         }
     }
 }

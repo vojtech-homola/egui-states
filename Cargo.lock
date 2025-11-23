@@ -200,6 +200,7 @@ dependencies = [
 name = "egui_states"
 version = "0.9.0"
 dependencies = [
+ "bytes",
  "egui",
  "egui_states_core",
  "egui_states_macros",
