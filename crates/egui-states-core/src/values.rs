@@ -80,6 +80,13 @@ impl ObjectType {
         self.hash(&mut hasher);
         hasher.finish()
     }
+
+    pub fn get_hash_add(&self, add_hash: impl Hash) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        self.hash(&mut hasher);
+        add_hash.hash(&mut hasher);
+        hasher.finish()
+    }
 }
 
 // Conversion traits --------------------------------------------------------

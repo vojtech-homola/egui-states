@@ -1,25 +1,26 @@
 use std::net::{Ipv4Addr, SocketAddrV4};
-use std::thread;
 
 use egui::Context;
-use tokio::runtime::Builder;
 use tokio::sync::mpsc::UnboundedReceiver;
 
+use egui_states_core::PROTOCOL_VERSION;
 use egui_states_core::serialization::ClientHeader;
 
 use crate::State;
 use crate::client_base::{Client, ConnectionState};
-use crate::handle_message::handle_message;
+use crate::handle_message::{check_types, handle_message};
 use crate::sender::{ChannelMessage, MessageSender};
 use crate::values_creator::{ClientValuesCreator, ValuesList};
 
 #[cfg(feature = "client")]
 use crate::websocket::build_ws;
 
+#[cfg(feature = "client-wasm")]
+use crate::websocket_wasm::build_ws;
+
 async fn start_gui_client(
     addr: SocketAddrV4,
     vals: ValuesList,
-    version: u64,
     mut rx: UnboundedReceiver<ChannelMessage>,
     sender: MessageSender,
     ui_state: Client,
@@ -29,25 +30,6 @@ async fn start_gui_client(
         // wait for the connection signal
         ui_state.wait_connection().await;
         ui_state.set_state(ConnectionState::NotConnected);
-
-        // // try to connect to the server
-        // let address = format!("ws://{}/ws", addr);
-        // let mut websocket_config = WebSocketConfig::default();
-        // websocket_config.max_message_size = Some(536870912); // 512 MB
-        // websocket_config.max_frame_size = Some(536870912); // 512 MB
-        // let res = connect_async_with_config(&address, Some(websocket_config), false).await;
-        // if res.is_err() {
-        //     #[cfg(debug_assertions)]
-        //     println!(
-        //         "connecting to server at {:?} failed: {:?}",
-        //         address,
-        //         res.err()
-        //     );
-        //     continue;
-        // }
-
-        // // get the socket
-        // let socket = res.unwrap().0;
 
         // try to connect to the server
         let res = build_ws(addr).await;
@@ -61,19 +43,41 @@ async fn start_gui_client(
             let _ = rx.recv().await;
         }
 
-        // split the socket
-        // let (mut socket_write, mut socket_read) = socket.split();
+        // communicate handshake and initialization -------------------------
+        let message = ClientHeader::serialize_handshake(PROTOCOL_VERSION, handshake);
+        if let Err(_) = socket_send.send(message).await {
+            #[cfg(debug_assertions)]
+            println!("Sending handshake failed.");
+            continue;
+        }
+
+        // process and send states types
+        match socket_read.read().await {
+            Ok(data) => match check_types(data.as_ref(), &vals) {
+                Ok(message) => {
+                    if let Err(_) = socket_send.send(message).await {
+                        #[cfg(debug_assertions)]
+                        println!("Sending states types failed.");
+                        continue;
+                    }
+                }
+                Err(_) => continue,
+            },
+            Err(_) => {
+                #[cfg(debug_assertions)]
+                println!("Receiving states types failed.");
+                continue;
+            }
+        }
 
         // read -----------------------------------------
         let th_vals = vals.clone();
         let th_ui_state = ui_state.clone();
         let th_sender = sender.clone();
 
-        let recv_future = tokio::spawn(async move {
+        let recv_future = async move {
             loop {
                 // read the message
-                // let res = socket_read.read().await;
-
                 match socket_read.read().await {
                     Ok(data) => {
                         if let Err(e) = handle_message(data.as_ref(), &th_vals, &th_ui_state).await
@@ -85,58 +89,14 @@ async fn start_gui_client(
                     }
                     Err(_) => break,
                 }
-
-                // if res.is_none() {
-                //     #[cfg(debug_assertions)]
-                //     println!("Connection closed by server");
-                //     break;
-                // }
-                // let res = res.unwrap();
-
-                // // #[allow(unused_variables)]
-                // if let Err(e) = res {
-                //     #[cfg(debug_assertions)]
-                //     println!("reading message from server failed: {:?}", e);
-                //     break;
-                // }
-                // let message = res.unwrap();
-                // let mess = match message {
-                //     Message::Binary(d) => d,
-                //     Message::Close(_) => break,
-                //     _ => {
-                //         let error =
-                //             format!("client received unexpected message type: {:?}", message);
-                //         th_sender.send(ClientHeader::error(error));
-                //         break;
-                //     }
-                // };
-
-                // // handle the message
-                // let res = handle_message(mess.as_ref(), &th_vals, &th_ui_state).await;
-                // if let Err(e) = res {
-                //     let error = format!("handling message from server failed: {:?}", e);
-                //     th_sender.send(ClientHeader::error(error));
-                //     break;
-                // }
             }
-        });
+        };
+
+        #[cfg(feature = "client")]
+        let recv_future = tokio::spawn(recv_future);
 
         // send -----------------------------------------
-        let send_future = tokio::spawn(async move {
-            let message = ClientHeader::serialize_handshake(version, handshake);
-            if let Err(_) = socket_send.send(message).await {
-                #[cfg(debug_assertions)]
-                println!("Sending handshake failed.");
-                return rx;
-            }
-
-            // #[allow(unused_variables)]
-            // if let Err(e) = res {
-            //     #[cfg(debug_assertions)]
-            //     println!("sending handshake failed: {:?}", e);
-            //     return rx;
-            // }
-
+        let send_future = async move {
             loop {
                 // wait for the message from the channel
                 match rx.recv().await.unwrap() {
@@ -153,29 +113,12 @@ async fn start_gui_client(
                         break;
                     }
                 }
-
-                // // wait for the message from the channel
-                // let message = rx.recv().await.unwrap();
-
-                // // check if the message is terminate
-                // if message.is_none() {
-                //     let _ = socket_send.flush().await;
-                //     break;
-                // }
-                // let (header, data) = message.unwrap();
-                // let data = header.serialize_message(data);
-
-                // // write the message
-                // let res = socket_send.send(Message::Binary(data)).await;
-                // #[allow(unused_variables)]
-                // if let Err(e) = res {
-                //     #[cfg(debug_assertions)]
-                //     println!("sending message to socket failed: {:?}", e);
-                //     break;
-                // }
             }
             rx
-        });
+        };
+
+        #[cfg(feature = "client")]
+        let send_future = tokio::spawn(send_future);
 
         ui_state.set_state(ConnectionState::Connected);
 
@@ -187,6 +130,12 @@ async fn start_gui_client(
             // terminate the send thread
             sender.close();
             rx = send_future.await.unwrap();
+        }
+
+        #[cfg(feature = "client-wasm")]
+        {
+            let (_, rx_) = tokio::join!(recv_future, send_future);
+            rx = rx_;
         }
 
         ui_state.set_state(ConnectionState::Disconnected);
@@ -239,12 +188,15 @@ impl ClientBuilder {
 
         let addr = SocketAddrV4::new(addr, port);
         let states = T::new(&mut creator);
-        let (values, version) = creator.get_values();
+        let (values, _) = creator.get_values();
         let client = Client::new(context, sender.clone());
         let client_out = client.clone();
 
         #[cfg(feature = "client")]
         {
+            use std::thread;
+            use tokio::runtime::Builder;
+
             let runtime = Builder::new_current_thread()
                 .thread_name("Client Runtime")
                 .enable_io()
@@ -256,8 +208,15 @@ impl ClientBuilder {
 
             let _ = thread.spawn(move || {
                 runtime.block_on(start_gui_client(
-                    addr, values, version, rx, sender, client, handshake,
+                    addr, values, rx, sender, client, handshake,
                 ))
+            });
+        }
+
+        #[cfg(feature = "client-wasm")]
+        {
+            wasm_bindgen_futures::spawn_local(async move {
+                start_gui_client(addr, values, version, rx, sender, client, handshake).await;
             });
         }
 

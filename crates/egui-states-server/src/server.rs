@@ -20,6 +20,10 @@ pub(crate) trait SyncTrait: Sync + Send {
     fn sync(&self);
 }
 
+pub(crate) trait EnableTrait: Sync + Send {
+    fn enable(&self, enable: bool);
+}
+
 pub(crate) trait Acknowledge: Sync + Send {
     fn acknowledge(&self);
 }
@@ -63,7 +67,8 @@ pub(crate) struct ServerStatesList {
     pub(crate) values: NoHashMap<u64, Arc<Value>>,
     pub(crate) signals: NoHashMap<u64, Arc<Signal>>,
     pub(crate) ack: NoHashMap<u64, Arc<dyn Acknowledge>>,
-    pub(crate) sync: NoHashMap<u64, Arc<dyn SyncTrait>>,
+    pub(crate) enable: NoHashMap<u64, Arc<dyn EnableTrait>>,
+    pub(crate) sync: Vec<Arc<dyn SyncTrait>>,
     pub(crate) types: NoHashMap<u64, u64>,
 }
 
@@ -73,7 +78,8 @@ impl ServerStatesList {
             values: NoHashMap::default(),
             signals: NoHashMap::default(),
             ack: NoHashMap::default(),
-            sync: NoHashMap::default(),
+            enable: NoHashMap::default(),
+            sync: Vec::new(),
             types: NoHashMap::default(),
         }
     }
@@ -82,6 +88,7 @@ impl ServerStatesList {
         self.values.shrink_to_fit();
         self.signals.shrink_to_fit();
         self.ack.shrink_to_fit();
+        self.enable.shrink_to_fit();
         self.sync.shrink_to_fit();
         self.types.shrink_to_fit();
     }
@@ -145,8 +152,7 @@ impl Server {
         let signals = self.signals.clone();
         let start_event = self.start_event.clone();
         let handshake = self.handshake.clone();
-        let addr = self.addr; 
-        let version = 0;
+        let addr = self.addr;
 
         let server_thread = thread::Builder::new().name("Server".to_string());
         let _ = server_thread.spawn(move || {
@@ -160,7 +166,6 @@ impl Server {
                     signals,
                     start_event,
                     addr,
-                    version,
                     handshake,
                 )
                 .await;

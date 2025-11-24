@@ -1,8 +1,38 @@
-use egui_states_core::controls::ControlServer;
-use egui_states_core::serialization::{ServerHeader, deserialize_from};
+use egui_states_core::controls::{ControlClient, ControlServer};
+use egui_states_core::serialization::{
+    ClientHeader, MessageData, ServerHeader, deserialize, deserialize_from,
+};
 
 use crate::client_base::Client;
 use crate::values_creator::ValuesList;
+
+pub(crate) fn check_types(message_data: &[u8], vals: &ValuesList) -> Result<MessageData, ()> {
+    match deserialize::<ServerHeader>(message_data) {
+        Ok(ServerHeader::Control(ControlServer::TypesAsk(types))) => {
+            let mut types_res = Vec::new();
+            for (id, t) in types {
+                if let Some(state_type) = vals.types.get(&id) {
+                    if *state_type == t {
+                        types_res.push(id);
+                    }
+                }
+            }
+            let header = ClientHeader::Control(ControlClient::TypesAnswer(types_res));
+            let message = header.serialize_message(None);
+            Ok(message)
+        }
+        Ok(_) => {
+            #[cfg(debug_assertions)]
+            println!("Expected TypesAsk message, got different message.");
+            Err(())
+        }
+        Err(_) => {
+            #[cfg(debug_assertions)]
+            println!("Deserialization types message failed.");
+            Err(())
+        }
+    }
+}
 
 pub(crate) async fn handle_message(
     message_data: &[u8],
@@ -60,54 +90,6 @@ pub(crate) async fn handle_message(
         }
         ServerHeader::Control(_) => false,
     };
-
-    // let message_type = data[0];
-
-    // if message_type == serialization::TYPE_CONTROL {
-    //     let control = ControlMessage::deserialize(data)?;
-    //     match control {
-    //         ControlMessage::Update(t) => {
-    //             client.update(t);
-    //         }
-    //         _ => {}
-    //     }
-    //     return Ok(());
-    // }
-
-    // let id = u32::from_le_bytes(data[1..5].try_into().unwrap());
-    // let update = match message_type {
-    //     serialization::TYPE_VALUE => match vals.values.get(&id) {
-    //         Some(value) => value.update_value(&data[5..])?,
-    //         None => return Err(format!("Value with id {} not found", id)),
-    //     },
-
-    //     serialization::TYPE_STATIC => match vals.static_values.get(&id) {
-    //         Some(value) => value.update_value(&data[5..])?,
-    //         None => return Err(format!("Static with id {} not found", id)),
-    //     },
-
-    //     serialization::TYPE_IMAGE => match vals.images.get(&id) {
-    //         Some(value) => value.update_value(&data[5..])?,
-    //         None => return Err(format!("Image with id {} not found", id)),
-    //     },
-
-    //     serialization::TYPE_DICT => match vals.maps.get(&id) {
-    //         Some(value) => value.update_value(&data[5..])?,
-    //         None => return Err(format!("Dict with id {} not found", id)),
-    //     },
-
-    //     serialization::TYPE_LIST => match vals.lists.get(&id) {
-    //         Some(value) => value.update_value(&data[5..])?,
-    //         None => return Err(format!("List with id {} not found", id)),
-    //     },
-
-    //     serialization::TYPE_GRAPH => match vals.graphs.get(&id) {
-    //         Some(value) => value.update_value(&data[5..])?,
-    //         None => return Err(format!("Graph with id {} not found", id)),
-    //     },
-
-    //     _ => return Err(format!("Unknown message type: {}", message_type)),
-    // };
 
     if update {
         client.update(0.);

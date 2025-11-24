@@ -9,9 +9,10 @@ use tokio::task::JoinHandle;
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::{Message, protocol::WebSocketConfig};
 
-use egui_states_core::controls::ControlClient;
+use egui_states_core::PROTOCOL_VERSION;
+use egui_states_core::controls::{ControlClient, ControlServer};
 use egui_states_core::event_async::Event;
-use egui_states_core::serialization::ClientHeader;
+use egui_states_core::serialization::{ClientHeader, ServerHeader};
 
 use crate::sender::{MessageReceiver, MessageSender};
 use crate::server::ServerStatesList;
@@ -31,7 +32,6 @@ pub(crate) async fn start(
     signals: ChangedValues,
     start_event: Event,
     addr: SocketAddrV4,
-    version: u64,
     handshake: Option<Vec<u64>>,
 ) {
     let mut holder = ChannelHolder::Rx(rx);
@@ -41,12 +41,13 @@ pub(crate) async fn start(
         start_event.wait().await;
 
         // listen to incoming connections
-        let listener = TcpListener::bind(addr).await;
-        if let Err(e) = listener {
-            signals.error(&format!("binding failed: {:?}", e));
-            continue;
-        }
-        let listener = listener.unwrap();
+        let listener = match TcpListener::bind(addr).await {
+            Ok(l) => l,
+            Err(e) => {
+                signals.error(&format!("binding failed: {:?}", e));
+                continue;
+            }
+        };
 
         // accept incoming connection
         let stream = listener.accept().await;
@@ -60,52 +61,57 @@ pub(crate) async fn start(
         }
 
         // check if error accepting connection
-        if let Err(e) = stream {
-            signals.error(&format!("accepting connection failed: {:?}", e));
-            continue;
-        }
-        let stream = stream.unwrap().0;
+        let stream = match stream {
+            Ok(s) => s.0,
+            Err(e) => {
+                signals.error(&format!("accepting connection failed: {:?}", e));
+                continue;
+            }
+        };
 
         let mut websocket_config = WebSocketConfig::default();
         websocket_config.max_message_size = Some(536870912); // 512 MB
         websocket_config.max_frame_size = Some(536870912); // 512 MB
-        let websocket_res =
-            tokio_tungstenite::accept_async_with_config(stream, Some(websocket_config)).await;
-        if let Err(e) = websocket_res {
-            signals.error(&format!("websocket handshake failed: {:?}", e));
-            connected.store(false, atomic::Ordering::Relaxed);
-            continue;
-        }
-        let mut websocket = websocket_res.unwrap();
+        let mut websocket =
+            match tokio_tungstenite::accept_async_with_config(stream, Some(websocket_config)).await
+            {
+                Ok(ws) => ws,
+                Err(e) => {
+                    signals.error(&format!("websocket handshake failed: {:?}", e));
+                    connected.store(false, atomic::Ordering::Relaxed);
+                    continue;
+                }
+            };
 
         // read the message
-        let res = websocket.next().await;
-        if res.is_none() {
-            signals.error("reading initial message failed");
-            connected.store(false, atomic::Ordering::Relaxed);
-            continue;
-        }
-
-        let res = res.unwrap();
-        if let Err(e) = res {
-            signals.error(&format!("reading initial message failed: {:?}", e));
-            connected.store(false, atomic::Ordering::Relaxed);
-            continue;
-        }
-
-        if let Message::Binary(message) = res.unwrap() {
-            let res = ClientHeader::deserialize_header(&message);
-            if res.is_err() {
-                signals.error(&format!("deserializing initial message header failed"));
+        let message = match websocket.next().await {
+            Some(Ok(message)) => message,
+            Some(Err(e)) => {
+                signals.error(&format!("reading initial message failed: {:?}", e));
+                connected.store(false, atomic::Ordering::Relaxed);
                 continue;
             }
-            let (header, _) = res.unwrap();
+            None => {
+                signals.error("reading initial message failed");
+                connected.store(false, atomic::Ordering::Relaxed);
+                continue;
+            }
+        };
 
-            if let ClientHeader::Control(ControlClient::Handshake(v, h)) = header {
-                if v != version {
+        if let Message::Binary(message) = message {
+            let header = match ClientHeader::deserialize_header(&message) {
+                Ok((h, _)) => h,
+                Err(_) => {
+                    signals.error("deserializing initial message header failed");
+                    continue;
+                }
+            };
+
+            if let ClientHeader::Control(ControlClient::Handshake(p, h)) = header {
+                if p != PROTOCOL_VERSION {
                     let message = format!(
-                        "attempted to connect with different version: {}, version {} is required.",
-                        v, version
+                        "attempted to connect with wrong protocol version: expected {}, got {}",
+                        PROTOCOL_VERSION, p
                     );
                     signals.warning(&message);
                     continue;
@@ -118,14 +124,44 @@ pub(crate) async fn start(
                     }
                 }
 
+                // check types --------------------------
+                let control = ControlServer::TypesAsk(values.types.clone());
+                let message = ServerHeader::serialize_control(control);
+                if let Err(e) = websocket.send(Message::Binary(message)).await {
+                    signals.error(&format!("sending states types failed: {:?}", e));
+                    continue;
+                }
+
+                let types = match websocket.next().await {
+                    Some(Ok(Message::Binary(data))) => {
+                        match ClientHeader::deserialize_control(&data) {
+                            Ok(ControlClient::TypesAnswer(types)) => types,
+                            _ => {
+                                signals.error(
+                                    "unexpected control message when receiving initial states types",
+                                );
+                                continue;
+                            }
+                        }
+                    }
+                    _ => {
+                        signals.error("receiving initial states types failed");
+                        continue;
+                    }
+                };
+                // --------------------------------------
+
                 let mut rx = match holder {
                     // disconnect previous client
                     ChannelHolder::Transfer(handler) => {
                         #[cfg(debug_assertions)]
                         signals.debug("terminating previous connection");
                         connected.store(false, atomic::Ordering::Relaxed);
+                        for (_, v) in &values.enable {
+                            v.enable(false);
+                        }
                         sender.close();
-                        let rx = handler.await.unwrap();
+                        let rx = handler.await.expect("joining communication handler failed");
                         rx
                     }
                     ChannelHolder::Rx(rx) => rx,
@@ -136,9 +172,15 @@ pub(crate) async fn start(
                     let _ = rx.recv().await;
                 }
 
+                for id in &types {
+                    if let Some(v) = values.enable.get(id) {
+                        v.enable(true);
+                    }
+                }
+
                 // std::thread::sleep(std::time::Duration::from_millis(100));
                 connected.store(true, atomic::Ordering::Relaxed);
-                for (_, v) in values.sync.iter() {
+                for v in values.sync.iter() {
                     v.sync();
                 }
 
@@ -176,7 +218,7 @@ async fn communication_handler(
     let reader_handler = tokio::spawn(async move {
         loop {
             // read the message
-            let res = socket_rx.next().await;
+            let result_message = socket_rx.next().await;
 
             // check if not connected
             if !read_connected.load(atomic::Ordering::Relaxed) {
@@ -185,27 +227,30 @@ async fn communication_handler(
                 break;
             }
 
-            if res.is_none() {
-                read_signals.info("connection was closed by the client");
-                read_connected.store(false, atomic::Ordering::Relaxed);
-                break;
-            }
-            let res = res.unwrap();
+            let message = match result_message {
+                Some(Ok(m)) => m,
+                Some(Err(e)) => {
+                    read_signals.error(&format!("reading message from client failed: {:?}", e));
+                    read_connected.store(false, atomic::Ordering::Relaxed);
+                    break;
+                }
+                None => {
+                    read_signals.info("connection was closed by the client");
+                    read_connected.store(false, atomic::Ordering::Relaxed);
+                    break;
+                }
+            };
 
-            if let Err(e) = res {
-                read_signals.error(&format!("reading message from client failed: {:?}", e));
-                read_connected.store(false, atomic::Ordering::Relaxed);
-                break;
-            }
-
-            match res.unwrap() {
+            match message {
                 Message::Binary(m) => {
-                    let res = ClientHeader::deserialize_header(&m);
-                    if res.is_err() {
-                        read_signals.error(&format!("deserializing message header failed"));
-                        continue;
-                    }
-                    let (header, data) = res.unwrap();
+                    let (header, data) = match ClientHeader::deserialize_header(&m) {
+                        Ok(hd) => hd,
+                        Err(_) => {
+                            read_signals.error(&format!("deserializing message header failed"));
+                            continue;
+                        }
+                    };
+
                     match header {
                         ClientHeader::Control(control) => match control {
                             ControlClient::Ack(v) => {
@@ -279,17 +324,21 @@ async fn writer(
 ) -> MessageReceiver {
     loop {
         // get message from channel
-        let message = rx.recv().await.unwrap();
-
-        // check if message is terminate signal
-        if message.is_none() {
-            signals.info("writer is closing connection");
-            let _ = websocket.close().await;
-            reader_handle.abort();
-            let _ = reader_handle.await;
-            break;
-        }
-        let msg = message.unwrap();
+        let msg = match rx
+            .recv()
+            .await
+            .expect("receiving message from channel failed")
+        {
+            Some(m) => m,
+            // check if message is terminate signal
+            None => {
+                signals.info("writer is closing connection");
+                let _ = websocket.close().await;
+                reader_handle.abort();
+                let _ = reader_handle.await;
+                break;
+            }
+        };
 
         // if not connected, stop thread
         if !connected.load(atomic::Ordering::Relaxed) {
@@ -300,8 +349,7 @@ async fn writer(
         }
 
         // send message
-        let res = websocket.send(msg).await;
-        if let Err(e) = res {
+        if let Err(e) = websocket.send(msg).await {
             signals.error(&format!("sending message to client failed: {:?}", e));
             reader_handle.abort();
             let _ = reader_handle.await;

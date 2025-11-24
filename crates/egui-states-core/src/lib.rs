@@ -8,3 +8,5 @@ pub mod serialization;
 pub mod values;
 
 pub use heapless;
+
+pub const PROTOCOL_VERSION: u64 = 1;

@@ -1,6 +1,6 @@
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt, stream::SplitSink, stream::SplitStream};
-use std::net::{Ipv4Addr, SocketAddrV4};
+use std::net::SocketAddrV4;
 use tokio::net::TcpStream;
 use tokio_tungstenite::connect_async_with_config;
 use tokio_tungstenite::tungstenite::{Message, protocol::WebSocketConfig};

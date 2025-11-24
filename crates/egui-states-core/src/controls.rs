@@ -13,7 +13,7 @@ pub enum ControlServer {
 pub enum ControlClient {
     Error(String),
     Ack(u64),
-    TypesAnswer(NoHashMap<u64, bool>),
+    TypesAnswer(Vec<u64>),
     Handshake(u64, u64),
 }
 

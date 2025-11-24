@@ -113,7 +113,7 @@ impl ValuesList {
 pub struct ClientValuesCreator {
     counter: u64,
     val: ValuesList,
-    version: u64,
+    states_hash: u64,
     sender: MessageSender,
 }
 
@@ -122,7 +122,7 @@ impl ClientValuesCreator {
         Self {
             counter: 9, // first 10 values are reserved for special values
             val: ValuesList::new(),
-            version: 0,
+            states_hash: 0,
             sender,
         }
     }
@@ -135,11 +135,7 @@ impl ClientValuesCreator {
     pub(crate) fn get_values(self) -> (ValuesList, u64) {
         let mut val = self.val;
         val.shrink();
-        (val, self.version)
-    }
-
-    pub fn set_version(&mut self, version: u64) {
-        self.version = version;
+        (val, self.states_hash)
     }
 }
 
@@ -197,7 +193,9 @@ impl ValuesCreator for ClientValuesCreator {
         let value = ValueMap::new(id);
 
         self.val.maps.insert(id, value.clone());
-        self.val.types.insert(id, V::get_type().get_hash() + K::get_type().get_hash());
+        self.val
+            .types
+            .insert(id, V::get_type().get_hash_add(K::get_type()));
         value
     }
 

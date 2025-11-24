@@ -21,7 +21,7 @@ pub(crate) struct ValueMap {
     id: u64,
     value_type: (ObjectType, ObjectType),
     value_id: (u64, u64),
-    map: RwLock<NoHashMap<u64, (Bytes, Bytes)>>,
+    map: RwLock<NoHashMap<Bytes, Bytes>>,
     sender: MessageSender,
     connected: Arc<AtomicBool>,
 }

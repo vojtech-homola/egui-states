@@ -1,5 +1,5 @@
 mod client_base;
-mod data;
+// mod data;
 mod graphs;
 mod handle_message;
 mod image;
@@ -11,17 +11,11 @@ mod values_creator;
 
 pub mod build_scripts;
 
-#[cfg(feature = "client")]
+#[cfg(any(feature = "client", feature = "client-wasm"))]
 mod client;
 
-#[cfg(feature = "client")]
+#[cfg(any(feature = "client", feature = "client-wasm"))]
 pub use client::ClientBuilder;
-
-#[cfg(feature = "client-wasm")]
-mod client_wasm;
-
-#[cfg(feature = "client-wasm")]
-pub use client_wasm::ClientBuilder;
 
 #[cfg(feature = "client")]
 mod websocket;
