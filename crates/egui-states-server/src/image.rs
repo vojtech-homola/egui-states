@@ -1,11 +1,8 @@
+use egui_states_core::serialization::ServerHeader;
 use parking_lot::RwLock;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-// use pyo3::buffer::PyBuffer;
-// use pyo3::exceptions::PyValueError;
-// use pyo3::prelude::*;
-// use pyo3::types::PyByteArray;
 use tokio_tungstenite::tungstenite::Bytes;
 
 use egui_states_core::image::{ImageHeader, ImageType};
@@ -28,7 +25,7 @@ pub(crate) struct ImageData {
 }
 
 pub(crate) struct ValueImage {
-    id: u32,
+    id: u64,
     image: RwLock<ImageDataInner>,
     sender: MessageSender,
     connected: Arc<AtomicBool>,
@@ -36,7 +33,7 @@ pub(crate) struct ValueImage {
 }
 
 impl ValueImage {
-    pub(crate) fn new(id: u32, sender: MessageSender, connected: Arc<AtomicBool>) -> Arc<Self> {
+    pub(crate) fn new(id: u64, sender: MessageSender, connected: Arc<AtomicBool>) -> Arc<Self> {
         let event = Event::new();
         event.set(); // initially set so the first send does not block
 
@@ -91,13 +88,15 @@ impl ValueImage {
                 None => image.size, // use the new size
             };
 
-            let message = ImageHeader {
+            let image_header = ImageHeader {
                 image_size: [new_size[0] as u32, new_size[1] as u32],
                 rect: origin.map(|o| [o[0], o[1], image.size[0] as u32, image.size[1] as u32]),
                 image_type: image.image_type,
             };
             let mut head_buff = [0u8; 64];
-            let buff = message.serialize(self.id, &mut head_buff);
+            let header = ServerHeader::Image(self.id, update, image_header);
+            let buff = header.serialize_to_slice(&mut head_buff);
+
             let offset = buff.len();
             let data_size = image.size[0] * image.size[1] * image.image_type.bytes_per_pixel();
 
@@ -200,12 +199,13 @@ impl SyncTrait for ValueImage {
         }
 
         let mut head_buff = [0u8; 64];
-        let image_info = ImageHeader {
+        let image_header = ImageHeader {
             image_size: [w.size[0] as u32, w.size[1] as u32],
             rect: None,
             image_type: ImageType::ColorAlpha,
         };
-        let buff = image_info.serialize(self.id, &mut head_buff);
+        let header = ServerHeader::Image(self.id, false, image_header);
+        let buff = header.serialize_to_slice(&mut head_buff);
 
         let mut data = Vec::with_capacity(buff.len() + w.data.len());
         unsafe { data.set_len(buff.len() + w.data.len()) };
@@ -218,44 +218,44 @@ impl SyncTrait for ValueImage {
     }
 }
 
-fn check_image_type(shape: &[usize], strides: &[isize]) -> PyResult<ImageType> {
-    match shape.len() {
-        2 => {
-            if strides[1] == 1 {
-                return Ok(ImageType::Gray);
-            }
-            Err(PyValueError::new_err("Invalid strides"))
-        }
-        3 => {
-            if strides[2] != 1 {
-                return Err(PyValueError::new_err("Invalid strides"));
-            }
-            match shape[2] {
-                2 => {
-                    if strides[1] != 2 {
-                        return Err(PyValueError::new_err("Invalid strides"));
-                    }
-                    Ok(ImageType::GrayAlpha)
-                }
-                3 => {
-                    if strides[1] != 3 {
-                        return Err(PyValueError::new_err("Invalid strides"));
-                    }
+// fn check_image_type(shape: &[usize], strides: &[isize]) -> PyResult<ImageType> {
+//     match shape.len() {
+//         2 => {
+//             if strides[1] == 1 {
+//                 return Ok(ImageType::Gray);
+//             }
+//             Err(PyValueError::new_err("Invalid strides"))
+//         }
+//         3 => {
+//             if strides[2] != 1 {
+//                 return Err(PyValueError::new_err("Invalid strides"));
+//             }
+//             match shape[2] {
+//                 2 => {
+//                     if strides[1] != 2 {
+//                         return Err(PyValueError::new_err("Invalid strides"));
+//                     }
+//                     Ok(ImageType::GrayAlpha)
+//                 }
+//                 3 => {
+//                     if strides[1] != 3 {
+//                         return Err(PyValueError::new_err("Invalid strides"));
+//                     }
 
-                    Ok(ImageType::Color)
-                }
-                4 => {
-                    if strides[1] != 4 {
-                        return Err(PyValueError::new_err("Invalid strides"));
-                    }
-                    Ok(ImageType::ColorAlpha)
-                }
-                _ => Err(PyValueError::new_err("Invalid image dimensions")),
-            }
-        }
-        _ => Err(PyValueError::new_err("Invalid image dimensions")),
-    }
-}
+//                     Ok(ImageType::Color)
+//                 }
+//                 4 => {
+//                     if strides[1] != 4 {
+//                         return Err(PyValueError::new_err("Invalid strides"));
+//                     }
+//                     Ok(ImageType::ColorAlpha)
+//                 }
+//                 _ => Err(PyValueError::new_err("Invalid image dimensions")),
+//             }
+//         }
+//         _ => Err(PyValueError::new_err("Invalid image dimensions")),
+//     }
+// }
 
 unsafe fn write_all_new(data: *const u8, size: &[usize; 2], image_type: ImageType) -> Vec<u8> {
     let all_size = size[0] * size[1];

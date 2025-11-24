@@ -24,6 +24,11 @@ impl ServerHeader {
             .expect("Failed to serialize server control header");
         Bytes::from_owner(data)
     }
+
+    pub fn serialize_to_slice<'a>(&self, buffer: &'a mut [u8]) -> &'a [u8] {
+        postcard::to_slice::<ServerHeader>(self, buffer)
+            .expect("Failed to serialize server header")    
+        }
 }
 
 #[derive(Serialize, Deserialize)]
