@@ -7,7 +7,7 @@ use tokio::runtime::Builder;
 use egui_states_core::event_async::Event;
 use egui_states_core::nohash::NoHashMap;
 
-use crate::graph::ValueGraphs;
+use crate::graphs::ValueGraphs;
 use crate::image::ValueImage;
 use crate::list::ValueList;
 use crate::map::ValueMap;

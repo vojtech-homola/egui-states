@@ -9,7 +9,7 @@ use egui_states_core::image::{ImageHeader, ImageType};
 
 use crate::event::Event;
 use crate::sender::MessageSender;
-use crate::server::{Acknowledge, SyncTrait};
+use crate::server::{Acknowledge, EnableTrait, SyncTrait};
 
 struct ImageDataInner {
     data: Vec<u8>,
@@ -29,6 +29,7 @@ pub(crate) struct ValueImage {
     image: RwLock<ImageDataInner>,
     sender: MessageSender,
     connected: Arc<AtomicBool>,
+    enabled: AtomicBool,
     event: Event,
 }
 
@@ -45,6 +46,7 @@ impl ValueImage {
             }),
             sender,
             connected,
+            enabled: AtomicBool::new(false),
             event,
         })
     }
@@ -82,7 +84,8 @@ impl ValueImage {
         // get data pointer and prepare data
         let data_ptr;
         let mut w = self.image.write();
-        let data = if self.connected.load(Ordering::Relaxed) {
+        let data = if self.connected.load(Ordering::Relaxed) && self.enabled.load(Ordering::Relaxed)
+        {
             let new_size = match origin {
                 Some(_) => w.size,  // keep the old size
                 None => image.size, // use the new size
@@ -190,10 +193,16 @@ impl Acknowledge for ValueImage {
     }
 }
 
+impl EnableTrait for ValueImage {
+    fn enable(&self, enable: bool) {
+        self.enabled.store(enable, Ordering::Relaxed);
+    }
+}
+
 impl SyncTrait for ValueImage {
     fn sync(&self) {
         let w = self.image.read();
-        if w.size[0] == 0 || w.size[1] == 0 {
+        if !self.enabled.load(Ordering::Relaxed) || w.size[0] == 0 || w.size[1] == 0 {
             self.event.set();
             return;
         }

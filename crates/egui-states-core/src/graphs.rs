@@ -2,11 +2,22 @@ use std::hash::{DefaultHasher, Hasher};
 
 use serde::{Deserialize, Serialize};
 
+use crate::serialization::ServerHeader;
+
 // graphs -------------------------------------------------------------
 #[derive(Serialize, Deserialize, PartialEq, Clone, Copy, PartialOrd)]
 pub enum GraphType {
     F32,
     F64,
+}
+
+impl GraphType {
+    pub fn bytes_size(&self) -> usize {
+        match self {
+            GraphType::F32 => 4,
+            GraphType::F64 => 8,
+        }
+    }
 }
 
 pub trait GraphElement: Clone + Copy + Send + Sync + 'static {
@@ -44,49 +55,53 @@ impl GraphElement for f64 {
 }
 
 #[derive(Clone)]
-pub struct Graph<T> {
-    pub y: Vec<T>,
-    pub x: Option<Vec<T>>,
-}
-
-#[derive(Clone)]
 pub struct GraphTyped {
     pub y: Vec<u8>,
     pub x: Option<Vec<u8>>,
     pub graph_type: GraphType,
 }
 
-impl<T: GraphElement + Serialize> Graph<T> {
-    pub fn to_data(&self, id: u32, graph_id: u16, add_points: Option<usize>) -> Vec<u8> {
-        // let bytes_size = std::mem::size_of::<T>() * self.y.len();
+impl GraphTyped {
+    pub fn to_data(
+        &self,
+        id: u64,
+        graph_id: u16,
+        update: bool,
+        add_points: Option<usize>,
+    ) -> Vec<u8> {
         let mut head_buffer = [0u8; 32];
-
-        head_buffer[1..5].copy_from_slice(&id.to_le_bytes());
 
         let mut size = self.y.len();
         let mut data_offset = 0;
-        let message = match add_points {
+        let graph_header = match add_points {
             Some(points) => {
-                let info = GraphDataInfo::new::<T>(points, self.x.is_none());
-                let message = GraphHeader::AddPoints(graph_id, info);
+                let info = GraphDataInfo {
+                    graph_type: self.graph_type,
+                    points: points as u64,
+                    is_linear: self.x.is_none(),
+                };
+                let header = GraphHeader::AddPoints(graph_id, info);
                 data_offset = size - points;
                 size = points;
-                message
+                header
             }
             None => {
-                let points = self.y.len();
-                let info = GraphDataInfo::new::<T>(points, self.x.is_none());
-                let message = GraphHeader::Set(graph_id, info);
-                message
+                let points = self.y.len() / self.graph_type.bytes_size();
+                let info = GraphDataInfo {
+                    graph_type: self.graph_type,
+                    points: points as u64,
+                    is_linear: self.x.is_none(),
+                };
+                GraphHeader::Set(graph_id, info)
             }
         };
-        let offset = postcard::to_slice(&message, head_buffer[5..].as_mut())
+        let header = ServerHeader::Graph(id, update, graph_header);
+        let offset = postcard::to_slice(&header, head_buffer[0..].as_mut())
             .expect("Failed to serialize graph data info")
-            .len()
-            + 5;
+            .len();
 
-        size *= std::mem::size_of::<T>();
-        data_offset *= std::mem::size_of::<T>();
+        size *= self.graph_type.bytes_size();
+        data_offset *= self.graph_type.bytes_size();
 
         match self.x {
             Some(ref x) => {
@@ -138,6 +153,94 @@ impl<T: GraphElement + Serialize> Graph<T> {
     }
 }
 
+// impl<T: GraphElement + Serialize> Graph<T> {
+//     pub fn to_data(&self, id: u32, graph_id: u16, add_points: Option<usize>) -> Vec<u8> {
+//         // let bytes_size = std::mem::size_of::<T>() * self.y.len();
+//         let mut head_buffer = [0u8; 32];
+
+//         head_buffer[1..5].copy_from_slice(&id.to_le_bytes());
+
+//         let mut size = self.y.len();
+//         let mut data_offset = 0;
+//         let message = match add_points {
+//             Some(points) => {
+//                 let info = GraphDataInfo::new::<T>(points, self.x.is_none());
+//                 let message = GraphHeader::AddPoints(graph_id, info);
+//                 data_offset = size - points;
+//                 size = points;
+//                 message
+//             }
+//             None => {
+//                 let points = self.y.len();
+//                 let info = GraphDataInfo::new::<T>(points, self.x.is_none());
+//                 let message = GraphHeader::Set(graph_id, info);
+//                 message
+//             }
+//         };
+//         let offset = postcard::to_slice(&message, head_buffer[5..].as_mut())
+//             .expect("Failed to serialize graph data info")
+//             .len()
+//             + 5;
+
+//         size *= std::mem::size_of::<T>();
+//         data_offset *= std::mem::size_of::<T>();
+
+//         match self.x {
+//             Some(ref x) => {
+//                 let mut data = vec![0u8; size * 2 + offset];
+//                 data[..offset].copy_from_slice(&head_buffer[..offset]);
+//                 #[cfg(target_endian = "little")]
+//                 {
+//                     let dat_slice = unsafe {
+//                         let ptr = (x.as_ptr() as *const u8).add(data_offset);
+//                         std::slice::from_raw_parts(ptr, size)
+//                     };
+//                     data[offset..offset + size].copy_from_slice(dat_slice);
+
+//                     let dat_slice = unsafe {
+//                         let ptr = (self.y.as_ptr() as *const u8).add(data_offset);
+//                         std::slice::from_raw_parts(ptr, size)
+//                     };
+//                     data[offset + size..].copy_from_slice(dat_slice);
+//                 }
+
+//                 #[cfg(target_endian = "big")]
+//                 {
+//                     unimplemented!("Big endian not implemented.");
+//                 }
+
+//                 data
+//             }
+
+//             None => {
+//                 let mut data = vec![0u8; size + offset];
+//                 data[..offset].copy_from_slice(&head_buffer[..offset]);
+//                 #[cfg(target_endian = "little")]
+//                 {
+//                     let dat_slice = unsafe {
+//                         let ptr = (self.y.as_ptr() as *const u8).add(data_offset);
+//                         std::slice::from_raw_parts(ptr, size)
+//                     };
+//                     data[offset..].copy_from_slice(dat_slice);
+//                 }
+
+//                 #[cfg(target_endian = "big")]
+//                 {
+//                     unimplemented!("Big endian not implemented.");
+//                 }
+
+//                 data
+//             }
+//         }
+//     }
+// }
+
+#[derive(Clone)]
+pub struct Graph<T> {
+    pub y: Vec<T>,
+    pub x: Option<Vec<T>>,
+}
+
 impl<T: GraphElement> Graph<T> {
     pub fn add_points_from_data(&mut self, info: GraphDataInfo, data: &[u8]) -> Result<(), String> {
         let GraphDataInfo {
@@ -145,6 +248,7 @@ impl<T: GraphElement> Graph<T> {
             points,
             is_linear,
         } = info;
+        let points = points as usize;
 
         if graph_type != T::graph_type() {
             return Err("Incoming Graph data type does not match.".to_string());
@@ -196,6 +300,7 @@ impl<T: GraphElement> Graph<T> {
             is_linear,
             points,
         } = info;
+        let points = points as usize;
 
         if T::graph_type() != graph_type {
             return Err("Incoming Graph data type does not match.".to_string());
@@ -248,18 +353,18 @@ impl<T: GraphElement> Graph<T> {
 pub struct GraphDataInfo {
     graph_type: GraphType,
     is_linear: bool,
-    points: usize,
+    points: u64,
 }
 
-impl GraphDataInfo {
-    pub fn new<T: GraphElement>(points: usize, is_linear: bool) -> Self {
-        Self {
-            graph_type: T::graph_type(),
-            is_linear,
-            points,
-        }
-    }
-}
+// impl GraphDataInfo {
+//     pub fn new(points: usize, is_linear: bool, graph_type: GraphType) -> Self {
+//         Self {
+//             graph_type,
+//             is_linear,
+//             points: points as u64,
+//         }
+//     }
+// }
 
 #[derive(Serialize, Deserialize)]
 pub enum GraphHeader {
