@@ -1,10 +1,9 @@
+use egui_states_core::serialization::ServerHeader;
 use parking_lot::RwLock;
-use std::mem::size_of;
 use std::ptr::copy_nonoverlapping;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use serde::Serialize;
 use tokio_tungstenite::tungstenite::Bytes;
 
 use egui_states_core::graphs::{GraphHeader, GraphType, GraphTyped};
@@ -81,6 +80,31 @@ impl ValueGraphs {
         }
 
         Ok(())
+    }
+}
+
+impl EnableTrait for ValueGraphs {
+    fn enable(&self, enable: bool) {
+        self.enabled.store(enable, Ordering::Relaxed);
+    }
+}
+
+impl SyncTrait for ValueGraphs {
+    fn sync(&self) {
+        if !self.enabled.load(Ordering::Relaxed) {
+            return;
+        }
+
+        let w = self.graphs.read();
+
+        let header = ServerHeader::Graph(self.id, false, GraphHeader::Reset);
+        let data = header.serialize_to_bytes();
+        self.sender.send(data);
+
+        for (idx, graph) in w.iter() {
+            let data = graph.to_data(self.id, *idx, false, None);
+            self.sender.send(Bytes::from_owner(data));
+        }
     }
 }
 

@@ -219,7 +219,7 @@ impl ValuesCreator for ClientValuesCreator {
         let value = ValueGraphs::new(id);
 
         self.val.graphs.insert(id, value.clone());
-        self.val.types.insert(id, T::hash_type());
+        self.val.types.insert(id, T::bytes_size() as u64);
         value
     }
 

@@ -2,9 +2,11 @@ use std::net::{SocketAddrV4, TcpStream};
 use std::sync::{Arc, atomic};
 use std::thread;
 
+use bytes::Bytes;
 use tokio::runtime::Builder;
 
 use egui_states_core::event_async::Event;
+use egui_states_core::graphs::GraphType;
 use egui_states_core::nohash::NoHashMap;
 
 use crate::graphs::ValueGraphs;
@@ -174,7 +176,7 @@ impl Server {
     }
 
     pub(crate) fn start(&mut self) {
-        if self.enabled.load(atomic::Ordering::Relaxed) {
+        if self.enabled.load(atomic::Ordering::Relaxed) || self.states_server.is_some() {
             return;
         }
 
@@ -183,7 +185,7 @@ impl Server {
     }
 
     pub(crate) fn stop(&mut self) {
-        if !self.enabled.load(atomic::Ordering::Relaxed) {
+        if !self.enabled.load(atomic::Ordering::Relaxed) || self.states_server.is_some() {
             return;
         }
 
@@ -196,6 +198,10 @@ impl Server {
     }
 
     pub(crate) fn disconnect_client(&mut self) {
+        if self.states_server.is_some() {
+            return;
+        }
+
         if self.connected.load(atomic::Ordering::Relaxed) {
             self.connected.store(false, atomic::Ordering::Relaxed);
             self.sender.close();
@@ -203,6 +209,145 @@ impl Server {
     }
 
     pub(crate) fn is_running(&self) -> bool {
+        if self.states_server.is_some() {
+            return false;
+        }
+
         self.enabled.load(atomic::Ordering::Relaxed)
+    }
+
+    pub(crate) fn add_value(&mut self, id: u64, type_id: u64, value: Bytes) -> Result<(), String> {
+        if let Some(states) = self.states_server.as_mut() {
+            let val = Value::new(
+                id,
+                value,
+                self.sender.clone(),
+                self.connected.clone(),
+                self.signals.clone(),
+            );
+
+            states.types.insert(id, type_id);
+            states.values.insert(id, val.clone());
+            states.sync.push(val.clone());
+            states.ack.insert(id, val.clone());
+            states.enable.insert(id, val.clone());
+
+            self.states.values.insert(id, val);
+            return Ok(());
+        }
+
+        Err(format!(
+            "Cannot add value with id {}: server not initialized",
+            id
+        ))
+    }
+
+    pub(crate) fn add_static(&mut self, id: u64, type_id: u64, value: Bytes) -> Result<(), String> {
+        if let Some(states) = self.states_server.as_mut() {
+            let val = ValueStatic::new(id, value, self.sender.clone(), self.connected.clone());
+
+            states.types.insert(id, type_id);
+            states.enable.insert(id, val.clone());
+            states.sync.push(val.clone());
+
+            self.states.static_values.insert(id, val);
+            return Ok(());
+        }
+
+        Err(format!(
+            "Cannot add static value with id {}: server not initialized",
+            id
+        ))
+    }
+
+    pub(crate) fn add_signal(&mut self, id: u64, type_id: u64) -> Result<(), String> {
+        if let Some(states) = self.states_server.as_mut() {
+            let val = Signal::new(id, self.signals.clone());
+
+            states.types.insert(id, type_id);
+            states.signals.insert(id, val.clone());
+            states.enable.insert(id, val.clone());
+
+            self.states.signals.insert(id, val);
+            return Ok(());
+        }
+
+        Err(format!(
+            "Cannot add signal with id {}: server not initialized",
+            id
+        ))
+    }
+
+    pub(crate) fn add_list(&mut self, id: u64, type_id: u64) -> Result<(), String> {
+        if let Some(states) = self.states_server.as_mut() {
+            let val = ValueList::new(id, self.sender.clone(), self.connected.clone());
+
+            states.types.insert(id, type_id);
+            states.enable.insert(id, val.clone());
+            states.sync.push(val.clone());
+
+            self.states.lists.insert(id, val);
+            return Ok(());
+        }
+
+        Err(format!(
+            "Cannot add list with id {}: server not initialized",
+            id
+        ))
+    }
+
+    pub(crate) fn add_map(&mut self, id: u64, type_id: u64) -> Result<(), String> {
+        if let Some(states) = self.states_server.as_mut() {
+            let val = ValueMap::new(id, self.sender.clone(), self.connected.clone());
+
+            states.types.insert(id, type_id);
+            states.enable.insert(id, val.clone());
+            states.sync.push(val.clone());
+
+            self.states.maps.insert(id, val);
+            return Ok(());
+        }
+
+        Err(format!(
+            "Cannot add map with id {}: server not initialized",
+            id
+        ))
+    }
+
+    pub(crate) fn add_image(&mut self, id: u64) -> Result<(), String> {
+        if let Some(states) = self.states_server.as_mut() {
+            let val = ValueImage::new(id, self.sender.clone(), self.connected.clone());
+
+            states.types.insert(id, 42);
+            states.enable.insert(id, val.clone());
+            states.sync.push(val.clone());
+
+            self.states.images.insert(id, val);
+            return Ok(());
+        }
+
+        Err(format!(
+            "Cannot add image with id {}: server not initialized",
+            id
+        ))
+    }
+
+    pub(crate) fn add_graphs(&mut self, id: u64, graphs_type: GraphType) -> Result<(), String> {
+        if let Some(states) = self.states_server.as_mut() {
+            let val =
+                ValueGraphs::new(id, self.sender.clone(), graphs_type, self.connected.clone());
+
+            states.types.insert(id, graphs_type.bytes_size() as u64);
+            states.enable.insert(id, val.clone());
+            states.sync.push(val.clone());
+
+            self.states.graphs.insert(id, val);
+            return Ok(());
+        }
+
+        Err(format!(
+            "Cannot add graphs with id {}: server not initialized",
+            id
+        ))
     }
 }

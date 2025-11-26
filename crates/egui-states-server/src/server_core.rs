@@ -2,6 +2,7 @@ use std::net::SocketAddrV4;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, atomic};
 
+use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt, stream::SplitSink};
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
@@ -12,7 +13,9 @@ use tokio_tungstenite::tungstenite::{Message, protocol::WebSocketConfig};
 use egui_states_core::PROTOCOL_VERSION;
 use egui_states_core::controls::{ControlClient, ControlServer};
 use egui_states_core::event_async::Event;
-use egui_states_core::serialization::{ClientHeader, ServerHeader};
+use egui_states_core::serialization::{
+    ClientHeader, ServerHeader, deserialize, deserialize_from, serialize_value_vec,
+};
 
 use crate::sender::{MessageReceiver, MessageSender};
 use crate::server::ServerStatesList;
@@ -125,20 +128,35 @@ pub(crate) async fn start(
                 }
 
                 // check types --------------------------
-                let control = ControlServer::TypesAsk(values.types.clone());
-                let message = ServerHeader::serialize_control(control);
+                let header = ServerHeader::Control(ControlServer::TypesAsk);
+                let mut data = Vec::new();
+                serialize_value_vec(&header, &mut data);
+                serialize_value_vec(&values.types, &mut data);
+                let message = Bytes::from_owner(data);
+
                 if let Err(e) = websocket.send(Message::Binary(message)).await {
                     signals.error(&format!("sending states types failed: {:?}", e));
                     continue;
                 }
 
+                // TODO: move to special function
                 let types = match websocket.next().await {
                     Some(Ok(Message::Binary(data))) => {
-                        match ClientHeader::deserialize_control(&data) {
-                            Ok(ControlClient::TypesAnswer(types)) => types,
+                        match deserialize_from::<ClientHeader>(&data) {
+                            Ok((ClientHeader::Control(ControlClient::TypesAnswer), dat)) => {
+                                match deserialize::<Vec<u64>>(&dat) {
+                                    Ok(types) => types,
+                                    Err(_) => {
+                                        signals.error(
+                                        "unexpected message when receiving initial states types",
+                                    );
+                                        continue;
+                                    }
+                                }
+                            }
                             _ => {
                                 signals.error(
-                                    "unexpected control message when receiving initial states types",
+                                    "unexpected message when receiving initial states types",
                                 );
                                 continue;
                             }
@@ -265,7 +283,16 @@ async fn communication_handler(
                                     )),
                                 }
                             }
-                            ControlClient::Error(err) => {
+                            ControlClient::Error => {
+                                let err = match deserialize::<String>(&data.unwrap()) {
+                                    Ok(e) => e,
+                                    Err(_) => {
+                                        read_signals.error(
+                                            "deserializing error message from client failed",
+                                        );
+                                        continue;
+                                    }
+                                };
                                 read_signals.error(&format!("Error message from client: {}", err));
                             }
                             _ => read_signals.error(&format!(
@@ -286,7 +313,7 @@ async fn communication_handler(
                         },
                         ClientHeader::Signal(id) => match read_values.signals.get(&id) {
                             Some(val) => {
-                                if let Err(e) = val.set_signal(data.unwrap()) {
+                                if let Err(e) = val.update_signal(data.unwrap()) {
                                     read_signals.error(&format!(
                                         "updating signal with id {} failed: {}",
                                         id, e

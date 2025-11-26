@@ -5,7 +5,7 @@ mod map;
 // mod pygraphs;
 // mod pyimage;
 // mod pylist;
-mod python_convert;
+// mod python_convert;
 // mod pyvalues;
 mod graphs;
 mod image;
@@ -20,8 +20,12 @@ mod value_parsing;
 mod values;
 
 pub use egui_states_macros::{pyenum, pystruct};
-pub use pyo3;
-pub use python_convert::{EnumInit, FromPython, ToPython};
+
+#[cfg(feature = "python")]
+mod python;
+
+// pub use pyo3;
+// pub use python_convert::{EnumInit, FromPython, ToPython};
 // pub use states::ServerValuesCreator;
 
 // pub fn init_module(

@@ -83,7 +83,8 @@ async fn start_gui_client(
                         if let Err(e) = handle_message(data.as_ref(), &th_vals, &th_ui_state).await
                         {
                             let error = format!("handling message from server failed: {:?}", e);
-                            th_sender.send(ClientHeader::error(error));
+                            let (header, data) = ClientHeader::error(error);
+                            th_sender.send_data(header, data);
                             break;
                         }
                     }
@@ -216,7 +217,7 @@ impl ClientBuilder {
         #[cfg(feature = "client-wasm")]
         {
             wasm_bindgen_futures::spawn_local(async move {
-                start_gui_client(addr, values, version, rx, sender, client, handshake).await;
+                start_gui_client(addr, values, rx, sender, client, handshake).await;
             });
         }
 

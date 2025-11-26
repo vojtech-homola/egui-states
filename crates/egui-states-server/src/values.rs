@@ -1,89 +1,101 @@
 use parking_lot::RwLock;
-use std::marker::PhantomData;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use bytes::Bytes;
-use pyo3::prelude::*;
-use serde::{Deserialize, Serialize};
 
-use egui_states_core::serialization::{ServerHeader, deserialize, ser_server_value};
-use egui_states_core::values::ObjectType;
+use egui_states_core::serialization::{ServerHeader, ser_server_value};
 
 use crate::sender::MessageSender;
-use crate::server::{Acknowledge, SyncTrait};
+use crate::server::{Acknowledge, EnableTrait, SyncTrait};
 use crate::signals::ChangedValues;
 
 // pub(crate) trait UpdateValue: Send + Sync {
 //     fn update_value(&self, signal: bool, value: Bytes) -> Result<(), String>;
 // }
 
-pub(crate) trait GetValue: SetValue {
-    fn get_value(&self) -> Bytes;
-    fn get_type(&self) -> ObjectType;
-}
+// pub(crate) trait GetValue: SetValue {
+//     fn get_value(&self) -> Bytes;
+//     fn get_type(&self) -> ObjectType;
+// }
 
-pub(crate) trait SetValue: Send + Sync {
-    fn set_value(&self, value: Bytes);
-}
+// pub(crate) trait SetValue: Send + Sync {
+//     fn set_value(&self, value: Bytes);
+// }
 
 // Value --------------------------------------------------
 pub(crate) struct Value {
     id: u64,
     value: RwLock<(Bytes, usize)>,
-    value_type: ObjectType,
-    type_id: u64,
     sender: MessageSender,
     connected: Arc<AtomicBool>,
+    enabled: AtomicBool,
+    signals: ChangedValues,
 }
 
 impl Value {
     pub(crate) fn new(
         id: u64,
         value: Bytes,
-        value_type: ObjectType,
         sender: MessageSender,
         connected: Arc<AtomicBool>,
+        signals: ChangedValues,
     ) -> Arc<Self> {
-        let type_id = value_type.get_hash();
         Arc::new(Self {
             id,
             value: RwLock::new((value, 0)),
-            value_type,
-            type_id,
             sender,
             connected,
+            enabled: AtomicBool::new(false),
+            signals,
         })
     }
     // }
 
     // impl UpdateValue for Value {
     pub(crate) fn update_value(&self, signal: bool, value: Bytes) -> Result<(), String> {
+        if !self.enabled.load(Ordering::Relaxed) {
+            return Err(format!("Value {} is not enabled", self.id));
+        }
+
         let mut w = self.value.write();
         if w.1 == 0 {
             w.0 = value.clone();
         }
 
+        if signal {
+            self.signals.set(self.id, value);
+        }
+
         Ok(())
     }
-}
 
-impl GetValue for Value {
     #[inline]
-    fn get_value(&self) -> Bytes {
+    fn get(&self) -> Bytes {
         self.value.read().0.clone()
     }
 
-    #[inline]
-    fn get_type(&self) -> ObjectType {
-        self.value_type.clone()
-    }
-}
+    fn set(&self, value: Bytes, set_signals: bool, update: bool) {
+        if self.connected.load(Ordering::Relaxed) && self.enabled.load(Ordering::Relaxed) {
+            let mut w = self.value.write();
 
-impl SetValue for Value {
-    fn set_value(&self, value: Bytes) {
-        let mut w = self.value.write();
-        w.0 = value;
+            let header = ServerHeader::Value(self.id, update);
+            let message = header.serialize_to_bytes_data(Some(value.clone()));
+
+            w.0 = value.clone();
+            w.1 += 1;
+            self.sender.send(message);
+
+            if set_signals {
+                self.signals.set(self.id, value);
+            }
+        } else {
+            let mut w = self.value.write();
+            w.0 = value.clone();
+            if set_signals {
+                self.signals.set(self.id, value);
+            }
+        }
     }
 }
 
@@ -108,56 +120,103 @@ impl SyncTrait for Value {
     }
 }
 
+impl EnableTrait for Value {
+    fn enable(&self, enable: bool) {
+        self.enabled.store(enable, Ordering::Relaxed);
+    }
+}
+
 // ValueStatic --------------------------------------------
 pub(crate) struct ValueStatic {
     id: u64,
     value: RwLock<Bytes>,
-    value_type: ObjectType,
-    type_id: u64,
     sender: MessageSender,
     connected: Arc<AtomicBool>,
+    enabled: AtomicBool,
 }
 
 impl ValueStatic {
     pub(crate) fn new(
         id: u64,
         value: Bytes,
-        value_type: ObjectType,
         sender: MessageSender,
         connected: Arc<AtomicBool>,
     ) -> Arc<Self> {
-        let type_id = value_type.get_hash();
         Arc::new(Self {
             id,
             value: RwLock::new(value),
-            value_type,
-            type_id,
             sender,
             connected,
+            enabled: AtomicBool::new(false),
         })
+    }
+
+    pub(crate) fn set(&self, value: Bytes, update: bool) {
+        if self.connected.load(Ordering::Relaxed) && self.enabled.load(Ordering::Relaxed) {
+            let mut w = self.value.write();
+
+            let header = ServerHeader::Static(self.id, update);
+            let message = header.serialize_to_bytes_data(Some(value.clone()));
+
+            *w = value;
+            self.sender.send(message);
+        } else {
+            let mut w = self.value.write();
+            *w = value;
+        }
+    }
+}
+
+impl SyncTrait for ValueStatic {
+    fn sync(&self) {
+        if self.enabled.load(Ordering::Relaxed) {
+            let w = self.value.read();
+            let header = ServerHeader::Static(self.id, false);
+            let data = ser_server_value(header, &w);
+            drop(w);
+
+            self.sender.send(data);
+        }
+    }
+}
+
+impl EnableTrait for ValueStatic {
+    fn enable(&self, enable: bool) {
+        self.enabled.store(enable, Ordering::Relaxed);
     }
 }
 
 // Signals --------------------------------------------
 pub(crate) struct Signal {
     id: u64,
-    value_type: ObjectType,
-    type_id: u64,
+    signals: ChangedValues,
+    enabled: AtomicBool,
 }
 
 impl Signal {
-    pub(crate) fn new(id: u64, value: Bytes, value_type: ObjectType) -> Arc<Self> {
-        let type_id = value_type.get_hash();
+    pub(crate) fn new(id: u64, signals: ChangedValues) -> Arc<Self> {
         Arc::new(Self {
             id,
-            value_type,
-            type_id,
+            signals,
+            enabled: AtomicBool::new(false),
         })
     }
-// }
 
-// impl UpdateValue for Signal {
-    pub(crate) fn set_signal(&self, value: Bytes) -> Result<(), String> {
+    pub(crate) fn set(&self, value: Bytes) {
+        self.signals.set(self.id, value);
+    }
+
+    pub(crate) fn update_signal(&self, value: Bytes) -> Result<(), String> {
+        if !self.enabled.load(Ordering::Relaxed) {
+            return Err(format!("Signal {} is not enabled", self.id));
+        }
+        self.signals.set(self.id, value);
         Ok(())
+    }
+}
+
+impl EnableTrait for Signal {
+    fn enable(&self, enable: bool) {
+        self.enabled.store(enable, Ordering::Relaxed);
     }
 }

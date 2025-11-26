@@ -7,6 +7,23 @@ use crate::controls::{ControlClient, ControlServer};
 use crate::graphs::GraphHeader;
 use crate::image::ImageHeader;
 
+pub const HEAPLESS_SIZE: usize = 64;
+
+pub enum MessageData {
+    Heap(Vec<u8>),
+    Stack(heapless::Vec<u8, HEAPLESS_SIZE>),
+}
+
+impl MessageData {
+    #[inline]
+    pub fn to_bytes(self) -> Bytes {
+        match self {
+            MessageData::Heap(vec) => Bytes::from_owner(vec),
+            MessageData::Stack(vec) => Bytes::from_owner(vec),
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 pub enum ServerHeader {
     Value(u64, bool),
@@ -19,16 +36,51 @@ pub enum ServerHeader {
 }
 
 impl ServerHeader {
-    pub fn serialize_control(control: ControlServer) -> Bytes {
-        let data = postcard::to_stdvec(&ServerHeader::Control(control))
-            .expect("Failed to serialize server control header");
-        Bytes::from_owner(data)
-    }
+    // pub fn serialize_control(control: ControlServer) -> Bytes {
+    //     let data = postcard::to_stdvec(&ServerHeader::Control(control))
+    //         .expect("Failed to serialize server control header");
+    //     Bytes::from_owner(data)
+    // }
 
     pub fn serialize_to_slice<'a>(&self, buffer: &'a mut [u8]) -> &'a [u8] {
-        postcard::to_slice::<ServerHeader>(self, buffer)
-            .expect("Failed to serialize server header")    
+        postcard::to_slice::<ServerHeader>(self, buffer).expect("Failed to serialize server header")
+    }
+
+    pub fn serialize_to_bytes(&self) -> Bytes {
+        let result = postcard::to_vec::<ServerHeader, HEAPLESS_SIZE>(self);
+        match result {
+            Ok(vec) => Bytes::from_owner(vec),
+            Err(postcard::Error::SerializeBufferFull) => Bytes::from_owner(
+                postcard::to_stdvec(self).expect("Failed to serialize server header"),
+            ),
+            Err(e) => panic!("Serialize error: {}", e),
         }
+    }
+
+    pub fn serialize_to_bytes_data(&self, data: Option<Bytes>) -> Bytes {
+        match data {
+            Some(b) => {
+                let mut head = postcard::to_vec::<ServerHeader, HEAPLESS_SIZE>(self)
+                    .expect("Failed to serialize server header");
+
+                if b.len() + head.len() <= HEAPLESS_SIZE {
+                    head.extend_from_slice(&b)
+                        .expect("Failed to extend head with stack data");
+                    Bytes::from_owner(head)
+                } else {
+                    let mut full_data = Vec::with_capacity(head.len() + b.len());
+                    full_data.extend_from_slice(&head);
+                    full_data.extend_from_slice(&b);
+                    Bytes::from_owner(full_data)
+                }
+            }
+            None => {
+                let head = postcard::to_vec::<ServerHeader, HEAPLESS_SIZE>(self)
+                    .expect("Failed to serialize server header");
+                Bytes::from_owner(head)
+            }
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -43,11 +95,13 @@ impl ClientHeader {
         ClientHeader::Control(ControlClient::Ack(id))
     }
 
-    pub fn error(message: String) -> Self {
-        ClientHeader::Control(ControlClient::Error(message))
+    pub fn error(message: String) -> (Self, MessageData) {
+        let header = ClientHeader::Control(ControlClient::Error);
+        let data = postcard::to_stdvec(&message).expect("Failed to serialize error message");
+        (header, MessageData::Heap(data))
     }
 
-    pub fn serialize_handshake(protocol: u64, version: u64) -> MessageData {
+    pub fn serialize_handshake(protocol: u16, version: u64) -> MessageData {
         let header = ClientHeader::Control(ControlClient::Handshake(protocol, version));
         let data =
             postcard::to_vec::<ClientHeader, HEAPLESS_SIZE>(&header).expect("Failed to serialize");
@@ -84,76 +138,44 @@ impl ClientHeader {
         }
     }
 
+    #[inline]
     pub fn serialize_message(&self, data: Option<MessageData>) -> MessageData {
-        match self {
-            ClientHeader::Control(ControlClient::TypesAnswer(_)) => {
-                let mut head =
-                    postcard::to_stdvec(self).expect("Failed to serialize client header");
-                match data {
-                    Some(MessageData::Heap(vec)) => {
-                        head.extend_from_slice(&vec);
-                        MessageData::Heap(head)
-                    }
-                    Some(MessageData::Stack(vec)) => {
-                        head.extend_from_slice(&vec);
-                        MessageData::Heap(head)
-                    }
-                    None => MessageData::Heap(head),
-                }
-            }
-            ClientHeader::Control(ControlClient::Error(_)) => {
-                let mut head =
-                    postcard::to_stdvec(self).expect("Failed to serialize client header");
-                match data {
-                    Some(MessageData::Heap(vec)) => {
-                        head.extend_from_slice(&vec);
-                        MessageData::Heap(head)
-                    }
-                    Some(MessageData::Stack(vec)) => {
-                        head.extend_from_slice(&vec);
-                        MessageData::Heap(head)
-                    }
-                    None => MessageData::Heap(head),
-                }
-            }
-            _ => match data {
-                Some(MessageData::Heap(vec)) => {
-                    let head = postcard::to_vec::<ClientHeader, 24>(self)
-                        .expect("Failed to serialize client header");
-                    let mut full_data = Vec::with_capacity(head.len() + vec.len());
-                    full_data.extend_from_slice(&head);
-                    full_data.extend_from_slice(&vec);
-                    MessageData::Heap(full_data)
-                }
-                Some(MessageData::Stack(vec)) => {
-                    let mut head = postcard::to_vec::<ClientHeader, HEAPLESS_SIZE>(self)
-                        .expect("Failed to serialize client header");
-                    if vec.len() + head.len() <= HEAPLESS_SIZE {
-                        head.extend_from_slice(&vec)
-                            .expect("Failed to extend head with stack data");
-                        MessageData::Stack(head)
-                    } else {
-                        let mut full_data = Vec::with_capacity(head.len() + vec.len());
-                        full_data.extend_from_slice(&head);
-                        full_data.extend_from_slice(&vec);
-                        MessageData::Heap(full_data)
-                    }
-                }
-                None => {
-                    let head = postcard::to_vec::<ClientHeader, HEAPLESS_SIZE>(self)
-                        .expect("Failed to serialize client header");
-                    MessageData::Stack(head)
-                }
-            },
-        }
+        serialize_value_data_to_message(self, data)
     }
 }
 
-pub const HEAPLESS_SIZE: usize = 64;
-
-pub enum MessageData {
-    Heap(Vec<u8>),
-    Stack(heapless::Vec<u8, HEAPLESS_SIZE>),
+pub fn serialize_value_data_to_message<T: Serialize>(
+    value: &T,
+    data: Option<MessageData>,
+) -> MessageData {
+    match data {
+        Some(MessageData::Heap(vec)) => {
+            let head = postcard::to_vec::<T, 24>(value).expect("Failed to serialize client header");
+            let mut full_data = Vec::with_capacity(head.len() + vec.len());
+            full_data.extend_from_slice(&head);
+            full_data.extend_from_slice(&vec);
+            MessageData::Heap(full_data)
+        }
+        Some(MessageData::Stack(vec)) => {
+            let mut head = postcard::to_vec::<T, HEAPLESS_SIZE>(value)
+                .expect("Failed to serialize client header");
+            if vec.len() + head.len() <= HEAPLESS_SIZE {
+                head.extend_from_slice(&vec)
+                    .expect("Failed to extend head with stack data");
+                MessageData::Stack(head)
+            } else {
+                let mut full_data = Vec::with_capacity(head.len() + vec.len());
+                full_data.extend_from_slice(&head);
+                full_data.extend_from_slice(&vec);
+                MessageData::Heap(full_data)
+            }
+        }
+        None => {
+            let head = postcard::to_vec::<T, HEAPLESS_SIZE>(value)
+                .expect("Failed to serialize client header");
+            MessageData::Stack(head)
+        }
+    }
 }
 
 pub fn serialize_value_to_message<T: Serialize>(value: T) -> MessageData {

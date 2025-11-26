@@ -9,4 +9,4 @@ pub mod values;
 
 pub use heapless;
 
-pub const PROTOCOL_VERSION: u64 = 1;
+pub const PROTOCOL_VERSION: u16 = 1;

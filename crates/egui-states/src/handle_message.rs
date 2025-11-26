@@ -1,14 +1,25 @@
 use egui_states_core::controls::{ControlClient, ControlServer};
+use egui_states_core::nohash::NoHashMap;
 use egui_states_core::serialization::{
     ClientHeader, MessageData, ServerHeader, deserialize, deserialize_from,
+    serialize_value_to_message,
 };
 
 use crate::client_base::Client;
 use crate::values_creator::ValuesList;
 
 pub(crate) fn check_types(message_data: &[u8], vals: &ValuesList) -> Result<MessageData, ()> {
-    match deserialize::<ServerHeader>(message_data) {
-        Ok(ServerHeader::Control(ControlServer::TypesAsk(types))) => {
+    match deserialize_from::<ServerHeader>(message_data) {
+        Ok((ServerHeader::Control(ControlServer::TypesAsk), data)) => {
+            let types = match deserialize::<NoHashMap<u64, u64>>(data) {
+                Ok(t) => t,
+                Err(_) => {
+                    #[cfg(debug_assertions)]
+                    println!("Deserialization types ask data failed.");
+                    return Err(());
+                }
+            };
+
             let mut types_res = Vec::new();
             for (id, t) in types {
                 if let Some(state_type) = vals.types.get(&id) {
@@ -17,11 +28,12 @@ pub(crate) fn check_types(message_data: &[u8], vals: &ValuesList) -> Result<Mess
                     }
                 }
             }
-            let header = ClientHeader::Control(ControlClient::TypesAnswer(types_res));
-            let message = header.serialize_message(None);
+            let header = ClientHeader::Control(ControlClient::TypesAnswer);
+            let data = serialize_value_to_message(types_res);
+            let message = header.serialize_message(Some(data));
             Ok(message)
         }
-        Ok(_) => {
+        Ok((_, _)) => {
             #[cfg(debug_assertions)]
             println!("Expected TypesAsk message, got different message.");
             Err(())
