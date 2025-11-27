@@ -103,6 +103,7 @@ impl OrderedMap {
 struct ChangedInner {
     values: OrderedMap,           // values not blocked
     blocked_list: NoHashSet<u64>, // ids blocked by some thread
+    registered: NoHashSet<u64>,   // ids which are registered to be signaled
 }
 
 /*
@@ -114,6 +115,7 @@ impl ChangedInner {
         Self {
             values: OrderedMap::new(),
             blocked_list: NoHashSet::default(),
+            registered: NoHashSet::default(),
         }
     }
 
@@ -130,7 +132,7 @@ impl ChangedInner {
     }
 
     fn get(&mut self, last_id: Option<u64>) -> Option<(u64, Bytes)> {
-        match last_id {
+        let res = match last_id {
             // previous call was made
             Some(last_id) => {
                 if self.blocked_list.contains(&last_id) {
@@ -163,6 +165,14 @@ impl ChangedInner {
                 }
                 val
             }
+        };
+
+        match &res {
+            Some((id, _)) => match self.registered.contains(id) {
+                true => res,
+                false => None,
+            },
+            None => None,
         }
     }
 }
@@ -225,6 +235,14 @@ impl ChangedValues {
                 return val;
             }
             self.event.wait_lock();
+        }
+    }
+
+    pub(crate) fn set_registerd(&self, id: u64, register: bool) {
+        if register {
+            self.values.lock().registered.insert(id);
+        } else {
+            self.values.lock().registered.remove(&id);
         }
     }
 

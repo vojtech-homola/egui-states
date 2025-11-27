@@ -134,9 +134,9 @@ impl Server {
         obj
     }
 
-    pub(crate) fn initialize(&mut self) {
+    pub(crate) fn initialize(&mut self) -> Option<(StatesList, ChangedValues)> {
         if self.states_server.is_none() {
-            return;
+            return None;
         }
 
         let runtime = Builder::new_current_thread()
@@ -150,7 +150,8 @@ impl Server {
         let rx = self.rx.take().unwrap();
         let connected = self.connected.clone();
         let enabled = self.enabled.clone();
-        let values = self.states_server.take().unwrap();
+        let mut values = self.states_server.take().unwrap();
+        values.shrink();
         let signals = self.signals.clone();
         let start_event = self.start_event.clone();
         let handshake = self.handshake.clone();
@@ -173,6 +174,9 @@ impl Server {
                 .await;
             });
         });
+
+        self.states.shrink();
+        Some((self.states.clone(), self.signals.clone()))
     }
 
     pub(crate) fn start(&mut self) {
@@ -218,6 +222,10 @@ impl Server {
 
     pub(crate) fn add_value(&mut self, id: u64, type_id: u64, value: Bytes) -> Result<(), String> {
         if let Some(states) = self.states_server.as_mut() {
+            if self.states.values.contains_key(&id) {
+                return Err(format!("Value with id {} already exists", id));
+            }
+
             let val = Value::new(
                 id,
                 value,

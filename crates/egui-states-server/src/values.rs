@@ -71,11 +71,11 @@ impl Value {
     }
 
     #[inline]
-    fn get(&self) -> Bytes {
+    pub(crate) fn get(&self) -> Bytes {
         self.value.read().0.clone()
     }
 
-    fn set(&self, value: Bytes, set_signals: bool, update: bool) {
+    pub(crate) fn set(&self, value: Bytes, set_signals: bool, update: bool) {
         if self.connected.load(Ordering::Relaxed) && self.enabled.load(Ordering::Relaxed) {
             let mut w = self.value.write();
 

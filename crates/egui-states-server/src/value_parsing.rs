@@ -15,20 +15,20 @@ impl ValueParser {
         Self { value, pointer: 0 }
     }
 
-    pub(crate) fn get<T: for<'a> Deserialize<'a>>(&mut self, value: &mut T) -> bool {
+    pub(crate) fn get<T: for<'a> Deserialize<'a>>(&mut self, value: &mut T) -> Result<(), ()> {
         let result = deserialize_value(&self.value[self.pointer..]);
         match result {
             Some((val, size)) => {
                 *value = val;
                 self.pointer += size;
-                true
+                Ok(())
             }
-            None => false,
+            None => Err(()),
         }
     }
 }
 
-pub(crate) enum SerData {
+pub enum SerData {
     Stack([u8; 32], usize),
     Heap(Vec<u8>),
 }
