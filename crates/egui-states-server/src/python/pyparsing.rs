@@ -2,7 +2,7 @@ use pyo3::exceptions::PyValueError;
 use pyo3::types::{PyDict, PyList, PyNone, PyTuple};
 use pyo3::{IntoPyObjectExt, prelude::*};
 
-use egui_states_core::values::ObjectType;
+use egui_states_core::types::ObjectType;
 
 use crate::value_parsing::{ValueCreator, ValueParser};
 

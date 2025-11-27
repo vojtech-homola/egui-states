@@ -5,7 +5,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use egui_states_core::graphs::GraphElement;
-use egui_states_core::values::GetType;
+use egui_states_core::types::GetType;
 
 use crate::graphs::ValueGraphs;
 use crate::image::ValueImage;

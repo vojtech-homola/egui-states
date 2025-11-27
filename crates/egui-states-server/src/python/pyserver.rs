@@ -1,15 +1,17 @@
 use parking_lot::RwLock;
+use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::OnceLock;
 
 use pyo3::prelude::*;
+use pyo3::types::{PyDict, PyList};
 
 use egui_states_core::graphs::GraphType;
 use egui_states_core::nohash::NoHashMap;
-use egui_states_core::values::ObjectType;
+use egui_states_core::types::ObjectType;
 
 use crate::python::pyparsing;
-use crate::python::type_creator::PyObjectType;
+use crate::python::pytypes::PyObjectType;
 use crate::server::{Server, StatesList};
 use crate::signals::ChangedValues;
 use crate::value_parsing::{ValueCreator, ValueParser};
@@ -226,8 +228,369 @@ impl StateServerCore {
     }
 
     // lists ------------------------------------------------------------
+    fn list_set(&self, value_id: u64, py_list: &Bound<PyList>, update: bool) -> PyResult<()> {
+        match self.inner.get() {
+            Some(inner) => {
+                match (
+                    inner.states.lists.get(&value_id),
+                    inner.types.get(&value_id),
+                ) {
+                    (Some(list), Some(ObjectType::Vec(value_type))) => {
+                        let mut vec = Vec::with_capacity(py_list.len());
+                        for item in py_list.iter() {
+                            let mut creator = ValueCreator::new();
+                            pyparsing::serialize_py(&item, value_type, &mut creator)?;
+                            let data = creator.finalize();
+                            vec.push(data);
+                        }
+                        list.set(vec, update);
+                        Ok(())
+                    }
+                    _ => Err(pyo3::exceptions::PyValueError::new_err(
+                        "Value ID not found or type mismatch.",
+                    )),
+                }
+            }
+            None => Err(pyo3::exceptions::PyValueError::new_err(
+                "Server not initialized",
+            )),
+        }
+    }
+
+    fn list_get<'py>(&self, py: Python<'py>, value_id: u64) -> PyResult<Bound<'py, PyList>> {
+        match self.inner.get() {
+            Some(inner) => {
+                match (
+                    inner.states.lists.get(&value_id),
+                    inner.types.get(&value_id),
+                ) {
+                    (Some(list), Some(ObjectType::Vec(value_type))) => {
+                        let vec = list.get();
+                        let py_list = PyList::empty(py);
+                        for item in vec.iter() {
+                            let mut parser = ValueParser::new(item.clone());
+                            let py_value =
+                                pyparsing::deserelialize_py(py, &mut parser, value_type)?;
+                            py_list.append(py_value)?;
+                        }
+                        Ok(py_list)
+                    }
+                    _ => Err(pyo3::exceptions::PyValueError::new_err(
+                        "Value ID not found or type mismatch.",
+                    )),
+                }
+            }
+            None => Err(pyo3::exceptions::PyValueError::new_err(
+                "Server not initialized",
+            )),
+        }
+    }
+
+    fn list_set_item(
+        &self,
+        value_id: u64,
+        index: usize,
+        item: &Bound<PyAny>,
+        update: bool,
+    ) -> PyResult<()> {
+        match self.inner.get() {
+            Some(inner) => {
+                match (
+                    inner.states.lists.get(&value_id),
+                    inner.types.get(&value_id),
+                ) {
+                    (Some(list), Some(ObjectType::Vec(value_type))) => {
+                        let mut creator = ValueCreator::new();
+                        pyparsing::serialize_py(item, value_type, &mut creator)?;
+                        let data = creator.finalize();
+                        list.set_item_py(index, data, update)
+                            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?;
+                        Ok(())
+                    }
+                    _ => Err(pyo3::exceptions::PyValueError::new_err(
+                        "Value ID not found or type mismatch.",
+                    )),
+                }
+            }
+            None => Err(pyo3::exceptions::PyValueError::new_err(
+                "Server not initialized",
+            )),
+        }
+    }
+
+    fn list_get_item<'py>(
+        &self,
+        py: Python<'py>,
+        value_id: u64,
+        index: usize,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        match self.inner.get() {
+            Some(inner) => {
+                match (
+                    inner.states.lists.get(&value_id),
+                    inner.types.get(&value_id),
+                ) {
+                    (Some(list), Some(ObjectType::Vec(value_type))) => {
+                        let data = list
+                            .get_item(index)
+                            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?;
+                        let mut parser = ValueParser::new(data);
+                        let py_value = pyparsing::deserelialize_py(py, &mut parser, value_type)?;
+                        Ok(py_value)
+                    }
+                    _ => Err(pyo3::exceptions::PyValueError::new_err(
+                        "Value ID not found or type mismatch.",
+                    )),
+                }
+            }
+            None => Err(pyo3::exceptions::PyValueError::new_err(
+                "Server not initialized",
+            )),
+        }
+    }
+
+    fn list_remove_item<'py>(
+        &self,
+        py: Python<'py>,
+        value_id: u64,
+        index: usize,
+        update: bool,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        match self.inner.get() {
+            Some(inner) => {
+                match (
+                    inner.states.lists.get(&value_id),
+                    inner.types.get(&value_id),
+                ) {
+                    (Some(list), Some(ObjectType::Vec(value_type))) => {
+                        let data = list
+                            .remove_item(index, update)
+                            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?;
+                        let mut parser = ValueParser::new(data);
+                        let py_value = pyparsing::deserelialize_py(py, &mut parser, value_type)?;
+                        Ok(py_value)
+                    }
+                    _ => Err(pyo3::exceptions::PyValueError::new_err(
+                        "Value ID not found or type mismatch.",
+                    )),
+                }
+            }
+            None => Err(pyo3::exceptions::PyValueError::new_err(
+                "Server not initialized",
+            )),
+        }
+    }
+
+    fn list_append_item(&self, value_id: u64, item: &Bound<PyAny>, update: bool) -> PyResult<()> {
+        match self.inner.get() {
+            Some(inner) => {
+                match (
+                    inner.states.lists.get(&value_id),
+                    inner.types.get(&value_id),
+                ) {
+                    (Some(list), Some(ObjectType::Vec(value_type))) => {
+                        let mut creator = ValueCreator::new();
+                        pyparsing::serialize_py(item, value_type, &mut creator)?;
+                        let data = creator.finalize();
+                        list.append_item(data, update);
+                        Ok(())
+                    }
+                    _ => Err(pyo3::exceptions::PyValueError::new_err(
+                        "Value ID not found or type mismatch.",
+                    )),
+                }
+            }
+            None => Err(pyo3::exceptions::PyValueError::new_err(
+                "Server not initialized",
+            )),
+        }
+    }
+
+    fn list_len(&self, value_id: u64) -> PyResult<usize> {
+        match self.inner.get() {
+            Some(inner) => match inner.states.lists.get(&value_id) {
+                Some(list) => Ok(list.len()),
+                _ => Err(pyo3::exceptions::PyValueError::new_err(
+                    "Value ID not found.",
+                )),
+            },
+            None => Err(pyo3::exceptions::PyValueError::new_err(
+                "Server not initialized",
+            )),
+        }
+    }
 
     // maps -------------------------------------------------------------
+    fn map_set(&self, value_id: u64, py_dict: &Bound<PyDict>, update: bool) -> PyResult<()> {
+        match self.inner.get() {
+            Some(inner) => match (inner.states.maps.get(&value_id), inner.types.get(&value_id)) {
+                (Some(map), Some(ObjectType::Map(key_type, value_type))) => {
+                    let mut new_map = HashMap::with_capacity(py_dict.len());
+                    for (key, value) in py_dict.iter() {
+                        let mut key_creator = ValueCreator::new();
+                        pyparsing::serialize_py(&key, key_type, &mut key_creator)?;
+                        let key_data = key_creator.finalize();
+
+                        let mut value_creator = ValueCreator::new();
+                        pyparsing::serialize_py(&value, value_type, &mut value_creator)?;
+                        let value_data = value_creator.finalize();
+
+                        new_map.insert(key_data, value_data);
+                    }
+                    map.set(new_map, update);
+                    Ok(())
+                }
+                _ => Err(pyo3::exceptions::PyValueError::new_err(
+                    "Value ID not found or type mismatch.",
+                )),
+            },
+            None => Err(pyo3::exceptions::PyValueError::new_err(
+                "Server not initialized",
+            )),
+        }
+    }
+
+    fn map_get<'py>(&self, py: Python<'py>, value_id: u64) -> PyResult<Bound<'py, PyDict>> {
+        match self.inner.get() {
+            Some(inner) => match (inner.states.maps.get(&value_id), inner.types.get(&value_id)) {
+                (Some(map), Some(ObjectType::Map(key_type, value_type))) => {
+                    let data_map = map.get();
+                    let py_dict = PyDict::new(py);
+                    for (key_data, value_data) in data_map.iter() {
+                        let mut key_parser = ValueParser::new(key_data.clone());
+                        let py_key = pyparsing::deserelialize_py(py, &mut key_parser, key_type)?;
+
+                        let mut value_parser = ValueParser::new(value_data.clone());
+                        let py_value =
+                            pyparsing::deserelialize_py(py, &mut value_parser, value_type)?;
+
+                        py_dict.set_item(py_key, py_value)?;
+                    }
+                    Ok(py_dict)
+                }
+                _ => Err(pyo3::exceptions::PyValueError::new_err(
+                    "Value ID not found or type mismatch.",
+                )),
+            },
+            None => Err(pyo3::exceptions::PyValueError::new_err(
+                "Server not initialized",
+            )),
+        }
+    }
+
+    fn map_set_item(
+        &self,
+        value_id: u64,
+        key: &Bound<PyAny>,
+        item: &Bound<PyAny>,
+        update: bool,
+    ) -> PyResult<()> {
+        match self.inner.get() {
+            Some(inner) => match (inner.states.maps.get(&value_id), inner.types.get(&value_id)) {
+                (Some(map), Some(ObjectType::Map(key_type, value_type))) => {
+                    let mut key_creator = ValueCreator::new();
+                    pyparsing::serialize_py(key, key_type, &mut key_creator)?;
+                    let key_data = key_creator.finalize();
+
+                    let mut value_creator = ValueCreator::new();
+                    pyparsing::serialize_py(item, value_type, &mut value_creator)?;
+                    let value_data = value_creator.finalize();
+
+                    map.set_item(key_data, value_data, update);
+                    Ok(())
+                }
+                _ => Err(pyo3::exceptions::PyValueError::new_err(
+                    "Value ID not found or type mismatch.",
+                )),
+            },
+            None => Err(pyo3::exceptions::PyValueError::new_err(
+                "Server not initialized",
+            )),
+        }
+    }
+
+    fn map_get_item<'py>(
+        &self,
+        py: Python<'py>,
+        value_id: u64,
+        key: &Bound<PyAny>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        match self.inner.get() {
+            Some(inner) => match (inner.states.maps.get(&value_id), inner.types.get(&value_id)) {
+                (Some(map), Some(ObjectType::Map(key_type, value_type))) => {
+                    let mut key_creator = ValueCreator::new();
+                    pyparsing::serialize_py(key, key_type, &mut key_creator)?;
+                    let key_data = key_creator.finalize();
+
+                    match map.get_item(&key_data) {
+                        Some(value_data) => {
+                            let mut value_parser = ValueParser::new(value_data);
+                            let py_value =
+                                pyparsing::deserelialize_py(py, &mut value_parser, value_type)?;
+                            Ok(py_value)
+                        }
+                        None => Err(pyo3::exceptions::PyValueError::new_err(
+                            "Key not found in map.",
+                        )),
+                    }
+                }
+                _ => Err(pyo3::exceptions::PyValueError::new_err(
+                    "Value ID not found or type mismatch.",
+                )),
+            },
+            None => Err(pyo3::exceptions::PyValueError::new_err(
+                "Server not initialized",
+            )),
+        }
+    }
+
+    fn map_remove_item<'py>(
+        &self,
+        py: Python<'py>,
+        value_id: u64,
+        key: &Bound<PyAny>,
+        update: bool,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        match self.inner.get() {
+            Some(inner) => match (inner.states.maps.get(&value_id), inner.types.get(&value_id)) {
+                (Some(map), Some(ObjectType::Map(key_type, value_type))) => {
+                    let mut key_creator = ValueCreator::new();
+                    pyparsing::serialize_py(key, key_type, &mut key_creator)?;
+                    let key_data = key_creator.finalize();
+
+                    match map.remove_item(&key_data, update) {
+                        Ok(value_data) => {
+                            let mut value_parser = ValueParser::new(value_data);
+                            let py_value =
+                                pyparsing::deserelialize_py(py, &mut value_parser, value_type)?;
+                            Ok(py_value)
+                        }
+                        Err(e) => Err(pyo3::exceptions::PyValueError::new_err(e)),
+                    }
+                }
+                _ => Err(pyo3::exceptions::PyValueError::new_err(
+                    "Value ID not found or type mismatch.",
+                )),
+            },
+            None => Err(pyo3::exceptions::PyValueError::new_err(
+                "Server not initialized",
+            )),
+        }
+    }
+
+    fn map_len(&self, value_id: u64) -> PyResult<usize> {
+        match self.inner.get() {
+            Some(inner) => match inner.states.maps.get(&value_id) {
+                Some(map) => Ok(map.len()),
+                _ => Err(pyo3::exceptions::PyValueError::new_err(
+                    "Value ID not found.",
+                )),
+            },
+            None => Err(pyo3::exceptions::PyValueError::new_err(
+                "Server not initialized",
+            )),
+        }
+    }
 
     // images -----------------------------------------------------------
 

@@ -5,7 +5,7 @@ pub mod graphs;
 pub mod image;
 pub mod nohash;
 pub mod serialization;
-pub mod values;
+pub mod types;
 
 pub use heapless;
 

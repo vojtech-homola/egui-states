@@ -5,7 +5,7 @@ use serde::Deserialize;
 
 use egui_states_core::collections::ListHeader;
 use egui_states_core::serialization::deserialize;
-use egui_states_core::values::GetType;
+use egui_states_core::types::GetType;
 
 pub(crate) trait UpdateList: Sync + Send {
     fn update_list(&self, header: ListHeader, data: &[u8]) -> Result<(), String>;

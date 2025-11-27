@@ -105,7 +105,7 @@ impl ValueList {
         Ok(value)
     }
 
-    pub(crate) fn add_item(&self, value: Bytes, update: bool) {
+    pub(crate) fn append_item(&self, value: Bytes, update: bool) {
         let mut w = self.list.write();
         if self.connected.load(Ordering::Relaxed) && self.enabled.load(Ordering::Relaxed) {
             let header = ServerHeader::List(self.id, update, ListHeader::Add);

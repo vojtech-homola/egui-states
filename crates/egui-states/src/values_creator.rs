@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use egui_states_core::graphs::GraphElement;
 use egui_states_core::nohash::NoHashMap;
-use egui_states_core::values::GetType;
+use egui_states_core::types::GetType;
 
 use crate::graphs::{UpdateGraph, ValueGraphs};
 use crate::image::ValueImage;

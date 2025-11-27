@@ -242,6 +242,7 @@ async fn communication_handler(
             if !read_connected.load(atomic::Ordering::Relaxed) {
                 #[cfg(debug_assertions)]
                 read_signals.debug("read thread is closing");
+                read_signals.reset();
                 break;
             }
 
@@ -250,11 +251,13 @@ async fn communication_handler(
                 Some(Err(e)) => {
                     read_signals.error(&format!("reading message from client failed: {:?}", e));
                     read_connected.store(false, atomic::Ordering::Relaxed);
+                    read_signals.reset();
                     break;
                 }
                 None => {
                     read_signals.info("connection was closed by the client");
                     read_connected.store(false, atomic::Ordering::Relaxed);
+                    read_signals.reset();
                     break;
                 }
             };

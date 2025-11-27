@@ -7,7 +7,7 @@ use serde::Deserialize;
 
 use egui_states_core::collections::MapHeader;
 use egui_states_core::serialization::deserialize;
-use egui_states_core::values::GetType;
+use egui_states_core::types::GetType;
 
 pub(crate) trait UpdateMap: Sync + Send {
     fn update_map(&self, header: MapHeader, data: &[u8]) -> Result<(), String>;

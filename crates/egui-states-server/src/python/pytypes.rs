@@ -1,6 +1,6 @@
 use pyo3::prelude::*;
 
-use egui_states_core::values::ObjectType;
+use egui_states_core::types::ObjectType;
 
 #[pyclass]
 pub(crate) struct PyObjectType {
