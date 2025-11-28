@@ -45,6 +45,10 @@ impl ValueGraphs {
         })
     }
 
+    pub(crate) fn graph_type(&self) -> GraphType {
+        self.graph_type
+    }
+
     pub(crate) fn set(&self, idx: u16, graph_data: GraphData, update: bool) {
         let graph = data_to_graph(&graph_data);
 

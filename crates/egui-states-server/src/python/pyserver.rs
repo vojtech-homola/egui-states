@@ -3,13 +3,15 @@ use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::OnceLock;
 
+use pyo3::buffer::PyBuffer;
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList};
+use pyo3::types::{PyByteArray, PyDict, PyList};
 
 use egui_states_core::graphs::GraphType;
 use egui_states_core::nohash::NoHashMap;
 use egui_states_core::types::ObjectType;
 
+use crate::python::pyimage;
 use crate::python::pyparsing;
 use crate::python::pytypes::PyObjectType;
 use crate::server::{Server, StatesList};
@@ -593,8 +595,104 @@ impl StateServerCore {
     }
 
     // images -----------------------------------------------------------
+    fn image_get_size(&self, value_id: u64) -> PyResult<(usize, usize)> {
+        match self.inner.get() {
+            Some(inner) => match inner.states.images.get(&value_id) {
+                Some(image) => {
+                    let size = image.get_size();
+                    Ok((size[0], size[1]))
+                }
+                _ => Err(pyo3::exceptions::PyValueError::new_err(
+                    "Value ID not found.",
+                )),
+            },
+            None => Err(pyo3::exceptions::PyValueError::new_err(
+                "Server not initialized",
+            )),
+        }
+    }
+
+    fn image_get<'py>(
+        &self,
+        py: Python<'py>,
+        value_id: u64,
+    ) -> PyResult<(Bound<'py, PyByteArray>, (usize, usize))> {
+        match self.inner.get() {
+            Some(inner) => match inner.states.images.get(&value_id) {
+                Some(image) => {
+                    let (array, size) = image.get_image(|(data, size)| {
+                        let array = PyByteArray::new(py, data);
+                        (array, (size[0], size[1]))
+                    });
+                    Ok((array, size))
+                }
+                _ => Err(pyo3::exceptions::PyValueError::new_err(
+                    "Value ID not found.",
+                )),
+            },
+            None => Err(pyo3::exceptions::PyValueError::new_err(
+                "Server not initialized",
+            )),
+        }
+    }
+
+    fn image_set(
+        &self,
+        py: Python,
+        value_id: u64,
+        image: PyBuffer<u8>,
+        origin: Option<[u32; 2]>,
+        update: bool,
+    ) -> PyResult<()> {
+        match self.inner.get() {
+            Some(inner) => match inner.states.images.get(&value_id) {
+                Some(image_value) => {
+                    py.detach(|| pyimage::set_image(&image, image_value, origin, update))
+                }
+                _ => Err(pyo3::exceptions::PyValueError::new_err(
+                    "Value ID not found.",
+                )),
+            },
+            None => Err(pyo3::exceptions::PyValueError::new_err(
+                "Server not initialized",
+            )),
+        }
+    }
 
     // graphs -----------------------------------------------------------
+    fn graph_set(
+        &self,
+        py: Python,
+        value_id: u64,
+        idx: u16,
+        graph: &Bound<PyAny>,
+        update: bool,
+    ) -> PyResult<()> {
+        match self.inner.get() {
+            Some(inner) => match inner.states.graphs.get(&value_id) {
+                Some(graphs) => match graphs.graph_type() {
+                    GraphType::F32 => {
+                        let graph_buffer = PyBuffer::<f32>::extract(graph.as_borrowed())?;
+                        py.detach(|| {
+                            crate::python::pygraphs::set_graph(idx, &graph_buffer, graphs, update)
+                        })
+                    }
+                    GraphType::F64 => {
+                        let graph_buffer = PyBuffer::<f64>::extract(graph.as_borrowed())?;
+                        py.detach(|| {
+                            crate::python::pygraphs::set_graph(idx, &graph_buffer, graphs, update)
+                        })
+                    }
+                },
+                _ => Err(pyo3::exceptions::PyValueError::new_err(
+                    "Value ID not found.",
+                )),
+            },
+            None => Err(pyo3::exceptions::PyValueError::new_err(
+                "Server not initialized",
+            )),
+        }
+    }
 
     // add states -------------------------------------------------------
     fn add_value(

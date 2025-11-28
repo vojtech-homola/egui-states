@@ -17,11 +17,11 @@ struct ImageDataInner {
 }
 
 pub(crate) struct ImageData {
-    size: [usize; 2],
-    stride: usize,
-    contiguous: bool,
-    image_type: ImageType,
-    data: *const u8,
+    pub size: [usize; 2],
+    pub stride: usize,
+    pub contiguous: bool,
+    pub image_type: ImageType,
+    pub data: *const u8,
 }
 
 pub(crate) struct ValueImage {
@@ -55,29 +55,19 @@ impl ValueImage {
         self.image.read().size
     }
 
+    pub(crate) fn get_image<T>(&self, getter: impl FnOnce((&Vec<u8>, &[usize; 2])) -> T) -> T {
+        let w = self.image.read();
+        getter((&w.data, &w.size))
+    }
+
     // Function is complex because it needs to handle different image types and also not contiguous
     // data. Also it tries to avoid copying data if possible.
     pub(crate) fn set_image(
         &self,
-        image: &ImageData,
+        image: ImageData,
         origin: Option<[u32; 2]>,
         update: bool,
     ) -> Result<(), String> {
-        // let shape = image.shape();
-        // let strides = image.strides();
-        // let mut contiguous = image.is_c_contiguous();
-        // let image_type = check_image_type(shape, strides)?;
-        // let size = image.size;
-
-        // get data stride
-        // let mut stride = if contiguous {
-        //     0 // do not use strides
-        // } else {
-        //     if strides[0] <= 0 {
-        //         return Err("Invalid strides".to_string());
-        //     }
-        //     strides[0] as usize
-        // };
         let mut stride = image.stride;
         let mut contiguous = image.contiguous;
 
@@ -226,45 +216,6 @@ impl SyncTrait for ValueImage {
         self.sender.send(Bytes::from(data));
     }
 }
-
-// fn check_image_type(shape: &[usize], strides: &[isize]) -> PyResult<ImageType> {
-//     match shape.len() {
-//         2 => {
-//             if strides[1] == 1 {
-//                 return Ok(ImageType::Gray);
-//             }
-//             Err(PyValueError::new_err("Invalid strides"))
-//         }
-//         3 => {
-//             if strides[2] != 1 {
-//                 return Err(PyValueError::new_err("Invalid strides"));
-//             }
-//             match shape[2] {
-//                 2 => {
-//                     if strides[1] != 2 {
-//                         return Err(PyValueError::new_err("Invalid strides"));
-//                     }
-//                     Ok(ImageType::GrayAlpha)
-//                 }
-//                 3 => {
-//                     if strides[1] != 3 {
-//                         return Err(PyValueError::new_err("Invalid strides"));
-//                     }
-
-//                     Ok(ImageType::Color)
-//                 }
-//                 4 => {
-//                     if strides[1] != 4 {
-//                         return Err(PyValueError::new_err("Invalid strides"));
-//                     }
-//                     Ok(ImageType::ColorAlpha)
-//                 }
-//                 _ => Err(PyValueError::new_err("Invalid image dimensions")),
-//             }
-//         }
-//         _ => Err(PyValueError::new_err("Invalid image dimensions")),
-//     }
-// }
 
 unsafe fn write_all_new(data: *const u8, size: &[usize; 2], image_type: ImageType) -> Vec<u8> {
     let all_size = size[0] * size[1];

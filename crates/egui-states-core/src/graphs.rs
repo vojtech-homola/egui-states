@@ -1,5 +1,3 @@
-use std::hash::{DefaultHasher, Hasher};
-
 use serde::{Deserialize, Serialize};
 
 use crate::serialization::ServerHeader;

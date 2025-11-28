@@ -1,3 +1,5 @@
+mod pygraphs;
+mod pyimage;
 mod pyparsing;
 mod pyserver;
 mod pytypes;
