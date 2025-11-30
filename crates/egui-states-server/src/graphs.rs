@@ -63,7 +63,7 @@ impl ValueGraphs {
     pub(crate) fn add_points(
         &self,
         idx: u16,
-        graph_data: &GraphData,
+        graph_data: GraphData,
         update: bool,
     ) -> Result<(), String> {
         let mut w = self.graphs.write();
@@ -84,6 +84,34 @@ impl ValueGraphs {
         }
 
         Ok(())
+    }
+
+    pub(crate) fn get<T>(&self, idx: u16, getter: impl Fn(&GraphTyped) -> T) -> Option<T> {
+        self.graphs.read().get(&idx).map(getter)
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.graphs.read().len()
+    }
+
+    pub(crate) fn remove(&self, idx: u16, update: bool) {
+        let mut w = self.graphs.write();
+        w.remove(&idx);
+        if self.connected.load(Ordering::Relaxed) && self.enabled.load(Ordering::Relaxed) {
+            let header = ServerHeader::Graph(self.id, update, GraphHeader::Remove(idx));
+            let data = header.serialize_to_bytes();
+            self.sender.send(Bytes::from(data));
+        }
+    }
+
+    pub(crate) fn reset(&self, update: bool) {
+        let mut w = self.graphs.write();
+        w.clear();
+        if self.connected.load(Ordering::Relaxed) && self.enabled.load(Ordering::Relaxed) {
+            let header = ServerHeader::Graph(self.id, update, GraphHeader::Reset);
+            let data = header.serialize_to_bytes();
+            self.sender.send(Bytes::from(data));
+        }
     }
 }
 

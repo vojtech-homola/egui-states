@@ -4,13 +4,15 @@ use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::OnceLock;
 
 use pyo3::buffer::PyBuffer;
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::{PyByteArray, PyDict, PyList};
+use pyo3::types::{PyByteArray, PyDict, PyList, PyTuple};
 
 use egui_states_core::graphs::GraphType;
 use egui_states_core::nohash::NoHashMap;
 use egui_states_core::types::ObjectType;
 
+use crate::python::pygraphs;
 use crate::python::pyimage;
 use crate::python::pyparsing;
 use crate::python::pytypes::PyObjectType;
@@ -674,16 +676,144 @@ impl StateServerCore {
                     GraphType::F32 => {
                         let graph_buffer = PyBuffer::<f32>::extract(graph.as_borrowed())?;
                         py.detach(|| {
-                            crate::python::pygraphs::set_graph(idx, &graph_buffer, graphs, update)
+                            let graph_data = pygraphs::buffer_to_data(&graph_buffer)?;
+                            graphs.set(idx, graph_data, update);
+                            Ok(())
                         })
                     }
                     GraphType::F64 => {
                         let graph_buffer = PyBuffer::<f64>::extract(graph.as_borrowed())?;
                         py.detach(|| {
-                            crate::python::pygraphs::set_graph(idx, &graph_buffer, graphs, update)
+                            let graph_data = pygraphs::buffer_to_data(&graph_buffer)?;
+                            graphs.set(idx, graph_data, update);
+                            Ok(())
                         })
                     }
                 },
+                _ => Err(pyo3::exceptions::PyValueError::new_err(
+                    "Value ID not found.",
+                )),
+            },
+            None => Err(pyo3::exceptions::PyValueError::new_err(
+                "Server not initialized",
+            )),
+        }
+    }
+
+    fn graph_add_points(
+        &self,
+        py: Python,
+        value_id: u64,
+        idx: u16,
+        graph: &Bound<PyAny>,
+        update: bool,
+    ) -> PyResult<()> {
+        match self.inner.get() {
+            Some(inner) => match inner.states.graphs.get(&value_id) {
+                Some(graphs) => match graphs.graph_type() {
+                    GraphType::F32 => {
+                        let graph_buffer = PyBuffer::<f32>::extract(graph.as_borrowed())?;
+                        py.detach(|| {
+                            let graph_data = pygraphs::buffer_to_data(&graph_buffer)?;
+                            graphs.add_points(idx, graph_data, update).map_err(|e| {
+                                PyValueError::new_err(format!(
+                                    "Failed to add points to graph: {}",
+                                    e
+                                ))
+                            })
+                        })
+                    }
+                    GraphType::F64 => {
+                        let graph_buffer = PyBuffer::<f64>::extract(graph.as_borrowed())?;
+                        py.detach(|| {
+                            let graph_data = pygraphs::buffer_to_data(&graph_buffer)?;
+                            graphs.add_points(idx, graph_data, update).map_err(|e| {
+                                PyValueError::new_err(format!(
+                                    "Failed to add points to graph: {}",
+                                    e
+                                ))
+                            })
+                        })
+                    }
+                },
+                _ => Err(pyo3::exceptions::PyValueError::new_err(
+                    "Value ID not found.",
+                )),
+            },
+            None => Err(pyo3::exceptions::PyValueError::new_err(
+                "Server not initialized",
+            )),
+        }
+    }
+
+    fn graph_get<'py>(
+        &self,
+        py: Python<'py>,
+        value_id: u64,
+        idx: u16,
+    ) -> PyResult<Bound<'py, PyTuple>> {
+        match self.inner.get() {
+            Some(inner) => match inner.states.graphs.get(&value_id) {
+                Some(graphs) => match graphs.graph_type() {
+                    GraphType::F32 => graphs
+                        .get(idx, |data| pygraphs::graph_to_buffer::<f32>(py, data))
+                        .ok_or_else(|| {
+                            PyValueError::new_err(format!("No graph found at index {}", idx))
+                        })?,
+                    GraphType::F64 => graphs
+                        .get(idx, |data| pygraphs::graph_to_buffer::<f64>(py, data))
+                        .ok_or_else(|| {
+                            PyValueError::new_err(format!("No graph found at index {}", idx))
+                        })?,
+                },
+                _ => Err(pyo3::exceptions::PyValueError::new_err(
+                    "Value ID not found.",
+                )),
+            },
+            None => Err(pyo3::exceptions::PyValueError::new_err(
+                "Server not initialized",
+            )),
+        }
+    }
+
+    fn graph_count(&self, value_id: u64) -> PyResult<usize> {
+        match self.inner.get() {
+            Some(inner) => match inner.states.graphs.get(&value_id) {
+                Some(graphs) => Ok(graphs.len()),
+                _ => Err(pyo3::exceptions::PyValueError::new_err(
+                    "Value ID not found.",
+                )),
+            },
+            None => Err(pyo3::exceptions::PyValueError::new_err(
+                "Server not initialized",
+            )),
+        }
+    }
+
+    fn graph_remove(&self, value_id: u64, idx: u16, update: bool) -> PyResult<()> {
+        match self.inner.get() {
+            Some(inner) => match inner.states.graphs.get(&value_id) {
+                Some(graphs) => {
+                    graphs.remove(idx, update);
+                    Ok(())
+                }
+                _ => Err(pyo3::exceptions::PyValueError::new_err(
+                    "Value ID not found.",
+                )),
+            },
+            None => Err(pyo3::exceptions::PyValueError::new_err(
+                "Server not initialized",
+            )),
+        }
+    }
+
+    fn graph_reset(&self, value_id: u64, update: bool) -> PyResult<()> {
+        match self.inner.get() {
+            Some(inner) => match inner.states.graphs.get(&value_id) {
+                Some(graphs) => {
+                    graphs.reset(update);
+                    Ok(())
+                }
                 _ => Err(pyo3::exceptions::PyValueError::new_err(
                     "Value ID not found.",
                 )),
