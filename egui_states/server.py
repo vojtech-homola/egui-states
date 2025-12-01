@@ -3,10 +3,10 @@ from types import ModuleType
 
 from egui_states.signals import SignalsManager
 from egui_states.structures import LoggingSignal, _MainStatesBase, _StatesBase, _StaticBase, _ValueBase
-from egui_states.typing import SteteServerCoreBase
+from egui_states._core import StateServerCore
 
 
-def _initialize_states(obj, server: SteteServerCoreBase, signals_manager: SignalsManager) -> None:
+def _initialize_states(obj, server: StateServerCore, signals_manager: SignalsManager) -> None:
     for o in obj.__dict__.values():
         if isinstance(o, _ValueBase):
             o._initialize_value(server, signals_manager)
@@ -30,8 +30,7 @@ class StateServer[T: _MainStatesBase]:
         handshake: list[int] | None = None,
     ) -> None:
         """Initialize the SteteServer."""
-        core_server_class: type[SteteServerCoreBase] = getattr(core_module, "StateServerCore")
-        self._server = core_server_class(port, ip_addr, handshake)
+        self._server = StateServerCore(port, ip_addr, handshake)
         self._signals_manager = SignalsManager(self._server, signals_workers, error_handler)
         self._states: T = state_class(self._server.update)
 
@@ -82,7 +81,3 @@ class StateServer[T: _MainStatesBase]:
             error_handler(Callable[[Exception], None] | None): The error handler function.
         """
         self._signals_manager.set_error_handler(error_handler)
-
-    def check_workers(self) -> None:
-        """Check all workers threads and restart them if they are stopped."""
-        self._signals_manager.check_workers()

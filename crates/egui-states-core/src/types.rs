@@ -15,6 +15,7 @@ pub enum ObjectType {
     F32,
     String,
     Bool,
+    Enum,
     Tuple(Vec<ObjectType>),
     List(u32, Box<ObjectType>),
     Vec(Box<ObjectType>),

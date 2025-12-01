@@ -165,6 +165,11 @@ impl ValueStatic {
             *w = value;
         }
     }
+
+    #[inline]
+    pub(crate) fn get(&self) -> Bytes {
+        self.value.read().clone()
+    }
 }
 
 impl SyncTrait for ValueStatic {

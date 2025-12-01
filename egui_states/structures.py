@@ -8,16 +8,16 @@ import numpy as np
 import numpy.typing as npt
 
 from egui_states.signals import SignalsManager
-from egui_states.typing import SteteServerCoreBase
+from egui_states._core import StateServerCore
 
 
-class _Counter:
-    def __init__(self) -> None:
-        self._counter = 9  # first 10 values are reserved for system signals
+# class _Counter:
+#     def __init__(self) -> None:
+#         self._counter = 9  # first 10 values are reserved for system signals
 
-    def get_id(self) -> int:
-        self._counter += 1
-        return self._counter
+#     def get_id(self) -> int:
+#         self._counter += 1
+#         return self._counter
 
 
 class _StatesBase:
@@ -42,11 +42,11 @@ class LogLevel(Enum):
 class LoggingSignal:
     """Logging signal for processing log messages from the state server."""
 
-    def __init__(self, signals_manager: SignalsManager, server: SteteServerCoreBase) -> None:
+    def __init__(self, signals_manager: SignalsManager, server: StateServerCore) -> None:
         """Initialize the LoggingSignal."""
         self._loggers: dict[int, list[Callable[[str], None]]] = {0: [], 1: [], 2: [], 3: []}
         signals_manager.add_callback(0, self._callback)
-        server.set_to_multi(0)
+        server.signal_set_to_multi(0)
 
     def _callback(self, message: tuple[int, str]) -> None:
         level = message[0]
@@ -92,19 +92,19 @@ class LoggingSignal:
 
 
 class _StaticBase:
-    _server: SteteServerCoreBase
+    _server: StateServerCore
 
-    def __init__(self, counter: _Counter) -> None:
-        self._value_id = counter.get_id()
+    def __init__(self, value_id: int) -> None:
+        self._value_id = value_id
 
-    def _initialize_base(self, server: SteteServerCoreBase):
+    def _initialize_base(self, server: StateServerCore):
         self._server = server
 
 
 class _ValueBase(_StaticBase):
     _signals_manager: SignalsManager
 
-    def _initialize_value(self, server: SteteServerCoreBase, signals_manager: SignalsManager):
+    def _initialize_value(self, server: StateServerCore, signals_manager: SignalsManager):
         self._server = server
         self._signals_manager = signals_manager
         # signals_manager.register_signal(self._value_id)
@@ -114,14 +114,14 @@ class _ValueBase(_StaticBase):
 
         In multi mode, changes of the value are queued and are all processed with single thread.
         """
-        self._server.set_to_multi(self._value_id)
+        self._server.signal_set_to_multi(self._value_id)
 
     def set_to_single(self) -> None:
         """Set the value to single mode. It is the default mode.
 
         In single mode, only the last change of the value is processed.
         """
-        self._server.set_to_single(self._value_id)
+        self._server.signal_set_to_single(self._value_id)
 
 
 class Value[T](_ValueBase):
@@ -301,7 +301,7 @@ class ValueDict[K, V](_StaticBase):
             value(dict[K, V]): The dict to set.
             update(bool, optional): Whether to update the UI. Defaults to False.
         """
-        self._server.dict_set(self._value_id, value, update)
+        self._server.map_set(self._value_id, value, update)
 
     def get(self) -> dict[K, V]:
         """Get the dict in the UI dict.
@@ -309,7 +309,7 @@ class ValueDict[K, V](_StaticBase):
         Returns:
             dict[K, V]: The dict in the UI dict.
         """
-        return self._server.dict_get(self._value_id)
+        return self._server.map_get(self._value_id)
 
     def set_item(self, key: K, value: V, update: bool = False) -> None:
         """Set the item in the UI dict.
@@ -319,7 +319,7 @@ class ValueDict[K, V](_StaticBase):
             value(V): The value of the item.
             update(bool, optional): Whether to update the UI. Defaults to False.
         """
-        self._server.dict_item_set(self._value_id, key, value, update)
+        self._server.map_set_item(self._value_id, key, value, update)
 
     def get_item(self, key: K) -> V:
         """Get the item in the UI dict.

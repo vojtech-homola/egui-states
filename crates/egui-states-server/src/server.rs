@@ -5,9 +5,11 @@ use std::thread;
 use bytes::Bytes;
 use tokio::runtime::Builder;
 
+use egui_states_core::controls::ControlServer;
 use egui_states_core::event_async::Event;
 use egui_states_core::graphs::GraphType;
 use egui_states_core::nohash::NoHashMap;
+use egui_states_core::serialization::ServerHeader;
 
 use crate::graphs::ValueGraphs;
 use crate::image::ValueImage;
@@ -218,6 +220,20 @@ impl Server {
         }
 
         self.enabled.load(atomic::Ordering::Relaxed)
+    }
+
+    pub(crate) fn is_connected(&self) -> bool {
+        self.connected.load(atomic::Ordering::Relaxed)
+    }
+
+    pub(crate) fn update(&self, duration: Option<f32>) {
+        if self.states_server.is_some() {
+            return;
+        }
+
+        let duration = duration.unwrap_or(0.0);
+        let header = ServerHeader::Control(ControlServer::Update(duration));
+        self.sender.send(header.serialize_to_bytes());
     }
 
     pub(crate) fn add_value(&mut self, id: u64, type_id: u64, value: Bytes) -> Result<(), String> {

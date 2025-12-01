@@ -2,7 +2,7 @@ import threading
 import traceback
 from collections.abc import Callable
 
-from egui_states.typing import SteteServerCoreBase
+from egui_states._core import StateServerCore
 
 
 class SignalsManager:
@@ -10,7 +10,7 @@ class SignalsManager:
 
     def __init__(
         self,
-        server: SteteServerCoreBase,
+        server: StateServerCore,
         workers: int,
         error_handler: Callable[[Exception], None] | None,
     ):
@@ -35,7 +35,7 @@ class SignalsManager:
     def _run(self) -> None:
         last_id: int | None = None
         while True:
-            last_id, arg = self._server.value_get_signal(last_id)
+            last_id, arg = self._server.signal_get(last_id)
             callbacks = self._callbacks.get(last_id, None)
             if callbacks:
                 for callback in callbacks:
@@ -67,7 +67,7 @@ class SignalsManager:
             self._callbacks[value_id].append(callback)
         else:
             self._callbacks[value_id] = [callback]
-        self._server.value_set_register(value_id, True)
+        self._server.signal_set_register(value_id, True)
 
     def remove_callback(self, value_id: int, callback: Callable) -> None:
         """Remove a callback from a signal."""
@@ -75,10 +75,10 @@ class SignalsManager:
             if callback in self._callbacks[value_id]:
                 self._callbacks[value_id].remove(callback)
                 if not self._callbacks[value_id]:
-                    self._server.value_set_register(value_id, False)
+                    self._server.signal_set_register(value_id, False)
 
     def clear_callbacks(self, value_id: int) -> None:
         """Clear all callbacks from a signal."""
         if value_id in self._callbacks:
             self._callbacks[value_id].clear()
-            self._server.value_set_register(value_id, False)
+            self._server.signal_set_register(value_id, False)

@@ -2,8 +2,7 @@ use pyo3::exceptions::PyValueError;
 use pyo3::types::{PyDict, PyList, PyNone, PyTuple};
 use pyo3::{IntoPyObjectExt, prelude::*};
 
-use egui_states_core::types::ObjectType;
-
+use crate::python::pytypes::ObjectType;
 use crate::value_parsing::{ValueCreator, ValueParser};
 
 pub(crate) fn serialize_py(
@@ -60,7 +59,10 @@ pub(crate) fn serialize_py(
             let value: String = obj.extract()?;
             creator.add(&value);
         }
-        ObjectType::Empty => {}
+        ObjectType::Enum(_) => {
+            let value: u32 = obj.call_method0("index")?.extract()?;
+            creator.add(&value);
+        }
         ObjectType::Tuple(vec) => {
             let tuple = obj.cast::<PyTuple>()?;
             if tuple.len() != vec.len() {
@@ -111,12 +113,13 @@ pub(crate) fn serialize_py(
                 serialize_py(obj, object_type, creator)?;
             }
         }
+        ObjectType::Empty => {}
     }
 
     Ok(())
 }
 
-pub(crate) fn deserelialize_py<'py, 'a>(
+pub(crate) fn deserialize_py<'py, 'a>(
     py: Python<'py>,
     parser: &'a mut ValueParser,
     object_type: &'a ObjectType,
@@ -206,11 +209,18 @@ pub(crate) fn deserelialize_py<'py, 'a>(
                 .map_err(|_| PyValueError::new_err("Failed to parse string"))?;
             value.into_bound_py_any(py)
         }
-        ObjectType::Empty => Ok(PyTuple::empty(py).into_any()),
+        ObjectType::Enum(py_enum) => {
+            let mut value = 0u32;
+            parser
+                .get(&mut value)
+                .map_err(|_| PyValueError::new_err("Failed to parse enum"))?;
+
+            py_enum.bind(py).call_method1("from_index", (value,))
+        }
         ObjectType::Tuple(vec) => {
             let mut items = Vec::with_capacity(vec.len());
             for item_type in vec.iter() {
-                let item = deserelialize_py(py, parser, item_type)?;
+                let item = deserialize_py(py, parser, item_type)?;
                 items.push(item);
             }
             Ok(PyTuple::new(py, items)?.into_any())
@@ -219,7 +229,7 @@ pub(crate) fn deserelialize_py<'py, 'a>(
             let list = PyList::empty(py);
 
             for _ in 0..*size {
-                let item = deserelialize_py(py, parser, items_type)?;
+                let item = deserialize_py(py, parser, items_type)?;
                 list.append(item)?;
             }
 
@@ -233,7 +243,7 @@ pub(crate) fn deserelialize_py<'py, 'a>(
 
             let list = PyList::empty(py);
             for _ in 0..vec_size {
-                let item = deserelialize_py(py, parser, items_type)?;
+                let item = deserialize_py(py, parser, items_type)?;
                 list.append(item)?;
             }
 
@@ -247,8 +257,8 @@ pub(crate) fn deserelialize_py<'py, 'a>(
 
             let dict = PyDict::new(py);
             for _ in 0..map_size {
-                let key = deserelialize_py(py, parser, key_type)?;
-                let value = deserelialize_py(py, parser, value_type)?;
+                let key = deserialize_py(py, parser, key_type)?;
+                let value = deserialize_py(py, parser, value_type)?;
                 dict.set_item(key, value)?;
             }
 
@@ -263,8 +273,9 @@ pub(crate) fn deserelialize_py<'py, 'a>(
             if has_value == 0 {
                 Ok(PyNone::get(py).to_owned().into_any())
             } else {
-                deserelialize_py(py, parser, object_type)
+                deserialize_py(py, parser, object_type)
             }
         }
+        ObjectType::Empty => Ok(PyTuple::empty(py).into_any()),
     }
 }

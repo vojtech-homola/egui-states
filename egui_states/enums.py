@@ -8,7 +8,7 @@ class _FastEnum(Enum):
         cls._member_list = tuple(cls)
 
     @classmethod
-    def by_index(cls, index) -> Self:
+    def from_index(cls, index) -> Self:
         return cls._member_list[index]
 
     def index(self) -> int:

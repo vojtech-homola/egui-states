@@ -85,13 +85,9 @@ impl ValueMap {
         }
     }
 
-    pub(crate) fn remove_item(&self, key: &Bytes, update: bool) -> Result<Bytes, &'static str> {
+    pub(crate) fn remove_item(&self, key: &Bytes, update: bool) -> Option<Bytes> {
         let mut w = self.map.write();
-
-        let old = match w.remove(key) {
-            Some(v) => v,
-            None => return Err("Key not found"),
-        };
+        let old = w.remove(key)?;
 
         if self.connected.load(Ordering::Relaxed) && self.enabled.load(Ordering::Relaxed) {
             let header = ServerHeader::Map(self.id, update, MapHeader::Remove);
@@ -102,7 +98,7 @@ impl ValueMap {
         }
 
         drop(w);
-        Ok(old)
+        Some(old)
     }
 
     pub(crate) fn len(&self) -> usize {

@@ -77,15 +77,13 @@ pub(crate) fn graph_to_buffer<'py, T: GraphElement>(
                 };
                 Ok(())
             })?;
-
-            let shape = (2usize, graph.y.len(), size_of::<T>());
-            (bytes, shape).into_pyobject(py)
+            (bytes, size_of::<T>(), (2, graph.y.len())).into_pyobject(py)
         }
         None => {
             let size = graph.y.len() * size_of::<T>();
             let data = unsafe { from_raw_parts(graph.y.as_ptr(), size) };
             let bytes = PyBytes::new(py, data);
-            (bytes, (graph.y.len(), size_of::<T>())).into_pyobject(py)
+            (bytes, size_of::<T>(), (1, graph.y.len())).into_pyobject(py)
         }
     }
 }
