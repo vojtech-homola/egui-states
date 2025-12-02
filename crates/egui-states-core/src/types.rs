@@ -1,5 +1,7 @@
 use std::collections::HashMap;
-use std::hash::{DefaultHasher, Hash, Hasher};
+use std::hash::{Hash, Hasher};
+
+use crate::hasher::StableHasher;
 
 #[derive(Hash, Clone)]
 pub enum ObjectType {
@@ -26,15 +28,8 @@ pub enum ObjectType {
 
 impl ObjectType {
     pub fn get_hash(&self) -> u64 {
-        let mut hasher = DefaultHasher::new();
+        let mut hasher = StableHasher::new();
         self.hash(&mut hasher);
-        hasher.finish()
-    }
-
-    pub fn get_hash_add(&self, add_hash: impl Hash) -> u64 {
-        let mut hasher = DefaultHasher::new();
-        self.hash(&mut hasher);
-        add_hash.hash(&mut hasher);
         hasher.finish()
     }
 }

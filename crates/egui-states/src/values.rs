@@ -3,7 +3,6 @@ use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-// use egui_states_core::controls::ControlMessage;
 use egui_states_core::serialization::{ClientHeader, deserialize, serialize_value_to_message};
 
 use crate::sender::MessageSender;

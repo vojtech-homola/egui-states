@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use egui_states_core::graphs::GraphElement;
 use egui_states_core::nohash::NoHashMap;
-use egui_states_core::types::GetType;
+use egui_states_core::types::{GetType, ObjectType};
 
 use crate::graphs::{UpdateGraph, ValueGraphs};
 use crate::image::ValueImage;
@@ -111,31 +111,31 @@ impl ValuesList {
 }
 
 pub struct ClientValuesCreator {
-    counter: u64,
+    // counter: u64,
     val: ValuesList,
-    states_hash: u64,
+    // states_hash: u64,
     sender: MessageSender,
 }
 
 impl ClientValuesCreator {
     pub(crate) fn new(sender: MessageSender) -> Self {
         Self {
-            counter: 9, // first 10 values are reserved for special values
+            // counter: 9, // first 10 values are reserved for special values
             val: ValuesList::new(),
-            states_hash: 0,
+            // states_hash: 0,
             sender,
         }
     }
 
-    fn get_id(&mut self) -> u64 {
-        self.counter += 1;
-        self.counter
-    }
+    // fn get_id(&mut self) -> u64 {
+    //     self.counter += 1;
+    //     self.counter
+    // }
 
-    pub(crate) fn get_values(self) -> (ValuesList, u64) {
+    pub(crate) fn get_values(self) -> ValuesList {
         let mut val = self.val;
         val.shrink();
-        (val, self.states_hash)
+        val
     }
 }
 
@@ -193,9 +193,10 @@ impl ValuesCreator for ClientValuesCreator {
         let value = ValueMap::new(id);
 
         self.val.maps.insert(id, value.clone());
-        self.val
-            .types
-            .insert(id, V::get_type().get_hash_add(K::get_type()));
+        self.val.types.insert(
+            id,
+            ObjectType::Map(Box::new(K::get_type()), Box::new(V::get_type())).get_hash(),
+        );
         value
     }
 
@@ -207,7 +208,9 @@ impl ValuesCreator for ClientValuesCreator {
         let value = ValueList::new(id);
 
         self.val.lists.insert(id, value.clone());
-        self.val.types.insert(id, T::get_type().get_hash());
+        self.val
+            .types
+            .insert(id, ObjectType::Vec(Box::new(T::get_type())).get_hash());
         value
     }
 

@@ -189,7 +189,7 @@ impl ClientBuilder {
 
         let addr = SocketAddrV4::new(addr, port);
         let states = T::new(&mut creator);
-        let (values, _) = creator.get_values();
+        let values = creator.get_values();
         let client = Client::new(context, sender.clone());
         let client_out = client.clone();
 

@@ -1,8 +1,7 @@
 use pyo3::prelude::*;
 
-// use egui_states_core::types::ObjectType;
+use egui_states_core::types::ObjectType as CoreObjectType;
 
-// #[derive(Clone)]
 pub(crate) enum ObjectType {
     U8,
     U16,
@@ -18,6 +17,7 @@ pub(crate) enum ObjectType {
     Bool,
     Enum(Py<PyAny>),
     Tuple(Vec<ObjectType>),
+    Class(Vec<ObjectType>, Py<PyAny>),
     List(u32, Box<ObjectType>),
     Vec(Box<ObjectType>),
     Map(Box<ObjectType>, Box<ObjectType>),
@@ -45,6 +45,10 @@ impl ObjectType {
                 let cloned_vec = vec.iter().map(|t| t.clone_py(py)).collect();
                 ObjectType::Tuple(cloned_vec)
             }
+            ObjectType::Class(vec, py_obj) => {
+                let cloned_vec = vec.iter().map(|t| t.clone_py(py)).collect();
+                ObjectType::Class(cloned_vec, py_obj.clone_ref(py))
+            }
             ObjectType::List(size, elem_type) => {
                 ObjectType::List(*size, Box::new(elem_type.clone_py(py)))
             }
@@ -56,6 +60,48 @@ impl ObjectType {
             ObjectType::Option(inner_type) => ObjectType::Option(Box::new(inner_type.clone_py(py))),
             ObjectType::Empty => ObjectType::Empty,
         }
+    }
+
+    fn get_core_type(&self) -> CoreObjectType {
+        match self {
+            ObjectType::U8 => CoreObjectType::U8,
+            ObjectType::U16 => CoreObjectType::U16,
+            ObjectType::U32 => CoreObjectType::U32,
+            ObjectType::U64 => CoreObjectType::U64,
+            ObjectType::I8 => CoreObjectType::I8,
+            ObjectType::I16 => CoreObjectType::I16,
+            ObjectType::I32 => CoreObjectType::I32,
+            ObjectType::I64 => CoreObjectType::I64,
+            ObjectType::F32 => CoreObjectType::F32,
+            ObjectType::F64 => CoreObjectType::F64,
+            ObjectType::String => CoreObjectType::String,
+            ObjectType::Bool => CoreObjectType::Bool,
+            ObjectType::Enum(_) => CoreObjectType::Enum,
+            ObjectType::Tuple(elements) => {
+                let core_elements = elements.iter().map(|t| t.get_core_type()).collect();
+                CoreObjectType::Tuple(core_elements)
+            }
+            ObjectType::Class(elements, _) => {
+                let core_elements = elements.iter().map(|t| t.get_core_type()).collect();
+                CoreObjectType::Tuple(core_elements)
+            }
+            ObjectType::List(size, elem_type) => {
+                CoreObjectType::List(*size, Box::new(elem_type.get_core_type()))
+            }
+            ObjectType::Vec(elem_type) => CoreObjectType::Vec(Box::new(elem_type.get_core_type())),
+            ObjectType::Map(key_type, value_type) => CoreObjectType::Map(
+                Box::new(key_type.get_core_type()),
+                Box::new(value_type.get_core_type()),
+            ),
+            ObjectType::Option(inner_type) => {
+                CoreObjectType::Option(Box::new(inner_type.get_core_type()))
+            }
+            ObjectType::Empty => panic!("Empty type has no core representation"),
+        }
+    }
+
+    pub(crate) fn get_hash(&self) -> u64 {
+        self.get_core_type().get_hash()
     }
 }
 
@@ -233,6 +279,33 @@ impl PyObjectType {
         let object_type = match optional {
             true => ObjectType::Option(Box::new(ObjectType::Tuple(object_types))),
             false => ObjectType::Tuple(object_types),
+        };
+
+        Ok(Self { object_type })
+    }
+
+    #[staticmethod]
+    #[pyo3(signature = (elements, class_type, optional=false))]
+    fn class_(
+        py: Python,
+        elements: Vec<Bound<PyObjectType>>,
+        class_type: Py<PyAny>,
+        optional: bool,
+    ) -> PyResult<Self> {
+        let object_types: Vec<ObjectType> = elements
+            .iter()
+            .map(|t| t.borrow().object_type.clone_py(py))
+            .collect();
+
+        if object_types.iter().any(|t| matches!(t, ObjectType::Empty)) {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "Tuple cannot contain Empty type",
+            ));
+        }
+
+        let object_type = match optional {
+            true => ObjectType::Option(Box::new(ObjectType::Class(object_types, class_type))),
+            false => ObjectType::Class(object_types, class_type),
         };
 
         Ok(Self { object_type })

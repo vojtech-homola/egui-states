@@ -76,6 +76,12 @@ pub(crate) fn serialize_py(
                 serialize_py(&item, item_type, creator)?;
             }
         }
+        ObjectType::Class(vec, _) => {
+            for (i, item_type) in vec.iter().enumerate() {
+                let item = obj.get_item(i)?;
+                serialize_py(&item, item_type, creator)?;
+            }
+        }
         ObjectType::List(size, items_type) => {
             let list = obj.cast::<pyo3::types::PyList>()?;
             if list.len() != *size as usize {
@@ -224,6 +230,14 @@ pub(crate) fn deserialize_py<'py, 'a>(
                 items.push(item);
             }
             Ok(PyTuple::new(py, items)?.into_any())
+        }
+        ObjectType::Class(vec, py_class) => {
+            let list = PyList::empty(py);
+            for item_type in vec.iter() {
+                let item = deserialize_py(py, parser, item_type)?;
+                list.append(item)?;
+            }
+            py_class.bind(py).call1((list,))
         }
         ObjectType::List(size, items_type) => {
             let list = PyList::empty(py);

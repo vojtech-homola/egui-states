@@ -9,6 +9,7 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyByteArray, PyDict, PyList, PyTuple};
 
+use egui_states_core::generate_value_id;
 use egui_states_core::graphs::GraphType;
 use egui_states_core::nohash::NoHashMap;
 
@@ -594,17 +595,18 @@ impl StateServerCore {
     fn add_value(
         &self,
         py: Python,
-        value_id: u64,
-        type_id: u64,
+        name: String,
         object_type: &Bound<PyObjectType>,
         initial_value: &Bound<PyAny>,
     ) -> PyResult<()> {
         let object_type = object_type.borrow().object_type.clone_py(py);
+        let type_id = object_type.get_hash();
 
         let mut creator = ValueCreator::new();
         pyparsing::serialize_py(initial_value, &object_type, &mut creator)?;
         let data = creator.finalize();
 
+        let value_id = generate_value_id(&name);
         self.server
             .write()
             .add_value(value_id, type_id, data)
@@ -621,17 +623,18 @@ impl StateServerCore {
     fn add_static(
         &self,
         py: Python,
-        value_id: u64,
-        type_id: u64,
+        name: String,
         object_type: &Bound<PyObjectType>,
         initial_value: &Bound<PyAny>,
     ) -> PyResult<()> {
         let object_type = object_type.borrow().object_type.clone_py(py);
+        let type_id = object_type.get_hash();
 
         let mut creator = ValueCreator::new();
         pyparsing::serialize_py(initial_value, &object_type, &mut creator)?;
         let data = creator.finalize();
 
+        let value_id = generate_value_id(&name);
         self.server
             .write()
             .add_static(value_id, type_id, data)
@@ -646,12 +649,13 @@ impl StateServerCore {
     fn add_signal(
         &self,
         py: Python,
-        value_id: u64,
-        type_id: u64,
+        name: String,
         object_type: &Bound<PyObjectType>,
     ) -> PyResult<()> {
         let object_type = object_type.borrow().object_type.clone_py(py);
+        let type_id = object_type.get_hash();
 
+        let value_id = generate_value_id(&name);
         self.server
             .write()
             .add_signal(value_id, type_id)
@@ -666,12 +670,13 @@ impl StateServerCore {
     fn add_list(
         &self,
         py: Python,
-        value_id: u64,
-        type_id: u64,
+        name: String,
         object_type: &Bound<PyObjectType>,
     ) -> PyResult<()> {
-        let object_type = object_type.borrow().object_type.clone_py(py);
+        let object_type = ObjectType::Vec(Box::new(object_type.borrow().object_type.clone_py(py)));
+        let type_id = object_type.get_hash();
 
+        let value_id = generate_value_id(&name);
         self.server
             .write()
             .add_list(value_id, type_id)
@@ -686,15 +691,16 @@ impl StateServerCore {
     fn add_map(
         &self,
         py: Python,
-        value_id: u64,
-        type_id: u64,
+        name: String,
         key_type: &Bound<PyObjectType>,
         value_type: &Bound<PyObjectType>,
     ) -> PyResult<()> {
         let key_type = key_type.borrow().object_type.clone_py(py);
         let value_type = value_type.borrow().object_type.clone_py(py);
         let object_type = ObjectType::Map(Box::new(key_type), Box::new(value_type));
+        let type_id = object_type.get_hash();
 
+        let value_id = generate_value_id(&name);
         self.server
             .write()
             .add_map(value_id, type_id)
@@ -706,7 +712,8 @@ impl StateServerCore {
         Ok(())
     }
 
-    fn add_image(&self, value_id: u64) -> PyResult<()> {
+    fn add_image(&self, name: String) -> PyResult<()> {
+        let value_id = generate_value_id(&name);
         self.server
             .write()
             .add_image(value_id)
@@ -714,12 +721,13 @@ impl StateServerCore {
         Ok(())
     }
 
-    fn add_graphs(&self, value_id: u64, is_double: bool) -> PyResult<()> {
+    fn add_graphs(&self, name: String, is_double: bool) -> PyResult<()> {
         let graph_type = match is_double {
             true => GraphType::F64,
             false => GraphType::F32,
         };
 
+        let value_id = generate_value_id(&name);
         self.server
             .write()
             .add_graphs(value_id, graph_type)
