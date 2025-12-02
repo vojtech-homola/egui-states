@@ -1,5 +1,6 @@
+# ruff: noqa: PLC2801
 from enum import Enum
-from typing import Self
+from typing import Any, Self
 
 
 class _FastEnum(Enum):
@@ -13,3 +14,10 @@ class _FastEnum(Enum):
 
     def index(self) -> int:
         return self._member_list.index(self)
+
+
+class _CustomStruct:
+    __getitem__ = object.__getattribute__
+
+    def _get_values(self) -> list[Any]:
+        return [self.__getattribute__(name) for name in self.__annotations__.keys()]
