@@ -30,6 +30,7 @@ pub(crate) fn impl_struct(input: TokenStream) -> TokenStream {
             panic!("Struct fields must be named");
         }
     }
+    let types2 = types.clone();
 
     let out = quote!(
         #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -40,7 +41,7 @@ pub(crate) fn impl_struct(input: TokenStream) -> TokenStream {
             #[inline]
             fn type_info() -> egui_states::values_info::TypeInfo {
                 egui_states::values_info::TypeInfo::Struct(stringify!(#ident) ,vec![
-                    #((stringify!(#names), <#types as egui_states::GetTypeInfo>::type_info())),*
+                    #((stringify!(#names), <#types as egui_states::values_info::GetTypeInfo>::type_info())),*
                 ])
             }
         }
@@ -51,6 +52,14 @@ pub(crate) fn impl_struct(input: TokenStream) -> TokenStream {
                 egui_states::values_info::InitValue::Struct(stringify!(#ident), vec![
                     #((stringify!(#names), self.#names.init_value())),*
                 ])
+            }
+        }
+
+        impl egui_states::GetType for #ident {
+            #[inline]
+            fn get_type() -> egui_states::ObjectType {
+                let vec = vec![#(<#types2 as egui_states::GetType>::get_type()),*];
+                egui_states::ObjectType::Tuple(vec)
             }
         }
     );
@@ -101,6 +110,7 @@ pub(crate) fn impl_enum(input: TokenStream) -> TokenStream {
         values.push(actual);
         actual += 1;
     }
+    let max = values.len() as u32;
 
     let out = quote!(
         #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -122,6 +132,13 @@ pub(crate) fn impl_enum(input: TokenStream) -> TokenStream {
             #[inline]
             fn init_value(&self) -> egui_states::values_info::InitValue {
                 egui_states::values_info::InitValue::Value(format!("{}::{:?}", stringify!(#ident), self))
+            }
+        }
+
+        impl egui_states::GetType for #ident {
+            #[inline]
+            fn get_type() -> egui_states::ObjectType {
+                egui_states::ObjectType::Enum(#max)
             }
         }
     );

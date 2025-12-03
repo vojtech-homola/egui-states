@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use egui_states::state_enum;
 use egui_states::{State, StatesCreator, Value, ValueGraphs, ValueImage};
+use egui_states::{state_enum, state_struct};
 
 #[state_enum]
 enum TestEnum {
@@ -10,11 +10,19 @@ enum TestEnum {
     C,
 }
 
+#[state_struct]
+struct TestStruct {
+    x: f32,
+    y: f32,
+    label: String,
+}
+
 pub struct States {
     pub(crate) value: Arc<Value<f32>>,
     pub(crate) image: Arc<ValueImage>,
     pub(crate) graphs: Arc<ValueGraphs<f32>>,
     pub(crate) test_enum: Arc<Value<TestEnum>>,
+    pub(crate) test_struct: Arc<Value<TestStruct>>,
 }
 
 impl State for States {
@@ -26,6 +34,14 @@ impl State for States {
             image: b.add_image("image"),
             graphs: b.add_graphs("graphs"),
             test_enum: b.add_value("test_enum", TestEnum::A),
+            test_struct: b.add_value(
+                "test_struct",
+                TestStruct {
+                    x: 0.0,
+                    y: 0.0,
+                    label: String::new(),
+                },
+            ),
         };
         c.add_states(b);
         obj

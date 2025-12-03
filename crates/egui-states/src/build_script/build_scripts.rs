@@ -4,7 +4,7 @@ use std::string::ToString;
 use std::{fs, io::Write};
 
 use crate::State;
-use crate::build_script::parser::{InitValue, TypeInfo, ValueType};
+use crate::values_info::{InitValue, TypeInfo, ValueType};
 use crate::build_script::state_creator::StatesCreator;
 
 fn parse_states<S: State>() -> BTreeMap<&'static str, Vec<ValueType>> {

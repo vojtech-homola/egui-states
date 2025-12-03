@@ -15,7 +15,7 @@ pub(crate) enum ObjectType {
     F32,
     String,
     Bool,
-    Enum(Py<PyAny>),
+    Enum(Py<PyAny>, u32),
     Tuple(Vec<ObjectType>),
     Class(Vec<ObjectType>, Py<PyAny>),
     List(u32, Box<ObjectType>),
@@ -28,7 +28,7 @@ pub(crate) enum ObjectType {
 impl ObjectType {
     pub(crate) fn clone_py(&self, py: Python) -> Self {
         match self {
-            ObjectType::Enum(py_enum) => ObjectType::Enum(py_enum.clone_ref(py)),
+            ObjectType::Enum(py_enum, max) => ObjectType::Enum(py_enum.clone_ref(py), *max),
             ObjectType::U8 => ObjectType::U8,
             ObjectType::U16 => ObjectType::U16,
             ObjectType::U32 => ObjectType::U32,
@@ -76,7 +76,7 @@ impl ObjectType {
             ObjectType::F64 => CoreObjectType::F64,
             ObjectType::String => CoreObjectType::String,
             ObjectType::Bool => CoreObjectType::Bool,
-            ObjectType::Enum(_) => CoreObjectType::Enum,
+            ObjectType::Enum(_, max) => CoreObjectType::Enum(*max),
             ObjectType::Tuple(elements) => {
                 let core_elements = elements.iter().map(|t| t.get_core_type()).collect();
                 CoreObjectType::Tuple(core_elements)
@@ -112,6 +112,13 @@ pub(crate) struct PyObjectType {
 
 #[pymethods]
 impl PyObjectType {
+    #[staticmethod]
+    fn optional(py: Python, pytype: &Bound<PyObjectType>) -> Self {
+        let object_type = ObjectType::Option(Box::new(pytype.borrow().object_type.clone_py(py)));
+
+        Self { object_type }
+    }
+    
     #[staticmethod]
     #[pyo3(signature = (optional=false))]
     fn u8(optional: bool) -> Self {
@@ -246,10 +253,12 @@ impl PyObjectType {
 
     #[staticmethod]
     #[pyo3(signature = (enum_obj, optional=false))]
-    fn enum_(enum_obj: Py<PyAny>, optional: bool) -> PyResult<Self> {
+    fn enum_(enum_obj: Bound<PyAny>, optional: bool) -> PyResult<Self> {
+        let len = enum_obj.len()? as u32;
+        let obj = enum_obj.unbind();
         let object_type = match optional {
-            true => ObjectType::Option(Box::new(ObjectType::Enum(enum_obj))),
-            false => ObjectType::Enum(enum_obj),
+            true => ObjectType::Option(Box::new(ObjectType::Enum(obj, len))),
+            false => ObjectType::Enum(obj, len),
         };
 
         Ok(Self { object_type })

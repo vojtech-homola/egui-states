@@ -52,10 +52,10 @@ impl eframe::App for MainApp {
             let texture_id = self.states.image.get_id();
             const UV: Rect = Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
             let (response, painter) =
-                ui.allocate_painter([1024.0, 1024.0].into(), egui::Sense::HOVER);
+                ui.allocate_painter([512.0, 512.0].into(), egui::Sense::HOVER);
             painter.image(
                 texture_id,
-                response.rect.translate(egui::vec2(15.0, 50.0)) / 1.5,
+                response.rect,
                 UV,
                 Color32::WHITE,
             );

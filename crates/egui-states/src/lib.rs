@@ -16,10 +16,16 @@ mod states_creator;
 #[cfg(feature = "build-script")]
 pub mod build_script;
 
-#[cfg(all(any(feature = "client", feature = "client-wasm"), not(feature = "build-script")))]
+#[cfg(all(
+    any(feature = "client", feature = "client-wasm"),
+    not(feature = "build-script")
+))]
 mod client;
 
-#[cfg(all(any(feature = "client", feature = "client-wasm"), not(feature = "build-script")))]
+#[cfg(all(
+    any(feature = "client", feature = "client-wasm"),
+    not(feature = "build-script")
+))]
 pub use client::ClientBuilder;
 
 #[cfg(feature = "client")]
@@ -45,4 +51,5 @@ pub trait State {
     fn new(c: &mut StatesCreator, parent: String) -> Self;
 }
 
+pub use egui_states_core::types::{GetType, ObjectType};
 pub use egui_states_macros::{state_enum, state_struct};

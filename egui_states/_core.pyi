@@ -1,6 +1,8 @@
 from collections.abc import Buffer
 from typing import Any
 
+from egui_states.custom_types import CustomStruct, FastEnum
+
 class PyObjectType:
     """A class representing a type of object in the state server."""
 
@@ -29,9 +31,15 @@ class PyObjectType:
     @staticmethod
     def string(optional: bool = False) -> PyObjectType: ...
     @staticmethod
+    def enum_(enum_obj: type[FastEnum], optional: bool = False) -> PyObjectType: ...
+    @staticmethod
     def empty() -> PyObjectType: ...
     @staticmethod
     def tuple_(elements: list[PyObjectType], optional: bool = False) -> PyObjectType: ...
+    @staticmethod
+    def class_(
+        elements: list[PyObjectType], class_type: type[CustomStruct], optional: bool = False
+    ) -> PyObjectType: ...
     @staticmethod
     def list_(element_type: PyObjectType, size: int, optional: bool = False) -> PyObjectType: ...
     @staticmethod

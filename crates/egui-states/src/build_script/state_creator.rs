@@ -9,7 +9,7 @@ use egui_states_core::graphs::GraphElement;
 use egui_states_core::types::GetType;
 
 use crate::State;
-use crate::build_script::parser::{GetInitValue, GetTypeInfo, ValueType};
+use crate::values_info::{GetInitValue, GetTypeInfo, ValueType};
 use crate::graphs::ValueGraphs;
 use crate::image::ValueImage;
 use crate::list::ValueList;
