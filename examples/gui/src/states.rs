@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use egui_states::{State, Value, ValueGraphs, ValueImage, ValuesCreator};
 use egui_states::state_enum;
+use egui_states::{State, StatesCreator, Value, ValueGraphs, ValueImage};
 
 #[state_enum]
 enum TestEnum {
@@ -18,14 +18,16 @@ pub struct States {
 }
 
 impl State for States {
-    const N: &'static str = "States";
+    fn new(c: &mut StatesCreator, parent: String) -> Self {
+        let mut b = c.builder("States", parent);
 
-    fn new(c: &mut impl ValuesCreator) -> Self {
-        Self {
-            value: c.add_value(Self::N, "value", 0.0),
-            image: c.add_image(Self::N, "image"),
-            graphs: c.add_graphs(Self::N, "graphs"),
-            test_enum: c.add_value(Self::N, "test_enum", TestEnum::A),
-        }
+        let obj = Self {
+            value: b.add_value("value", 0.0),
+            image: b.add_image("image"),
+            graphs: b.add_graphs("graphs"),
+            test_enum: b.add_value("test_enum", TestEnum::A),
+        };
+        c.add_states(b);
+        obj
     }
 }

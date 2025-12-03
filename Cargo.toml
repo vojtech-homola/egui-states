@@ -7,7 +7,7 @@ members = [
     "crates/egui-states-core",
     "crates/egui-states-server-old",
     "crates/egui-states-server",
-    # "examples/gui",
+    "examples/gui",
     # "examples/states-server",
 ]
 resolver = "3"

@@ -10,7 +10,7 @@ use crate::State;
 use crate::client_base::{Client, ConnectionState};
 use crate::handle_message::{check_types, handle_message};
 use crate::sender::{ChannelMessage, MessageSender};
-use crate::values_creator::{ClientValuesCreator, ValuesList};
+use crate::states_creator::{StatesCreator, ValuesList};
 
 #[cfg(feature = "client")]
 use crate::websocket::build_ws;
@@ -144,7 +144,7 @@ async fn start_gui_client(
 }
 
 pub struct ClientBuilder {
-    creator: ClientValuesCreator,
+    creator: StatesCreator,
     sender: MessageSender,
     rx: UnboundedReceiver<ChannelMessage>,
     addr: Ipv4Addr,
@@ -155,7 +155,7 @@ impl ClientBuilder {
     pub fn new() -> Self {
         let (sender, rx) = MessageSender::new();
 
-        let creator = ClientValuesCreator::new(sender.clone());
+        let creator = StatesCreator::new(sender.clone());
         let addr = Ipv4Addr::new(127, 0, 0, 1);
 
         Self {
@@ -188,7 +188,7 @@ impl ClientBuilder {
         } = self;
 
         let addr = SocketAddrV4::new(addr, port);
-        let states = T::new(&mut creator);
+        let states = T::new(&mut creator, "root".to_string());
         let values = creator.get_values();
         let client = Client::new(context, sender.clone());
         let client_out = client.clone();

@@ -36,19 +36,19 @@ pub(crate) fn impl_struct(input: TokenStream) -> TokenStream {
         #(#attrs)*
         #vis #struct_token #ident #fields #semi_token
 
-        impl egui_states::GetTypeInfo for #ident {
+        impl egui_states::values_info::GetTypeInfo for #ident {
             #[inline]
-            fn type_info() -> egui_states::TypeInfo {
-                egui_states::TypeInfo::Struct(stringify!(#ident) ,vec![
+            fn type_info() -> egui_states::values_info::TypeInfo {
+                egui_states::values_info::TypeInfo::Struct(stringify!(#ident) ,vec![
                     #((stringify!(#names), <#types as egui_states::GetTypeInfo>::type_info())),*
                 ])
             }
         }
 
-        impl egui_states::GetInitValue for #ident {
+        impl egui_states::values_info::GetInitValue for #ident {
             #[inline]
-            fn init_value(&self) -> egui_states::InitValue {
-                egui_states::InitValue::Struct(stringify!(#ident), vec![
+            fn init_value(&self) -> egui_states::values_info::InitValue {
+                egui_states::values_info::InitValue::Struct(stringify!(#ident), vec![
                     #((stringify!(#names), self.#names.init_value())),*
                 ])
             }
@@ -109,19 +109,19 @@ pub(crate) fn impl_enum(input: TokenStream) -> TokenStream {
             #(#variants),*
         }
 
-        impl egui_states::GetTypeInfo for #ident {
+        impl egui_states::values_info::GetTypeInfo for #ident {
             #[inline]
-            fn type_info() -> egui_states::TypeInfo {
-                egui_states::TypeInfo::Enum(stringify!(#ident), vec![
+            fn type_info() -> egui_states::values_info::TypeInfo {
+                egui_states::values_info::TypeInfo::Enum(stringify!(#ident), vec![
                     #((stringify!(#names), #values as isize)),*
                 ])
             }
         }
 
-        impl egui_states::GetInitValue for #ident {
+        impl egui_states::values_info::GetInitValue for #ident {
             #[inline]
-            fn init_value(&self) -> egui_states::InitValue {
-                egui_states::InitValue::Value(format!("{}::{:?}", stringify!(#ident), self))
+            fn init_value(&self) -> egui_states::values_info::InitValue {
+                egui_states::values_info::InitValue::Value(format!("{}::{:?}", stringify!(#ident), self))
             }
         }
     );
