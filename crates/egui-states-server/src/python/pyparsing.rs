@@ -59,7 +59,7 @@ pub(crate) fn serialize_py(
             let value: String = obj.extract()?;
             creator.add(&value);
         }
-        ObjectType::Enum(_, _) => {
+        ObjectType::Enum(_) => {
             let value: u32 = obj.call_method0("index")?.extract()?;
             creator.add(&value);
         }
@@ -216,7 +216,7 @@ pub(crate) fn deserialize_py<'py, 'a>(
                 .map_err(|_| PyValueError::new_err("Failed to parse string"))?;
             value.into_bound_py_any(py)
         }
-        ObjectType::Enum(py_enum, _) => {
+        ObjectType::Enum(py_enum) => {
             let mut value = 0u32;
             parser
                 .get(&mut value)

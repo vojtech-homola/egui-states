@@ -11,15 +11,6 @@ from egui_states.signals import SignalsManager
 from egui_states._core import StateServerCore
 
 
-# class _Counter:
-#     def __init__(self) -> None:
-#         self._counter = 9  # first 10 values are reserved for system signals
-
-#     def get_id(self) -> int:
-#         self._counter += 1
-#         return self._counter
-
-
 class _StatesBase:
     pass
 

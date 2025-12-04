@@ -4,11 +4,11 @@ use std::string::ToString;
 use std::{fs, io::Write};
 
 use crate::State;
-use crate::values_info::{InitValue, TypeInfo, ValueType};
-use crate::build_script::state_creator::StatesCreator;
+use crate::build_script::values_info::{InitValue, TypeInfo, StateType};
+use crate::build_script::state_creator::StatesCreatorBuild;
 
-fn parse_states<S: State>() -> BTreeMap<&'static str, Vec<ValueType>> {
-    let mut creator = StatesCreator::new();
+fn parse_states<S: State>() -> BTreeMap<&'static str, Vec<StateType>> {
+    let mut creator = StatesCreatorBuild::new();
     S::new(&mut creator, "root".to_string());
     creator.get_states()
 }
@@ -51,7 +51,7 @@ fn init_to_string(init: &InitValue) -> String {
             let elem_strs: Vec<String> = elements.iter().map(init_to_string).collect();
             format!("({})", elem_strs.join(", "))
         }
-        InitValue::Array(elements) => {
+        InitValue::List(elements) => {
             let elem_strs: Vec<String> = elements.iter().map(init_to_string).collect();
             format!("[{}]", elem_strs.join(", "))
         }
@@ -136,7 +136,7 @@ fn collect_structs(
 }
 
 fn get_all_enums_struct(
-    values: &[ValueType],
+    values: &[StateType],
 ) -> (
     BTreeMap<&'static str, Vec<(&'static str, isize)>>,
     BTreeMap<&'static str, Vec<(&'static str, TypeInfo)>>,
@@ -146,25 +146,25 @@ fn get_all_enums_struct(
 
     for value in values {
         match value {
-            ValueType::Value(_, info, _) => {
+            StateType::Value(_, info, _) => {
                 collect_enums(info, &mut enums);
                 collect_structs(info, &mut structs);
             }
-            ValueType::Static(_, info, _) => {
+            StateType::Static(_, info, _) => {
                 collect_enums(info, &mut enums);
                 collect_structs(info, &mut structs);
             }
-            ValueType::Dict(_, key_info, value_info) => {
+            StateType::Dict(_, key_info, value_info) => {
                 collect_enums(key_info, &mut enums);
                 collect_enums(value_info, &mut enums);
                 collect_structs(key_info, &mut structs);
                 collect_structs(value_info, &mut structs);
             }
-            ValueType::List(_, elem_info) => {
+            StateType::List(_, elem_info) => {
                 collect_enums(elem_info, &mut enums);
                 collect_structs(elem_info, &mut structs);
             }
-            ValueType::Signal(_, info) => {
+            StateType::Signal(_, info) => {
                 collect_enums(info, &mut enums);
                 collect_structs(info, &mut structs);
             }
@@ -288,7 +288,7 @@ pub fn generate_python_wrapper<S: State>(
         } else {
             for value in values {
                 match value {
-                    ValueType::Value(name, info, _) => {
+                    StateType::Value(name, info, _) => {
                         let py_type = type_info_to_python_type(&info, import_path, false);
                         file.write_all(
                             format!(
@@ -299,7 +299,7 @@ pub fn generate_python_wrapper<S: State>(
                         )
                         .unwrap();
                     }
-                    ValueType::Static(name, info, _) => {
+                    StateType::Static(name, info, _) => {
                         let py_type = type_info_to_python_type(&info, import_path, false);
                         file.write_all(
                             format!(
@@ -310,14 +310,14 @@ pub fn generate_python_wrapper<S: State>(
                         )
                         .unwrap();
                     }
-                    ValueType::Image(name) => {
+                    StateType::Image(name) => {
                         file.write_all(
                             format!("        self.{}: sc.ValueImage = sc.ValueImage(c)\n", name)
                                 .as_bytes(),
                         )
                         .unwrap();
                     }
-                    ValueType::Dict(name, key_info, value_info) => {
+                    StateType::Dict(name, key_info, value_info) => {
                         let py_key_type = type_info_to_python_type(&key_info, import_path, false);
                         let py_value_type =
                             type_info_to_python_type(&value_info, import_path, false);
@@ -330,7 +330,7 @@ pub fn generate_python_wrapper<S: State>(
                         )
                         .unwrap();
                     }
-                    ValueType::List(name, info) => {
+                    StateType::List(name, info) => {
                         let py_type = type_info_to_python_type(&info, import_path, false);
                         file.write_all(
                             format!(
@@ -341,7 +341,7 @@ pub fn generate_python_wrapper<S: State>(
                         )
                         .unwrap();
                     }
-                    ValueType::Graphs(name, _) => {
+                    StateType::Graphs(name, _) => {
                         file.write_all(
                             format!(
                                 "        self.{}: sc.ValueGraphs = sc.ValueGraphs(c)\n",
@@ -351,7 +351,7 @@ pub fn generate_python_wrapper<S: State>(
                         )
                         .unwrap();
                     }
-                    ValueType::Signal(name, info) => {
+                    StateType::Signal(name, info) => {
                         let py_type = type_info_to_python_type(&info, import_path, false);
                         let line = if py_type.is_empty() {
                             format!(
@@ -367,7 +367,7 @@ pub fn generate_python_wrapper<S: State>(
 
                         file.write_all(line.as_bytes()).unwrap();
                     }
-                    ValueType::SubState(name, substate) => {
+                    StateType::SubState(name, substate) => {
                         file.write_all(
                             format!("        self.{}: {} = {}(c)\n", name, substate, substate)
                                 .as_bytes(),

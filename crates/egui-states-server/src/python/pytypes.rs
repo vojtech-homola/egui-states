@@ -1,4 +1,5 @@
 use pyo3::prelude::*;
+use pyo3::types::PyAny;
 
 use egui_states_core::types::ObjectType as CoreObjectType;
 
@@ -15,7 +16,7 @@ pub(crate) enum ObjectType {
     F32,
     String,
     Bool,
-    Enum(Py<PyAny>, u32),
+    Enum(Py<PyAny>),
     Tuple(Vec<ObjectType>),
     Class(Vec<ObjectType>, Py<PyAny>),
     List(u32, Box<ObjectType>),
@@ -28,7 +29,7 @@ pub(crate) enum ObjectType {
 impl ObjectType {
     pub(crate) fn clone_py(&self, py: Python) -> Self {
         match self {
-            ObjectType::Enum(py_enum, max) => ObjectType::Enum(py_enum.clone_ref(py), *max),
+            ObjectType::Enum(py_enum) => ObjectType::Enum(py_enum.clone_ref(py)),
             ObjectType::U8 => ObjectType::U8,
             ObjectType::U16 => ObjectType::U16,
             ObjectType::U32 => ObjectType::U32,
@@ -62,8 +63,8 @@ impl ObjectType {
         }
     }
 
-    fn get_core_type(&self) -> CoreObjectType {
-        match self {
+    fn get_core_type(&self, py: Python) -> PyResult<CoreObjectType> {
+        let obj = match self {
             ObjectType::U8 => CoreObjectType::U8,
             ObjectType::U16 => CoreObjectType::U16,
             ObjectType::U32 => CoreObjectType::U32,
@@ -76,32 +77,62 @@ impl ObjectType {
             ObjectType::F64 => CoreObjectType::F64,
             ObjectType::String => CoreObjectType::String,
             ObjectType::Bool => CoreObjectType::Bool,
-            ObjectType::Enum(_, max) => CoreObjectType::Enum(*max),
+            ObjectType::Enum(obj) => {
+                let enum_type = obj.bind(py);
+                let members = enum_type
+                    .call_method0("_get_members")?
+                    .extract::<Vec<(String, i32)>>()?;
+                let name = enum_type.getattr("__name__")?.extract::<String>()?;
+                CoreObjectType::Enum(
+                    name,
+                    members
+                        .into_iter()
+                        .map(|(name, value)| (name, value as isize))
+                        .collect(),
+                )
+            }
             ObjectType::Tuple(elements) => {
-                let core_elements = elements.iter().map(|t| t.get_core_type()).collect();
+                let mut core_elements = Vec::with_capacity(elements.len());
+                for t in elements {
+                    core_elements.push(t.get_core_type(py)?);
+                }
                 CoreObjectType::Tuple(core_elements)
             }
-            ObjectType::Class(elements, _) => {
-                let core_elements = elements.iter().map(|t| t.get_core_type()).collect();
-                CoreObjectType::Tuple(core_elements)
+            ObjectType::Class(elements, obj) => {
+                let struct_type = obj.bind(py);
+                let name = struct_type.getattr("__name__")?.extract::<String>()?;
+                let memebers = struct_type
+                    .call_method0("_field_names")?
+                    .extract::<Vec<String>>()?;
+                let mut core_elements = Vec::with_capacity(elements.len());
+                for (n, t) in memebers.iter().zip(elements.iter()) {
+                    core_elements.push((n.clone(), t.get_core_type(py)?));
+                }
+
+                CoreObjectType::Struct(name, core_elements)
             }
             ObjectType::List(size, elem_type) => {
-                CoreObjectType::List(*size, Box::new(elem_type.get_core_type()))
+                CoreObjectType::List(*size, Box::new(elem_type.get_core_type(py)?))
             }
-            ObjectType::Vec(elem_type) => CoreObjectType::Vec(Box::new(elem_type.get_core_type())),
+            ObjectType::Vec(elem_type) => {
+                CoreObjectType::Vec(Box::new(elem_type.get_core_type(py)?))
+            }
             ObjectType::Map(key_type, value_type) => CoreObjectType::Map(
-                Box::new(key_type.get_core_type()),
-                Box::new(value_type.get_core_type()),
+                Box::new(key_type.get_core_type(py)?),
+                Box::new(value_type.get_core_type(py)?),
             ),
             ObjectType::Option(inner_type) => {
-                CoreObjectType::Option(Box::new(inner_type.get_core_type()))
+                CoreObjectType::Option(Box::new(inner_type.get_core_type(py)?))
             }
             ObjectType::Empty => panic!("Empty type has no core representation"),
-        }
+        };
+
+        Ok(obj)
     }
 
-    pub(crate) fn get_hash(&self) -> u64 {
-        self.get_core_type().get_hash()
+    pub(crate) fn get_hash(&self, py: Python) -> PyResult<u64> {
+        let res = self.get_core_type(py)?.get_hash();
+        Ok(res)
     }
 }
 
@@ -110,286 +141,163 @@ pub(crate) struct PyObjectType {
     pub object_type: ObjectType,
 }
 
-#[pymethods]
-impl PyObjectType {
-    #[staticmethod]
-    fn optional(py: Python, pytype: &Bound<PyObjectType>) -> Self {
-        let object_type = ObjectType::Option(Box::new(pytype.borrow().object_type.clone_py(py)));
+pub(crate) const U8: PyObjectType = PyObjectType {
+    object_type: ObjectType::U8,
+};
 
-        Self { object_type }
-    }
-    
-    #[staticmethod]
-    #[pyo3(signature = (optional=false))]
-    fn u8(optional: bool) -> Self {
-        let object_type = match optional {
-            true => ObjectType::Option(Box::new(ObjectType::U8)),
-            false => ObjectType::U8,
-        };
+pub(crate) const U16: PyObjectType = PyObjectType {
+    object_type: ObjectType::U16,
+};
 
-        Self { object_type }
-    }
+pub(crate) const U32: PyObjectType = PyObjectType {
+    object_type: ObjectType::U32,
+};
 
-    #[staticmethod]
-    #[pyo3(signature = (optional=false))]
-    fn u16(optional: bool) -> Self {
-        let object_type = match optional {
-            true => ObjectType::Option(Box::new(ObjectType::U16)),
-            false => ObjectType::U16,
-        };
+pub(crate) const U64: PyObjectType = PyObjectType {
+    object_type: ObjectType::U64,
+};
 
-        Self { object_type }
-    }
+pub(crate) const I8: PyObjectType = PyObjectType {
+    object_type: ObjectType::I8,
+};
 
-    #[staticmethod]
-    #[pyo3(signature = (optional=false))]
-    fn u32(optional: bool) -> Self {
-        let object_type = match optional {
-            true => ObjectType::Option(Box::new(ObjectType::U32)),
-            false => ObjectType::U32,
-        };
+pub(crate) const I16: PyObjectType = PyObjectType {
+    object_type: ObjectType::I16,
+};
 
-        Self { object_type }
-    }
+pub(crate) const I32: PyObjectType = PyObjectType {
+    object_type: ObjectType::I32,
+};
 
-    #[staticmethod]
-    #[pyo3(signature = (optional=false))]
-    fn u64(optional: bool) -> Self {
-        let object_type = match optional {
-            true => ObjectType::Option(Box::new(ObjectType::U64)),
-            false => ObjectType::U64,
-        };
+pub(crate) const I64: PyObjectType = PyObjectType {
+    object_type: ObjectType::I64,
+};
 
-        Self { object_type }
-    }
+pub(crate) const F32: PyObjectType = PyObjectType {
+    object_type: ObjectType::F32,
+};
 
-    #[staticmethod]
-    #[pyo3(signature = (optional=false))]
-    fn i8(optional: bool) -> Self {
-        let object_type = match optional {
-            true => ObjectType::Option(Box::new(ObjectType::I8)),
-            false => ObjectType::I8,
-        };
+pub(crate) const F64: PyObjectType = PyObjectType {
+    object_type: ObjectType::F64,
+};
 
-        Self { object_type }
-    }
+pub(crate) const BO: PyObjectType = PyObjectType {
+    object_type: ObjectType::Bool,
+};
 
-    #[staticmethod]
-    #[pyo3(signature = (optional=false))]
-    fn i16(optional: bool) -> Self {
-        let object_type = match optional {
-            true => ObjectType::Option(Box::new(ObjectType::I16)),
-            false => ObjectType::I16,
-        };
+pub(crate) const STR: PyObjectType = PyObjectType {
+    object_type: ObjectType::String,
+};
 
-        Self { object_type }
+pub(crate) const EMP: PyObjectType = PyObjectType {
+    object_type: ObjectType::Empty,
+};
+
+#[pyfunction]
+pub(crate) fn opt(py: Python, pytype: &Bound<PyObjectType>) -> PyObjectType {
+    let object_type = ObjectType::Option(Box::new(pytype.borrow().object_type.clone_py(py)));
+
+    PyObjectType { object_type }
+}
+
+#[pyfunction]
+pub(crate) fn tu(py: Python, elements: Vec<Bound<PyObjectType>>) -> PyResult<PyObjectType> {
+    let object_types: Vec<ObjectType> = elements
+        .iter()
+        .map(|t| t.borrow().object_type.clone_py(py))
+        .collect();
+
+    if object_types.iter().any(|t| matches!(t, ObjectType::Empty)) {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "Tuple cannot contain Empty type",
+        ));
     }
 
-    #[staticmethod]
-    #[pyo3(signature = (optional=false))]
-    fn i32(optional: bool) -> Self {
-        let object_type = match optional {
-            true => ObjectType::Option(Box::new(ObjectType::I32)),
-            false => ObjectType::I32,
-        };
+    Ok(PyObjectType {
+        object_type: ObjectType::Tuple(object_types),
+    })
+}
 
-        Self { object_type }
+#[pyfunction]
+pub(crate) fn cl(
+    py: Python,
+    elements: Vec<Bound<PyObjectType>>,
+    class_type: Py<PyAny>,
+) -> PyResult<PyObjectType> {
+    let object_types: Vec<ObjectType> = elements
+        .iter()
+        .map(|t| t.borrow().object_type.clone_py(py))
+        .collect();
+
+    if object_types.iter().any(|t| matches!(t, ObjectType::Empty)) {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "Tuple cannot contain Empty type",
+        ));
     }
 
-    #[staticmethod]
-    #[pyo3(signature = (optional=false))]
-    fn i64(optional: bool) -> Self {
-        let object_type = match optional {
-            true => ObjectType::Option(Box::new(ObjectType::I64)),
-            false => ObjectType::I64,
-        };
+    Ok(PyObjectType {
+        object_type: ObjectType::Class(object_types, class_type),
+    })
+}
 
-        Self { object_type }
+#[pyfunction]
+pub(crate) fn li(
+    py: Python,
+    element_type: Bound<PyObjectType>,
+    size: u32,
+) -> PyResult<PyObjectType> {
+    let elem_type = element_type.borrow().object_type.clone_py(py);
+    if matches!(elem_type, ObjectType::Empty) {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "List cannot contain Empty type",
+        ));
     }
 
-    #[staticmethod]
-    #[pyo3(signature = (optional=false))]
-    fn f32(optional: bool) -> Self {
-        let object_type = match optional {
-            true => ObjectType::Option(Box::new(ObjectType::F32)),
-            false => ObjectType::F32,
-        };
+    Ok(PyObjectType {
+        object_type: ObjectType::List(size, Box::new(elem_type)),
+    })
+}
 
-        Self { object_type }
+#[pyfunction]
+pub(crate) fn vec(py: Python, element_type: Bound<PyObjectType>) -> PyResult<PyObjectType> {
+    let val_type = element_type.borrow().object_type.clone_py(py);
+
+    if matches!(val_type, ObjectType::Empty) {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "Vec cannot contain Empty type",
+        ));
     }
 
-    #[staticmethod]
-    #[pyo3(signature = (optional=false))]
-    fn f64(optional: bool) -> Self {
-        let object_type = match optional {
-            true => ObjectType::Option(Box::new(ObjectType::F64)),
-            false => ObjectType::F64,
-        };
+    Ok(PyObjectType {
+        object_type: ObjectType::Vec(Box::new(val_type)),
+    })
+}
 
-        Self { object_type }
+#[pyfunction]
+pub(crate) fn map(
+    py: Python,
+    key_type: &Bound<PyObjectType>,
+    value_type: &Bound<PyObjectType>,
+) -> PyResult<PyObjectType> {
+    let k_type = key_type.borrow().object_type.clone_py(py);
+    let v_type = value_type.borrow().object_type.clone_py(py);
+
+    if matches!(k_type, ObjectType::Empty) || matches!(v_type, ObjectType::Empty) {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "Map cannot contain Empty type",
+        ));
     }
 
-    #[staticmethod]
-    #[pyo3(signature = (optional=false))]
-    fn boolean(optional: bool) -> Self {
-        let object_type = match optional {
-            true => ObjectType::Option(Box::new(ObjectType::Bool)),
-            false => ObjectType::Bool,
-        };
+    Ok(PyObjectType {
+        object_type: ObjectType::Map(Box::new(k_type), Box::new(v_type)),
+    })
+}
 
-        Self { object_type }
-    }
+#[pyfunction]
+pub(crate) fn enu(enum_type: Bound<PyAny>) -> PyResult<PyObjectType> {
+    let obj = enum_type.unbind();
 
-    #[staticmethod]
-    #[pyo3(signature = (optional=false))]
-    fn string(optional: bool) -> Self {
-        let object_type = match optional {
-            true => ObjectType::Option(Box::new(ObjectType::String)),
-            false => ObjectType::String,
-        };
-
-        Self { object_type }
-    }
-
-    #[staticmethod]
-    #[pyo3(signature = (enum_obj, optional=false))]
-    fn enum_(enum_obj: Bound<PyAny>, optional: bool) -> PyResult<Self> {
-        let len = enum_obj.len()? as u32;
-        let obj = enum_obj.unbind();
-        let object_type = match optional {
-            true => ObjectType::Option(Box::new(ObjectType::Enum(obj, len))),
-            false => ObjectType::Enum(obj, len),
-        };
-
-        Ok(Self { object_type })
-    }
-
-    #[staticmethod]
-    fn empty() -> Self {
-        Self {
-            object_type: ObjectType::Empty,
-        }
-    }
-
-    #[staticmethod]
-    #[pyo3(signature = (elements, optional=false))]
-    fn tuple_(py: Python, elements: Vec<Bound<PyObjectType>>, optional: bool) -> PyResult<Self> {
-        let object_types: Vec<ObjectType> = elements
-            .iter()
-            .map(|t| t.borrow().object_type.clone_py(py))
-            .collect();
-
-        if object_types.iter().any(|t| matches!(t, ObjectType::Empty)) {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "Tuple cannot contain Empty type",
-            ));
-        }
-
-        let object_type = match optional {
-            true => ObjectType::Option(Box::new(ObjectType::Tuple(object_types))),
-            false => ObjectType::Tuple(object_types),
-        };
-
-        Ok(Self { object_type })
-    }
-
-    #[staticmethod]
-    #[pyo3(signature = (elements, class_type, optional=false))]
-    fn class_(
-        py: Python,
-        elements: Vec<Bound<PyObjectType>>,
-        class_type: Py<PyAny>,
-        optional: bool,
-    ) -> PyResult<Self> {
-        let object_types: Vec<ObjectType> = elements
-            .iter()
-            .map(|t| t.borrow().object_type.clone_py(py))
-            .collect();
-
-        if object_types.iter().any(|t| matches!(t, ObjectType::Empty)) {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "Tuple cannot contain Empty type",
-            ));
-        }
-
-        let object_type = match optional {
-            true => ObjectType::Option(Box::new(ObjectType::Class(object_types, class_type))),
-            false => ObjectType::Class(object_types, class_type),
-        };
-
-        Ok(Self { object_type })
-    }
-
-    #[staticmethod]
-    #[pyo3(signature = (element_type, size, optional=false))]
-    fn list_(
-        py: Python,
-        element_type: Bound<PyObjectType>,
-        size: u32,
-        optional: bool,
-    ) -> PyResult<Self> {
-        let elem_type = element_type.borrow().object_type.clone_py(py);
-        if matches!(elem_type, ObjectType::Empty) {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "List cannot contain Empty type",
-            ));
-        }
-
-        let elem_type = ObjectType::List(size, Box::new(elem_type));
-
-        let object_type = match optional {
-            true => ObjectType::Option(Box::new(elem_type)),
-            false => elem_type,
-        };
-
-        Ok(Self { object_type })
-    }
-
-    #[staticmethod]
-    #[pyo3(signature = (element_type, optional=false))]
-    fn vec(py: Python, element_type: Bound<PyObjectType>, optional: bool) -> PyResult<Self> {
-        let val_type = element_type.borrow().object_type.clone_py(py);
-
-        if matches!(val_type, ObjectType::Empty) {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "Vec cannot contain Empty type",
-            ));
-        }
-
-        let val_type = ObjectType::Vec(Box::new(val_type));
-
-        let object_type = match optional {
-            true => ObjectType::Option(Box::new(val_type)),
-            false => val_type,
-        };
-
-        Ok(Self { object_type })
-    }
-
-    #[staticmethod]
-    #[pyo3(signature = (key_type, value_type, optional=false))]
-    fn map(
-        py: Python,
-        key_type: Bound<PyObjectType>,
-        value_type: Bound<PyObjectType>,
-        optional: bool,
-    ) -> PyResult<Self> {
-        let k_type = key_type.borrow().object_type.clone_py(py);
-        let v_type = value_type.borrow().object_type.clone_py(py);
-
-        if matches!(k_type, ObjectType::Empty) || matches!(v_type, ObjectType::Empty) {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "Map cannot contain Empty type",
-            ));
-        }
-
-        let map_type = ObjectType::Map(Box::new(k_type), Box::new(v_type));
-
-        let object_type = match optional {
-            true => ObjectType::Option(Box::new(map_type)),
-            false => map_type,
-        };
-
-        Ok(Self { object_type })
-    }
+    Ok(PyObjectType {
+        object_type: ObjectType::Enum(obj),
+    })
 }

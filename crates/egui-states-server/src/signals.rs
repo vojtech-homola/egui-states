@@ -4,6 +4,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 use parking_lot::Mutex;
 
+use egui_states_core::generate_value_id;
 use egui_states_core::nohash::{NoHashMap, NoHashSet};
 use egui_states_core::serialization::serialize_value_vec;
 
@@ -181,13 +182,16 @@ impl ChangedInner {
 pub(crate) struct ChangedValues {
     event: Event,
     values: Arc<Mutex<ChangedInner>>,
+    logging_id: u64,
 }
 
 impl ChangedValues {
     pub(crate) fn new() -> Self {
+        let logging_id = generate_value_id("__egui_states_logging");
         Self {
             event: Event::new(),
             values: Arc::new(Mutex::new(ChangedInner::new())),
+            logging_id,
         }
     }
 
@@ -211,22 +215,22 @@ impl ChangedValues {
     #[allow(dead_code)]
     pub(crate) fn debug(&self, message: impl ToString) {
         let data = Self::serialize_message(0, message);
-        self.set(0, data);
+        self.set(self.logging_id, data);
     }
 
     pub(crate) fn info(&self, message: impl ToString) {
         let data = Self::serialize_message(1, message);
-        self.set(0, data);
+        self.set(self.logging_id, data);
     }
 
     pub(crate) fn warning(&self, message: impl ToString) {
         let data = Self::serialize_message(2, message);
-        self.set(0, data);
+        self.set(self.logging_id, data);
     }
 
     pub(crate) fn error(&self, message: impl ToString) {
         let data = Self::serialize_message(3, message);
-        self.set(0, data);
+        self.set(self.logging_id, data);
     }
 
     pub(crate) fn wait_changed_value(&self, last_id: Option<u64>) -> (u64, Bytes) {
@@ -250,7 +254,11 @@ impl ChangedValues {
         self.values.lock().values.set_to_multi(id);
     }
 
-    pub fn set_to_single(&self, id: u64) {
+    pub(crate) fn set_to_single(&self, id: u64) {
         self.values.lock().values.set_to_single(id);
+    }
+
+    pub(crate) fn get_logging_id(&self) -> u64 {
+        self.logging_id
     }
 }

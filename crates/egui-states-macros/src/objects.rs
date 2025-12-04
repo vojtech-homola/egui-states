@@ -30,36 +30,38 @@ pub(crate) fn impl_struct(input: TokenStream) -> TokenStream {
             panic!("Struct fields must be named");
         }
     }
-    let types2 = types.clone();
+    // let types2 = types.clone();
 
     let out = quote!(
         #[derive(Clone, serde::Serialize, serde::Deserialize)]
         #(#attrs)*
         #vis #struct_token #ident #fields #semi_token
 
-        impl egui_states::values_info::GetTypeInfo for #ident {
-            #[inline]
-            fn type_info() -> egui_states::values_info::TypeInfo {
-                egui_states::values_info::TypeInfo::Struct(stringify!(#ident) ,vec![
-                    #((stringify!(#names), <#types as egui_states::values_info::GetTypeInfo>::type_info())),*
-                ])
-            }
-        }
+        // impl egui_states::values_info::GetTypeInfo for #ident {
+        //     #[inline]
+        //     fn type_info() -> egui_states::values_info::TypeInfo {
+        //         egui_states::values_info::TypeInfo::Struct(stringify!(#ident) ,vec![
+        //             #((stringify!(#names), <#types as egui_states::values_info::GetTypeInfo>::type_info())),*
+        //         ])
+        //     }
+        // }
 
-        impl egui_states::values_info::GetInitValue for #ident {
+        impl egui_states::GetInitValue for #ident {
             #[inline]
-            fn init_value(&self) -> egui_states::values_info::InitValue {
-                egui_states::values_info::InitValue::Struct(stringify!(#ident), vec![
-                    #((stringify!(#names), self.#names.init_value())),*
-                ])
+            fn init_value(&self) -> egui_states::InitValue {
+                egui_states::InitValue::Tuple(vec![#(self.#names.init_value()),*])
             }
         }
 
         impl egui_states::GetType for #ident {
             #[inline]
             fn get_type() -> egui_states::ObjectType {
-                let vec = vec![#(<#types2 as egui_states::GetType>::get_type()),*];
-                egui_states::ObjectType::Tuple(vec)
+                egui_states::ObjectType::Struct(
+                    stringify!(#ident).to_string(),
+                    vec![
+                        #((stringify!(#names).to_string(), <#types as egui_states::GetType>::get_type())),*
+                    ]
+                )
             }
         }
     );
@@ -110,7 +112,6 @@ pub(crate) fn impl_enum(input: TokenStream) -> TokenStream {
         values.push(actual);
         actual += 1;
     }
-    let max = values.len() as u32;
 
     let out = quote!(
         #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -119,26 +120,31 @@ pub(crate) fn impl_enum(input: TokenStream) -> TokenStream {
             #(#variants),*
         }
 
-        impl egui_states::values_info::GetTypeInfo for #ident {
-            #[inline]
-            fn type_info() -> egui_states::values_info::TypeInfo {
-                egui_states::values_info::TypeInfo::Enum(stringify!(#ident), vec![
-                    #((stringify!(#names), #values as isize)),*
-                ])
-            }
-        }
+        // impl egui_states::values_info::GetTypeInfo for #ident {
+        //     #[inline]
+        //     fn type_info() -> egui_states::values_info::TypeInfo {
+        //         egui_states::values_info::TypeInfo::Enum(stringify!(#ident), vec![
+        //             #((stringify!(#names), #values as isize)),*
+        //         ])
+        //     }
+        // }
 
-        impl egui_states::values_info::GetInitValue for #ident {
+        impl egui_states::GetInitValue for #ident {
             #[inline]
-            fn init_value(&self) -> egui_states::values_info::InitValue {
-                egui_states::values_info::InitValue::Value(format!("{}::{:?}", stringify!(#ident), self))
+            fn init_value(&self) -> egui_states::InitValue {
+                egui_states::InitValue::Enum(format!("{:?}", self))
             }
         }
 
         impl egui_states::GetType for #ident {
             #[inline]
             fn get_type() -> egui_states::ObjectType {
-                egui_states::ObjectType::Enum(#max)
+                egui_states::ObjectType::Enum(
+                    stringify!(#ident).to_string(),
+                    vec![
+                        #((stringify!(#names).to_string(), #values as isize)),*
+                    ]
+                )
             }
         }
     );

@@ -266,6 +266,10 @@ impl StateServerCore {
         }
     }
 
+    fn signal_get_logging_id(&self) -> PyResult<u64> {
+        Ok(self.get_inner()?.signals.get_logging_id())
+    }
+
     // lists ------------------------------------------------------------
     fn list_set(&self, value_id: u64, py_list: &Bound<PyList>, update: bool) -> PyResult<()> {
         let (list, value_type) = self.inner_list(value_id)?;
@@ -600,7 +604,7 @@ impl StateServerCore {
         initial_value: &Bound<PyAny>,
     ) -> PyResult<()> {
         let object_type = object_type.borrow().object_type.clone_py(py);
-        let type_id = object_type.get_hash();
+        let type_id = object_type.get_hash(py)?;
 
         let mut creator = ValueCreator::new();
         pyparsing::serialize_py(initial_value, &object_type, &mut creator)?;
@@ -628,7 +632,7 @@ impl StateServerCore {
         initial_value: &Bound<PyAny>,
     ) -> PyResult<()> {
         let object_type = object_type.borrow().object_type.clone_py(py);
-        let type_id = object_type.get_hash();
+        let type_id = object_type.get_hash(py)?;
 
         let mut creator = ValueCreator::new();
         pyparsing::serialize_py(initial_value, &object_type, &mut creator)?;
@@ -653,7 +657,7 @@ impl StateServerCore {
         object_type: &Bound<PyObjectType>,
     ) -> PyResult<()> {
         let object_type = object_type.borrow().object_type.clone_py(py);
-        let type_id = object_type.get_hash();
+        let type_id = object_type.get_hash(py)?;
 
         let value_id = generate_value_id(&name);
         self.server
@@ -674,7 +678,7 @@ impl StateServerCore {
         object_type: &Bound<PyObjectType>,
     ) -> PyResult<()> {
         let object_type = ObjectType::Vec(Box::new(object_type.borrow().object_type.clone_py(py)));
-        let type_id = object_type.get_hash();
+        let type_id = object_type.get_hash(py)?;
 
         let value_id = generate_value_id(&name);
         self.server
@@ -698,7 +702,7 @@ impl StateServerCore {
         let key_type = key_type.borrow().object_type.clone_py(py);
         let value_type = value_type.borrow().object_type.clone_py(py);
         let object_type = ObjectType::Map(Box::new(key_type), Box::new(value_type));
-        let type_id = object_type.get_hash();
+        let type_id = object_type.get_hash(py)?;
 
         let value_id = generate_value_id(&name);
         self.server

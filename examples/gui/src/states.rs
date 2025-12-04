@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use egui_states::{State, StatesCreator, Value, ValueGraphs, ValueImage};
+use egui_states::{State, StatesBuilder, StatesCreator, Value, ValueGraphs, ValueImage};
 use egui_states::{state_enum, state_struct};
 
 #[state_enum]
@@ -26,7 +26,7 @@ pub struct States {
 }
 
 impl State for States {
-    fn new(c: &mut StatesCreator, parent: String) -> Self {
+    fn new(c: &mut impl StatesCreator, parent: String) -> Self {
         let mut b = c.builder("States", parent);
 
         let obj = Self {

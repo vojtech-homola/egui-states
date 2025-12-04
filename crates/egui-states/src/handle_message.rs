@@ -6,7 +6,7 @@ use egui_states_core::serialization::{
 };
 
 use crate::client_base::Client;
-use crate::states_creator::ValuesList;
+use crate::client_states::ValuesList;
 
 pub(crate) fn check_types(message_data: &[u8], vals: &ValuesList) -> Result<MessageData, ()> {
     match deserialize_from::<ServerHeader>(message_data) {
