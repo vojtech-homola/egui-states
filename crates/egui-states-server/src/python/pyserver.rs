@@ -18,20 +18,20 @@ use crate::python::{
     pytypes::{ObjectType, PyObjectType},
 };
 use crate::server::{Server, StatesList};
-use crate::signals::ChangedValues;
+use crate::signals::SignalsManager;
 use crate::value_parsing::{ValueCreator, ValueParser};
 use crate::values::{Value, ValueStatic};
 use crate::{graphs::ValueGraphs, image::ValueImage, list::ValueList, map::ValueMap};
 
 struct CoreInner {
     states: StatesList,
-    signals: ChangedValues,
     types: NoHashMap<u64, ObjectType>,
 }
 
 #[pyclass]
 pub struct StateServerCore {
     server: RwLock<Server>,
+    signals: SignalsManager,
     inner: OnceLock<CoreInner>,
     temps: RwLock<Option<NoHashMap<u64, ObjectType>>>,
 }
@@ -126,22 +126,26 @@ impl StateServerCore {
         };
 
         let server = Server::new(addr, handshake);
+        let signals = server.get_signals_manager();
+
+        // register logging signal type
+        let logging_object_type = ObjectType::Tuple(vec![ObjectType::U8, ObjectType::String]);
+        let mut types = NoHashMap::default();
+        types.insert(signals.get_logging_id(), logging_object_type);
+
         Ok(Self {
             server: RwLock::new(server),
+            signals,
             inner: OnceLock::new(),
-            temps: RwLock::new(Some(NoHashMap::default())),
+            temps: RwLock::new(Some(types)),
         })
     }
 
     fn initialize(&self) {
         let states = self.server.write().initialize();
-        if let Some((states, signals)) = states {
+        if let Some(states) = states {
             if let Some(types) = self.temps.write().take() {
-                let _ = self.inner.set(CoreInner {
-                    states,
-                    signals,
-                    types,
-                });
+                let _ = self.inner.set(CoreInner { states, types });
             }
         }
     }
@@ -230,9 +234,7 @@ impl StateServerCore {
 
     // signal callbacks -------------------------------------------------
     fn signal_set_register(&self, value_id: u64, register: bool) {
-        if let Some(inner) = self.inner.get() {
-            inner.signals.set_registerd(value_id, register);
-        }
+        self.signals.set_register(value_id, register);
     }
 
     fn signal_get<'py>(
@@ -241,7 +243,7 @@ impl StateServerCore {
         last_id: Option<u64>,
     ) -> PyResult<(u64, Bound<'py, PyAny>)> {
         let inner = self.get_inner()?;
-        let (id, data) = inner.signals.wait_changed_value(last_id);
+        let (id, data) = self.signals.wait_changed_value(last_id);
         match inner.types.get(&id) {
             Some(object_type) => {
                 let mut parser = ValueParser::new(data);
@@ -255,19 +257,15 @@ impl StateServerCore {
     }
 
     fn signalset_to_multi(&self, value_id: u64) {
-        if let Some(inner) = self.inner.get() {
-            inner.signals.set_to_multi(value_id);
-        }
+        self.signals.set_to_multi(value_id);
     }
 
     fn signal_set_to_single(&self, value_id: u64) {
-        if let Some(inner) = self.inner.get() {
-            inner.signals.set_to_single(value_id);
-        }
+        self.signals.set_to_single(value_id);
     }
 
-    fn signal_get_logging_id(&self) -> PyResult<u64> {
-        Ok(self.get_inner()?.signals.get_logging_id())
+    fn signal_get_logging_id(&self) -> u64 {
+        self.signals.get_logging_id()
     }
 
     // lists ------------------------------------------------------------
@@ -503,7 +501,7 @@ impl StateServerCore {
     }
 
     // graphs -----------------------------------------------------------
-    fn graph_set(
+    fn graphs_set(
         &self,
         py: Python,
         value_id: u64,
@@ -532,7 +530,7 @@ impl StateServerCore {
         }
     }
 
-    fn graph_add_points(
+    fn graphs_add_points(
         &self,
         py: Python,
         value_id: u64,
@@ -563,7 +561,7 @@ impl StateServerCore {
         }
     }
 
-    fn graph_get<'py>(
+    fn graphs_get<'py>(
         &self,
         py: Python<'py>,
         value_id: u64,
@@ -580,29 +578,44 @@ impl StateServerCore {
         }
     }
 
-    fn graph_count(&self, value_id: u64) -> PyResult<usize> {
-        let count = self.inner_graphs(value_id)?.len();
+    fn graphs_count(&self, value_id: u64) -> PyResult<usize> {
+        let count = self.inner_graphs(value_id)?.count();
         Ok(count)
     }
 
-    fn graph_remove(&self, value_id: u64, idx: u16, update: bool) -> PyResult<()> {
+    fn graphs_len(&self, value_id: u64, idx: u16) -> PyResult<usize> {
+        let len = self
+            .inner_graphs(value_id)?
+            .len(idx)
+            .ok_or_else(|| PyValueError::new_err(format!("No graph found at index {}", idx)))?;
+        Ok(len)
+    }
+
+    fn graphs_remove(&self, value_id: u64, idx: u16, update: bool) -> PyResult<()> {
         self.inner_graphs(value_id)?.remove(idx, update);
         Ok(())
     }
 
-    fn graph_reset(&self, value_id: u64, update: bool) -> PyResult<()> {
+    fn graphs_reset(&self, value_id: u64, update: bool) -> PyResult<()> {
         self.inner_graphs(value_id)?.reset(update);
         Ok(())
     }
 
+    fn graphs_is_linear(&self, value_id: u64, idx: u16) -> PyResult<bool> {
+        self.inner_graphs(value_id)?
+            .is_linear(idx)
+            .map_err(|_| PyValueError::new_err(format!("No graph found at index {}", idx)))
+    }
+
     // add states -------------------------------------------------------
+    // ------------------------------------------------------------------
     fn add_value(
         &self,
         py: Python,
         name: String,
         object_type: &Bound<PyObjectType>,
         initial_value: &Bound<PyAny>,
-    ) -> PyResult<()> {
+    ) -> PyResult<u64> {
         let object_type = object_type.borrow().object_type.clone_py(py);
         let type_id = object_type.get_hash(py)?;
 
@@ -621,7 +634,7 @@ impl StateServerCore {
         if let Some(types_map) = self.temps.write().as_mut() {
             types_map.insert(type_id, object_type);
         }
-        Ok(())
+        Ok(value_id)
     }
 
     fn add_static(
@@ -630,7 +643,7 @@ impl StateServerCore {
         name: String,
         object_type: &Bound<PyObjectType>,
         initial_value: &Bound<PyAny>,
-    ) -> PyResult<()> {
+    ) -> PyResult<u64> {
         let object_type = object_type.borrow().object_type.clone_py(py);
         let type_id = object_type.get_hash(py)?;
 
@@ -647,7 +660,7 @@ impl StateServerCore {
         if let Some(types_map) = self.temps.write().as_mut() {
             types_map.insert(type_id, object_type);
         }
-        Ok(())
+        Ok(value_id)
     }
 
     fn add_signal(
@@ -655,7 +668,7 @@ impl StateServerCore {
         py: Python,
         name: String,
         object_type: &Bound<PyObjectType>,
-    ) -> PyResult<()> {
+    ) -> PyResult<u64> {
         let object_type = object_type.borrow().object_type.clone_py(py);
         let type_id = object_type.get_hash(py)?;
 
@@ -668,7 +681,7 @@ impl StateServerCore {
         if let Some(types_map) = self.temps.write().as_mut() {
             types_map.insert(type_id, object_type);
         }
-        Ok(())
+        Ok(value_id)
     }
 
     fn add_list(
@@ -676,7 +689,7 @@ impl StateServerCore {
         py: Python,
         name: String,
         object_type: &Bound<PyObjectType>,
-    ) -> PyResult<()> {
+    ) -> PyResult<u64> {
         let object_type = ObjectType::Vec(Box::new(object_type.borrow().object_type.clone_py(py)));
         let type_id = object_type.get_hash(py)?;
 
@@ -689,7 +702,7 @@ impl StateServerCore {
         if let Some(types_map) = self.temps.write().as_mut() {
             types_map.insert(type_id, object_type);
         }
-        Ok(())
+        Ok(value_id)
     }
 
     fn add_map(
@@ -698,7 +711,7 @@ impl StateServerCore {
         name: String,
         key_type: &Bound<PyObjectType>,
         value_type: &Bound<PyObjectType>,
-    ) -> PyResult<()> {
+    ) -> PyResult<u64> {
         let key_type = key_type.borrow().object_type.clone_py(py);
         let value_type = value_type.borrow().object_type.clone_py(py);
         let object_type = ObjectType::Map(Box::new(key_type), Box::new(value_type));
@@ -713,19 +726,19 @@ impl StateServerCore {
         if let Some(types_map) = self.temps.write().as_mut() {
             types_map.insert(type_id, object_type);
         }
-        Ok(())
+        Ok(value_id)
     }
 
-    fn add_image(&self, name: String) -> PyResult<()> {
+    fn add_image(&self, name: String) -> PyResult<u64> {
         let value_id = generate_value_id(&name);
         self.server
             .write()
             .add_image(value_id)
             .map_err(|e| PyValueError::new_err(format!("Failed to add image: {}", e)))?;
-        Ok(())
+        Ok(value_id)
     }
 
-    fn add_graphs(&self, name: String, is_double: bool) -> PyResult<()> {
+    fn add_graphs(&self, name: String, is_double: bool) -> PyResult<u64> {
         let graph_type = match is_double {
             true => GraphType::F64,
             false => GraphType::F32,
@@ -736,6 +749,6 @@ impl StateServerCore {
             .write()
             .add_graphs(value_id, graph_type)
             .map_err(|e| PyValueError::new_err(format!("Failed to add graphs: {}", e)))?;
-        Ok(())
+        Ok(value_id)
     }
 }

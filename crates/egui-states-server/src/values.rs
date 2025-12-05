@@ -8,7 +8,7 @@ use egui_states_core::serialization::{ServerHeader, ser_server_value};
 
 use crate::sender::MessageSender;
 use crate::server::{Acknowledge, EnableTrait, SyncTrait};
-use crate::signals::ChangedValues;
+use crate::signals::SignalsManager;
 
 // pub(crate) trait UpdateValue: Send + Sync {
 //     fn update_value(&self, signal: bool, value: Bytes) -> Result<(), String>;
@@ -30,7 +30,7 @@ pub(crate) struct Value {
     sender: MessageSender,
     connected: Arc<AtomicBool>,
     enabled: AtomicBool,
-    signals: ChangedValues,
+    signals: SignalsManager,
 }
 
 impl Value {
@@ -39,7 +39,7 @@ impl Value {
         value: Bytes,
         sender: MessageSender,
         connected: Arc<AtomicBool>,
-        signals: ChangedValues,
+        signals: SignalsManager,
     ) -> Arc<Self> {
         Arc::new(Self {
             id,
@@ -194,12 +194,12 @@ impl EnableTrait for ValueStatic {
 // Signals --------------------------------------------
 pub(crate) struct Signal {
     id: u64,
-    signals: ChangedValues,
+    signals: SignalsManager,
     enabled: AtomicBool,
 }
 
 impl Signal {
-    pub(crate) fn new(id: u64, signals: ChangedValues) -> Arc<Self> {
+    pub(crate) fn new(id: u64, signals: SignalsManager) -> Arc<Self> {
         Arc::new(Self {
             id,
             signals,

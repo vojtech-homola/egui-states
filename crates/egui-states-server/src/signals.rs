@@ -179,13 +179,13 @@ impl ChangedInner {
 }
 
 #[derive(Clone)]
-pub(crate) struct ChangedValues {
+pub(crate) struct SignalsManager {
     event: Event,
     values: Arc<Mutex<ChangedInner>>,
     logging_id: u64,
 }
 
-impl ChangedValues {
+impl SignalsManager {
     pub(crate) fn new() -> Self {
         let logging_id = generate_value_id("__egui_states_logging");
         Self {
@@ -203,10 +203,10 @@ impl ChangedValues {
         self.values.lock().clear();
     }
 
-    fn serialize_message(level: u8, message: impl ToString) -> Bytes {
-        let data = message.to_string().into_bytes();
+    fn serialize_message(level: u8, text: impl ToString) -> Bytes {
+        let data = text.to_string().into_bytes();
         let mut message = Vec::new();
-        serialize_value_vec(&0, &mut message);
+        // serialize_value_vec(&0, &mut message);
         serialize_value_vec(&level, &mut message);
         message.extend_from_slice(&data);
         Bytes::from_owner(message)
@@ -242,7 +242,7 @@ impl ChangedValues {
         }
     }
 
-    pub(crate) fn set_registerd(&self, id: u64, register: bool) {
+    pub(crate) fn set_register(&self, id: u64, register: bool) {
         if register {
             self.values.lock().registered.insert(id);
         } else {

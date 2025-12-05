@@ -1,14 +1,14 @@
 from collections.abc import Callable
-from types import ModuleType
 
-from egui_states.signals import SignalsManager
-from egui_states.structures import LoggingSignal, _MainStatesBase, _StatesBase, _StaticBase, _ValueBase
 from egui_states._core import StateServerCore
+from egui_states.logging import LoggingSignal
+from egui_states.signals import SignalsManager
+from egui_states.structures import RoorState, _StatesBase, _StaticBase, _SiganlBase
 
 
 def _initialize_states(obj, server: StateServerCore, signals_manager: SignalsManager) -> None:
     for o in obj.__dict__.values():
-        if isinstance(o, _ValueBase):
+        if isinstance(o, _SiganlBase):
             o._initialize_value(server, signals_manager)
         elif isinstance(o, _StaticBase):
             o._initialize_base(server)
@@ -16,20 +16,28 @@ def _initialize_states(obj, server: StateServerCore, signals_manager: SignalsMan
             _initialize_states(o, server, signals_manager)
 
 
-class StateServer[T: _MainStatesBase]:
+class StateServer[T: RoorState]:
     """The main class for the SteteServer for UI."""
 
     def __init__(
         self,
         state_class: type[T],
-        core_module: ModuleType,
         port: int,
         signals_workers: int = 3,
         error_handler: Callable[[Exception], None] | None = None,
         ip_addr: tuple[int, int, int, int] | None = None,
         handshake: list[int] | None = None,
     ) -> None:
-        """Initialize the SteteServer."""
+        """Initialize the SteteServer.
+
+        Args:
+            state_class (RoorState): The class representing the UI states.
+            port (int): The port to run the server on.
+            signals_workers (int): The number of worker threads for signal handling.
+            error_handler (Callable[[Exception], None] | None): The error handler function.
+            ip_addr (tuple[int, int, int, int] | None): The IP address to bind the server to.
+            handshake (list[int] | None): The handshake bytes for client connection.
+        """
         self._server = StateServerCore(port, ip_addr, handshake)
         self._signals_manager = SignalsManager(self._server, signals_workers, error_handler)
         self._states: T = state_class(self._server.update)

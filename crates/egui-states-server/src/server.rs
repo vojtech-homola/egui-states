@@ -16,8 +16,8 @@ use crate::image::ValueImage;
 use crate::list::ValueList;
 use crate::map::ValueMap;
 use crate::sender::{MessageReceiver, MessageSender};
-use crate::server_core::start;
-use crate::signals::ChangedValues;
+use crate::server_core;
+use crate::signals::SignalsManager;
 use crate::values::{Signal, Value, ValueStatic};
 
 pub(crate) trait SyncTrait: Sync + Send {
@@ -105,7 +105,7 @@ pub(crate) struct Server {
     start_event: Event,
     addr: SocketAddrV4,
     states: StatesList,
-    signals: ChangedValues,
+    signals: SignalsManager,
     handshake: Option<Vec<u64>>,
 
     states_server: Option<ServerStatesList>,
@@ -118,7 +118,7 @@ impl Server {
         let enabled = Arc::new(atomic::AtomicBool::new(false));
         let connected = Arc::new(atomic::AtomicBool::new(false));
         let (sender, rx) = MessageSender::new();
-        let signals = ChangedValues::new();
+        let signals = SignalsManager::new();
 
         let obj = Self {
             connected,
@@ -136,7 +136,7 @@ impl Server {
         obj
     }
 
-    pub(crate) fn initialize(&mut self) -> Option<(StatesList, ChangedValues)> {
+    pub(crate) fn initialize(&mut self) -> Option<StatesList> {
         if self.states_server.is_none() {
             return None;
         }
@@ -162,7 +162,7 @@ impl Server {
         let server_thread = thread::Builder::new().name("Server".to_string());
         let _ = server_thread.spawn(move || {
             runtime.block_on(async move {
-                start(
+                server_core::start(
                     sender,
                     rx,
                     connected,
@@ -178,7 +178,11 @@ impl Server {
         });
 
         self.states.shrink();
-        Some((self.states.clone(), self.signals.clone()))
+        Some(self.states.clone())
+    }
+
+    pub(crate) fn get_signals_manager(&self) -> SignalsManager {
+        self.signals.clone()
     }
 
     pub(crate) fn start(&mut self) {

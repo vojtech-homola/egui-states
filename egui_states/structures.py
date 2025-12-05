@@ -1,104 +1,41 @@
 # ruff: noqa: D107
 from abc import ABC, abstractmethod
 from collections.abc import Buffer, Callable
-from enum import Enum
 from typing import Any
 
 import numpy as np
 import numpy.typing as npt
 
 from egui_states.signals import SignalsManager
-from egui_states._core import StateServerCore
+from egui_states._core import StateServerCore, PyObjectType
 
 
-class _StatesBase:
+class _StatesBase(ABC):
     pass
 
 
-class _MainStatesBase(_StatesBase, ABC):
+class RoorState(ABC):
+    """The root state class for the UI states."""
+
     @abstractmethod
     def __init__(self, update: Callable[[float | None], None]) -> None:
         pass
 
 
-class LogLevel(Enum):
-    """Logging levels."""
-
-    Debug = 0
-    Info = 1
-    Warning = 2
-    Error = 3
-
-
-class LoggingSignal:
-    """Logging signal for processing log messages from the state server."""
-
-    def __init__(self, signals_manager: SignalsManager, server: StateServerCore) -> None:
-        """Initialize the LoggingSignal."""
-        self._loggers: dict[int, list[Callable[[str], None]]] = {0: [], 1: [], 2: [], 3: []}
-        signals_manager.add_callback(0, self._callback)
-        server.signal_set_to_multi(0)
-
-    def _callback(self, message: tuple[int, str]) -> None:
-        level = message[0]
-        if level == LogLevel.Debug.value:
-            for logger in self._loggers[0]:
-                logger(message[1])
-        elif level == LogLevel.Info.value:
-            for logger in self._loggers[1]:
-                logger(message[1])
-        elif level == LogLevel.Warning.value:
-            for logger in self._loggers[2]:
-                logger(message[1])
-        elif level == LogLevel.Error.value:
-            for logger in self._loggers[3]:
-                logger(message[1])
-
-    def add_logger(self, level: LogLevel, logger: Callable[[str], None]):
-        """Add logger for a specific level.
-
-        Args:
-            level(Level): The logging level.
-            logger(Callable[[str], None]): The logger to add.
-        """
-        self._loggers[level.value].append(logger)
-
-    def remove_logger(self, level: LogLevel, logger: Callable[[str], None]):
-        """Remove logger for a specific level.
-
-        Args:
-            level(Level): The logging level.
-            logger(Callable[[str], None]): The logger to remove.
-        """
-        if logger in self._loggers[level.value]:
-            self._loggers[level.value].remove(logger)
-
-    def remove_all_loggers(self, level: LogLevel):
-        """Remove all loggers for a specific level.
-
-        Args:
-            level(Level): The logging level.
-        """
-        self._loggers[level.value].clear()
-
-
 class _StaticBase:
     _server: StateServerCore
-
-    def __init__(self, value_id: int) -> None:
-        self._value_id = value_id
+    _value_id: int
 
     def _initialize_base(self, server: StateServerCore):
         self._server = server
 
 
-class _ValueBase(_StaticBase):
+class _SiganlBase(_StaticBase):
     _signals_manager: SignalsManager
 
     def _initialize_value(self, server: StateServerCore, signals_manager: SignalsManager):
         self._server = server
         self._signals_manager = signals_manager
-        # signals_manager.register_signal(self._value_id)
 
     def set_to_multi(self) -> None:
         """Set the value to multi mode.
@@ -115,8 +52,12 @@ class _ValueBase(_StaticBase):
         self._server.signal_set_to_single(self._value_id)
 
 
-class Value[T](_ValueBase):
+class Value[T](_SiganlBase):
     """General UI value of type T."""
+
+    def __init__(self, obj_type: PyObjectType, initial_value: T):
+        self._initial_value = initial_value
+        self._obj_type = obj_type
 
     def set(self, value: T, set_signal: bool = False, update: bool = False) -> None:
         """Set the value of the UI element.
@@ -178,7 +119,7 @@ class ValueStatic[T](_StaticBase):
         return self._server.static_get(self._value_id)
 
 
-class Signal[T](_ValueBase):
+class Signal[T](_SiganlBase):
     """Signal from UI."""
 
     def set(self, value: T) -> None:
@@ -212,7 +153,7 @@ class Signal[T](_ValueBase):
         self._signals_manager.clear_callbacks(self._value_id)
 
 
-class SignalEmpty(_ValueBase):
+class SignalEmpty(_SiganlBase):
     """Empty Signal from UI."""
 
     def set(self) -> None:
@@ -321,7 +262,7 @@ class ValueDict[K, V](_StaticBase):
         Returns:
             V: The value of the item.
         """
-        return self._server.dict_item_get(self._value_id, key)
+        return self._server.map_get_item(self._value_id, key)
 
     def remove_item(self, key: K, update: bool = False) -> None:
         """Remove the item from the UI dict.
@@ -330,7 +271,7 @@ class ValueDict[K, V](_StaticBase):
             key(K): The key of the item.
             update(bool, optional): Whether to update the UI. Defaults to False.
         """
-        self._server.dict_item_del(self._value_id, key, update)
+        self._server.map_del_item(self._value_id, key, update)
 
     def __getitem__(self, key: K) -> V:
         """Get the item in the UI dict."""
@@ -373,7 +314,7 @@ class ValueList[T](_StaticBase):
             value(T): The value of the item.
             update(bool, optional): Whether to update the UI. Defaults to False.
         """
-        self._server.list_item_set(self._value_id, idx, value, update)
+        self._server.list_set_item(self._value_id, idx, value, update)
 
     def get_item(self, idx: int) -> T:
         """Get the item in the UI list.
@@ -384,7 +325,7 @@ class ValueList[T](_StaticBase):
         Returns:
             T: The value of the item.
         """
-        return self._server.list_item_get(self._value_id, idx)
+        return self._server.list_get_item(self._value_id, idx)
 
     def remove_item(self, idx: int, update: bool = False) -> None:
         """Remove the item from the UI list.
@@ -393,7 +334,7 @@ class ValueList[T](_StaticBase):
             idx(int): The index of the item.
             update(bool, optional): Whether to update the UI. Defaults to False.
         """
-        self._server.list_item_del(self._value_id, idx, update)
+        self._server.list_del_item(self._value_id, idx, update)
 
     def add_item(self, value: T, update: bool = False) -> None:
         """Add the item to the UI list.
@@ -402,7 +343,7 @@ class ValueList[T](_StaticBase):
             value(T): The value of the item.
             update(bool, optional): Whether to update the UI. Defaults to False.
         """
-        self._server.list_item_add(self._value_id, value, update)
+        self._server.list_append_item(self._value_id, value, update)
 
     def __getitem__(self, idx: int) -> T:
         """Get the item in the UI list."""
@@ -416,7 +357,7 @@ class ValueList[T](_StaticBase):
 class Graph:
     """Graph UI element."""
 
-    def __init__(self, value_id: int, idx: int, server: SteteServerCoreBase):
+    def __init__(self, value_id: int, idx: int, server: StateServerCore):
         """Initialize the Graph."""
         self._value_id = value_id
         self._idx = idx
@@ -474,16 +415,16 @@ class Graph:
         Returns:
             npt.NDArray[np.float32 | np.float64]: The graph.
         """
-        data, shape = self._server.graphs_get(self._value_id, self._idx)
+        data, byte_size, shape = self._server.graphs_get(self._value_id, self._idx)
 
-        if shape[-1] == 4:
+        if byte_size == 4:
             dtype = np.float32
-        elif shape[-1] == 8:
+        elif byte_size == 8:
             dtype = np.float64
         else:
             raise RuntimeError("Invalid graph datatype.")
 
-        reshape = shape[:2] if len(shape) == 3 else shape[:1]
+        reshape = shape if shape[0] == 2 else (shape[1],)
         return np.frombuffer(data, dtype=dtype).reshape(reshape)
 
     def _kill(self):
@@ -499,7 +440,7 @@ class Graph:
         return self.len()
 
 
-class ValueGraphs(_StaticBase):
+class ValueGraphs[T](_StaticBase):
     """Graph UI element."""
 
     def __init__(self, counter: _Counter):  # noqa: D107
@@ -578,4 +519,4 @@ class ValueGraphs(_StaticBase):
             update(bool, optional): Whether to update the UI. Defaults to False.
         """
         self._graphs.clear()
-        self._server.graphs_clear(self._value_id, update)
+        self._server.graphs_reset(self._value_id, update)

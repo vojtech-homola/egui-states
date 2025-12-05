@@ -49,6 +49,13 @@ impl ValueGraphs {
         self.graph_type
     }
 
+    pub(crate) fn is_linear(&self, idx: u16) -> Result<bool, ()> {
+        self.graphs
+            .read()
+            .get(&idx)
+            .map_or(Err(()), |g| Ok(g.x.is_none()))
+    }
+
     pub(crate) fn set(&self, idx: u16, graph_data: GraphData, update: bool) {
         let graph = data_to_graph(&graph_data);
 
@@ -90,8 +97,12 @@ impl ValueGraphs {
         self.graphs.read().get(&idx).map(getter)
     }
 
-    pub(crate) fn len(&self) -> usize {
+    pub(crate) fn count(&self) -> usize {
         self.graphs.read().len()
+    }
+
+    pub(crate) fn len(&self, idx: u16) -> Option<usize> {
+        self.graphs.read().get(&idx).map(|g| g.y.len())
     }
 
     pub(crate) fn remove(&self, idx: u16, update: bool) {

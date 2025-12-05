@@ -1,10 +1,10 @@
 """TODO: Doc string."""
 
 from egui_states import structures, version
+from egui_states.logging import LogLevel
 from egui_states.server import StateServer
 from egui_states.structures import (
     Graph,
-    LogLevel,
     Signal,
     SignalEmpty,
     Value,

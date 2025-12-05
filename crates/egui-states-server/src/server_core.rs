@@ -19,7 +19,7 @@ use egui_states_core::serialization::{
 
 use crate::sender::{MessageReceiver, MessageSender};
 use crate::server::ServerStatesList;
-use crate::signals::ChangedValues;
+use crate::signals::SignalsManager;
 
 enum ChannelHolder {
     Transfer(JoinHandle<MessageReceiver>),
@@ -32,7 +32,7 @@ pub(crate) async fn start(
     connected: Arc<atomic::AtomicBool>,
     enabled: Arc<atomic::AtomicBool>,
     values: ServerStatesList,
-    signals: ChangedValues,
+    signals: SignalsManager,
     start_event: Event,
     addr: SocketAddrV4,
     handshake: Option<Vec<u64>>,
@@ -221,7 +221,7 @@ pub(crate) async fn start(
 async fn communication_handler(
     connected: Arc<AtomicBool>,
     values: ServerStatesList,
-    signals: ChangedValues,
+    signals: SignalsManager,
     websocket: WebSocketStream<TcpStream>,
     rx: MessageReceiver,
     sender: MessageSender,
@@ -349,7 +349,7 @@ async fn writer(
     mut rx: MessageReceiver,
     connected: Arc<AtomicBool>,
     mut websocket: SplitSink<WebSocketStream<TcpStream>, Message>,
-    signals: ChangedValues,
+    signals: SignalsManager,
     reader_handle: tokio::task::JoinHandle<()>,
 ) -> MessageReceiver {
     loop {
