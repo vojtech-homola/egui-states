@@ -38,3 +38,4 @@ pub trait State {
 
 pub use egui_states_core::types::{GetType, ObjectType};
 pub use egui_states_macros::{state_enum, state_struct};
+pub use serde;

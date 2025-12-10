@@ -8,7 +8,6 @@ members = [
     "crates/egui-states-server-old",
     "crates/egui-states-server",
     "examples/gui",
-    # "examples/states-server",
 ]
 resolver = "3"
 
@@ -24,7 +23,8 @@ egui_states_old = { path = "crates/egui-states-old" }
 egui_states = { path = "crates/egui-states" }
 egui_states_server_old = { path = "crates/egui-states-server-old" }
 egui_states_server = { path = "crates/egui-states-server" }
-# gui = { path = "examples/gui" }
+
+gui = { path = "examples/gui" }
 
 serde = "1"
 tokio-tungstenite = "0.28"
