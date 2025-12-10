@@ -3,9 +3,11 @@ use std::collections::VecDeque;
 use std::string::ToString;
 use std::{fs, io::Write};
 
+use egui_states_core::types::ObjectType;
+
 use crate::State;
-use crate::build_script::values_info::{InitValue, TypeInfo, StateType};
 use crate::build_script::state_creator::StatesCreatorBuild;
+use crate::build_script::values_info::{InitValue, StateType};
 
 fn parse_states<S: State>() -> BTreeMap<&'static str, Vec<StateType>> {
     let mut creator = StatesCreatorBuild::new();
@@ -13,7 +15,7 @@ fn parse_states<S: State>() -> BTreeMap<&'static str, Vec<StateType>> {
     creator.get_states()
 }
 
-fn type_info_to_type_string(info: &TypeInfo) -> String {
+fn type_info_to_type_string(info: &ObjectType) -> String {
     match info {
         TypeInfo::Basic(name) => name.to_string(),
         TypeInfo::Tuple(elements) => {

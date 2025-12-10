@@ -2,7 +2,7 @@ from collections.abc import Callable
 from types import ModuleType
 
 from egui_states.signals import SignalsManager
-from egui_states.structures import LoggingSignal, _MainStatesBase, _StatesBase, _StaticBase, _ValueBase
+from egui_states.structures import LoggingSignal, _MainStatesBase, ISubStates, _StaticBase, _ValueBase
 from egui_states.typing import SteteServerCoreBase
 
 
@@ -12,7 +12,7 @@ def _initialize_states(obj, server: SteteServerCoreBase, signals_manager: Signal
             o._initialize_value(server, signals_manager)
         elif isinstance(o, _StaticBase):
             o._initialize_base(server)
-        elif isinstance(o, _StatesBase):
+        elif isinstance(o, ISubStates):
             _initialize_states(o, server, signals_manager)
 
 

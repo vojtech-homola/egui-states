@@ -136,7 +136,7 @@ impl Server {
         obj
     }
 
-    pub(crate) fn initialize(&mut self) -> Option<StatesList> {
+    pub(crate) fn finalize(&mut self) -> Option<StatesList> {
         if self.states_server.is_none() {
             return None;
         }
@@ -144,7 +144,7 @@ impl Server {
         let runtime = Builder::new_current_thread()
             .thread_name("Server Runtime")
             .enable_io()
-            .worker_threads(2)
+            .worker_threads(3)
             .build()
             .unwrap();
 
@@ -162,7 +162,7 @@ impl Server {
         let server_thread = thread::Builder::new().name("Server".to_string());
         let _ = server_thread.spawn(move || {
             runtime.block_on(async move {
-                server_core::start(
+                server_core::run(
                     sender,
                     rx,
                     connected,
@@ -265,7 +265,7 @@ impl Server {
         }
 
         Err(format!(
-            "Cannot add value with id {}: server not initialized",
+            "Cannot add value with id {}: server is already initialized",
             id
         ))
     }
@@ -283,7 +283,7 @@ impl Server {
         }
 
         Err(format!(
-            "Cannot add static value with id {}: server not initialized",
+            "Cannot add static value with id {}: server is already initialized",
             id
         ))
     }
@@ -301,7 +301,7 @@ impl Server {
         }
 
         Err(format!(
-            "Cannot add signal with id {}: server not initialized",
+            "Cannot add signal with id {}: server is already initialized",
             id
         ))
     }
@@ -319,7 +319,7 @@ impl Server {
         }
 
         Err(format!(
-            "Cannot add list with id {}: server not initialized",
+            "Cannot add list with id {}: server is already initialized",
             id
         ))
     }
@@ -337,7 +337,7 @@ impl Server {
         }
 
         Err(format!(
-            "Cannot add map with id {}: server not initialized",
+            "Cannot add map with id {}: server is already initialized",
             id
         ))
     }
@@ -355,7 +355,7 @@ impl Server {
         }
 
         Err(format!(
-            "Cannot add image with id {}: server not initialized",
+            "Cannot add image with id {}: server is already initialized",
             id
         ))
     }
@@ -374,7 +374,7 @@ impl Server {
         }
 
         Err(format!(
-            "Cannot add graphs with id {}: server not initialized",
+            "Cannot add graphs with id {}: server is already initialized",
             id
         ))
     }

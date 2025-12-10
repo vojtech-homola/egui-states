@@ -8,10 +8,10 @@ from egui_states.structures import (
     Signal,
     SignalEmpty,
     Value,
-    ValueDict,
     ValueGraphs,
     ValueImage,
     ValueList,
+    ValueMap,
     ValueStatic,
 )
 from egui_states.version import __version__
@@ -24,7 +24,7 @@ __all__ = [
     "Signal",
     "SignalEmpty",
     "Value",
-    "ValueDict",
+    "ValueMap",
     "ValueGraphs",
     "ValueImage",
     "ValueList",

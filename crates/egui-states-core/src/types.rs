@@ -3,7 +3,7 @@ use std::hash::{Hash, Hasher};
 
 use crate::hasher::StableHasher;
 
-#[derive(Hash, Clone)]
+#[derive(Hash, Clone, PartialEq)]
 pub enum ObjectType {
     U8,
     U16,

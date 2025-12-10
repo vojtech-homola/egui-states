@@ -141,8 +141,8 @@ impl StateServerCore {
         })
     }
 
-    fn initialize(&self) {
-        let states = self.server.write().initialize();
+    fn finalize(&self) {
+        let states = self.server.write().finalize();
         if let Some(states) = states {
             if let Some(types) = self.temps.write().take() {
                 let _ = self.inner.set(CoreInner { states, types });
@@ -690,7 +690,7 @@ impl StateServerCore {
         name: String,
         object_type: &Bound<PyObjectType>,
     ) -> PyResult<u64> {
-        let object_type = ObjectType::Vec(Box::new(object_type.borrow().object_type.clone_py(py)));
+        let object_type = object_type.borrow().object_type.clone_py(py);
         let type_id = object_type.get_hash(py)?;
 
         let value_id = generate_value_id(&name);
@@ -709,12 +709,9 @@ impl StateServerCore {
         &self,
         py: Python,
         name: String,
-        key_type: &Bound<PyObjectType>,
-        value_type: &Bound<PyObjectType>,
+        object_type: &Bound<PyObjectType>,
     ) -> PyResult<u64> {
-        let key_type = key_type.borrow().object_type.clone_py(py);
-        let value_type = value_type.borrow().object_type.clone_py(py);
-        let object_type = ObjectType::Map(Box::new(key_type), Box::new(value_type));
+        let object_type = object_type.borrow().object_type.clone_py(py);
         let type_id = object_type.get_hash(py)?;
 
         let value_id = generate_value_id(&name);

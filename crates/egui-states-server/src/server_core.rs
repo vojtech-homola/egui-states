@@ -26,7 +26,7 @@ enum ChannelHolder {
     Rx(MessageReceiver),
 }
 
-pub(crate) async fn start(
+pub(crate) async fn run(
     sender: MessageSender,
     rx: MessageReceiver,
     connected: Arc<atomic::AtomicBool>,
@@ -179,8 +179,7 @@ pub(crate) async fn start(
                             v.enable(false);
                         }
                         sender.close();
-                        let rx = handler.await.expect("joining communication handler failed");
-                        rx
+                        handler.await.expect("joining communication handler failed")
                     }
                     ChannelHolder::Rx(rx) => rx,
                 };

@@ -1,22 +1,26 @@
 from collections.abc import Callable
 
-from egui_states._core import StateServerCore
+from egui_states._core import PyObjectType, StateServerCore
 from egui_states.logging import LoggingSignal
 from egui_states.signals import SignalsManager
-from egui_states.structures import RoorState, _StatesBase, _StaticBase, _SiganlBase
+from egui_states.structures import IStates, ISubStates, _SignalBase, _StaticBase
 
 
-def _initialize_states(obj, server: StateServerCore, signals_manager: SignalsManager) -> None:
-    for o in obj.__dict__.values():
-        if isinstance(o, _SiganlBase):
-            o._initialize_value(server, signals_manager)
-        elif isinstance(o, _StaticBase):
+def _initialize(
+    obj, parent: str, server: StateServerCore, signals_manager: SignalsManager, types: list[PyObjectType]
+) -> None:
+    for name, o in obj.__dict__.items():
+        full_name = f"{parent}.{name}"
+        if isinstance(o, _StaticBase):
             o._initialize_base(server)
-        elif isinstance(o, _StatesBase):
-            _initialize_states(o, server, signals_manager)
+            if isinstance(o, _SignalBase):
+                o._initialize_signal(signals_manager)
+            o._initialize(full_name, types)
+        elif isinstance(o, ISubStates):
+            _initialize(o, full_name, server, signals_manager, types)
 
 
-class StateServer[T: RoorState]:
+class StateServer[T: IStates]:
     """The main class for the SteteServer for UI."""
 
     def __init__(
@@ -42,7 +46,7 @@ class StateServer[T: RoorState]:
         self._signals_manager = SignalsManager(self._server, signals_workers, error_handler)
         self._states: T = state_class(self._server.update)
 
-        _initialize_states(self._states, self._server, self._signals_manager)
+        _initialize(self._states, "root", self._server, self._signals_manager, self._states._get_obj_types())
         self.logging = LoggingSignal(self._signals_manager, self._server)
 
     @property

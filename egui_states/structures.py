@@ -6,35 +6,48 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 
+from egui_states import _core
+from egui_states._core import PyObjectType, StateServerCore
 from egui_states.signals import SignalsManager
-from egui_states._core import StateServerCore, PyObjectType
 
 
-class _StatesBase(ABC):
-    pass
+class ISubStates(ABC):
+    """The base class for substates in the UI states."""
+
+    @abstractmethod
+    def __init__(self, parent: str) -> None:
+        pass
 
 
-class RoorState(ABC):
+class IStates(ABC):
     """The root state class for the UI states."""
 
     @abstractmethod
     def __init__(self, update: Callable[[float | None], None]) -> None:
         pass
 
+    @classmethod
+    @abstractmethod
+    def _get_obj_types(cls) -> list[PyObjectType]:
+        pass
 
-class _StaticBase:
+
+class _StaticBase(ABC):
     _server: StateServerCore
     _value_id: int
 
-    def _initialize_base(self, server: StateServerCore):
+    def _initialize_base(self, server: StateServerCore) -> None:
         self._server = server
 
+    @abstractmethod
+    def _initialize(self, name: str, types: list[PyObjectType]) -> None:
+        pass
 
-class _SiganlBase(_StaticBase):
+
+class _SignalBase(_StaticBase):
     _signals_manager: SignalsManager
 
-    def _initialize_value(self, server: StateServerCore, signals_manager: SignalsManager):
-        self._server = server
+    def _initialize_signal(self, signals_manager: SignalsManager) -> None:
         self._signals_manager = signals_manager
 
     def set_to_multi(self) -> None:
@@ -52,12 +65,17 @@ class _SiganlBase(_StaticBase):
         self._server.signal_set_to_single(self._value_id)
 
 
-class Value[T](_SiganlBase):
+class Value[T](_SignalBase):
     """General UI value of type T."""
 
-    def __init__(self, obj_type: PyObjectType, initial_value: T):
+    def __init__(self, obj_id: int, initial_value: T):
         self._initial_value = initial_value
-        self._obj_type = obj_type
+        self._obj_id = obj_id
+
+    def _initialize(self, name: str, types: list[PyObjectType]) -> None:
+        self._value_id = self._server.add_value(name, types[self._obj_id], self._initial_value)
+        del self._initial_value
+        del self._obj_id
 
     def set(self, value: T, set_signal: bool = False, update: bool = False) -> None:
         """Set the value of the UI element.
@@ -101,6 +119,15 @@ class Value[T](_SiganlBase):
 class ValueStatic[T](_StaticBase):
     """Numeric static UI value of type T. Static means that the value is not updated in the UI."""
 
+    def __init__(self, obj_id: int, initial_value: T) -> None:
+        self._initial_value = initial_value
+        self._obj_id = obj_id
+
+    def _initialize(self, name: str, types: list[PyObjectType]) -> None:
+        self._value_id = self._server.add_static(name, types[self._obj_id], self._initial_value)
+        del self._initial_value
+        del self._obj_id
+
     def set(self, value: T, update: bool = False) -> None:
         """Set the static value of the UI.
 
@@ -119,8 +146,15 @@ class ValueStatic[T](_StaticBase):
         return self._server.static_get(self._value_id)
 
 
-class Signal[T](_SiganlBase):
+class Signal[T](_SignalBase):
     """Signal from UI."""
+
+    def __init__(self, obj_id: int) -> None:
+        self._obj_id = obj_id
+
+    def _initialize(self, name: str, types: list[PyObjectType]) -> None:
+        self._value_id = self._server.add_signal(name, types[self._obj_id])
+        del self._obj_id
 
     def set(self, value: T) -> None:
         """Set the signal value.
@@ -153,8 +187,11 @@ class Signal[T](_SiganlBase):
         self._signals_manager.clear_callbacks(self._value_id)
 
 
-class SignalEmpty(_SiganlBase):
+class SignalEmpty(_SignalBase):
     """Empty Signal from UI."""
+
+    def _initialize(self, name: str, types: list[PyObjectType]) -> None:
+        self._value_id = self._server.add_signal(name, _core.emp)
 
     def set(self) -> None:
         """Set the signal value.
@@ -186,6 +223,9 @@ class SignalEmpty(_SiganlBase):
 
 class ValueImage(_StaticBase):
     """Image UI element."""
+
+    def _initialize(self, name: str, types: list[PyObjectType]) -> None:
+        self._value_id = self._server.add_image(name)
 
     def set(
         self,
@@ -223,8 +263,15 @@ class ValueImage(_StaticBase):
         return self._server.image_size(self._value_id)
 
 
-class ValueDict[K, V](_StaticBase):
+class ValueMap[K, V](_StaticBase):
     """Dict UI element."""
+
+    def __init__(self, obj_id: int) -> None:
+        self._obj_id = obj_id
+
+    def _initialize(self, name: str, types: list[PyObjectType]) -> None:
+        self._value_id = self._server.add_map(name, types[self._obj_id])
+        del self._obj_id
 
     def set(self, value: dict[K, V], update: bool = False) -> None:
         """Set the dict in the UI dict.
@@ -288,6 +335,13 @@ class ValueDict[K, V](_StaticBase):
 
 class ValueList[T](_StaticBase):
     """List UI element."""
+
+    def __init__(self, obj_id: int) -> None:
+        self._obj_id = obj_id
+
+    def _initialize(self, name: str, types: list[PyObjectType]) -> None:
+        self._value_id = self._server.add_list(name, types[self._obj_id])
+        del self._obj_id
 
     def set(self, value: list[T], update: bool = False) -> None:
         """Set the list in the UI list.
@@ -443,11 +497,19 @@ class Graph:
 class ValueGraphs[T](_StaticBase):
     """Graph UI element."""
 
-    def __init__(self, counter: _Counter):  # noqa: D107
-        super().__init__(counter)
+    def __init__(self, dtype: np.dtype):  # noqa: D107
+        if dtype == np.float32:
+            self._id_double = False
+        elif dtype == np.float64:
+            self._id_double = True
+        else:
+            raise ValueError("Invalid dtype for graphs. Only np.float32 and np.float64 are supported.")
 
         self._graphs: dict[int, Graph] = {}
         self.__getitem__ = self.get
+
+    def _initialize(self, name: str, types: list[PyObjectType]) -> None:
+        self._value_id = self._server.add_graphs(name, self._id_double)
 
     def get(self, idx: int) -> Graph:
         """Get the graph by index.
