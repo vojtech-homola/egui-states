@@ -3,7 +3,7 @@ from collections.abc import Callable
 from egui_states._core import PyObjectType, StateServerCore
 from egui_states.logging import LoggingSignal
 from egui_states.signals import SignalsManager
-from egui_states.structures import IStates, ISubStates, _SignalBase, _StaticBase
+from egui_states.structures import StatesBase, ISubStates, _SignalBase, _StaticBase
 
 
 def _initialize(
@@ -20,7 +20,7 @@ def _initialize(
             _initialize(o, full_name, server, signals_manager, types)
 
 
-class StateServer[T: IStates]:
+class StateServer[T: StatesBase]:
     """The main class for the SteteServer for UI."""
 
     def __init__(

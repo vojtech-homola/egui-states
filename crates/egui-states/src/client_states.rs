@@ -75,9 +75,9 @@ impl StatesCreatorClient {
 impl StatesCreator for StatesCreatorClient {
     type Builder = StatesBuilderClient;
 
-    fn builder(&self, _state_name: &'static str, parent: String) -> Self::Builder {
+    fn builder(&mut self, _state_name: &'static str, parent: &String) -> Self::Builder {
         StatesBuilderClient {
-            parent,
+            parent: parent.clone(),
             sender: self.sender.clone(),
             val: ValuesList::new(),
         }

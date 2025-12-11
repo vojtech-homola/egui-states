@@ -17,7 +17,7 @@ use crate::values::{Signal, Value, ValueStatic};
 pub trait StatesCreator {
     type Builder: StatesBuilder;
 
-    fn builder(&self, state_name: &'static str, parent: String) -> Self::Builder;
+    fn builder(&mut self, state_name: &'static str, parent: &String) -> Self::Builder;
     fn add_states(&mut self, builder: Self::Builder);
     fn add_substate<S: State>(&mut self, parent: &str, name: &str) -> S;
 }

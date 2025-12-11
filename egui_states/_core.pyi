@@ -1,7 +1,7 @@
 from collections.abc import Buffer
 from typing import Any
 
-from egui_states.custom_types import CustomStruct, FastEnum
+from egui_states.structures import CustomStruct, FastEnum
 
 class PyObjectType:
     """A class representing a type of object in the state server."""

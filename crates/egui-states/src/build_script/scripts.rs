@@ -1,18 +1,17 @@
 use std::collections::BTreeMap;
-use std::collections::VecDeque;
 use std::string::ToString;
-use std::{fs, io::Write};
 
 use egui_states_core::types::ObjectType;
 
 use crate::State;
 use crate::build_script::state_creator::StatesCreatorBuild;
-use crate::build_script::values_info::{InitValue, StateType};
+use crate::build_script::values_info::StateType;
 
-pub(crate) fn parse_states<S: State>() -> BTreeMap<&'static str, Vec<StateType>> {
+pub(crate) fn parse_states<S: State>() -> (BTreeMap<&'static str, Vec<StateType>>, &'static str) {
     let mut creator = StatesCreatorBuild::new();
     S::new(&mut creator, "root".to_string());
-    creator.get_states()
+    let root_state = creator.root_state();
+    (creator.get_states(), root_state)
 }
 
 fn collect_enums(type_info: &ObjectType, enums: &mut BTreeMap<String, Vec<(String, isize)>>) {

@@ -49,7 +49,13 @@ pub(crate) fn impl_struct(input: TokenStream) -> TokenStream {
         impl egui_states::GetInitValue for #ident {
             #[inline]
             fn init_value(&self) -> egui_states::InitValue {
-                egui_states::InitValue::Tuple(vec![#(self.#names.init_value()),*])
+                //egui_states::InitValue::Tuple(vec![#(self.#names.init_value()),*])
+                egui_states::InitValue::Struct(
+                    stringify!(#ident),
+                    vec![
+                        #((stringify!(#names), self.#names.init_value())),*
+                    ]
+                )
             }
         }
 
@@ -132,7 +138,7 @@ pub(crate) fn impl_enum(input: TokenStream) -> TokenStream {
         impl egui_states::GetInitValue for #ident {
             #[inline]
             fn init_value(&self) -> egui_states::InitValue {
-                egui_states::InitValue::Enum(format!("{:?}", self))
+                egui_states::InitValue::Enum(format!("{}::{:?}", stringify!(#ident), self))
             }
         }
 

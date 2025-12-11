@@ -20,6 +20,7 @@ use crate::values::{Signal, Value, ValueStatic};
 
 pub struct StatesCreatorBuild {
     states: BTreeMap<&'static str, Vec<StateType>>,
+    root_state: Option<&'static str>,
     sender: MessageSender,
 }
 
@@ -29,6 +30,7 @@ impl StatesCreatorBuild {
 
         Self {
             states: BTreeMap::new(),
+            root_state: None,
             sender,
         }
     }
@@ -36,15 +38,25 @@ impl StatesCreatorBuild {
     pub fn get_states(self) -> BTreeMap<&'static str, Vec<StateType>> {
         self.states
     }
+
+    pub fn root_state(&self) -> &'static str {
+        self.root_state.unwrap()
+    }
 }
 
 impl StatesCreator for StatesCreatorBuild {
     type Builder = StatesBuilderBuild;
 
-    fn builder(&self, state_name: &'static str, parent: String) -> StatesBuilderBuild {
+    fn builder(&mut self, state_name: &'static str, parent: &String) -> StatesBuilderBuild {
+        if let None = self.root_state {
+            self.root_state = Some(state_name);
+        }
+
+
+
         StatesBuilderBuild {
             state_name,
-            parent,
+            parent: parent.clone(),
             sender: self.sender.clone(),
             states: Vec::new(),
         }

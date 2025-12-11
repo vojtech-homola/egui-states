@@ -1,45 +1,48 @@
-use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::string::ToString;
 use std::{fs, io::Write};
 
+use egui_states_core::graphs::GraphType;
 use egui_states_core::types::ObjectType;
 
 use crate::State;
 use crate::build_script::scripts;
-use crate::build_script::state_creator::StatesCreatorBuild;
 use crate::build_script::values_info::{InitValue, StateType};
 
 fn type_to_pytype(type_info: &ObjectType) -> String {
     match type_info {
-        ObjectType::U8 => "u8".to_string(),
-        ObjectType::U16 => "u16".to_string(),
-        ObjectType::U32 => "u32".to_string(),
-        ObjectType::U64 => "u64".to_string(),
-        ObjectType::I8 => "i8".to_string(),
-        ObjectType::I16 => "i16".to_string(),
-        ObjectType::I32 => "i32".to_string(),
-        ObjectType::I64 => "i64".to_string(),
-        ObjectType::F32 => "f32".to_string(),
-        ObjectType::F64 => "f64".to_string(),
-        ObjectType::Bool => "bo".to_string(),
-        ObjectType::String => "st".to_string(),
-        ObjectType::Empty => "emp".to_string(),
-        ObjectType::Enum(name, _) => format!("enu({})", name),
-        ObjectType::Struct(name, _) => format!("str({})", name),
+        ObjectType::U8 => "s.u8".to_string(),
+        ObjectType::U16 => "s.u16".to_string(),
+        ObjectType::U32 => "s.u32".to_string(),
+        ObjectType::U64 => "s.u64".to_string(),
+        ObjectType::I8 => "s.i8".to_string(),
+        ObjectType::I16 => "s.i16".to_string(),
+        ObjectType::I32 => "s.i32".to_string(),
+        ObjectType::I64 => "s.i64".to_string(),
+        ObjectType::F32 => "s.f32".to_string(),
+        ObjectType::F64 => "s.f64".to_string(),
+        ObjectType::Bool => "s.bo".to_string(),
+        ObjectType::String => "s.st".to_string(),
+        ObjectType::Empty => "s.emp".to_string(),
+        ObjectType::Enum(name, _) => format!("s.enu({})", name),
+        ObjectType::Struct(name, elments) => {
+            let fields: Vec<String> = elments.iter().map(|(_, obj)| type_to_pytype(obj)).collect();
+            format!("s.cl([{}], {})", fields.join(", "), name)
+        }
         ObjectType::Tuple(vec) => {
             let elems: Vec<String> = vec.iter().map(|t| type_to_pytype(t)).collect();
-            format!("tu([{}])", elems.join(", "))
+            format!("s.tu([{}])", elems.join(", "))
         }
         ObjectType::List(size, element) => {
-            format!("li({}, {})", type_to_pytype(element), size)
+            format!("s.li({}, {})", type_to_pytype(element), size)
         }
         ObjectType::Vec(element) => {
-            format!("vec({})", type_to_pytype(element))
+            format!("s.vec({})", type_to_pytype(element))
         }
         ObjectType::Map(key_type, value_type) => {
             format!(
-                "map({}, {})",
+                "s.map({}, {})",
                 type_to_pytype(key_type),
                 type_to_pytype(value_type)
             )
@@ -48,6 +51,45 @@ fn type_to_pytype(type_info: &ObjectType) -> String {
             format!("opt({})", type_to_pytype(element))
         }
     }
+}
+
+fn process_type_info(values: &Vec<StateType>) -> (HashMap<String, usize>, Vec<ObjectType>) {
+    let mut type_map: HashMap<String, usize> = HashMap::new();
+    let mut type_list: Vec<ObjectType> = Vec::new();
+
+    for state in values {
+        match state {
+            StateType::Value(name, obj_type, _)
+            | StateType::Static(name, obj_type, _)
+            | StateType::List(name, obj_type)
+            | StateType::Signal(name, obj_type) => {
+                if type_list.contains(obj_type) {
+                    type_map.insert(
+                        name.clone(),
+                        type_list.iter().position(|t| t == obj_type).unwrap(),
+                    );
+                } else {
+                    type_list.push(obj_type.clone());
+                    type_map.insert(name.clone(), type_list.len() - 1);
+                }
+            }
+            StateType::Dict(name, key, value) => {
+                let dict_type = ObjectType::Map(Box::new(key.clone()), Box::new(value.clone()));
+                if type_list.contains(&dict_type) {
+                    type_map.insert(
+                        name.clone(),
+                        type_list.iter().position(|t| t == &dict_type).unwrap(),
+                    );
+                } else {
+                    type_list.push(dict_type);
+                    type_map.insert(name.clone(), type_list.len() - 1);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    (type_map, type_list)
 }
 
 fn type_info_to_python_type(info: &ObjectType, list_comment: bool) -> String {
@@ -63,7 +105,7 @@ fn type_info_to_python_type(info: &ObjectType, list_comment: bool) -> String {
         ObjectType::F32 | ObjectType::F64 => "float".to_string(),
         ObjectType::Bool => "bool".to_string(),
         ObjectType::String => "str".to_string(),
-        ObjectType::Empty => "()".to_string(),
+        ObjectType::Empty => "".to_string(),
         ObjectType::Enum(name, _) => name.clone(),
         ObjectType::Struct(name, _) => name.clone(),
         ObjectType::Tuple(elements) => {
@@ -97,6 +139,142 @@ fn type_info_to_python_type(info: &ObjectType, list_comment: bool) -> String {
     }
 }
 
+fn init_to_python_value(init: &InitValue) -> String {
+    match init {
+        InitValue::U8(v) => format!("{}", v),
+        InitValue::U16(v) => format!("{}", v),
+        InitValue::U32(v) => format!("{}", v),
+        InitValue::U64(v) => format!("{}", v),
+        InitValue::I8(v) => format!("{}", v),
+        InitValue::I16(v) => format!("{}", v),
+        InitValue::I32(v) => format!("{}", v),
+        InitValue::I64(v) => format!("{}", v),
+        InitValue::F64(v) => format!("{}", v),
+        InitValue::F32(v) => format!("{}", v),
+        InitValue::String(v) => format!("\"{}\"", v),
+        InitValue::Bool(v) => format!("{}", v),
+        InitValue::Enum(v) => {
+            let value = v.replace("::", ".");
+            format!("{}", value)
+        }
+        InitValue::Option(opt) => match opt {
+            Some(boxed) => init_to_python_value(boxed),
+            None => "None".to_string(),
+        },
+        InitValue::Tuple(elems) => {
+            let elem_strs: Vec<String> = elems.iter().map(|e| init_to_python_value(e)).collect();
+            format!("({})", elem_strs.join(", "))
+        }
+        InitValue::List(elems) | InitValue::Vec(elems) => {
+            let elem_strs: Vec<String> = elems.iter().map(|e| init_to_python_value(e)).collect();
+            format!("[{}]", elem_strs.join(", "))
+        }
+        InitValue::Map(pairs) => {
+            let pair_strs: Vec<String> = pairs
+                .iter()
+                .map(|(k, v)| format!("{}: {}", init_to_python_value(k), init_to_python_value(v)))
+                .collect();
+            format!("{{{}}}", pair_strs.join(", "))
+        }
+        InitValue::Struct(name, items) => {
+            let field_strs: Vec<String> = items
+                .iter()
+                .map(|(_, value)| init_to_python_value(value))
+                .collect();
+            format!("{}({})", name, field_strs.join(", "))
+        }
+    }
+}
+
+fn write_states(file: &mut fs::File, states: &Vec<StateType>, types_map: &HashMap<String, usize>) {
+    for state in states {
+        match state {
+            StateType::Value(name, state_type, init) => {
+                let last_name = name.split('.').last().unwrap();
+                let py_type = type_info_to_python_type(state_type, false);
+                let init_value = init_to_python_value(init);
+                let index = types_map.get(name).unwrap();
+                let text = format!(
+                    "        {} = sc.Value[{}]({}, {})\n",
+                    last_name, py_type, *index, init_value
+                );
+                file.write_all(text.as_bytes()).unwrap();
+            }
+            StateType::Static(name, state_type, init) => {
+                let last_name = name.split('.').last().unwrap();
+                let py_type = type_info_to_python_type(state_type, false);
+                let init_value = init_to_python_value(init);
+                let index = types_map.get(name).unwrap();
+                let text = format!(
+                    "        {} = sc.ValueStatic[{}]({}, {})\n",
+                    last_name, py_type, *index, init_value
+                );
+                file.write_all(text.as_bytes()).unwrap();
+            }
+            StateType::Signal(name, state_type) => {
+                let last_name = name.split('.').last().unwrap();
+                let py_type = type_info_to_python_type(state_type, false);
+                let index = types_map.get(name).unwrap();
+                let text = if let ObjectType::Empty = state_type {
+                    format!("        {} = sc.SignalEmpty()\n", last_name)
+                } else {
+                    format!(
+                        "        {} = sc.Signal[{}]({})\n",
+                        last_name, py_type, *index
+                    )
+                };
+                file.write_all(text.as_bytes()).unwrap();
+            }
+            StateType::List(name, state_type) => {
+                let last_name = name.split('.').last().unwrap();
+                let py_type = type_info_to_python_type(state_type, false);
+                let index = types_map.get(name).unwrap();
+                let text = format!(
+                    "        {} = sc.ValueList[{}]({})\n",
+                    last_name, py_type, *index
+                );
+                file.write_all(text.as_bytes()).unwrap();
+            }
+            StateType::Dict(name, key_type, value_type) => {
+                let last_name = name.split('.').last().unwrap();
+                let py_key_type = type_info_to_python_type(key_type, false);
+                let py_value_type = type_info_to_python_type(value_type, false);
+                let index = types_map.get(name).unwrap();
+                let text = format!(
+                    "        {} = sc.ValueMap[{}, {}]({})\n",
+                    last_name, py_key_type, py_value_type, *index
+                );
+                file.write_all(text.as_bytes()).unwrap();
+            }
+            StateType::Graphs(name, graph_type) => {
+                let last_name = name.split('.').last().unwrap();
+                let text = format!(
+                    "        {} = sc.ValueGraphs({})\n",
+                    last_name,
+                    match graph_type {
+                        GraphType::F32 => "np.float32",
+                        GraphType::F64 => "np.float64",
+                    }
+                );
+                file.write_all(text.as_bytes()).unwrap();
+            }
+            StateType::Image(name) => {
+                let last_name = name.split('.').last().unwrap();
+                let text = format!("        {} = sc.ValueImage()\n", last_name);
+                file.write_all(text.as_bytes()).unwrap();
+            }
+            StateType::SubState(name, state_name) => {
+                let last_name = name.split('.').last().unwrap();
+                let text = format!(
+                    "        {} = {}(parent + '.{}')\n",
+                    last_name, state_name, last_name
+                );
+                file.write_all(text.as_bytes()).unwrap();
+            }
+        }
+    }
+}
+
 fn order_structs(items: &Vec<(String, ObjectType)>, order: &mut VecDeque<String>) {
     for (_, item_type) in items {
         if let ObjectType::Struct(name, fields) = item_type {
@@ -109,7 +287,7 @@ fn order_structs(items: &Vec<(String, ObjectType)>, order: &mut VecDeque<String>
 }
 
 pub fn generate<S: State>(path: impl ToString) -> Result<(), String> {
-    let map = scripts::parse_states::<S>();
+    let (mut map, root_name) = scripts::parse_states::<S>();
     let mut values_list = Vec::new();
     for (_, values) in map.iter() {
         for value in values {
@@ -124,30 +302,30 @@ pub fn generate<S: State>(path: impl ToString) -> Result<(), String> {
             order_structs(items, &mut order_list);
         }
     }
+    let (types_map, types_list) = process_type_info(&values_list);
 
     let mut file =
         fs::File::create(path.to_string()).map_err(|e| format!("Failed to create file: {}", e))?;
 
     file.write_all(b"# Generated by build.rs, do not edit\n")
         .unwrap();
+    file.write_all(b"# ruff: noqa: D101 D107\n").unwrap();
 
+    file.write_all(b"import numpy as np\n").unwrap();
     if structs.len() > 0 {
-        file.write_all(b"from dataclasses import dataclass\n")
+        file.write_all(b"from dataclasses import dataclass\n\n")
             .unwrap();
     }
 
-    file.write_all(b"from egui_states.server import StateServerCore")
+    file.write_all(b"import egui_states as s\n").unwrap();
+    file.write_all(b"import egui_states.structures as sc\n")
+        .unwrap();
+    file.write_all(b"from egui_states.structures import ISubStates, StatesBase\n")
         .unwrap();
 
-    if enums.len() > 0 || structs.len() > 0 {
-        file.write_all(b"\nimport egui_states.custom_types as cust")
-            .unwrap();
-    }
-
-    file.write_all(b"\n").unwrap();
-
+    // Write enums
     for (enum_name, variants) in &enums {
-        file.write_all(format!("\nclass {}(cust.FastEnum):\n", enum_name).as_bytes())
+        file.write_all(format!("\n\nclass {}(sc.FastEnum):\n", enum_name).as_bytes())
             .unwrap();
         for (name, value) in variants {
             let text = format!("    {} = {}\n", name, value);
@@ -155,10 +333,11 @@ pub fn generate<S: State>(path: impl ToString) -> Result<(), String> {
         }
     }
 
+    // Write custom structs
     for struct_name in &order_list {
         let fields = &structs[struct_name];
         file.write_all(
-            format!("\n@dataclass\nclass {}(cust.CustomStruct):\n", struct_name).as_bytes(),
+            format!("\n\n@dataclass\nclass {}(sc.CustomStruct):\n", struct_name).as_bytes(),
         )
         .unwrap();
 
@@ -173,6 +352,36 @@ pub fn generate<S: State>(path: impl ToString) -> Result<(), String> {
             file.write_all(text.as_bytes()).unwrap();
         }
     }
+
+    // write substates
+    let root_state = map.remove(root_name).unwrap();
+    for (state_name, states) in &map {
+        file.write_all(format!("\n\nclass {}(ISubStates):\n", state_name).as_bytes())
+            .unwrap();
+        file.write_all(b"    def __init__(self, parent: str):\n")
+            .unwrap();
+        write_states(&mut file, states, &types_map);
+    }
+
+    // write root state
+    // Write the _get_obj_types function
+    file.write_all(format!("\n\nclass {}(StatesBase):\n", root_name).as_bytes())
+        .unwrap();
+    file.write_all(b"    @staticmethod\n").unwrap();
+    file.write_all(b"    def _get_obj_types() -> list[s.PyObjectType]:\n")
+        .unwrap();
+    file.write_all(b"        return [\n").unwrap();
+    for obj_type in &types_list {
+        let py_type_str = type_to_pytype(obj_type);
+        file.write_all(format!("            {},\n", py_type_str).as_bytes())
+            .unwrap();
+    }
+    file.write_all(b"        ]\n\n").unwrap();
+
+    // Write the state values
+    file.write_all(b"    def __init__(self, parent: str):\n")
+        .unwrap();
+    write_states(&mut file, &root_state, &types_map);
 
     Ok(())
 }

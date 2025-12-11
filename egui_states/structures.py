@@ -1,7 +1,8 @@
-# ruff: noqa: D107
+# ruff: noqa: D107 D101 D105 D102 PLC2801
 from abc import ABC, abstractmethod
 from collections.abc import Buffer, Callable
-from typing import Any
+from enum import Enum
+from typing import Any, Self
 
 import numpy as np
 import numpy.typing as npt
@@ -9,6 +10,34 @@ import numpy.typing as npt
 from egui_states import _core
 from egui_states._core import PyObjectType, StateServerCore
 from egui_states.signals import SignalsManager
+
+
+class FastEnum(Enum):
+    def __init_subclass__(cls):
+        super().__init_subclass__()
+        cls._member_list = tuple(cls)
+
+    @classmethod
+    def from_index(cls, index) -> Self:
+        return cls._member_list[index]
+
+    @classmethod
+    def _get_members(cls) -> list[tuple[str, int]]:
+        return [(member.name, member.value) for member in cls._member_list]
+
+    def index(self) -> int:
+        return self._member_list.index(self)
+
+
+class CustomStruct:
+    __getitem__ = object.__getattribute__
+
+    def _get_values(self) -> list[Any]:
+        return [self.__getattribute__(name) for name in self.__annotations__.keys()]
+
+    @classmethod
+    def _field_names(cls) -> list[str]:
+        return list(cls.__annotations__.keys())
 
 
 class ISubStates(ABC):
@@ -19,16 +48,23 @@ class ISubStates(ABC):
         pass
 
 
-class IStates(ABC):
+class StatesBase(ABC):
     """The root state class for the UI states."""
 
-    @abstractmethod
     def __init__(self, update: Callable[[float | None], None]) -> None:
-        pass
+        self._update = update
 
-    @classmethod
+    def update_ui(self, dt: float | None = None) -> None:
+        """Request the UI to update.
+
+        Args:
+            dt(float | None, optional): Delay time to next update, None means immediate. Defaults to None.
+        """
+        self._update(dt)
+
+    @staticmethod
     @abstractmethod
-    def _get_obj_types(cls) -> list[PyObjectType]:
+    def _get_obj_types() -> list[PyObjectType]:
         pass
 
 
@@ -497,7 +533,7 @@ class Graph:
 class ValueGraphs[T](_StaticBase):
     """Graph UI element."""
 
-    def __init__(self, dtype: np.dtype):  # noqa: D107
+    def __init__(self, dtype: type[T]):  # noqa: D107
         if dtype == np.float32:
             self._id_double = False
         elif dtype == np.float64:
