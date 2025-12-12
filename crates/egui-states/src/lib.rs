@@ -29,11 +29,13 @@ pub use graphs::ValueGraphs;
 pub use image::ValueImage;
 pub use list::ValueList;
 pub use map::ValueMap;
-pub use states_creator::{StatesBuilder, StatesCreator};
+pub use states_creator::StatesCreator;
 pub use values::{Diff, Signal, Value, ValueStatic};
 
 pub trait State {
-    fn new(c: &mut impl StatesCreator, parent: String) -> Self;
+    const NAME: &'static str;
+
+    fn new(c: &mut impl StatesCreator) -> Self;
 }
 
 pub use egui_states_core::types::{GetType, ObjectType};

@@ -12,7 +12,7 @@ pub enum StateType {
     List(String, ObjectType),
     Graphs(String, GraphType),
     Signal(String, ObjectType),
-    SubState(String, &'static str),
+    SubState(String, &'static str, Vec<StateType>),
 }
 
 #[derive(Clone)]

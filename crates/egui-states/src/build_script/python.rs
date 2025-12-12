@@ -186,92 +186,192 @@ fn init_to_python_value(init: &InitValue) -> String {
     }
 }
 
-fn write_states(file: &mut fs::File, states: &Vec<StateType>, types_map: &HashMap<String, usize>) {
-    for state in states {
-        match state {
-            StateType::Value(name, state_type, init) => {
-                let last_name = name.split('.').last().unwrap();
-                let py_type = type_info_to_python_type(state_type, false);
-                let init_value = init_to_python_value(init);
-                let index = types_map.get(name).unwrap();
-                let text = format!(
-                    "        {} = sc.Value[{}]({}, {})\n",
-                    last_name, py_type, *index, init_value
-                );
-                file.write_all(text.as_bytes()).unwrap();
-            }
-            StateType::Static(name, state_type, init) => {
-                let last_name = name.split('.').last().unwrap();
-                let py_type = type_info_to_python_type(state_type, false);
-                let init_value = init_to_python_value(init);
-                let index = types_map.get(name).unwrap();
-                let text = format!(
-                    "        {} = sc.ValueStatic[{}]({}, {})\n",
-                    last_name, py_type, *index, init_value
-                );
-                file.write_all(text.as_bytes()).unwrap();
-            }
-            StateType::Signal(name, state_type) => {
-                let last_name = name.split('.').last().unwrap();
-                let py_type = type_info_to_python_type(state_type, false);
-                let index = types_map.get(name).unwrap();
-                let text = if let ObjectType::Empty = state_type {
-                    format!("        {} = sc.SignalEmpty()\n", last_name)
-                } else {
-                    format!(
-                        "        {} = sc.Signal[{}]({})\n",
-                        last_name, py_type, *index
-                    )
-                };
-                file.write_all(text.as_bytes()).unwrap();
-            }
-            StateType::List(name, state_type) => {
-                let last_name = name.split('.').last().unwrap();
-                let py_type = type_info_to_python_type(state_type, false);
-                let index = types_map.get(name).unwrap();
-                let text = format!(
-                    "        {} = sc.ValueList[{}]({})\n",
+fn state_to_line(state: &StateType, types_map: &HashMap<String, usize>) -> String {
+    match state {
+        StateType::Value(name, state_type, init) => {
+            let last_name = name.split('.').last().unwrap();
+            let py_type = type_info_to_python_type(state_type, false);
+            let init_value = init_to_python_value(init);
+            let index = types_map.get(name).unwrap();
+            format!(
+                "        self.{} = sc.Value[{}]({}, {})\n",
+                last_name, py_type, *index, init_value
+            )
+        }
+        StateType::Static(name, state_type, init) => {
+            let last_name = name.split('.').last().unwrap();
+            let py_type = type_info_to_python_type(state_type, false);
+            let init_value = init_to_python_value(init);
+            let index = types_map.get(name).unwrap();
+            format!(
+                "        self.{} = sc.ValueStatic[{}]({}, {})\n",
+                last_name, py_type, *index, init_value
+            )
+        }
+        StateType::Signal(name, state_type) => {
+            let last_name = name.split('.').last().unwrap();
+            let py_type = type_info_to_python_type(state_type, false);
+            let index = types_map.get(name).unwrap();
+            if let ObjectType::Empty = state_type {
+                format!("        self.{} = sc.SignalEmpty()\n", last_name)
+            } else {
+                format!(
+                    "        self.{} = sc.Signal[{}]({})\n",
                     last_name, py_type, *index
-                );
-                file.write_all(text.as_bytes()).unwrap();
-            }
-            StateType::Dict(name, key_type, value_type) => {
-                let last_name = name.split('.').last().unwrap();
-                let py_key_type = type_info_to_python_type(key_type, false);
-                let py_value_type = type_info_to_python_type(value_type, false);
-                let index = types_map.get(name).unwrap();
-                let text = format!(
-                    "        {} = sc.ValueMap[{}, {}]({})\n",
-                    last_name, py_key_type, py_value_type, *index
-                );
-                file.write_all(text.as_bytes()).unwrap();
-            }
-            StateType::Graphs(name, graph_type) => {
-                let last_name = name.split('.').last().unwrap();
-                let text = format!(
-                    "        {} = sc.ValueGraphs({})\n",
-                    last_name,
-                    match graph_type {
-                        GraphType::F32 => "np.float32",
-                        GraphType::F64 => "np.float64",
-                    }
-                );
-                file.write_all(text.as_bytes()).unwrap();
-            }
-            StateType::Image(name) => {
-                let last_name = name.split('.').last().unwrap();
-                let text = format!("        {} = sc.ValueImage()\n", last_name);
-                file.write_all(text.as_bytes()).unwrap();
-            }
-            StateType::SubState(name, state_name) => {
-                let last_name = name.split('.').last().unwrap();
-                let text = format!(
-                    "        {} = {}(parent + '.{}')\n",
-                    last_name, state_name, last_name
-                );
-                file.write_all(text.as_bytes()).unwrap();
+                )
             }
         }
+        StateType::List(name, state_type) => {
+            let last_name = name.split('.').last().unwrap();
+            let py_type = type_info_to_python_type(state_type, false);
+            let index = types_map.get(name).unwrap();
+            format!(
+                "        self.{} = sc.ValueList[{}]({})\n",
+                last_name, py_type, *index
+            )
+        }
+        StateType::Dict(name, key_type, value_type) => {
+            let last_name = name.split('.').last().unwrap();
+            let py_key_type = type_info_to_python_type(key_type, false);
+            let py_value_type = type_info_to_python_type(value_type, false);
+            let index = types_map.get(name).unwrap();
+            format!(
+                "        self.{} = sc.ValueMap[{}, {}]({})\n",
+                last_name, py_key_type, py_value_type, *index
+            )
+        }
+        StateType::Graphs(name, graph_type) => {
+            let last_name = name.split('.').last().unwrap();
+            format!(
+                "        self.{} = sc.ValueGraphs({})\n",
+                last_name,
+                match graph_type {
+                    GraphType::F32 => "np.float32",
+                    GraphType::F64 => "np.float64",
+                }
+            )
+        }
+        StateType::Image(name) => {
+            let last_name = name.split('.').last().unwrap();
+            format!("        self.{} = sc.ValueImage()\n", last_name)
+        }
+        StateType::SubState(name, state_class, _) => {
+            let last_name = name.split('.').last().unwrap();
+            format!(
+                "        self.{} = {}(parent + \".{}\")\n",
+                last_name, state_class, last_name
+            )
+        }
+    }
+}
+
+fn write_states(
+    file: &mut fs::File,
+    state_class: &str,
+    states: &Vec<StateType>,
+    types_map: &HashMap<String, usize>,
+) {
+    let mut lines = Vec::new();
+
+    for state in states {
+        // match state {
+        //     StateType::Value(name, state_type, init) => {
+        //         let last_name = name.split('.').last().unwrap();
+        //         let py_type = type_info_to_python_type(state_type, false);
+        //         let init_value = init_to_python_value(init);
+        //         let index = types_map.get(name).unwrap();
+        //         let text = format!(
+        //             "        {} = sc.Value[{}]({}, {})\n",
+        //             last_name, py_type, *index, init_value
+        //         );
+        //         lines.push(text);
+        //     }
+        //     StateType::Static(name, state_type, init) => {
+        //         let last_name = name.split('.').last().unwrap();
+        //         let py_type = type_info_to_python_type(state_type, false);
+        //         let init_value = init_to_python_value(init);
+        //         let index = types_map.get(name).unwrap();
+        //         let text = format!(
+        //             "        {} = sc.ValueStatic[{}]({}, {})\n",
+        //             last_name, py_type, *index, init_value
+        //         );
+        //         lines.push(text);
+        //     }
+        //     StateType::Signal(name, state_type) => {
+        //         let last_name = name.split('.').last().unwrap();
+        //         let py_type = type_info_to_python_type(state_type, false);
+        //         let index = types_map.get(name).unwrap();
+        //         let text = if let ObjectType::Empty = state_type {
+        //             format!("        {} = sc.SignalEmpty()\n", last_name)
+        //         } else {
+        //             format!(
+        //                 "        {} = sc.Signal[{}]({})\n",
+        //                 last_name, py_type, *index
+        //             )
+        //         };
+        //         lines.push(text);
+        //     }
+        //     StateType::List(name, state_type) => {
+        //         let last_name = name.split('.').last().unwrap();
+        //         let py_type = type_info_to_python_type(state_type, false);
+        //         let index = types_map.get(name).unwrap();
+        //         let text = format!(
+        //             "        {} = sc.ValueList[{}]({})\n",
+        //             last_name, py_type, *index
+        //         );
+        //         lines.push(text);
+        //     }
+        //     StateType::Dict(name, key_type, value_type) => {
+        //         let last_name = name.split('.').last().unwrap();
+        //         let py_key_type = type_info_to_python_type(key_type, false);
+        //         let py_value_type = type_info_to_python_type(value_type, false);
+        //         let index = types_map.get(name).unwrap();
+        //         let text = format!(
+        //             "        {} = sc.ValueMap[{}, {}]({})\n",
+        //             last_name, py_key_type, py_value_type, *index
+        //         );
+        //         lines.push(text);
+        //     }
+        //     StateType::Graphs(name, graph_type) => {
+        //         let last_name = name.split('.').last().unwrap();
+        //         let text = format!(
+        //             "        {} = sc.ValueGraphs({})\n",
+        //             last_name,
+        //             match graph_type {
+        //                 GraphType::F32 => "np.float32",
+        //                 GraphType::F64 => "np.float64",
+        //             }
+        //         );
+        //         lines.push(text);
+        //     }
+        //     StateType::Image(name) => {
+        //         let last_name = name.split('.').last().unwrap();
+        //         let text = format!("        {} = sc.ValueImage()\n", last_name);
+        //         lines.push(text);
+        //     }
+        //     StateType::SubState(name, state_class, states) => {
+        //         let last_name = name.split('.').last().unwrap();
+        //         let text = format!(
+        //             "        {} = {}(parent + '.{}')\n",
+        //             last_name, state_class, last_name
+        //         );
+        //         lines.push(text);
+        //         write_states(file, state_class, states, types_map);
+        //     }
+        // }
+        lines.push(state_to_line(state, types_map));
+        if let StateType::SubState(_, state_class, sub_states) = state {
+            write_states(file, state_class, sub_states, types_map);
+        }
+    }
+
+    file.write_all(format!("\n\nclass {}(ISubStates):\n", state_class).as_bytes())
+        .unwrap();
+    file.write_all(b"    def __init__(self, parent: str):\n")
+        .unwrap();
+
+    for line in lines {
+        file.write_all(line.as_bytes()).unwrap();
     }
 }
 
@@ -287,13 +387,10 @@ fn order_structs(items: &Vec<(String, ObjectType)>, order: &mut VecDeque<String>
 }
 
 pub fn generate<S: State>(path: impl ToString) -> Result<(), String> {
-    let (mut map, root_name) = scripts::parse_states::<S>();
+    let states = scripts::parse_states::<S>();
+
     let mut values_list = Vec::new();
-    for (_, values) in map.iter() {
-        for value in values {
-            values_list.push(value.clone());
-        }
-    }
+    scripts::states_into_values_list(&states, &mut values_list);
     let (enums, structs) = scripts::get_all_enums_struct(&values_list);
     let mut order_list = VecDeque::new();
     for (struct_name, items) in &structs {
@@ -310,12 +407,14 @@ pub fn generate<S: State>(path: impl ToString) -> Result<(), String> {
     file.write_all(b"# Generated by build.rs, do not edit\n")
         .unwrap();
     file.write_all(b"# ruff: noqa: D101 D107\n").unwrap();
-
-    file.write_all(b"import numpy as np\n").unwrap();
+    file.write_all(b"from collections.abc import Callable\n")
+        .unwrap();
     if structs.len() > 0 {
-        file.write_all(b"from dataclasses import dataclass\n\n")
+        file.write_all(b"from dataclasses import dataclass\n")
             .unwrap();
     }
+
+    file.write_all(b"\nimport numpy as np\n\n").unwrap();
 
     file.write_all(b"import egui_states as s\n").unwrap();
     file.write_all(b"import egui_states.structures as sc\n")
@@ -353,35 +452,44 @@ pub fn generate<S: State>(path: impl ToString) -> Result<(), String> {
         }
     }
 
-    // write substates
-    let root_state = map.remove(root_name).unwrap();
-    for (state_name, states) in &map {
-        file.write_all(format!("\n\nclass {}(ISubStates):\n", state_name).as_bytes())
-            .unwrap();
-        file.write_all(b"    def __init__(self, parent: str):\n")
-            .unwrap();
-        write_states(&mut file, states, &types_map);
-    }
+    // write states
+    if let StateType::SubState(_, root_name, substates) = &states {
+        // write substates
+        for state in substates {
+            if let StateType::SubState(_, state_class, sub_states) = state {
+                write_states(&mut file, state_class, sub_states, &types_map);
+            }
+        }
 
-    // write root state
-    // Write the _get_obj_types function
-    file.write_all(format!("\n\nclass {}(StatesBase):\n", root_name).as_bytes())
-        .unwrap();
-    file.write_all(b"    @staticmethod\n").unwrap();
-    file.write_all(b"    def _get_obj_types() -> list[s.PyObjectType]:\n")
-        .unwrap();
-    file.write_all(b"        return [\n").unwrap();
-    for obj_type in &types_list {
-        let py_type_str = type_to_pytype(obj_type);
-        file.write_all(format!("            {},\n", py_type_str).as_bytes())
+        // write root state
+        // Write the _get_obj_types function
+        file.write_all(format!("\n\nclass {}(StatesBase):\n", root_name).as_bytes())
             .unwrap();
-    }
-    file.write_all(b"        ]\n\n").unwrap();
+        file.write_all(b"    @staticmethod\n").unwrap();
+        file.write_all(b"    def _get_obj_types() -> list[s.PyObjectType]:\n")
+            .unwrap();
+        file.write_all(b"        return [\n").unwrap();
+        for obj_type in &types_list {
+            let py_type_str = type_to_pytype(obj_type);
+            file.write_all(format!("            {},\n", py_type_str).as_bytes())
+                .unwrap();
+        }
+        file.write_all(b"        ]\n\n").unwrap();
 
-    // Write the state values
-    file.write_all(b"    def __init__(self, parent: str):\n")
-        .unwrap();
-    write_states(&mut file, &root_state, &types_map);
+        // Write the state values
+        file.write_all(b"    def __init__(self, update: Callable[[float | None], None]):\n")
+            .unwrap();
+        file.write_all(b"        super().__init__(update)\n")
+            .unwrap();
+        file.write_all(b"        parent = \"root\"\n").unwrap();
+
+        for state in substates {
+            let line = state_to_line(state, &types_map);
+            file.write_all(line.as_bytes()).unwrap();
+        }
+    } else {
+        panic!("Root state must be a SubState");
+    }
 
     Ok(())
 }

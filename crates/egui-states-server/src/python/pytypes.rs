@@ -124,7 +124,7 @@ impl ObjectType {
             ObjectType::Option(inner_type) => {
                 CoreObjectType::Option(Box::new(inner_type.get_core_type(py)?))
             }
-            ObjectType::Empty => panic!("Empty type has no core representation"),
+            ObjectType::Empty => CoreObjectType::Empty,
         };
 
         Ok(obj)

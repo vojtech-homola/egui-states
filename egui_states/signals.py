@@ -35,7 +35,12 @@ class SignalsManager:
     def _run(self) -> None:
         last_id: int | None = None
         while True:
-            last_id, arg = self._server.signal_get(last_id)
+            try:
+                last_id, arg = self._server.signal_get(last_id)
+            except Exception as e:
+                error = RuntimeError(f"Error while getting signal from server: {e}")
+                self._error_handler(error)
+                continue
             callbacks = self._callbacks.get(last_id, None)
             if callbacks:
                 for callback in callbacks:

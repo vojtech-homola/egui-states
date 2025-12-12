@@ -243,7 +243,7 @@ impl StateServerCore {
         last_id: Option<u64>,
     ) -> PyResult<(u64, Bound<'py, PyAny>)> {
         let inner = self.get_inner()?;
-        let (id, data) = self.signals.wait_changed_value(last_id);
+        let (id, data) = py.detach(|| self.signals.wait_changed_value(last_id));
         match inner.types.get(&id) {
             Some(object_type) => {
                 let mut parser = ValueParser::new(data);
@@ -256,7 +256,7 @@ impl StateServerCore {
         }
     }
 
-    fn signalset_to_multi(&self, value_id: u64) {
+    fn signal_set_to_multi(&self, value_id: u64) {
         self.signals.set_to_multi(value_id);
     }
 
@@ -632,7 +632,7 @@ impl StateServerCore {
             })?;
 
         if let Some(types_map) = self.temps.write().as_mut() {
-            types_map.insert(type_id, object_type);
+            types_map.insert(value_id, object_type);
         }
         Ok(value_id)
     }
@@ -658,7 +658,7 @@ impl StateServerCore {
             .map_err(|e| PyValueError::new_err(format!("Failed to add value: {}", e)))?;
 
         if let Some(types_map) = self.temps.write().as_mut() {
-            types_map.insert(type_id, object_type);
+            types_map.insert(value_id, object_type);
         }
         Ok(value_id)
     }
@@ -679,7 +679,7 @@ impl StateServerCore {
             .map_err(|e| PyValueError::new_err(format!("Failed to add signal: {}", e)))?;
 
         if let Some(types_map) = self.temps.write().as_mut() {
-            types_map.insert(type_id, object_type);
+            types_map.insert(value_id, object_type);
         }
         Ok(value_id)
     }
@@ -700,7 +700,7 @@ impl StateServerCore {
             .map_err(|e| PyValueError::new_err(format!("Failed to add list: {}", e)))?;
 
         if let Some(types_map) = self.temps.write().as_mut() {
-            types_map.insert(type_id, object_type);
+            types_map.insert(value_id, object_type);
         }
         Ok(value_id)
     }
@@ -721,7 +721,7 @@ impl StateServerCore {
             .map_err(|e| PyValueError::new_err(format!("Failed to add map: {}", e)))?;
 
         if let Some(types_map) = self.temps.write().as_mut() {
-            types_map.insert(type_id, object_type);
+            types_map.insert(value_id, object_type);
         }
         Ok(value_id)
     }

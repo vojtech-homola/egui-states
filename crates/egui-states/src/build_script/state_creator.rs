@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::hash::Hash;
 use std::sync::Arc;
 
@@ -15,70 +14,44 @@ use crate::image::ValueImage;
 use crate::list::ValueList;
 use crate::map::ValueMap;
 use crate::sender::MessageSender;
-use crate::states_creator::{StatesBuilder, StatesCreator};
+use crate::states_creator::StatesCreator;
 use crate::values::{Signal, Value, ValueStatic};
 
 pub struct StatesCreatorBuild {
-    states: BTreeMap<&'static str, Vec<StateType>>,
-    root_state: Option<&'static str>,
+    states: Vec<StateType>,
+    parent: String,
     sender: MessageSender,
 }
 
 impl StatesCreatorBuild {
-    pub fn new() -> Self {
+    pub fn new(parent: &str) -> Self {
         let (sender, _) = MessageSender::new();
 
         Self {
-            states: BTreeMap::new(),
-            root_state: None,
+            states: Vec::new(),
+            parent: parent.to_string(),
             sender,
         }
     }
 
-    pub fn get_states(self) -> BTreeMap<&'static str, Vec<StateType>> {
+    pub fn get_states(self) -> Vec<StateType> {
         self.states
-    }
-
-    pub fn root_state(&self) -> &'static str {
-        self.root_state.unwrap()
     }
 }
 
 impl StatesCreator for StatesCreatorBuild {
-    type Builder = StatesBuilderBuild;
+    fn add_substate<S: State>(&mut self, name: &str) -> S {
+        let parent = format!("{}.{}", self.parent, name);
 
-    fn builder(&mut self, state_name: &'static str, parent: &String) -> StatesBuilderBuild {
-        if let None = self.root_state {
-            self.root_state = Some(state_name);
-        }
+        let mut builder = Self::new(&parent);
+        let substate = S::new(&mut builder);
+        let states = builder.get_states();
+        self.states
+            .push(StateType::SubState(parent, S::NAME, states));
 
-
-
-        StatesBuilderBuild {
-            state_name,
-            parent: parent.clone(),
-            sender: self.sender.clone(),
-            states: Vec::new(),
-        }
+        substate
     }
 
-    fn add_states(&mut self, builder: StatesBuilderBuild) {
-        self.states.insert(builder.state_name, builder.states);
-    }
-
-    fn add_substate<S: State>(&mut self, parent: &str, name: &str) -> S {
-        S::new(self, format!("{}.{}", parent, name))
-    }
-}
-
-pub struct StatesBuilderBuild {
-    state_name: &'static str,
-    parent: String,
-    sender: MessageSender,
-    states: Vec<StateType>,
-}
-
-impl StatesBuilder for StatesBuilderBuild {
     fn add_value<T>(&mut self, name: &'static str, value: T) -> Arc<Value<T>>
     where
         T: for<'a> Deserialize<'a> + Serialize + Clone + GetInitValue + GetType,

@@ -1,5 +1,4 @@
 use std::collections::BTreeMap;
-use std::string::ToString;
 
 use egui_states_core::types::ObjectType;
 
@@ -7,11 +6,11 @@ use crate::State;
 use crate::build_script::state_creator::StatesCreatorBuild;
 use crate::build_script::values_info::StateType;
 
-pub(crate) fn parse_states<S: State>() -> (BTreeMap<&'static str, Vec<StateType>>, &'static str) {
-    let mut creator = StatesCreatorBuild::new();
-    S::new(&mut creator, "root".to_string());
-    let root_state = creator.root_state();
-    (creator.get_states(), root_state)
+pub(crate) fn parse_states<S: State>() -> StateType {
+    let mut creator = StatesCreatorBuild::new("root");
+    S::new(&mut creator);
+    let states = creator.get_states();
+    StateType::SubState("root".to_string(), S::NAME, states)
 }
 
 fn collect_enums(type_info: &ObjectType, enums: &mut BTreeMap<String, Vec<(String, isize)>>) {
@@ -140,4 +139,17 @@ pub(crate) fn get_all_enums_struct(
     }
 
     (enums, structs)
+}
+
+pub(crate) fn states_into_values_list(state: &StateType, list: &mut Vec<StateType>) {
+    match state {
+        StateType::SubState(_, _, sub_values) => {
+            for sub_value in sub_values {
+                states_into_values_list(sub_value, list);
+            }
+        }
+        _ => {
+            list.push(state.clone());
+        }
+    }
 }

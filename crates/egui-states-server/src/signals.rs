@@ -214,22 +214,22 @@ impl SignalsManager {
 
     #[allow(dead_code)]
     pub(crate) fn debug(&self, message: impl ToString) {
-        let data = Self::serialize_message(0, message);
+        let data = Self::serialize_message(0u8, message);
         self.set(self.logging_id, data);
     }
 
     pub(crate) fn info(&self, message: impl ToString) {
-        let data = Self::serialize_message(1, message);
+        let data = Self::serialize_message(1u8, message);
         self.set(self.logging_id, data);
     }
 
     pub(crate) fn warning(&self, message: impl ToString) {
-        let data = Self::serialize_message(2, message);
+        let data = Self::serialize_message(2u8, message);
         self.set(self.logging_id, data);
     }
 
     pub(crate) fn error(&self, message: impl ToString) {
-        let data = Self::serialize_message(3, message);
+        let data = Self::serialize_message(3u8, message);
         self.set(self.logging_id, data);
     }
 

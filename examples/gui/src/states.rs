@@ -1,8 +1,7 @@
 use std::sync::Arc;
 
 use egui_states::{
-    Signal, State, StatesBuilder, StatesCreator, Value, ValueGraphs, ValueImage, ValueList,
-    ValueMap, ValueStatic,
+    Signal, State, StatesCreator, Value, ValueGraphs, ValueImage, ValueList, ValueMap, ValueStatic,
 };
 use egui_states::{state_enum, state_struct};
 
@@ -43,19 +42,16 @@ pub(crate) struct MySubState {
 }
 
 impl State for MySubState {
-    fn new(c: &mut impl StatesCreator, parent: String) -> Self {
-        let mut b = c.builder("MySubState", &parent);
+    const NAME: &'static str = "MySubState";
 
-        let obj = Self {
-            sub_value: b.add_value("sub_value", 0),
-            test_enum: b.add_value("test_enum", TestEnum::A),
-            stat: b.add_static("stat", [0.0, 0.0, 0.0]),
-            test_signal: b.add_signal("test_signal"),
-            signal_emp: b.add_signal("signal_emp"),
-        };
-
-        c.add_states(b);
-        obj
+    fn new(c: &mut impl StatesCreator) -> Self {
+        Self {
+            sub_value: c.add_value("sub_value", 0),
+            test_enum: c.add_value("test_enum", TestEnum::A),
+            stat: c.add_static("stat", [0.0, 0.0, 0.0]),
+            test_signal: c.add_signal("test_signal"),
+            signal_emp: c.add_signal("signal_emp"),
+        }
     }
 }
 
@@ -65,16 +61,13 @@ pub(crate) struct Collections {
 }
 
 impl State for Collections {
-    fn new(c: &mut impl StatesCreator, parent: String) -> Self {
-        let mut b = c.builder("Collections", &parent);
+    const NAME: &'static str = "Collections";
 
-        let obj = Self {
-            list: b.add_list("list"),
-            map: b.add_map("map"),
-        };
-
-        c.add_states(b);
-        obj
+    fn new(c: &mut impl StatesCreator) -> Self {
+        Self {
+            list: c.add_list("list"),
+            map: c.add_map("map"),
+        }
     }
 }
 
@@ -91,15 +84,15 @@ pub struct States {
 }
 
 impl State for States {
-    fn new(c: &mut impl StatesCreator, parent: String) -> Self {
-        let mut b = c.builder("States", &parent);
+    const NAME: &'static str = "States";
 
-        let obj = Self {
-            value: b.add_value("value", 0.0),
-            image: b.add_image("image"),
-            graphs: b.add_graphs("graphs"),
-            test_enum: b.add_value("test_enum", TestEnum::A),
-            test_struct: b.add_value(
+    fn new(c: &mut impl StatesCreator) -> Self {
+        Self {
+            value: c.add_value("value", 0.0),
+            image: c.add_image("image"),
+            graphs: c.add_graphs("graphs"),
+            test_enum: c.add_value("test_enum", TestEnum::A),
+            test_struct: c.add_value(
                 "test_struct",
                 TestStruct {
                     x: 0.0,
@@ -107,8 +100,8 @@ impl State for States {
                     label: "".to_string(),
                 },
             ),
-            test_enum2: b.add_value("test_enum2", TestEnum2::X),
-            test_struct2: b.add_value(
+            test_enum2: c.add_value("test_enum2", TestEnum2::X),
+            test_struct2: c.add_value(
                 "test_struct2",
                 TestStruct2 {
                     x: 0.0,
@@ -117,11 +110,8 @@ impl State for States {
                 },
             ),
 
-            my_sub_state: c.add_substate(&parent, "my_sub_state"),
-            collections: c.add_substate(&parent, "collections"),
-        };
-
-        c.add_states(b);
-        obj
+            my_sub_state: c.add_substate("my_sub_state"),
+            collections: c.add_substate("collections"),
+        }
     }
 }

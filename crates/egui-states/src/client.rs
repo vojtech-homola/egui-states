@@ -8,9 +8,9 @@ use egui_states_core::serialization::ClientHeader;
 
 use crate::State;
 use crate::client_base::{Client, ConnectionState};
+use crate::client_states::{StatesCreatorClient, ValuesList};
 use crate::handle_message::{check_types, handle_message};
 use crate::sender::{ChannelMessage, MessageSender};
-use crate::client_states::{StatesCreatorClient, ValuesList};
 
 #[cfg(feature = "client")]
 use crate::websocket::build_ws;
@@ -155,7 +155,7 @@ impl ClientBuilder {
     pub fn new() -> Self {
         let (sender, rx) = MessageSender::new();
 
-        let creator = StatesCreatorClient::new(sender.clone());
+        let creator = StatesCreatorClient::new(sender.clone(), "root".to_string());
         let addr = Ipv4Addr::new(127, 0, 0, 1);
 
         Self {
@@ -188,7 +188,7 @@ impl ClientBuilder {
         } = self;
 
         let addr = SocketAddrV4::new(addr, port);
-        let states = T::new(&mut creator, "root".to_string());
+        let states = T::new(&mut creator);
         let values = creator.get_values();
         let client = Client::new(context, sender.clone());
         let client_out = client.clone();

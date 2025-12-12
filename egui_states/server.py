@@ -47,6 +47,7 @@ class StateServer[T: StatesBase]:
         self._states: T = state_class(self._server.update)
 
         _initialize(self._states, "root", self._server, self._signals_manager, self._states._get_obj_types())
+        self._server.finalize()
         self.logging = LoggingSignal(self._signals_manager, self._server)
 
     @property

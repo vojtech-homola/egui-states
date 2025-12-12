@@ -86,14 +86,14 @@ class _SignalBase(_StaticBase):
     def _initialize_signal(self, signals_manager: SignalsManager) -> None:
         self._signals_manager = signals_manager
 
-    def set_to_multi(self) -> None:
-        """Set the value to multi mode.
+    def signal_set_to_queue(self) -> None:
+        """Set the value to queue mode.
 
-        In multi mode, changes of the value are queued and are all processed with single thread.
+        In queue mode, changes of the value are queued and are all processed with single thread.
         """
         self._server.signal_set_to_multi(self._value_id)
 
-    def set_to_single(self) -> None:
+    def signal_set_to_single(self) -> None:
         """Set the value to single mode. It is the default mode.
 
         In single mode, only the last change of the value is processed.

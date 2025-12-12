@@ -1,11 +1,8 @@
 [workspace]
 members = [
     "crates/egui-states-macros",
-    "crates/egui-states-old",
     "crates/egui-states",
-    "crates/egui-states-core-old",
     "crates/egui-states-core",
-    "crates/egui-states-server-old",
     "crates/egui-states-server",
     "examples/gui",
 ]
@@ -17,11 +14,8 @@ edition = "2024"
 
 [workspace.dependencies]
 egui_states_macros = { path = "crates/egui-states-macros" }
-egui_states_core_old = { path = "crates/egui-states-core-old" }
 egui_states_core = { path = "crates/egui-states-core" }
-egui_states_old = { path = "crates/egui-states-old" }
 egui_states = { path = "crates/egui-states" }
-egui_states_server_old = { path = "crates/egui-states-server-old" }
 egui_states_server = { path = "crates/egui-states-server" }
 
 gui = { path = "examples/gui" }

@@ -14,7 +14,7 @@ use crate::image::ValueImage;
 use crate::list::{UpdateList, ValueList};
 use crate::map::{UpdateMap, ValueMap};
 use crate::sender::MessageSender;
-use crate::states_creator::{StatesBuilder, StatesCreator};
+use crate::states_creator::StatesCreator;
 use crate::values::{Signal, UpdateValue, Value, ValueStatic};
 
 #[derive(Clone)]
@@ -55,13 +55,15 @@ impl ValuesList {
 pub struct StatesCreatorClient {
     val: ValuesList,
     sender: MessageSender,
+    parent: String,
 }
 
 impl StatesCreatorClient {
-    pub(crate) fn new(sender: MessageSender) -> Self {
+    pub(crate) fn new(sender: MessageSender, parent: String) -> Self {
         Self {
             val: ValuesList::new(),
             sender,
+            parent,
         }
     }
 
@@ -73,38 +75,22 @@ impl StatesCreatorClient {
 }
 
 impl StatesCreator for StatesCreatorClient {
-    type Builder = StatesBuilderClient;
+    fn add_substate<S: State>(&mut self, name: &str) -> S {
+        let parent = format!("{}.{}", self.parent, name);
+        let mut creator = StatesCreatorClient::new(self.sender.clone(), parent);
+        let substate = S::new(&mut creator);
 
-    fn builder(&mut self, _state_name: &'static str, parent: &String) -> Self::Builder {
-        StatesBuilderClient {
-            parent: parent.clone(),
-            sender: self.sender.clone(),
-            val: ValuesList::new(),
-        }
+        self.val.values.extend(creator.val.values);
+        self.val.static_values.extend(creator.val.static_values);
+        self.val.images.extend(creator.val.images);
+        self.val.maps.extend(creator.val.maps);
+        self.val.lists.extend(creator.val.lists);
+        self.val.graphs.extend(creator.val.graphs);
+        self.val.types.extend(creator.val.types);
+
+        substate
     }
 
-    fn add_states(&mut self, builder: StatesBuilderClient) {
-        self.val.values.extend(builder.val.values);
-        self.val.static_values.extend(builder.val.static_values);
-        self.val.images.extend(builder.val.images);
-        self.val.maps.extend(builder.val.maps);
-        self.val.lists.extend(builder.val.lists);
-        self.val.graphs.extend(builder.val.graphs);
-        self.val.types.extend(builder.val.types);
-    }
-
-    fn add_substate<S: State>(&mut self, parent: &str, name: &str) -> S {
-        S::new(self, format!("{}.{}", parent, name))
-    }
-}
-
-pub struct StatesBuilderClient {
-    parent: String,
-    sender: MessageSender,
-    val: ValuesList,
-}
-
-impl StatesBuilder for StatesBuilderClient {
     fn add_value<T>(&mut self, name: &str, value: T) -> Arc<Value<T>>
     where
         T: for<'a> Deserialize<'a> + Serialize + GetType + Send + Sync + Clone + 'static,

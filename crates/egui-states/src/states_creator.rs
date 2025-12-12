@@ -15,14 +15,10 @@ use crate::map::ValueMap;
 use crate::values::{Signal, Value, ValueStatic};
 
 pub trait StatesCreator {
-    type Builder: StatesBuilder;
+    // fn set_state_name(&mut self, name: &'static str, parent: &str);
 
-    fn builder(&mut self, state_name: &'static str, parent: &String) -> Self::Builder;
-    fn add_states(&mut self, builder: Self::Builder);
-    fn add_substate<S: State>(&mut self, parent: &str, name: &str) -> S;
-}
+    fn add_substate<S: State>(&mut self, name: &str) -> S;
 
-pub trait StatesBuilder {
     fn add_value<T>(&mut self, name: &'static str, value: T) -> Arc<Value<T>>
     where
         T: for<'a> Deserialize<'a>
