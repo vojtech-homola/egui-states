@@ -349,6 +349,7 @@ impl Server {
             states.types.insert(id, 42);
             states.enable.insert(id, val.clone());
             states.sync.push(val.clone());
+            states.ack.insert(id, val.clone());
 
             self.states.images.insert(id, val);
             return Ok(());

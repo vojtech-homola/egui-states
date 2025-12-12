@@ -204,11 +204,12 @@ impl SignalsManager {
     }
 
     fn serialize_message(level: u8, text: impl ToString) -> Bytes {
-        let data = text.to_string().into_bytes();
+        let data = text.to_string();
         let mut message = Vec::new();
         // serialize_value_vec(&0, &mut message);
         serialize_value_vec(&level, &mut message);
-        message.extend_from_slice(&data);
+        serialize_value_vec(&data, &mut message);
+        // message.extend_from_slice(&data);
         Bytes::from_owner(message)
     }
 
