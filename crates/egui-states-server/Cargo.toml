@@ -10,10 +10,7 @@ crate-type = ["rlib", "cdylib"]
 python = ["dep:pyo3"]
 
 [dependencies]
-pyo3 = { version = "0.27", optional = true, features = [
-    "extension-module",
-    "abi3-py312",
-] }
+pyo3 = { version = "0.27", optional = true, features = ["extension-module"] }
 
 bytes = { workspace = true }
 tokio-tungstenite = { workspace = true }

@@ -72,7 +72,7 @@ impl State for Collections {
 }
 
 pub struct States {
-    pub(crate) value: Arc<Value<f32>>,
+    pub(crate) value: Arc<Value<f64>>,
     pub(crate) image: Arc<ValueImage>,
     pub(crate) graphs: Arc<ValueGraphs<f32>>,
     pub(crate) test_enum: Arc<Value<TestEnum>>,

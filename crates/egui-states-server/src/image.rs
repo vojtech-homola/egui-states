@@ -164,12 +164,13 @@ impl ValueImage {
             }
         }
 
-        self.event.wait_lock();
-        if !self.connected.load(Ordering::Relaxed) {
-            return Ok(());
-        }
         // send the image to the server
         if let Some(data) = data {
+            self.event.wait_lock();
+            if !self.connected.load(Ordering::Relaxed) {
+                return Ok(());
+            }
+
             self.sender.send(Bytes::from(data));
         }
 

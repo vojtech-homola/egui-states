@@ -166,7 +166,7 @@ impl StateServerCore {
         self.server.read().is_connected()
     }
 
-    fn disconnect_clients(&self) {
+    fn disconnect_client(&self) {
         self.server.write().disconnect_client();
     }
 

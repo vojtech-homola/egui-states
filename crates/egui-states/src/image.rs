@@ -9,10 +9,6 @@ use egui_states_core::serialization::ClientHeader;
 
 use crate::sender::MessageSender;
 
-// pub(crate) trait UpdateImage {
-//     fn update_image(&self, header: ImageHeader, data: &[u8]) -> Result<(), String>;
-// }
-
 const TEXTURE_OPTIONS: egui::TextureOptions = egui::TextureOptions {
     magnification: egui::TextureFilter::Nearest,
     minification: egui::TextureFilter::Nearest,

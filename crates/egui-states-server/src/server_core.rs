@@ -3,7 +3,10 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, atomic};
 
 use bytes::Bytes;
-use futures_util::{SinkExt, StreamExt, stream::SplitSink};
+use futures_util::{
+    SinkExt, StreamExt,
+    stream::{SplitSink, SplitStream},
+};
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinHandle;
@@ -20,6 +23,11 @@ use egui_states_core::serialization::{
 use crate::sender::{MessageReceiver, MessageSender};
 use crate::server::ServerStatesList;
 use crate::signals::SignalsManager;
+
+// #[inline]
+// pub(crate) fn release_values(values: &ServerStatesList) {
+//     values.images.iter().for_each(|img| img.release());
+// }
 
 enum ChannelHolder {
     Transfer(JoinHandle<MessageReceiver>),
@@ -202,7 +210,7 @@ pub(crate) async fn run(
                 }
 
                 // start transfer thread
-                let handler = communication_handler(
+                let handler = run_core(
                     connected.clone(),
                     values.clone(),
                     signals.clone(),
@@ -217,7 +225,7 @@ pub(crate) async fn run(
     }
 }
 
-async fn communication_handler(
+async fn run_core(
     connected: Arc<AtomicBool>,
     values: ServerStatesList,
     signals: SignalsManager,
@@ -225,123 +233,128 @@ async fn communication_handler(
     rx: MessageReceiver,
     sender: MessageSender,
 ) -> JoinHandle<MessageReceiver> {
-    let (socket_tx, mut socket_rx) = websocket.split();
+    let (socket_tx, socket_rx) = websocket.split();
 
-    let read_connected = connected.clone();
-    let read_signals = signals.clone();
-    let read_values = values.clone();
-    let read_sender = sender.clone();
-
-    let reader_handler = tokio::spawn(async move {
-        loop {
-            // read the message
-            let result_message = socket_rx.next().await;
-
-            // check if not connected
-            if !read_connected.load(atomic::Ordering::Relaxed) {
-                #[cfg(debug_assertions)]
-                read_signals.debug("read thread is closing");
-                read_signals.reset();
-                break;
-            }
-
-            let message = match result_message {
-                Some(Ok(m)) => m,
-                Some(Err(e)) => {
-                    read_signals.error(&format!("reading message from client failed: {:?}", e));
-                    read_connected.store(false, atomic::Ordering::Relaxed);
-                    read_signals.reset();
-                    break;
-                }
-                None => {
-                    read_signals.info("connection was closed by the client");
-                    read_connected.store(false, atomic::Ordering::Relaxed);
-                    read_signals.reset();
-                    break;
-                }
-            };
-
-            match message {
-                Message::Binary(m) => {
-                    let (header, data) = match ClientHeader::deserialize_header(&m) {
-                        Ok(hd) => hd,
-                        Err(_) => {
-                            read_signals.error(&format!("deserializing message header failed"));
-                            continue;
-                        }
-                    };
-
-                    match header {
-                        ClientHeader::Control(control) => match control {
-                            ControlClient::Ack(v) => {
-                                let val_res = read_values.ack.get(&v);
-                                match val_res {
-                                    Some(val) => {
-                                        val.acknowledge();
-                                    }
-                                    None => read_signals.error(&format!(
-                                        "value with id {} not found for Acknowledge",
-                                        v
-                                    )),
-                                }
-                            }
-                            ControlClient::Error => {
-                                let err = match deserialize::<String>(&data.unwrap()) {
-                                    Ok(e) => e,
-                                    Err(_) => {
-                                        read_signals.error(
-                                            "deserializing error message from client failed",
-                                        );
-                                        continue;
-                                    }
-                                };
-                                read_signals.error(&format!("Error message from client: {}", err));
-                            }
-                            _ => read_signals.error(&format!(
-                                "Command {} should not be processed here",
-                                control.as_str()
-                            )),
-                        },
-                        ClientHeader::Value(id, signal) => match read_values.values.get(&id) {
-                            Some(val) => {
-                                if let Err(e) = val.update_value(signal, data.unwrap()) {
-                                    read_signals.error(&format!(
-                                        "updating value with id {} failed: {}",
-                                        id, e
-                                    ));
-                                }
-                            }
-                            None => read_signals.error(&format!("value with id {} not found", id)),
-                        },
-                        ClientHeader::Signal(id) => match read_values.signals.get(&id) {
-                            Some(val) => {
-                                if let Err(e) = val.update_signal(data.unwrap()) {
-                                    read_signals.error(&format!(
-                                        "updating signal with id {} failed: {}",
-                                        id, e
-                                    ));
-                                }
-                            }
-                            None => read_signals.error(&format!("value with id {} not found", id)),
-                        },
-                    }
-                }
-                _ => read_signals.error("Unexpected message format"),
-            };
-        }
-
-        // acknowledge all pending values
-        for v in values.ack.values() {
-            v.acknowledge();
-        }
-
-        // send close signal to writing thread if reading fails
-        #[cfg(debug_assertions)]
-        read_signals.debug("terminating write thread");
-        read_sender.close();
-    });
+    let reader_handler = tokio::spawn(reader(
+        socket_rx,
+        connected.clone(),
+        signals.clone(),
+        values.clone(),
+        sender.clone(),
+    ));
 
     tokio::spawn(writer(rx, connected, socket_tx, signals, reader_handler))
+}
+
+async fn reader(
+    mut socket_rx: SplitStream<WebSocketStream<TcpStream>>,
+    connected: Arc<AtomicBool>,
+    signals: SignalsManager,
+    values: ServerStatesList,
+    sender: MessageSender,
+) {
+    loop {
+        // read the message
+        let result_message = socket_rx.next().await;
+
+        // check if not connected
+        if !connected.load(atomic::Ordering::Relaxed) {
+            #[cfg(debug_assertions)]
+            signals.debug("read thread is closing");
+            signals.reset();
+            break;
+        }
+
+        let message = match result_message {
+            Some(Ok(m)) => m,
+            Some(Err(e)) => {
+                signals.error(&format!("reading message from client failed: {:?}", e));
+                connected.store(false, atomic::Ordering::Relaxed);
+                signals.reset();
+                break;
+            }
+            None => {
+                signals.info("connection was closed by the client");
+                connected.store(false, atomic::Ordering::Relaxed);
+                signals.reset();
+                break;
+            }
+        };
+
+        match message {
+            Message::Binary(m) => {
+                let (header, data) = match ClientHeader::deserialize_header(&m) {
+                    Ok(hd) => hd,
+                    Err(_) => {
+                        signals.error(&format!("deserializing message header failed"));
+                        continue;
+                    }
+                };
+
+                match header {
+                    ClientHeader::Control(control) => match control {
+                        ControlClient::Ack(v) => {
+                            let val_res = values.ack.get(&v);
+                            match val_res {
+                                Some(val) => {
+                                    val.acknowledge();
+                                }
+                                None => signals.error(&format!(
+                                    "value with id {} not found for Acknowledge",
+                                    v
+                                )),
+                            }
+                        }
+                        ControlClient::Error => {
+                            let err = match deserialize::<String>(&data.unwrap()) {
+                                Ok(e) => e,
+                                Err(_) => {
+                                    signals.error("deserializing error message from client failed");
+                                    continue;
+                                }
+                            };
+                            signals.error(&format!("Error message from client: {}", err));
+                        }
+                        _ => signals.error(&format!(
+                            "Command {} should not be processed here",
+                            control.as_str()
+                        )),
+                    },
+                    ClientHeader::Value(id, signal) => match values.values.get(&id) {
+                        Some(val) => {
+                            if let Err(e) = val.update_value(signal, data.unwrap()) {
+                                signals
+                                    .error(&format!("updating value with id {} failed: {}", id, e));
+                            }
+                        }
+                        None => signals.error(&format!("value with id {} not found", id)),
+                    },
+                    ClientHeader::Signal(id) => match values.signals.get(&id) {
+                        Some(val) => {
+                            if let Err(e) = val.update_signal(data.unwrap()) {
+                                signals.error(&format!(
+                                    "updating signal with id {} failed: {}",
+                                    id, e
+                                ));
+                            }
+                        }
+                        None => signals.error(&format!("value with id {} not found", id)),
+                    },
+                }
+            }
+            _ => signals.error("Unexpected message format"),
+        };
+    }
+
+    // acknowledge all pending values
+    for v in values.ack.values() {
+        v.acknowledge();
+    }
+
+    // send close signal to writing thread if reading fails
+    #[cfg(debug_assertions)]
+    signals.debug("terminating write thread");
+    sender.close();
 }
 
 async fn writer(

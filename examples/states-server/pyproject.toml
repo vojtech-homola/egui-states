@@ -1,4 +1,0 @@
-[project]
-name = "states-server"
-dynamic = ["version"]
-dependencies = ["numpy"]

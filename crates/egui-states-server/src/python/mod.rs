@@ -6,9 +6,7 @@ mod pytypes;
 
 use pyo3::prelude::*;
 
-// use crate::python::pytypes::{self, ObjectType, PyObjectType};
-
-#[pymodule]
+#[pymodule(gil_used = false)]
 #[pyo3(name = "_core")]
 fn init_module(m: &Bound<PyModule>) -> PyResult<()> {
     m.add_class::<pyserver::StateServerCore>()?;

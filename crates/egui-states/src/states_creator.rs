@@ -15,8 +15,6 @@ use crate::map::ValueMap;
 use crate::values::{Signal, Value, ValueStatic};
 
 pub trait StatesCreator {
-    // fn set_state_name(&mut self, name: &'static str, parent: &str);
-
     fn add_substate<S: State>(&mut self, name: &str) -> S;
 
     fn add_value<T>(&mut self, name: &'static str, value: T) -> Arc<Value<T>>
