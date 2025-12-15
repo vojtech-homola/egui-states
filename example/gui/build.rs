@@ -1,6 +1,7 @@
 use egui_states::build_script::python;
 
 #[path = "src/states.rs"]
+#[allow(dead_code)]
 mod states;
 
 use states::States;

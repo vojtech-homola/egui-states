@@ -32,9 +32,14 @@ impl<T: GetType + Clone> ValueList<T> {
         self.list.read().get(idx).cloned()
     }
 
-    pub fn process<R>(&self, op: impl Fn(&Vec<T>) -> R) -> R {
+    pub fn read<R>(&self, mut f: impl FnMut(&Vec<T>) -> R) -> R {
         let l = self.list.read();
-        op(&*l)
+        f(&*l)
+    }
+
+    pub fn read_item<R>(&self, idx: usize, mut f: impl FnMut(Option<&T>) -> R) -> R {
+        let l = self.list.read();
+        f(l.get(idx))
     }
 }
 

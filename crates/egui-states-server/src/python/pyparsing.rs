@@ -97,7 +97,7 @@ pub(crate) fn serialize_py(
         }
         ObjectType::Vec(items_type) => {
             let list = obj.cast::<pyo3::types::PyList>()?;
-            creator.add(&(list.len() as u64));
+            creator.add::<u64>(&(list.len() as u64));
 
             for item in list.iter() {
                 serialize_py(&item, items_type, creator)?;

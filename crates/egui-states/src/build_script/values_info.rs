@@ -8,7 +8,7 @@ pub enum StateType {
     Value(String, ObjectType, InitValue),
     Static(String, ObjectType, InitValue),
     Image(String),
-    Dict(String, ObjectType, ObjectType),
+    Map(String, ObjectType, ObjectType),
     List(String, ObjectType),
     Graphs(String, GraphType),
     Signal(String, ObjectType),

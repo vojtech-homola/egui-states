@@ -24,11 +24,6 @@ use crate::sender::{MessageReceiver, MessageSender};
 use crate::server::ServerStatesList;
 use crate::signals::SignalsManager;
 
-// #[inline]
-// pub(crate) fn release_values(values: &ServerStatesList) {
-//     values.images.iter().for_each(|img| img.release());
-// }
-
 enum ChannelHolder {
     Transfer(JoinHandle<MessageReceiver>),
     Rx(MessageReceiver),

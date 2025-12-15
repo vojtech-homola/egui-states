@@ -228,9 +228,8 @@ pub fn serialize_value_slice<T>(value: &T, buffer: &mut [u8]) -> SerResult
 where
     T: Serialize,
 {
-    let original_len = buffer.len();
     match postcard::to_slice::<T>(value, buffer) {
-        Ok(slice) => SerResult::Ok(original_len - slice.len()),
+        Ok(slice) => SerResult::Ok(slice.len()),
         Err(postcard::Error::SerializeBufferFull) => {
             let vec = postcard::to_stdvec(value).expect("Failed to serialize value");
             SerResult::Heap(vec)

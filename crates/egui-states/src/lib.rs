@@ -11,16 +11,16 @@ mod sender;
 mod states_creator;
 mod values;
 
-#[cfg(any(feature = "client", feature = "client-wasm"))]
+// #[cfg(any(feature = "client", feature = "client-wasm"))]
 mod client;
 
-#[cfg(any(feature = "client", feature = "client-wasm"))]
+// #[cfg(any(feature = "client", feature = "client-wasm"))]
 pub use client::ClientBuilder;
 
-#[cfg(feature = "client")]
+#[cfg(not(target_arch = "wasm32"))]
 mod websocket;
 
-#[cfg(feature = "client-wasm")]
+#[cfg(target_arch = "wasm32")]
 mod websocket_wasm;
 
 pub use build_script::values_info::{GetInitValue, InitValue};

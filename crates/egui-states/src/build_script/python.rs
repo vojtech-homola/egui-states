@@ -48,7 +48,7 @@ fn type_to_pytype(type_info: &ObjectType) -> String {
             )
         }
         ObjectType::Option(element) => {
-            format!("opt({})", type_to_pytype(element))
+            format!("s.opt({})", type_to_pytype(element))
         }
     }
 }
@@ -61,7 +61,6 @@ fn process_type_info(values: &Vec<StateType>) -> (HashMap<String, usize>, Vec<Ob
         match state {
             StateType::Value(name, obj_type, _)
             | StateType::Static(name, obj_type, _)
-            | StateType::List(name, obj_type)
             | StateType::Signal(name, obj_type) => {
                 if type_list.contains(obj_type) {
                     type_map.insert(
@@ -73,7 +72,7 @@ fn process_type_info(values: &Vec<StateType>) -> (HashMap<String, usize>, Vec<Ob
                     type_map.insert(name.clone(), type_list.len() - 1);
                 }
             }
-            StateType::Dict(name, key, value) => {
+            StateType::Map(name, key, value) => {
                 let dict_type = ObjectType::Map(Box::new(key.clone()), Box::new(value.clone()));
                 if type_list.contains(&dict_type) {
                     type_map.insert(
@@ -82,6 +81,18 @@ fn process_type_info(values: &Vec<StateType>) -> (HashMap<String, usize>, Vec<Ob
                     );
                 } else {
                     type_list.push(dict_type);
+                    type_map.insert(name.clone(), type_list.len() - 1);
+                }
+            }
+            StateType::List(name, value_type) => {
+                let list_type = ObjectType::Vec(Box::new(value_type.clone()));
+                if type_list.contains(&list_type) {
+                    type_map.insert(
+                        name.clone(),
+                        type_list.iter().position(|t| t == &list_type).unwrap(),
+                    );
+                } else {
+                    type_list.push(list_type);
                     type_map.insert(name.clone(), type_list.len() - 1);
                 }
             }
@@ -230,7 +241,7 @@ fn state_to_line(state: &StateType, types_map: &HashMap<String, usize>) -> Strin
                 last_name, py_type, *index
             )
         }
-        StateType::Dict(name, key_type, value_type) => {
+        StateType::Map(name, key_type, value_type) => {
             let last_name = name.split('.').last().unwrap();
             let py_key_type = type_info_to_python_type(key_type, false);
             let py_value_type = type_info_to_python_type(value_type, false);

@@ -65,6 +65,31 @@ where
         self.value.read().clone()
     }
 
+    pub fn read<R>(&self, f: impl Fn(&T) -> R) -> R {
+        let r = self.value.read();
+        f(&r)
+    }
+
+    pub fn write<R>(&self, f: impl Fn(&mut T) -> R) -> R {
+        let mut w = self.value.write();
+        let result = f(&mut w);
+
+        let data = serialize_value_to_message(&*w);
+        let header = ClientHeader::Value(self.id, false);
+        self.sender.send_data(header, data);
+        result
+    }
+
+    pub fn write_signal<R>(&self, f: impl Fn(&mut T) -> R) -> R {
+        let mut w = self.value.write();
+        let result = f(&mut w);
+
+        let data = serialize_value_to_message(&*w);
+        let header = ClientHeader::Value(self.id, true);
+        self.sender.send_data(header, data);
+        result
+    }
+
     pub fn set(&self, value: T) {
         let data = serialize_value_to_message(&value);
         let header = ClientHeader::Value(self.id, false);
@@ -110,6 +135,11 @@ impl<T: Clone> ValueStatic<T> {
 
     pub fn get(&self) -> T {
         self.value.read().clone()
+    }
+
+    pub fn read<R>(&self, f: impl Fn(&T) -> R) -> R {
+        let r = self.value.read();
+        f(&r)
     }
 }
 

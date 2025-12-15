@@ -6,38 +6,37 @@ use egui_states::{
 use egui_states::{state_enum, state_struct};
 
 #[state_enum]
-enum TestEnum {
+pub(crate) enum TestEnum {
     A,
     B,
     C,
 }
 
 #[state_enum]
-enum TestEnum2 {
+pub(crate) enum TestEnum2 {
     X,
     Y,
     Z,
 }
 
 #[state_struct]
-struct TestStruct {
+pub(crate) struct TestStruct {
     x: f32,
     y: f32,
     label: String,
 }
 
 #[state_struct]
-struct TestStruct2 {
+pub(crate) struct TestStruct2 {
     x: f32,
     y: f32,
-    lab: Vec<(i64, String)>,
 }
 
 pub(crate) struct MySubState {
-    pub sub_value: Arc<Value<i32>>,
+    pub sub_value: Arc<Value<Option<i32>>>,
     pub test_enum: Arc<Value<TestEnum>>,
-    pub stat: Arc<ValueStatic<[f32; 3]>>,
-    pub test_signal: Arc<Signal<f32>>,
+    pub stat: Arc<ValueStatic<[f64; 3]>>,
+    pub test_signal: Arc<Signal<f64>>,
     pub signal_emp: Arc<Signal<()>>,
 }
 
@@ -46,7 +45,7 @@ impl State for MySubState {
 
     fn new(c: &mut impl StatesCreator) -> Self {
         Self {
-            sub_value: c.add_value("sub_value", 0),
+            sub_value: c.add_value("sub_value", None),
             test_enum: c.add_value("test_enum", TestEnum::A),
             stat: c.add_static("stat", [0.0, 0.0, 0.0]),
             test_signal: c.add_signal("test_signal"),
@@ -57,7 +56,7 @@ impl State for MySubState {
 
 pub(crate) struct Collections {
     pub list: Arc<ValueList<i32>>,
-    pub map: Arc<ValueMap<u16, String>>,
+    pub map: Arc<ValueMap<u16, u32>>,
 }
 
 impl State for Collections {
@@ -80,6 +79,7 @@ pub struct States {
     pub(crate) test_enum2: Arc<Value<TestEnum2>>,
     pub(crate) test_struct2: Arc<Value<TestStruct2>>,
     pub(crate) my_sub_state: MySubState,
+    pub(crate) map: Arc<Value<Vec<u32>>>,
     pub(crate) collections: Collections,
 }
 
@@ -91,24 +91,18 @@ impl State for States {
             value: c.add_value("value", 0.0),
             image: c.add_image("image"),
             graphs: c.add_graphs("graphs"),
-            test_enum: c.add_value("test_enum", TestEnum::A),
+            test_enum: c.add_value("test_enum", TestEnum::B),
             test_struct: c.add_value(
                 "test_struct",
                 TestStruct {
-                    x: 0.0,
-                    y: 0.0,
-                    label: "".to_string(),
+                    x: 5.0,
+                    y: 78.0,
+                    label: "tttt".to_string(),
                 },
             ),
             test_enum2: c.add_value("test_enum2", TestEnum2::X),
-            test_struct2: c.add_value(
-                "test_struct2",
-                TestStruct2 {
-                    x: 0.0,
-                    y: 0.0,
-                    lab: Vec::new(),
-                },
-            ),
+            test_struct2: c.add_value("test_struct2", TestStruct2 { x: 0.0, y: 0.0 }),
+            map: c.add_value("map", vec![78, 78, 78, 78]),
 
             my_sub_state: c.add_substate("my_sub_state"),
             collections: c.add_substate("collections"),

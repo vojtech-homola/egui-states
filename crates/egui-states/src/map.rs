@@ -40,9 +40,15 @@ where
         self.dict.read().get(key).cloned()
     }
 
-    pub fn process<R>(&self, op: impl Fn(&HashMap<K, V>) -> R) -> R {
+    pub fn read<R>(&self, mut f: impl FnMut(&HashMap<K, V>) -> R) -> R {
         let d = self.dict.read();
-        op(&*d)
+        f(&*d)
+    }
+
+    pub fn read_item<R>(&self, key: &K, mut f: impl FnMut(Option<&V>) -> R) -> R {
+        let d = self.dict.read();
+        let v = d.get(key);
+        f(v)
     }
 }
 

@@ -25,7 +25,16 @@ pub(crate) fn check_types(message_data: &[u8], vals: &ValuesList) -> Result<Mess
                 if let Some(state_type) = vals.types.get(&id) {
                     if *state_type == t {
                         types_res.push(id);
+                    } else {
+                        #[cfg(debug_assertions)]
+                        println!(
+                            "Type mismatch for state id {}: expected {}, got {}",
+                            id, state_type, t
+                        );
                     }
+                } else {
+                    #[cfg(debug_assertions)]
+                    println!("State with id {} not found for types check.", id);
                 }
             }
             let header = ClientHeader::Control(ControlClient::TypesAnswer);

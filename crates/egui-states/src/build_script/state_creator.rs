@@ -114,7 +114,7 @@ impl StatesCreator for StatesCreatorBuild {
         let value = ValueMap::new(id);
 
         self.states
-            .push(StateType::Dict(name, K::get_type(), V::get_type()));
+            .push(StateType::Map(name, K::get_type(), V::get_type()));
         value
     }
 

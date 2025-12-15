@@ -120,7 +120,7 @@ pub(crate) fn get_all_enums_struct(
                 collect_enums(info, &mut enums);
                 collect_structs(info, &mut structs);
             }
-            StateType::Dict(_, key_info, value_info) => {
+            StateType::Map(_, key_info, value_info) => {
                 collect_enums(key_info, &mut enums);
                 collect_enums(value_info, &mut enums);
                 collect_structs(key_info, &mut structs);

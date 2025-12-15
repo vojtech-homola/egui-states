@@ -31,17 +31,17 @@ impl<T: Clone + Copy> ValueGraphs<T> {
         self.graphs.read().len()
     }
 
-    pub fn process<R>(&self, idx: u16, op: impl Fn(Option<&Graph<T>>, bool) -> R) -> R {
+    pub fn read<R>(&self, idx: u16, f: impl Fn(Option<&Graph<T>>, bool) -> R) -> R {
         let mut g = self.graphs.write();
         let graph = g.get_mut(&idx);
 
         match graph {
             Some((graph, changed)) => {
-                let r = op(Some(graph), *changed);
+                let r = f(Some(graph), *changed);
                 *changed = false;
                 r
             }
-            None => op(None, false),
+            None => f(None, false),
         }
     }
 }

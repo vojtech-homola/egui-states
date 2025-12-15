@@ -3,9 +3,6 @@ name = "gui"
 version.workspace = true
 edition.workspace = true
 
-[lib]
-name = "gui"
-
 [[bin]]
 name = "GuiTest"
 path = "src/main.rs"
@@ -14,12 +11,9 @@ path = "src/main.rs"
 serde = "*"
 eframe = "0.33"
 egui = { version = "0.33", features = ["rayon"] }
-
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-egui_states = { workspace = true, features = ["client"] }
+egui_states = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-egui_states = { workspace = true, features = ["client-wasm"] }
 wasm-bindgen-futures = "0.4"
 web-sys = "0.3"
 log = "0.4"

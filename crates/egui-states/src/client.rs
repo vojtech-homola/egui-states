@@ -12,10 +12,10 @@ use crate::client_states::{StatesCreatorClient, ValuesList};
 use crate::handle_message::{check_types, handle_message};
 use crate::sender::{ChannelMessage, MessageSender};
 
-#[cfg(feature = "client")]
+#[cfg(not(target_arch = "wasm32"))]
 use crate::websocket::build_ws;
 
-#[cfg(feature = "client-wasm")]
+#[cfg(target_arch = "wasm32")]
 use crate::websocket_wasm::build_ws;
 
 async fn start_gui_client(
@@ -93,7 +93,7 @@ async fn start_gui_client(
             }
         };
 
-        #[cfg(feature = "client")]
+        #[cfg(not(target_arch = "wasm32"))]
         let recv_future = tokio::spawn(recv_future);
 
         // send -----------------------------------------
@@ -118,12 +118,12 @@ async fn start_gui_client(
             rx
         };
 
-        #[cfg(feature = "client")]
+        #[cfg(not(target_arch = "wasm32"))]
         let send_future = tokio::spawn(send_future);
 
         ui_state.set_state(ConnectionState::Connected);
 
-        #[cfg(feature = "client")]
+        #[cfg(not(target_arch = "wasm32"))]
         {
             // wait for the read thread to finish
             let _ = recv_future.await;
@@ -133,7 +133,7 @@ async fn start_gui_client(
             rx = send_future.await.unwrap();
         }
 
-        #[cfg(feature = "client-wasm")]
+        #[cfg(target_arch = "wasm32")]
         {
             let (_, rx_) = tokio::join!(recv_future, send_future);
             rx = rx_;
@@ -193,7 +193,7 @@ impl ClientBuilder {
         let client = Client::new(context, sender.clone());
         let client_out = client.clone();
 
-        #[cfg(feature = "client")]
+        #[cfg(not(target_arch = "wasm32"))]
         {
             use std::thread;
             use tokio::runtime::Builder;
@@ -214,7 +214,7 @@ impl ClientBuilder {
             });
         }
 
-        #[cfg(feature = "client-wasm")]
+        #[cfg(target_arch = "wasm32")]
         {
             wasm_bindgen_futures::spawn_local(async move {
                 start_gui_client(addr, values, rx, sender, client, handshake).await;

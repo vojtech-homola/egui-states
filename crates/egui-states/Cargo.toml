@@ -4,14 +4,14 @@ version.workspace = true
 edition.workspace = true
 
 [features]
-client = ["dep:tokio-tungstenite", "tokio/rt-multi-thread", "tokio/net"]
-client-wasm = [
-    "dep:ws_stream_wasm",
-    "dep:log",
-    "dep:wasm-bindgen-futures",
-    "tokio/macros",
-]
-build-script = []
+# client = ["dep:tokio-tungstenite", "tokio/rt-multi-thread", "tokio/net"]
+# client-wasm = [
+#     "dep:ws_stream_wasm",
+#     "dep:log",
+#     "dep:wasm-bindgen-futures",
+#     "tokio/macros",
+# ]
+# build-script = []
 
 [dependencies]
 serde = { workspace = true }
@@ -23,11 +23,12 @@ bytes = { workspace = true }
 egui_states_core = { workspace = true }
 egui_states_macros = { workspace = true }
 
-# client
-tokio = { workspace = true, features = ["sync"] }
-tokio-tungstenite = { workspace = true, optional = true }
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { workspace = true, features = ["sync", "rt-multi-thread", "net"] }
+tokio-tungstenite = { workspace = true }
 
-# client-wasm
-ws_stream_wasm = { version = "0.7", optional = true }
-wasm-bindgen-futures = { version = "0.4", optional = true }
-log = { version = "0.4", optional = true }
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+tokio = { workspace = true, features = ["sync", "macros"] }
+ws_stream_wasm = { version = "0.7" }
+wasm-bindgen-futures = { version = "0.4" }
+log = { version = "0.4" }

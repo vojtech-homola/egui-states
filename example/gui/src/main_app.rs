@@ -75,6 +75,29 @@ impl eframe::App for MainApp {
             {
                 self.states.value.set_signal(value);
             }
+
+            //map --------------------------------------------------
+            self.states.collections.map.read(|m| {
+                for (k, v) in m {
+                    ui.label(format!("Map key: {}, value: {}", k, v));
+                }
+            });
+
+            ui.separator();
+
+            //list --------------------------------------------------
+            self.states.collections.list.read(|l| {
+                for v in l {
+                    ui.label(format!("List item: {}", v));
+                }
+            });
+
+            ui.separator();
+
+            let l = self.states.map.get();
+            for v in l {
+                ui.label(format!("List item: {}", v));
+            }
         });
     }
 }

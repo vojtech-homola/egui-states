@@ -1,4 +1,7 @@
 [build]
-target = "./examples/gui/index.html"
-dist = "./examples/gui/web/"
+target = "./example/gui/index.html"
+dist = "./example/gui/web/"
 filehash = false
+
+[serve]
+port = 8090
