@@ -205,7 +205,7 @@ fn state_to_line(state: &StateType, types_map: &HashMap<String, usize>) -> Strin
             let init_value = init_to_python_value(init);
             let index = types_map.get(name).unwrap();
             format!(
-                "        self.{} = sc.Value[{}]({}, {})\n",
+                "        self.{} = s.Value[{}]({}, {})\n",
                 last_name, py_type, *index, init_value
             )
         }
@@ -215,7 +215,7 @@ fn state_to_line(state: &StateType, types_map: &HashMap<String, usize>) -> Strin
             let init_value = init_to_python_value(init);
             let index = types_map.get(name).unwrap();
             format!(
-                "        self.{} = sc.ValueStatic[{}]({}, {})\n",
+                "        self.{} = s.ValueStatic[{}]({}, {})\n",
                 last_name, py_type, *index, init_value
             )
         }
@@ -224,10 +224,10 @@ fn state_to_line(state: &StateType, types_map: &HashMap<String, usize>) -> Strin
             let py_type = type_info_to_python_type(state_type, false);
             let index = types_map.get(name).unwrap();
             if let ObjectType::Empty = state_type {
-                format!("        self.{} = sc.SignalEmpty()\n", last_name)
+                format!("        self.{} = s.SignalEmpty()\n", last_name)
             } else {
                 format!(
-                    "        self.{} = sc.Signal[{}]({})\n",
+                    "        self.{} = s.Signal[{}]({})\n",
                     last_name, py_type, *index
                 )
             }
@@ -237,7 +237,7 @@ fn state_to_line(state: &StateType, types_map: &HashMap<String, usize>) -> Strin
             let py_type = type_info_to_python_type(state_type, false);
             let index = types_map.get(name).unwrap();
             format!(
-                "        self.{} = sc.ValueList[{}]({})\n",
+                "        self.{} = s.ValueList[{}]({})\n",
                 last_name, py_type, *index
             )
         }
@@ -247,14 +247,14 @@ fn state_to_line(state: &StateType, types_map: &HashMap<String, usize>) -> Strin
             let py_value_type = type_info_to_python_type(value_type, false);
             let index = types_map.get(name).unwrap();
             format!(
-                "        self.{} = sc.ValueMap[{}, {}]({})\n",
+                "        self.{} = s.ValueMap[{}, {}]({})\n",
                 last_name, py_key_type, py_value_type, *index
             )
         }
         StateType::Graphs(name, graph_type) => {
             let last_name = name.split('.').last().unwrap();
             format!(
-                "        self.{} = sc.ValueGraphs({})\n",
+                "        self.{} = s.ValueGraphs({})\n",
                 last_name,
                 match graph_type {
                     GraphType::F32 => "np.float32",
@@ -264,7 +264,7 @@ fn state_to_line(state: &StateType, types_map: &HashMap<String, usize>) -> Strin
         }
         StateType::Image(name) => {
             let last_name = name.split('.').last().unwrap();
-            format!("        self.{} = sc.ValueImage()\n", last_name)
+            format!("        self.{} = s.ValueImage()\n", last_name)
         }
         StateType::SubState(name, state_class, _) => {
             let last_name = name.split('.').last().unwrap();
@@ -342,15 +342,16 @@ pub fn generate<S: State>(path: impl ToString) -> Result<(), String> {
 
     file.write_all(b"\nimport numpy as np\n\n").unwrap();
 
-    file.write_all(b"import egui_states as s\n").unwrap();
-    file.write_all(b"import egui_states.structures as sc\n")
+    file.write_all(b"import egui_states.structures as s\n")
         .unwrap();
-    file.write_all(b"from egui_states.structures import ISubStates, StatesBase\n")
+    file.write_all(b"from egui_states.server import StatesBase, StateServerBase\n")
+        .unwrap();
+    file.write_all(b"from egui_states.structures import ISubStates\n")
         .unwrap();
 
     // Write enums
     for (enum_name, variants) in &enums {
-        file.write_all(format!("\n\nclass {}(sc.FastEnum):\n", enum_name).as_bytes())
+        file.write_all(format!("\n\nclass {}(s.FastEnum):\n", enum_name).as_bytes())
             .unwrap();
         for (name, value) in variants {
             let text = format!("    {} = {}\n", name, value);
@@ -362,7 +363,7 @@ pub fn generate<S: State>(path: impl ToString) -> Result<(), String> {
     for struct_name in &order_list {
         let fields = &structs[struct_name];
         file.write_all(
-            format!("\n\n@dataclass\nclass {}(sc.CustomStruct):\n", struct_name).as_bytes(),
+            format!("\n\n@dataclass\nclass {}(s.CustomStruct):\n", struct_name).as_bytes(),
         )
         .unwrap();
 
@@ -403,9 +404,9 @@ pub fn generate<S: State>(path: impl ToString) -> Result<(), String> {
         file.write_all(b"        ]\n\n").unwrap();
 
         // Write the state values
-        file.write_all(b"    def __init__(self, update: Callable[[float | None], None]):\n")
+        file.write_all(b"    def __init__(self, server: StateServerBase):\n")
             .unwrap();
-        file.write_all(b"        super().__init__(update)\n")
+        file.write_all(b"        super().__init__(server)\n")
             .unwrap();
         file.write_all(b"        parent = \"root\"\n").unwrap();
 
@@ -413,6 +414,41 @@ pub fn generate<S: State>(path: impl ToString) -> Result<(), String> {
             let line = state_to_line(state, &types_map);
             file.write_all(line.as_bytes()).unwrap();
         }
+
+        file.write_all(b"\n").unwrap();
+
+        let text = r#"
+class StatesServer(StateServerBase):
+    """The main class for the SteteServer for UI."""
+
+    def __init__(
+        self,
+        port: int,
+        signals_workers: int = 3,
+        error_handler: Callable[[Exception], None] | None = None,
+        ip_addr: tuple[int, int, int, int] | None = None,
+        handshake: list[int] | None = None,
+    ) -> None:
+        """Initialize the StateServer.
+
+        Args:
+            port (int): The port to listen on.
+            signals_workers (int, optional): Number of workers for signal processing. Defaults to 3.
+            error_handler (Callable[[Exception], None] | None, optional): Error handler function. Defaults to None.
+            ip_addr (tuple[int, int, int, int] | None, optional): IP address to bind to. Defaults to None.
+            handshake (list[int] | None, optional): Handshake bytes. Defaults to None.
+        """
+        "#;
+        file.write_all(text.as_bytes()).unwrap();
+
+        file.write_all(
+            format!(
+                "super().__init__({}, port, signals_workers, error_handler, ip_addr, handshake)\n",
+                root_name
+            )
+            .as_bytes(),
+        )
+        .unwrap();
     } else {
         panic!("Root state must be a SubState");
     }

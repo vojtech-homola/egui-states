@@ -1,10 +1,10 @@
 # ruff: noqa: D103
 import numpy as np
-from egui_states import LogLevel, StateServer
+from egui_states import LogLevel
 
-from states import States
+from states import StatesServer
 
-state_server = StateServer(States, port=8081)
+state_server = StatesServer(port=8081)
 state_server.start()
 states = state_server.states
 

@@ -1,9 +1,11 @@
+# ruff: noqa: D107
+from abc import ABC, abstractmethod
 from collections.abc import Callable
 
 from egui_states._core import PyObjectType, StateServerCore
 from egui_states.logging import LoggingSignal
 from egui_states.signals import SignalsManager
-from egui_states.structures import StatesBase, ISubStates, _SignalBase, _StaticBase
+from egui_states.structures import ISubStates, _SignalBase, _StaticBase
 
 
 def _initialize(
@@ -20,7 +22,35 @@ def _initialize(
             _initialize(o, full_name, server, signals_manager, types)
 
 
-class StateServer[T: StatesBase]:
+class StatesBase(ABC):
+    """The root state class for the UI states."""
+
+    def __init__(self, server: "StateServerBase") -> None:
+        self._server = server
+
+    def update_ui(self, dt: float | None = None) -> None:
+        """Request the UI to update.
+
+        Args:
+            dt(float | None, optional): Delay time to next update, None means immediate. Defaults to None.
+        """
+        self._server.update(dt)
+
+    def get_server(self) -> "StateServerBase":
+        """Get the state server.
+
+        Returns:
+            StateServer: The state server.
+        """
+        return self._server
+
+    @staticmethod
+    @abstractmethod
+    def _get_obj_types() -> list[PyObjectType]:
+        pass
+
+
+class StateServerBase[T: StatesBase]:
     """The main class for the SteteServer for UI."""
 
     def __init__(
@@ -44,7 +74,7 @@ class StateServer[T: StatesBase]:
         """
         self._server = StateServerCore(port, ip_addr, handshake)
         self._signals_manager = SignalsManager(self._server, signals_workers, error_handler)
-        self._states: T = state_class(self._server.update)
+        self._states: T = state_class(self)
 
         _initialize(self._states, "root", self._server, self._signals_manager, self._states._get_obj_types())
         self._server.finalize()
