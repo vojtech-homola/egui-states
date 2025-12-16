@@ -21,6 +21,7 @@ from egui_states._core import (
     u64,
     f32,
     f64,
+    bo,
     emp,
     enu,
     cl,
@@ -28,6 +29,7 @@ from egui_states._core import (
     vec,
     opt,
     li,
+    tu,
     map,
 )
 from egui_states.signals import SignalsManager
@@ -632,6 +634,7 @@ __all__ = [
     "u64",
     "f32",
     "f64",
+    "bo",
     "emp",
     "enu",
     "cl",
@@ -639,6 +642,7 @@ __all__ = [
     "vec",
     "opt",
     "li",
+    "tu",
     "map",
     "FastEnum",
     "CustomStruct",

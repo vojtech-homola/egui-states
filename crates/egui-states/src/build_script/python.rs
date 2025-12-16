@@ -163,7 +163,10 @@ fn init_to_python_value(init: &InitValue) -> String {
         InitValue::F64(v) => format!("{}", v),
         InitValue::F32(v) => format!("{}", v),
         InitValue::String(v) => format!("\"{}\"", v),
-        InitValue::Bool(v) => format!("{}", v),
+        InitValue::Bool(v) => match v {
+            true => "True".to_string(),
+            false => "False".to_string(),
+        },
         InitValue::Enum(v) => {
             let value = v.replace("::", ".");
             format!("{}", value)
@@ -281,13 +284,18 @@ fn write_states(
     state_class: &str,
     states: &Vec<StateType>,
     types_map: &HashMap<String, usize>,
+    used_states: &mut Vec<&str>,
 ) {
     let mut lines = Vec::new();
 
     for state in states {
         lines.push(state_to_line(state, types_map));
         if let StateType::SubState(_, state_class, sub_states) = state {
-            write_states(file, state_class, sub_states, types_map);
+            if used_states.contains(state_class) {
+                continue;
+            }
+            used_states.push(state_class);
+            write_states(file, state_class, sub_states, types_map, used_states);
         }
     }
 
@@ -382,9 +390,20 @@ pub fn generate<S: State>(path: impl ToString) -> Result<(), String> {
     // write states
     if let StateType::SubState(_, root_name, substates) = &states {
         // write substates
+        let mut used_states = Vec::new();
         for state in substates {
             if let StateType::SubState(_, state_class, sub_states) = state {
-                write_states(&mut file, state_class, sub_states, &types_map);
+                if used_states.contains(state_class) {
+                    continue;
+                }
+                used_states.push(state_class);
+                write_states(
+                    &mut file,
+                    state_class,
+                    sub_states,
+                    &types_map,
+                    &mut used_states,
+                );
             }
         }
 
