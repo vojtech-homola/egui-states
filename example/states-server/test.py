@@ -43,3 +43,10 @@ def on_value(value: float):
 
 
 states.value.connect(on_value)
+
+
+def on_empty_signal():
+    print("Empty signal emitted")
+
+
+states.empty_signal.connect(on_empty_signal)

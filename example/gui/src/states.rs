@@ -72,6 +72,7 @@ impl State for Collections {
 
 pub struct States {
     pub(crate) value: Arc<Value<f64>>,
+    pub(crate) empty_signal: Arc<Signal<()>>,
     pub(crate) image: Arc<ValueImage>,
     pub(crate) graphs: Arc<ValueGraphs<f32>>,
     pub(crate) test_enum: Arc<Value<TestEnum>>,
@@ -89,6 +90,7 @@ impl State for States {
     fn new(c: &mut impl StatesCreator) -> Self {
         Self {
             value: c.add_value("value", 0.0),
+            empty_signal: c.add_signal("empty_signal"),
             image: c.add_image("image"),
             graphs: c.add_graphs("graphs"),
             test_enum: c.add_value("test_enum", TestEnum::B),

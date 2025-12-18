@@ -168,8 +168,8 @@ impl<T: Serialize + Clone> Signal<T> {
         })
     }
 
-    pub fn set(&self, value: impl Into<T>) {
-        let message = serialize_value_to_message(&value.into());
+    pub fn set(&self, value: T) {
+        let message = serialize_value_to_message(&value);
         let header = ClientHeader::Signal(self.id);
         self.sender.send_data(header, message);
     }

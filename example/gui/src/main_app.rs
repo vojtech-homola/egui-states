@@ -98,6 +98,12 @@ impl eframe::App for MainApp {
             for v in l {
                 ui.label(format!("List item: {}", v));
             }
+            
+            // signal --------------------------------------------------
+            if ui.button("Emit empty signal").clicked() {
+                self.states.empty_signal.set(());
+            }
+
         });
     }
 }
