@@ -30,27 +30,44 @@ pub(crate) fn impl_struct(input: TokenStream) -> TokenStream {
             panic!("Struct fields must be named");
         }
     }
+    // let types2 = types.clone();
 
     let out = quote!(
         #[derive(Clone, serde::Serialize, serde::Deserialize)]
         #(#attrs)*
         #vis #struct_token #ident #fields #semi_token
 
-        impl egui_states::GetTypeInfo for #ident {
-            #[inline]
-            fn type_info() -> egui_states::TypeInfo {
-                egui_states::TypeInfo::Struct(stringify!(#ident) ,vec![
-                    #((stringify!(#names), <#types as egui_states::GetTypeInfo>::type_info())),*
-                ])
-            }
-        }
+        // impl egui_states::values_info::GetTypeInfo for #ident {
+        //     #[inline]
+        //     fn type_info() -> egui_states::values_info::TypeInfo {
+        //         egui_states::values_info::TypeInfo::Struct(stringify!(#ident) ,vec![
+        //             #((stringify!(#names), <#types as egui_states::values_info::GetTypeInfo>::type_info())),*
+        //         ])
+        //     }
+        // }
 
         impl egui_states::GetInitValue for #ident {
             #[inline]
             fn init_value(&self) -> egui_states::InitValue {
-                egui_states::InitValue::Struct(stringify!(#ident), vec![
-                    #((stringify!(#names), self.#names.init_value())),*
-                ])
+                //egui_states::InitValue::Tuple(vec![#(self.#names.init_value()),*])
+                egui_states::InitValue::Struct(
+                    stringify!(#ident),
+                    vec![
+                        #((stringify!(#names), self.#names.init_value())),*
+                    ]
+                )
+            }
+        }
+
+        impl egui_states::GetType for #ident {
+            #[inline]
+            fn get_type() -> egui_states::ObjectType {
+                egui_states::ObjectType::Struct(
+                    stringify!(#ident).to_string(),
+                    vec![
+                        #((stringify!(#names).to_string(), <#types as egui_states::GetType>::get_type())),*
+                    ]
+                )
             }
         }
     );
@@ -109,19 +126,31 @@ pub(crate) fn impl_enum(input: TokenStream) -> TokenStream {
             #(#variants),*
         }
 
-        impl egui_states::GetTypeInfo for #ident {
-            #[inline]
-            fn type_info() -> egui_states::TypeInfo {
-                egui_states::TypeInfo::Enum(stringify!(#ident), vec![
-                    #((stringify!(#names), #values as isize)),*
-                ])
-            }
-        }
+        // impl egui_states::values_info::GetTypeInfo for #ident {
+        //     #[inline]
+        //     fn type_info() -> egui_states::values_info::TypeInfo {
+        //         egui_states::values_info::TypeInfo::Enum(stringify!(#ident), vec![
+        //             #((stringify!(#names), #values as isize)),*
+        //         ])
+        //     }
+        // }
 
         impl egui_states::GetInitValue for #ident {
             #[inline]
             fn init_value(&self) -> egui_states::InitValue {
-                egui_states::InitValue::Value(format!("{}::{:?}", stringify!(#ident), self))
+                egui_states::InitValue::Enum(format!("{}::{:?}", stringify!(#ident), self))
+            }
+        }
+
+        impl egui_states::GetType for #ident {
+            #[inline]
+            fn get_type() -> egui_states::ObjectType {
+                egui_states::ObjectType::Enum(
+                    stringify!(#ident).to_string(),
+                    vec![
+                        #((stringify!(#names).to_string(), #values as isize)),*
+                    ]
+                )
             }
         }
     );

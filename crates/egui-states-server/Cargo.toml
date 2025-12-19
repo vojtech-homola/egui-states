@@ -3,8 +3,16 @@ name = "egui_states_server"
 version.workspace = true
 edition.workspace = true
 
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[features]
+python = ["dep:pyo3"]
+
 [dependencies]
-pyo3 = ">=0.27"
+pyo3 = { version = "0.27", optional = true, features = ["extension-module"] }
+
+bytes = { workspace = true }
 tokio-tungstenite = { workspace = true }
 serde = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "net", "sync"] }

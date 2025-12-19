@@ -1,19 +1,25 @@
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
-use egui_states_core::serialization::MessageData;
+use egui_states_core::serialization::{ClientHeader, MessageData};
+
+pub(crate) type ChannelMessage = Option<(ClientHeader, Option<MessageData>)>;
 
 #[derive(Clone)]
 pub(crate) struct MessageSender {
-    sender: UnboundedSender<Option<MessageData>>,
+    sender: UnboundedSender<ChannelMessage>,
 }
 impl MessageSender {
-    pub(crate) fn new() -> (Self, UnboundedReceiver<Option<MessageData>>) {
+    pub(crate) fn new() -> (Self, UnboundedReceiver<ChannelMessage>) {
         let (sender, receiver) = unbounded_channel();
         (Self { sender }, receiver)
     }
 
-    pub(crate) fn send(&self, msg: MessageData) {
-        self.sender.send(Some(msg)).unwrap();
+    pub(crate) fn send_data(&self, header: ClientHeader, data: MessageData) {
+        self.sender.send(Some((header, Some(data)))).unwrap();
+    }
+
+    pub(crate) fn send(&self, header: ClientHeader) {
+        self.sender.send(Some((header, None))).unwrap();
     }
 
     pub(crate) fn close(&self) {

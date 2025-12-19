@@ -1,131 +1,120 @@
-# ruff: noqa: D107
+# ruff: noqa: D107 D101 D105 D102 PLC2801
 from abc import ABC, abstractmethod
 from collections.abc import Buffer, Callable
 from enum import Enum
-from typing import Any
+from typing import Any, Self
 
 import numpy as np
 import numpy.typing as npt
 
+from egui_states import _core
+from egui_states._core import (
+    PyObjectType,
+    StateServerCore,
+    i8,
+    i16,
+    i32,
+    i64,
+    u8,
+    u16,
+    u32,
+    u64,
+    f32,
+    f64,
+    bo,
+    emp,
+    enu,
+    cl,
+    st,
+    vec,
+    opt,
+    li,
+    tu,
+    map,
+)
 from egui_states.signals import SignalsManager
-from egui_states.typing import SteteServerCoreBase
 
 
-class _Counter:
-    def __init__(self) -> None:
-        self._counter = 9  # first 10 values are reserved for system signals
+class FastEnum(Enum):
+    def __init_subclass__(cls):
+        super().__init_subclass__()
+        cls._member_list = tuple(cls)
 
-    def get_id(self) -> int:
-        self._counter += 1
-        return self._counter
+    @classmethod
+    def from_index(cls, index) -> Self:
+        return cls._member_list[index]
+
+    @classmethod
+    def _get_members(cls) -> list[tuple[str, int]]:
+        return [(member.name, member.value) for member in cls._member_list]
+
+    def index(self) -> int:
+        return self._member_list.index(self)
 
 
-class _StatesBase:
-    pass
+class CustomStruct:
+    __getitem__ = object.__getattribute__
+
+    def _get_values(self) -> list[Any]:
+        return [self.__getattribute__(name) for name in self.__annotations__.keys()]
+
+    @classmethod
+    def _field_names(cls) -> list[str]:
+        return list(cls.__annotations__.keys())
 
 
-class _MainStatesBase(_StatesBase, ABC):
+class ISubStates(ABC):
+    """The base class for substates in the UI states."""
+
     @abstractmethod
-    def __init__(self, update: Callable[[float | None], None]) -> None:
+    def __init__(self, parent: str) -> None:
         pass
 
 
-class LogLevel(Enum):
-    """Logging levels."""
+class _StaticBase(ABC):
+    _server: StateServerCore
+    _value_id: int
 
-    Debug = 0
-    Info = 1
-    Warning = 2
-    Error = 3
-
-
-class LoggingSignal:
-    """Logging signal for processing log messages from the state server."""
-
-    def __init__(self, signals_manager: SignalsManager, server: SteteServerCoreBase) -> None:
-        """Initialize the LoggingSignal."""
-        self._loggers: dict[int, list[Callable[[str], None]]] = {0: [], 1: [], 2: [], 3: []}
-        signals_manager.add_callback(0, self._callback)
-        server.set_to_multi(0)
-
-    def _callback(self, message: tuple[int, str]) -> None:
-        level = message[0]
-        if level == LogLevel.Debug.value:
-            for logger in self._loggers[0]:
-                logger(message[1])
-        elif level == LogLevel.Info.value:
-            for logger in self._loggers[1]:
-                logger(message[1])
-        elif level == LogLevel.Warning.value:
-            for logger in self._loggers[2]:
-                logger(message[1])
-        elif level == LogLevel.Error.value:
-            for logger in self._loggers[3]:
-                logger(message[1])
-
-    def add_logger(self, level: LogLevel, logger: Callable[[str], None]):
-        """Add logger for a specific level.
-
-        Args:
-            level(Level): The logging level.
-            logger(Callable[[str], None]): The logger to add.
-        """
-        self._loggers[level.value].append(logger)
-
-    def remove_logger(self, level: LogLevel, logger: Callable[[str], None]):
-        """Remove logger for a specific level.
-
-        Args:
-            level(Level): The logging level.
-            logger(Callable[[str], None]): The logger to remove.
-        """
-        if logger in self._loggers[level.value]:
-            self._loggers[level.value].remove(logger)
-
-    def remove_all_loggers(self, level: LogLevel):
-        """Remove all loggers for a specific level.
-
-        Args:
-            level(Level): The logging level.
-        """
-        self._loggers[level.value].clear()
-
-
-class _StaticBase:
-    _server: SteteServerCoreBase
-
-    def __init__(self, counter: _Counter) -> None:
-        self._value_id = counter.get_id()
-
-    def _initialize_base(self, server: SteteServerCoreBase):
+    def _initialize_base(self, server: StateServerCore) -> None:
         self._server = server
 
+    @abstractmethod
+    def _initialize(self, name: str, types: list[PyObjectType]) -> None:
+        pass
 
-class _ValueBase(_StaticBase):
+
+class _SignalBase(_StaticBase):
     _signals_manager: SignalsManager
 
-    def _initialize_value(self, server: SteteServerCoreBase, signals_manager: SignalsManager):
-        self._server = server
+    def _initialize_signal(self, signals_manager: SignalsManager) -> None:
         self._signals_manager = signals_manager
-        # signals_manager.register_signal(self._value_id)
 
-    def set_to_multi(self) -> None:
-        """Set the value to multi mode.
+    def signal_set_to_queue(self) -> None:
+        """Set the value to queue mode.
 
-        In multi mode, changes of the value are queued and are all processed with single thread.
+        In queue mode, changes of the value are queued and are all processed with single thread.
         """
-        self._server.set_to_multi(self._value_id)
+        self._server.signal_set_to_multi(self._value_id)
 
-    def set_to_single(self) -> None:
+    def signal_set_to_single(self) -> None:
         """Set the value to single mode. It is the default mode.
 
         In single mode, only the last change of the value is processed.
         """
-        self._server.set_to_single(self._value_id)
+        self._server.signal_set_to_single(self._value_id)
 
 
-class Value[T](_ValueBase):
+class Value[T](_SignalBase):
     """General UI value of type T."""
+
+    def __init__(self, obj_id: int, initial_value: T):
+        self._initial_value = initial_value
+        self._obj_id = obj_id
+
+    def _initialize(self, name: str, types: list[PyObjectType]) -> None:
+        self._value_id = self._server.add_value(name, types[self._obj_id], self._initial_value)
+        del self._initial_value
+        del self._obj_id
 
     def set(self, value: T, set_signal: bool = False, update: bool = False) -> None:
         """Set the value of the UI element.
@@ -169,6 +158,15 @@ class Value[T](_ValueBase):
 class ValueStatic[T](_StaticBase):
     """Numeric static UI value of type T. Static means that the value is not updated in the UI."""
 
+    def __init__(self, obj_id: int, initial_value: T) -> None:
+        self._initial_value = initial_value
+        self._obj_id = obj_id
+
+    def _initialize(self, name: str, types: list[PyObjectType]) -> None:
+        self._value_id = self._server.add_static(name, types[self._obj_id], self._initial_value)
+        del self._initial_value
+        del self._obj_id
+
     def set(self, value: T, update: bool = False) -> None:
         """Set the static value of the UI.
 
@@ -187,8 +185,15 @@ class ValueStatic[T](_StaticBase):
         return self._server.static_get(self._value_id)
 
 
-class Signal[T](_ValueBase):
+class Signal[T](_SignalBase):
     """Signal from UI."""
+
+    def __init__(self, obj_id: int) -> None:
+        self._obj_id = obj_id
+
+    def _initialize(self, name: str, types: list[PyObjectType]) -> None:
+        self._value_id = self._server.add_signal(name, types[self._obj_id])
+        del self._obj_id
 
     def set(self, value: T) -> None:
         """Set the signal value.
@@ -221,8 +226,11 @@ class Signal[T](_ValueBase):
         self._signals_manager.clear_callbacks(self._value_id)
 
 
-class SignalEmpty(_ValueBase):
+class SignalEmpty(_SignalBase):
     """Empty Signal from UI."""
+
+    def _initialize(self, name: str, types: list[PyObjectType]) -> None:
+        self._value_id = self._server.add_signal(name, _core.emp)
 
     def set(self) -> None:
         """Set the signal value.
@@ -254,6 +262,9 @@ class SignalEmpty(_ValueBase):
 
 class ValueImage(_StaticBase):
     """Image UI element."""
+
+    def _initialize(self, name: str, types: list[PyObjectType]) -> None:
+        self._value_id = self._server.add_image(name)
 
     def set(
         self,
@@ -291,8 +302,15 @@ class ValueImage(_StaticBase):
         return self._server.image_size(self._value_id)
 
 
-class ValueDict[K, V](_StaticBase):
+class ValueMap[K, V](_StaticBase):
     """Dict UI element."""
+
+    def __init__(self, obj_id: int) -> None:
+        self._obj_id = obj_id
+
+    def _initialize(self, name: str, types: list[PyObjectType]) -> None:
+        self._value_id = self._server.add_map(name, types[self._obj_id])
+        del self._obj_id
 
     def set(self, value: dict[K, V], update: bool = False) -> None:
         """Set the dict in the UI dict.
@@ -301,7 +319,7 @@ class ValueDict[K, V](_StaticBase):
             value(dict[K, V]): The dict to set.
             update(bool, optional): Whether to update the UI. Defaults to False.
         """
-        self._server.dict_set(self._value_id, value, update)
+        self._server.map_set(self._value_id, value, update)
 
     def get(self) -> dict[K, V]:
         """Get the dict in the UI dict.
@@ -309,7 +327,7 @@ class ValueDict[K, V](_StaticBase):
         Returns:
             dict[K, V]: The dict in the UI dict.
         """
-        return self._server.dict_get(self._value_id)
+        return self._server.map_get(self._value_id)
 
     def set_item(self, key: K, value: V, update: bool = False) -> None:
         """Set the item in the UI dict.
@@ -319,7 +337,7 @@ class ValueDict[K, V](_StaticBase):
             value(V): The value of the item.
             update(bool, optional): Whether to update the UI. Defaults to False.
         """
-        self._server.dict_item_set(self._value_id, key, value, update)
+        self._server.map_set_item(self._value_id, key, value, update)
 
     def get_item(self, key: K) -> V:
         """Get the item in the UI dict.
@@ -330,7 +348,7 @@ class ValueDict[K, V](_StaticBase):
         Returns:
             V: The value of the item.
         """
-        return self._server.dict_item_get(self._value_id, key)
+        return self._server.map_get_item(self._value_id, key)
 
     def remove_item(self, key: K, update: bool = False) -> None:
         """Remove the item from the UI dict.
@@ -339,7 +357,7 @@ class ValueDict[K, V](_StaticBase):
             key(K): The key of the item.
             update(bool, optional): Whether to update the UI. Defaults to False.
         """
-        self._server.dict_item_del(self._value_id, key, update)
+        self._server.map_del_item(self._value_id, key, update)
 
     def __getitem__(self, key: K) -> V:
         """Get the item in the UI dict."""
@@ -356,6 +374,13 @@ class ValueDict[K, V](_StaticBase):
 
 class ValueList[T](_StaticBase):
     """List UI element."""
+
+    def __init__(self, obj_id: int) -> None:
+        self._obj_id = obj_id
+
+    def _initialize(self, name: str, types: list[PyObjectType]) -> None:
+        self._value_id = self._server.add_list(name, types[self._obj_id])
+        del self._obj_id
 
     def set(self, value: list[T], update: bool = False) -> None:
         """Set the list in the UI list.
@@ -382,7 +407,7 @@ class ValueList[T](_StaticBase):
             value(T): The value of the item.
             update(bool, optional): Whether to update the UI. Defaults to False.
         """
-        self._server.list_item_set(self._value_id, idx, value, update)
+        self._server.list_set_item(self._value_id, idx, value, update)
 
     def get_item(self, idx: int) -> T:
         """Get the item in the UI list.
@@ -393,7 +418,7 @@ class ValueList[T](_StaticBase):
         Returns:
             T: The value of the item.
         """
-        return self._server.list_item_get(self._value_id, idx)
+        return self._server.list_get_item(self._value_id, idx)
 
     def remove_item(self, idx: int, update: bool = False) -> None:
         """Remove the item from the UI list.
@@ -402,7 +427,7 @@ class ValueList[T](_StaticBase):
             idx(int): The index of the item.
             update(bool, optional): Whether to update the UI. Defaults to False.
         """
-        self._server.list_item_del(self._value_id, idx, update)
+        self._server.list_del_item(self._value_id, idx, update)
 
     def add_item(self, value: T, update: bool = False) -> None:
         """Add the item to the UI list.
@@ -411,7 +436,7 @@ class ValueList[T](_StaticBase):
             value(T): The value of the item.
             update(bool, optional): Whether to update the UI. Defaults to False.
         """
-        self._server.list_item_add(self._value_id, value, update)
+        self._server.list_append_item(self._value_id, value, update)
 
     def __getitem__(self, idx: int) -> T:
         """Get the item in the UI list."""
@@ -425,7 +450,7 @@ class ValueList[T](_StaticBase):
 class Graph:
     """Graph UI element."""
 
-    def __init__(self, value_id: int, idx: int, server: SteteServerCoreBase):
+    def __init__(self, value_id: int, idx: int, server: StateServerCore):
         """Initialize the Graph."""
         self._value_id = value_id
         self._idx = idx
@@ -483,16 +508,16 @@ class Graph:
         Returns:
             npt.NDArray[np.float32 | np.float64]: The graph.
         """
-        data, shape = self._server.graphs_get(self._value_id, self._idx)
+        data, byte_size, shape = self._server.graphs_get(self._value_id, self._idx)
 
-        if shape[-1] == 4:
+        if byte_size == 4:
             dtype = np.float32
-        elif shape[-1] == 8:
+        elif byte_size == 8:
             dtype = np.float64
         else:
             raise RuntimeError("Invalid graph datatype.")
 
-        reshape = shape[:2] if len(shape) == 3 else shape[:1]
+        reshape = shape if shape[0] == 2 else (shape[1],)
         return np.frombuffer(data, dtype=dtype).reshape(reshape)
 
     def _kill(self):
@@ -508,14 +533,22 @@ class Graph:
         return self.len()
 
 
-class ValueGraphs(_StaticBase):
+class ValueGraphs[T](_StaticBase):
     """Graph UI element."""
 
-    def __init__(self, counter: _Counter):  # noqa: D107
-        super().__init__(counter)
+    def __init__(self, dtype: type[T]):  # noqa: D107
+        if dtype == np.float32:
+            self._id_double = False
+        elif dtype == np.float64:
+            self._id_double = True
+        else:
+            raise ValueError("Invalid dtype for graphs. Only np.float32 and np.float64 are supported.")
 
         self._graphs: dict[int, Graph] = {}
         self.__getitem__ = self.get
+
+    def _initialize(self, name: str, types: list[PyObjectType]) -> None:
+        self._value_id = self._server.add_graphs(name, self._id_double)
 
     def get(self, idx: int) -> Graph:
         """Get the graph by index.
@@ -587,4 +620,30 @@ class ValueGraphs(_StaticBase):
             update(bool, optional): Whether to update the UI. Defaults to False.
         """
         self._graphs.clear()
-        self._server.graphs_clear(self._value_id, update)
+        self._server.graphs_reset(self._value_id, update)
+
+
+__all__ = [
+    "i8",
+    "i16",
+    "i32",
+    "i64",
+    "u8",
+    "u16",
+    "u32",
+    "u64",
+    "f32",
+    "f64",
+    "bo",
+    "emp",
+    "enu",
+    "cl",
+    "st",
+    "vec",
+    "opt",
+    "li",
+    "tu",
+    "map",
+    "FastEnum",
+    "CustomStruct",
+]

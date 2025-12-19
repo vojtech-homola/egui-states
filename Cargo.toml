@@ -4,13 +4,12 @@ members = [
     "crates/egui-states",
     "crates/egui-states-core",
     "crates/egui-states-server",
-    "examples/gui",
-    "examples/states-server",
+    "example/gui",
 ]
 resolver = "3"
 
 [workspace.package]
-version = "0.8.4"
+version = "0.9.0"
 edition = "2024"
 
 [workspace.dependencies]
@@ -18,10 +17,12 @@ egui_states_macros = { path = "crates/egui-states-macros" }
 egui_states_core = { path = "crates/egui-states-core" }
 egui_states = { path = "crates/egui-states" }
 egui_states_server = { path = "crates/egui-states-server" }
-gui = { path = "examples/gui" }
+
+gui = { path = "example/gui" }
 
 serde = "1"
 tokio-tungstenite = "0.28"
 tokio = "1.47"
 futures-util = "0.3"
 parking_lot = "0.12"
+bytes = "1.10"

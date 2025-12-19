@@ -4,10 +4,9 @@ use std::sync::Arc;
 
 use egui::{ColorImage, ImageData, TextureHandle};
 
-use egui_states_core::controls::ControlMessage;
-use egui_states_core::image::{ImageInfo, ImageType};
+use egui_states_core::image::{ImageHeader, ImageType};
+use egui_states_core::serialization::ClientHeader;
 
-use crate::UpdateValue;
 use crate::sender::MessageSender;
 
 const TEXTURE_OPTIONS: egui::TextureOptions = egui::TextureOptions {
@@ -18,13 +17,13 @@ const TEXTURE_OPTIONS: egui::TextureOptions = egui::TextureOptions {
 };
 
 pub struct ValueImage {
-    id: u32,
+    id: u64,
     texture_handle: RwLock<Option<(TextureHandle, [usize; 2])>>,
     sender: MessageSender,
 }
 
 impl ValueImage {
-    pub(crate) fn new(id: u32, sender: MessageSender) -> Arc<Self> {
+    pub(crate) fn new(id: u64, sender: MessageSender) -> Arc<Self> {
         Arc::new(Self {
             id,
             texture_handle: RwLock::new(None),
@@ -63,26 +62,18 @@ impl ValueImage {
             _ => {}
         }
     }
-}
+    // }
 
-impl UpdateValue for ValueImage {
-    fn update_value(&self, data: &[u8]) -> Result<bool, String> {
-        let (info, dat) = ImageInfo::deserialize(data).map_err(|e| {
-            format!(
-                "Failed to deserialize image message: {} for image of id {}",
-                e, self.id
-            )
-        })?;
-
+    // impl UpdateImage for ValueImage {
+    pub(crate) fn update_image(&self, header: ImageHeader, data: &[u8]) -> Result<(), String> {
         // TODO: not sure if this is the best place to send ack
-        self.sender.send(ControlMessage::ack(self.id));
+        self.sender.send(ClientHeader::ack(self.id));
 
-        let ImageInfo {
+        let ImageHeader {
             image_size,
             rect,
             image_type,
-            update,
-        } = info;
+        } = header;
 
         let size = match rect {
             Some(r) => {
@@ -97,7 +88,7 @@ impl UpdateValue for ValueImage {
         let mut c_image = egui::ColorImage::filled(size, egui::Color32::WHITE);
         let pixel_count = size[0] * size[1];
 
-        let data_ptr = dat.as_ptr();
+        let data_ptr = data.as_ptr();
         let image_ptr = c_image.pixels.as_mut_ptr() as *mut u8;
 
         match image_type {
@@ -170,6 +161,6 @@ impl UpdateValue for ValueImage {
             }
         }
 
-        Ok(update)
+        Ok(())
     }
 }

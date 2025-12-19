@@ -1,49 +1,43 @@
 mod client_base;
-mod data;
-mod dict;
+// mod data;
+pub mod build_script;
+mod client_states;
 mod graphs;
 mod handle_message;
 mod image;
 mod list;
+mod map;
 mod sender;
+mod states_creator;
 mod values;
-mod values_creator;
 
-pub mod build_scripts;
-
-#[cfg(feature = "client")]
+// #[cfg(any(feature = "client", feature = "client-wasm"))]
 mod client;
 
-#[cfg(feature = "client")]
+// #[cfg(any(feature = "client", feature = "client-wasm"))]
 pub use client::ClientBuilder;
 
-#[cfg(feature = "client-wasm")]
-mod client_wasm;
+#[cfg(not(target_arch = "wasm32"))]
+mod websocket;
 
-#[cfg(feature = "client-wasm")]
-pub use client_wasm::ClientBuilder;
+#[cfg(target_arch = "wasm32")]
+mod websocket_wasm;
 
+pub use build_script::values_info::{GetInitValue, InitValue};
 pub use client_base::{Client, ConnectionState};
-pub use dict::ValueDict;
 pub use graphs::ValueGraphs;
 pub use image::ValueImage;
 pub use list::ValueList;
-pub use parser_values::ParseValuesCreator;
+pub use map::ValueMap;
+pub use states_creator::StatesCreator;
 pub use values::{Diff, Signal, Value, ValueStatic};
-pub use values_creator::{ClientValuesCreator, ValuesCreator};
-
-pub trait UpdateValue: Sync + Send {
-    fn update_value(&self, data: &[u8]) -> Result<bool, String>;
-}
 
 pub trait State {
-    const N: &'static str;
+    const NAME: &'static str;
 
-    fn new(c: &mut impl ValuesCreator) -> Self;
+    fn new(c: &mut impl StatesCreator) -> Self;
 }
 
-mod parser;
-mod parser_values;
-
+pub use egui_states_core::types::{GetType, ObjectType};
 pub use egui_states_macros::{state_enum, state_struct};
-pub use parser::{GetInitValue, GetTypeInfo, InitValue, TypeInfo};
+pub use serde;

@@ -1,20 +1,23 @@
-use parking_lot::Mutex;
 use std::collections::{VecDeque, hash_map::Entry};
 use std::sync::Arc;
 
+use bytes::Bytes;
+use parking_lot::Mutex;
+
+use egui_states_core::generate_value_id;
 use egui_states_core::nohash::{NoHashMap, NoHashSet};
+use egui_states_core::serialization::serialize_value_vec;
 
 use crate::event::Event;
-use crate::python_convert::ToPython;
 
 enum Signal {
-    Single(Box<dyn ToPython + Sync + Send>),
-    Multi(VecDeque<Box<dyn ToPython + Sync + Send>>),
+    Single(Bytes),
+    Multi(VecDeque<Bytes>),
 }
 
 struct OrderedMap {
-    values: NoHashMap<u32, Signal>,
-    indexes: VecDeque<u32>,
+    values: NoHashMap<u64, Signal>,
+    indexes: VecDeque<u64>,
 }
 
 impl OrderedMap {
@@ -25,7 +28,12 @@ impl OrderedMap {
         }
     }
 
-    fn insert(&mut self, id: u32, value: Box<dyn ToPython + Sync + Send>) {
+    fn clear(&mut self) {
+        self.values.clear();
+        self.indexes.clear();
+    }
+
+    fn insert(&mut self, id: u64, value: Bytes) {
         let entry = self.values.entry(id);
         match entry {
             Entry::Vacant(e) => {
@@ -39,7 +47,7 @@ impl OrderedMap {
         self.indexes.push_back(id);
     }
 
-    fn pop(&mut self, id: u32) -> Option<Box<dyn ToPython + Sync + Send>> {
+    fn pop(&mut self, id: u64) -> Option<Bytes> {
         match self.values.get_mut(&id) {
             None => None,
             Some(Signal::Single(_)) => match self.values.remove(&id).unwrap() {
@@ -50,7 +58,7 @@ impl OrderedMap {
         }
     }
 
-    fn pop_first(&mut self) -> Option<(u32, Box<dyn ToPython + Sync + Send>)> {
+    fn pop_first(&mut self) -> Option<(u64, Bytes)> {
         while let Some(id) = self.indexes.pop_front() {
             if let Some(value) = self.pop(id) {
                 return Some((id, value));
@@ -63,7 +71,7 @@ impl OrderedMap {
         None
     }
 
-    fn set_to_multi(&mut self, id: u32) {
+    fn set_to_multi(&mut self, id: u64) {
         if let Some(signal) = self.values.remove(&id) {
             let res = match signal {
                 Signal::Single(v) => {
@@ -79,7 +87,7 @@ impl OrderedMap {
         }
     }
 
-    fn set_to_single(&mut self, id: u32) {
+    fn set_to_single(&mut self, id: u64) {
         if let Some(signal) = self.values.remove(&id) {
             let res = match signal {
                 Signal::Single(v) => Some(v),
@@ -95,7 +103,8 @@ impl OrderedMap {
 
 struct ChangedInner {
     values: OrderedMap,           // values not blocked
-    blocked_list: NoHashSet<u32>, // ids blocked by some thread
+    blocked_list: NoHashSet<u64>, // ids blocked by some thread
+    registered: NoHashSet<u64>,   // ids which are registered to be signaled
 }
 
 /*
@@ -107,18 +116,24 @@ impl ChangedInner {
         Self {
             values: OrderedMap::new(),
             blocked_list: NoHashSet::default(),
+            registered: NoHashSet::default(),
         }
     }
 
-    fn set(&mut self, id: u32, value: Box<dyn ToPython + Sync + Send>, event: &Event) {
+    fn clear(&mut self) {
+        self.values.clear();
+        self.blocked_list.clear();
+    }
+
+    fn set(&mut self, id: u64, value: Bytes, event: &Event) {
         self.values.insert(id, value);
         if !self.blocked_list.contains(&id) {
             event.set_one();
         }
     }
 
-    fn get(&mut self, last_id: Option<u32>) -> Option<(u32, Box<dyn ToPython + Send + Sync>)> {
-        match last_id {
+    fn get(&mut self, last_id: Option<u64>) -> Option<(u64, Bytes)> {
+        let res = match last_id {
             // previous call was made
             Some(last_id) => {
                 if self.blocked_list.contains(&last_id) {
@@ -151,50 +166,75 @@ impl ChangedInner {
                 }
                 val
             }
+        };
+
+        match &res {
+            Some((id, _)) => match self.registered.contains(id) {
+                true => res,
+                false => None,
+            },
+            None => None,
         }
     }
 }
 
 #[derive(Clone)]
-pub(crate) struct ChangedValues {
+pub(crate) struct SignalsManager {
     event: Event,
     values: Arc<Mutex<ChangedInner>>,
+    logging_id: u64,
 }
 
-impl ChangedValues {
-    pub fn new() -> Self {
+impl SignalsManager {
+    pub(crate) fn new() -> Self {
+        let logging_id = generate_value_id("__egui_states_logging");
         Self {
             event: Event::new(),
             values: Arc::new(Mutex::new(ChangedInner::new())),
+            logging_id,
         }
     }
 
-    pub fn set(&self, id: u32, value: impl ToPython + Sync + Send + 'static) {
-        let value = Box::new(value);
+    pub(crate) fn set(&self, id: u64, value: Bytes) {
         self.values.lock().set(id, value, &self.event);
+    }
+
+    pub(crate) fn reset(&self) {
+        self.values.lock().clear();
+    }
+
+    fn serialize_message(level: u8, text: impl ToString) -> Bytes {
+        let data = text.to_string();
+        let mut message = Vec::new();
+        // serialize_value_vec(&0, &mut message);
+        serialize_value_vec(&level, &mut message);
+        serialize_value_vec(&data, &mut message);
+        // message.extend_from_slice(&data);
+        Bytes::from_owner(message)
     }
 
     #[allow(dead_code)]
     pub(crate) fn debug(&self, message: impl ToString) {
-        self.set(0, (0, message.to_string()));
+        let data = Self::serialize_message(0u8, message);
+        self.set(self.logging_id, data);
     }
 
     pub(crate) fn info(&self, message: impl ToString) {
-        self.set(0, (1, message.to_string()));
+        let data = Self::serialize_message(1u8, message);
+        self.set(self.logging_id, data);
     }
 
     pub(crate) fn warning(&self, message: impl ToString) {
-        self.set(0, (2, message.to_string()));
+        let data = Self::serialize_message(2u8, message);
+        self.set(self.logging_id, data);
     }
 
     pub(crate) fn error(&self, message: impl ToString) {
-        self.set(0, (3, message.to_string()));
+        let data = Self::serialize_message(3u8, message);
+        self.set(self.logging_id, data);
     }
 
-    pub fn wait_changed_value(
-        &self,
-        last_id: Option<u32>,
-    ) -> (u32, Box<dyn ToPython + Send + Sync>) {
+    pub(crate) fn wait_changed_value(&self, last_id: Option<u64>) -> (u64, Bytes) {
         loop {
             if let Some(val) = self.values.lock().get(last_id) {
                 return val;
@@ -203,11 +243,23 @@ impl ChangedValues {
         }
     }
 
-    pub fn set_to_multi(&self, id: u32) {
+    pub(crate) fn set_register(&self, id: u64, register: bool) {
+        if register {
+            self.values.lock().registered.insert(id);
+        } else {
+            self.values.lock().registered.remove(&id);
+        }
+    }
+
+    pub(crate) fn set_to_multi(&self, id: u64) {
         self.values.lock().values.set_to_multi(id);
     }
 
-    pub fn set_to_single(&self, id: u32) {
+    pub(crate) fn set_to_single(&self, id: u64) {
         self.values.lock().values.set_to_single(id);
+    }
+
+    pub(crate) fn get_logging_id(&self) -> u64 {
+        self.logging_id
     }
 }

@@ -1,41 +1,83 @@
+# ruff: noqa: D107
+from abc import ABC, abstractmethod
 from collections.abc import Callable
-from types import ModuleType
 
+from egui_states._core import PyObjectType, StateServerCore
+from egui_states.logging import LoggingSignal
 from egui_states.signals import SignalsManager
-from egui_states.structures import LoggingSignal, _MainStatesBase, _StatesBase, _StaticBase, _ValueBase
-from egui_states.typing import SteteServerCoreBase
+from egui_states.structures import ISubStates, _SignalBase, _StaticBase
 
 
-def _initialize_states(obj, server: SteteServerCoreBase, signals_manager: SignalsManager) -> None:
-    for o in obj.__dict__.values():
-        if isinstance(o, _ValueBase):
-            o._initialize_value(server, signals_manager)
-        elif isinstance(o, _StaticBase):
+def _initialize(
+    obj, parent: str, server: StateServerCore, signals_manager: SignalsManager, types: list[PyObjectType]
+) -> None:
+    for name, o in obj.__dict__.items():
+        full_name = f"{parent}.{name}"
+        if isinstance(o, _StaticBase):
             o._initialize_base(server)
-        elif isinstance(o, _StatesBase):
-            _initialize_states(o, server, signals_manager)
+            if isinstance(o, _SignalBase):
+                o._initialize_signal(signals_manager)
+            o._initialize(full_name, types)
+        elif isinstance(o, ISubStates):
+            _initialize(o, full_name, server, signals_manager, types)
 
 
-class StateServer[T: _MainStatesBase]:
+class StatesBase(ABC):
+    """The root state class for the UI states."""
+
+    def __init__(self, server: "StateServerBase") -> None:
+        self._server = server
+
+    def update_ui(self, dt: float | None = None) -> None:
+        """Request the UI to update.
+
+        Args:
+            dt(float | None, optional): Delay time to next update, None means immediate. Defaults to None.
+        """
+        self._server.update(dt)
+
+    def get_server(self) -> "StateServerBase":
+        """Get the state server.
+
+        Returns:
+            StateServer: The state server.
+        """
+        return self._server
+
+    @staticmethod
+    @abstractmethod
+    def _get_obj_types() -> list[PyObjectType]:
+        pass
+
+
+class StateServerBase[T: StatesBase]:
     """The main class for the SteteServer for UI."""
 
     def __init__(
         self,
         state_class: type[T],
-        core_module: ModuleType,
         port: int,
         signals_workers: int = 3,
         error_handler: Callable[[Exception], None] | None = None,
         ip_addr: tuple[int, int, int, int] | None = None,
         handshake: list[int] | None = None,
     ) -> None:
-        """Initialize the SteteServer."""
-        core_server_class: type[SteteServerCoreBase] = getattr(core_module, "StateServerCore")
-        self._server = core_server_class(port, ip_addr, handshake)
-        self._signals_manager = SignalsManager(self._server, signals_workers, error_handler)
-        self._states: T = state_class(self._server.update)
+        """Initialize the SteteServer.
 
-        _initialize_states(self._states, self._server, self._signals_manager)
+        Args:
+            state_class (RoorState): The class representing the UI states.
+            port (int): The port to run the server on.
+            signals_workers (int): The number of worker threads for signal handling.
+            error_handler (Callable[[Exception], None] | None): The error handler function.
+            ip_addr (tuple[int, int, int, int] | None): The IP address to bind the server to.
+            handshake (list[int] | None): The handshake bytes for client connection.
+        """
+        self._server = StateServerCore(port, ip_addr, handshake)
+        self._signals_manager = SignalsManager(self._server, signals_workers, error_handler)
+        self._states: T = state_class(self)
+
+        _initialize(self._states, "root", self._server, self._signals_manager, self._states._get_obj_types())
+        self._server.finalize()
         self.logging = LoggingSignal(self._signals_manager, self._server)
 
     @property
@@ -82,7 +124,3 @@ class StateServer[T: _MainStatesBase]:
             error_handler(Callable[[Exception], None] | None): The error handler function.
         """
         self._signals_manager.set_error_handler(error_handler)
-
-    def check_workers(self) -> None:
-        """Check all workers threads and restart them if they are stopped."""
-        self._signals_manager.check_workers()

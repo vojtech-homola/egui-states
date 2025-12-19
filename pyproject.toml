@@ -1,6 +1,6 @@
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["maturin>=1.10"]
+build-backend = "maturin"
 
 [project]
 name = "egui-states"
@@ -16,15 +16,12 @@ dependencies = ["numpy"]
 [dependency-groups]
 dev = ["ipython", "matplotlib"]
 
-[tool.hatch.version]
-path = "egui_states/version.py"
-
-[tool.hatch.build]
-packages = ["egui_states"]
-ignore-vcs = true
-
-[tool.uv]
-workspace.members = ["examples/states-server"]
+[tool.maturin]
+bindings = "pyo3"
+python-packages = ["egui_states"]
+module-name = "egui_states._core"
+manifest-path = "crates/egui-states-server/Cargo.toml"
+features = ["python"]
 
 [tool.ruff]
 line-length = 120

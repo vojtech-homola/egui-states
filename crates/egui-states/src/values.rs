@@ -3,10 +3,8 @@ use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use egui_states_core::controls::ControlMessage;
-use egui_states_core::serialization::{TYPE_SIGNAL, TYPE_VALUE, deserialize, serialize};
+use egui_states_core::serialization::{ClientHeader, deserialize, serialize_value_to_message};
 
-use crate::UpdateValue;
 use crate::sender::MessageSender;
 
 pub struct Diff<'a, T> {
@@ -26,16 +24,27 @@ impl<'a, T: Serialize + Clone + PartialEq> Diff<'a, T> {
     }
 
     #[inline]
-    pub fn set(self, signal: bool) {
+    pub fn set(self) {
         if self.v != self.original {
-            self.value.set(self.v, signal);
+            self.value.set(self.v);
+        }
+    }
+
+    #[inline]
+    pub fn set_signal(self) {
+        if self.v != self.original {
+            self.value.set_signal(self.v);
         }
     }
 }
 
+pub trait UpdateValue: Sync + Send {
+    fn update_value(&self, data: &[u8]) -> Result<(), String>;
+}
+
 // Value --------------------------------------------
 pub struct Value<T> {
-    id: u32,
+    id: u64,
     value: RwLock<T>,
     sender: MessageSender,
 }
@@ -44,7 +53,7 @@ impl<T> Value<T>
 where
     T: Serialize + Clone,
 {
-    pub(crate) fn new(id: u32, value: T, sender: MessageSender) -> Arc<Self> {
+    pub(crate) fn new(id: u64, value: T, sender: MessageSender) -> Arc<Self> {
         Arc::new(Self {
             id,
             value: RwLock::new(value),
@@ -56,34 +65,68 @@ where
         self.value.read().clone()
     }
 
-    pub fn set(&self, value: T, signal: bool) {
-        let data = serialize(self.id, (signal, &value), TYPE_VALUE);
+    pub fn read<R>(&self, f: impl Fn(&T) -> R) -> R {
+        let r = self.value.read();
+        f(&r)
+    }
+
+    pub fn write<R>(&self, f: impl Fn(&mut T) -> R) -> R {
         let mut w = self.value.write();
-        self.sender.send(data);
+        let result = f(&mut w);
+
+        let data = serialize_value_to_message(&*w);
+        let header = ClientHeader::Value(self.id, false);
+        self.sender.send_data(header, data);
+        result
+    }
+
+    pub fn write_signal<R>(&self, f: impl Fn(&mut T) -> R) -> R {
+        let mut w = self.value.write();
+        let result = f(&mut w);
+
+        let data = serialize_value_to_message(&*w);
+        let header = ClientHeader::Value(self.id, true);
+        self.sender.send_data(header, data);
+        result
+    }
+
+    pub fn set(&self, value: T) {
+        let data = serialize_value_to_message(&value);
+        let header = ClientHeader::Value(self.id, false);
+        let mut w = self.value.write();
+        self.sender.send_data(header, data);
+        *w = value;
+    }
+
+    pub fn set_signal(&self, value: T) {
+        let data = serialize_value_to_message(&value);
+        let header = ClientHeader::Value(self.id, true);
+        let mut w = self.value.write();
+        self.sender.send_data(header, data);
         *w = value;
     }
 }
 
 impl<T: for<'a> Deserialize<'a> + Send + Sync> UpdateValue for Value<T> {
-    fn update_value(&self, data: &[u8]) -> Result<bool, String> {
-        let (update, value) = deserialize::<(bool, T)>(data)
+    fn update_value(&self, data: &[u8]) -> Result<(), String> {
+        let value = deserialize(data)
             .map_err(|e| format!("Parse error: {} for value id: {}", e, self.id))?;
 
         let mut w = self.value.write();
         *w = value;
-        self.sender.send(ControlMessage::ack(self.id));
-        Ok(update)
+        self.sender.send(ClientHeader::ack(self.id));
+        Ok(())
     }
 }
 
 // StaticValue --------------------------------------------
 pub struct ValueStatic<T> {
-    id: u32,
+    id: u64,
     value: RwLock<T>,
 }
 
 impl<T: Clone> ValueStatic<T> {
-    pub(crate) fn new(id: u32, value: T) -> Arc<Self> {
+    pub(crate) fn new(id: u64, value: T) -> Arc<Self> {
         Arc::new(Self {
             id,
             value: RwLock::new(value),
@@ -93,26 +136,31 @@ impl<T: Clone> ValueStatic<T> {
     pub fn get(&self) -> T {
         self.value.read().clone()
     }
+
+    pub fn read<R>(&self, f: impl Fn(&T) -> R) -> R {
+        let r = self.value.read();
+        f(&r)
+    }
 }
 
 impl<T: for<'a> Deserialize<'a> + Send + Sync> UpdateValue for ValueStatic<T> {
-    fn update_value(&self, data: &[u8]) -> Result<bool, String> {
-        let (update, value) = deserialize::<(bool, T)>(data)
+    fn update_value(&self, data: &[u8]) -> Result<(), String> {
+        let value = deserialize(data)
             .map_err(|e| format!("Parse error: {} for value id: {}", e, self.id))?;
         *self.value.write() = value;
-        Ok(update)
+        Ok(())
     }
 }
 
 // Signal --------------------------------------------
 pub struct Signal<T> {
-    id: u32,
+    id: u64,
     sender: MessageSender,
     phantom: PhantomData<T>,
 }
 
 impl<T: Serialize + Clone> Signal<T> {
-    pub(crate) fn new(id: u32, sender: MessageSender) -> Arc<Self> {
+    pub(crate) fn new(id: u64, sender: MessageSender) -> Arc<Self> {
         Arc::new(Self {
             id,
             sender,
@@ -120,8 +168,9 @@ impl<T: Serialize + Clone> Signal<T> {
         })
     }
 
-    pub fn set(&self, value: impl Into<T>) {
-        let message = serialize(self.id, &value.into(), TYPE_SIGNAL);
-        self.sender.send(message);
+    pub fn set(&self, value: T) {
+        let message = serialize_value_to_message(&value);
+        let header = ClientHeader::Signal(self.id);
+        self.sender.send_data(header, message);
     }
 }

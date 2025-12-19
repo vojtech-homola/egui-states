@@ -1,17 +1,16 @@
 """TODO: Doc string."""
 
-from egui_states import structures, version
-from egui_states.server import StateServer
+from egui_states import version
+from egui_states.logging import LogLevel
 from egui_states.structures import (
     Graph,
-    LogLevel,
     Signal,
     SignalEmpty,
     Value,
-    ValueDict,
     ValueGraphs,
     ValueImage,
     ValueList,
+    ValueMap,
     ValueStatic,
 )
 from egui_states.version import __version__
@@ -19,12 +18,10 @@ from egui_states.version import __version__
 __all__ = [
     "version",
     "__version__",
-    "StateServer",
-    "structures",
     "Signal",
     "SignalEmpty",
     "Value",
-    "ValueDict",
+    "ValueMap",
     "ValueGraphs",
     "ValueImage",
     "ValueList",
