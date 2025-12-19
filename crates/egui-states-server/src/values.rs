@@ -10,19 +10,6 @@ use crate::sender::MessageSender;
 use crate::server::{Acknowledge, EnableTrait, SyncTrait};
 use crate::signals::SignalsManager;
 
-// pub(crate) trait UpdateValue: Send + Sync {
-//     fn update_value(&self, signal: bool, value: Bytes) -> Result<(), String>;
-// }
-
-// pub(crate) trait GetValue: SetValue {
-//     fn get_value(&self) -> Bytes;
-//     fn get_type(&self) -> ObjectType;
-// }
-
-// pub(crate) trait SetValue: Send + Sync {
-//     fn set_value(&self, value: Bytes);
-// }
-
 // Value --------------------------------------------------
 pub(crate) struct Value {
     id: u64,
@@ -50,9 +37,7 @@ impl Value {
             signals,
         })
     }
-    // }
 
-    // impl UpdateValue for Value {
     pub(crate) fn update_value(&self, signal: bool, value: Bytes) -> Result<(), String> {
         if !self.enabled.load(Ordering::Relaxed) {
             return Err(format!("Value {} is not enabled", self.id));

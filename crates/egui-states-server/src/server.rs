@@ -9,7 +9,7 @@ use egui_states_core::controls::ControlServer;
 use egui_states_core::event_async::Event;
 use egui_states_core::graphs::GraphType;
 use egui_states_core::nohash::NoHashMap;
-use egui_states_core::serialization::ServerHeader;
+use egui_states_core::serialization::{ServerHeader, serialize_value_vec};
 
 use crate::graphs::ValueGraphs;
 use crate::image::ValueImage;
@@ -98,18 +98,46 @@ impl ServerStatesList {
     }
 }
 
+enum RunnerState {
+    Running(thread::JoinHandle<MessageReceiver>, MessageSender),
+    Stopped(MessageReceiver, MessageSender),
+    Uninitialized,
+}
+
+impl RunnerState {
+    #[inline]
+    fn is_running(&self) -> bool {
+        match self {
+            RunnerState::Running(_, _) => true,
+            RunnerState::Stopped(_, _) => false,
+            RunnerState::Uninitialized => unreachable!(),
+        }
+    }
+
+    fn take(&mut self) -> Self {
+        match std::mem::replace(self, RunnerState::Uninitialized) {
+            RunnerState::Running(handle, sender) => {
+                RunnerState::Running(handle, sender)
+            }
+            RunnerState::Stopped(rx, sender) => {
+                RunnerState::Stopped(rx, sender)
+            }
+            RunnerState::Uninitialized => RunnerState::Uninitialized,
+        }
+    }
+}
+
 pub(crate) struct Server {
     connected: Arc<atomic::AtomicBool>,
     enabled: Arc<atomic::AtomicBool>,
-    sender: MessageSender,
     start_event: Event,
     addr: SocketAddrV4,
     states: StatesList,
     signals: SignalsManager,
     handshake: Option<Vec<u64>>,
+    states_server: ServerStatesList,
 
-    states_server: Option<ServerStatesList>,
-    rx: Option<MessageReceiver>,
+    runner_state: RunnerState,
 }
 
 impl Server {
@@ -123,17 +151,23 @@ impl Server {
         let obj = Self {
             connected,
             enabled,
-            sender,
             start_event,
             addr,
             states: StatesList::new(),
             signals,
             handshake,
-            states_server: Some(ServerStatesList::new()),
-            rx: Some(rx),
+            states_server: ServerStatesList::new(),
+            runner_state: RunnerState::Stopped(rx, sender),
         };
 
         obj
+    }
+
+    fn reinitialize(&mut self) -> MessageSender {
+        if let RunnerState::Uninitialized = self.runner_state {
+            let (sender, rx) = MessageSender::new();
+            self.runner_state = RunnerState::Stopped(rx, sender);
+        }
     }
 
     pub(crate) fn finalize(&mut self) -> Option<StatesList> {
@@ -160,7 +194,7 @@ impl Server {
         let addr = self.addr;
 
         let server_thread = thread::Builder::new().name("Server".to_string());
-        let _ = server_thread.spawn(move || {
+        let thread_handle = server_thread.spawn(move || {
             runtime.block_on(async move {
                 server_core::run(
                     sender,
@@ -185,26 +219,98 @@ impl Server {
         self.signals.clone()
     }
 
-    pub(crate) fn start(&mut self) {
-        if self.enabled.load(atomic::Ordering::Relaxed) || self.states_server.is_some() {
-            return;
+    pub(crate) fn start(&mut self) -> Result<StatesList, ()> {
+        if self.enabled.load(atomic::Ordering::Relaxed) self.runner_state.is_running()
+
+
+        if self.enabled.load(atomic::Ordering::Relaxed) || self.rx.is_none() {
+            return Ok(self.states.clone());
         }
 
+        let runtime = Builder::new_current_thread()
+            .thread_name("Server Runtime")
+            .enable_io()
+            .worker_threads(3)
+            .build()
+            .unwrap();
+
+        let sender = self.sender.clone();
+        let rx = self.rx.take().unwrap();
+        let connected = self.connected.clone();
+        let enabled = self.enabled.clone();
+        self.states_server.shrink();
+        let values = self.states_server.clone();
+        let signals = self.signals.clone();
+        let start_event = self.start_event.clone();
+        let handshake = self.handshake.clone();
+        let addr = self.addr;
+
+        let server_thread = thread::Builder::new().name("Server".to_string());
+        let thread_handle = server_thread
+            .spawn(move || {
+                runtime.block_on(async move {
+                    server_core::run(
+                        sender,
+                        rx,
+                        connected,
+                        enabled,
+                        values,
+                        signals,
+                        addr,
+                        handshake,
+                    )
+                    .await
+                })
+            })
+            .map_err(|_| ())?;
+
+        self.thread_handle = Some(thread_handle);
         self.enabled.store(true, atomic::Ordering::Relaxed);
         self.start_event.set();
+
+        self.states.shrink();
+        Ok(self.states.clone())
     }
 
     pub(crate) fn stop(&mut self) {
-        if !self.enabled.load(atomic::Ordering::Relaxed) || self.states_server.is_some() {
-            return;
+        let state = self.runner_state.take();
+        match state {
+            RunnerState::Stopped(rx, sender) => {
+                self.runner_state = RunnerState::Stopped(rx, sender);
+            },
+            RunnerState::Running(handle, sender) => {
+                self.enabled.store(false, atomic::Ordering::Relaxed);
+                self.connected.store(false, atomic::Ordering::Relaxed);
+                sender.close();
+
+                // try to connect to the server to unblock the accept call
+                let _ = TcpStream::connect(self.addr); // TODO: use localhost?
+
+                match handle.join() {
+                    Ok(rx) => {
+                        self.runner_state = RunnerState::Stopped(rx, sender);
+                    }
+                    Err(_) => {
+                        self.runner_state = RunnerState::Uninitialized;
+                }
+            }
+                
+            },
+            RunnerState::Uninitialized => {}
         }
 
-        self.start_event.clear();
-        self.enabled.store(false, atomic::Ordering::Relaxed);
-        self.disconnect_client();
 
-        // try to connect to the server to unblock the accept call
-        let _ = TcpStream::connect(self.addr); // TODO: use localhost?
+
+        // if !self.enabled.load(atomic::Ordering::Relaxed) || self.states_server.is_some() {
+        //     return;
+        // }
+
+        // self.start_event.clear();
+        // self.enabled.store(false, atomic::Ordering::Relaxed);
+        // self.disconnect_client();
+
+        // // try to connect to the server to unblock the accept call
+        // let _ = TcpStream::connect(self.addr); // TODO: use localhost?
     }
 
     pub(crate) fn disconnect_client(&mut self) {

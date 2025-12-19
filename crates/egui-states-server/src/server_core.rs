@@ -36,16 +36,12 @@ pub(crate) async fn run(
     enabled: Arc<atomic::AtomicBool>,
     values: ServerStatesList,
     signals: SignalsManager,
-    start_event: Event,
     addr: SocketAddrV4,
     handshake: Option<Vec<u64>>,
-) {
+) -> MessageReceiver {
     let mut holder = ChannelHolder::Rx(rx);
 
     loop {
-        // wait for start control event
-        start_event.wait().await;
-
         // listen to incoming connections
         let listener = match TcpListener::bind(addr).await {
             Ok(l) => l,
