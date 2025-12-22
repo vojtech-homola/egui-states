@@ -1,0 +1,9 @@
+[package]
+name = "egui_states_widgets"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+egui = ">=0.33"
+
+egui_states = { workspace = true }
