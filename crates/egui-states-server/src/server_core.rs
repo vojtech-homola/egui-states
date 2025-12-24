@@ -15,7 +15,6 @@ use tokio_tungstenite::tungstenite::{Message, protocol::WebSocketConfig};
 
 use egui_states_core::PROTOCOL_VERSION;
 use egui_states_core::controls::{ControlClient, ControlServer};
-use egui_states_core::event_async::Event;
 use egui_states_core::serialization::{
     ClientHeader, ServerHeader, deserialize, deserialize_from, serialize_value_vec,
 };
@@ -42,6 +41,11 @@ pub(crate) async fn run(
     let mut holder = ChannelHolder::Rx(rx);
 
     loop {
+        // if server is disabled, exit loop
+        if !enabled.load(atomic::Ordering::Relaxed) {
+            break;
+        }
+
         // listen to incoming connections
         let listener = match TcpListener::bind(addr).await {
             Ok(l) => l,
@@ -54,12 +58,12 @@ pub(crate) async fn run(
         // accept incoming connection
         let stream = listener.accept().await;
 
-        // if server is disabled, go back and wait for start control event
+        // if server is disabled, exit loop
         if !enabled.load(atomic::Ordering::Relaxed) {
             if let Ok((mut stream, _)) = stream {
                 let _ = stream.shutdown().await;
             }
-            continue;
+            break;
         }
 
         // check if error accepting connection
@@ -214,6 +218,21 @@ pub(crate) async fn run(
             }
         }
     }
+
+    match holder {
+        // disconnect previous client
+        ChannelHolder::Transfer(handler) => {
+            #[cfg(debug_assertions)]
+            signals.debug("terminating previous connection");
+            connected.store(false, atomic::Ordering::Relaxed);
+            for (_, v) in &values.enable {
+                v.enable(false);
+            }
+            sender.close();
+            handler.await.expect("joining communication handler failed")
+        }
+        ChannelHolder::Rx(rx) => rx,
+    }
 }
 
 async fn run_core(
@@ -357,18 +376,14 @@ async fn writer(
 ) -> MessageReceiver {
     loop {
         // get message from channel
-        let msg = match rx
-            .recv()
-            .await
-            .expect("receiving message from channel failed")
-        {
-            Some(m) => m,
+        let msg = match rx.recv().await {
+            Some(Some(m)) => m,
             // check if message is terminate signal
-            None => {
+            _ => {
                 signals.info("writer is closing connection");
                 let _ = websocket.close().await;
                 reader_handle.abort();
-                let _ = reader_handle.await;
+                reader_handle.await;
                 break;
             }
         };
@@ -377,7 +392,7 @@ async fn writer(
         if !connected.load(atomic::Ordering::Relaxed) {
             let _ = websocket.close().await;
             reader_handle.abort();
-            let _ = reader_handle.await;
+            reader_handle.await;
             break;
         }
 
@@ -385,7 +400,7 @@ async fn writer(
         if let Err(e) = websocket.send(msg).await {
             signals.error(&format!("sending message to client failed: {:?}", e));
             reader_handle.abort();
-            let _ = reader_handle.await;
+            reader_handle.await;
             break;
         }
     }

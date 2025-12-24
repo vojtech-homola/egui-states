@@ -125,7 +125,7 @@ impl StateServerCore {
             None => SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), port),
         };
 
-        let server = Server::new(addr, handshake);
+        let server = Server::new(addr, handshake, 3);
         let signals = server.get_signals_manager();
 
         // register logging signal type

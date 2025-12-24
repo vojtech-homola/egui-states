@@ -1,5 +1,8 @@
 use std::net::{SocketAddrV4, TcpStream};
-use std::sync::{Arc, atomic};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::thread;
 
 use bytes::Bytes;
@@ -32,7 +35,7 @@ pub(crate) trait Acknowledge: Sync + Send {
     fn acknowledge(&self);
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub(crate) struct StatesList {
     pub(crate) values: NoHashMap<u64, Arc<Value>>,
     pub(crate) static_values: NoHashMap<u64, Arc<ValueStatic>>,
@@ -41,32 +44,58 @@ pub(crate) struct StatesList {
     pub(crate) maps: NoHashMap<u64, Arc<ValueMap>>,
     pub(crate) lists: NoHashMap<u64, Arc<ValueList>>,
     pub(crate) graphs: NoHashMap<u64, Arc<ValueGraphs>>,
+    pub(crate) types: NoHashMap<u64, u64>,
 }
 
 impl StatesList {
-    fn new() -> Self {
-        Self {
-            values: NoHashMap::default(),
-            static_values: NoHashMap::default(),
-            signals: NoHashMap::default(),
-            images: NoHashMap::default(),
-            maps: NoHashMap::default(),
-            lists: NoHashMap::default(),
-            graphs: NoHashMap::default(),
-        }
-    }
+    fn get_server_list(&self) -> ServerStatesList {
+        let mut server_list = ServerStatesList::default();
 
-    fn shrink(&mut self) {
-        self.values.shrink_to_fit();
-        self.static_values.shrink_to_fit();
-        self.images.shrink_to_fit();
-        self.maps.shrink_to_fit();
-        self.lists.shrink_to_fit();
-        self.graphs.shrink_to_fit();
+        server_list.types = self.types.clone();
+        server_list.values.extend(self.values.clone());
+        server_list.signals.extend(self.signals.clone());
+
+        for (id, value) in self.values.iter() {
+            server_list.sync.push(value.clone());
+            server_list.ack.insert(*id, value.clone());
+            server_list.enable.insert(*id, value.clone());
+        }
+
+        for (id, value) in self.static_values.iter() {
+            server_list.enable.insert(*id, value.clone());
+            server_list.sync.push(value.clone());
+        }
+
+        for (id, signal) in self.signals.iter() {
+            server_list.enable.insert(*id, signal.clone());
+        }
+
+        for (id, image) in self.images.iter() {
+            server_list.sync.push(image.clone());
+            server_list.ack.insert(*id, image.clone());
+            server_list.enable.insert(*id, image.clone());
+        }
+
+        for (id, map) in self.maps.iter() {
+            server_list.enable.insert(*id, map.clone());
+            server_list.sync.push(map.clone());
+        }
+
+        for (id, list) in self.lists.iter() {
+            server_list.enable.insert(*id, list.clone());
+            server_list.sync.push(list.clone());
+        }
+
+        for (id, graphs) in self.graphs.iter() {
+            server_list.enable.insert(*id, graphs.clone());
+            server_list.sync.push(graphs.clone());
+        }
+
+        server_list
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub(crate) struct ServerStatesList {
     pub(crate) values: NoHashMap<u64, Arc<Value>>,
     pub(crate) signals: NoHashMap<u64, Arc<Signal>>,
@@ -74,28 +103,6 @@ pub(crate) struct ServerStatesList {
     pub(crate) enable: NoHashMap<u64, Arc<dyn EnableTrait>>,
     pub(crate) sync: Vec<Arc<dyn SyncTrait>>,
     pub(crate) types: NoHashMap<u64, u64>,
-}
-
-impl ServerStatesList {
-    fn new() -> Self {
-        Self {
-            values: NoHashMap::default(),
-            signals: NoHashMap::default(),
-            ack: NoHashMap::default(),
-            enable: NoHashMap::default(),
-            sync: Vec::new(),
-            types: NoHashMap::default(),
-        }
-    }
-
-    fn shrink(&mut self) {
-        self.values.shrink_to_fit();
-        self.signals.shrink_to_fit();
-        self.ack.shrink_to_fit();
-        self.enable.shrink_to_fit();
-        self.sync.shrink_to_fit();
-        self.types.shrink_to_fit();
-    }
 }
 
 enum RunnerState {
@@ -110,41 +117,61 @@ impl RunnerState {
         match self {
             RunnerState::Running(_, _) => true,
             RunnerState::Stopped(_, _) => false,
-            RunnerState::Uninitialized => unreachable!(),
+            RunnerState::Uninitialized => false,
         }
     }
 
     fn take(&mut self) -> Self {
         match std::mem::replace(self, RunnerState::Uninitialized) {
-            RunnerState::Running(handle, sender) => {
-                RunnerState::Running(handle, sender)
-            }
-            RunnerState::Stopped(rx, sender) => {
-                RunnerState::Stopped(rx, sender)
-            }
+            RunnerState::Running(handle, sender) => RunnerState::Running(handle, sender),
+            RunnerState::Stopped(rx, sender) => RunnerState::Stopped(rx, sender),
             RunnerState::Uninitialized => RunnerState::Uninitialized,
+        }
+    }
+
+    fn check_state(&mut self) -> MessageSender {
+        match self {
+            RunnerState::Uninitialized => {
+                let (sender, rx) = MessageSender::new();
+                *self = RunnerState::Stopped(rx, sender.clone());
+                sender
+            }
+            RunnerState::Stopped(_, sender) => sender.clone(),
+            RunnerState::Running(_, sender) => sender.clone(),
+        }
+    }
+
+    fn get_sender(&self, f: impl Fn(&MessageSender)) {
+        match self {
+            RunnerState::Uninitialized => {}
+            RunnerState::Stopped(_, sender) => f(sender),
+            RunnerState::Running(_, sender) => f(sender),
         }
     }
 }
 
 pub(crate) struct Server {
-    connected: Arc<atomic::AtomicBool>,
-    enabled: Arc<atomic::AtomicBool>,
+    connected: Arc<AtomicBool>,
+    enabled: Arc<AtomicBool>,
     start_event: Event,
     addr: SocketAddrV4,
     states: StatesList,
     signals: SignalsManager,
     handshake: Option<Vec<u64>>,
-    states_server: ServerStatesList,
 
     runner_state: RunnerState,
+    runner_threads: usize,
 }
 
 impl Server {
-    pub(crate) fn new(addr: SocketAddrV4, handshake: Option<Vec<u64>>) -> Self {
+    pub(crate) fn new(
+        addr: SocketAddrV4,
+        handshake: Option<Vec<u64>>,
+        runner_threads: usize,
+    ) -> Self {
         let start_event = Event::new();
-        let enabled = Arc::new(atomic::AtomicBool::new(false));
-        let connected = Arc::new(atomic::AtomicBool::new(false));
+        let enabled = Arc::new(AtomicBool::new(false));
+        let connected = Arc::new(AtomicBool::new(false));
         let (sender, rx) = MessageSender::new();
         let signals = SignalsManager::new();
 
@@ -153,21 +180,15 @@ impl Server {
             enabled,
             start_event,
             addr,
-            states: StatesList::new(),
+            states: StatesList::default(),
             signals,
             handshake,
-            states_server: ServerStatesList::new(),
+            // states_server: ServerStatesList::new(),
             runner_state: RunnerState::Stopped(rx, sender),
+            runner_threads,
         };
 
         obj
-    }
-
-    fn reinitialize(&mut self) -> MessageSender {
-        if let RunnerState::Uninitialized = self.runner_state {
-            let (sender, rx) = MessageSender::new();
-            self.runner_state = RunnerState::Stopped(rx, sender);
-        }
     }
 
     pub(crate) fn finalize(&mut self) -> Option<StatesList> {
@@ -220,12 +241,21 @@ impl Server {
     }
 
     pub(crate) fn start(&mut self) -> Result<StatesList, ()> {
-        if self.enabled.load(atomic::Ordering::Relaxed) self.runner_state.is_running()
+        match self.runner_state {}
 
 
-        if self.enabled.load(atomic::Ordering::Relaxed) || self.rx.is_none() {
-            return Ok(self.states.clone());
-        }
+
+
+
+
+
+
+
+
+
+
+
+
 
         let runtime = Builder::new_current_thread()
             .thread_name("Server Runtime")
@@ -250,14 +280,7 @@ impl Server {
             .spawn(move || {
                 runtime.block_on(async move {
                     server_core::run(
-                        sender,
-                        rx,
-                        connected,
-                        enabled,
-                        values,
-                        signals,
-                        addr,
-                        handshake,
+                        sender, rx, connected, enabled, values, signals, addr, handshake,
                     )
                     .await
                 })
@@ -265,10 +288,9 @@ impl Server {
             .map_err(|_| ())?;
 
         self.thread_handle = Some(thread_handle);
-        self.enabled.store(true, atomic::Ordering::Relaxed);
+        self.enabled.store(true, Ordering::Release);
         self.start_event.set();
 
-        self.states.shrink();
         Ok(self.states.clone())
     }
 
@@ -277,14 +299,14 @@ impl Server {
         match state {
             RunnerState::Stopped(rx, sender) => {
                 self.runner_state = RunnerState::Stopped(rx, sender);
-            },
+            }
             RunnerState::Running(handle, sender) => {
-                self.enabled.store(false, atomic::Ordering::Relaxed);
-                self.connected.store(false, atomic::Ordering::Relaxed);
+                self.enabled.store(false, Ordering::Release);
+                self.connected.store(false, Ordering::Release);
                 sender.close();
 
                 // try to connect to the server to unblock the accept call
-                let _ = TcpStream::connect(self.addr); // TODO: use localhost?
+                TcpStream::connect(self.addr); // TODO: use localhost?
 
                 match handle.join() {
                     Ok(rx) => {
@@ -292,197 +314,135 @@ impl Server {
                     }
                     Err(_) => {
                         self.runner_state = RunnerState::Uninitialized;
+                    }
                 }
             }
-                
-            },
             RunnerState::Uninitialized => {}
         }
-
-
-
-        // if !self.enabled.load(atomic::Ordering::Relaxed) || self.states_server.is_some() {
-        //     return;
-        // }
-
-        // self.start_event.clear();
-        // self.enabled.store(false, atomic::Ordering::Relaxed);
-        // self.disconnect_client();
-
-        // // try to connect to the server to unblock the accept call
-        // let _ = TcpStream::connect(self.addr); // TODO: use localhost?
     }
 
     pub(crate) fn disconnect_client(&mut self) {
-        if self.states_server.is_some() {
-            return;
-        }
-
-        if self.connected.load(atomic::Ordering::Relaxed) {
-            self.connected.store(false, atomic::Ordering::Relaxed);
-            self.sender.close();
+        if self.connected.load(Ordering::Release) {
+            self.connected.store(false, Ordering::Release);
+            self.runner_state.get_sender(|sender| {
+                sender.close();
+            });
         }
     }
 
     pub(crate) fn is_running(&self) -> bool {
-        if self.states_server.is_some() {
-            return false;
+        if let RunnerState::Running(_, _) = self.runner_state {
+            return true;
         }
-
-        self.enabled.load(atomic::Ordering::Relaxed)
+        false
     }
 
     pub(crate) fn is_connected(&self) -> bool {
-        self.connected.load(atomic::Ordering::Relaxed)
+        self.connected.load(Relaxed)
     }
 
     pub(crate) fn update(&self, duration: Option<f32>) {
-        if self.states_server.is_some() {
-            return;
+        if self.connected.load(Relaxed) {
+            let duration = duration.unwrap_or(0.0);
+            let header = ServerHeader::Control(ControlServer::Update(duration));
+            self.runner_state
+                .get_sender(|sender| sender.send(header.serialize_to_bytes()));
         }
-
-        let duration = duration.unwrap_or(0.0);
-        let header = ServerHeader::Control(ControlServer::Update(duration));
-        self.sender.send(header.serialize_to_bytes());
     }
 
     pub(crate) fn add_value(&mut self, id: u64, type_id: u64, value: Bytes) -> Result<(), String> {
-        if let Some(states) = self.states_server.as_mut() {
-            if self.states.values.contains_key(&id) {
-                return Err(format!("Value with id {} already exists", id));
-            }
-
-            let val = Value::new(
-                id,
-                value,
-                self.sender.clone(),
-                self.connected.clone(),
-                self.signals.clone(),
-            );
-
-            states.types.insert(id, type_id);
-            states.values.insert(id, val.clone());
-            states.sync.push(val.clone());
-            states.ack.insert(id, val.clone());
-            states.enable.insert(id, val.clone());
-
-            self.states.values.insert(id, val);
-            return Ok(());
+        if self.states.values.contains_key(&id) {
+            return Err(format!("Value with id {} already exists", id));
         }
 
-        Err(format!(
-            "Cannot add value with id {}: server is already initialized",
-            id
-        ))
+        let sender = self.runner_state.check_state();
+        let val = Value::new(
+            id,
+            value,
+            sender,
+            self.connected.clone(),
+            self.signals.clone(),
+        );
+
+        self.states.types.insert(id, type_id);
+        self.states.values.insert(id, val);
+        Ok(())
     }
 
     pub(crate) fn add_static(&mut self, id: u64, type_id: u64, value: Bytes) -> Result<(), String> {
-        if let Some(states) = self.states_server.as_mut() {
-            let val = ValueStatic::new(id, value, self.sender.clone(), self.connected.clone());
-
-            states.types.insert(id, type_id);
-            states.enable.insert(id, val.clone());
-            states.sync.push(val.clone());
-
-            self.states.static_values.insert(id, val);
-            return Ok(());
+        if self.states.static_values.contains_key(&id) {
+            return Err(format!("Static value with id {} already exists", id));
         }
+        let sender = self.runner_state.check_state();
+        let val = ValueStatic::new(id, value, sender, self.connected.clone());
 
-        Err(format!(
-            "Cannot add static value with id {}: server is already initialized",
-            id
-        ))
+        self.states.types.insert(id, type_id);
+        self.states.static_values.insert(id, val);
+        Ok(())
     }
 
     pub(crate) fn add_signal(&mut self, id: u64, type_id: u64) -> Result<(), String> {
-        if let Some(states) = self.states_server.as_mut() {
-            let val = Signal::new(id, self.signals.clone());
-
-            states.types.insert(id, type_id);
-            states.signals.insert(id, val.clone());
-            states.enable.insert(id, val.clone());
-
-            self.states.signals.insert(id, val);
-            return Ok(());
+        if self.states.signals.contains_key(&id) {
+            return Err(format!("Signal with id {} already exists", id));
         }
 
-        Err(format!(
-            "Cannot add signal with id {}: server is already initialized",
-            id
-        ))
+        let val = Signal::new(id, self.signals.clone());
+
+        self.states.types.insert(id, type_id);
+        self.states.signals.insert(id, val);
+        Ok(())
     }
 
     pub(crate) fn add_list(&mut self, id: u64, type_id: u64) -> Result<(), String> {
-        if let Some(states) = self.states_server.as_mut() {
-            let val = ValueList::new(id, self.sender.clone(), self.connected.clone());
-
-            states.types.insert(id, type_id);
-            states.enable.insert(id, val.clone());
-            states.sync.push(val.clone());
-
-            self.states.lists.insert(id, val);
-            return Ok(());
+        if self.states.lists.contains_key(&id) {
+            return Err(format!("List with id {} already exists", id));
         }
+        let sender = self.runner_state.check_state();
+        let val = ValueList::new(id, sender, self.connected.clone());
 
-        Err(format!(
-            "Cannot add list with id {}: server is already initialized",
-            id
-        ))
+        self.states.types.insert(id, type_id);
+        self.states.lists.insert(id, val);
+        Ok(())
     }
 
     pub(crate) fn add_map(&mut self, id: u64, type_id: u64) -> Result<(), String> {
-        if let Some(states) = self.states_server.as_mut() {
-            let val = ValueMap::new(id, self.sender.clone(), self.connected.clone());
-
-            states.types.insert(id, type_id);
-            states.enable.insert(id, val.clone());
-            states.sync.push(val.clone());
-
-            self.states.maps.insert(id, val);
-            return Ok(());
+        if self.states.maps.contains_key(&id) {
+            return Err(format!("Map with id {} already exists", id));
         }
+        let sender = self.runner_state.check_state();
+        let val = ValueMap::new(id, sender, self.connected.clone());
 
-        Err(format!(
-            "Cannot add map with id {}: server is already initialized",
-            id
-        ))
+        self.states.types.insert(id, type_id);
+        self.states.maps.insert(id, val);
+
+        Ok(())
     }
 
     pub(crate) fn add_image(&mut self, id: u64) -> Result<(), String> {
-        if let Some(states) = self.states_server.as_mut() {
-            let val = ValueImage::new(id, self.sender.clone(), self.connected.clone());
-
-            states.types.insert(id, 42);
-            states.enable.insert(id, val.clone());
-            states.sync.push(val.clone());
-            states.ack.insert(id, val.clone());
-
-            self.states.images.insert(id, val);
-            return Ok(());
+        if self.states.images.contains_key(&id) {
+            return Err(format!("Image with id {} already exists", id));
         }
+        let sender = self.runner_state.check_state();
 
-        Err(format!(
-            "Cannot add image with id {}: server is already initialized",
-            id
-        ))
+        let val = ValueImage::new(id, sender, self.connected.clone());
+
+        self.states.types.insert(id, 42);
+        self.states.images.insert(id, val);
+        Ok(())
     }
 
     pub(crate) fn add_graphs(&mut self, id: u64, graphs_type: GraphType) -> Result<(), String> {
-        if let Some(states) = self.states_server.as_mut() {
-            let val =
-                ValueGraphs::new(id, self.sender.clone(), graphs_type, self.connected.clone());
-
-            states.types.insert(id, graphs_type.bytes_size() as u64);
-            states.enable.insert(id, val.clone());
-            states.sync.push(val.clone());
-
-            self.states.graphs.insert(id, val);
-            return Ok(());
+        if self.states.graphs.contains_key(&id) {
+            return Err(format!("Graphs with id {} already exists", id));
         }
 
-        Err(format!(
-            "Cannot add graphs with id {}: server is already initialized",
-            id
-        ))
+        let sender = self.runner_state.check_state();
+        let val = ValueGraphs::new(id, sender, graphs_type, self.connected.clone());
+
+        self.states
+            .types
+            .insert(id, graphs_type.bytes_size() as u64);
+        self.states.graphs.insert(id, val);
+        Ok(())
     }
 }
