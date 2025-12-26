@@ -32,7 +32,11 @@ class StateServerCore:
     """A class representing the core functionality of the state server."""
 
     def __init__(
-        self, port: int, ip_addr: tuple[int, int, int, int] | None = None, handshake: list[int] | None = None
+        self,
+        port: int,
+        ip_addr: tuple[int, int, int, int] | None = None,
+        handshake: list[int] | None = None,
+        runner_threads: int = 3,
     ) -> None: ...
     def start(self) -> None: ...
     def stop(self) -> None: ...

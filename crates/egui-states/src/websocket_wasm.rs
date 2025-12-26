@@ -10,7 +10,7 @@ pub(crate) async fn build_ws(address: SocketAddrV4) -> Result<(WsClientRead, WsC
 
     if res.is_err() {
         #[cfg(debug_assertions)]
-        println!(
+        log::error!(
             "connecting to server at {:?} failed: {:?}",
             address,
             res.err()
@@ -52,13 +52,13 @@ impl WsClientRead {
                 WsMessage::Binary(data) => Ok(ReadData(data)),
                 _ => {
                     #[cfg(debug_assertions)]
-                    println!("Unexpected message from server: {:?}", message);
+                    log::error!("Unexpected message from server: {:?}", message);
                     Err(())
                 }
             },
             None => {
                 #[cfg(debug_assertions)]
-                println!("Connection closed by server");
+                log::info!("Connection closed by server");
                 Err(())
             }
         }
@@ -85,7 +85,7 @@ impl WsClientSend {
             Ok(_) => Ok(()),
             Err(e) => {
                 #[cfg(debug_assertions)]
-                println!("Sending message to socket failed: {:?}", e);
+                log::error!("Sending message to socket failed: {:?}", e);
                 Err(())
             }
         }

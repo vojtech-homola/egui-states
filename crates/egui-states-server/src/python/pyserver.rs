@@ -5,11 +5,10 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 
 use pyo3::buffer::PyBuffer;
-use pyo3::exceptions::PyValueError;
+use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyByteArray, PyDict, PyList, PyTuple};
 
-use egui_states_core::generate_value_id;
 use egui_states_core::graphs::GraphType;
 use egui_states_core::nohash::NoHashMap;
 
@@ -116,8 +115,13 @@ impl StateServerCore {
 #[pymethods]
 impl StateServerCore {
     #[new]
-    #[pyo3(signature = (port, ip_addr=None, handshake=None))]
-    fn new(port: u16, ip_addr: Option<[u8; 4]>, handshake: Option<Vec<u64>>) -> PyResult<Self> {
+    #[pyo3(signature = (port, ip_addr=None, handshake=None, runner_threads=3))]
+    fn new(
+        port: u16,
+        ip_addr: Option<[u8; 4]>,
+        handshake: Option<Vec<u64>>,
+        runner_threads: usize,
+    ) -> PyResult<Self> {
         let addr = match ip_addr {
             Some(addr) => {
                 SocketAddrV4::new(Ipv4Addr::new(addr[0], addr[1], addr[2], addr[3]), port)
@@ -125,7 +129,7 @@ impl StateServerCore {
             None => SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), port),
         };
 
-        let server = Server::new(addr, handshake, 3);
+        let server = Server::new(addr, handshake, runner_threads);
         let signals = server.get_signals_manager();
 
         // register logging signal type
@@ -150,8 +154,11 @@ impl StateServerCore {
         }
     }
 
-    fn start(&self) {
-        self.server.write().start();
+    fn start(&self) -> PyResult<()> {
+        self.server
+            .write()
+            .start()
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))
     }
 
     fn stop(&self) {
@@ -623,10 +630,10 @@ impl StateServerCore {
         pyparsing::serialize_py(initial_value, &object_type, &mut creator)?;
         let data = creator.finalize();
 
-        let value_id = generate_value_id(&name);
-        self.server
+        let value_id = self
+            .server
             .write()
-            .add_value(value_id, type_id, data)
+            .add_value(&name, type_id, data)
             .map_err(|e| {
                 pyo3::exceptions::PyValueError::new_err(format!("Failed to add value: {}", e))
             })?;
@@ -651,10 +658,10 @@ impl StateServerCore {
         pyparsing::serialize_py(initial_value, &object_type, &mut creator)?;
         let data = creator.finalize();
 
-        let value_id = generate_value_id(&name);
-        self.server
+        let value_id = self
+            .server
             .write()
-            .add_static(value_id, type_id, data)
+            .add_static(&name, type_id, data)
             .map_err(|e| PyValueError::new_err(format!("Failed to add value: {}", e)))?;
 
         if let Some(types_map) = self.temps.write().as_mut() {
@@ -672,10 +679,10 @@ impl StateServerCore {
         let object_type = object_type.borrow().object_type.clone_py(py);
         let type_id = object_type.get_hash(py)?;
 
-        let value_id = generate_value_id(&name);
-        self.server
+        let value_id = self
+            .server
             .write()
-            .add_signal(value_id, type_id)
+            .add_signal(&name, type_id)
             .map_err(|e| PyValueError::new_err(format!("Failed to add signal: {}", e)))?;
 
         if let Some(types_map) = self.temps.write().as_mut() {
@@ -693,10 +700,10 @@ impl StateServerCore {
         let object_type = object_type.borrow().object_type.clone_py(py);
         let type_id = object_type.get_hash(py)?;
 
-        let value_id = generate_value_id(&name);
-        self.server
+        let value_id = self
+            .server
             .write()
-            .add_list(value_id, type_id)
+            .add_list(&name, type_id)
             .map_err(|e| PyValueError::new_err(format!("Failed to add list: {}", e)))?;
 
         if let Some(types_map) = self.temps.write().as_mut() {
@@ -714,10 +721,10 @@ impl StateServerCore {
         let object_type = object_type.borrow().object_type.clone_py(py);
         let type_id = object_type.get_hash(py)?;
 
-        let value_id = generate_value_id(&name);
-        self.server
+        let value_id = self
+            .server
             .write()
-            .add_map(value_id, type_id)
+            .add_map(&name, type_id)
             .map_err(|e| PyValueError::new_err(format!("Failed to add map: {}", e)))?;
 
         if let Some(types_map) = self.temps.write().as_mut() {
@@ -727,10 +734,10 @@ impl StateServerCore {
     }
 
     fn add_image(&self, name: String) -> PyResult<u64> {
-        let value_id = generate_value_id(&name);
-        self.server
+        let value_id = self
+            .server
             .write()
-            .add_image(value_id)
+            .add_image(&name)
             .map_err(|e| PyValueError::new_err(format!("Failed to add image: {}", e)))?;
         Ok(value_id)
     }
@@ -741,10 +748,10 @@ impl StateServerCore {
             false => GraphType::F32,
         };
 
-        let value_id = generate_value_id(&name);
-        self.server
+        let value_id = self
+            .server
             .write()
-            .add_graphs(value_id, graph_type)
+            .add_graphs(&name, graph_type)
             .map_err(|e| PyValueError::new_err(format!("Failed to add graphs: {}", e)))?;
         Ok(value_id)
     }

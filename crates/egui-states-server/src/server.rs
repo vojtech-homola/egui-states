@@ -9,10 +9,10 @@ use bytes::Bytes;
 use tokio::runtime::Builder;
 
 use egui_states_core::controls::ControlServer;
-use egui_states_core::event_async::Event;
+use egui_states_core::generate_value_id;
 use egui_states_core::graphs::GraphType;
 use egui_states_core::nohash::NoHashMap;
-use egui_states_core::serialization::{ServerHeader, serialize_value_vec};
+use egui_states_core::serialization::ServerHeader;
 
 use crate::graphs::ValueGraphs;
 use crate::image::ValueImage;
@@ -106,46 +106,17 @@ pub(crate) struct ServerStatesList {
 }
 
 enum RunnerState {
-    Running(thread::JoinHandle<MessageReceiver>, MessageSender),
-    Stopped(MessageReceiver, MessageSender),
-    Uninitialized,
+    Running(thread::JoinHandle<MessageReceiver>),
+    Stopped(MessageReceiver),
+    Undefined,
 }
 
 impl RunnerState {
-    #[inline]
-    fn is_running(&self) -> bool {
-        match self {
-            RunnerState::Running(_, _) => true,
-            RunnerState::Stopped(_, _) => false,
-            RunnerState::Uninitialized => false,
-        }
-    }
-
     fn take(&mut self) -> Self {
-        match std::mem::replace(self, RunnerState::Uninitialized) {
-            RunnerState::Running(handle, sender) => RunnerState::Running(handle, sender),
-            RunnerState::Stopped(rx, sender) => RunnerState::Stopped(rx, sender),
-            RunnerState::Uninitialized => RunnerState::Uninitialized,
-        }
-    }
-
-    fn check_state(&mut self) -> MessageSender {
-        match self {
-            RunnerState::Uninitialized => {
-                let (sender, rx) = MessageSender::new();
-                *self = RunnerState::Stopped(rx, sender.clone());
-                sender
-            }
-            RunnerState::Stopped(_, sender) => sender.clone(),
-            RunnerState::Running(_, sender) => sender.clone(),
-        }
-    }
-
-    fn get_sender(&self, f: impl Fn(&MessageSender)) {
-        match self {
-            RunnerState::Uninitialized => {}
-            RunnerState::Stopped(_, sender) => f(sender),
-            RunnerState::Running(_, sender) => f(sender),
+        match std::mem::replace(self, RunnerState::Undefined) {
+            RunnerState::Running(handle) => RunnerState::Running(handle),
+            RunnerState::Stopped(rx) => RunnerState::Stopped(rx),
+            RunnerState::Undefined => RunnerState::Undefined,
         }
     }
 }
@@ -153,9 +124,10 @@ impl RunnerState {
 pub(crate) struct Server {
     connected: Arc<AtomicBool>,
     enabled: Arc<AtomicBool>,
-    start_event: Event,
+    sender: MessageSender,
     addr: SocketAddrV4,
     states: StatesList,
+    states_server: Option<ServerStatesList>,
     signals: SignalsManager,
     handshake: Option<Vec<u64>>,
 
@@ -169,7 +141,6 @@ impl Server {
         handshake: Option<Vec<u64>>,
         runner_threads: usize,
     ) -> Self {
-        let start_event = Event::new();
         let enabled = Arc::new(AtomicBool::new(false));
         let connected = Arc::new(AtomicBool::new(false));
         let (sender, rx) = MessageSender::new();
@@ -178,13 +149,13 @@ impl Server {
         let obj = Self {
             connected,
             enabled,
-            start_event,
+            sender,
             addr,
             states: StatesList::default(),
+            states_server: None,
             signals,
             handshake,
-            // states_server: ServerStatesList::new(),
-            runner_state: RunnerState::Stopped(rx, sender),
+            runner_state: RunnerState::Stopped(rx),
             runner_threads,
         };
 
@@ -192,257 +163,261 @@ impl Server {
     }
 
     pub(crate) fn finalize(&mut self) -> Option<StatesList> {
-        if self.states_server.is_none() {
-            return None;
+        match self.states_server {
+            Some(_) => None,
+            None => {
+                let states_server = self.states.get_server_list();
+                self.states_server = Some(states_server);
+                Some(self.states.clone())
+            }
         }
-
-        let runtime = Builder::new_current_thread()
-            .thread_name("Server Runtime")
-            .enable_io()
-            .worker_threads(3)
-            .build()
-            .unwrap();
-
-        let sender = self.sender.clone();
-        let rx = self.rx.take().unwrap();
-        let connected = self.connected.clone();
-        let enabled = self.enabled.clone();
-        let mut values = self.states_server.take().unwrap();
-        values.shrink();
-        let signals = self.signals.clone();
-        let start_event = self.start_event.clone();
-        let handshake = self.handshake.clone();
-        let addr = self.addr;
-
-        let server_thread = thread::Builder::new().name("Server".to_string());
-        let thread_handle = server_thread.spawn(move || {
-            runtime.block_on(async move {
-                server_core::run(
-                    sender,
-                    rx,
-                    connected,
-                    enabled,
-                    values,
-                    signals,
-                    start_event,
-                    addr,
-                    handshake,
-                )
-                .await;
-            });
-        });
-
-        self.states.shrink();
-        Some(self.states.clone())
     }
 
     pub(crate) fn get_signals_manager(&self) -> SignalsManager {
         self.signals.clone()
     }
 
-    pub(crate) fn start(&mut self) -> Result<StatesList, ()> {
-        match self.runner_state {}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-        let runtime = Builder::new_current_thread()
-            .thread_name("Server Runtime")
-            .enable_io()
-            .worker_threads(3)
-            .build()
-            .unwrap();
-
-        let sender = self.sender.clone();
-        let rx = self.rx.take().unwrap();
-        let connected = self.connected.clone();
-        let enabled = self.enabled.clone();
-        self.states_server.shrink();
-        let values = self.states_server.clone();
-        let signals = self.signals.clone();
-        let start_event = self.start_event.clone();
-        let handshake = self.handshake.clone();
-        let addr = self.addr;
-
-        let server_thread = thread::Builder::new().name("Server".to_string());
-        let thread_handle = server_thread
-            .spawn(move || {
-                runtime.block_on(async move {
-                    server_core::run(
-                        sender, rx, connected, enabled, values, signals, addr, handshake,
-                    )
-                    .await
-                })
-            })
-            .map_err(|_| ())?;
-
-        self.thread_handle = Some(thread_handle);
-        self.enabled.store(true, Ordering::Release);
-        self.start_event.set();
-
-        Ok(self.states.clone())
-    }
-
-    pub(crate) fn stop(&mut self) {
-        let state = self.runner_state.take();
-        match state {
-            RunnerState::Stopped(rx, sender) => {
-                self.runner_state = RunnerState::Stopped(rx, sender);
+    pub(crate) fn start(&mut self) -> Result<(), &'static str> {
+        match (self.runner_state.take(), &self.states_server) {
+            (RunnerState::Running(rx), _) => {
+                self.runner_state = RunnerState::Running(rx);
+                Ok(())
             }
-            RunnerState::Running(handle, sender) => {
-                self.enabled.store(false, Ordering::Release);
-                self.connected.store(false, Ordering::Release);
-                sender.close();
+            (RunnerState::Stopped(rx), Some(states_server)) => {
+                let runtime = Builder::new_current_thread()
+                    .thread_name("ServerRuntime")
+                    .enable_io()
+                    .worker_threads(self.runner_threads)
+                    .build()
+                    .unwrap();
 
-                // try to connect to the server to unblock the accept call
-                TcpStream::connect(self.addr); // TODO: use localhost?
+                let sender = self.sender.clone();
+                let connected = self.connected.clone();
+                let enabled = self.enabled.clone();
+                let values = states_server.clone();
+                let signals = self.signals.clone();
 
-                match handle.join() {
-                    Ok(rx) => {
-                        self.runner_state = RunnerState::Stopped(rx, sender);
-                    }
+                let handshake = self.handshake.clone();
+                let addr = self.addr;
+
+                self.enabled.store(true, Ordering::Release);
+                let server_thread = thread::Builder::new().name("StatesServer".to_string());
+                let thread_handle_res = server_thread.spawn(move || {
+                    runtime.block_on(async move {
+                        server_core::run(
+                            sender, rx, connected, enabled, values, signals, addr, handshake,
+                        )
+                        .await
+                    })
+                });
+
+                match thread_handle_res {
                     Err(_) => {
-                        self.runner_state = RunnerState::Uninitialized;
+                        self.runner_state = RunnerState::Undefined;
+                        Err("Failed to start server thread, server is in undefined state")
+                    }
+                    Ok(thread_handle) => {
+                        self.runner_state = RunnerState::Running(thread_handle);
+                        Ok(())
                     }
                 }
             }
-            RunnerState::Uninitialized => {}
+            (RunnerState::Undefined, _) => Err("Server is in undefined state"),
+            (state, None) => {
+                self.runner_state = state;
+                Err("Server has not been finalized")
+            }
+        }
+    }
+
+    pub(crate) fn stop(&mut self) {
+        match self.runner_state.take() {
+            RunnerState::Stopped(rx) => {
+                self.runner_state = RunnerState::Stopped(rx);
+            }
+            RunnerState::Running(handle) => {
+                self.enabled.store(false, Ordering::Release);
+                self.connected.store(false, Ordering::Release);
+                self.sender.close();
+
+                // try to connect to the server to unblock the accept call
+                let _ = TcpStream::connect(self.addr); // TODO: use localhost?
+
+                match handle.join() {
+                    Ok(rx) => {
+                        self.runner_state = RunnerState::Stopped(rx);
+                    }
+                    Err(_) => {
+                        self.runner_state = RunnerState::Undefined;
+                    }
+                }
+            }
+            RunnerState::Undefined => {}
         }
     }
 
     pub(crate) fn disconnect_client(&mut self) {
-        if self.connected.load(Ordering::Release) {
+        if self.connected.load(Ordering::Acquire) {
             self.connected.store(false, Ordering::Release);
-            self.runner_state.get_sender(|sender| {
-                sender.close();
-            });
+            self.sender.close();
         }
     }
 
     pub(crate) fn is_running(&self) -> bool {
-        if let RunnerState::Running(_, _) = self.runner_state {
+        if let RunnerState::Running(_) = self.runner_state {
             return true;
         }
         false
     }
 
     pub(crate) fn is_connected(&self) -> bool {
-        self.connected.load(Relaxed)
+        self.connected.load(Ordering::Acquire)
     }
 
     pub(crate) fn update(&self, duration: Option<f32>) {
-        if self.connected.load(Relaxed) {
+        if self.connected.load(Ordering::Acquire) {
             let duration = duration.unwrap_or(0.0);
             let header = ServerHeader::Control(ControlServer::Update(duration));
-            self.runner_state
-                .get_sender(|sender| sender.send(header.serialize_to_bytes()));
+            self.sender.send(header.serialize_to_bytes());
         }
     }
 
-    pub(crate) fn add_value(&mut self, id: u64, type_id: u64, value: Bytes) -> Result<(), String> {
+    pub(crate) fn add_value(
+        &mut self,
+        name: &str,
+        type_id: u64,
+        value: Bytes,
+    ) -> Result<u64, String> {
+        if self.states_server.is_some() {
+            return Err("Cannot add new values after server has been finalized".to_string());
+        }
+
+        let id = generate_value_id(&name);
         if self.states.values.contains_key(&id) {
             return Err(format!("Value with id {} already exists", id));
         }
 
-        let sender = self.runner_state.check_state();
         let val = Value::new(
+            name.to_string(),
             id,
             value,
-            sender,
+            self.sender.clone(),
             self.connected.clone(),
             self.signals.clone(),
         );
 
         self.states.types.insert(id, type_id);
         self.states.values.insert(id, val);
-        Ok(())
+        Ok(id)
     }
 
-    pub(crate) fn add_static(&mut self, id: u64, type_id: u64, value: Bytes) -> Result<(), String> {
+    pub(crate) fn add_static(
+        &mut self,
+        name: &str,
+        type_id: u64,
+        value: Bytes,
+    ) -> Result<u64, String> {
+        if self.states_server.is_some() {
+            return Err("Cannot add new values after server has been finalized".to_string());
+        }
+
+        let id = generate_value_id(&name);
         if self.states.static_values.contains_key(&id) {
             return Err(format!("Static value with id {} already exists", id));
         }
-        let sender = self.runner_state.check_state();
-        let val = ValueStatic::new(id, value, sender, self.connected.clone());
+
+        let val = ValueStatic::new(id, value, self.sender.clone(), self.connected.clone());
 
         self.states.types.insert(id, type_id);
         self.states.static_values.insert(id, val);
-        Ok(())
+        Ok(id)
     }
 
-    pub(crate) fn add_signal(&mut self, id: u64, type_id: u64) -> Result<(), String> {
+    pub(crate) fn add_signal(&mut self, name: &str, type_id: u64) -> Result<u64, String> {
+        if self.states_server.is_some() {
+            return Err("Cannot add new values after server has been finalized".to_string());
+        }
+
+        let id = generate_value_id(&name);
         if self.states.signals.contains_key(&id) {
             return Err(format!("Signal with id {} already exists", id));
         }
 
-        let val = Signal::new(id, self.signals.clone());
+        let val = Signal::new(name.to_string(), id, self.signals.clone());
 
         self.states.types.insert(id, type_id);
         self.states.signals.insert(id, val);
-        Ok(())
+        Ok(id)
     }
 
-    pub(crate) fn add_list(&mut self, id: u64, type_id: u64) -> Result<(), String> {
+    pub(crate) fn add_list(&mut self, name: &str, type_id: u64) -> Result<u64, String> {
+        if self.states_server.is_some() {
+            return Err("Cannot add new values after server has been finalized".to_string());
+        }
+
+        let id = generate_value_id(&name);
         if self.states.lists.contains_key(&id) {
             return Err(format!("List with id {} already exists", id));
         }
-        let sender = self.runner_state.check_state();
-        let val = ValueList::new(id, sender, self.connected.clone());
+
+        let val = ValueList::new(id, self.sender.clone(), self.connected.clone());
 
         self.states.types.insert(id, type_id);
         self.states.lists.insert(id, val);
-        Ok(())
+        Ok(id)
     }
 
-    pub(crate) fn add_map(&mut self, id: u64, type_id: u64) -> Result<(), String> {
+    pub(crate) fn add_map(&mut self, name: &str, type_id: u64) -> Result<u64, String> {
+        if self.states_server.is_some() {
+            return Err("Cannot add new values after server has been finalized".to_string());
+        }
+
+        let id = generate_value_id(&name);
         if self.states.maps.contains_key(&id) {
             return Err(format!("Map with id {} already exists", id));
         }
-        let sender = self.runner_state.check_state();
-        let val = ValueMap::new(id, sender, self.connected.clone());
+
+        let val = ValueMap::new(id, self.sender.clone(), self.connected.clone());
 
         self.states.types.insert(id, type_id);
         self.states.maps.insert(id, val);
 
-        Ok(())
+        Ok(id)
     }
 
-    pub(crate) fn add_image(&mut self, id: u64) -> Result<(), String> {
+    pub(crate) fn add_image(&mut self, name: &str) -> Result<u64, String> {
+        if self.states_server.is_some() {
+            return Err("Cannot add new values after server has been finalized".to_string());
+        }
+
+        let id = generate_value_id(&name);
         if self.states.images.contains_key(&id) {
             return Err(format!("Image with id {} already exists", id));
         }
-        let sender = self.runner_state.check_state();
 
-        let val = ValueImage::new(id, sender, self.connected.clone());
+        let val = ValueImage::new(id, self.sender.clone(), self.connected.clone());
 
         self.states.types.insert(id, 42);
         self.states.images.insert(id, val);
-        Ok(())
+        Ok(id)
     }
 
-    pub(crate) fn add_graphs(&mut self, id: u64, graphs_type: GraphType) -> Result<(), String> {
+    pub(crate) fn add_graphs(&mut self, name: &str, graphs_type: GraphType) -> Result<u64, String> {
+        if self.states_server.is_some() {
+            return Err("Cannot add new values after server has been finalized".to_string());
+        }
+
+        let id = generate_value_id(&name);
         if self.states.graphs.contains_key(&id) {
             return Err(format!("Graphs with id {} already exists", id));
         }
 
-        let sender = self.runner_state.check_state();
-        let val = ValueGraphs::new(id, sender, graphs_type, self.connected.clone());
+        let val = ValueGraphs::new(id, self.sender.clone(), graphs_type, self.connected.clone());
 
         self.states
             .types
             .insert(id, graphs_type.bytes_size() as u64);
         self.states.graphs.insert(id, val);
-        Ok(())
+        Ok(id)
     }
 }

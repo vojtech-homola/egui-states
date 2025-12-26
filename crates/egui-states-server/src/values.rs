@@ -12,6 +12,7 @@ use crate::signals::SignalsManager;
 
 // Value --------------------------------------------------
 pub(crate) struct Value {
+    name: String,
     id: u64,
     value: RwLock<(Bytes, usize)>,
     sender: MessageSender,
@@ -22,6 +23,7 @@ pub(crate) struct Value {
 
 impl Value {
     pub(crate) fn new(
+        name: String,
         id: u64,
         value: Bytes,
         sender: MessageSender,
@@ -29,6 +31,7 @@ impl Value {
         signals: SignalsManager,
     ) -> Arc<Self> {
         Arc::new(Self {
+            name,
             id,
             value: RwLock::new((value, 0)),
             sender,
@@ -40,7 +43,7 @@ impl Value {
 
     pub(crate) fn update_value(&self, signal: bool, value: Bytes) -> Result<(), String> {
         if !self.enabled.load(Ordering::Relaxed) {
-            return Err(format!("Value {} is not enabled", self.id));
+            return Err(format!("Value {} is not enabled", self.name));
         }
 
         let mut w = self.value.write();
@@ -178,14 +181,16 @@ impl EnableTrait for ValueStatic {
 
 // Signals --------------------------------------------
 pub(crate) struct Signal {
+    name: String,
     id: u64,
     signals: SignalsManager,
     enabled: AtomicBool,
 }
 
 impl Signal {
-    pub(crate) fn new(id: u64, signals: SignalsManager) -> Arc<Self> {
+    pub(crate) fn new(name: String, id: u64, signals: SignalsManager) -> Arc<Self> {
         Arc::new(Self {
+            name,
             id,
             signals,
             enabled: AtomicBool::new(false),
@@ -198,7 +203,7 @@ impl Signal {
 
     pub(crate) fn update_signal(&self, value: Bytes) -> Result<(), String> {
         if !self.enabled.load(Ordering::Relaxed) {
-            return Err(format!("Signal {} is not enabled", self.id));
+            return Err(format!("Signal {} is not enabled", self.name));
         }
         self.signals.set(self.id, value);
         Ok(())

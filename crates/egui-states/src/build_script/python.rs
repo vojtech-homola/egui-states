@@ -447,6 +447,7 @@ class StatesServer(StateServerBase):
         error_handler: Callable[[Exception], None] | None = None,
         ip_addr: tuple[int, int, int, int] | None = None,
         handshake: list[int] | None = None,
+        runner_threads: int = 3,
     ) -> None:
         """Initialize the StateServer.
 
@@ -456,13 +457,14 @@ class StatesServer(StateServerBase):
             error_handler (Callable[[Exception], None] | None, optional): Error handler function. Defaults to None.
             ip_addr (tuple[int, int, int, int] | None, optional): IP address to bind to. Defaults to None.
             handshake (list[int] | None, optional): Handshake bytes. Defaults to None.
+            runner_threads (int): The number of threads for running the server.
         """
         "#;
         file.write_all(text.as_bytes()).unwrap();
 
         file.write_all(
             format!(
-                "super().__init__({}, port, signals_workers, error_handler, ip_addr, handshake)\n",
+                "super().__init__({}, port, signals_workers, error_handler, ip_addr, handshake, runner_threads)\n",
                 root_name
             )
             .as_bytes(),
