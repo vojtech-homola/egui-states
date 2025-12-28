@@ -195,9 +195,7 @@ pub(crate) async fn run(
                 }
 
                 for id in &types {
-                    println!("Client supports state with id {}", id);
                     if let Some(v) = values.enable.get(id) {
-                        println!("Enabling state with id {}", id);
                         v.enable(true);
                     }
                 }

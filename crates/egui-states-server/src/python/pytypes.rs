@@ -87,7 +87,7 @@ impl ObjectType {
                     name,
                     members
                         .into_iter()
-                        .map(|(name, value)| (name, value as isize))
+                        .map(|(name, value)| (name, value))
                         .collect(),
                 )
             }

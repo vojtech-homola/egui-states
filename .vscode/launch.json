@@ -15,7 +15,7 @@
                 "example/states-server/test.py",
                 "--matplotlib"
             ],
-            // "preLaunchTask": "build server",
+            "preLaunchTask": "build server",
         },
         {
             "type": "lldb",

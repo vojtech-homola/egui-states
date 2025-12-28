@@ -6,7 +6,7 @@
         {
             "label": "build server",
             "type": "shell",
-            "command": "maturin develop -m examples/states-server/Cargo.toml",
+            "command": "maturin develop",
         },
     ]
 }
