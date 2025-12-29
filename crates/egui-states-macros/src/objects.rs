@@ -148,7 +148,7 @@ pub(crate) fn impl_enum(input: TokenStream) -> TokenStream {
                 egui_states::ObjectType::Enum(
                     stringify!(#ident).to_string(),
                     vec![
-                        #((stringify!(#names).to_string(), #values as i32)),*
+                        #((stringify!(#names).to_string(), #values)),*
                     ]
                 )
             }

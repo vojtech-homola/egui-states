@@ -15,6 +15,18 @@
                 "example/states-server/test.py",
                 "--matplotlib"
             ],
+        },
+        {
+            "name": "server compile",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "IPython",
+            "console": "integratedTerminal",
+            "args": [
+                "-i",
+                "example/states-server/test.py",
+                "--matplotlib"
+            ],
             "preLaunchTask": "build server",
         },
         {

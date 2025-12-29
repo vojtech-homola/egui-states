@@ -347,6 +347,9 @@ pub fn generate<S: State>(path: impl ToString) -> Result<(), String> {
         file.write_all(b"from dataclasses import dataclass\n")
             .unwrap();
     }
+    if enums.len() > 0 {
+        file.write_all(b"from enum import IntEnum\n").unwrap();
+    }
 
     file.write_all(b"\nimport numpy as np\n\n").unwrap();
 
@@ -359,7 +362,7 @@ pub fn generate<S: State>(path: impl ToString) -> Result<(), String> {
 
     // Write enums
     for (enum_name, variants) in &enums {
-        file.write_all(format!("\n\nclass {}(s.FastEnum):\n", enum_name).as_bytes())
+        file.write_all(format!("\n\nclass {}(IntEnum):\n", enum_name).as_bytes())
             .unwrap();
         for (name, value) in variants {
             let text = format!("    {} = {}\n", name, value);

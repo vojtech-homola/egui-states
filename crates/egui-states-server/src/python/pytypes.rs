@@ -1,5 +1,5 @@
 use pyo3::prelude::*;
-use pyo3::types::PyAny;
+use pyo3::types::{PyAny, PyDict};
 
 use egui_states_core::types::ObjectType as CoreObjectType;
 
@@ -79,17 +79,22 @@ impl ObjectType {
             ObjectType::Bool => CoreObjectType::Bool,
             ObjectType::Enum(obj) => {
                 let enum_type = obj.bind(py);
-                let members = enum_type
-                    .call_method0("_get_members")?
-                    .extract::<Vec<(String, i32)>>()?;
+                // let members = enum_type
+                //     .call_method0("_get_members")?
+                //     .extract::<Vec<(String, i64)>>()?;
+                let member_map = enum_type.getattr("_member_map_")?;
+                let members = member_map
+                    .cast::<PyDict>()?
+                    .iter()
+                    .map(|(name, value)| {
+                        let name = name.extract::<String>()?;
+                        let value = value.getattr("value")?.extract::<i64>()?;
+                        Ok((name, value))
+                    })
+                    .collect::<PyResult<Vec<(String, i64)>>>()?;
+
                 let name = enum_type.getattr("__name__")?.extract::<String>()?;
-                CoreObjectType::Enum(
-                    name,
-                    members
-                        .into_iter()
-                        .map(|(name, value)| (name, value))
-                        .collect(),
-                )
+                CoreObjectType::Enum(name, members)
             }
             ObjectType::Tuple(elements) => {
                 let mut core_elements = Vec::with_capacity(elements.len());
@@ -102,7 +107,7 @@ impl ObjectType {
                 let struct_type = obj.bind(py);
                 let name = struct_type.getattr("__name__")?.extract::<String>()?;
                 let memebers = struct_type
-                    .call_method0("_field_names")?
+                    .getattr("__match_args__")?
                     .extract::<Vec<String>>()?;
                 let mut core_elements = Vec::with_capacity(elements.len());
                 for (n, t) in memebers.iter().zip(elements.iter()) {
