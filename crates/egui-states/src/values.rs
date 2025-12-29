@@ -65,12 +65,12 @@ where
         self.value.read().clone()
     }
 
-    pub fn read<R>(&self, f: impl Fn(&T) -> R) -> R {
+    pub fn read<R>(&self, mut f: impl FnMut(&T) -> R) -> R {
         let r = self.value.read();
         f(&r)
     }
 
-    pub fn write<R>(&self, f: impl Fn(&mut T) -> R) -> R {
+    pub fn write<R>(&self, mut f: impl FnMut(&mut T) -> R) -> R {
         let mut w = self.value.write();
         let result = f(&mut w);
 
@@ -80,7 +80,7 @@ where
         result
     }
 
-    pub fn write_signal<R>(&self, f: impl Fn(&mut T) -> R) -> R {
+    pub fn write_signal<R>(&self, mut f: impl FnMut(&mut T) -> R) -> R {
         let mut w = self.value.write();
         let result = f(&mut w);
 
@@ -113,8 +113,9 @@ impl<T: for<'a> Deserialize<'a> + Send + Sync> UpdateValue for Value<T> {
             .map_err(|e| format!("Parse error: {} for value id: {}", e, self.id))?;
 
         let mut w = self.value.write();
-        *w = value;
         self.sender.send(ClientHeader::ack(self.id));
+        *w = value;
+
         Ok(())
     }
 }
@@ -137,7 +138,7 @@ impl<T: Clone> ValueStatic<T> {
         self.value.read().clone()
     }
 
-    pub fn read<R>(&self, f: impl Fn(&T) -> R) -> R {
+    pub fn read<R>(&self, mut f: impl FnMut(&T) -> R) -> R {
         let r = self.value.read();
         f(&r)
     }
