@@ -14,8 +14,10 @@ pub(crate) fn check_types(message_data: &[u8], vals: &ValuesList) -> Result<Mess
             let types = match deserialize::<NoHashMap<u64, u64>>(data) {
                 Ok(t) => t,
                 Err(_) => {
-                    #[cfg(debug_assertions)]
+                    #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
                     println!("Deserialization types ask data failed.");
+                    #[cfg(all(debug_assertions, target_arch = "wasm32"))]
+                    log::error!("Deserialization types ask data failed.");
                     return Err(());
                 }
             };
@@ -26,15 +28,24 @@ pub(crate) fn check_types(message_data: &[u8], vals: &ValuesList) -> Result<Mess
                     if *state_type == t {
                         types_res.push(id);
                     } else {
-                        #[cfg(debug_assertions)]
+                        #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
                         println!(
                             "Type mismatch for state id {}: expected {}, got {}",
                             id, state_type, t
                         );
+                        #[cfg(all(debug_assertions, target_arch = "wasm32"))]
+                        log::error!(
+                            "Type mismatch for state id {}: expected {}, got {}",
+                            id,
+                            state_type,
+                            t
+                        );
                     }
                 } else {
-                    #[cfg(debug_assertions)]
+                    #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
                     println!("State with id {} not found for types check.", id);
+                    #[cfg(all(debug_assertions, target_arch = "wasm32"))]
+                    log::error!("State with id {} not found for types check.", id);
                 }
             }
             let header = ClientHeader::Control(ControlClient::TypesAnswer);
@@ -43,13 +54,17 @@ pub(crate) fn check_types(message_data: &[u8], vals: &ValuesList) -> Result<Mess
             Ok(message)
         }
         Ok((_, _)) => {
-            #[cfg(debug_assertions)]
+            #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
             println!("Expected TypesAsk message, got different message.");
+            #[cfg(all(debug_assertions, target_arch = "wasm32"))]
+            log::error!("Expected TypesAsk message, got different message.");
             Err(())
         }
         Err(_) => {
-            #[cfg(debug_assertions)]
+            #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
             println!("Deserialization types message failed.");
+            #[cfg(all(debug_assertions, target_arch = "wasm32"))]
+            log::error!("Deserialization types message failed.");
             Err(())
         }
     }

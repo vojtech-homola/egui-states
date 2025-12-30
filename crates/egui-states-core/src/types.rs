@@ -3,7 +3,7 @@ use std::hash::{Hash, Hasher};
 
 use crate::hasher::StableHasher;
 
-#[derive(Hash, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub enum ObjectType {
     U8,
     U16,
@@ -17,7 +17,7 @@ pub enum ObjectType {
     F32,
     String,
     Bool,
-    Enum(String, Vec<(String, isize)>),
+    Enum(String, Vec<(String, i64)>),
     Struct(String, Vec<(String, ObjectType)>),
     Tuple(Vec<ObjectType>),
     List(u32, Box<ObjectType>),
@@ -25,6 +25,70 @@ pub enum ObjectType {
     Map(Box<ObjectType>, Box<ObjectType>),
     Option(Box<ObjectType>),
     Empty,
+}
+
+// Manual Hash implementation for cross-platform stability.
+impl Hash for ObjectType {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        match self {
+            ObjectType::U8 => 0u8.hash(state),
+            ObjectType::U16 => 1u8.hash(state),
+            ObjectType::U32 => 2u8.hash(state),
+            ObjectType::U64 => 3u8.hash(state),
+            ObjectType::I8 => 4u8.hash(state),
+            ObjectType::I16 => 5u8.hash(state),
+            ObjectType::I32 => 6u8.hash(state),
+            ObjectType::I64 => 7u8.hash(state),
+            ObjectType::F64 => 8u8.hash(state),
+            ObjectType::F32 => 9u8.hash(state),
+            ObjectType::String => 10u8.hash(state),
+            ObjectType::Bool => 11u8.hash(state),
+            ObjectType::Enum(name, variants) => {
+                12u8.hash(state);
+                name.hash(state);
+                (variants.len() as u64).hash(state);
+                for (variant_name, value) in variants {
+                    variant_name.hash(state);
+                    value.hash(state);
+                }
+            }
+            ObjectType::Struct(name, fields) => {
+                13u8.hash(state);
+                name.hash(state);
+                (fields.len() as u64).hash(state);
+                for (field_name, field_type) in fields {
+                    field_name.hash(state);
+                    field_type.hash(state);
+                }
+            }
+            ObjectType::Tuple(types) => {
+                14u8.hash(state);
+                (types.len() as u64).hash(state);
+                for t in types {
+                    t.hash(state);
+                }
+            }
+            ObjectType::List(size, inner) => {
+                15u8.hash(state);
+                size.hash(state);
+                inner.hash(state);
+            }
+            ObjectType::Vec(inner) => {
+                16u8.hash(state);
+                inner.hash(state);
+            }
+            ObjectType::Map(key, value) => {
+                17u8.hash(state);
+                key.hash(state);
+                value.hash(state);
+            }
+            ObjectType::Option(inner) => {
+                18u8.hash(state);
+                inner.hash(state);
+            }
+            ObjectType::Empty => 19u8.hash(state),
+        }
+    }
 }
 
 impl ObjectType {

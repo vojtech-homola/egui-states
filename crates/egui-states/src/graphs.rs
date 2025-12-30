@@ -31,7 +31,7 @@ impl<T: Clone + Copy> ValueGraphs<T> {
         self.graphs.read().len()
     }
 
-    pub fn read<R>(&self, idx: u16, f: impl Fn(Option<&Graph<T>>, bool) -> R) -> R {
+    pub fn read<R>(&self, idx: u16, mut f: impl FnMut(Option<&Graph<T>>, bool) -> R) -> R {
         let mut g = self.graphs.write();
         let graph = g.get_mut(&idx);
 

@@ -1,6 +1,8 @@
 use std::net::SocketAddrV4;
-use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, atomic};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 use bytes::Bytes;
 use futures_util::{
@@ -15,7 +17,6 @@ use tokio_tungstenite::tungstenite::{Message, protocol::WebSocketConfig};
 
 use egui_states_core::PROTOCOL_VERSION;
 use egui_states_core::controls::{ControlClient, ControlServer};
-use egui_states_core::event_async::Event;
 use egui_states_core::serialization::{
     ClientHeader, ServerHeader, deserialize, deserialize_from, serialize_value_vec,
 };
@@ -32,19 +33,20 @@ enum ChannelHolder {
 pub(crate) async fn run(
     sender: MessageSender,
     rx: MessageReceiver,
-    connected: Arc<atomic::AtomicBool>,
-    enabled: Arc<atomic::AtomicBool>,
+    connected: Arc<AtomicBool>,
+    enabled: Arc<AtomicBool>,
     values: ServerStatesList,
     signals: SignalsManager,
-    start_event: Event,
     addr: SocketAddrV4,
     handshake: Option<Vec<u64>>,
-) {
+) -> MessageReceiver {
     let mut holder = ChannelHolder::Rx(rx);
 
     loop {
-        // wait for start control event
-        start_event.wait().await;
+        // if server is disabled, exit loop
+        if !enabled.load(Ordering::Acquire) {
+            break;
+        }
 
         // listen to incoming connections
         let listener = match TcpListener::bind(addr).await {
@@ -58,12 +60,12 @@ pub(crate) async fn run(
         // accept incoming connection
         let stream = listener.accept().await;
 
-        // if server is disabled, go back and wait for start control event
-        if !enabled.load(atomic::Ordering::Relaxed) {
+        // if server is disabled, exit loop
+        if !enabled.load(Ordering::Acquire) {
             if let Ok((mut stream, _)) = stream {
                 let _ = stream.shutdown().await;
             }
-            continue;
+            break;
         }
 
         // check if error accepting connection
@@ -84,7 +86,7 @@ pub(crate) async fn run(
                 Ok(ws) => ws,
                 Err(e) => {
                     signals.error(&format!("websocket handshake failed: {:?}", e));
-                    connected.store(false, atomic::Ordering::Relaxed);
+                    connected.store(false, Ordering::Release);
                     continue;
                 }
             };
@@ -94,12 +96,12 @@ pub(crate) async fn run(
             Some(Ok(message)) => message,
             Some(Err(e)) => {
                 signals.error(&format!("reading initial message failed: {:?}", e));
-                connected.store(false, atomic::Ordering::Relaxed);
+                connected.store(false, Ordering::Release);
                 continue;
             }
             None => {
                 signals.error("reading initial message failed");
-                connected.store(false, atomic::Ordering::Relaxed);
+                connected.store(false, Ordering::Release);
                 continue;
             }
         };
@@ -177,7 +179,7 @@ pub(crate) async fn run(
                     ChannelHolder::Transfer(handler) => {
                         #[cfg(debug_assertions)]
                         signals.debug("terminating previous connection");
-                        connected.store(false, atomic::Ordering::Relaxed);
+                        connected.store(false, Ordering::Release);
                         for (_, v) in &values.enable {
                             v.enable(false);
                         }
@@ -199,7 +201,7 @@ pub(crate) async fn run(
                 }
 
                 // std::thread::sleep(std::time::Duration::from_millis(100));
-                connected.store(true, atomic::Ordering::Relaxed);
+                connected.store(true, Ordering::Release);
                 for v in values.sync.iter() {
                     v.sync();
                 }
@@ -217,6 +219,21 @@ pub(crate) async fn run(
                 holder = ChannelHolder::Transfer(handler);
             }
         }
+    }
+
+    match holder {
+        // disconnect previous client
+        ChannelHolder::Transfer(handler) => {
+            #[cfg(debug_assertions)]
+            signals.debug("terminating previous connection");
+            connected.store(false, Ordering::Release);
+            for (_, v) in &values.enable {
+                v.enable(false);
+            }
+            sender.close();
+            handler.await.expect("joining communication handler failed")
+        }
+        ChannelHolder::Rx(rx) => rx,
     }
 }
 
@@ -253,7 +270,7 @@ async fn reader(
         let result_message = socket_rx.next().await;
 
         // check if not connected
-        if !connected.load(atomic::Ordering::Relaxed) {
+        if !connected.load(Ordering::Acquire) {
             #[cfg(debug_assertions)]
             signals.debug("read thread is closing");
             signals.reset();
@@ -264,13 +281,13 @@ async fn reader(
             Some(Ok(m)) => m,
             Some(Err(e)) => {
                 signals.error(&format!("reading message from client failed: {:?}", e));
-                connected.store(false, atomic::Ordering::Relaxed);
+                connected.store(false, Ordering::Release);
                 signals.reset();
                 break;
             }
             None => {
                 signals.info("connection was closed by the client");
-                connected.store(false, atomic::Ordering::Relaxed);
+                connected.store(false, Ordering::Release);
                 signals.reset();
                 break;
             }
@@ -318,8 +335,7 @@ async fn reader(
                     ClientHeader::Value(id, signal) => match values.values.get(&id) {
                         Some(val) => {
                             if let Err(e) = val.update_value(signal, data.unwrap()) {
-                                signals
-                                    .error(&format!("updating value with id {} failed: {}", id, e));
+                                signals.error(&format!("value updating failed: {}", e));
                             }
                         }
                         None => signals.error(&format!("value with id {} not found", id)),
@@ -327,10 +343,7 @@ async fn reader(
                     ClientHeader::Signal(id) => match values.signals.get(&id) {
                         Some(val) => {
                             if let Err(e) = val.update_signal(data.unwrap()) {
-                                signals.error(&format!(
-                                    "updating signal with id {} failed: {}",
-                                    id, e
-                                ));
+                                signals.error(&format!("signal updating failed: {}", e));
                             }
                         }
                         None => signals.error(&format!("value with id {} not found", id)),
@@ -361,14 +374,10 @@ async fn writer(
 ) -> MessageReceiver {
     loop {
         // get message from channel
-        let msg = match rx
-            .recv()
-            .await
-            .expect("receiving message from channel failed")
-        {
-            Some(m) => m,
+        let msg = match rx.recv().await {
+            Some(Some(m)) => m,
             // check if message is terminate signal
-            None => {
+            _ => {
                 signals.info("writer is closing connection");
                 let _ = websocket.close().await;
                 reader_handle.abort();
@@ -378,7 +387,7 @@ async fn writer(
         };
 
         // if not connected, stop thread
-        if !connected.load(atomic::Ordering::Relaxed) {
+        if !connected.load(Ordering::Acquire) {
             let _ = websocket.close().await;
             reader_handle.abort();
             let _ = reader_handle.await;
