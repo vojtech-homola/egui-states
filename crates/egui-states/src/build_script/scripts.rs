@@ -13,7 +13,7 @@ pub(crate) fn parse_states<S: State>() -> StateType {
     StateType::SubState("root".to_string(), S::NAME, states)
 }
 
-fn collect_enums(type_info: &ObjectType, enums: &mut BTreeMap<String, Vec<(String, isize)>>) {
+fn collect_enums(type_info: &ObjectType, enums: &mut BTreeMap<String, Vec<(String, i64)>>) {
     match type_info {
         ObjectType::Enum(name, variants) => {
             if enums.contains_key(name) {
@@ -104,7 +104,7 @@ fn collect_structs(
 pub(crate) fn get_all_enums_struct(
     values: &[StateType],
 ) -> (
-    BTreeMap<String, Vec<(String, isize)>>,
+    BTreeMap<String, Vec<(String, i64)>>,
     BTreeMap<String, Vec<(String, ObjectType)>>,
 ) {
     let mut enums = BTreeMap::new();

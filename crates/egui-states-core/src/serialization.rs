@@ -115,6 +115,9 @@ impl ClientHeader {
                 None
             }
             _ => {
+                if l == 0 {
+                    return Err("Non-control message should have data");
+                }
                 Some(message.slice(message.len() - rest.len()..))
             }
         };

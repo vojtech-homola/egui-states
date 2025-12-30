@@ -347,6 +347,9 @@ pub fn generate<S: State>(path: impl ToString) -> Result<(), String> {
         file.write_all(b"from dataclasses import dataclass\n")
             .unwrap();
     }
+    if enums.len() > 0 {
+        file.write_all(b"from enum import IntEnum\n").unwrap();
+    }
 
     file.write_all(b"\nimport numpy as np\n\n").unwrap();
 
@@ -359,7 +362,7 @@ pub fn generate<S: State>(path: impl ToString) -> Result<(), String> {
 
     // Write enums
     for (enum_name, variants) in &enums {
-        file.write_all(format!("\n\nclass {}(s.FastEnum):\n", enum_name).as_bytes())
+        file.write_all(format!("\n\nclass {}(IntEnum):\n", enum_name).as_bytes())
             .unwrap();
         for (name, value) in variants {
             let text = format!("    {} = {}\n", name, value);
@@ -447,6 +450,7 @@ class StatesServer(StateServerBase):
         error_handler: Callable[[Exception], None] | None = None,
         ip_addr: tuple[int, int, int, int] | None = None,
         handshake: list[int] | None = None,
+        runner_threads: int = 3,
     ) -> None:
         """Initialize the StateServer.
 
@@ -456,13 +460,14 @@ class StatesServer(StateServerBase):
             error_handler (Callable[[Exception], None] | None, optional): Error handler function. Defaults to None.
             ip_addr (tuple[int, int, int, int] | None, optional): IP address to bind to. Defaults to None.
             handshake (list[int] | None, optional): Handshake bytes. Defaults to None.
+            runner_threads (int): The number of threads for running the server.
         """
         "#;
         file.write_all(text.as_bytes()).unwrap();
 
         file.write_all(
             format!(
-                "super().__init__({}, port, signals_workers, error_handler, ip_addr, handshake)\n",
+                "super().__init__({}, port, signals_workers, error_handler, ip_addr, handshake, runner_threads)\n",
                 root_name
             )
             .as_bytes(),

@@ -14,10 +14,10 @@ impl MessageSender {
     }
 
     pub(crate) fn send(&self, msg: Bytes) {
-        self.sender.send(Some(Message::from(msg))).unwrap();
+        let _ =self.sender.send(Some(Message::from(msg)));
     }
 
     pub(crate) fn close(&self) {
-        self.sender.send(None).unwrap();
+        let _ = self.sender.send(None);
     }
 }

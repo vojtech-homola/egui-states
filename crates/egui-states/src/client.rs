@@ -46,8 +46,10 @@ async fn start_gui_client(
         // communicate handshake and initialization -------------------------
         let message = ClientHeader::serialize_handshake(PROTOCOL_VERSION, handshake);
         if let Err(_) = socket_send.send(message).await {
-            #[cfg(debug_assertions)]
+            #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
             println!("Sending handshake failed.");
+            #[cfg(all(debug_assertions, target_arch = "wasm32"))]
+            log::error!("Sending handshake failed.");
             continue;
         }
 
@@ -56,16 +58,20 @@ async fn start_gui_client(
             Ok(data) => match check_types(data.as_ref(), &vals) {
                 Ok(message) => {
                     if let Err(_) = socket_send.send(message).await {
-                        #[cfg(debug_assertions)]
+                        #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
                         println!("Sending states types failed.");
+                        #[cfg(all(debug_assertions, target_arch = "wasm32"))]
+                        log::error!("Sending states types failed.");
                         continue;
                     }
                 }
                 Err(_) => continue,
             },
             Err(_) => {
-                #[cfg(debug_assertions)]
+                #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
                 println!("Receiving states types failed.");
+                #[cfg(all(debug_assertions, target_arch = "wasm32"))]
+                log::error!("Receiving states types failed.");
                 continue;
             }
         }
@@ -85,12 +91,13 @@ async fn start_gui_client(
                             let error = format!("handling message from server failed: {:?}", e);
                             let (header, data) = ClientHeader::error(error);
                             th_sender.send_data(header, data);
-                            break;
+                            // break; TODO: decide if we want to break the loop on error
                         }
                     }
                     Err(_) => break,
                 }
             }
+            th_sender.close();
         };
 
         #[cfg(not(target_arch = "wasm32"))]
@@ -129,7 +136,7 @@ async fn start_gui_client(
             let _ = recv_future.await;
 
             // terminate the send thread
-            sender.close();
+            // sender.close();
             rx = send_future.await.unwrap();
         }
 

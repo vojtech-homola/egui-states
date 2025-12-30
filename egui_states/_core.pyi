@@ -1,7 +1,8 @@
 from collections.abc import Buffer
+from enum import IntEnum
 from typing import Any
 
-from egui_states.structures import CustomStruct, FastEnum
+from egui_states.structures import CustomStruct
 
 class PyObjectType:
     """A class representing a type of object in the state server."""
@@ -26,13 +27,17 @@ def cl(elements: list[PyObjectType], class_type: type[CustomStruct]) -> PyObject
 def li(element_type: PyObjectType, size: int) -> PyObjectType: ...
 def vec(element_type: PyObjectType) -> PyObjectType: ...
 def map(key_type: PyObjectType, value_type: PyObjectType) -> PyObjectType: ...
-def enu(enum_obj: type[FastEnum]) -> PyObjectType: ...
+def enu(enum_obj: type[IntEnum]) -> PyObjectType: ...
 
 class StateServerCore:
     """A class representing the core functionality of the state server."""
 
     def __init__(
-        self, port: int, ip_addr: tuple[int, int, int, int] | None = None, handshake: list[int] | None = None
+        self,
+        port: int,
+        ip_addr: tuple[int, int, int, int] | None = None,
+        handshake: list[int] | None = None,
+        runner_threads: int = 3,
     ) -> None: ...
     def start(self) -> None: ...
     def stop(self) -> None: ...

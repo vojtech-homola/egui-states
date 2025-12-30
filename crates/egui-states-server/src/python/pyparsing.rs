@@ -60,7 +60,11 @@ pub(crate) fn serialize_py(
             creator.add(&value);
         }
         ObjectType::Enum(_) => {
-            let value: u32 = obj.call_method0("index")?.extract()?;
+            let member_names = obj.getattr("_member_names_")?;
+            let name = obj.getattr("name")?;
+            let value = member_names.cast::<PyList>()?.index(name)? as u32;
+
+            // let value: u32 = obj.call_method0("index")?.extract()?;
             creator.add(&value);
         }
         ObjectType::Tuple(vec) => {
@@ -77,7 +81,7 @@ pub(crate) fn serialize_py(
             }
         }
         ObjectType::Class(vec, _) => {
-            let list = obj.call_method0("_get_values")?;
+            let list = obj.call_method0("__getstate__")?.cast::<PyDict>()?.values();
             for (i, item_type) in vec.iter().enumerate() {
                 let item = list.get_item(i)?;
                 serialize_py(&item, item_type, creator)?;
@@ -222,7 +226,19 @@ pub(crate) fn deserialize_py<'py, 'a>(
                 .get(&mut value)
                 .map_err(|_| PyValueError::new_err("Failed to parse enum"))?;
 
-            py_enum.bind(py).call_method1("from_index", (value,))
+            // py_enum.bind(py).call_method1("from_index", (value,))
+            let obj = py_enum.bind(py);
+            let name = obj
+                .getattr("_member_names_")?
+                .cast::<PyList>()?
+                .get_item(value as usize)?;
+            let enum_value = obj
+                .getattr("_member_map_")?
+                .cast::<PyDict>()?
+                .get_item(name)?;
+
+            let res = enum_value.ok_or(PyValueError::new_err("Failed to get enum member"))?;
+            Ok(res.into_any())
         }
         ObjectType::Tuple(vec) => {
             let mut items = Vec::with_capacity(vec.len());

@@ -12,3 +12,6 @@ mod values;
 
 #[cfg(feature = "python")]
 mod python;
+
+#[cfg(feature = "rust")]
+pub mod rust;
