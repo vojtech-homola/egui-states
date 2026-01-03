@@ -23,7 +23,7 @@ gui = { path = "example/gui" }
 
 serde = "1"
 tokio-tungstenite = "0.28"
-tokio = "1.47"
+tokio = "1.49"
 futures-util = "0.3"
 parking_lot = "0.12"
-bytes = "1.10"
+bytes = "1.11"

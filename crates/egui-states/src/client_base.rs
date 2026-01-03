@@ -49,7 +49,7 @@ impl Client {
 
     pub(crate) async fn wait_connection(&self) {
         self.connect_signal.clear();
-        self.connect_signal.wait_lock().await;
+        self.connect_signal.wait_clear().await;
     }
 
     pub fn connect(&self) {

@@ -9,7 +9,6 @@ use futures_util::{
     SinkExt, StreamExt,
     stream::{SplitSink, SplitStream},
 };
-use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinHandle;
 use tokio_tungstenite::WebSocketStream;
@@ -17,6 +16,7 @@ use tokio_tungstenite::tungstenite::{Message, protocol::WebSocketConfig};
 
 use egui_states_core::PROTOCOL_VERSION;
 use egui_states_core::controls::{ControlClient, ControlServer};
+use egui_states_core::event_async::Event;
 use egui_states_core::serialization::{
     ClientHeader, ServerHeader, deserialize, deserialize_from, serialize_value_vec,
 };
@@ -34,39 +34,35 @@ pub(crate) async fn run(
     sender: MessageSender,
     rx: MessageReceiver,
     connected: Arc<AtomicBool>,
-    enabled: Arc<AtomicBool>,
+    stop_event: Event,
     values: ServerStatesList,
     signals: SignalsManager,
     addr: SocketAddrV4,
     handshake: Option<Vec<u64>>,
 ) -> MessageReceiver {
+    // listen to incoming connections
+    let listener = match TcpListener::bind(addr).await {
+        Ok(l) => l,
+        Err(e) => {
+            stop_event.clear();
+            signals.error(&format!("binding failed: {:?}", e));
+            return rx;
+        }
+    };
+
     let mut holder = ChannelHolder::Rx(rx);
 
     loop {
-        // if server is disabled, exit loop
-        if !enabled.load(Ordering::Acquire) {
-            break;
-        }
-
-        // listen to incoming connections
-        let listener = match TcpListener::bind(addr).await {
-            Ok(l) => l,
-            Err(e) => {
-                signals.error(&format!("binding failed: {:?}", e));
-                continue;
+        // check for stop event or incoming connection
+        let stream = tokio::select! {
+            biased;
+            _ = stop_event.wait_clear() => {
+                break;
+            }
+            s = listener.accept() => {
+                s
             }
         };
-
-        // accept incoming connection
-        let stream = listener.accept().await;
-
-        // if server is disabled, exit loop
-        if !enabled.load(Ordering::Acquire) {
-            if let Ok((mut stream, _)) = stream {
-                let _ = stream.shutdown().await;
-            }
-            break;
-        }
 
         // check if error accepting connection
         let stream = match stream {

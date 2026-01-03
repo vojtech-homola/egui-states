@@ -135,8 +135,7 @@ async fn start_gui_client(
             // wait for the read thread to finish
             let _ = recv_future.await;
 
-            // terminate the send thread
-            // sender.close();
+            // wait for the send thread
             rx = send_future.await.unwrap();
         }
 

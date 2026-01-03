@@ -1,4 +1,4 @@
-use std::net::{SocketAddrV4, TcpStream};
+use std::net::SocketAddrV4;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -9,6 +9,7 @@ use bytes::Bytes;
 use tokio::runtime::Builder;
 
 use egui_states_core::controls::ControlServer;
+use egui_states_core::event_async::Event;
 use egui_states_core::generate_value_id;
 use egui_states_core::graphs::GraphType;
 use egui_states_core::nohash::NoHashMap;
@@ -123,7 +124,7 @@ impl RunnerState {
 
 pub(crate) struct Server {
     connected: Arc<AtomicBool>,
-    enabled: Arc<AtomicBool>,
+    stop_event: Event,
     sender: MessageSender,
     addr: SocketAddrV4,
     states: StatesList,
@@ -141,14 +142,13 @@ impl Server {
         handshake: Option<Vec<u64>>,
         runner_threads: usize,
     ) -> Self {
-        let enabled = Arc::new(AtomicBool::new(false));
         let connected = Arc::new(AtomicBool::new(false));
         let (sender, rx) = MessageSender::new();
         let signals = SignalsManager::new();
 
         let obj = Self {
             connected,
-            enabled,
+            stop_event: Event::new(),
             sender,
             addr,
             states: StatesList::default(),
@@ -193,19 +193,19 @@ impl Server {
 
                 let sender = self.sender.clone();
                 let connected = self.connected.clone();
-                let enabled = self.enabled.clone();
+                let stop_event = self.stop_event.clone();
                 let values = states_server.clone();
                 let signals = self.signals.clone();
 
                 let handshake = self.handshake.clone();
                 let addr = self.addr;
 
-                self.enabled.store(true, Ordering::Release);
                 let server_thread = thread::Builder::new().name("StatesServer".to_string());
+                stop_event.clear();
                 let thread_handle_res = server_thread.spawn(move || {
                     runtime.block_on(async move {
                         server_core::run(
-                            sender, rx, connected, enabled, values, signals, addr, handshake,
+                            sender, rx, connected, stop_event, values, signals, addr, handshake,
                         )
                         .await
                     })
@@ -236,12 +236,9 @@ impl Server {
                 self.runner_state = RunnerState::Stopped(rx);
             }
             RunnerState::Running(handle) => {
-                self.enabled.store(false, Ordering::Release);
                 self.connected.store(false, Ordering::Release);
+                self.stop_event.set();
                 self.sender.close();
-
-                // try to connect to the server to unblock the accept call
-                let _ = TcpStream::connect(self.addr); // TODO: use localhost?
 
                 match handle.join() {
                     Ok(rx) => {
@@ -265,7 +262,7 @@ impl Server {
 
     pub(crate) fn is_running(&self) -> bool {
         if let RunnerState::Running(_) = self.runner_state {
-            return true;
+            return !self.stop_event.is_set();
         }
         false
     }
