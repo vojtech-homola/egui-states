@@ -4,7 +4,6 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-use bytes::Bytes;
 use futures_util::{
     SinkExt, StreamExt,
     stream::{SplitSink, SplitStream},
@@ -17,9 +16,7 @@ use tokio_tungstenite::tungstenite::{Message, protocol::WebSocketConfig};
 use egui_states_core::PROTOCOL_VERSION;
 use egui_states_core::controls::{ControlClient, ControlServer};
 use egui_states_core::event_async::Event;
-use egui_states_core::serialization::{
-    ClientHeader, ServerHeader, deserialize, deserialize_from, serialize_value_vec,
-};
+use egui_states_core::serialization::{ClientHeader, ServerHeader};
 
 use crate::sender::{MessageReceiver, MessageSender};
 use crate::server::ServerStatesList;
@@ -111,7 +108,7 @@ pub(crate) async fn run(
                 }
             };
 
-            if let ClientHeader::Control(ControlClient::Handshake(p, h)) = header {
+            if let ClientHeader::Control(ControlClient::Handshake(p, h, types)) = header {
                 if p != PROTOCOL_VERSION {
                     let message = format!(
                         "attempted to connect with wrong protocol version: expected {}, got {}",
@@ -127,48 +124,6 @@ pub(crate) async fn run(
                         continue;
                     }
                 }
-
-                // check types --------------------------
-                let header = ServerHeader::Control(ControlServer::TypesAsk);
-                let mut data = Vec::new();
-                serialize_value_vec(&header, &mut data);
-                serialize_value_vec(&values.types, &mut data);
-                let message = Bytes::from_owner(data);
-
-                if let Err(e) = websocket.send(Message::Binary(message)).await {
-                    signals.error(&format!("sending states types failed: {:?}", e));
-                    continue;
-                }
-
-                // TODO: move to special function
-                let types = match websocket.next().await {
-                    Some(Ok(Message::Binary(data))) => {
-                        match deserialize_from::<ClientHeader>(&data) {
-                            Ok((ClientHeader::Control(ControlClient::TypesAnswer), dat)) => {
-                                match deserialize::<Vec<u64>>(&dat) {
-                                    Ok(types) => types,
-                                    Err(_) => {
-                                        signals.error(
-                                        "unexpected message when receiving initial states types",
-                                    );
-                                        continue;
-                                    }
-                                }
-                            }
-                            _ => {
-                                signals.error(
-                                    "unexpected message when receiving initial states types",
-                                );
-                                continue;
-                            }
-                        }
-                    }
-                    _ => {
-                        signals.error("receiving initial states types failed");
-                        continue;
-                    }
-                };
-                // --------------------------------------
 
                 let mut rx = match holder {
                     // disconnect previous client
@@ -190,9 +145,13 @@ pub(crate) async fn run(
                     let _ = rx.recv().await;
                 }
 
-                for id in &types {
-                    if let Some(v) = values.enable.get(id) {
-                        v.enable(true);
+                for (id, client_type) in types {
+                    if let Some(server_type) = values.types.get(&id) {
+                        if client_type == *server_type {
+                            if let Some(v) = values.enable.get(&id) {
+                                v.enable(true);
+                            }
+                        }
                     }
                 }
 
@@ -201,6 +160,7 @@ pub(crate) async fn run(
                 for v in values.sync.iter() {
                     v.sync();
                 }
+                sender.send(ServerHeader::Control(ControlServer::Update(0.0)).serialize_to_bytes());
 
                 // start transfer thread
                 let handler = run_core(
@@ -313,14 +273,7 @@ async fn reader(
                                 )),
                             }
                         }
-                        ControlClient::Error => {
-                            let err = match deserialize::<String>(&data.unwrap()) {
-                                Ok(e) => e,
-                                Err(_) => {
-                                    signals.error("deserializing error message from client failed");
-                                    continue;
-                                }
-                            };
+                        ControlClient::Error(err) => {
                             signals.error(&format!("Error message from client: {}", err));
                         }
                         _ => signals.error(&format!(

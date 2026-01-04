@@ -2,6 +2,8 @@ use bytes::Bytes;
 use postcard::ser_flavors::Flavor;
 use serde::{Deserialize, Serialize};
 
+use crate::nohash::NoHashMap;
+
 use crate::collections::{ListHeader, MapHeader};
 use crate::controls::{ControlClient, ControlServer};
 use crate::graphs::GraphHeader;
@@ -85,21 +87,24 @@ pub enum ClientHeader {
 }
 
 impl ClientHeader {
+    #[inline]
     pub fn ack(id: u64) -> Self {
         ClientHeader::Control(ControlClient::Ack(id))
     }
 
-    pub fn error(message: String) -> (Self, MessageData) {
-        let header = ClientHeader::Control(ControlClient::Error);
-        let data = postcard::to_stdvec(&message).expect("Failed to serialize error message");
-        (header, MessageData::Heap(data))
+    #[inline]
+    pub fn error(message: String) -> Self {
+        ClientHeader::Control(ControlClient::Error(message))
     }
 
-    pub fn serialize_handshake(protocol: u16, version: u64) -> MessageData {
-        let header = ClientHeader::Control(ControlClient::Handshake(protocol, version));
-        let data =
-            postcard::to_vec::<ClientHeader, HEAPLESS_SIZE>(&header).expect("Failed to serialize");
-        MessageData::Stack(data)
+    pub fn serialize_handshake(
+        protocol: u16,
+        version: u64,
+        types: NoHashMap<u64, u64>,
+    ) -> MessageData {
+        let header = ClientHeader::Control(ControlClient::Handshake(protocol, version, types));
+        let data = postcard::to_stdvec(&header).expect("Failed to serialize handshake");
+        MessageData::Heap(data)
     }
 
     pub fn deserialize_header(message: &Bytes) -> Result<(Self, Option<Bytes>), &'static str> {
@@ -114,9 +119,7 @@ impl ClientHeader {
                 }
                 None
             }
-            _ => {
-                Some(message.slice(message.len() - rest.len()..))
-            }
+            _ => Some(message.slice(message.len() - rest.len()..)),
         };
 
         Ok((header, data))
@@ -161,11 +164,13 @@ pub fn serialize_value_data_to_message<T: Serialize>(
                 MessageData::Heap(full_data)
             }
         }
-        None => {
-            let head = postcard::to_vec::<T, HEAPLESS_SIZE>(value)
-                .expect("Failed to serialize client header");
-            MessageData::Stack(head)
-        }
+        None => match postcard::to_vec::<T, HEAPLESS_SIZE>(value) {
+            Ok(vec) => MessageData::Stack(vec),
+            Err(_) => {
+                let head = postcard::to_stdvec(value).expect("Failed to serialize client header");
+                MessageData::Heap(head)
+            }
+        },
     }
 }
 

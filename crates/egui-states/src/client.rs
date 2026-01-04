@@ -9,7 +9,7 @@ use egui_states_core::serialization::ClientHeader;
 use crate::State;
 use crate::client_base::{Client, ConnectionState};
 use crate::client_states::{StatesCreatorClient, ValuesList};
-use crate::handle_message::{check_types, handle_message};
+use crate::handle_message::handle_message;
 use crate::sender::{ChannelMessage, MessageSender};
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -44,36 +44,14 @@ async fn start_gui_client(
         }
 
         // communicate handshake and initialization -------------------------
-        let message = ClientHeader::serialize_handshake(PROTOCOL_VERSION, handshake);
+        let message =
+            ClientHeader::serialize_handshake(PROTOCOL_VERSION, handshake, vals.types.clone());
         if let Err(_) = socket_send.send(message).await {
             #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
             println!("Sending handshake failed.");
             #[cfg(all(debug_assertions, target_arch = "wasm32"))]
             log::error!("Sending handshake failed.");
             continue;
-        }
-
-        // process and send states types
-        match socket_read.read().await {
-            Ok(data) => match check_types(data.as_ref(), &vals) {
-                Ok(message) => {
-                    if let Err(_) = socket_send.send(message).await {
-                        #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
-                        println!("Sending states types failed.");
-                        #[cfg(all(debug_assertions, target_arch = "wasm32"))]
-                        log::error!("Sending states types failed.");
-                        continue;
-                    }
-                }
-                Err(_) => continue,
-            },
-            Err(_) => {
-                #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
-                println!("Receiving states types failed.");
-                #[cfg(all(debug_assertions, target_arch = "wasm32"))]
-                log::error!("Receiving states types failed.");
-                continue;
-            }
         }
 
         // read -----------------------------------------
@@ -89,8 +67,7 @@ async fn start_gui_client(
                         if let Err(e) = handle_message(data.as_ref(), &th_vals, &th_ui_state).await
                         {
                             let error = format!("handling message from server failed: {:?}", e);
-                            let (header, data) = ClientHeader::error(error);
-                            th_sender.send_data(header, data);
+                            th_sender.send(ClientHeader::error(error));
                             // break; TODO: decide if we want to break the loop on error
                         }
                     }

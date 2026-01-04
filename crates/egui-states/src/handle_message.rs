@@ -1,74 +1,8 @@
-use egui_states_core::controls::{ControlClient, ControlServer};
-use egui_states_core::nohash::NoHashMap;
-use egui_states_core::serialization::{
-    ClientHeader, MessageData, ServerHeader, deserialize, deserialize_from,
-    serialize_value_to_message,
-};
+use egui_states_core::controls::ControlServer;
+use egui_states_core::serialization::{ServerHeader, deserialize_from};
 
 use crate::client_base::Client;
 use crate::client_states::ValuesList;
-
-pub(crate) fn check_types(message_data: &[u8], vals: &ValuesList) -> Result<MessageData, ()> {
-    match deserialize_from::<ServerHeader>(message_data) {
-        Ok((ServerHeader::Control(ControlServer::TypesAsk), data)) => {
-            let types = match deserialize::<NoHashMap<u64, u64>>(data) {
-                Ok(t) => t,
-                Err(_) => {
-                    #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
-                    println!("Deserialization types ask data failed.");
-                    #[cfg(all(debug_assertions, target_arch = "wasm32"))]
-                    log::error!("Deserialization types ask data failed.");
-                    return Err(());
-                }
-            };
-
-            let mut types_res = Vec::new();
-            for (id, t) in types {
-                if let Some(state_type) = vals.types.get(&id) {
-                    if *state_type == t {
-                        types_res.push(id);
-                    } else {
-                        #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
-                        println!(
-                            "Type mismatch for state id {}: expected {}, got {}",
-                            id, state_type, t
-                        );
-                        #[cfg(all(debug_assertions, target_arch = "wasm32"))]
-                        log::error!(
-                            "Type mismatch for state id {}: expected {}, got {}",
-                            id,
-                            state_type,
-                            t
-                        );
-                    }
-                } else {
-                    #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
-                    println!("State with id {} not found for types check.", id);
-                    #[cfg(all(debug_assertions, target_arch = "wasm32"))]
-                    log::error!("State with id {} not found for types check.", id);
-                }
-            }
-            let header = ClientHeader::Control(ControlClient::TypesAnswer);
-            let data = serialize_value_to_message(types_res);
-            let message = header.serialize_message(Some(data));
-            Ok(message)
-        }
-        Ok((_, _)) => {
-            #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
-            println!("Expected TypesAsk message, got different message.");
-            #[cfg(all(debug_assertions, target_arch = "wasm32"))]
-            log::error!("Expected TypesAsk message, got different message.");
-            Err(())
-        }
-        Err(_) => {
-            #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
-            println!("Deserialization types message failed.");
-            #[cfg(all(debug_assertions, target_arch = "wasm32"))]
-            log::error!("Deserialization types message failed.");
-            Err(())
-        }
-    }
-}
 
 pub(crate) async fn handle_message(
     message_data: &[u8],
