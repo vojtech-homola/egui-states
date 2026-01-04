@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tokio_tungstenite::tungstenite::Bytes;
 
 use egui_states_core::collections::ListHeader;
-use egui_states_core::serialization::{ServerHeader, serialize_value_vec};
+use egui_states_core::serialization::{MessageData, ServerHeader, serialize_to_data};
 
 use crate::sender::MessageSender;
 use crate::server::{EnableTrait, SyncTrait};
@@ -30,15 +30,17 @@ impl ValueList {
     }
 
     fn serialize_all(&self, vec: &Vec<Bytes>, update: bool) -> Bytes {
-        let mut data = Vec::new();
         let len = vec.len() as u64;
         let header = ServerHeader::List(self.id, update, ListHeader::All);
-        serialize_value_vec(&header, &mut data);
-        serialize_value_vec(&len, &mut data);
+
+        let data = MessageData::new();
+        let data = serialize_to_data(&header, data);
+        let mut data = serialize_to_data(&len, data);
         vec.iter().for_each(|b| {
             data.extend_from_slice(&b);
         });
-        Bytes::from_owner(data)
+
+        data.to_bytes()
     }
 
     pub(crate) fn set(&self, list: Vec<Bytes>, update: bool) {

@@ -10,7 +10,6 @@ pub mod types;
 mod hasher;
 
 use crate::hasher::StableHasher;
-pub use heapless;
 use std::hash::{Hash, Hasher};
 
 pub const PROTOCOL_VERSION: u16 = 1;

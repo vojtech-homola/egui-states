@@ -4,7 +4,8 @@ use egui::Context;
 use tokio::sync::mpsc::UnboundedReceiver;
 
 use egui_states_core::PROTOCOL_VERSION;
-use egui_states_core::serialization::ClientHeader;
+use egui_states_core::controls::ControlClient;
+use egui_states_core::serialization::{ClientHeader, to_message_data};
 
 use crate::State;
 use crate::client_base::{Client, ConnectionState};
@@ -67,7 +68,7 @@ async fn start_gui_client(
                         if let Err(e) = handle_message(data.as_ref(), &th_vals, &th_ui_state).await
                         {
                             let error = format!("handling message from server failed: {:?}", e);
-                            th_sender.send(ClientHeader::error(error));
+                            th_sender.send(ClientHeader::Control(ControlClient::Error(error)));
                             // break; TODO: decide if we want to break the loop on error
                         }
                     }
@@ -86,7 +87,7 @@ async fn start_gui_client(
                 // wait for the message from the channel
                 match rx.recv().await.unwrap() {
                     Some((header, data)) => {
-                        let message = header.serialize_message(data);
+                        let message = to_message_data(&header, data);
                         // write the message
                         if let Err(_) = socket_send.send(message).await {
                             break;

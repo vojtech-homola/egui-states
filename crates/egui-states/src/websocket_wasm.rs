@@ -76,11 +76,7 @@ impl WsClientSend {
     }
 
     pub(crate) async fn send(&mut self, data: MessageData) -> Result<(), ()> {
-        let message = match data {
-            MessageData::Heap(vec) => WsMessage::Binary(vec),
-            MessageData::Stack(vec) => WsMessage::Binary(vec.to_vec()),
-        };
-
+        let message = WsMessage::Binary(data.to_vec());
         match self.sink.send(message).await {
             Ok(_) => Ok(()),
             Err(e) => {

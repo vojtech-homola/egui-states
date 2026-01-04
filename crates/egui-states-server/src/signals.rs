@@ -6,7 +6,7 @@ use parking_lot::Mutex;
 
 use egui_states_core::generate_value_id;
 use egui_states_core::nohash::{NoHashMap, NoHashSet};
-use egui_states_core::serialization::serialize_value_vec;
+use egui_states_core::serialization::{FastVec, serialize_to_data};
 
 use crate::event::Event;
 
@@ -205,12 +205,10 @@ impl SignalsManager {
 
     fn serialize_message(level: u8, text: impl ToString) -> Bytes {
         let data = text.to_string();
-        let mut message = Vec::new();
-        // serialize_value_vec(&0, &mut message);
-        serialize_value_vec(&level, &mut message);
-        serialize_value_vec(&data, &mut message);
-        // message.extend_from_slice(&data);
-        Bytes::from_owner(message)
+        let message = FastVec::<64>::new();
+        let message = serialize_to_data(&level, message);
+        let message = serialize_to_data(&data, message);
+        message.to_bytes()
     }
 
     #[allow(dead_code)]

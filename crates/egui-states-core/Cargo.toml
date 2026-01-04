@@ -5,7 +5,6 @@ edition.workspace = true
 
 [dependencies]
 postcard = { version = "1.1", features = ["use-std"] }
-heapless = { version = "0.7" }
 sha2 = "0.10"
 
 serde = { workspace = true }

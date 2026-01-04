@@ -1,4 +1,3 @@
-use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt, stream::SplitSink, stream::SplitStream};
 use std::net::SocketAddrV4;
 use tokio::net::TcpStream;
@@ -91,11 +90,7 @@ impl WsClientSend {
     }
 
     pub(crate) async fn send(&mut self, data: MessageData) -> Result<(), ()> {
-        let message = match data {
-            MessageData::Heap(vec) => Message::Binary(Bytes::from_owner(vec)),
-            MessageData::Stack(vec) => Message::Binary(Bytes::from_owner(vec)),
-        };
-
+        let message = Message::Binary(data.to_bytes());
         match self.sink.send(message).await {
             Ok(_) => Ok(()),
             Err(e) => {

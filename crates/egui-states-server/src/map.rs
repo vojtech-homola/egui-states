@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tokio_tungstenite::tungstenite::Bytes;
 
 use egui_states_core::collections::MapHeader;
-use egui_states_core::serialization::{ServerHeader, serialize_value_vec};
+use egui_states_core::serialization::{MessageData, ServerHeader, serialize_to_data};
 
 use crate::sender::MessageSender;
 use crate::server::{EnableTrait, SyncTrait};
@@ -31,16 +31,16 @@ impl ValueMap {
     }
 
     fn serialize_all(&self, map: &HashMap<Bytes, Bytes>, update: bool) -> Bytes {
-        let mut data = Vec::new();
         let len = map.len() as u64;
         let header = ServerHeader::Map(self.id, update, MapHeader::All);
-        serialize_value_vec(&header, &mut data);
-        serialize_value_vec(&len, &mut data);
+        let data = MessageData::new();
+        let data = serialize_to_data(&header, data);
+        let mut data = serialize_to_data(&len, data);
         map.iter().for_each(|(k, v)| {
             data.extend_from_slice(&k);
             data.extend_from_slice(&v);
         });
-        Bytes::from_owner(data)
+        data.to_bytes()
     }
 
     pub(crate) fn set(&self, map: HashMap<Bytes, Bytes>, update: bool) {
@@ -63,11 +63,11 @@ impl ValueMap {
 
         if self.connected.load(Ordering::Relaxed) && self.enabled.load(Ordering::Relaxed) {
             let header = ServerHeader::Map(self.id, update, MapHeader::Set);
-            let mut data = Vec::new();
-            serialize_value_vec(&header, &mut data);
+            let data = MessageData::new();
+            let mut data = serialize_to_data(&header, data);
             data.extend_from_slice(&key);
             data.extend_from_slice(&value);
-            self.sender.send(Bytes::from_owner(data));
+            self.sender.send(data.to_bytes());
         }
 
         match w.get_mut(&key) {
@@ -91,10 +91,10 @@ impl ValueMap {
 
         if self.connected.load(Ordering::Relaxed) && self.enabled.load(Ordering::Relaxed) {
             let header = ServerHeader::Map(self.id, update, MapHeader::Remove);
-            let mut data = Vec::new();
-            serialize_value_vec(&header, &mut data);
+            let data = MessageData::new();
+            let mut data = serialize_to_data(&header, data);
             data.extend_from_slice(&key);
-            self.sender.send(Bytes::from_owner(data));
+            self.sender.send(data.to_bytes());
         }
 
         drop(w);

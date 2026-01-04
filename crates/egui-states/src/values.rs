@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use egui_states_core::serialization::{ClientHeader, deserialize, serialize_value_to_message};
+use egui_states_core::serialization::{ClientHeader, deserialize, to_message};
 
 use crate::sender::MessageSender;
 
@@ -74,7 +74,7 @@ where
         let mut w = self.value.write();
         let result = f(&mut w);
 
-        let data = serialize_value_to_message(&*w);
+        let data = to_message(&*w);
         let header = ClientHeader::Value(self.id, false);
         self.sender.send_data(header, data);
         result
@@ -84,14 +84,14 @@ where
         let mut w = self.value.write();
         let result = f(&mut w);
 
-        let data = serialize_value_to_message(&*w);
+        let data = to_message(&*w);
         let header = ClientHeader::Value(self.id, true);
         self.sender.send_data(header, data);
         result
     }
 
     pub fn set(&self, value: T) {
-        let data = serialize_value_to_message(&value);
+        let data = to_message(&value);
         let header = ClientHeader::Value(self.id, false);
         let mut w = self.value.write();
         self.sender.send_data(header, data);
@@ -99,7 +99,7 @@ where
     }
 
     pub fn set_signal(&self, value: T) {
-        let data = serialize_value_to_message(&value);
+        let data = to_message(&value);
         let header = ClientHeader::Value(self.id, true);
         let mut w = self.value.write();
         self.sender.send_data(header, data);
@@ -170,7 +170,7 @@ impl<T: Serialize + Clone> Signal<T> {
     }
 
     pub fn set(&self, value: impl Into<T>) {
-        let message = serialize_value_to_message(&value.into());
+        let message = to_message(&value.into());
         let header = ClientHeader::Signal(self.id);
         self.sender.send_data(header, message);
     }
