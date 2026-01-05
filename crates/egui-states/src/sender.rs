@@ -2,6 +2,14 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use egui_states_core::serialization::{ClientHeader, MessageData};
 
+enum CahnnelMessage {
+    Value(u64, bool, MessageData),
+    Signal(u64, MessageData),
+    Ack(u64),
+    Error(String),
+    Close,
+}
+
 pub(crate) type ChannelMessage = Option<(ClientHeader, Option<MessageData>)>;
 
 #[derive(Clone)]

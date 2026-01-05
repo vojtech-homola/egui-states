@@ -70,6 +70,11 @@ pub(crate) async fn run(
             }
         };
 
+        if let Err(e) = stream.set_nodelay(true) {
+            signals.error(&format!("failed to set TCP_NODELAY: {:?}", e));
+            continue;
+        }
+
         let mut websocket_config = WebSocketConfig::default();
         websocket_config.max_message_size = Some(536870912); // 512 MB
         websocket_config.max_frame_size = Some(536870912); // 512 MB

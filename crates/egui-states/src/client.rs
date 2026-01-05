@@ -95,11 +95,11 @@ async fn start_gui_client(
                     }
                     // check if the message is terminate
                     None => {
-                        socket_send.flush().await;
                         break;
                     }
                 }
             }
+            socket_send.close().await;
             rx
         };
 

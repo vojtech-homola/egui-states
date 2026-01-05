@@ -85,8 +85,8 @@ pub(crate) struct WsClientSend {
 
 impl WsClientSend {
     #[inline]
-    pub(crate) async fn flush(&mut self) {
-        let _ = self.sink.flush().await;
+    pub(crate) async fn close(&mut self) {
+        let _ = self.sink.close().await;
     }
 
     pub(crate) async fn send(&mut self, data: MessageData) -> Result<(), ()> {
