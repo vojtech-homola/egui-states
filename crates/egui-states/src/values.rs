@@ -3,9 +3,9 @@ use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use egui_states_core::serialization::{ClientHeader, deserialize, to_message};
+use egui_states_core::serialization::{deserialize, to_message};
 
-use crate::sender::MessageSender;
+use crate::sender::{ChannelMessage, MessageSender};
 
 pub struct Diff<'a, T> {
     pub v: T,
@@ -72,37 +72,39 @@ where
 
     pub fn write<R>(&self, mut f: impl FnMut(&mut T) -> R) -> R {
         let mut w = self.value.write();
+
         let result = f(&mut w);
 
         let data = to_message(&*w);
-        let header = ClientHeader::Value(self.id, false);
-        self.sender.send_data(header, data);
+        self.sender
+            .send(ChannelMessage::Value(self.id, false, data));
         result
     }
 
     pub fn write_signal<R>(&self, mut f: impl FnMut(&mut T) -> R) -> R {
         let mut w = self.value.write();
+
         let result = f(&mut w);
 
         let data = to_message(&*w);
-        let header = ClientHeader::Value(self.id, true);
-        self.sender.send_data(header, data);
+        self.sender.send(ChannelMessage::Value(self.id, true, data));
         result
     }
 
     pub fn set(&self, value: T) {
         let data = to_message(&value);
-        let header = ClientHeader::Value(self.id, false);
+
         let mut w = self.value.write();
-        self.sender.send_data(header, data);
+        self.sender
+            .send(ChannelMessage::Value(self.id, false, data));
         *w = value;
     }
 
     pub fn set_signal(&self, value: T) {
         let data = to_message(&value);
-        let header = ClientHeader::Value(self.id, true);
+
         let mut w = self.value.write();
-        self.sender.send_data(header, data);
+        self.sender.send(ChannelMessage::Value(self.id, true, data));
         *w = value;
     }
 }
@@ -113,7 +115,7 @@ impl<T: for<'a> Deserialize<'a> + Send + Sync> UpdateValue for Value<T> {
             .map_err(|e| format!("Parse error: {} for value id: {}", e, self.id))?;
 
         let mut w = self.value.write();
-        self.sender.send(ClientHeader::ack(self.id));
+        self.sender.send(ChannelMessage::Ack(self.id));
         *w = value;
 
         Ok(())
@@ -171,7 +173,6 @@ impl<T: Serialize + Clone> Signal<T> {
 
     pub fn set(&self, value: impl Into<T>) {
         let message = to_message(&value.into());
-        let header = ClientHeader::Signal(self.id);
-        self.sender.send_data(header, message);
+        self.sender.send(ChannelMessage::Signal(self.id, message));
     }
 }

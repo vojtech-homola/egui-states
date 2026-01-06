@@ -14,7 +14,6 @@ use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::{Message, protocol::WebSocketConfig};
 
 use egui_states_core::PROTOCOL_VERSION;
-use egui_states_core::controls::{ControlClient, ControlServer};
 use egui_states_core::event_async::Event;
 use egui_states_core::serialization::{ClientHeader, ServerHeader};
 
@@ -113,7 +112,7 @@ pub(crate) async fn run(
                 }
             };
 
-            if let ClientHeader::Control(ControlClient::Handshake(p, h, types)) = header {
+            if let ClientHeader::Handshake(p, h, types) = header {
                 if p != PROTOCOL_VERSION {
                     let message = format!(
                         "attempted to connect with wrong protocol version: expected {}, got {}",
@@ -165,7 +164,7 @@ pub(crate) async fn run(
                 for v in values.sync.iter() {
                     v.sync();
                 }
-                sender.send(ServerHeader::Control(ControlServer::Update(0.0)).serialize_to_bytes());
+                sender.send(ServerHeader::Update(0.0).serialize_to_bytes());
 
                 // start transfer thread
                 let handler = run_core(
@@ -265,27 +264,19 @@ async fn reader(
                 };
 
                 match header {
-                    ClientHeader::Control(control) => match control {
-                        ControlClient::Ack(v) => {
-                            let val_res = values.ack.get(&v);
-                            match val_res {
-                                Some(val) => {
-                                    val.acknowledge();
-                                }
-                                None => signals.error(&format!(
-                                    "value with id {} not found for Acknowledge",
-                                    v
-                                )),
+                    ClientHeader::Ack(v) => {
+                        let val_res = values.ack.get(&v);
+                        match val_res {
+                            Some(val) => {
+                                val.acknowledge();
                             }
+                            None => signals
+                                .error(&format!("value with id {} not found for Acknowledge", v)),
                         }
-                        ControlClient::Error(err) => {
-                            signals.error(&format!("Error message from client: {}", err));
-                        }
-                        _ => signals.error(&format!(
-                            "Command {} should not be processed here",
-                            control.as_str()
-                        )),
-                    },
+                    }
+                    ClientHeader::Error(err) => {
+                        signals.error(&format!("Error message from client: {}", err));
+                    }
                     ClientHeader::Value(id, signal) => match values.values.get(&id) {
                         Some(val) => {
                             if let Err(e) = val.update_value(signal, data.unwrap()) {
@@ -302,6 +293,9 @@ async fn reader(
                         }
                         None => signals.error(&format!("value with id {} not found", id)),
                     },
+                    ClientHeader::Handshake(_, _, _) => {
+                        signals.error("unexpected handshake message after connection established");
+                    }
                 }
             }
             _ => signals.error("Unexpected message format"),

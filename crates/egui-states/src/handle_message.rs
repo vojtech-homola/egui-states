@@ -1,8 +1,27 @@
-use egui_states_core::controls::ControlServer;
-use egui_states_core::serialization::{ServerHeader, deserialize_from};
+use tokio::sync::mpsc::UnboundedReceiver;
+
+use egui_states_core::serialization::{MessageData, ServerHeader, deserialize_from};
 
 use crate::client_base::Client;
 use crate::client_states::ValuesList;
+use crate::sender::ChannelMessage;
+
+pub(crate) struct ValuesQueue {
+    
+}
+
+pub(crate) async fn parse_to_send(
+    rx: &mut UnboundedReceiver<Option<ChannelMessage>>,
+) -> Option<MessageData> {
+    let result = rx.recv().await.unwrap();
+    if let None = result {
+        return None;
+    }
+    let msg = result.unwrap();
+    let message = MessageData::new();
+
+    Some(message)
+}
 
 pub(crate) async fn handle_message(
     message_data: &[u8],
@@ -12,7 +31,7 @@ pub(crate) async fn handle_message(
     let (header, data) = deserialize_from::<ServerHeader>(message_data)?;
 
     let update = match header {
-        ServerHeader::Control(ControlServer::Update(t)) => {
+        ServerHeader::Update(t) => {
             client.update(t);
             return Ok(());
         }
@@ -58,7 +77,6 @@ pub(crate) async fn handle_message(
             }
             update
         }
-        ServerHeader::Control(_) => false,
     };
 
     if update {

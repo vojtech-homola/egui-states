@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 use crate::nohash::NoHashMap;
 
 use crate::collections::{ListHeader, MapHeader};
-use crate::controls::{ControlClient, ControlServer};
 use crate::graphs::GraphHeader;
 use crate::image::ImageHeader;
 
@@ -161,7 +160,7 @@ pub enum ServerHeader {
     Graph(u64, bool, GraphHeader),
     List(u64, bool, ListHeader),
     Map(u64, bool, MapHeader),
-    Control(ControlServer),
+    Update(f32),
 }
 
 impl ServerHeader {
@@ -210,21 +209,23 @@ impl ServerHeader {
 pub enum ClientHeader {
     Value(u64, bool),
     Signal(u64),
-    Control(ControlClient),
+    Ack(u64),
+    Error(String),
+    Handshake(u16, u64, NoHashMap<u64, u64>),
 }
 
 impl ClientHeader {
-    #[inline]
-    pub fn ack(id: u64) -> Self {
-        ClientHeader::Control(ControlClient::Ack(id))
-    }
+    // #[inline]
+    // pub fn ack(id: u64) -> Self {
+    //     ClientHeader::Control(ControlClient::Ack(id))
+    // }
 
     pub fn serialize_handshake(
         protocol: u16,
         version: u64,
         types: NoHashMap<u64, u64>,
     ) -> MessageData {
-        let header = ClientHeader::Control(ControlClient::Handshake(protocol, version, types));
+        let header = ClientHeader::Handshake(protocol, version, types);
         let data = postcard::to_stdvec(&header).expect("Failed to serialize handshake");
         MessageData::Heap(data)
     }
@@ -233,15 +234,16 @@ impl ClientHeader {
         let (header, rest) = postcard::take_from_bytes::<ClientHeader>(&message)
             .map_err(|_| "Failed to deserialize")?;
 
-        let l = rest.len();
         let data = match header {
-            Self::Control(_) => {
-                if l != 0 {
+            Self::Signal(_) | Self::Value(_, _) => {
+                Some(message.slice(message.len() - rest.len()..))
+            }
+            _ => {
+                if rest.len() != 0 {
                     return Err("Control message should not have data");
                 }
                 None
             }
-            _ => Some(message.slice(message.len() - rest.len()..)),
         };
 
         Ok((header, data))

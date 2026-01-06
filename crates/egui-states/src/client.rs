@@ -4,13 +4,12 @@ use egui::Context;
 use tokio::sync::mpsc::UnboundedReceiver;
 
 use egui_states_core::PROTOCOL_VERSION;
-use egui_states_core::controls::ControlClient;
-use egui_states_core::serialization::{ClientHeader, to_message_data};
+use egui_states_core::serialization::ClientHeader;
 
 use crate::State;
 use crate::client_base::{Client, ConnectionState};
 use crate::client_states::{StatesCreatorClient, ValuesList};
-use crate::handle_message::handle_message;
+use crate::handle_message::{handle_message, parse_to_send};
 use crate::sender::{ChannelMessage, MessageSender};
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -22,7 +21,7 @@ use crate::websocket_wasm::build_ws;
 async fn start_gui_client(
     addr: SocketAddrV4,
     vals: ValuesList,
-    mut rx: UnboundedReceiver<ChannelMessage>,
+    mut rx: UnboundedReceiver<Option<ChannelMessage>>,
     sender: MessageSender,
     ui_state: Client,
     handshake: u64,
@@ -68,7 +67,7 @@ async fn start_gui_client(
                         if let Err(e) = handle_message(data.as_ref(), &th_vals, &th_ui_state).await
                         {
                             let error = format!("handling message from server failed: {:?}", e);
-                            th_sender.send(ClientHeader::Control(ControlClient::Error(error)));
+                            th_sender.send(ChannelMessage::Error(error));
                             // break; TODO: decide if we want to break the loop on error
                         }
                     }
@@ -84,20 +83,28 @@ async fn start_gui_client(
         // send -----------------------------------------
         let send_future = async move {
             loop {
-                // wait for the message from the channel
-                match rx.recv().await.unwrap() {
-                    Some((header, data)) => {
-                        let message = to_message_data(&header, data);
-                        // write the message
-                        if let Err(_) = socket_send.send(message).await {
+                match parse_to_send(&mut rx).await {
+                    Some(msg) => {
+                        if let Err(_) = socket_send.send(msg).await {
                             break;
                         }
                     }
-                    // check if the message is terminate
-                    None => {
-                        break;
-                    }
+                    None => break,
                 }
+                // // wait for the message from the channel
+                // match rx.recv().await.unwrap() {
+                //     Some((header, data)) => {
+                //         let message = to_message_data(&header, data);
+                //         // write the message
+                //         if let Err(_) = socket_send.send(message).await {
+                //             break;
+                //         }
+                //     }
+                //     // check if the message is terminate
+                //     None => {
+                //         break;
+                //     }
+                // }
             }
             socket_send.close().await;
             rx
@@ -130,7 +137,7 @@ async fn start_gui_client(
 pub struct ClientBuilder {
     creator: StatesCreatorClient,
     sender: MessageSender,
-    rx: UnboundedReceiver<ChannelMessage>,
+    rx: UnboundedReceiver<Option<ChannelMessage>>,
     addr: Ipv4Addr,
     context: Option<Context>,
 }

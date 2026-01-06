@@ -8,7 +8,6 @@ use std::thread;
 use bytes::Bytes;
 use tokio::runtime::Builder;
 
-use egui_states_core::controls::ControlServer;
 use egui_states_core::event_async::Event;
 use egui_states_core::generate_value_id;
 use egui_states_core::graphs::GraphType;
@@ -274,7 +273,7 @@ impl Server {
     pub(crate) fn update(&self, duration: Option<f32>) {
         if self.connected.load(Ordering::Acquire) {
             let duration = duration.unwrap_or(0.0);
-            let header = ServerHeader::Control(ControlServer::Update(duration));
+            let header = ServerHeader::Update(duration);
             self.sender.send(header.serialize_to_bytes());
         }
     }
