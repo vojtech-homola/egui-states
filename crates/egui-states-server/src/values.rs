@@ -88,10 +88,13 @@ impl Value {
 }
 
 impl Acknowledge for Value {
-    fn acknowledge(&self) {
+    fn acknowledge(&self, count: u32) {
+        let count = count as usize;
         let mut w = self.value.write();
-        if w.1 > 0 {
-            w.1 -= 1;
+        if w.1 >= count {
+            w.1 -= count;
+        } else {
+            w.1 = 0;
         }
     }
 }

@@ -30,7 +30,7 @@ pub use image::ValueImage;
 pub use list::ValueList;
 pub use map::ValueMap;
 pub use states_creator::StatesCreator;
-pub use values::{Diff, Signal, Value, ValueStatic};
+pub use values::{Diff, Queue, Signal, NoQueue, Value, ValueStatic};
 
 pub trait State {
     const NAME: &'static str;

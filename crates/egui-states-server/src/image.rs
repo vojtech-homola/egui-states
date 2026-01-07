@@ -179,7 +179,7 @@ impl ValueImage {
 }
 
 impl Acknowledge for ValueImage {
-    fn acknowledge(&self) {
+    fn acknowledge(&self, _: u32) {
         self.event.set();
     }
 }

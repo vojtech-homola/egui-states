@@ -42,14 +42,48 @@ pub trait UpdateValue: Sync + Send {
     fn update_value(&self, data: &[u8]) -> Result<(), String>;
 }
 
+pub enum QueueType {
+    Single,
+    Multiple,
+}
+
+pub trait GetQueueType: Sync + Send + 'static {
+    fn queue_type() -> QueueType;
+}
+
+pub struct NoQueue;
+
+impl GetQueueType for NoQueue {
+    #[inline]
+    fn queue_type() -> QueueType {
+        QueueType::Single
+    }
+}
+
+pub struct Queue;
+
+impl GetQueueType for Queue {
+    #[inline]
+    fn queue_type() -> QueueType {
+        QueueType::Multiple
+    }
+}
+
 // Value --------------------------------------------
-pub struct Value<T> {
+pub struct Value<T, Q: GetQueueType = NoQueue> {
     id: u64,
     value: RwLock<T>,
     sender: MessageSender,
+    _phantom: PhantomData<Q>,
 }
 
-impl<T> Value<T>
+// impl<T, Q: GetQueueType> GetQueueType for Value<T, Q> {
+//     fn queue_type() -> QueueType {
+//         Q::queue_type()
+//     }
+// }
+
+impl<T, Q: GetQueueType> Value<T, Q>
 where
     T: Serialize + Clone,
 {
@@ -58,6 +92,7 @@ where
             id,
             value: RwLock::new(value),
             sender,
+            _phantom: PhantomData,
         })
     }
 
@@ -109,7 +144,9 @@ where
     }
 }
 
-impl<T: for<'a> Deserialize<'a> + Send + Sync> UpdateValue for Value<T> {
+impl<T: for<'a> Deserialize<'a> + Send + Sync, Q: GetQueueType + Send + Sync> UpdateValue
+    for Value<T, Q>
+{
     fn update_value(&self, data: &[u8]) -> Result<(), String> {
         let value = deserialize(data)
             .map_err(|e| format!("Parse error: {} for value id: {}", e, self.id))?;
@@ -156,13 +193,13 @@ impl<T: for<'a> Deserialize<'a> + Send + Sync> UpdateValue for ValueStatic<T> {
 }
 
 // Signal --------------------------------------------
-pub struct Signal<T> {
+pub struct Signal<T, Q: GetQueueType = NoQueue> {
     id: u64,
     sender: MessageSender,
-    phantom: PhantomData<T>,
+    phantom: PhantomData<(T, Q)>,
 }
 
-impl<T: Serialize + Clone> Signal<T> {
+impl<T: Serialize + Clone, Q: GetQueueType> Signal<T, Q> {
     pub(crate) fn new(id: u64, sender: MessageSender) -> Arc<Self> {
         Arc::new(Self {
             id,

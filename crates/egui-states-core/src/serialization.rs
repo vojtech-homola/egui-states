@@ -207,9 +207,9 @@ impl ServerHeader {
 
 #[derive(Serialize, Deserialize)]
 pub enum ClientHeader {
-    Value(u64, bool),
-    Signal(u64),
-    Ack(u64),
+    Value(u64, bool, u32),
+    Signal(u64, u32),
+    Ack(u64, u32),
     Error(String),
     Handshake(u16, u64, NoHashMap<u64, u64>),
 }
@@ -235,7 +235,7 @@ impl ClientHeader {
             .map_err(|_| "Failed to deserialize")?;
 
         let data = match header {
-            Self::Signal(_) | Self::Value(_, _) => {
+            Self::Signal(_, _) | Self::Value(_, _, _) => {
                 Some(message.slice(message.len() - rest.len()..))
             }
             _ => {

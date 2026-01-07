@@ -15,7 +15,7 @@ use crate::list::ValueList;
 use crate::map::ValueMap;
 use crate::sender::MessageSender;
 use crate::states_creator::StatesCreator;
-use crate::values::{Signal, Value, ValueStatic};
+use crate::values::{GetQueueType, Signal, Value, ValueStatic};
 
 pub struct StatesCreatorBuild {
     states: Vec<StateType>,
@@ -52,9 +52,10 @@ impl StatesCreator for StatesCreatorBuild {
         substate
     }
 
-    fn add_value<T>(&mut self, name: &'static str, value: T) -> Arc<Value<T>>
+    fn add_value<T, Q>(&mut self, name: &'static str, value: T) -> Arc<Value<T, Q>>
     where
         T: for<'a> Deserialize<'a> + Serialize + Clone + GetInitValue + GetType,
+        Q: GetQueueType,
     {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
@@ -91,9 +92,10 @@ impl StatesCreator for StatesCreatorBuild {
         value
     }
 
-    fn add_signal<T>(&mut self, name: &'static str) -> Arc<Signal<T>>
+    fn add_signal<T, Q>(&mut self, name: &'static str) -> Arc<Signal<T, Q>>
     where
         T: Serialize + Clone + GetType,
+        Q: GetQueueType,
     {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
