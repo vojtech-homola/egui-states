@@ -2,7 +2,9 @@ use std::error::Error;
 
 use eframe::{App, CreationContext};
 use egui::{Color32, ColorImage, Rect};
-use egui_states::{Client, ClientBuilder, ConnectionState};
+use egui_states::{Client, ClientBuilder, ConnectionState, Diff};
+
+use egui_states_widgets::WheelBoxF;
 
 use crate::states::States;
 
@@ -53,12 +55,7 @@ impl eframe::App for MainApp {
             const UV: Rect = Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
             let (response, painter) =
                 ui.allocate_painter([512.0, 512.0].into(), egui::Sense::HOVER);
-            painter.image(
-                texture_id,
-                response.rect,
-                UV,
-                Color32::WHITE,
-            );
+            painter.image(texture_id, response.rect, UV, Color32::WHITE);
 
             let g = self.states.graphs.get(0);
             if let Some(g) = g {
@@ -75,6 +72,15 @@ impl eframe::App for MainApp {
             {
                 self.states.value.set_signal(value);
             }
+
+            // value2 --------------------------------------------------
+            let mut value2 = Diff::new(&self.states.value2);
+            let mut step = 0.01;
+            let box_ = WheelBoxF::new(&mut value2.v, 3)
+                .desired_width(100.0)
+                .single_step(&mut step);
+            ui.add(box_);
+            value2.set_signal();
 
             //map --------------------------------------------------
             self.states.collections.map.read(|m| {
@@ -98,12 +104,13 @@ impl eframe::App for MainApp {
             for v in l {
                 ui.label(format!("List item: {}", v));
             }
-            
+
             // signal --------------------------------------------------
             if ui.button("Emit empty signal").clicked() {
                 self.states.empty_signal.set(());
             }
-
         });
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
     }
 }

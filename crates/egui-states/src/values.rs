@@ -42,6 +42,7 @@ pub trait UpdateValue: Sync + Send {
     fn update_value(&self, data: &[u8]) -> Result<(), String>;
 }
 
+#[derive(Clone, Copy, PartialEq)]
 pub enum QueueType {
     Single,
     Multiple,

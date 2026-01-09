@@ -48,11 +48,11 @@ impl Value {
 
         let mut w = self.value.write();
         if w.1 == 0 {
-            w.0 = value.clone();
-        }
+            if signal {
+                self.signals.set(self.id, value.clone());
+            }
 
-        if signal {
-            self.signals.set(self.id, value);
+            w.0 = value;
         }
 
         Ok(())
@@ -88,13 +88,10 @@ impl Value {
 }
 
 impl Acknowledge for Value {
-    fn acknowledge(&self, count: u32) {
-        let count = count as usize;
+    fn acknowledge(&self) {
         let mut w = self.value.write();
-        if w.1 >= count {
-            w.1 -= count;
-        } else {
-            w.1 = 0;
+        if w.1 > 0 {
+            w.1 -= 1;
         }
     }
 }

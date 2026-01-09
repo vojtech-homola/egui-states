@@ -1559,6 +1559,7 @@ dependencies = [
  "eframe",
  "egui",
  "egui_states",
+ "egui_states_widgets",
  "log",
  "serde",
  "wasm-bindgen-futures",

@@ -73,6 +73,7 @@ impl State for Collections {
 
 pub struct States {
     pub(crate) value: Arc<Value<f64>>,
+    pub(crate) value2: Arc<Value<f32>>,
     pub(crate) empty_signal: Arc<Signal<(), Queue>>,
     pub(crate) image: Arc<ValueImage>,
     pub(crate) graphs: Arc<ValueGraphs<f32>>,
@@ -91,6 +92,7 @@ impl State for States {
     fn new(c: &mut impl StatesCreator) -> Self {
         Self {
             value: c.add_value("value", 0.0),
+            value2: c.add_value("value2", 0.0f32),
             empty_signal: c.add_signal("empty_signal"),
             image: c.add_image("image"),
             graphs: c.add_graphs("graphs"),

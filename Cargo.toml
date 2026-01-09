@@ -18,6 +18,7 @@ egui_states_macros = { path = "crates/egui-states-macros" }
 egui_states_core = { path = "crates/egui-states-core" }
 egui_states = { path = "crates/egui-states" }
 egui_states_server = { path = "crates/egui-states-server" }
+egui_states_widgets = { path = "crates/egui-states-widgets" }
 
 gui = { path = "example/gui" }
 

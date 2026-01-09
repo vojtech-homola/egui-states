@@ -1,26 +1,34 @@
-use tokio::sync::mpsc::UnboundedReceiver;
-
-use egui_states_core::serialization::{MessageData, ServerHeader, deserialize_from};
+use egui_states_core::serialization::{
+    ClientHeader, MessageData, ServerHeader, deserialize_from, serialize_to_data,
+};
 
 use crate::client_base::Client;
 use crate::client_states::ValuesList;
 use crate::sender::ChannelMessage;
 
-pub(crate) struct ValuesQueue {
-    
-}
-
-pub(crate) async fn parse_to_send(
-    rx: &mut UnboundedReceiver<Option<ChannelMessage>>,
-) -> Option<MessageData> {
-    let result = rx.recv().await.unwrap();
-    if let None = result {
-        return None;
+pub(crate) fn parse_to_send(message: ChannelMessage, data: MessageData) -> MessageData {
+    match message {
+        ChannelMessage::Value(id, signal, dat) => {
+            let header = ClientHeader::Value(id, signal, data.len() as u32);
+            let mut message = serialize_to_data(&header, data);
+            message.extend_from_data(&dat);
+            message
+        }
+        ChannelMessage::Signal(id, dat) => {
+            let header = ClientHeader::Signal(id, data.len() as u32);
+            let mut message = serialize_to_data(&header, data);
+            message.extend_from_data(&dat);
+            message
+        }
+        ChannelMessage::Ack(id) => {
+            let header = ClientHeader::Ack(id);
+            serialize_to_data(&header, data)
+        }
+        ChannelMessage::Error(err) => {
+            let header = ClientHeader::Error(err);
+            serialize_to_data(&header, data)
+        }
     }
-    let msg = result.unwrap();
-    let message = MessageData::new();
-
-    Some(message)
 }
 
 pub(crate) async fn handle_message(

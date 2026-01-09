@@ -4,7 +4,7 @@ use egui::Context;
 use tokio::sync::mpsc::UnboundedReceiver;
 
 use egui_states_core::PROTOCOL_VERSION;
-use egui_states_core::serialization::ClientHeader;
+use egui_states_core::serialization::{ClientHeader, MessageData, to_message_data};
 
 use crate::State;
 use crate::client_base::{Client, ConnectionState};
@@ -83,28 +83,43 @@ async fn start_gui_client(
         // send -----------------------------------------
         let send_future = async move {
             loop {
-                match parse_to_send(&mut rx).await {
+                match rx.recv().await.unwrap() {
                     Some(msg) => {
-                        if let Err(_) = socket_send.send(msg).await {
+                        let message = MessageData::new();
+                        let mut message = parse_to_send(msg, message);
+                        let stop = loop {
+                            match rx.try_recv() {
+                                Ok(Some(msg)) => {
+                                    message = parse_to_send(msg, message);
+                                }
+                                Ok(None) => {
+                                    let _ = socket_send.send(message).await;
+                                    break true;
+                                }
+                                Err(_) => {
+                                    if let Err(_) = socket_send.send(message).await {
+                                        break true;
+                                    }
+                                    break false;
+                                }
+                            }
+                        };
+
+                        if stop {
                             break;
                         }
+
+                        // // let message = to_message_data(&header, data);
+                        // // write the message
+                        // if let Err(_) = socket_send.send(message).await {
+                        //     break;
+                        // }
                     }
-                    None => break,
+                    // check if the message is terminate
+                    None => {
+                        break;
+                    }
                 }
-                // // wait for the message from the channel
-                // match rx.recv().await.unwrap() {
-                //     Some((header, data)) => {
-                //         let message = to_message_data(&header, data);
-                //         // write the message
-                //         if let Err(_) = socket_send.send(message).await {
-                //             break;
-                //         }
-                //     }
-                //     // check if the message is terminate
-                //     None => {
-                //         break;
-                //     }
-                // }
             }
             socket_send.close().await;
             rx

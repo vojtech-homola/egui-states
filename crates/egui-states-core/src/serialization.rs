@@ -43,6 +43,14 @@ impl<const N: usize> FastVec<N> {
         }
     }
 
+    #[inline]
+    pub fn len(&self) -> usize {
+        match self {
+            Self::Heap(vec) => vec.len(),
+            Self::Stack(stack_vec) => stack_vec.1,
+        }
+    }
+
     pub fn extend_from_slice(&mut self, data: &[u8]) {
         match self {
             Self::Heap(vec) => {
@@ -62,7 +70,7 @@ impl<const N: usize> FastVec<N> {
         }
     }
 
-    fn extend_from_data(&mut self, data: &FastVec<N>) {
+    pub fn extend_from_data(&mut self, data: &FastVec<N>) {
         match self {
             Self::Heap(vec) => match data {
                 Self::Heap(dvec) => vec.extend_from_slice(dvec),
@@ -209,17 +217,12 @@ impl ServerHeader {
 pub enum ClientHeader {
     Value(u64, bool, u32),
     Signal(u64, u32),
-    Ack(u64, u32),
+    Ack(u64),
     Error(String),
     Handshake(u16, u64, NoHashMap<u64, u64>),
 }
 
 impl ClientHeader {
-    // #[inline]
-    // pub fn ack(id: u64) -> Self {
-    //     ClientHeader::Control(ControlClient::Ack(id))
-    // }
-
     pub fn serialize_handshake(
         protocol: u16,
         version: u64,
@@ -248,6 +251,8 @@ impl ClientHeader {
 
         Ok((header, data))
     }
+
+    pub fn deserialize()
 }
 
 pub fn to_message_data<T: Serialize>(value: &T, data: Option<MessageData>) -> MessageData {

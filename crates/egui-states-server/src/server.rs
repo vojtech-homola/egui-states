@@ -32,7 +32,7 @@ pub(crate) trait EnableTrait: Sync + Send {
 }
 
 pub(crate) trait Acknowledge: Sync + Send {
-    fn acknowledge(&self, count: u32);
+    fn acknowledge(&self);
 }
 
 #[derive(Clone, Default)]
