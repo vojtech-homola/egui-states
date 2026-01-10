@@ -70,14 +70,14 @@ impl<const N: usize> FastVec<N> {
         }
     }
 
-    pub fn extend_from_data(&mut self, data: &FastVec<N>) {
+    pub fn extend_from_data<const M: usize>(&mut self, data: &FastVec<M>) {
         match self {
             Self::Heap(vec) => match data {
-                Self::Heap(dvec) => vec.extend_from_slice(dvec),
-                Self::Stack(dvec) => vec.extend_from_slice(dvec.as_ref()),
+                FastVec::Heap(dvec) => vec.extend_from_slice(dvec),
+                FastVec::Stack(dvec) => vec.extend_from_slice(dvec.as_ref()),
             },
             Self::Stack(stack_vec) => match data {
-                Self::Heap(dvec) => {
+                FastVec::Heap(dvec) => {
                     if stack_vec.1 + dvec.len() <= N {
                         stack_vec.0[stack_vec.1..stack_vec.1 + dvec.len()].copy_from_slice(&dvec);
                         stack_vec.1 += dvec.len();
@@ -88,7 +88,7 @@ impl<const N: usize> FastVec<N> {
                         *self = Self::Heap(new_vec);
                     }
                 }
-                Self::Stack(dvec) => {
+                FastVec::Stack(dvec) => {
                     if stack_vec.1 + dvec.1 <= N {
                         stack_vec.0[stack_vec.1..stack_vec.1 + dvec.1]
                             .copy_from_slice(&dvec.0[..dvec.1]);
@@ -157,7 +157,7 @@ impl<const N: usize> Flavor for FastVec<N> {
     }
 }
 
-pub const HEAPLESS_SIZE: usize = 64;
+pub const HEAPLESS_SIZE: usize = 32;
 pub type MessageData = FastVec<HEAPLESS_SIZE>;
 
 #[derive(Serialize, Deserialize)]
@@ -227,32 +227,16 @@ impl ClientHeader {
         protocol: u16,
         version: u64,
         types: NoHashMap<u64, u64>,
-    ) -> MessageData {
+    ) -> FastVec<64> {
         let header = ClientHeader::Handshake(protocol, version, types);
         let data = postcard::to_stdvec(&header).expect("Failed to serialize handshake");
-        MessageData::Heap(data)
+        FastVec::Heap(data)
     }
 
-    pub fn deserialize_header(message: &Bytes) -> Result<(Self, Option<Bytes>), &'static str> {
-        let (header, rest) = postcard::take_from_bytes::<ClientHeader>(&message)
-            .map_err(|_| "Failed to deserialize")?;
-
-        let data = match header {
-            Self::Signal(_, _) | Self::Value(_, _, _) => {
-                Some(message.slice(message.len() - rest.len()..))
-            }
-            _ => {
-                if rest.len() != 0 {
-                    return Err("Control message should not have data");
-                }
-                None
-            }
-        };
-
-        Ok((header, data))
+    pub fn deserialize(msg: &[u8]) -> Result<(Self, usize), ()> {
+        let (header, rest) = postcard::take_from_bytes::<ClientHeader>(msg).map_err(|_| ())?;
+        Ok((header, msg.len() - rest.len()))
     }
-
-    pub fn deserialize()
 }
 
 pub fn to_message_data<T: Serialize>(value: &T, data: Option<MessageData>) -> MessageData {

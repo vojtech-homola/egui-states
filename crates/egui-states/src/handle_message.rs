@@ -1,23 +1,23 @@
 use egui_states_core::serialization::{
-    ClientHeader, MessageData, ServerHeader, deserialize_from, serialize_to_data,
+    ClientHeader, FastVec, ServerHeader, deserialize_from, serialize_to_data,
 };
 
 use crate::client_base::Client;
 use crate::client_states::ValuesList;
 use crate::sender::ChannelMessage;
 
-pub(crate) fn parse_to_send(message: ChannelMessage, data: MessageData) -> MessageData {
+pub(crate) fn parse_to_send(message: ChannelMessage, data: FastVec<64>) -> FastVec<64> {
     match message {
-        ChannelMessage::Value(id, signal, dat) => {
-            let header = ClientHeader::Value(id, signal, data.len() as u32);
+        ChannelMessage::Value(id, signal, msg_data) => {
+            let header = ClientHeader::Value(id, signal, msg_data.len() as u32);
             let mut message = serialize_to_data(&header, data);
-            message.extend_from_data(&dat);
+            message.extend_from_data(&msg_data);
             message
         }
-        ChannelMessage::Signal(id, dat) => {
-            let header = ClientHeader::Signal(id, data.len() as u32);
+        ChannelMessage::Signal(id, msg_data) => {
+            let header = ClientHeader::Signal(id, msg_data.len() as u32);
             let mut message = serialize_to_data(&header, data);
-            message.extend_from_data(&dat);
+            message.extend_from_data(&msg_data);
             message
         }
         ChannelMessage::Ack(id) => {

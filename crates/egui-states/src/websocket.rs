@@ -5,7 +5,7 @@ use tokio_tungstenite::connect_async_with_config;
 use tokio_tungstenite::tungstenite::{Message, protocol::WebSocketConfig};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
-use egui_states_core::serialization::MessageData;
+use egui_states_core::serialization::FastVec;
 
 pub(crate) async fn build_ws(address: SocketAddrV4) -> Result<(WsClientRead, WsClientSend), ()> {
     let address = format!("ws://{}/ws", address);
@@ -89,7 +89,7 @@ impl WsClientSend {
         let _ = self.sink.close().await;
     }
 
-    pub(crate) async fn send(&mut self, data: MessageData) -> Result<(), ()> {
+    pub(crate) async fn send(&mut self, data: FastVec<64>) -> Result<(), ()> {
         let message = Message::Binary(data.to_bytes());
         match self.sink.send(message).await {
             Ok(_) => Ok(()),

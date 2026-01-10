@@ -42,22 +42,16 @@ pub trait UpdateValue: Sync + Send {
     fn update_value(&self, data: &[u8]) -> Result<(), String>;
 }
 
-#[derive(Clone, Copy, PartialEq)]
-pub enum QueueType {
-    Single,
-    Multiple,
-}
-
 pub trait GetQueueType: Sync + Send + 'static {
-    fn queue_type() -> QueueType;
+    fn is_queue() -> bool;
 }
 
 pub struct NoQueue;
 
 impl GetQueueType for NoQueue {
     #[inline]
-    fn queue_type() -> QueueType {
-        QueueType::Single
+    fn is_queue() -> bool {
+        false
     }
 }
 
@@ -65,8 +59,8 @@ pub struct Queue;
 
 impl GetQueueType for Queue {
     #[inline]
-    fn queue_type() -> QueueType {
-        QueueType::Multiple
+    fn is_queue() -> bool {
+        true
     }
 }
 
@@ -77,12 +71,6 @@ pub struct Value<T, Q: GetQueueType = NoQueue> {
     sender: MessageSender,
     _phantom: PhantomData<Q>,
 }
-
-// impl<T, Q: GetQueueType> GetQueueType for Value<T, Q> {
-//     fn queue_type() -> QueueType {
-//         Q::queue_type()
-//     }
-// }
 
 impl<T, Q: GetQueueType> Value<T, Q>
 where

@@ -4,7 +4,7 @@ use egui::Context;
 use tokio::sync::mpsc::UnboundedReceiver;
 
 use egui_states_core::PROTOCOL_VERSION;
-use egui_states_core::serialization::{ClientHeader, MessageData, to_message_data};
+use egui_states_core::serialization::{ClientHeader, FastVec};
 
 use crate::State;
 use crate::client_base::{Client, ConnectionState};
@@ -17,6 +17,9 @@ use crate::websocket::build_ws;
 
 #[cfg(target_arch = "wasm32")]
 use crate::websocket_wasm::build_ws;
+
+const MSG_SIZE_THRESHOLD: usize = 1024 * 1024 * 100; // 100 MB
+const MAX_MSG_COUNT: usize = 10;
 
 async fn start_gui_client(
     addr: SocketAddrV4,
@@ -71,7 +74,13 @@ async fn start_gui_client(
                             // break; TODO: decide if we want to break the loop on error
                         }
                     }
-                    Err(_) => break,
+                    Err(_) => {
+                        #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
+                        println!("Connection was closed by the server.");
+                        #[cfg(all(debug_assertions, target_arch = "wasm32"))]
+                        log::error!("Connection was closed by the server.");
+                        break;
+                    }
                 }
             }
             th_sender.close();
@@ -85,12 +94,23 @@ async fn start_gui_client(
             loop {
                 match rx.recv().await.unwrap() {
                     Some(msg) => {
-                        let message = MessageData::new();
+                        let message = FastVec::<64>::new();
                         let mut message = parse_to_send(msg, message);
+                        let mut counter = 0;
                         let stop = loop {
                             match rx.try_recv() {
                                 Ok(Some(msg)) => {
+                                    counter += 1;
                                     message = parse_to_send(msg, message);
+
+                                    if counter > MAX_MSG_COUNT || message.len() > MSG_SIZE_THRESHOLD
+                                    {
+                                        if let Err(_) = socket_send.send(message).await {
+                                            break true;
+                                        }
+                                        message = FastVec::<64>::new();
+                                        counter = 0;
+                                    }
                                 }
                                 Ok(None) => {
                                     let _ = socket_send.send(message).await;
@@ -108,12 +128,6 @@ async fn start_gui_client(
                         if stop {
                             break;
                         }
-
-                        // // let message = to_message_data(&header, data);
-                        // // write the message
-                        // if let Err(_) = socket_send.send(message).await {
-                        //     break;
-                        // }
                     }
                     // check if the message is terminate
                     None => {
