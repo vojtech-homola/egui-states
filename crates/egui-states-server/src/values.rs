@@ -4,9 +4,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use bytes::Bytes;
 
-use egui_states_core::serialization::{ServerHeader, ser_server_value};
+use egui_states_core::serialization::{FastVec, ServerHeader, ser_server_value};
 
-use crate::sender::MessageSender;
+use crate::sender::{MessageSender, SenderData};
 use crate::server::{Acknowledge, EnableTrait, SyncTrait};
 use crate::signals::SignalsManager;
 
@@ -66,9 +66,7 @@ impl Value {
     pub(crate) fn set(&self, value: Bytes, set_signals: bool, update: bool) {
         if self.connected.load(Ordering::Relaxed) && self.enabled.load(Ordering::Relaxed) {
             let mut w = self.value.write();
-
-            let header = ServerHeader::Value(self.id, update);
-            let message = header.serialize_to_bytes_data(Some(value.clone()));
+            let message = ServerHeader::serialize_value(self.id, update, &value);
 
             w.0 = value.clone();
             w.1 += 1;
@@ -100,8 +98,7 @@ impl SyncTrait for Value {
     fn sync(&self) {
         let mut w = self.value.write();
         w.1 = 1;
-        let header = ServerHeader::Value(self.id, false);
-        let data = ser_server_value(header, &w.0);
+        let data = ServerHeader::serialize_value(self.id, false, &w.0);
         drop(w);
 
         self.sender.send(data);
@@ -142,9 +139,7 @@ impl ValueStatic {
     pub(crate) fn set(&self, value: Bytes, update: bool) {
         if self.connected.load(Ordering::Relaxed) && self.enabled.load(Ordering::Relaxed) {
             let mut w = self.value.write();
-
-            let header = ServerHeader::Static(self.id, update);
-            let message = header.serialize_to_bytes_data(Some(value.clone()));
+            let message = ServerHeader::serialize_static(self.id, update, &value);
 
             *w = value;
             self.sender.send(message);
@@ -164,8 +159,7 @@ impl SyncTrait for ValueStatic {
     fn sync(&self) {
         if self.enabled.load(Ordering::Relaxed) {
             let w = self.value.read();
-            let header = ServerHeader::Static(self.id, false);
-            let data = ser_server_value(header, &w);
+            let data = ServerHeader::serialize_static(self.id, false, &w);
             drop(w);
 
             self.sender.send(data);

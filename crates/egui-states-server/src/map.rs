@@ -6,9 +6,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tokio_tungstenite::tungstenite::Bytes;
 
 use egui_states_core::collections::MapHeader;
-use egui_states_core::serialization::{MessageData, ServerHeader, serialize_to_data};
+use egui_states_core::serialization::{
+    FastVec, MessageData, ServerHeader, serialize, serialize_to_data,
+};
 
-use crate::sender::MessageSender;
+use crate::sender::{MessageSender, SenderData};
 use crate::server::{EnableTrait, SyncTrait};
 
 pub(crate) struct ValueMap {
@@ -30,44 +32,56 @@ impl ValueMap {
         })
     }
 
-    fn serialize_all(&self, map: &HashMap<Bytes, Bytes>, update: bool) -> Bytes {
+    fn serialize_all(&self, map: &HashMap<Bytes, Bytes>, update: bool) -> Result<SenderData, ()> {
         let len = map.len() as u64;
-        let header = ServerHeader::Map(self.id, update, MapHeader::All);
-        let data = MessageData::new();
-        let data = serialize_to_data(&header, data);
-        let mut data = serialize_to_data(&len, data);
+        let len_data = serialize::<10>(&len)?;
+        let mut size = 0;
+        map.iter().for_each(|(k, v)| {
+            size += k.len();
+            size += v.len();
+        });
+        let all_size = (size + len_data.len()) as u32;
+        let header = ServerHeader::Map(self.id, update, MapHeader::All, all_size);
+
+        let mut data = serialize(&header)?;
         map.iter().for_each(|(k, v)| {
             data.extend_from_slice(&k);
             data.extend_from_slice(&v);
         });
-        data.to_bytes()
+
+        Ok(data)
     }
 
-    pub(crate) fn set(&self, map: HashMap<Bytes, Bytes>, update: bool) {
+    pub(crate) fn set(&self, map: HashMap<Bytes, Bytes>, update: bool) -> Result<(), ()> {
         let mut w = self.map.write();
 
         if self.connected.load(Ordering::Relaxed) && self.enabled.load(Ordering::Relaxed) {
-            let data = self.serialize_all(&map, update);
+            let data = self.serialize_all(&map, update)?;
             self.sender.send(data);
         }
 
         *w = map;
+        Ok(())
     }
 
     pub(crate) fn get(&self) -> HashMap<Bytes, Bytes> {
         self.map.read().clone()
     }
 
-    pub(crate) fn set_item(&self, key: Bytes, value: Bytes, update: bool) {
+    pub(crate) fn set_item(&self, key: Bytes, value: Bytes, update: bool) -> Result<(), ()> {
         let mut w = self.map.write();
 
         if self.connected.load(Ordering::Relaxed) && self.enabled.load(Ordering::Relaxed) {
-            let header = ServerHeader::Map(self.id, update, MapHeader::Set);
-            let data = MessageData::new();
-            let mut data = serialize_to_data(&header, data);
+            let header = ServerHeader::Map(
+                self.id,
+                update,
+                MapHeader::Set,
+                (key.len() + value.len()) as u32,
+            );
+            let mut data = serialize(&header)?;
             data.extend_from_slice(&key);
             data.extend_from_slice(&value);
-            self.sender.send(data.to_bytes());
+            self.sender.send(data);
         }
 
         match w.get_mut(&key) {
@@ -76,6 +90,7 @@ impl ValueMap {
                 w.insert(key, value);
             }
         }
+        Ok(())
     }
 
     pub(crate) fn get_item(&self, key: &Bytes) -> Option<Bytes> {
@@ -85,20 +100,19 @@ impl ValueMap {
         }
     }
 
-    pub(crate) fn remove_item(&self, key: &Bytes, update: bool) -> Option<Bytes> {
+    pub(crate) fn remove_item(&self, key: &Bytes, update: bool) -> Result<Option<Bytes>, ()> {
         let mut w = self.map.write();
         let old = w.remove(key)?;
 
         if self.connected.load(Ordering::Relaxed) && self.enabled.load(Ordering::Relaxed) {
-            let header = ServerHeader::Map(self.id, update, MapHeader::Remove);
-            let data = MessageData::new();
-            let mut data = serialize_to_data(&header, data);
+            let header = ServerHeader::Map(self.id, update, MapHeader::Remove, key.len() as u32);
+            let mut data = serialize(&header)?;
             data.extend_from_slice(&key);
-            self.sender.send(data.to_bytes());
+            self.sender.send(data);
         }
 
         drop(w);
-        Some(old)
+        Ok(Some(old))
     }
 
     pub(crate) fn len(&self) -> usize {

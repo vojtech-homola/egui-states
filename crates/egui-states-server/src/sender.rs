@@ -1,11 +1,13 @@
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
-use tokio_tungstenite::tungstenite::{Bytes, Message};
 
-pub(crate) type MessageReceiver = UnboundedReceiver<Option<Message>>;
+use egui_states_core::serialization::FastVec;
+
+pub(crate) type SenderData = FastVec<32>;
+pub(crate) type MessageReceiver = UnboundedReceiver<Option<SenderData>>;
 
 #[derive(Clone)]
 pub(crate) struct MessageSender {
-    sender: UnboundedSender<Option<Message>>,
+    sender: UnboundedSender<Option<SenderData>>,
 }
 impl MessageSender {
     pub(crate) fn new() -> (Self, MessageReceiver) {
@@ -13,8 +15,8 @@ impl MessageSender {
         (Self { sender }, receiver)
     }
 
-    pub(crate) fn send(&self, msg: Bytes) {
-        let _ =self.sender.send(Some(Message::from(msg)));
+    pub(crate) fn send(&self, msg: SenderData) {
+        let _ = self.sender.send(Some(msg));
     }
 
     pub(crate) fn close(&self) {

@@ -520,7 +520,10 @@ impl StateServerCore {
         pyparsing::serialize_py(key, key_type, &mut key_creator)?;
         let key_data = key_creator.finalize();
 
-        match map.remove_item(&key_data, update) {
+        match map
+            .remove_item(&key_data, update)
+            .map_err(|_| PyRuntimeError::new_err("Failed to remove item from map."))?
+        {
             Some(value_data) => {
                 let mut value_parser = ValueParser::new(value_data);
                 let py_value = pyparsing::deserialize_py(py, &mut value_parser, value_type)?;

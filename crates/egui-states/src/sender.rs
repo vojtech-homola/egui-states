@@ -9,8 +9,6 @@ pub(crate) enum ChannelMessage {
     Error(String),
 }
 
-// pub(crate) type ChannelMessage = Option<(ClientHeader, Option<MessageData>)>;
-
 #[derive(Clone)]
 pub(crate) struct MessageSender {
     sender: UnboundedSender<Option<ChannelMessage>>,
@@ -20,10 +18,6 @@ impl MessageSender {
         let (sender, receiver) = unbounded_channel();
         (Self { sender }, receiver)
     }
-
-    // pub(crate) fn send_data(&self, header: ClientHeader, data: MessageData) {
-    //     self.sender.send(Some((header, Some(data)))).unwrap();
-    // }
 
     pub(crate) fn send(&self, msg: ChannelMessage) {
         self.sender.send(Some(msg)).unwrap();

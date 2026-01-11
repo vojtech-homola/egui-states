@@ -28,6 +28,11 @@ impl<const N: usize> FastVec<N> {
     }
 
     #[inline]
+    pub fn new_heap() -> Self {
+        Self::Heap(Vec::new())
+    }
+
+    #[inline]
     pub fn to_bytes(self) -> Bytes {
         match self {
             Self::Heap(vec) => Bytes::from_owner(vec),
@@ -157,17 +162,16 @@ impl<const N: usize> Flavor for FastVec<N> {
     }
 }
 
-pub const HEAPLESS_SIZE: usize = 32;
-pub type MessageData = FastVec<HEAPLESS_SIZE>;
+pub type MessageData = FastVec<32>;
 
 #[derive(Serialize, Deserialize)]
 pub enum ServerHeader {
-    Value(u64, bool),
-    Static(u64, bool),
-    Image(u64, bool, ImageHeader),
-    Graph(u64, bool, GraphHeader),
-    List(u64, bool, ListHeader),
-    Map(u64, bool, MapHeader),
+    Value(u64, bool, u32),
+    Static(u64, bool, u32),
+    Image(u64, bool, ImageHeader, u32),
+    Graph(u64, bool, GraphHeader, u32),
+    List(u64, bool, ListHeader, u32),
+    Map(u64, bool, MapHeader, u32),
     Update(f32),
 }
 
@@ -210,6 +214,24 @@ impl ServerHeader {
                 Bytes::from_owner(head)
             }
         }
+    }
+
+    pub fn serialize_value<const N: usize>(id: u64, update: bool, value_data: &[u8]) -> FastVec<N> {
+        let header = ServerHeader::Value(id, update, value_data.len() as u32);
+        let mut data = serialize_to_data(&header, FastVec::<N>::new());
+        data.extend_from_slice(value_data);
+        data
+    }
+
+    pub fn serialize_static<const N: usize>(
+        id: u64,
+        update: bool,
+        value_data: &[u8],
+    ) -> FastVec<N> {
+        let header = ServerHeader::Static(id, update, value_data.len() as u32);
+        let mut data = serialize_to_data(&header, FastVec::<N>::new());
+        data.extend_from_slice(value_data);
+        data
     }
 }
 
@@ -293,6 +315,16 @@ where
     Ok((value, data.len() - new_data.len()))
 }
 
+#[inline]
+pub fn serialize<T, const N: usize>(value: &T) -> Result<FastVec<N>, ()>
+where
+    T: Serialize,
+{
+    postcard::serialize_with_flavor::<T, FastVec<N>, FastVec<N>>(value, FastVec::new())
+        .map_err(|_| ())
+}
+
+#[inline]
 pub fn serialize_to_data<T, const N: usize>(value: &T, data: FastVec<N>) -> FastVec<N>
 where
     T: Serialize,

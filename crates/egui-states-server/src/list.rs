@@ -5,9 +5,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tokio_tungstenite::tungstenite::Bytes;
 
 use egui_states_core::collections::ListHeader;
-use egui_states_core::serialization::{MessageData, ServerHeader, serialize_to_data};
+use egui_states_core::serialization::{MessageData, ServerHeader, serialize, serialize_to_data};
 
-use crate::sender::MessageSender;
+use crate::sender::{MessageSender, SenderData};
 use crate::server::{EnableTrait, SyncTrait};
 
 pub(crate) struct ValueList {
@@ -29,29 +29,34 @@ impl ValueList {
         })
     }
 
-    fn serialize_all(&self, vec: &Vec<Bytes>, update: bool) -> Bytes {
+    fn serialize_all(&self, vec: &Vec<Bytes>, update: bool) -> Result<SenderData, ()> {
         let len = vec.len() as u64;
-        let header = ServerHeader::List(self.id, update, ListHeader::All);
+        let len_data = serialize::<10>(&len)?;
+        let mut size = 0;
+        vec.iter().for_each(|b| {
+            size += b.len();
+        });
+        let all_size = (size + len_data.len()) as u32;
+        let header = ServerHeader::List(self.id, update, ListHeader::All, all_size);
 
-        let data = MessageData::new();
-        let data = serialize_to_data(&header, data);
-        let mut data = serialize_to_data(&len, data);
+        let mut data = serialize(&header)?;
         vec.iter().for_each(|b| {
             data.extend_from_slice(&b);
         });
 
-        data.to_bytes()
+        Ok(data)
     }
 
-    pub(crate) fn set(&self, list: Vec<Bytes>, update: bool) {
+    pub(crate) fn set(&self, list: Vec<Bytes>, update: bool) -> Result<(), ()> {
         let mut w = self.list.write();
 
         if self.connected.load(Ordering::Relaxed) && self.enabled.load(Ordering::Relaxed) {
-            let data = self.serialize_all(&list, update);
+            let data = self.serialize_all(&list, update)?;
             self.sender.send(data);
         }
 
         *w = list;
+        Ok(())
     }
 
     pub(crate) fn get(&self) -> Vec<Bytes> {
@@ -70,8 +75,8 @@ impl ValueList {
         }
 
         if self.connected.load(Ordering::Relaxed) && self.enabled.load(Ordering::Relaxed) {
-            let header = ServerHeader::List(self.id, update, ListHeader::Set(idx as u64));
-            let message = header.serialize_to_bytes_data(Some(value.clone()));
+            let header = ServerHeader::List(self.id, update, ListHeader::Set(idx as u64), value.len() as u32);
+            let message = serialize(&header).map_err(|_| "Serialization error")?;
             self.sender.send(message);
         }
 
@@ -99,22 +104,23 @@ impl ValueList {
         let value = w.remove(idx);
 
         if self.connected.load(Ordering::Relaxed) && self.enabled.load(Ordering::Relaxed) {
-            let header = ServerHeader::List(self.id, update, ListHeader::Remove(idx as u64));
-            let message = header.serialize_to_bytes();
+            let header = ServerHeader::List(self.id, update, ListHeader::Remove(idx as u64), 0);
+            let message = serialize(&header).map_err(|_| "Serialization error")?;
             self.sender.send(message);
         }
 
         Ok(value)
     }
 
-    pub(crate) fn append_item(&self, value: Bytes, update: bool) {
+    pub(crate) fn append_item(&self, value: Bytes, update: bool) -> Result<(), ()> {
         let mut w = self.list.write();
         if self.connected.load(Ordering::Relaxed) && self.enabled.load(Ordering::Relaxed) {
-            let header = ServerHeader::List(self.id, update, ListHeader::Add);
-            let message = header.serialize_to_bytes_data(Some(value.clone()));
+            let header = ServerHeader::List(self.id, update, ListHeader::Add, value.len() as u32);
+            let message = serialize(&header)?;
             self.sender.send(message);
         }
         w.push(value);
+        Ok(())
     }
 }
 
