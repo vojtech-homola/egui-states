@@ -18,7 +18,7 @@ use crate::websocket::build_ws;
 #[cfg(target_arch = "wasm32")]
 use crate::websocket_wasm::build_ws;
 
-const MSG_SIZE_THRESHOLD: usize = 1024 * 1024 * 100; // 100 MB
+const MSG_SIZE_THRESHOLD: usize = 1024 * 1024 * 10; // 10 MB
 const MAX_MSG_COUNT: usize = 10;
 
 async fn start_gui_client(

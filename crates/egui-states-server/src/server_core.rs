@@ -12,12 +12,15 @@ use tokio_tungstenite::tungstenite::{Message, protocol::WebSocketConfig};
 
 use egui_states_core::PROTOCOL_VERSION;
 use egui_states_core::event_async::Event;
-use egui_states_core::serialization::ServerHeader;
+use egui_states_core::serialization::{ServerHeader, serialize};
 
 use crate::sender::{MessageReceiver, MessageSender};
 use crate::server::ServerStatesList;
 use crate::signals::SignalsManager;
 use crate::socket_reader::{ClientMessage, SocketReader};
+
+const MSG_SIZE_THRESHOLD: usize = 1024 * 1024 * 10; // 10 MB
+const MAX_MSG_COUNT: usize = 10;
 
 enum ChannelHolder {
     Transfer(JoinHandle<MessageReceiver>),
@@ -147,7 +150,15 @@ pub(crate) async fn run(
                 for v in values.sync.iter() {
                     v.sync();
                 }
-                sender.send(ServerHeader::Update(0.0).serialize_to_bytes());
+                match serialize(&ServerHeader::Update(0.0)) {
+                    Ok(data) => sender.send(data),
+                    Err(_) => {
+                        signals.error("failed to serialize update message");
+                        connected.store(false, Ordering::Release);
+                        holder = ChannelHolder::Rx(rx);
+                        break;
+                    }
+                }
 
                 let reader_handler = tokio::spawn(reader(
                     socket_reader,

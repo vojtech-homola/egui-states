@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tokio_tungstenite::tungstenite::Bytes;
 
 use egui_states_core::collections::ListHeader;
-use egui_states_core::serialization::{MessageData, ServerHeader, serialize, serialize_to_data};
+use egui_states_core::serialization::{FastVec, ServerHeader, serialize};
 
 use crate::sender::{MessageSender, SenderData};
 use crate::server::{EnableTrait, SyncTrait};
@@ -31,7 +31,7 @@ impl ValueList {
 
     fn serialize_all(&self, vec: &Vec<Bytes>, update: bool) -> Result<SenderData, ()> {
         let len = vec.len() as u64;
-        let len_data = serialize::<10>(&len)?;
+        let len_data: FastVec<10> = serialize(&len)?;
         let mut size = 0;
         vec.iter().for_each(|b| {
             size += b.len();
@@ -75,7 +75,12 @@ impl ValueList {
         }
 
         if self.connected.load(Ordering::Relaxed) && self.enabled.load(Ordering::Relaxed) {
-            let header = ServerHeader::List(self.id, update, ListHeader::Set(idx as u64), value.len() as u32);
+            let header = ServerHeader::List(
+                self.id,
+                update,
+                ListHeader::Set(idx as u64),
+                value.len() as u32,
+            );
             let message = serialize(&header).map_err(|_| "Serialization error")?;
             self.sender.send(message);
         }
@@ -125,12 +130,13 @@ impl ValueList {
 }
 
 impl SyncTrait for ValueList {
-    fn sync(&self) {
+    fn sync(&self) -> Result<(), ()> {
         if self.enabled.load(Ordering::Relaxed) {
             let r = self.list.read();
-            let data = self.serialize_all(&r, false);
+            let data = self.serialize_all(&r, false)?;
             self.sender.send(data);
         }
+        Ok(())
     }
 }
 

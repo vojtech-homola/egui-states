@@ -203,33 +203,37 @@ impl SignalsManager {
         self.values.lock().clear();
     }
 
-    fn serialize_message(level: u8, text: impl ToString) -> Bytes {
+    fn serialize_message(level: u8, text: impl ToString) -> Result<Bytes, ()> {
         let data = text.to_string();
         let message = FastVec::<64>::new();
-        let message = serialize_to_data(&level, message);
-        let message = serialize_to_data(&data, message);
-        message.to_bytes()
+        let message = serialize_to_data(&level, message)?;
+        let message = serialize_to_data(&data, message)?;
+        Ok(message.to_bytes())
     }
 
     #[allow(dead_code)]
     pub(crate) fn debug(&self, message: impl ToString) {
-        let data = Self::serialize_message(0u8, message);
-        self.set(self.logging_id, data);
+        if let Ok(data) = Self::serialize_message(0u8, message) {
+            self.set(self.logging_id, data);
+        }
     }
 
     pub(crate) fn info(&self, message: impl ToString) {
-        let data = Self::serialize_message(1u8, message);
-        self.set(self.logging_id, data);
+        if let Ok(data) = Self::serialize_message(1u8, message) {
+            self.set(self.logging_id, data);
+        }
     }
 
     pub(crate) fn warning(&self, message: impl ToString) {
-        let data = Self::serialize_message(2u8, message);
-        self.set(self.logging_id, data);
+        if let Ok(data) = Self::serialize_message(2u8, message) {
+            self.set(self.logging_id, data);
+        }
     }
 
     pub(crate) fn error(&self, message: impl ToString) {
-        let data = Self::serialize_message(3u8, message);
-        self.set(self.logging_id, data);
+        if let Ok(data) = Self::serialize_message(3u8, message) {
+            self.set(self.logging_id, data);
+        }
     }
 
     pub(crate) fn wait_changed_value(&self, last_id: Option<u64>) -> (u64, Bytes) {

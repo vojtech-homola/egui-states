@@ -6,9 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tokio_tungstenite::tungstenite::Bytes;
 
 use egui_states_core::collections::MapHeader;
-use egui_states_core::serialization::{
-    FastVec, MessageData, ServerHeader, serialize, serialize_to_data,
-};
+use egui_states_core::serialization::{FastVec, ServerHeader, serialize};
 
 use crate::sender::{MessageSender, SenderData};
 use crate::server::{EnableTrait, SyncTrait};
@@ -34,7 +32,7 @@ impl ValueMap {
 
     fn serialize_all(&self, map: &HashMap<Bytes, Bytes>, update: bool) -> Result<SenderData, ()> {
         let len = map.len() as u64;
-        let len_data = serialize::<10>(&len)?;
+        let len_data: FastVec<10> = serialize(&len)?;
         let mut size = 0;
         map.iter().for_each(|(k, v)| {
             size += k.len();
@@ -102,7 +100,10 @@ impl ValueMap {
 
     pub(crate) fn remove_item(&self, key: &Bytes, update: bool) -> Result<Option<Bytes>, ()> {
         let mut w = self.map.write();
-        let old = w.remove(key)?;
+        let old = match w.remove(key) {
+            Some(v) => v,
+            None => return Ok(None),
+        };
 
         if self.connected.load(Ordering::Relaxed) && self.enabled.load(Ordering::Relaxed) {
             let header = ServerHeader::Map(self.id, update, MapHeader::Remove, key.len() as u32);
@@ -121,7 +122,14 @@ impl ValueMap {
 }
 
 impl SyncTrait for ValueMap {
-    fn sync(&self) {}
+    fn sync(&self) -> Result<(), ()> {
+        if self.enabled.load(Ordering::Relaxed) {
+            let r = self.map.read();
+            let data = self.serialize_all(&r, false)?;
+            self.sender.send(data);
+        }
+        Ok(())
+    }
 }
 
 impl EnableTrait for ValueMap {

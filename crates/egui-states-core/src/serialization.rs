@@ -33,6 +33,11 @@ impl<const N: usize> FastVec<N> {
     }
 
     #[inline]
+    pub fn from_vec(vec: Vec<u8>) -> Self {
+        Self::Heap(vec)
+    }
+
+    #[inline]
     pub fn to_bytes(self) -> Bytes {
         match self {
             Self::Heap(vec) => Bytes::from_owner(vec),
@@ -168,70 +173,38 @@ pub type MessageData = FastVec<32>;
 pub enum ServerHeader {
     Value(u64, bool, u32),
     Static(u64, bool, u32),
-    Image(u64, bool, ImageHeader, u32),
-    Graph(u64, bool, GraphHeader, u32),
+    Image(u64, bool, ImageHeader),
+    Graph(u64, bool, GraphHeader),
     List(u64, bool, ListHeader, u32),
     Map(u64, bool, MapHeader, u32),
     Update(f32),
 }
 
 impl ServerHeader {
-    pub fn serialize_to_slice<'a>(&self, buffer: &'a mut [u8]) -> &'a [u8] {
-        postcard::to_slice::<ServerHeader>(self, buffer).expect("Failed to serialize server header")
+    pub fn serialize_to_slice<'a, 'b>(&'b self, buffer: &'a mut [u8]) -> Result<&'a mut [u8], ()> {
+        postcard::to_slice::<ServerHeader>(self, buffer).map_err(|_| ())
     }
 
-    pub fn serialize_to_bytes(&self) -> Bytes {
-        let result = postcard::to_vec::<ServerHeader, HEAPLESS_SIZE>(self);
-        match result {
-            Ok(vec) => Bytes::from_owner(vec),
-            Err(postcard::Error::SerializeBufferFull) => Bytes::from_owner(
-                postcard::to_stdvec(self).expect("Failed to serialize server header"),
-            ),
-            Err(e) => panic!("Serialize error: {}", e),
-        }
-    }
-
-    pub fn serialize_to_bytes_data(&self, data: Option<Bytes>) -> Bytes {
-        match data {
-            Some(b) => {
-                let mut head = postcard::to_vec::<ServerHeader, HEAPLESS_SIZE>(self)
-                    .expect("Failed to serialize server header");
-
-                if b.len() + head.len() <= HEAPLESS_SIZE {
-                    head.extend_from_slice(&b)
-                        .expect("Failed to extend head with stack data");
-                    Bytes::from_owner(head)
-                } else {
-                    let mut full_data = Vec::with_capacity(head.len() + b.len());
-                    full_data.extend_from_slice(&head);
-                    full_data.extend_from_slice(&b);
-                    Bytes::from_owner(full_data)
-                }
-            }
-            None => {
-                let head = postcard::to_vec::<ServerHeader, HEAPLESS_SIZE>(self)
-                    .expect("Failed to serialize server header");
-                Bytes::from_owner(head)
-            }
-        }
-    }
-
-    pub fn serialize_value<const N: usize>(id: u64, update: bool, value_data: &[u8]) -> FastVec<N> {
+    pub fn serialize_value<const N: usize>(
+        id: u64,
+        update: bool,
+        value_data: &[u8],
+    ) -> Result<FastVec<N>, ()> {
         let header = ServerHeader::Value(id, update, value_data.len() as u32);
-        let mut data = serialize_to_data(&header, FastVec::<N>::new());
+        let mut data = serialize_to_data(&header, FastVec::<N>::new())?;
         data.extend_from_slice(value_data);
-        data
+        Ok(data)
     }
 
     pub fn serialize_static<const N: usize>(
         id: u64,
         update: bool,
         value_data: &[u8],
-    ) -> FastVec<N> {
+    ) -> Result<FastVec<N>, ()> {
         let header = ServerHeader::Static(id, update, value_data.len() as u32);
-        let mut data = serialize_to_data(&header, FastVec::<N>::new());
+        let mut data = serialize_to_data(&header, FastVec::<N>::new())?;
         data.extend_from_slice(value_data);
-        data
+        Ok(data)
     }
 }
 
@@ -279,17 +252,6 @@ pub fn to_message<T: Serialize>(value: T) -> MessageData {
         .expect("Failed to serialize value")
 }
 
-pub fn ser_server_value(header: ServerHeader, value: &Bytes) -> Bytes {
-    let head = postcard::to_vec::<ServerHeader, HEAPLESS_SIZE>(&header)
-        .expect("Failed to serialize server header");
-
-    let mut data = Vec::with_capacity(head.len() + value.len());
-    data.extend_from_slice(&head);
-    data.extend_from_slice(value);
-
-    Bytes::from_owner(data)
-}
-
 #[inline]
 pub fn deserialize<T>(data: &[u8]) -> Result<T, String>
 where
@@ -325,10 +287,9 @@ where
 }
 
 #[inline]
-pub fn serialize_to_data<T, const N: usize>(value: &T, data: FastVec<N>) -> FastVec<N>
+pub fn serialize_to_data<T, const N: usize>(value: &T, data: FastVec<N>) -> Result<FastVec<N>, ()>
 where
     T: Serialize,
 {
-    postcard::serialize_with_flavor::<T, FastVec<N>, FastVec<N>>(value, data)
-        .expect("Failed to serialize value")
+    postcard::serialize_with_flavor::<T, FastVec<N>, FastVec<N>>(value, data).map_err(|_| ())
 }

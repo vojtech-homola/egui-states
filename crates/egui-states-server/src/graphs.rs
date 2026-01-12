@@ -1,15 +1,13 @@
-use egui_states_core::serialization::ServerHeader;
 use parking_lot::RwLock;
 use std::ptr::copy_nonoverlapping;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use tokio_tungstenite::tungstenite::Bytes;
-
 use egui_states_core::graphs::{GraphHeader, GraphType, GraphTyped};
 use egui_states_core::nohash::NoHashMap;
+use egui_states_core::serialization::{ServerHeader, serialize};
 
-use crate::sender::MessageSender;
+use crate::sender::{MessageSender, SenderData};
 use crate::server::{EnableTrait, SyncTrait};
 
 pub(crate) struct GraphData {
@@ -62,7 +60,7 @@ impl ValueGraphs {
         let mut w = self.graphs.write();
         if self.connected.load(Ordering::Relaxed) && self.enabled.load(Ordering::Relaxed) {
             let data = graph.to_data(self.id, idx, update, None);
-            self.sender.send(Bytes::from(data));
+            self.sender.send_immediate(SenderData::from_vec(data));
         }
         w.insert(idx, graph);
     }
@@ -87,7 +85,7 @@ impl ValueGraphs {
                 update,
                 Some(graph_data.size / self.graph_type.bytes_size()),
             );
-            self.sender.send(Bytes::from(data));
+            self.sender.send_immediate(SenderData::from_vec(data));
         }
 
         Ok(())
@@ -105,24 +103,26 @@ impl ValueGraphs {
         self.graphs.read().get(&idx).map(|g| g.y.len())
     }
 
-    pub(crate) fn remove(&self, idx: u16, update: bool) {
+    pub(crate) fn remove(&self, idx: u16, update: bool) -> Result<(), ()> {
         let mut w = self.graphs.write();
         w.remove(&idx);
         if self.connected.load(Ordering::Relaxed) && self.enabled.load(Ordering::Relaxed) {
             let header = ServerHeader::Graph(self.id, update, GraphHeader::Remove(idx));
-            let data = header.serialize_to_bytes();
-            self.sender.send(Bytes::from(data));
+            let data = serialize(&header)?;
+            self.sender.send(data);
         }
+        Ok(())
     }
 
-    pub(crate) fn reset(&self, update: bool) {
+    pub(crate) fn reset(&self, update: bool) -> Result<(), ()> {
         let mut w = self.graphs.write();
         w.clear();
         if self.connected.load(Ordering::Relaxed) && self.enabled.load(Ordering::Relaxed) {
             let header = ServerHeader::Graph(self.id, update, GraphHeader::Reset);
-            let data = header.serialize_to_bytes();
-            self.sender.send(Bytes::from(data));
+            let data = serialize(&header)?;
+            self.sender.send(data);
         }
+        Ok(())
     }
 }
 
@@ -133,21 +133,22 @@ impl EnableTrait for ValueGraphs {
 }
 
 impl SyncTrait for ValueGraphs {
-    fn sync(&self) {
+    fn sync(&self) -> Result<(), ()> {
         if !self.enabled.load(Ordering::Relaxed) {
-            return;
+            return Ok(());
         }
 
         let w = self.graphs.read();
 
         let header = ServerHeader::Graph(self.id, false, GraphHeader::Reset);
-        let data = header.serialize_to_bytes();
+        let data = serialize(&header)?;
         self.sender.send(data);
 
         for (idx, graph) in w.iter() {
             let data = graph.to_data(self.id, *idx, false, None);
-            self.sender.send(Bytes::from_owner(data));
+            self.sender.send_immediate(SenderData::from_vec(data));
         }
+        Ok(())
     }
 }
 

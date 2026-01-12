@@ -32,10 +32,11 @@ impl ValueCreator {
         }
     }
 
-    pub(crate) fn add<T: Serialize>(&mut self, value: &T) {
+    pub(crate) fn add<T: Serialize>(&mut self, value: &T) -> Result<(), ()> {
         if let Some(data) = self.data.take() {
-            self.data = Some(serialize_to_data(value, data));
+            self.data = Some(serialize_to_data(value, data)?);
         }
+        Ok(())
     }
 
     pub(crate) fn finalize(self) -> Bytes {
