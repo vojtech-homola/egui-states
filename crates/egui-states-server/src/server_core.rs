@@ -4,7 +4,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-use futures_util::{SinkExt, StreamExt, stream::SplitSink};
+use futures_util::{SinkExt, StreamExt, sink::Close, stream::SplitSink};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinHandle;
 use tokio_tungstenite::WebSocketStream;
@@ -283,7 +283,7 @@ async fn writer(
 ) -> MessageReceiver {
     loop {
         // get message from channel
-        let msg = match rx.recv().await {
+        let (msg, send_now) = match rx.recv().await {
             Some(Some(m)) => m,
             // check if message is terminate signal
             _ => {
@@ -297,7 +297,7 @@ async fn writer(
 
         // if not connected, stop thread
         if !connected.load(Ordering::Acquire) {
-            let _ = websocket.close().await;
+            let r = websocket.close();
             reader_handle.abort();
             let _ = reader_handle.await;
             break;
@@ -312,4 +312,22 @@ async fn writer(
         }
     }
     rx
+}
+
+struct SocketWriter {
+    websocket: SplitSink<WebSocketStream<TcpStream>, Message>,
+    close: Option<Close<SplitSink<WebSocketStream<TcpStream>, Message>>>,
+}
+
+impl SocketWriter {
+    fn new(
+        websocket: SplitSink<WebSocketStream<TcpStream>, Message>,
+    ) -> Self {
+        Self {
+            websocket,
+            close: None,
+        }
+    }
+
+    fn send()
 }
