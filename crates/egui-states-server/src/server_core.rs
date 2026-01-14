@@ -4,7 +4,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-use futures_util::{SinkExt, StreamExt, sink::Close, stream::SplitSink};
+use futures_util::{SinkExt, StreamExt, stream::SplitSink};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinHandle;
 use tokio_tungstenite::WebSocketStream;
@@ -14,7 +14,7 @@ use egui_states_core::PROTOCOL_VERSION;
 use egui_states_core::event_async::Event;
 use egui_states_core::serialization::{ServerHeader, serialize};
 
-use crate::sender::{MessageReceiver, MessageSender};
+use crate::sender::{MessageReceiver, MessageSender, SenderData};
 use crate::server::ServerStatesList;
 use crate::signals::SignalsManager;
 use crate::socket_reader::{ClientMessage, SocketReader};
@@ -147,8 +147,18 @@ pub(crate) async fn run(
 
                 // std::thread::sleep(std::time::Duration::from_millis(100));
                 connected.store(true, Ordering::Release);
+                let mut success = true;
                 for v in values.sync.iter() {
-                    v.sync();
+                    if let Err(_) = v.sync() {
+                        success = false;
+                        break;
+                    }
+                }
+                if !success {
+                    signals.error("failed to sync value after handshake");
+                    connected.store(false, Ordering::Release);
+                    holder = ChannelHolder::Rx(rx);
+                    break;
                 }
                 match serialize(&ServerHeader::Update(0.0)) {
                     Ok(data) => sender.send(data),
@@ -275,59 +285,175 @@ async fn reader(
 }
 
 async fn writer(
-    mut rx: MessageReceiver,
+    rx: MessageReceiver,
     connected: Arc<AtomicBool>,
     mut websocket: SplitSink<WebSocketStream<TcpStream>, Message>,
     signals: SignalsManager,
     reader_handle: tokio::task::JoinHandle<()>,
 ) -> MessageReceiver {
+    let mut data_receiver = DataReceiver::new(rx);
     loop {
         // get message from channel
-        let (msg, send_now) = match rx.recv().await {
-            Some(Some(m)) => m,
+        match data_receiver.next().await {
+            Some(msg) => {
+                // if not connected, stop thread
+                if !connected.load(Ordering::Acquire) {
+                    let _ = websocket.close().await;
+                    reader_handle.abort();
+                    let _ = reader_handle.await;
+                    break;
+                }
+
+                // send message
+                let data = Message::Binary(msg.to_bytes());
+                if let Err(e) = websocket.send(data).await {
+                    signals.error(&format!("sending message to client failed: {:?}", e));
+                    reader_handle.abort();
+                    let _ = reader_handle.await;
+                    break;
+                }
+            }
             // check if message is terminate signal
-            _ => {
+            None => {
                 signals.info("writer is closing connection");
                 let _ = websocket.close().await;
                 reader_handle.abort();
                 let _ = reader_handle.await;
                 break;
             }
-        };
-
-        // if not connected, stop thread
-        if !connected.load(Ordering::Acquire) {
-            let r = websocket.close();
-            reader_handle.abort();
-            let _ = reader_handle.await;
-            break;
         }
 
-        // send message
-        if let Err(e) = websocket.send(msg).await {
-            signals.error(&format!("sending message to client failed: {:?}", e));
-            reader_handle.abort();
-            let _ = reader_handle.await;
-            break;
-        }
+        // let msg = match rx.recv().await {
+        //     Some(Some((mut msg, send_now))) => match send_now {
+        //         true => msg,
+        //         false => {
+        //             let stop = loop {
+        //                 match rx.try_recv() {
+        //                     Ok(Some((next_msg, send_now))) => match send_now {
+        //                         true => {
+        //                             msg.extend_from_data(&next_msg);
+        //                             break;
+        //                         }
+        //                         false => {
+        //                             msg.extend_from_data(&next_msg);
+        //                         }
+        //                     },
+        //                     Ok(None) => break,
+        //                     Err(_) => break,
+        //                 }
+        //             };
+        //             msg
+        //         }
+        //     },
+        //     // check if message is terminate signal
+        //     _ => {
+        //         signals.info("writer is closing connection");
+        //         let _ = websocket.close().await;
+        //         reader_handle.abort();
+        //         let _ = reader_handle.await;
+        //         break;
+        //     }
+        // };
+
+        // // if not connected, stop thread
+        // if !connected.load(Ordering::Acquire) {
+        //     let _ = websocket.close().await;
+        //     reader_handle.abort();
+        //     let _ = reader_handle.await;
+        //     break;
+        // }
+
+        // // send message
+        // let data = Message::Binary(msg.to_bytes());
+        // if let Err(e) = websocket.send(data).await {
+        //     signals.error(&format!("sending message to client failed: {:?}", e));
+        //     reader_handle.abort();
+        //     let _ = reader_handle.await;
+        //     break;
+        // }
     }
-    rx
+    data_receiver.finalize()
 }
 
-struct SocketWriter {
-    websocket: SplitSink<WebSocketStream<TcpStream>, Message>,
-    close: Option<Close<SplitSink<WebSocketStream<TcpStream>, Message>>>,
+// A helper struct to receive from MessageReceiver and create micro-batches
+struct DataReceiver {
+    rx: MessageReceiver,
+    buffer: Option<SenderData>,
+    send_next: Option<SenderData>,
+    is_closed: bool,
 }
 
-impl SocketWriter {
-    fn new(
-        websocket: SplitSink<WebSocketStream<TcpStream>, Message>,
-    ) -> Self {
+impl DataReceiver {
+    fn new(rx: MessageReceiver) -> Self {
         Self {
-            websocket,
-            close: None,
+            rx,
+            buffer: None,
+            send_next: None,
+            is_closed: false,
         }
     }
 
-    fn send()
+    async fn next(&mut self) -> Option<SenderData> {
+        // empty send_next first
+        if let Some(data) = self.send_next.take() {
+            return Some(data);
+        }
+
+        if self.is_closed {
+            return self.buffer.take();
+        }
+
+        match self.rx.recv().await {
+            Some(Some((msg, send_now))) => match send_now {
+                true => match self.buffer.take() {
+                    Some(buffer) => {
+                        self.send_next = Some(msg);
+                        Some(buffer)
+                    }
+                    None => Some(msg),
+                },
+                false => {
+                    let mut buffer = match self.buffer.take() {
+                        Some(mut buffer) => {
+                            buffer.extend_from_data(&msg);
+                            buffer
+                        }
+                        None => msg,
+                    };
+
+                    let mut counter = 0;
+                    loop {
+                        if buffer.len() > MSG_SIZE_THRESHOLD || counter >= MAX_MSG_COUNT {
+                            break Some(buffer);
+                        }
+
+                        match self.rx.try_recv() {
+                            Ok(Some((next_msg, send_now))) => match send_now {
+                                true => {
+                                    self.send_next = Some(next_msg);
+                                    break Some(buffer);
+                                }
+                                false => {
+                                    buffer.extend_from_data(&next_msg);
+                                    counter += 1;
+                                }
+                            },
+                            _ => {
+                                self.is_closed = true;
+                                break Some(buffer);
+                            }
+                        }
+                    }
+                }
+            },
+            None | Some(None) => {
+                self.is_closed = true;
+                self.buffer.take()
+            }
+        }
+    }
+
+    fn finalize(self) -> MessageReceiver {
+        self.rx
+    }
 }

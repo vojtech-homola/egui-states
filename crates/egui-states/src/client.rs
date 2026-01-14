@@ -66,9 +66,8 @@ async fn start_gui_client(
             loop {
                 // read the message
                 match socket_read.read().await {
-                    Ok(data) => {
-                        if let Err(e) = handle_message(data.as_ref(), &th_vals, &th_ui_state).await
-                        {
+                    Ok(msg) => {
+                        if let Err(e) = handle_message(msg, &th_vals, &th_ui_state).await {
                             let error = format!("handling message from server failed: {:?}", e);
                             th_sender.send(ChannelMessage::Error(error));
                             // break; TODO: decide if we want to break the loop on error

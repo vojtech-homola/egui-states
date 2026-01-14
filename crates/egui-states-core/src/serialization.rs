@@ -206,6 +206,12 @@ impl ServerHeader {
         data.extend_from_slice(value_data);
         Ok(data)
     }
+
+    #[inline]
+    pub fn deserialize(msg: &[u8]) -> Result<(Self, usize), ()> {
+        let (header, rest) = postcard::take_from_bytes::<Self>(msg).map_err(|_| ())?;
+        Ok((header, msg.len() - rest.len()))
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -228,8 +234,9 @@ impl ClientHeader {
         FastVec::Heap(data)
     }
 
+    #[inline]
     pub fn deserialize(msg: &[u8]) -> Result<(Self, usize), ()> {
-        let (header, rest) = postcard::take_from_bytes::<ClientHeader>(msg).map_err(|_| ())?;
+        let (header, rest) = postcard::take_from_bytes::<Self>(msg).map_err(|_| ())?;
         Ok((header, msg.len() - rest.len()))
     }
 }
