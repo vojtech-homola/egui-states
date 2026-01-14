@@ -73,11 +73,11 @@ async fn start_gui_client(
                             // break; TODO: decide if we want to break the loop on error
                         }
                     }
-                    Err(_) => {
+                    Err(e) => {
                         #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
-                        println!("Connection was closed by the server.");
+                        println!("Connection with server failed: {:?}", e);
                         #[cfg(all(debug_assertions, target_arch = "wasm32"))]
-                        log::error!("Connection was closed by the server.");
+                        log::error!("Connection with server failed: {:?}", e);
                         break;
                     }
                 }

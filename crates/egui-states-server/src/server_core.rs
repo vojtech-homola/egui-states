@@ -322,55 +322,6 @@ async fn writer(
                 break;
             }
         }
-
-        // let msg = match rx.recv().await {
-        //     Some(Some((mut msg, send_now))) => match send_now {
-        //         true => msg,
-        //         false => {
-        //             let stop = loop {
-        //                 match rx.try_recv() {
-        //                     Ok(Some((next_msg, send_now))) => match send_now {
-        //                         true => {
-        //                             msg.extend_from_data(&next_msg);
-        //                             break;
-        //                         }
-        //                         false => {
-        //                             msg.extend_from_data(&next_msg);
-        //                         }
-        //                     },
-        //                     Ok(None) => break,
-        //                     Err(_) => break,
-        //                 }
-        //             };
-        //             msg
-        //         }
-        //     },
-        //     // check if message is terminate signal
-        //     _ => {
-        //         signals.info("writer is closing connection");
-        //         let _ = websocket.close().await;
-        //         reader_handle.abort();
-        //         let _ = reader_handle.await;
-        //         break;
-        //     }
-        // };
-
-        // // if not connected, stop thread
-        // if !connected.load(Ordering::Acquire) {
-        //     let _ = websocket.close().await;
-        //     reader_handle.abort();
-        //     let _ = reader_handle.await;
-        //     break;
-        // }
-
-        // // send message
-        // let data = Message::Binary(msg.to_bytes());
-        // if let Err(e) = websocket.send(data).await {
-        //     signals.error(&format!("sending message to client failed: {:?}", e));
-        //     reader_handle.abort();
-        //     let _ = reader_handle.await;
-        //     break;
-        // }
     }
     data_receiver.finalize()
 }

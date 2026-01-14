@@ -91,7 +91,7 @@ impl MessagesParser {
         let message_data = match header {
             ServerHeader::Value(id, update, size) => {
                 let size = size as usize;
-                if size + self.pointer >= self.data.len() {
+                if size + self.pointer > self.data.len() {
                     return Err("Incomplete data for Value message");
                 }
                 let data = self.data.slice(self.pointer..self.pointer + size);
@@ -100,7 +100,7 @@ impl MessagesParser {
             }
             ServerHeader::Static(id, update, size) => {
                 let size = size as usize;
-                if size + self.pointer >= self.data.len() {
+                if size + self.pointer > self.data.len() {
                     return Err("Incomplete data for Static message");
                 }
                 let data = self.data.slice(self.pointer..self.pointer + size);
@@ -138,8 +138,15 @@ impl MessagesParser {
                 if self.pointer > self.data.len() {
                     return Err("Incomplete data for Graph message");
                 }
-                let data = self.data.slice(self.pointer..);
-                self.is_empty = true;
+                let data =match header {
+                    GraphHeader::AddPoints(_, _) | GraphHeader::Set(_, _) => {
+                        self.is_empty = true;
+                        self.data.slice(self.pointer..)
+                    }
+                    GraphHeader::Reset | GraphHeader::Remove(_) => {
+                        Bytes::new()
+                    }
+                };
                 ServerMessage::Graph(id, update, header, data)
             }
         };
