@@ -60,7 +60,7 @@ impl ValueGraphs {
         let mut w = self.graphs.write();
         if self.connected.load(Ordering::Relaxed) && self.enabled.load(Ordering::Relaxed) {
             let data = graph.to_data(self.id, idx, update, None);
-            self.sender.send_immediate(SenderData::from_vec(data));
+            self.sender.send_single(SenderData::from_vec(data));
         }
         w.insert(idx, graph);
     }
@@ -85,7 +85,7 @@ impl ValueGraphs {
                 update,
                 Some(graph_data.size / self.graph_type.bytes_size()),
             );
-            self.sender.send_immediate(SenderData::from_vec(data));
+            self.sender.send_single(SenderData::from_vec(data));
         }
 
         Ok(())
@@ -146,7 +146,7 @@ impl SyncTrait for ValueGraphs {
 
         for (idx, graph) in w.iter() {
             let data = graph.to_data(self.id, *idx, false, None);
-            self.sender.send_immediate(SenderData::from_vec(data));
+            self.sender.send_single(SenderData::from_vec(data));
         }
         Ok(())
     }

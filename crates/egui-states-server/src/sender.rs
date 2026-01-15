@@ -19,7 +19,7 @@ impl MessageSender {
         let _ = self.sender.send(Some((msg, false)));
     }
 
-    pub(crate) fn send_immediate(&self, msg: SenderData) {
+    pub(crate) fn send_single(&self, msg: SenderData) {
         let _ = self.sender.send(Some((msg, true)));
     }
 

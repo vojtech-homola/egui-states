@@ -171,7 +171,7 @@ impl ValueImage {
                 return Ok(());
             }
 
-            self.sender.send_immediate(SenderData::from_vec(data));
+            self.sender.send_single(SenderData::from_vec(data));
         }
 
         Ok(())
@@ -214,7 +214,7 @@ impl SyncTrait for ValueImage {
         drop(w);
 
         self.event.clear();
-        self.sender.send_immediate(SenderData::from_vec(data));
+        self.sender.send_single(SenderData::from_vec(data));
         Ok(())
     }
 }

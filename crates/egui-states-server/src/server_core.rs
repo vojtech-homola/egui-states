@@ -6,6 +6,7 @@ use std::sync::{
 
 use futures_util::{SinkExt, StreamExt, stream::SplitSink};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::mpsc::error::TryRecvError;
 use tokio::task::JoinHandle;
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::{Message, protocol::WebSocketConfig};
@@ -329,7 +330,6 @@ async fn writer(
 // A helper struct to receive from MessageReceiver and create micro-batches
 struct DataReceiver {
     rx: MessageReceiver,
-    buffer: Option<SenderData>,
     send_next: Option<SenderData>,
     is_closed: bool,
 }
@@ -338,7 +338,6 @@ impl DataReceiver {
     fn new(rx: MessageReceiver) -> Self {
         Self {
             rx,
-            buffer: None,
             send_next: None,
             is_closed: false,
         }
@@ -351,56 +350,42 @@ impl DataReceiver {
         }
 
         if self.is_closed {
-            return self.buffer.take();
+            return None;
         }
 
         match self.rx.recv().await {
-            Some(Some((msg, send_now))) => match send_now {
-                true => match self.buffer.take() {
-                    Some(buffer) => {
-                        self.send_next = Some(msg);
-                        Some(buffer)
-                    }
-                    None => Some(msg),
-                },
+            Some(Some((mut msg, send_now))) => match send_now {
+                true => Some(msg),
                 false => {
-                    let mut buffer = match self.buffer.take() {
-                        Some(mut buffer) => {
-                            buffer.extend_from_data(&msg);
-                            buffer
-                        }
-                        None => msg,
-                    };
-
                     let mut counter = 0;
                     loop {
-                        if buffer.len() > MSG_SIZE_THRESHOLD || counter >= MAX_MSG_COUNT {
-                            break Some(buffer);
+                        if msg.len() > MSG_SIZE_THRESHOLD || counter >= MAX_MSG_COUNT {
+                            break Some(msg);
                         }
 
                         match self.rx.try_recv() {
                             Ok(Some((next_msg, send_now))) => match send_now {
                                 true => {
                                     self.send_next = Some(next_msg);
-                                    break Some(buffer);
+                                    break Some(msg);
                                 }
                                 false => {
-                                    buffer.extend_from_data(&next_msg);
+                                    msg.extend_from_data(&next_msg);
                                     counter += 1;
                                 }
                             },
-                            _ => {
+                            Err(TryRecvError::Empty) => {
+                                break Some(msg);
+                            }
+                            Ok(None) | Err(TryRecvError::Disconnected) => {
                                 self.is_closed = true;
-                                break Some(buffer);
+                                break Some(msg);
                             }
                         }
                     }
                 }
             },
-            None | Some(None) => {
-                self.is_closed = true;
-                self.buffer.take()
-            }
+            None | Some(None) => None,
         }
     }
 

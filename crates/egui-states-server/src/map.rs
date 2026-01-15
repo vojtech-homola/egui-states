@@ -42,6 +42,7 @@ impl ValueMap {
         let header = ServerHeader::Map(self.id, update, MapHeader::All, all_size);
 
         let mut data = serialize(&header)?;
+        data.extend_from_data(&len_data);
         map.iter().for_each(|(k, v)| {
             data.extend_from_slice(&k);
             data.extend_from_slice(&v);

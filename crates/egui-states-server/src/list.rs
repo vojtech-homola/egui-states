@@ -40,6 +40,7 @@ impl ValueList {
         let header = ServerHeader::List(self.id, update, ListHeader::All, all_size);
 
         let mut data = serialize(&header)?;
+        data.extend_from_data(&len_data);
         vec.iter().for_each(|b| {
             data.extend_from_slice(&b);
         });
