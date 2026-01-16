@@ -1,5 +1,5 @@
 [build-system]
-requires = ["maturin>=1.10"]
+requires = ["maturin>=1.11"]
 build-backend = "maturin"
 
 [project]
@@ -22,6 +22,8 @@ python-packages = ["egui_states"]
 module-name = "egui_states._core"
 manifest-path = "crates/egui-states-server/Cargo.toml"
 features = ["python"]
+auditwheel = "repair"
+manylinux = "2_28"
 
 [tool.ruff]
 line-length = 120
@@ -43,3 +45,6 @@ ignore = [
     "PLR0912", # too-many-branches
     "D100",    # undocumented-public-module
 ]
+
+[tool.uv.config-settings]
+"maturin.build-args" = "--manylinux 2_28 --auditwheel repair --compression-level 9"
