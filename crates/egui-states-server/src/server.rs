@@ -8,12 +8,11 @@ use std::thread;
 use bytes::Bytes;
 use tokio::runtime::Builder;
 
-use egui_states_core::controls::ControlServer;
 use egui_states_core::event_async::Event;
 use egui_states_core::generate_value_id;
 use egui_states_core::graphs::GraphType;
 use egui_states_core::nohash::NoHashMap;
-use egui_states_core::serialization::ServerHeader;
+use egui_states_core::serialization::{ServerHeader, serialize};
 
 use crate::graphs::ValueGraphs;
 use crate::image::ValueImage;
@@ -25,7 +24,7 @@ use crate::signals::SignalsManager;
 use crate::values::{Signal, Value, ValueStatic};
 
 pub(crate) trait SyncTrait: Sync + Send {
-    fn sync(&self);
+    fn sync(&self) -> Result<(), ()>;
 }
 
 pub(crate) trait EnableTrait: Sync + Send {
@@ -271,12 +270,14 @@ impl Server {
         self.connected.load(Ordering::Acquire)
     }
 
-    pub(crate) fn update(&self, duration: Option<f32>) {
+    pub(crate) fn update(&self, duration: Option<f32>) -> Result<(), ()> {
         if self.connected.load(Ordering::Acquire) {
             let duration = duration.unwrap_or(0.0);
-            let header = ServerHeader::Control(ControlServer::Update(duration));
-            self.sender.send(header.serialize_to_bytes());
+            let header = ServerHeader::Update(duration);
+            let data = serialize(&header)?;
+            self.sender.send(data);
         }
+        Ok(())
     }
 
     pub(crate) fn add_value(
@@ -284,6 +285,7 @@ impl Server {
         name: &str,
         type_id: u64,
         value: Bytes,
+        queue: bool,
     ) -> Result<u64, String> {
         if self.states_server.is_some() {
             return Err("Cannot add new values after server has been finalized".to_string());
@@ -305,6 +307,11 @@ impl Server {
 
         self.states.types.insert(id, type_id);
         self.states.values.insert(id, val);
+
+        if queue {
+            self.signals.set_to_queue(id);
+        }
+
         Ok(id)
     }
 
@@ -330,7 +337,12 @@ impl Server {
         Ok(id)
     }
 
-    pub(crate) fn add_signal(&mut self, name: &str, type_id: u64) -> Result<u64, String> {
+    pub(crate) fn add_signal(
+        &mut self,
+        name: &str,
+        type_id: u64,
+        queue: bool,
+    ) -> Result<u64, String> {
         if self.states_server.is_some() {
             return Err("Cannot add new values after server has been finalized".to_string());
         }
@@ -344,6 +356,11 @@ impl Server {
 
         self.states.types.insert(id, type_id);
         self.states.signals.insert(id, val);
+
+        if queue {
+            self.signals.set_to_queue(id);
+        }
+
         Ok(id)
     }
 

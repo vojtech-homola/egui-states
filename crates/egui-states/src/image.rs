@@ -5,9 +5,8 @@ use std::sync::Arc;
 use egui::{ColorImage, ImageData, TextureHandle};
 
 use egui_states_core::image::{ImageHeader, ImageType};
-use egui_states_core::serialization::ClientHeader;
 
-use crate::sender::MessageSender;
+use crate::sender::{ChannelMessage, MessageSender};
 
 const TEXTURE_OPTIONS: egui::TextureOptions = egui::TextureOptions {
     magnification: egui::TextureFilter::Nearest,
@@ -67,7 +66,7 @@ impl ValueImage {
     // impl UpdateImage for ValueImage {
     pub(crate) fn update_image(&self, header: ImageHeader, data: &[u8]) -> Result<(), String> {
         // TODO: not sure if this is the best place to send ack
-        self.sender.send(ClientHeader::ack(self.id));
+        self.sender.send(ChannelMessage::Ack(self.id));
 
         let ImageHeader {
             image_size,

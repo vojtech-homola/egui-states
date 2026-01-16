@@ -349,16 +349,6 @@ pub struct GraphDataInfo {
     points: u64,
 }
 
-// impl GraphDataInfo {
-//     pub fn new(points: usize, is_linear: bool, graph_type: GraphType) -> Self {
-//         Self {
-//             graph_type,
-//             is_linear,
-//             points: points as u64,
-//         }
-//     }
-// }
-
 #[derive(Serialize, Deserialize)]
 pub enum GraphHeader {
     Set(u16, GraphDataInfo),
@@ -366,9 +356,3 @@ pub enum GraphHeader {
     Remove(u16),
     Reset,
 }
-
-// impl<'a, T: Deserialize<'a>> GraphHeader<T> {
-//     pub fn deserialize(data: &'a [u8]) -> Result<(Self, &'a [u8]), String> {
-//         postcard::take_from_bytes(data).map_err(|e| e.to_string())
-//     }
-// }

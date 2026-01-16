@@ -4,26 +4,24 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-use bytes::Bytes;
-use futures_util::{
-    SinkExt, StreamExt,
-    stream::{SplitSink, SplitStream},
-};
+use futures_util::{SinkExt, StreamExt, stream::SplitSink};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::mpsc::error::TryRecvError;
 use tokio::task::JoinHandle;
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::{Message, protocol::WebSocketConfig};
 
 use egui_states_core::PROTOCOL_VERSION;
-use egui_states_core::controls::{ControlClient, ControlServer};
 use egui_states_core::event_async::Event;
-use egui_states_core::serialization::{
-    ClientHeader, ServerHeader, deserialize, deserialize_from, serialize_value_vec,
-};
+use egui_states_core::serialization::{ServerHeader, serialize};
 
-use crate::sender::{MessageReceiver, MessageSender};
+use crate::sender::{MessageReceiver, MessageSender, SenderData};
 use crate::server::ServerStatesList;
 use crate::signals::SignalsManager;
+use crate::socket_reader::{ClientMessage, SocketReader};
+
+const MSG_SIZE_THRESHOLD: usize = 1024 * 1024 * 10; // 10 MB
+const MAX_MSG_COUNT: usize = 10;
 
 enum ChannelHolder {
     Transfer(JoinHandle<MessageReceiver>),
@@ -73,10 +71,15 @@ pub(crate) async fn run(
             }
         };
 
+        if let Err(e) = stream.set_nodelay(true) {
+            signals.error(&format!("failed to set TCP_NODELAY: {:?}", e));
+            continue;
+        }
+
         let mut websocket_config = WebSocketConfig::default();
         websocket_config.max_message_size = Some(536870912); // 512 MB
         websocket_config.max_frame_size = Some(536870912); // 512 MB
-        let mut websocket =
+        let websocket =
             match tokio_tungstenite::accept_async_with_config(stream, Some(websocket_config)).await
             {
                 Ok(ws) => ws,
@@ -87,31 +90,16 @@ pub(crate) async fn run(
                 }
             };
 
-        // read the message
-        let message = match websocket.next().await {
-            Some(Ok(message)) => message,
-            Some(Err(e)) => {
-                signals.error(&format!("reading initial message failed: {:?}", e));
+        let (socket_tx, socket_rx) = websocket.split();
+        let mut socket_reader = SocketReader::new(socket_rx);
+
+        match socket_reader.next().await {
+            Err(e) => {
+                signals.error(e);
                 connected.store(false, Ordering::Release);
                 continue;
             }
-            None => {
-                signals.error("reading initial message failed");
-                connected.store(false, Ordering::Release);
-                continue;
-            }
-        };
-
-        if let Message::Binary(message) = message {
-            let header = match ClientHeader::deserialize_header(&message) {
-                Ok((h, _)) => h,
-                Err(_) => {
-                    signals.error("deserializing initial message header failed");
-                    continue;
-                }
-            };
-
-            if let ClientHeader::Control(ControlClient::Handshake(p, h)) = header {
+            Ok(ClientMessage::Handshake(p, h, types)) => {
                 if p != PROTOCOL_VERSION {
                     let message = format!(
                         "attempted to connect with wrong protocol version: expected {}, got {}",
@@ -127,48 +115,6 @@ pub(crate) async fn run(
                         continue;
                     }
                 }
-
-                // check types --------------------------
-                let header = ServerHeader::Control(ControlServer::TypesAsk);
-                let mut data = Vec::new();
-                serialize_value_vec(&header, &mut data);
-                serialize_value_vec(&values.types, &mut data);
-                let message = Bytes::from_owner(data);
-
-                if let Err(e) = websocket.send(Message::Binary(message)).await {
-                    signals.error(&format!("sending states types failed: {:?}", e));
-                    continue;
-                }
-
-                // TODO: move to special function
-                let types = match websocket.next().await {
-                    Some(Ok(Message::Binary(data))) => {
-                        match deserialize_from::<ClientHeader>(&data) {
-                            Ok((ClientHeader::Control(ControlClient::TypesAnswer), dat)) => {
-                                match deserialize::<Vec<u64>>(&dat) {
-                                    Ok(types) => types,
-                                    Err(_) => {
-                                        signals.error(
-                                        "unexpected message when receiving initial states types",
-                                    );
-                                        continue;
-                                    }
-                                }
-                            }
-                            _ => {
-                                signals.error(
-                                    "unexpected message when receiving initial states types",
-                                );
-                                continue;
-                            }
-                        }
-                    }
-                    _ => {
-                        signals.error("receiving initial states types failed");
-                        continue;
-                    }
-                };
-                // --------------------------------------
 
                 let mut rx = match holder {
                     // disconnect previous client
@@ -190,29 +136,62 @@ pub(crate) async fn run(
                     let _ = rx.recv().await;
                 }
 
-                for id in &types {
-                    if let Some(v) = values.enable.get(id) {
-                        v.enable(true);
+                for (id, client_type) in types {
+                    if let Some(server_type) = values.types.get(&id) {
+                        if client_type == *server_type {
+                            if let Some(v) = values.enable.get(&id) {
+                                v.enable(true);
+                            }
+                        }
                     }
                 }
 
                 // std::thread::sleep(std::time::Duration::from_millis(100));
                 connected.store(true, Ordering::Release);
+                let mut success = true;
                 for v in values.sync.iter() {
-                    v.sync();
+                    if let Err(_) = v.sync() {
+                        success = false;
+                        break;
+                    }
+                }
+                if !success {
+                    signals.error("failed to sync value after handshake");
+                    connected.store(false, Ordering::Release);
+                    holder = ChannelHolder::Rx(rx);
+                    break;
+                }
+                match serialize(&ServerHeader::Update(0.0)) {
+                    Ok(data) => sender.send(data),
+                    Err(_) => {
+                        signals.error("failed to serialize update message");
+                        connected.store(false, Ordering::Release);
+                        holder = ChannelHolder::Rx(rx);
+                        break;
+                    }
                 }
 
-                // start transfer thread
-                let handler = run_core(
+                let reader_handler = tokio::spawn(reader(
+                    socket_reader,
                     connected.clone(),
-                    values.clone(),
                     signals.clone(),
-                    websocket,
-                    rx,
+                    values.clone(),
                     sender.clone(),
-                )
-                .await;
+                ));
+                let handler = tokio::spawn(writer(
+                    rx,
+                    connected.clone(),
+                    socket_tx,
+                    signals.clone(),
+                    reader_handler,
+                ));
+
                 holder = ChannelHolder::Transfer(handler);
+            }
+            Ok(_) => {
+                signals.error("expected handshake message from client");
+                connected.store(false, Ordering::Release);
+                continue;
             }
         }
     }
@@ -233,29 +212,8 @@ pub(crate) async fn run(
     }
 }
 
-async fn run_core(
-    connected: Arc<AtomicBool>,
-    values: ServerStatesList,
-    signals: SignalsManager,
-    websocket: WebSocketStream<TcpStream>,
-    rx: MessageReceiver,
-    sender: MessageSender,
-) -> JoinHandle<MessageReceiver> {
-    let (socket_tx, socket_rx) = websocket.split();
-
-    let reader_handler = tokio::spawn(reader(
-        socket_rx,
-        connected.clone(),
-        signals.clone(),
-        values.clone(),
-        sender.clone(),
-    ));
-
-    tokio::spawn(writer(rx, connected, socket_tx, signals, reader_handler))
-}
-
 async fn reader(
-    mut socket_rx: SplitStream<WebSocketStream<TcpStream>>,
+    mut socket_rx: SocketReader,
     connected: Arc<AtomicBool>,
     signals: SignalsManager,
     values: ServerStatesList,
@@ -273,81 +231,47 @@ async fn reader(
             break;
         }
 
-        let message = match result_message {
-            Some(Ok(m)) => m,
-            Some(Err(e)) => {
-                signals.error(&format!("reading message from client failed: {:?}", e));
+        match result_message {
+            Err(e) => {
+                signals.error(e);
                 connected.store(false, Ordering::Release);
                 signals.reset();
                 break;
             }
-            None => {
-                signals.info("connection was closed by the client");
-                connected.store(false, Ordering::Release);
-                signals.reset();
-                break;
-            }
-        };
-
-        match message {
-            Message::Binary(m) => {
-                let (header, data) = match ClientHeader::deserialize_header(&m) {
-                    Ok(hd) => hd,
-                    Err(_) => {
-                        signals.error(&format!("deserializing message header failed"));
-                        continue;
+            Ok(ClientMessage::Ack(id)) => {
+                let val_res = values.ack.get(&id);
+                match val_res {
+                    Some(val) => {
+                        val.acknowledge();
                     }
-                };
-
-                match header {
-                    ClientHeader::Control(control) => match control {
-                        ControlClient::Ack(v) => {
-                            let val_res = values.ack.get(&v);
-                            match val_res {
-                                Some(val) => {
-                                    val.acknowledge();
-                                }
-                                None => signals.error(&format!(
-                                    "value with id {} not found for Acknowledge",
-                                    v
-                                )),
-                            }
-                        }
-                        ControlClient::Error => {
-                            let err = match deserialize::<String>(&data.unwrap()) {
-                                Ok(e) => e,
-                                Err(_) => {
-                                    signals.error("deserializing error message from client failed");
-                                    continue;
-                                }
-                            };
-                            signals.error(&format!("Error message from client: {}", err));
-                        }
-                        _ => signals.error(&format!(
-                            "Command {} should not be processed here",
-                            control.as_str()
-                        )),
-                    },
-                    ClientHeader::Value(id, signal) => match values.values.get(&id) {
-                        Some(val) => {
-                            if let Err(e) = val.update_value(signal, data.unwrap()) {
-                                signals.error(&format!("value updating failed: {}", e));
-                            }
-                        }
-                        None => signals.error(&format!("value with id {} not found", id)),
-                    },
-                    ClientHeader::Signal(id) => match values.signals.get(&id) {
-                        Some(val) => {
-                            if let Err(e) = val.update_signal(data.unwrap()) {
-                                signals.error(&format!("signal updating failed: {}", e));
-                            }
-                        }
-                        None => signals.error(&format!("value with id {} not found", id)),
-                    },
+                    None => {
+                        signals.error(&format!("value with id {} not found for Acknowledge", id))
+                    }
                 }
             }
-            _ => signals.error("Unexpected message format"),
-        };
+            Ok(ClientMessage::Value(id, signal, data)) => match values.values.get(&id) {
+                Some(val) => {
+                    if let Err(e) = val.update_value(signal, data) {
+                        signals.error(&format!("value updating failed: {}", e));
+                    }
+                }
+                None => signals.error(&format!("value with id {} not found", id)),
+            },
+            Ok(ClientMessage::Signal(id, data)) => match values.signals.get(&id) {
+                Some(val) => {
+                    if let Err(e) = val.update_signal(data) {
+                        signals.error(&format!("signal updating failed: {}", e));
+                    }
+                }
+                None => signals.error(&format!("value with id {} not found", id)),
+            },
+            Ok(ClientMessage::Error(err)) => {
+                signals.error(&format!("Error message from client: {}", err));
+            }
+            Ok(ClientMessage::Handshake(_, _, _)) => {
+                signals.error("unexpected handshake message after connection established");
+            }
+        }
     }
 
     // acknowledge all pending values
@@ -362,41 +286,110 @@ async fn reader(
 }
 
 async fn writer(
-    mut rx: MessageReceiver,
+    rx: MessageReceiver,
     connected: Arc<AtomicBool>,
     mut websocket: SplitSink<WebSocketStream<TcpStream>, Message>,
     signals: SignalsManager,
     reader_handle: tokio::task::JoinHandle<()>,
 ) -> MessageReceiver {
+    let mut data_receiver = DataReceiver::new(rx);
     loop {
         // get message from channel
-        let msg = match rx.recv().await {
-            Some(Some(m)) => m,
+        match data_receiver.next().await {
+            Some(msg) => {
+                // if not connected, stop thread
+                if !connected.load(Ordering::Acquire) {
+                    let _ = websocket.close().await;
+                    reader_handle.abort();
+                    let _ = reader_handle.await;
+                    break;
+                }
+
+                // send message
+                let data = Message::Binary(msg.to_bytes());
+                if let Err(e) = websocket.send(data).await {
+                    signals.error(&format!("sending message to client failed: {:?}", e));
+                    reader_handle.abort();
+                    let _ = reader_handle.await;
+                    break;
+                }
+            }
             // check if message is terminate signal
-            _ => {
+            None => {
                 signals.info("writer is closing connection");
                 let _ = websocket.close().await;
                 reader_handle.abort();
                 let _ = reader_handle.await;
                 break;
             }
-        };
-
-        // if not connected, stop thread
-        if !connected.load(Ordering::Acquire) {
-            let _ = websocket.close().await;
-            reader_handle.abort();
-            let _ = reader_handle.await;
-            break;
-        }
-
-        // send message
-        if let Err(e) = websocket.send(msg).await {
-            signals.error(&format!("sending message to client failed: {:?}", e));
-            reader_handle.abort();
-            let _ = reader_handle.await;
-            break;
         }
     }
-    rx
+    data_receiver.finalize()
+}
+
+// A helper struct to receive from MessageReceiver and create micro-batches
+struct DataReceiver {
+    rx: MessageReceiver,
+    send_next: Option<SenderData>,
+    is_closed: bool,
+}
+
+impl DataReceiver {
+    fn new(rx: MessageReceiver) -> Self {
+        Self {
+            rx,
+            send_next: None,
+            is_closed: false,
+        }
+    }
+
+    async fn next(&mut self) -> Option<SenderData> {
+        // empty send_next first
+        if let Some(data) = self.send_next.take() {
+            return Some(data);
+        }
+
+        if self.is_closed {
+            return None;
+        }
+
+        match self.rx.recv().await {
+            Some(Some((mut msg, send_now))) => match send_now {
+                true => Some(msg),
+                false => {
+                    let mut counter = 0;
+                    loop {
+                        if msg.len() > MSG_SIZE_THRESHOLD || counter >= MAX_MSG_COUNT {
+                            break Some(msg);
+                        }
+
+                        match self.rx.try_recv() {
+                            Ok(Some((next_msg, send_now))) => match send_now {
+                                true => {
+                                    self.send_next = Some(next_msg);
+                                    break Some(msg);
+                                }
+                                false => {
+                                    msg.extend_from_data(&next_msg);
+                                    counter += 1;
+                                }
+                            },
+                            Err(TryRecvError::Empty) => {
+                                break Some(msg);
+                            }
+                            Ok(None) | Err(TryRecvError::Disconnected) => {
+                                self.is_closed = true;
+                                break Some(msg);
+                            }
+                        }
+                    }
+                }
+            },
+            None | Some(None) => None,
+        }
+    }
+
+    fn finalize(self) -> MessageReceiver {
+        self.rx
+    }
 }

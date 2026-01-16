@@ -1,4 +1,3 @@
-use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt, stream::SplitSink, stream::SplitStream};
 use std::net::SocketAddrV4;
 use tokio::net::TcpStream;
@@ -6,7 +5,9 @@ use tokio_tungstenite::connect_async_with_config;
 use tokio_tungstenite::tungstenite::{Message, protocol::WebSocketConfig};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
-use egui_states_core::serialization::MessageData;
+use egui_states_core::serialization::FastVec;
+
+use crate::handle_message::{MessagesParser, ServerMessage};
 
 pub(crate) async fn build_ws(address: SocketAddrV4) -> Result<(WsClientRead, WsClientSend), ()> {
     let address = format!("ws://{}/ws", address);
@@ -34,47 +35,48 @@ pub(crate) async fn build_ws(address: SocketAddrV4) -> Result<(WsClientRead, WsC
     Ok((
         WsClientRead {
             stream: socket_read,
+            parser: MessagesParser::empty(),
         },
         WsClientSend { sink: socket_write },
     ))
 }
 
-pub(crate) struct ReadData(bytes::Bytes);
-
-impl ReadData {
-    #[inline]
-    pub(crate) fn as_ref(&self) -> &[u8] {
-        self.0.as_ref()
-    }
-}
-
 pub(crate) struct WsClientRead {
     stream: SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
+    parser: MessagesParser,
 }
 
 impl WsClientRead {
-    pub(crate) async fn read(&mut self) -> Result<ReadData, ()> {
+    pub(crate) async fn read(&mut self) -> Result<ServerMessage, &'static str> {
+        if let Some(message) = self.parser.next()? {
+            return Ok(message);
+        }
+
         match self.stream.next().await {
             Some(message) => match message {
                 Ok(message) => match message {
-                    Message::Binary(data) => Ok(ReadData(data)),
-                    Message::Close(_) => Err(()),
+                    Message::Binary(data) => {
+                        let (parser, message) = MessagesParser::from_bytes(data)?;
+                        self.parser = parser;
+                        Ok(message)
+                    }
+                    Message::Close(_) => Err("Connection closed by server"),
                     _ => {
                         #[cfg(debug_assertions)]
                         println!("Unexpected message from server: {:?}", message);
-                        Err(())
+                        Err("Unexpected message from server")
                     }
                 },
                 Err(e) => {
                     #[cfg(debug_assertions)]
                     println!("Reading message from server failed: {:?}", e);
-                    Err(())
+                    Err("Reading message from server failed")
                 }
             },
             None => {
                 #[cfg(debug_assertions)]
                 println!("Connection closed by server");
-                Err(())
+                Err("Connection closed by server")
             }
         }
     }
@@ -86,16 +88,12 @@ pub(crate) struct WsClientSend {
 
 impl WsClientSend {
     #[inline]
-    pub(crate) async fn flush(&mut self) {
-        let _ = self.sink.flush().await;
+    pub(crate) async fn close(&mut self) {
+        let _ = self.sink.close().await;
     }
 
-    pub(crate) async fn send(&mut self, data: MessageData) -> Result<(), ()> {
-        let message = match data {
-            MessageData::Heap(vec) => Message::Binary(Bytes::from_owner(vec)),
-            MessageData::Stack(vec) => Message::Binary(Bytes::from_owner(vec)),
-        };
-
+    pub(crate) async fn send(&mut self, data: FastVec<64>) -> Result<(), ()> {
+        let message = Message::Binary(data.to_bytes());
         match self.sink.send(message).await {
             Ok(_) => Ok(()),
             Err(e) => {

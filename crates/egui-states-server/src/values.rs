@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use bytes::Bytes;
 
-use egui_states_core::serialization::{ServerHeader, ser_server_value};
+use egui_states_core::serialization::ServerHeader;
 
 use crate::sender::MessageSender;
 use crate::server::{Acknowledge, EnableTrait, SyncTrait};
@@ -48,11 +48,11 @@ impl Value {
 
         let mut w = self.value.write();
         if w.1 == 0 {
-            w.0 = value.clone();
-        }
+            if signal {
+                self.signals.set(self.id, value.clone());
+            }
 
-        if signal {
-            self.signals.set(self.id, value);
+            w.0 = value;
         }
 
         Ok(())
@@ -63,12 +63,10 @@ impl Value {
         self.value.read().0.clone()
     }
 
-    pub(crate) fn set(&self, value: Bytes, set_signals: bool, update: bool) {
+    pub(crate) fn set(&self, value: Bytes, set_signals: bool, update: bool) -> Result<(), ()> {
         if self.connected.load(Ordering::Relaxed) && self.enabled.load(Ordering::Relaxed) {
             let mut w = self.value.write();
-
-            let header = ServerHeader::Value(self.id, update);
-            let message = header.serialize_to_bytes_data(Some(value.clone()));
+            let message = ServerHeader::serialize_value(self.id, update, &value)?;
 
             w.0 = value.clone();
             w.1 += 1;
@@ -84,6 +82,7 @@ impl Value {
                 self.signals.set(self.id, value);
             }
         }
+        Ok(())
     }
 }
 
@@ -97,14 +96,14 @@ impl Acknowledge for Value {
 }
 
 impl SyncTrait for Value {
-    fn sync(&self) {
+    fn sync(&self) -> Result<(), ()> {
         let mut w = self.value.write();
         w.1 = 1;
-        let header = ServerHeader::Value(self.id, false);
-        let data = ser_server_value(header, &w.0);
+        let data = ServerHeader::serialize_value(self.id, false, &w.0)?;
         drop(w);
 
         self.sender.send(data);
+        Ok(())
     }
 }
 
@@ -139,12 +138,10 @@ impl ValueStatic {
         })
     }
 
-    pub(crate) fn set(&self, value: Bytes, update: bool) {
+    pub(crate) fn set(&self, value: Bytes, update: bool) -> Result<(), ()> {
         if self.connected.load(Ordering::Relaxed) && self.enabled.load(Ordering::Relaxed) {
             let mut w = self.value.write();
-
-            let header = ServerHeader::Static(self.id, update);
-            let message = header.serialize_to_bytes_data(Some(value.clone()));
+            let message = ServerHeader::serialize_static(self.id, update, &value)?;
 
             *w = value;
             self.sender.send(message);
@@ -152,6 +149,7 @@ impl ValueStatic {
             let mut w = self.value.write();
             *w = value;
         }
+        Ok(())
     }
 
     #[inline]
@@ -161,15 +159,15 @@ impl ValueStatic {
 }
 
 impl SyncTrait for ValueStatic {
-    fn sync(&self) {
+    fn sync(&self) -> Result<(), ()> {
         if self.enabled.load(Ordering::Relaxed) {
             let w = self.value.read();
-            let header = ServerHeader::Static(self.id, false);
-            let data = ser_server_value(header, &w);
+            let data = ServerHeader::serialize_static(self.id, false, &w)?;
             drop(w);
 
             self.sender.send(data);
         }
+        Ok(())
     }
 }
 

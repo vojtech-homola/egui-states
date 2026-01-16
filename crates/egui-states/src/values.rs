@@ -3,9 +3,9 @@ use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use egui_states_core::serialization::{ClientHeader, deserialize, serialize_value_to_message};
+use egui_states_core::serialization::{deserialize, to_message};
 
-use crate::sender::MessageSender;
+use crate::sender::{ChannelMessage, MessageSender};
 
 pub struct Diff<'a, T> {
     pub v: T,
@@ -42,14 +42,37 @@ pub trait UpdateValue: Sync + Send {
     fn update_value(&self, data: &[u8]) -> Result<(), String>;
 }
 
+pub trait GetQueueType: Sync + Send + 'static {
+    fn is_queue() -> bool;
+}
+
+pub struct NoQueue;
+
+impl GetQueueType for NoQueue {
+    #[inline]
+    fn is_queue() -> bool {
+        false
+    }
+}
+
+pub struct Queue;
+
+impl GetQueueType for Queue {
+    #[inline]
+    fn is_queue() -> bool {
+        true
+    }
+}
+
 // Value --------------------------------------------
-pub struct Value<T> {
+pub struct Value<T, Q: GetQueueType = NoQueue> {
     id: u64,
     value: RwLock<T>,
     sender: MessageSender,
+    _phantom: PhantomData<Q>,
 }
 
-impl<T> Value<T>
+impl<T, Q: GetQueueType> Value<T, Q>
 where
     T: Serialize + Clone,
 {
@@ -58,6 +81,7 @@ where
             id,
             value: RwLock::new(value),
             sender,
+            _phantom: PhantomData,
         })
     }
 
@@ -72,48 +96,52 @@ where
 
     pub fn write<R>(&self, mut f: impl FnMut(&mut T) -> R) -> R {
         let mut w = self.value.write();
+
         let result = f(&mut w);
 
-        let data = serialize_value_to_message(&*w);
-        let header = ClientHeader::Value(self.id, false);
-        self.sender.send_data(header, data);
+        let data = to_message(&*w);
+        self.sender
+            .send(ChannelMessage::Value(self.id, false, data));
         result
     }
 
     pub fn write_signal<R>(&self, mut f: impl FnMut(&mut T) -> R) -> R {
         let mut w = self.value.write();
+
         let result = f(&mut w);
 
-        let data = serialize_value_to_message(&*w);
-        let header = ClientHeader::Value(self.id, true);
-        self.sender.send_data(header, data);
+        let data = to_message(&*w);
+        self.sender.send(ChannelMessage::Value(self.id, true, data));
         result
     }
 
     pub fn set(&self, value: T) {
-        let data = serialize_value_to_message(&value);
-        let header = ClientHeader::Value(self.id, false);
+        let data = to_message(&value);
+
         let mut w = self.value.write();
-        self.sender.send_data(header, data);
+        self.sender
+            .send(ChannelMessage::Value(self.id, false, data));
         *w = value;
     }
 
     pub fn set_signal(&self, value: T) {
-        let data = serialize_value_to_message(&value);
-        let header = ClientHeader::Value(self.id, true);
+        let data = to_message(&value);
+
         let mut w = self.value.write();
-        self.sender.send_data(header, data);
+        self.sender.send(ChannelMessage::Value(self.id, true, data));
         *w = value;
     }
 }
 
-impl<T: for<'a> Deserialize<'a> + Send + Sync> UpdateValue for Value<T> {
+impl<T: for<'a> Deserialize<'a> + Send + Sync, Q: GetQueueType + Send + Sync> UpdateValue
+    for Value<T, Q>
+{
     fn update_value(&self, data: &[u8]) -> Result<(), String> {
         let value = deserialize(data)
             .map_err(|e| format!("Parse error: {} for value id: {}", e, self.id))?;
 
         let mut w = self.value.write();
-        self.sender.send(ClientHeader::ack(self.id));
+        self.sender.send(ChannelMessage::Ack(self.id));
         *w = value;
 
         Ok(())
@@ -154,13 +182,13 @@ impl<T: for<'a> Deserialize<'a> + Send + Sync> UpdateValue for ValueStatic<T> {
 }
 
 // Signal --------------------------------------------
-pub struct Signal<T> {
+pub struct Signal<T, Q: GetQueueType = NoQueue> {
     id: u64,
     sender: MessageSender,
-    phantom: PhantomData<T>,
+    phantom: PhantomData<(T, Q)>,
 }
 
-impl<T: Serialize + Clone> Signal<T> {
+impl<T: Serialize + Clone, Q: GetQueueType> Signal<T, Q> {
     pub(crate) fn new(id: u64, sender: MessageSender) -> Arc<Self> {
         Arc::new(Self {
             id,
@@ -170,8 +198,7 @@ impl<T: Serialize + Clone> Signal<T> {
     }
 
     pub fn set(&self, value: impl Into<T>) {
-        let message = serialize_value_to_message(&value.into());
-        let header = ClientHeader::Signal(self.id);
-        self.sender.send_data(header, message);
+        let message = to_message(&value.into());
+        self.sender.send(ChannelMessage::Signal(self.id, message));
     }
 }

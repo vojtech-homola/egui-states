@@ -6,9 +6,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tokio_tungstenite::tungstenite::Bytes;
 
 use egui_states_core::collections::MapHeader;
-use egui_states_core::serialization::{ServerHeader, serialize_value_vec};
+use egui_states_core::serialization::{FastVec, ServerHeader, serialize};
 
-use crate::sender::MessageSender;
+use crate::sender::{MessageSender, SenderData};
 use crate::server::{EnableTrait, SyncTrait};
 
 pub(crate) struct ValueMap {
@@ -30,44 +30,57 @@ impl ValueMap {
         })
     }
 
-    fn serialize_all(&self, map: &HashMap<Bytes, Bytes>, update: bool) -> Bytes {
-        let mut data = Vec::new();
+    fn serialize_all(&self, map: &HashMap<Bytes, Bytes>, update: bool) -> Result<SenderData, ()> {
         let len = map.len() as u64;
-        let header = ServerHeader::Map(self.id, update, MapHeader::All);
-        serialize_value_vec(&header, &mut data);
-        serialize_value_vec(&len, &mut data);
+        let len_data: FastVec<10> = serialize(&len)?;
+        let mut size = 0;
+        map.iter().for_each(|(k, v)| {
+            size += k.len();
+            size += v.len();
+        });
+        let all_size = (size + len_data.len()) as u32;
+        let header = ServerHeader::Map(self.id, update, MapHeader::All, all_size);
+
+        let mut data = serialize(&header)?;
+        data.extend_from_data(&len_data);
         map.iter().for_each(|(k, v)| {
             data.extend_from_slice(&k);
             data.extend_from_slice(&v);
         });
-        Bytes::from_owner(data)
+
+        Ok(data)
     }
 
-    pub(crate) fn set(&self, map: HashMap<Bytes, Bytes>, update: bool) {
+    pub(crate) fn set(&self, map: HashMap<Bytes, Bytes>, update: bool) -> Result<(), ()> {
         let mut w = self.map.write();
 
         if self.connected.load(Ordering::Relaxed) && self.enabled.load(Ordering::Relaxed) {
-            let data = self.serialize_all(&map, update);
+            let data = self.serialize_all(&map, update)?;
             self.sender.send(data);
         }
 
         *w = map;
+        Ok(())
     }
 
     pub(crate) fn get(&self) -> HashMap<Bytes, Bytes> {
         self.map.read().clone()
     }
 
-    pub(crate) fn set_item(&self, key: Bytes, value: Bytes, update: bool) {
+    pub(crate) fn set_item(&self, key: Bytes, value: Bytes, update: bool) -> Result<(), ()> {
         let mut w = self.map.write();
 
         if self.connected.load(Ordering::Relaxed) && self.enabled.load(Ordering::Relaxed) {
-            let header = ServerHeader::Map(self.id, update, MapHeader::Set);
-            let mut data = Vec::new();
-            serialize_value_vec(&header, &mut data);
+            let header = ServerHeader::Map(
+                self.id,
+                update,
+                MapHeader::Set,
+                (key.len() + value.len()) as u32,
+            );
+            let mut data = serialize(&header)?;
             data.extend_from_slice(&key);
             data.extend_from_slice(&value);
-            self.sender.send(Bytes::from_owner(data));
+            self.sender.send(data);
         }
 
         match w.get_mut(&key) {
@@ -76,6 +89,7 @@ impl ValueMap {
                 w.insert(key, value);
             }
         }
+        Ok(())
     }
 
     pub(crate) fn get_item(&self, key: &Bytes) -> Option<Bytes> {
@@ -85,20 +99,22 @@ impl ValueMap {
         }
     }
 
-    pub(crate) fn remove_item(&self, key: &Bytes, update: bool) -> Option<Bytes> {
+    pub(crate) fn remove_item(&self, key: &Bytes, update: bool) -> Result<Option<Bytes>, ()> {
         let mut w = self.map.write();
-        let old = w.remove(key)?;
+        let old = match w.remove(key) {
+            Some(v) => v,
+            None => return Ok(None),
+        };
 
         if self.connected.load(Ordering::Relaxed) && self.enabled.load(Ordering::Relaxed) {
-            let header = ServerHeader::Map(self.id, update, MapHeader::Remove);
-            let mut data = Vec::new();
-            serialize_value_vec(&header, &mut data);
+            let header = ServerHeader::Map(self.id, update, MapHeader::Remove, key.len() as u32);
+            let mut data = serialize(&header)?;
             data.extend_from_slice(&key);
-            self.sender.send(Bytes::from_owner(data));
+            self.sender.send(data);
         }
 
         drop(w);
-        Some(old)
+        Ok(Some(old))
     }
 
     pub(crate) fn len(&self) -> usize {
@@ -107,7 +123,14 @@ impl ValueMap {
 }
 
 impl SyncTrait for ValueMap {
-    fn sync(&self) {}
+    fn sync(&self) -> Result<(), ()> {
+        if self.enabled.load(Ordering::Relaxed) {
+            let r = self.map.read();
+            let data = self.serialize_all(&r, false)?;
+            self.sender.send(data);
+        }
+        Ok(())
+    }
 }
 
 impl EnableTrait for ValueMap {

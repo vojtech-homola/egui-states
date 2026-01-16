@@ -3,12 +3,10 @@ use parking_lot::RwLock;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use tokio_tungstenite::tungstenite::Bytes;
-
 use egui_states_core::image::{ImageHeader, ImageType};
 
 use crate::event::Event;
-use crate::sender::MessageSender;
+use crate::sender::{MessageSender, SenderData};
 use crate::server::{Acknowledge, EnableTrait, SyncTrait};
 
 struct ImageDataInner {
@@ -88,7 +86,9 @@ impl ValueImage {
             };
             let mut head_buff = [0u8; 64];
             let header = ServerHeader::Image(self.id, update, image_header);
-            let buff = header.serialize_to_slice(&mut head_buff);
+            let buff = header
+                .serialize_to_slice(&mut head_buff)
+                .map_err(|_| "Failed to serialize image header")?;
 
             let offset = buff.len();
             let data_size = image.size[0] * image.size[1] * image.image_type.bytes_per_pixel();
@@ -171,7 +171,7 @@ impl ValueImage {
                 return Ok(());
             }
 
-            self.sender.send(Bytes::from(data));
+            self.sender.send_single(SenderData::from_vec(data));
         }
 
         Ok(())
@@ -191,11 +191,11 @@ impl EnableTrait for ValueImage {
 }
 
 impl SyncTrait for ValueImage {
-    fn sync(&self) {
+    fn sync(&self) -> Result<(), ()> {
         let w = self.image.read();
         if !self.enabled.load(Ordering::Relaxed) || w.size[0] == 0 || w.size[1] == 0 {
             self.event.set();
-            return;
+            return Ok(());
         }
 
         let mut head_buff = [0u8; 64];
@@ -205,7 +205,7 @@ impl SyncTrait for ValueImage {
             image_type: ImageType::ColorAlpha,
         };
         let header = ServerHeader::Image(self.id, false, image_header);
-        let buff = header.serialize_to_slice(&mut head_buff);
+        let buff = header.serialize_to_slice(&mut head_buff)?;
 
         let mut data = Vec::with_capacity(buff.len() + w.data.len());
         unsafe { data.set_len(buff.len() + w.data.len()) };
@@ -214,7 +214,8 @@ impl SyncTrait for ValueImage {
         drop(w);
 
         self.event.clear();
-        self.sender.send(Bytes::from(data));
+        self.sender.send_single(SenderData::from_vec(data));
+        Ok(())
     }
 }
 

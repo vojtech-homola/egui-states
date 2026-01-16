@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
 use egui_states::{
-    Signal, State, StatesCreator, Value, ValueGraphs, ValueImage, ValueList, ValueMap, ValueStatic,
+    Queue, Signal, State, StatesCreator, Value, ValueGraphs, ValueImage, ValueList, ValueMap,
+    ValueStatic,
 };
 use egui_states::{state_enum, state_struct};
 
@@ -34,7 +35,7 @@ pub(crate) struct TestStruct2 {
 
 pub(crate) struct MySubState {
     pub sub_value: Arc<Value<Option<i32>>>,
-    pub test_enum: Arc<Value<TestEnum>>,
+    pub test_enum: Arc<Value<TestEnum, Queue>>,
     pub stat: Arc<ValueStatic<[f64; 3]>>,
     pub test_signal: Arc<Signal<f64>>,
     pub signal_emp: Arc<Signal<()>>,
@@ -72,7 +73,8 @@ impl State for Collections {
 
 pub struct States {
     pub(crate) value: Arc<Value<f64>>,
-    pub(crate) empty_signal: Arc<Signal<()>>,
+    pub(crate) value2: Arc<Value<f32>>,
+    pub(crate) empty_signal: Arc<Signal<(), Queue>>,
     pub(crate) image: Arc<ValueImage>,
     pub(crate) graphs: Arc<ValueGraphs<f32>>,
     pub(crate) test_enum: Arc<Value<TestEnum>>,
@@ -90,6 +92,7 @@ impl State for States {
     fn new(c: &mut impl StatesCreator) -> Self {
         Self {
             value: c.add_value("value", 0.0),
+            value2: c.add_value("value2", 0.0f32),
             empty_signal: c.add_signal("empty_signal"),
             image: c.add_image("image"),
             graphs: c.add_graphs("graphs"),

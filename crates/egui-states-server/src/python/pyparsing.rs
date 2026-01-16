@@ -1,4 +1,4 @@
-use pyo3::exceptions::PyValueError;
+use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::types::{PyDict, PyList, PyNone, PyTuple};
 use pyo3::{IntoPyObjectExt, prelude::*};
 
@@ -13,51 +13,51 @@ pub(crate) fn serialize_py(
     match object_type {
         ObjectType::U8 => {
             let value: u8 = obj.extract()?;
-            creator.add(&value);
+            creator.add(&value)
         }
         ObjectType::U16 => {
             let value: u16 = obj.extract()?;
-            creator.add(&value);
+            creator.add(&value)
         }
         ObjectType::U32 => {
             let value: u32 = obj.extract()?;
-            creator.add(&value);
+            creator.add(&value)
         }
         ObjectType::U64 => {
             let value: u64 = obj.extract()?;
-            creator.add(&value);
+            creator.add(&value)
         }
         ObjectType::I8 => {
             let value: i8 = obj.extract()?;
-            creator.add(&value);
+            creator.add(&value)
         }
         ObjectType::I16 => {
             let value: i16 = obj.extract()?;
-            creator.add(&value);
+            creator.add(&value)
         }
         ObjectType::I32 => {
             let value: i32 = obj.extract()?;
-            creator.add(&value);
+            creator.add(&value)
         }
         ObjectType::I64 => {
             let value: i64 = obj.extract()?;
-            creator.add(&value);
+            creator.add(&value)
         }
         ObjectType::F32 => {
             let value: f32 = obj.extract()?;
-            creator.add(&value);
+            creator.add(&value)
         }
         ObjectType::F64 => {
             let value: f64 = obj.extract()?;
-            creator.add(&value);
+            creator.add(&value)
         }
         ObjectType::Bool => {
             let value: bool = obj.extract()?;
-            creator.add(&value);
+            creator.add(&value)
         }
         ObjectType::String => {
             let value: String = obj.extract()?;
-            creator.add(&value);
+            creator.add(&value)
         }
         ObjectType::Enum(_) => {
             let member_names = obj.getattr("_member_names_")?;
@@ -65,7 +65,7 @@ pub(crate) fn serialize_py(
             let value = member_names.cast::<PyList>()?.index(name)? as u32;
 
             // let value: u32 = obj.call_method0("index")?.extract()?;
-            creator.add(&value);
+            creator.add(&value)
         }
         ObjectType::Tuple(vec) => {
             let tuple = obj.cast::<PyTuple>()?;
@@ -79,6 +79,7 @@ pub(crate) fn serialize_py(
                 let item = tuple.get_item(i)?;
                 serialize_py(&item, item_type, creator)?;
             }
+            Ok(())
         }
         ObjectType::Class(vec, _) => {
             let list = obj.call_method0("__getstate__")?.cast::<PyDict>()?.values();
@@ -86,6 +87,7 @@ pub(crate) fn serialize_py(
                 let item = list.get_item(i)?;
                 serialize_py(&item, item_type, creator)?;
             }
+            Ok(())
         }
         ObjectType::List(size, items_type) => {
             let list = obj.cast::<pyo3::types::PyList>()?;
@@ -98,36 +100,47 @@ pub(crate) fn serialize_py(
             for item in list.iter() {
                 serialize_py(&item, items_type, creator)?;
             }
+            Ok(())
         }
         ObjectType::Vec(items_type) => {
             let list = obj.cast::<pyo3::types::PyList>()?;
-            creator.add::<u64>(&(list.len() as u64));
+            creator
+                .add::<u64>(&(list.len() as u64))
+                .map_err(|_| PyRuntimeError::new_err("Failed to serialize value."))?;
 
             for item in list.iter() {
                 serialize_py(&item, items_type, creator)?;
             }
+            Ok(())
         }
         ObjectType::Map(key_type, value_type) => {
             let dict = obj.cast::<pyo3::types::PyDict>()?;
-            creator.add(&(dict.len() as u64));
+            creator
+                .add(&(dict.len() as u64))
+                .map_err(|_| PyRuntimeError::new_err("Failed to serialize value."))?;
 
             for (key, value) in dict.iter() {
                 serialize_py(&key, key_type, creator)?;
                 serialize_py(&value, value_type, creator)?;
             }
+            Ok(())
         }
         ObjectType::Option(object_type) => {
             if obj.is_none() {
-                creator.add(&0u8);
+                creator
+                    .add(&0u8)
+                    .map_err(|_| PyRuntimeError::new_err("Failed to serialize value."))?;
             } else {
-                creator.add(&1u8);
+                creator
+                    .add(&1u8)
+                    .map_err(|_| PyRuntimeError::new_err("Failed to serialize value."))?;
                 serialize_py(obj, object_type, creator)?;
             }
+            Ok(())
         }
-        ObjectType::Empty => {}
+        ObjectType::Empty => Ok(()),
     }
-
-    Ok(())
+    .map_err(|_| PyRuntimeError::new_err("Failed to serialize value."))
 }
 
 pub(crate) fn deserialize_py<'py, 'a>(

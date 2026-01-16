@@ -69,7 +69,7 @@ class _SignalBase(_StaticBase):
 
         In queue mode, changes of the value are queued and are all processed with single thread.
         """
-        self._server.signal_set_to_multi(self._value_id)
+        self._server.signal_set_to_queue(self._value_id)
 
     def signal_set_to_single(self) -> None:
         """Set the value to single mode. It is the default mode.
@@ -82,14 +82,16 @@ class _SignalBase(_StaticBase):
 class Value[T](_SignalBase):
     """General UI value of type T."""
 
-    def __init__(self, obj_id: int, initial_value: T):
+    def __init__(self, obj_id: int, initial_value: T, queue: bool = False) -> None:
         self._initial_value = initial_value
         self._obj_id = obj_id
+        self._queue = queue
 
     def _initialize(self, name: str, types: list[PyObjectType]) -> None:
-        self._value_id = self._server.add_value(name, types[self._obj_id], self._initial_value)
+        self._value_id = self._server.add_value(name, types[self._obj_id], self._initial_value, self._queue)
         del self._initial_value
         del self._obj_id
+        del self._queue
 
     def set(self, value: T, set_signal: bool = False, update: bool = False) -> None:
         """Set the value of the UI element.
@@ -163,12 +165,14 @@ class ValueStatic[T](_StaticBase):
 class Signal[T](_SignalBase):
     """Signal from UI."""
 
-    def __init__(self, obj_id: int) -> None:
+    def __init__(self, obj_id: int, queue: bool = False) -> None:
         self._obj_id = obj_id
+        self._queue = queue
 
     def _initialize(self, name: str, types: list[PyObjectType]) -> None:
-        self._value_id = self._server.add_signal(name, types[self._obj_id])
+        self._value_id = self._server.add_signal(name, types[self._obj_id], self._queue)
         del self._obj_id
+        del self._queue
 
     def set(self, value: T) -> None:
         """Set the signal value.
@@ -204,8 +208,12 @@ class Signal[T](_SignalBase):
 class SignalEmpty(_SignalBase):
     """Empty Signal from UI."""
 
+    def __init__(self, queue: bool = False) -> None:
+        self._queue = queue
+
     def _initialize(self, name: str, types: list[PyObjectType]) -> None:
-        self._value_id = self._server.add_signal(name, _core.emp)
+        self._value_id = self._server.add_signal(name, _core.emp, self._queue)
+        del self._queue
 
     def set(self) -> None:
         """Set the signal value.

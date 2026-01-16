@@ -4,12 +4,12 @@ use egui::Context;
 use tokio::sync::mpsc::UnboundedReceiver;
 
 use egui_states_core::PROTOCOL_VERSION;
-use egui_states_core::serialization::ClientHeader;
+use egui_states_core::serialization::{ClientHeader, FastVec};
 
 use crate::State;
 use crate::client_base::{Client, ConnectionState};
 use crate::client_states::{StatesCreatorClient, ValuesList};
-use crate::handle_message::{check_types, handle_message};
+use crate::handle_message::{handle_message, parse_to_send};
 use crate::sender::{ChannelMessage, MessageSender};
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -18,10 +18,13 @@ use crate::websocket::build_ws;
 #[cfg(target_arch = "wasm32")]
 use crate::websocket_wasm::build_ws;
 
+const MSG_SIZE_THRESHOLD: usize = 1024 * 1024 * 10; // 10 MB
+const MAX_MSG_COUNT: usize = 10;
+
 async fn start_gui_client(
     addr: SocketAddrV4,
     vals: ValuesList,
-    mut rx: UnboundedReceiver<ChannelMessage>,
+    mut rx: UnboundedReceiver<Option<ChannelMessage>>,
     sender: MessageSender,
     ui_state: Client,
     handshake: u64,
@@ -44,36 +47,14 @@ async fn start_gui_client(
         }
 
         // communicate handshake and initialization -------------------------
-        let message = ClientHeader::serialize_handshake(PROTOCOL_VERSION, handshake);
+        let message =
+            ClientHeader::serialize_handshake(PROTOCOL_VERSION, handshake, vals.types.clone());
         if let Err(_) = socket_send.send(message).await {
             #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
             println!("Sending handshake failed.");
             #[cfg(all(debug_assertions, target_arch = "wasm32"))]
             log::error!("Sending handshake failed.");
             continue;
-        }
-
-        // process and send states types
-        match socket_read.read().await {
-            Ok(data) => match check_types(data.as_ref(), &vals) {
-                Ok(message) => {
-                    if let Err(_) = socket_send.send(message).await {
-                        #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
-                        println!("Sending states types failed.");
-                        #[cfg(all(debug_assertions, target_arch = "wasm32"))]
-                        log::error!("Sending states types failed.");
-                        continue;
-                    }
-                }
-                Err(_) => continue,
-            },
-            Err(_) => {
-                #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
-                println!("Receiving states types failed.");
-                #[cfg(all(debug_assertions, target_arch = "wasm32"))]
-                log::error!("Receiving states types failed.");
-                continue;
-            }
         }
 
         // read -----------------------------------------
@@ -85,16 +66,20 @@ async fn start_gui_client(
             loop {
                 // read the message
                 match socket_read.read().await {
-                    Ok(data) => {
-                        if let Err(e) = handle_message(data.as_ref(), &th_vals, &th_ui_state).await
-                        {
+                    Ok(msg) => {
+                        if let Err(e) = handle_message(msg, &th_vals, &th_ui_state).await {
                             let error = format!("handling message from server failed: {:?}", e);
-                            let (header, data) = ClientHeader::error(error);
-                            th_sender.send_data(header, data);
+                            th_sender.send(ChannelMessage::Error(error));
                             // break; TODO: decide if we want to break the loop on error
                         }
                     }
-                    Err(_) => break,
+                    Err(e) => {
+                        #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
+                        println!("Connection with server failed: {:?}", e);
+                        #[cfg(all(debug_assertions, target_arch = "wasm32"))]
+                        log::error!("Connection with server failed: {:?}", e);
+                        break;
+                    }
                 }
             }
             th_sender.close();
@@ -106,22 +91,50 @@ async fn start_gui_client(
         // send -----------------------------------------
         let send_future = async move {
             loop {
-                // wait for the message from the channel
                 match rx.recv().await.unwrap() {
-                    Some((header, data)) => {
-                        let message = header.serialize_message(data);
-                        // write the message
-                        if let Err(_) = socket_send.send(message).await {
+                    Some(msg) => {
+                        let message = FastVec::<64>::new();
+                        let mut message = parse_to_send(msg, message);
+                        let mut counter = 0;
+                        let stop = loop {
+                            match rx.try_recv() {
+                                Ok(Some(msg)) => {
+                                    counter += 1;
+                                    message = parse_to_send(msg, message);
+
+                                    if counter > MAX_MSG_COUNT || message.len() > MSG_SIZE_THRESHOLD
+                                    {
+                                        if let Err(_) = socket_send.send(message).await {
+                                            break true;
+                                        }
+                                        message = FastVec::<64>::new();
+                                        counter = 0;
+                                    }
+                                }
+                                Ok(None) => {
+                                    let _ = socket_send.send(message).await;
+                                    break true;
+                                }
+                                Err(_) => {
+                                    if let Err(_) = socket_send.send(message).await {
+                                        break true;
+                                    }
+                                    break false;
+                                }
+                            }
+                        };
+
+                        if stop {
                             break;
                         }
                     }
                     // check if the message is terminate
                     None => {
-                        socket_send.flush().await;
                         break;
                     }
                 }
             }
+            socket_send.close().await;
             rx
         };
 
@@ -152,7 +165,7 @@ async fn start_gui_client(
 pub struct ClientBuilder {
     creator: StatesCreatorClient,
     sender: MessageSender,
-    rx: UnboundedReceiver<ChannelMessage>,
+    rx: UnboundedReceiver<Option<ChannelMessage>>,
     addr: Ipv4Addr,
     context: Option<Context>,
 }

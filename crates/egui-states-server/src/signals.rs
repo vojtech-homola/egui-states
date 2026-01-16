@@ -6,13 +6,13 @@ use parking_lot::Mutex;
 
 use egui_states_core::generate_value_id;
 use egui_states_core::nohash::{NoHashMap, NoHashSet};
-use egui_states_core::serialization::serialize_value_vec;
+use egui_states_core::serialization::{FastVec, serialize_to_data};
 
 use crate::event::Event;
 
 enum Signal {
     Single(Bytes),
-    Multi(VecDeque<Bytes>),
+    Queue(VecDeque<Bytes>),
 }
 
 struct OrderedMap {
@@ -41,7 +41,7 @@ impl OrderedMap {
             }
             Entry::Occupied(mut e) => match e.get_mut() {
                 Signal::Single(v) => *v = value,
-                Signal::Multi(v) => v.push_back(value),
+                Signal::Queue(v) => v.push_back(value),
             },
         }
         self.indexes.push_back(id);
@@ -54,7 +54,7 @@ impl OrderedMap {
                 Signal::Single(v) => Some(v),
                 _ => unreachable!(),
             },
-            Some(Signal::Multi(queue)) => queue.pop_front(),
+            Some(Signal::Queue(queue)) => queue.pop_front(),
         }
     }
 
@@ -71,7 +71,7 @@ impl OrderedMap {
         None
     }
 
-    fn set_to_multi(&mut self, id: u64) {
+    fn set_to_queue(&mut self, id: u64) {
         if let Some(signal) = self.values.remove(&id) {
             let res = match signal {
                 Signal::Single(v) => {
@@ -79,11 +79,11 @@ impl OrderedMap {
                     vec.push_back(v);
                     vec
                 }
-                Signal::Multi(vec) => vec,
+                Signal::Queue(vec) => vec,
             };
-            self.values.insert(id, Signal::Multi(res));
+            self.values.insert(id, Signal::Queue(res));
         } else {
-            self.values.insert(id, Signal::Multi(VecDeque::new()));
+            self.values.insert(id, Signal::Queue(VecDeque::new()));
         }
     }
 
@@ -91,7 +91,7 @@ impl OrderedMap {
         if let Some(signal) = self.values.remove(&id) {
             let res = match signal {
                 Signal::Single(v) => Some(v),
-                Signal::Multi(mut vec) => vec.pop_back(),
+                Signal::Queue(mut vec) => vec.pop_back(),
             };
 
             if let Some(res) = res {
@@ -203,35 +203,37 @@ impl SignalsManager {
         self.values.lock().clear();
     }
 
-    fn serialize_message(level: u8, text: impl ToString) -> Bytes {
+    fn serialize_message(level: u8, text: impl ToString) -> Result<Bytes, ()> {
         let data = text.to_string();
-        let mut message = Vec::new();
-        // serialize_value_vec(&0, &mut message);
-        serialize_value_vec(&level, &mut message);
-        serialize_value_vec(&data, &mut message);
-        // message.extend_from_slice(&data);
-        Bytes::from_owner(message)
+        let message = FastVec::<64>::new();
+        let message = serialize_to_data(&level, message)?;
+        let message = serialize_to_data(&data, message)?;
+        Ok(message.to_bytes())
     }
 
     #[allow(dead_code)]
     pub(crate) fn debug(&self, message: impl ToString) {
-        let data = Self::serialize_message(0u8, message);
-        self.set(self.logging_id, data);
+        if let Ok(data) = Self::serialize_message(0u8, message) {
+            self.set(self.logging_id, data);
+        }
     }
 
     pub(crate) fn info(&self, message: impl ToString) {
-        let data = Self::serialize_message(1u8, message);
-        self.set(self.logging_id, data);
+        if let Ok(data) = Self::serialize_message(1u8, message) {
+            self.set(self.logging_id, data);
+        }
     }
 
     pub(crate) fn warning(&self, message: impl ToString) {
-        let data = Self::serialize_message(2u8, message);
-        self.set(self.logging_id, data);
+        if let Ok(data) = Self::serialize_message(2u8, message) {
+            self.set(self.logging_id, data);
+        }
     }
 
     pub(crate) fn error(&self, message: impl ToString) {
-        let data = Self::serialize_message(3u8, message);
-        self.set(self.logging_id, data);
+        if let Ok(data) = Self::serialize_message(3u8, message) {
+            self.set(self.logging_id, data);
+        }
     }
 
     pub(crate) fn wait_changed_value(&self, last_id: Option<u64>) -> (u64, Bytes) {
@@ -251,8 +253,8 @@ impl SignalsManager {
         }
     }
 
-    pub(crate) fn set_to_multi(&self, id: u64) {
-        self.values.lock().values.set_to_multi(id);
+    pub(crate) fn set_to_queue(&self, id: u64) {
+        self.values.lock().values.set_to_queue(id);
     }
 
     pub(crate) fn set_to_single(&self, id: u64) {

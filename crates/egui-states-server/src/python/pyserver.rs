@@ -247,8 +247,11 @@ impl StateServerCore {
         self.server.write().disconnect_client();
     }
 
-    fn update(&self, duration: Option<f32>) {
-        self.server.write().update(duration);
+    fn update(&self, duration: Option<f32>) -> PyResult<()> {
+        self.server
+            .write()
+            .update(duration)
+            .map_err(|_| PyRuntimeError::new_err("Update failed."))
     }
 
     // values -----------------------------------------------------------
@@ -269,8 +272,8 @@ impl StateServerCore {
         let mut creator = ValueCreator::new();
         pyparsing::serialize_py(value, object_type, &mut creator)?;
         let data = creator.finalize();
-        val.set(data, set_signal, update);
-        Ok(())
+        val.set(data, set_signal, update)
+            .map_err(|_| PyRuntimeError::new_err("Value set failed."))
     }
 
     // static values ----------------------------------------------------
@@ -285,8 +288,8 @@ impl StateServerCore {
         let mut creator = ValueCreator::new();
         pyparsing::serialize_py(value, object_type, &mut creator)?;
         let data = creator.finalize();
-        val.set(data, update);
-        Ok(())
+        val.set(data, update)
+            .map_err(|_| PyRuntimeError::new_err("Static value set failed."))
     }
 
     // signals ----------------------------------------------------------
@@ -330,8 +333,8 @@ impl StateServerCore {
         }
     }
 
-    fn signal_set_to_multi(&self, value_id: u64) {
-        self.signals.set_to_multi(value_id);
+    fn signal_set_to_queue(&self, value_id: u64) {
+        self.signals.set_to_queue(value_id);
     }
 
     fn signal_set_to_single(&self, value_id: u64) {
@@ -352,8 +355,8 @@ impl StateServerCore {
             let data = creator.finalize();
             vec.push(data);
         }
-        list.set(vec, update);
-        Ok(())
+        list.set(vec, update)
+            .map_err(|_| PyRuntimeError::new_err("Failed to set list."))
     }
 
     fn list_get<'py>(&self, py: Python<'py>, value_id: u64) -> PyResult<Bound<'py, PyList>> {
@@ -420,8 +423,8 @@ impl StateServerCore {
         let mut creator = ValueCreator::new();
         pyparsing::serialize_py(item, value_type, &mut creator)?;
         let data = creator.finalize();
-        list.append_item(data, update);
-        Ok(())
+        list.append_item(data, update)
+            .map_err(|_| PyRuntimeError::new_err("Failed to append item to list."))
     }
 
     fn list_len(&self, value_id: u64) -> PyResult<usize> {
@@ -448,8 +451,8 @@ impl StateServerCore {
 
             new_map.insert(key_data, value_data);
         }
-        map.set(new_map, update);
-        Ok(())
+        map.set(new_map, update)
+            .map_err(|_| PyRuntimeError::new_err("Failed to set map."))
     }
 
     fn map_get<'py>(&self, py: Python<'py>, value_id: u64) -> PyResult<Bound<'py, PyDict>> {
@@ -484,8 +487,8 @@ impl StateServerCore {
         pyparsing::serialize_py(value, value_type, &mut value_creator)?;
         let value_data = value_creator.finalize();
 
-        map.set_item(key_data, value_data, update);
-        Ok(())
+        map.set_item(key_data, value_data, update)
+            .map_err(|_| PyRuntimeError::new_err("Failed to set item in map."))
     }
 
     fn map_get_item<'py>(
@@ -520,7 +523,10 @@ impl StateServerCore {
         pyparsing::serialize_py(key, key_type, &mut key_creator)?;
         let key_data = key_creator.finalize();
 
-        match map.remove_item(&key_data, update) {
+        match map
+            .remove_item(&key_data, update)
+            .map_err(|_| PyRuntimeError::new_err("Failed to remove item from map."))?
+        {
             Some(value_data) => {
                 let mut value_parser = ValueParser::new(value_data);
                 let py_value = pyparsing::deserialize_py(py, &mut value_parser, value_type)?;
@@ -664,13 +670,15 @@ impl StateServerCore {
     }
 
     fn graphs_remove(&self, value_id: u64, idx: u16, update: bool) -> PyResult<()> {
-        self.inner_graphs(value_id)?.remove(idx, update);
-        Ok(())
+        self.inner_graphs(value_id)?
+            .remove(idx, update)
+            .map_err(|_| PyRuntimeError::new_err("Failed to remove graph."))
     }
 
     fn graphs_reset(&self, value_id: u64, update: bool) -> PyResult<()> {
-        self.inner_graphs(value_id)?.reset(update);
-        Ok(())
+        self.inner_graphs(value_id)?
+            .reset(update)
+            .map_err(|_| PyRuntimeError::new_err("Failed to reset graphs."))
     }
 
     fn graphs_is_linear(&self, value_id: u64, idx: u16) -> PyResult<bool> {
@@ -687,6 +695,7 @@ impl StateServerCore {
         name: String,
         object_type: &Bound<PyObjectType>,
         initial_value: &Bound<PyAny>,
+        queue: bool,
     ) -> PyResult<u64> {
         let object_type = object_type.borrow().object_type.clone_py(py);
         let type_id = object_type.get_hash(py)?;
@@ -698,7 +707,7 @@ impl StateServerCore {
         let value_id = self
             .server
             .write()
-            .add_value(&name, type_id, data)
+            .add_value(&name, type_id, data, queue)
             .map_err(|e| {
                 pyo3::exceptions::PyValueError::new_err(format!("Failed to add value: {}", e))
             })?;
@@ -740,6 +749,7 @@ impl StateServerCore {
         py: Python,
         name: String,
         object_type: &Bound<PyObjectType>,
+        queue: bool,
     ) -> PyResult<u64> {
         let object_type = object_type.borrow().object_type.clone_py(py);
         let type_id = object_type.get_hash(py)?;
@@ -747,7 +757,7 @@ impl StateServerCore {
         let value_id = self
             .server
             .write()
-            .add_signal(&name, type_id)
+            .add_signal(&name, type_id, queue)
             .map_err(|e| PyValueError::new_err(format!("Failed to add signal: {}", e)))?;
 
         if let Some(types_map) = self.temps.write().as_mut() {

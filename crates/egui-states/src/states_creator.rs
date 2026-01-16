@@ -12,12 +12,12 @@ use crate::graphs::ValueGraphs;
 use crate::image::ValueImage;
 use crate::list::ValueList;
 use crate::map::ValueMap;
-use crate::values::{Signal, Value, ValueStatic};
+use crate::values::{GetQueueType, Signal, Value, ValueStatic};
 
 pub trait StatesCreator {
     fn add_substate<S: State>(&mut self, name: &str) -> S;
 
-    fn add_value<T>(&mut self, name: &'static str, value: T) -> Arc<Value<T>>
+    fn add_value<T, Q>(&mut self, name: &'static str, value: T) -> Arc<Value<T, Q>>
     where
         T: for<'a> Deserialize<'a>
             + Serialize
@@ -26,7 +26,8 @@ pub trait StatesCreator {
             + Sync
             + Clone
             + GetInitValue
-            + 'static;
+            + 'static,
+        Q: GetQueueType;
 
     fn add_static<T>(&mut self, name: &'static str, value: T) -> Arc<ValueStatic<T>>
     where
@@ -39,9 +40,10 @@ pub trait StatesCreator {
             + GetInitValue
             + 'static;
 
-    fn add_signal<T>(&mut self, name: &'static str) -> Arc<Signal<T>>
+    fn add_signal<T, Q>(&mut self, name: &'static str) -> Arc<Signal<T, Q>>
     where
-        T: Serialize + GetType + Clone + Send + Sync + 'static;
+        T: Serialize + GetType + Clone + Send + Sync + 'static,
+        Q: GetQueueType;
 
     fn add_image(&mut self, name: &'static str) -> Arc<ValueImage>;
 

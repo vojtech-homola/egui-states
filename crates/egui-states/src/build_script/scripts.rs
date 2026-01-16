@@ -112,7 +112,7 @@ pub(crate) fn get_all_enums_struct(
 
     for value in values {
         match value {
-            StateType::Value(_, info, _) => {
+            StateType::Value(_, info, _, _) => {
                 collect_enums(info, &mut enums);
                 collect_structs(info, &mut structs);
             }
@@ -130,7 +130,7 @@ pub(crate) fn get_all_enums_struct(
                 collect_enums(elem_info, &mut enums);
                 collect_structs(elem_info, &mut structs);
             }
-            StateType::Signal(_, info) => {
+            StateType::Signal(_, info, _) => {
                 collect_enums(info, &mut enums);
                 collect_structs(info, &mut structs);
             }

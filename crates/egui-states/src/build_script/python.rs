@@ -59,9 +59,9 @@ fn process_type_info(values: &Vec<StateType>) -> (HashMap<String, usize>, Vec<Ob
 
     for state in values {
         match state {
-            StateType::Value(name, obj_type, _)
+            StateType::Value(name, obj_type, _, _)
             | StateType::Static(name, obj_type, _)
-            | StateType::Signal(name, obj_type) => {
+            | StateType::Signal(name, obj_type, _) => {
                 if type_list.contains(obj_type) {
                     type_map.insert(
                         name.clone(),
@@ -202,14 +202,18 @@ fn init_to_python_value(init: &InitValue) -> String {
 
 fn state_to_line(state: &StateType, types_map: &HashMap<String, usize>) -> String {
     match state {
-        StateType::Value(name, state_type, init) => {
+        StateType::Value(name, state_type, init, queue) => {
             let last_name = name.split('.').last().unwrap();
             let py_type = type_info_to_python_type(state_type, false);
             let init_value = init_to_python_value(init);
             let index = types_map.get(name).unwrap();
+            let queue_str = match queue {
+                true => ", True",
+                false => "",
+            };
             format!(
-                "        self.{} = s.Value[{}]({}, {})\n",
-                last_name, py_type, *index, init_value
+                "        self.{} = s.Value[{}]({}, {}{})\n",
+                last_name, py_type, *index, init_value, queue_str
             )
         }
         StateType::Static(name, state_type, init) => {
@@ -222,17 +226,31 @@ fn state_to_line(state: &StateType, types_map: &HashMap<String, usize>) -> Strin
                 last_name, py_type, *index, init_value
             )
         }
-        StateType::Signal(name, state_type) => {
+        StateType::Signal(name, state_type, queue) => {
             let last_name = name.split('.').last().unwrap();
             let py_type = type_info_to_python_type(state_type, false);
             let index = types_map.get(name).unwrap();
-            if let ObjectType::Empty = state_type {
-                format!("        self.{} = s.SignalEmpty()\n", last_name)
-            } else {
-                format!(
-                    "        self.{} = s.Signal[{}]({})\n",
-                    last_name, py_type, *index
-                )
+            match state_type {
+                ObjectType::Empty => {
+                    let queue_str = match queue {
+                        true => "True",
+                        false => "",
+                    };
+                    format!(
+                        "        self.{} = s.SignalEmpty({})\n",
+                        last_name, queue_str
+                    )
+                }
+                _ => {
+                    let queue_str = match queue {
+                        true => ", True",
+                        false => "",
+                    };
+                    format!(
+                        "        self.{} = s.Signal[{}]({}{})\n",
+                        last_name, py_type, *index, queue_str
+                    )
+                }
             }
         }
         StateType::List(name, state_type) => {

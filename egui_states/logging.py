@@ -22,7 +22,7 @@ class LoggingSignal:
         self._loggers: dict[int, list[Callable[[str], None]]] = {0: [], 1: [], 2: [], 3: []}
         logging_id = server.signal_get_logging_id()
         signals_manager.add_callback(logging_id, self._callback)
-        server.signal_set_to_multi(logging_id)
+        server.signal_set_to_queue(logging_id)
 
     def _callback(self, message: tuple[int, str]) -> None:
         level = message[0]
