@@ -333,8 +333,8 @@ impl StateServerCore {
         }
     }
 
-    fn signal_set_to_multi(&self, value_id: u64) {
-        self.signals.set_to_multi(value_id);
+    fn signal_set_to_queue(&self, value_id: u64) {
+        self.signals.set_to_queue(value_id);
     }
 
     fn signal_set_to_single(&self, value_id: u64) {
@@ -695,6 +695,7 @@ impl StateServerCore {
         name: String,
         object_type: &Bound<PyObjectType>,
         initial_value: &Bound<PyAny>,
+        queue: bool,
     ) -> PyResult<u64> {
         let object_type = object_type.borrow().object_type.clone_py(py);
         let type_id = object_type.get_hash(py)?;
@@ -706,7 +707,7 @@ impl StateServerCore {
         let value_id = self
             .server
             .write()
-            .add_value(&name, type_id, data)
+            .add_value(&name, type_id, data, queue)
             .map_err(|e| {
                 pyo3::exceptions::PyValueError::new_err(format!("Failed to add value: {}", e))
             })?;
@@ -748,6 +749,7 @@ impl StateServerCore {
         py: Python,
         name: String,
         object_type: &Bound<PyObjectType>,
+        queue: bool,
     ) -> PyResult<u64> {
         let object_type = object_type.borrow().object_type.clone_py(py);
         let type_id = object_type.get_hash(py)?;
@@ -755,7 +757,7 @@ impl StateServerCore {
         let value_id = self
             .server
             .write()
-            .add_signal(&name, type_id)
+            .add_signal(&name, type_id, queue)
             .map_err(|e| PyValueError::new_err(format!("Failed to add signal: {}", e)))?;
 
         if let Some(types_map) = self.temps.write().as_mut() {

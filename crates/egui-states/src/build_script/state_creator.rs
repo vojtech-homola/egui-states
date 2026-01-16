@@ -63,7 +63,7 @@ impl StatesCreator for StatesCreatorBuild {
         let value = Value::new(id, value, self.sender.clone());
 
         self.states
-            .push(StateType::Value(name, T::get_type(), init));
+            .push(StateType::Value(name, T::get_type(), init, Q::is_queue()));
 
         value
     }
@@ -101,7 +101,8 @@ impl StatesCreator for StatesCreatorBuild {
         let id = generate_value_id(&name);
         let signal = Signal::new(id, self.sender.clone());
 
-        self.states.push(StateType::Signal(name, T::get_type()));
+        self.states
+            .push(StateType::Signal(name, T::get_type(), Q::is_queue()));
 
         signal
     }

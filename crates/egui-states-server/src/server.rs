@@ -285,6 +285,7 @@ impl Server {
         name: &str,
         type_id: u64,
         value: Bytes,
+        queue: bool,
     ) -> Result<u64, String> {
         if self.states_server.is_some() {
             return Err("Cannot add new values after server has been finalized".to_string());
@@ -306,6 +307,11 @@ impl Server {
 
         self.states.types.insert(id, type_id);
         self.states.values.insert(id, val);
+
+        if queue {
+            self.signals.set_to_queue(id);
+        }
+
         Ok(id)
     }
 
@@ -331,7 +337,12 @@ impl Server {
         Ok(id)
     }
 
-    pub(crate) fn add_signal(&mut self, name: &str, type_id: u64) -> Result<u64, String> {
+    pub(crate) fn add_signal(
+        &mut self,
+        name: &str,
+        type_id: u64,
+        queue: bool,
+    ) -> Result<u64, String> {
         if self.states_server.is_some() {
             return Err("Cannot add new values after server has been finalized".to_string());
         }
@@ -345,6 +356,11 @@ impl Server {
 
         self.states.types.insert(id, type_id);
         self.states.signals.insert(id, val);
+
+        if queue {
+            self.signals.set_to_queue(id);
+        }
+
         Ok(id)
     }
 

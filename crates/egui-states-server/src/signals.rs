@@ -12,7 +12,7 @@ use crate::event::Event;
 
 enum Signal {
     Single(Bytes),
-    Multi(VecDeque<Bytes>),
+    Queue(VecDeque<Bytes>),
 }
 
 struct OrderedMap {
@@ -41,7 +41,7 @@ impl OrderedMap {
             }
             Entry::Occupied(mut e) => match e.get_mut() {
                 Signal::Single(v) => *v = value,
-                Signal::Multi(v) => v.push_back(value),
+                Signal::Queue(v) => v.push_back(value),
             },
         }
         self.indexes.push_back(id);
@@ -54,7 +54,7 @@ impl OrderedMap {
                 Signal::Single(v) => Some(v),
                 _ => unreachable!(),
             },
-            Some(Signal::Multi(queue)) => queue.pop_front(),
+            Some(Signal::Queue(queue)) => queue.pop_front(),
         }
     }
 
@@ -71,7 +71,7 @@ impl OrderedMap {
         None
     }
 
-    fn set_to_multi(&mut self, id: u64) {
+    fn set_to_queue(&mut self, id: u64) {
         if let Some(signal) = self.values.remove(&id) {
             let res = match signal {
                 Signal::Single(v) => {
@@ -79,11 +79,11 @@ impl OrderedMap {
                     vec.push_back(v);
                     vec
                 }
-                Signal::Multi(vec) => vec,
+                Signal::Queue(vec) => vec,
             };
-            self.values.insert(id, Signal::Multi(res));
+            self.values.insert(id, Signal::Queue(res));
         } else {
-            self.values.insert(id, Signal::Multi(VecDeque::new()));
+            self.values.insert(id, Signal::Queue(VecDeque::new()));
         }
     }
 
@@ -91,7 +91,7 @@ impl OrderedMap {
         if let Some(signal) = self.values.remove(&id) {
             let res = match signal {
                 Signal::Single(v) => Some(v),
-                Signal::Multi(mut vec) => vec.pop_back(),
+                Signal::Queue(mut vec) => vec.pop_back(),
             };
 
             if let Some(res) = res {
@@ -253,8 +253,8 @@ impl SignalsManager {
         }
     }
 
-    pub(crate) fn set_to_multi(&self, id: u64) {
-        self.values.lock().values.set_to_multi(id);
+    pub(crate) fn set_to_queue(&self, id: u64) {
+        self.values.lock().values.set_to_queue(id);
     }
 
     pub(crate) fn set_to_single(&self, id: u64) {
