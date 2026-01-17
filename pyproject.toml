@@ -20,6 +20,7 @@ dev = ["ipython", "matplotlib"]
 bindings = "pyo3"
 python-packages = ["egui_states"]
 module-name = "egui_states._core"
+include = ["egui_states/version.py"]
 manifest-path = "crates/egui-states-server/Cargo.toml"
 features = ["python"]
 auditwheel = "repair"

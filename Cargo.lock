@@ -584,9 +584,9 @@ dependencies = [
 
 [[package]]
 name = "cc"
-version = "1.2.52"
+version = "1.2.53"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cd4932aefd12402b36c60956a4fe0035421f544799057659ff86f923657aada3"
+checksum = "755d2fce177175ffca841e9a06afdb2c4ab0f593d53b4dee48147dfaade85932"
 dependencies = [
  "find-msvc-tools",
  "jobserver",
@@ -998,7 +998,7 @@ dependencies = [
 
 [[package]]
 name = "egui_states"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "bytes",
  "egui",
@@ -1016,7 +1016,7 @@ dependencies = [
 
 [[package]]
 name = "egui_states_core"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "bytes",
  "postcard",
@@ -1027,7 +1027,7 @@ dependencies = [
 
 [[package]]
 name = "egui_states_macros"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1036,7 +1036,7 @@ dependencies = [
 
 [[package]]
 name = "egui_states_server"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "bytes",
  "egui_states_core",
@@ -1051,7 +1051,7 @@ dependencies = [
 
 [[package]]
 name = "egui_states_widgets"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "egui",
  "egui_states",
@@ -1216,9 +1216,9 @@ dependencies = [
 
 [[package]]
 name = "find-msvc-tools"
-version = "0.1.7"
+version = "0.1.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f449e6c6c08c865631d4890cfacf252b3d396c9bcc83adb6623cdb02a8336c41"
+checksum = "8591b0bcc8a98a64310a2fae1bb3e9b8564dd10e381e6e28010fde8e8e8568db"
 
 [[package]]
 name = "flate2"
@@ -1554,7 +1554,7 @@ dependencies = [
 
 [[package]]
 name = "gui"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "eframe",
  "egui",
