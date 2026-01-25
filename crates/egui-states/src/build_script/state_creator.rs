@@ -15,7 +15,8 @@ use crate::list::ValueList;
 use crate::map::ValueMap;
 use crate::sender::MessageSender;
 use crate::states_creator::StatesCreator;
-use crate::values::{GetQueueType, Signal, Value, ValueStatic};
+use crate::values::{GetQueueType, Signal, Static, StaticAtomic, Value, ValueAtomic};
+use crate::values_atomic::Atomic;
 
 pub struct StatesCreatorBuild {
     states: Vec<StateType>,
@@ -68,14 +69,56 @@ impl StatesCreator for StatesCreatorBuild {
         value
     }
 
-    fn add_static<T>(&mut self, name: &'static str, value: T) -> Arc<ValueStatic<T>>
+    fn add_atomic<T, Q>(&mut self, name: &'static str, value: T) -> Arc<ValueAtomic<T, Q>>
+    where
+        T: for<'a> Deserialize<'a> + Serialize + Clone + GetInitValue + GetType + Atomic,
+        Q: GetQueueType,
+    {
+        let name = format!("{}.{}", self.parent, name);
+        let id = generate_value_id(&name);
+        let init = value.init_value();
+        let value = ValueAtomic::new(id, value, self.sender.clone());
+
+        self.states
+            .push(StateType::Value(name, T::get_type(), init, Q::is_queue()));
+
+        value
+    }
+
+    fn add_static<T>(&mut self, name: &'static str, value: T) -> Arc<Static<T>>
     where
         T: for<'a> Deserialize<'a> + Serialize + Clone + GetInitValue + GetType,
     {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
         let init = value.init_value();
-        let value = ValueStatic::new(id, value);
+        let value = Static::new(id, value);
+
+        self.states
+            .push(StateType::Static(name, T::get_type(), init));
+        value
+    }
+
+    fn add_static_atomic<T>(
+        &mut self,
+        name: &'static str,
+        value: T,
+    ) -> Arc<crate::values::StaticAtomic<T>>
+    where
+        T: for<'a> Deserialize<'a>
+            + Serialize
+            + GetType
+            + Clone
+            + Send
+            + Sync
+            + GetInitValue
+            + Atomic
+            + 'static,
+    {
+        let name = format!("{}.{}", self.parent, name);
+        let id = generate_value_id(&name);
+        let init = value.init_value();
+        let value = StaticAtomic::new(id, value);
 
         self.states
             .push(StateType::Static(name, T::get_type(), init));

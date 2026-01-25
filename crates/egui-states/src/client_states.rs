@@ -15,7 +15,8 @@ use crate::list::{UpdateList, ValueList};
 use crate::map::{UpdateMap, ValueMap};
 use crate::sender::MessageSender;
 use crate::states_creator::StatesCreator;
-use crate::values::{GetQueueType, Signal, UpdateValue, Value, ValueStatic};
+use crate::values::{GetQueueType, Signal, Static, StaticAtomic, UpdateValue, Value, ValueAtomic};
+use crate::values_atomic::Atomic;
 
 #[derive(Clone)]
 pub(crate) struct ValuesList {
@@ -105,13 +106,52 @@ impl StatesCreator for StatesCreatorClient {
         value
     }
 
-    fn add_static<T>(&mut self, name: &str, value: T) -> Arc<ValueStatic<T>>
+    fn add_atomic<T, Q>(&mut self, name: &str, value: T) -> Arc<ValueAtomic<T, Q>>
+    where
+        T: for<'a> Deserialize<'a> + Serialize + GetType + Send + Sync + Clone + Atomic + 'static,
+        Q: GetQueueType,
+    {
+        let name = format!("{}.{}", self.parent, name);
+        let id = generate_value_id(&name);
+        let value = ValueAtomic::new(id, value, self.sender.clone());
+
+        self.val.values.insert(id, value.clone());
+        self.val.types.insert(id, T::get_type().get_hash());
+        value
+    }
+
+    fn add_static<T>(&mut self, name: &str, value: T) -> Arc<Static<T>>
     where
         T: for<'a> Deserialize<'a> + Serialize + GetType + Clone + Send + Sync + 'static,
     {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
-        let value = ValueStatic::new(id, value);
+        let value = Static::new(id, value);
+
+        self.val.static_values.insert(id, value.clone());
+        self.val.types.insert(id, T::get_type().get_hash());
+        value
+    }
+
+    fn add_static_atomic<T>(
+        &mut self,
+        name: &'static str,
+        value: T,
+    ) -> Arc<crate::values::StaticAtomic<T>>
+    where
+        T: for<'a> Deserialize<'a>
+            + Serialize
+            + GetType
+            + Clone
+            + Send
+            + Sync
+            + crate::GetInitValue
+            + Atomic
+            + 'static,
+    {
+        let name = format!("{}.{}", self.parent, name);
+        let id = generate_value_id(&name);
+        let value = StaticAtomic::new(id, value);
 
         self.val.static_values.insert(id, value.clone());
         self.val.types.insert(id, T::get_type().get_hash());

@@ -212,8 +212,8 @@ fn state_to_line(state: &StateType, types_map: &HashMap<String, usize>) -> Strin
                 false => "",
             };
             format!(
-                "        self.{} = s.Value[{}]({}, {}{})\n",
-                last_name, py_type, *index, init_value, queue_str
+                "        self.{}: s.Value[{}] = s.Value[{}]({}, {}{})\n",
+                last_name, py_type, py_type, *index, init_value, queue_str
             )
         }
         StateType::Static(name, state_type, init) => {
@@ -222,8 +222,8 @@ fn state_to_line(state: &StateType, types_map: &HashMap<String, usize>) -> Strin
             let init_value = init_to_python_value(init);
             let index = types_map.get(name).unwrap();
             format!(
-                "        self.{} = s.ValueStatic[{}]({}, {})\n",
-                last_name, py_type, *index, init_value
+                "        self.{}: s.Static[{}] = s.Static[{}]({}, {})\n",
+                last_name, py_type, py_type, *index, init_value
             )
         }
         StateType::Signal(name, state_type, queue) => {
@@ -237,7 +237,7 @@ fn state_to_line(state: &StateType, types_map: &HashMap<String, usize>) -> Strin
                         false => "",
                     };
                     format!(
-                        "        self.{} = s.SignalEmpty({})\n",
+                        "        self.{}: s.SignalEmpty = s.SignalEmpty({})\n",
                         last_name, queue_str
                     )
                 }
@@ -247,8 +247,8 @@ fn state_to_line(state: &StateType, types_map: &HashMap<String, usize>) -> Strin
                         false => "",
                     };
                     format!(
-                        "        self.{} = s.Signal[{}]({}{})\n",
-                        last_name, py_type, *index, queue_str
+                        "        self.{}: s.Signal[{}] = s.Signal[{}]({}{})\n",
+                        last_name, py_type, py_type, *index, queue_str
                     )
                 }
             }
@@ -258,8 +258,8 @@ fn state_to_line(state: &StateType, types_map: &HashMap<String, usize>) -> Strin
             let py_type = type_info_to_python_type(state_type, false);
             let index = types_map.get(name).unwrap();
             format!(
-                "        self.{} = s.ValueList[{}]({})\n",
-                last_name, py_type, *index
+                "        self.{}: s.ValueList[{}] = s.ValueList[{}]({})\n",
+                last_name, py_type, py_type, *index
             )
         }
         StateType::Map(name, key_type, value_type) => {
@@ -268,14 +268,14 @@ fn state_to_line(state: &StateType, types_map: &HashMap<String, usize>) -> Strin
             let py_value_type = type_info_to_python_type(value_type, false);
             let index = types_map.get(name).unwrap();
             format!(
-                "        self.{} = s.ValueMap[{}, {}]({})\n",
-                last_name, py_key_type, py_value_type, *index
+                "        self.{}: s.ValueMap[{}, {}] = s.ValueMap[{}, {}]({})\n",
+                last_name, py_key_type, py_value_type, py_key_type, py_value_type, *index
             )
         }
         StateType::Graphs(name, graph_type) => {
             let last_name = name.split('.').last().unwrap();
             format!(
-                "        self.{} = s.ValueGraphs({})\n",
+                "        self.{}: s.ValueGraphs = s.ValueGraphs({})\n",
                 last_name,
                 match graph_type {
                     GraphType::F32 => "np.float32",
@@ -285,13 +285,13 @@ fn state_to_line(state: &StateType, types_map: &HashMap<String, usize>) -> Strin
         }
         StateType::Image(name) => {
             let last_name = name.split('.').last().unwrap();
-            format!("        self.{} = s.ValueImage()\n", last_name)
+            format!("        self.{}: s.ValueImage = s.ValueImage()\n", last_name)
         }
         StateType::SubState(name, state_class, _) => {
             let last_name = name.split('.').last().unwrap();
             format!(
-                "        self.{} = {}(parent + \".{}\")\n",
-                last_name, state_class, last_name
+                "        self.{}: {} = {}(parent + \".{}\")\n",
+                last_name, state_class, state_class, last_name
             )
         }
     }
