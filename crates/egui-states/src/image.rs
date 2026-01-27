@@ -17,34 +17,35 @@ const TEXTURE_OPTIONS: egui::TextureOptions = egui::TextureOptions {
 
 pub struct ValueImage {
     id: u64,
-    texture_handle: RwLock<Option<(TextureHandle, [usize; 2])>>,
-    sender: MessageSender,
+    inner: Arc<(RwLock<Option<(TextureHandle, [usize; 2])>>, MessageSender)>,
 }
 
 impl ValueImage {
-    pub(crate) fn new(id: u64, sender: MessageSender) -> Arc<Self> {
-        Arc::new(Self {
+    pub(crate) fn new(id: u64, sender: MessageSender) -> Self {
+        Self {
             id,
-            texture_handle: RwLock::new(None),
-            sender,
-        })
+            inner: Arc::new((RwLock::new(None), sender)),
+        }
     }
 
-    pub fn get_id(&self) -> egui::TextureId {
-        self.texture_handle
-            .read()
-            .as_ref()
-            .expect("image is not initialized")
+    pub fn get(&self) -> Option<(egui::TextureId, [usize; 2])> {
+        self.inner
             .0
-            .id()
-    }
-
-    pub fn get_size(&self) -> [usize; 2] {
-        self.texture_handle
             .read()
             .as_ref()
-            .expect("image is not initialized")
-            .1
+            .map(|(texture_handle, size)| (texture_handle.id(), *size))
+    }
+
+    pub fn get_id(&self) -> Option<egui::TextureId> {
+        self.inner
+            .0
+            .read()
+            .as_ref()
+            .map(|(texture_handle, _)| texture_handle.id())
+    }
+
+    pub fn get_size(&self) -> Option<[usize; 2]> {
+        self.inner.0.read().as_ref().map(|(_, size)| *size)
     }
 
     pub fn initialize(&self, ctx: &egui::Context, image: ColorImage) {
@@ -52,7 +53,7 @@ impl ValueImage {
         let name = format!("image_{}", self.id);
         let texture_handle = ctx.load_texture(name, image_data, TEXTURE_OPTIONS);
 
-        let mut w = self.texture_handle.write();
+        let mut w = self.inner.0.write();
         let size = texture_handle.size();
         match *w {
             None => {
@@ -61,12 +62,10 @@ impl ValueImage {
             _ => {}
         }
     }
-    // }
-
-    // impl UpdateImage for ValueImage {
+    
     pub(crate) fn update_image(&self, header: ImageHeader, data: &[u8]) -> Result<(), String> {
         // TODO: not sure if this is the best place to send ack
-        self.sender.send(ChannelMessage::Ack(self.id));
+        self.inner.1.send(ChannelMessage::Ack(self.id));
 
         let ImageHeader {
             image_size,
@@ -135,7 +134,7 @@ impl ValueImage {
             }
         }
 
-        let mut w = self.texture_handle.write();
+        let mut w = self.inner.0.write();
         if let Some((ref mut texture_handle, ref mut save_size)) = *w {
             match rect {
                 Some(rec) => {
@@ -161,5 +160,14 @@ impl ValueImage {
         }
 
         Ok(())
+    }
+}
+
+impl Clone for ValueImage {
+    fn clone(&self) -> Self {
+        Self {
+            id: self.id,
+            inner: self.inner.clone(),
+        }
     }
 }

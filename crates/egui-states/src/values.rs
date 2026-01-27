@@ -99,8 +99,7 @@ impl GetQueueType for Queue {
 // Value --------------------------------------------
 pub struct Value<T, Q: GetQueueType = NoQueue> {
     id: u64,
-    value: RwLock<T>,
-    sender: MessageSender,
+    inner: Arc<(RwLock<T>, MessageSender)>,
     _phantom: PhantomData<Q>,
 }
 
@@ -108,50 +107,53 @@ impl<T, Q: GetQueueType> Value<T, Q>
 where
     T: Serialize + Clone,
 {
-    pub(crate) fn new(id: u64, value: T, sender: MessageSender) -> Arc<Self> {
-        Arc::new(Self {
+    pub(crate) fn new(id: u64, value: T, sender: MessageSender) -> Self {
+        Self {
             id,
-            value: RwLock::new(value),
-            sender,
+            inner: Arc::new((RwLock::new(value), sender)),
             _phantom: PhantomData,
-        })
+        }
     }
 
     pub fn get(&self) -> T {
-        self.value.read().clone()
+        self.inner.0.read().clone()
     }
 
     pub fn read<R>(&self, mut f: impl FnMut(&T) -> R) -> R {
-        let r = self.value.read();
+        let r = self.inner.0.read();
         f(&r)
     }
 
     pub fn write<R>(&self, mut f: impl FnMut(&mut T) -> R) -> R {
-        let mut w = self.value.write();
+        let mut w = self.inner.0.write();
 
         let result = f(&mut w);
 
         let data = to_message(&*w);
-        self.sender
+        self.inner
+            .1
             .send(ChannelMessage::Value(self.id, false, data));
         result
     }
 
     pub fn write_signal<R>(&self, mut f: impl FnMut(&mut T) -> R) -> R {
-        let mut w = self.value.write();
+        let mut w = self.inner.0.write();
 
         let result = f(&mut w);
 
         let data = to_message(&*w);
-        self.sender.send(ChannelMessage::Value(self.id, true, data));
+        self.inner
+            .1
+            .send(ChannelMessage::Value(self.id, true, data));
         result
     }
 
     pub fn set(&self, value: T) {
         let data = to_message(&value);
 
-        let mut w = self.value.write();
-        self.sender
+        let mut w = self.inner.0.write();
+        self.inner
+            .1
             .send(ChannelMessage::Value(self.id, false, data));
         *w = value;
     }
@@ -159,8 +161,10 @@ where
     pub fn set_signal(&self, value: T) {
         let data = to_message(&value);
 
-        let mut w = self.value.write();
-        self.sender.send(ChannelMessage::Value(self.id, true, data));
+        let mut w = self.inner.0.write();
+        self.inner
+            .1
+            .send(ChannelMessage::Value(self.id, true, data));
         *w = value;
     }
 }
@@ -172,11 +176,21 @@ impl<T: for<'a> Deserialize<'a> + Send + Sync, Q: GetQueueType + Send + Sync> Up
         let value = deserialize(data)
             .map_err(|e| format!("Parse error: {} for value id: {}", e, self.id))?;
 
-        let mut w = self.value.write();
-        self.sender.send(ChannelMessage::Ack(self.id));
+        let mut w = self.inner.0.write();
+        self.inner.1.send(ChannelMessage::Ack(self.id));
         *w = value;
 
         Ok(())
+    }
+}
+
+impl<T, Q: GetQueueType> Clone for Value<T, Q> {
+    fn clone(&self) -> Self {
+        Self {
+            id: self.id,
+            inner: self.inner.clone(),
+            _phantom: PhantomData,
+        }
     }
 }
 
@@ -187,8 +201,7 @@ enum ValueLock<T: Atomic> {
 
 pub struct ValueAtomic<T: Atomic, Q: GetQueueType = NoQueue> {
     id: u64,
-    value: ValueLock<T>,
-    sender: MessageSender,
+    inner: Arc<(ValueLock<T>, MessageSender)>,
     _phantom: PhantomData<Q>,
 }
 
@@ -196,23 +209,22 @@ impl<T, Q: GetQueueType> ValueAtomic<T, Q>
 where
     T: Serialize + Clone + Atomic,
 {
-    pub(crate) fn new(id: u64, value: T, sender: MessageSender) -> Arc<Self> {
+    pub(crate) fn new(id: u64, value: T, sender: MessageSender) -> Self {
         let value = if std::mem::size_of::<T>() > 4 && !cfg!(target_has_atomic = "64") {
             ValueLock::Fallback(RwLock::new(value))
         } else {
             ValueLock::Atomic(Mutex::new(()), T::Lock::new(value))
         };
 
-        Arc::new(Self {
+        Self {
             id,
-            value,
-            sender,
+            inner: Arc::new((value, sender)),
             _phantom: PhantomData,
-        })
+        }
     }
 
     pub fn get(&self) -> T {
-        match &self.value {
+        match &self.inner.0 {
             ValueLock::Atomic(_, lock) => lock.load(),
             ValueLock::Fallback(rwlock) => *rwlock.read(),
         }
@@ -230,15 +242,15 @@ where
 
     #[inline]
     fn set_raw(&self, value: T, message: ChannelMessage) {
-        match &self.value {
+        match &self.inner.0 {
             ValueLock::Atomic(lock, val) => {
                 let _g = lock.lock();
-                self.sender.send(message);
+                self.inner.1.send(message);
                 val.store(value);
             }
             ValueLock::Fallback(rwlock) => {
                 let mut w = rwlock.write();
-                self.sender.send(message);
+                self.inner.1.send(message);
                 *w = value;
             }
         }
@@ -254,15 +266,15 @@ impl<T: for<'a> Deserialize<'a> + Atomic + Send + Sync, Q: GetQueueType + Send +
 
         let message = ChannelMessage::Ack(self.id);
 
-        match &self.value {
+        match &self.inner.0 {
             ValueLock::Atomic(lock, val) => {
                 let _g = lock.lock();
-                self.sender.send(message);
+                self.inner.1.send(message);
                 val.store(value);
             }
             ValueLock::Fallback(rwlock) => {
                 let mut w = rwlock.write();
-                self.sender.send(message);
+                self.inner.1.send(message);
                 *w = value;
             }
         }
@@ -271,18 +283,28 @@ impl<T: for<'a> Deserialize<'a> + Atomic + Send + Sync, Q: GetQueueType + Send +
     }
 }
 
+impl<T: Atomic, Q: GetQueueType> Clone for ValueAtomic<T, Q> {
+    fn clone(&self) -> Self {
+        Self {
+            id: self.id,
+            inner: self.inner.clone(),
+            _phantom: PhantomData,
+        }
+    }
+}
+
 // Static --------------------------------------------
 pub struct Static<T> {
     id: u64,
-    value: RwLock<T>,
+    value: Arc<RwLock<T>>,
 }
 
 impl<T: Clone> Static<T> {
-    pub(crate) fn new(id: u64, value: T) -> Arc<Self> {
-        Arc::new(Self {
+    pub(crate) fn new(id: u64, value: T) -> Self {
+        Self {
             id,
-            value: RwLock::new(value),
-        })
+            value: Arc::new(RwLock::new(value)),
+        }
     }
 
     pub fn get(&self) -> T {
@@ -304,17 +326,26 @@ impl<T: for<'a> Deserialize<'a> + Send + Sync> UpdateValue for Static<T> {
     }
 }
 
+impl<T> Clone for Static<T> {
+    fn clone(&self) -> Self {
+        Self {
+            id: self.id,
+            value: self.value.clone(),
+        }
+    }
+}
+
 pub struct StaticAtomic<T: Atomic> {
     id: u64,
-    value: T::Lock,
+    value: Arc<T::Lock>,
 }
 
 impl<T: Atomic> StaticAtomic<T> {
-    pub(crate) fn new(id: u64, value: T) -> Arc<Self> {
-        Arc::new(Self {
+    pub(crate) fn new(id: u64, value: T) -> Self {
+        Self {
             id,
-            value: T::Lock::new(value),
-        })
+            value: Arc::new(T::Lock::new(value)),
+        }
     }
 
     pub fn get(&self) -> T {
@@ -331,24 +362,43 @@ impl<T: for<'a> Deserialize<'a> + Atomic + Send + Sync> UpdateValue for StaticAt
     }
 }
 
+impl<T: Atomic> Clone for StaticAtomic<T> {
+    fn clone(&self) -> Self {
+        Self {
+            id: self.id,
+            value: self.value.clone(),
+        }
+    }
+}
+
 // Signal --------------------------------------------
 pub struct Signal<T, Q: GetQueueType = NoQueue> {
     id: u64,
-    sender: MessageSender,
+    sender: Arc<MessageSender>,
     phantom: PhantomData<(T, Q)>,
 }
 
 impl<T: Serialize + Clone, Q: GetQueueType> Signal<T, Q> {
-    pub(crate) fn new(id: u64, sender: MessageSender) -> Arc<Self> {
-        Arc::new(Self {
+    pub(crate) fn new(id: u64, sender: MessageSender) -> Self {
+        Self {
             id,
-            sender,
+            sender: Arc::new(sender),
             phantom: PhantomData,
-        })
+        }
     }
 
     pub fn set(&self, value: impl Into<T>) {
         let message = to_message(&value.into());
         self.sender.send(ChannelMessage::Signal(self.id, message));
+    }
+}
+
+impl<T, Q: GetQueueType> Clone for Signal<T, Q> {
+    fn clone(&self) -> Self {
+        Self {
+            id: self.id,
+            sender: self.sender.clone(),
+            phantom: PhantomData,
+        }
     }
 }

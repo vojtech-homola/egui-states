@@ -8,7 +8,7 @@ use crate::build_script::values_info::StateType;
 
 pub(crate) fn parse_states<S: State>() -> StateType {
     let mut creator = StatesCreatorBuild::new("root");
-    S::new(&mut creator);
+    let _ = S::new(&mut creator);
     let states = creator.get_states();
     StateType::SubState("root".to_string(), S::NAME, states)
 }

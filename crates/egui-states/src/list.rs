@@ -13,15 +13,15 @@ pub(crate) trait UpdateList: Sync + Send {
 
 pub struct ValueList<T> {
     id: u64,
-    list: RwLock<Vec<T>>,
+    list: Arc<RwLock<Vec<T>>>,
 }
 
 impl<T: GetType + Clone> ValueList<T> {
-    pub(crate) fn new(id: u64) -> Arc<Self> {
-        Arc::new(Self {
+    pub(crate) fn new(id: u64) -> Self {
+        Self {
             id,
-            list: RwLock::new(Vec::new()),
-        })
+            list: Arc::new(RwLock::new(Vec::new())),
+        }
     }
 
     pub fn get(&self) -> Vec<T> {
@@ -78,6 +78,15 @@ impl<T: for<'a> Deserialize<'a> + Send + Sync> UpdateList for ValueList<T> {
                 }
                 Ok(())
             }
+        }
+    }
+}
+
+impl<T> Clone for ValueList<T> {
+    fn clone(&self) -> Self {
+        Self {
+            id: self.id,
+            list: self.list.clone(),
         }
     }
 }

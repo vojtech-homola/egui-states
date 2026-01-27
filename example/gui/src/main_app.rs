@@ -55,7 +55,14 @@ impl eframe::App for MainApp {
             const UV: Rect = Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
             let (response, painter) =
                 ui.allocate_painter([256.0, 256.0].into(), egui::Sense::HOVER);
-            painter.image(texture_id, response.rect, UV, Color32::WHITE);
+            match texture_id {
+                Some(texture_id) => {
+                    painter.image(texture_id, response.rect, UV, Color32::WHITE);
+                }
+                None => {
+                    painter.rect_filled(response.rect, 0.0, Color32::DARK_GRAY);
+                }
+            }
 
             let g = self.states.graphs.get(0);
             if let Some(g) = g {

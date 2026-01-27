@@ -22,7 +22,7 @@ use crate::values_atomic::Atomic;
 pub(crate) struct ValuesList {
     pub(crate) values: NoHashMap<u64, Arc<dyn UpdateValue>>,
     pub(crate) static_values: NoHashMap<u64, Arc<dyn UpdateValue>>,
-    pub(crate) images: NoHashMap<u64, Arc<ValueImage>>,
+    pub(crate) images: NoHashMap<u64, ValueImage>,
     pub(crate) maps: NoHashMap<u64, Arc<dyn UpdateMap>>,
     pub(crate) lists: NoHashMap<u64, Arc<dyn UpdateList>>,
     pub(crate) graphs: NoHashMap<u64, Arc<dyn UpdateGraph>>,
@@ -76,7 +76,7 @@ impl StatesCreatorClient {
 }
 
 impl StatesCreator for StatesCreatorClient {
-    fn add_substate<S: State>(&mut self, name: &str) -> S {
+    fn substate<S: State>(&mut self, name: &str) -> S {
         let parent = format!("{}.{}", self.parent, name);
         let mut creator = StatesCreatorClient::new(self.sender.clone(), parent);
         let substate = S::new(&mut creator);
@@ -92,7 +92,7 @@ impl StatesCreator for StatesCreatorClient {
         substate
     }
 
-    fn add_value<T, Q>(&mut self, name: &str, value: T) -> Arc<Value<T, Q>>
+    fn value<T, Q>(&mut self, name: &str, value: T) -> Value<T, Q>
     where
         T: for<'a> Deserialize<'a> + Serialize + GetType + Send + Sync + Clone + 'static,
         Q: GetQueueType,
@@ -101,12 +101,12 @@ impl StatesCreator for StatesCreatorClient {
         let id = generate_value_id(&name);
         let value = Value::new(id, value, self.sender.clone());
 
-        self.val.values.insert(id, value.clone());
+        self.val.values.insert(id, Arc::new(value.clone()));
         self.val.types.insert(id, T::get_type().get_hash());
         value
     }
 
-    fn add_atomic<T, Q>(&mut self, name: &str, value: T) -> Arc<ValueAtomic<T, Q>>
+    fn atomic<T, Q>(&mut self, name: &str, value: T) -> ValueAtomic<T, Q>
     where
         T: for<'a> Deserialize<'a> + Serialize + GetType + Send + Sync + Clone + Atomic + 'static,
         Q: GetQueueType,
@@ -115,12 +115,12 @@ impl StatesCreator for StatesCreatorClient {
         let id = generate_value_id(&name);
         let value = ValueAtomic::new(id, value, self.sender.clone());
 
-        self.val.values.insert(id, value.clone());
+        self.val.values.insert(id, Arc::new(value.clone()));
         self.val.types.insert(id, T::get_type().get_hash());
         value
     }
 
-    fn add_static<T>(&mut self, name: &str, value: T) -> Arc<Static<T>>
+    fn add_static<T>(&mut self, name: &str, value: T) -> Static<T>
     where
         T: for<'a> Deserialize<'a> + Serialize + GetType + Clone + Send + Sync + 'static,
     {
@@ -128,16 +128,16 @@ impl StatesCreator for StatesCreatorClient {
         let id = generate_value_id(&name);
         let value = Static::new(id, value);
 
-        self.val.static_values.insert(id, value.clone());
+        self.val.static_values.insert(id, Arc::new(value.clone()));
         self.val.types.insert(id, T::get_type().get_hash());
         value
     }
 
-    fn add_static_atomic<T>(
+    fn static_atomic<T>(
         &mut self,
         name: &'static str,
         value: T,
-    ) -> Arc<crate::values::StaticAtomic<T>>
+    ) -> StaticAtomic<T>
     where
         T: for<'a> Deserialize<'a>
             + Serialize
@@ -153,12 +153,12 @@ impl StatesCreator for StatesCreatorClient {
         let id = generate_value_id(&name);
         let value = StaticAtomic::new(id, value);
 
-        self.val.static_values.insert(id, value.clone());
+        self.val.static_values.insert(id, Arc::new(value.clone()));
         self.val.types.insert(id, T::get_type().get_hash());
         value
     }
 
-    fn add_image(&mut self, name: &str) -> Arc<ValueImage> {
+    fn image(&mut self, name: &str) -> ValueImage {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
         let value = ValueImage::new(id, self.sender.clone());
@@ -168,7 +168,7 @@ impl StatesCreator for StatesCreatorClient {
         value
     }
 
-    fn add_signal<T, Q>(&mut self, name: &str) -> Arc<Signal<T, Q>>
+    fn signal<T, Q>(&mut self, name: &str) -> Signal<T, Q>
     where
         T: Serialize + GetType + Clone + Send + Sync + 'static,
         Q: GetQueueType,
@@ -181,7 +181,7 @@ impl StatesCreator for StatesCreatorClient {
         signal
     }
 
-    fn add_map<K, V>(&mut self, name: &str) -> Arc<ValueMap<K, V>>
+    fn map<K, V>(&mut self, name: &str) -> ValueMap<K, V>
     where
         K: Hash + Eq + Clone + for<'a> Deserialize<'a> + Send + Sync + GetType + 'static,
         V: Clone + for<'a> Deserialize<'a> + Send + Sync + GetType + 'static,
@@ -190,7 +190,7 @@ impl StatesCreator for StatesCreatorClient {
         let id = generate_value_id(&name);
         let value = ValueMap::new(id);
 
-        self.val.maps.insert(id, value.clone());
+        self.val.maps.insert(id, Arc::new(value.clone()));
         self.val.types.insert(
             id,
             ObjectType::Map(Box::new(K::get_type()), Box::new(V::get_type())).get_hash(),
@@ -198,7 +198,7 @@ impl StatesCreator for StatesCreatorClient {
         value
     }
 
-    fn add_list<T>(&mut self, name: &str) -> Arc<ValueList<T>>
+    fn list<T>(&mut self, name: &str) -> ValueList<T>
     where
         T: Clone + for<'a> Deserialize<'a> + Send + Sync + GetType + 'static,
     {
@@ -206,14 +206,14 @@ impl StatesCreator for StatesCreatorClient {
         let id = generate_value_id(&name);
         let value = ValueList::new(id);
 
-        self.val.lists.insert(id, value.clone());
+        self.val.lists.insert(id, Arc::new(value.clone()));
         self.val
             .types
             .insert(id, ObjectType::Vec(Box::new(T::get_type())).get_hash());
         value
     }
 
-    fn add_graphs<T>(&mut self, name: &str) -> Arc<ValueGraphs<T>>
+    fn graphs<T>(&mut self, name: &str) -> ValueGraphs<T>
     where
         T: for<'a> Deserialize<'a> + GraphElement + 'static,
     {
@@ -221,7 +221,7 @@ impl StatesCreator for StatesCreatorClient {
         let id = generate_value_id(&name);
         let value = ValueGraphs::new(id);
 
-        self.val.graphs.insert(id, value.clone());
+        self.val.graphs.insert(id, Arc::new(value.clone()));
         self.val.types.insert(id, T::bytes_size() as u64);
         value
     }

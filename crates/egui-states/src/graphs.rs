@@ -12,15 +12,15 @@ pub(crate) trait UpdateGraph: Sync + Send {
 
 pub struct ValueGraphs<T> {
     _id: u64,
-    graphs: RwLock<NoHashMap<u16, (Graph<T>, bool)>>,
+    graphs: Arc<RwLock<NoHashMap<u16, (Graph<T>, bool)>>>,
 }
 
 impl<T: Clone + Copy> ValueGraphs<T> {
-    pub(crate) fn new(id: u64) -> Arc<Self> {
-        Arc::new(Self {
+    pub(crate) fn new(id: u64) -> Self {
+        Self {
             _id: id,
-            graphs: RwLock::new(NoHashMap::default()),
-        })
+            graphs: Arc::new(RwLock::new(NoHashMap::default())),
+        }
     }
 
     pub fn get(&self, idx: u16) -> Option<Graph<T>> {
@@ -71,5 +71,14 @@ where
         };
 
         Ok(())
+    }
+}
+
+impl<T> Clone for ValueGraphs<T> {
+    fn clone(&self) -> Self {
+        Self {
+            _id: self._id,
+            graphs: self.graphs.clone(),
+        }
     }
 }

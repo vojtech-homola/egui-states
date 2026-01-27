@@ -1,5 +1,4 @@
 use std::hash::Hash;
-use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
@@ -41,7 +40,7 @@ impl StatesCreatorBuild {
 }
 
 impl StatesCreator for StatesCreatorBuild {
-    fn add_substate<S: State>(&mut self, name: &str) -> S {
+    fn substate<S: State>(&mut self, name: &str) -> S {
         let parent = format!("{}.{}", self.parent, name);
 
         let mut builder = Self::new(&parent);
@@ -53,7 +52,7 @@ impl StatesCreator for StatesCreatorBuild {
         substate
     }
 
-    fn add_value<T, Q>(&mut self, name: &'static str, value: T) -> Arc<Value<T, Q>>
+    fn value<T, Q>(&mut self, name: &'static str, value: T) -> Value<T, Q>
     where
         T: for<'a> Deserialize<'a> + Serialize + Clone + GetInitValue + GetType,
         Q: GetQueueType,
@@ -69,7 +68,7 @@ impl StatesCreator for StatesCreatorBuild {
         value
     }
 
-    fn add_atomic<T, Q>(&mut self, name: &'static str, value: T) -> Arc<ValueAtomic<T, Q>>
+    fn atomic<T, Q>(&mut self, name: &'static str, value: T) -> ValueAtomic<T, Q>
     where
         T: for<'a> Deserialize<'a> + Serialize + Clone + GetInitValue + GetType + Atomic,
         Q: GetQueueType,
@@ -85,7 +84,7 @@ impl StatesCreator for StatesCreatorBuild {
         value
     }
 
-    fn add_static<T>(&mut self, name: &'static str, value: T) -> Arc<Static<T>>
+    fn add_static<T>(&mut self, name: &'static str, value: T) -> Static<T>
     where
         T: for<'a> Deserialize<'a> + Serialize + Clone + GetInitValue + GetType,
     {
@@ -99,11 +98,7 @@ impl StatesCreator for StatesCreatorBuild {
         value
     }
 
-    fn add_static_atomic<T>(
-        &mut self,
-        name: &'static str,
-        value: T,
-    ) -> Arc<crate::values::StaticAtomic<T>>
+    fn static_atomic<T>(&mut self, name: &'static str, value: T) -> StaticAtomic<T>
     where
         T: for<'a> Deserialize<'a>
             + Serialize
@@ -125,7 +120,7 @@ impl StatesCreator for StatesCreatorBuild {
         value
     }
 
-    fn add_image(&mut self, name: &'static str) -> Arc<ValueImage> {
+    fn image(&mut self, name: &'static str) -> ValueImage {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
         let value = ValueImage::new(id, self.sender.clone());
@@ -135,7 +130,7 @@ impl StatesCreator for StatesCreatorBuild {
         value
     }
 
-    fn add_signal<T, Q>(&mut self, name: &'static str) -> Arc<Signal<T, Q>>
+    fn signal<T, Q>(&mut self, name: &'static str) -> Signal<T, Q>
     where
         T: Serialize + Clone + GetType,
         Q: GetQueueType,
@@ -150,7 +145,7 @@ impl StatesCreator for StatesCreatorBuild {
         signal
     }
 
-    fn add_map<K, V>(&mut self, name: &'static str) -> Arc<ValueMap<K, V>>
+    fn map<K, V>(&mut self, name: &'static str) -> ValueMap<K, V>
     where
         K: Hash + Eq + Clone + for<'a> Deserialize<'a> + GetType,
         V: Clone + for<'a> Deserialize<'a> + GetType,
@@ -164,7 +159,7 @@ impl StatesCreator for StatesCreatorBuild {
         value
     }
 
-    fn add_list<T>(&mut self, name: &'static str) -> Arc<ValueList<T>>
+    fn list<T>(&mut self, name: &'static str) -> ValueList<T>
     where
         T: Clone + for<'a> Deserialize<'a> + GetType,
     {
@@ -177,7 +172,7 @@ impl StatesCreator for StatesCreatorBuild {
         value
     }
 
-    fn add_graphs<T>(&mut self, name: &'static str) -> Arc<ValueGraphs<T>>
+    fn graphs<T>(&mut self, name: &'static str) -> ValueGraphs<T>
     where
         T: for<'a> Deserialize<'a> + GraphElement,
     {

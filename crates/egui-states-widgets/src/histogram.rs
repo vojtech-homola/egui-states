@@ -1,12 +1,12 @@
 use egui::{Color32, Id, Mesh, Rect, Ui, pos2, vec2};
 
-use egui_states::{Value, ValueGraphs};
+use egui_states::{ValueAtomic, ValueGraphs};
 
 pub fn print_histogram(
     ui: &mut Ui,
     id: Id,
     histogram: &ValueGraphs<f32>,
-    position: &Value<(f32, f32)>,
+    position: &ValueAtomic<(f32, f32)>,
 ) {
     let size = ui.available_size();
     const X_MARGIN: f32 = 5.;

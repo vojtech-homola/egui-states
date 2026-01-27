@@ -15,7 +15,7 @@ pub(crate) trait UpdateMap: Sync + Send {
 
 pub struct ValueMap<K, V> {
     _id: u64,
-    dict: RwLock<HashMap<K, V>>,
+    dict: Arc<RwLock<HashMap<K, V>>>,
 }
 
 impl<K, V> ValueMap<K, V>
@@ -23,11 +23,11 @@ where
     K: GetType + Clone + Hash + Eq,
     V: GetType + Clone,
 {
-    pub(crate) fn new(id: u64) -> Arc<Self> {
-        Arc::new(Self {
+    pub(crate) fn new(id: u64) -> Self {
+        Self {
             _id: id,
-            dict: RwLock::new(HashMap::new()),
-        })
+            dict: Arc::new(RwLock::new(HashMap::new())),
+        }
     }
 
     #[inline]
@@ -78,5 +78,14 @@ where
             }
         }
         Ok(())
+    }
+}
+
+impl<K, V> Clone for ValueMap<K, V> {
+    fn clone(&self) -> Self {
+        Self {
+            _id: self._id,
+            dict: self.dict.clone(),
+        }
     }
 }

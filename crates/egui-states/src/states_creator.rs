@@ -1,5 +1,4 @@
 use std::hash::Hash;
-use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
@@ -16,9 +15,9 @@ use crate::values::{GetQueueType, Signal, Static, StaticAtomic, Value, ValueAtom
 use crate::values_atomic::Atomic;
 
 pub trait StatesCreator {
-    fn add_substate<S: State>(&mut self, name: &str) -> S;
+    fn substate<S: State>(&mut self, name: &str) -> S;
 
-    fn add_value<T, Q>(&mut self, name: &'static str, value: T) -> Arc<Value<T, Q>>
+    fn value<T, Q>(&mut self, name: &'static str, value: T) -> Value<T, Q>
     where
         T: for<'a> Deserialize<'a>
             + Serialize
@@ -30,7 +29,7 @@ pub trait StatesCreator {
             + 'static,
         Q: GetQueueType;
 
-    fn add_atomic<T, Q>(&mut self, name: &'static str, value: T) -> Arc<ValueAtomic<T, Q>>
+    fn atomic<T, Q>(&mut self, name: &'static str, value: T) -> ValueAtomic<T, Q>
     where
         T: for<'a> Deserialize<'a>
             + Serialize
@@ -43,7 +42,7 @@ pub trait StatesCreator {
             + 'static,
         Q: GetQueueType;
 
-    fn add_static<T>(&mut self, name: &'static str, value: T) -> Arc<Static<T>>
+    fn add_static<T>(&mut self, name: &'static str, value: T) -> Static<T>
     where
         T: for<'a> Deserialize<'a>
             + Serialize
@@ -54,7 +53,7 @@ pub trait StatesCreator {
             + GetInitValue
             + 'static;
 
-    fn add_static_atomic<T>(&mut self, name: &'static str, value: T) -> Arc<StaticAtomic<T>>
+    fn static_atomic<T>(&mut self, name: &'static str, value: T) -> StaticAtomic<T>
     where
         T: for<'a> Deserialize<'a>
             + Serialize
@@ -66,23 +65,23 @@ pub trait StatesCreator {
             + Atomic
             + 'static;
 
-    fn add_signal<T, Q>(&mut self, name: &'static str) -> Arc<Signal<T, Q>>
+    fn signal<T, Q>(&mut self, name: &'static str) -> Signal<T, Q>
     where
         T: Serialize + GetType + Clone + Send + Sync + 'static,
         Q: GetQueueType;
 
-    fn add_image(&mut self, name: &'static str) -> Arc<ValueImage>;
+    fn image(&mut self, name: &'static str) -> ValueImage;
 
-    fn add_map<K, V>(&mut self, name: &'static str) -> Arc<ValueMap<K, V>>
+    fn map<K, V>(&mut self, name: &'static str) -> ValueMap<K, V>
     where
         K: Hash + Eq + Clone + for<'a> Deserialize<'a> + Send + Sync + GetType + 'static,
         V: Clone + for<'a> Deserialize<'a> + Send + Sync + GetType + 'static;
 
-    fn add_list<T>(&mut self, name: &'static str) -> Arc<ValueList<T>>
+    fn list<T>(&mut self, name: &'static str) -> ValueList<T>
     where
         T: Clone + for<'a> Deserialize<'a> + Send + Sync + GetType + 'static;
 
-    fn add_graphs<T>(&mut self, name: &'static str) -> Arc<ValueGraphs<T>>
+    fn graphs<T>(&mut self, name: &'static str) -> ValueGraphs<T>
     where
         T: for<'a> Deserialize<'a> + GraphElement + 'static;
 }
