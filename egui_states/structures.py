@@ -132,7 +132,7 @@ class Value[T](_SignalBase):
         self._signals_manager.clear_callbacks(self._value_id)
 
 
-class ValueStatic[T](_StaticBase):
+class Static[T](_StaticBase):
     """Numeric static UI value of type T. Static means that the value is not updated in the UI."""
 
     def __init__(self, obj_id: int, initial_value: T) -> None:

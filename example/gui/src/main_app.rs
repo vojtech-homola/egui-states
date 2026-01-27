@@ -54,7 +54,7 @@ impl eframe::App for MainApp {
             let texture_id = self.states.image.get_id();
             const UV: Rect = Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
             let (response, painter) =
-                ui.allocate_painter([512.0, 512.0].into(), egui::Sense::HOVER);
+                ui.allocate_painter([256.0, 256.0].into(), egui::Sense::HOVER);
             painter.image(texture_id, response.rect, UV, Color32::WHITE);
 
             let g = self.states.graphs.get(0);
@@ -81,6 +81,9 @@ impl eframe::App for MainApp {
                 .single_step(&mut step);
             ui.add(box_);
             value2.set_signal();
+
+            let s = self.states.my_sub_state.stat.get();
+            ui.label(format!("Static atomic value: [{}, {}]", s[0], s[1]));
 
             //map --------------------------------------------------
             self.states.collections.map.read(|m| {

@@ -1,5 +1,5 @@
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
-use pyo3::types::{PyDict, PyList, PyNone, PyTuple};
+use pyo3::types::{PyDict, PyList, PyNone, PySequence, PySequenceMethods, PyTuple};
 use pyo3::{IntoPyObjectExt, prelude::*};
 
 use crate::python::pytypes::ObjectType;
@@ -68,15 +68,15 @@ pub(crate) fn serialize_py(
             creator.add(&value)
         }
         ObjectType::Tuple(vec) => {
-            let tuple = obj.cast::<PyTuple>()?;
-            if tuple.len() != vec.len() {
+            let sequence = obj.cast::<PySequence>()?;
+            if sequence.len()? != vec.len() {
                 return Err(PyValueError::new_err(
                     "Tuple length does not match the expected length",
                 ));
             }
 
             for (i, item_type) in vec.iter().enumerate() {
-                let item = tuple.get_item(i)?;
+                let item = sequence.get_item(i)?;
                 serialize_py(&item, item_type, creator)?;
             }
             Ok(())
@@ -90,15 +90,15 @@ pub(crate) fn serialize_py(
             Ok(())
         }
         ObjectType::List(size, items_type) => {
-            let list = obj.cast::<pyo3::types::PyList>()?;
-            if list.len() != *size as usize {
+            let sequence = obj.cast::<pyo3::types::PySequence>()?;
+            if sequence.len()? != *size as usize {
                 return Err(PyValueError::new_err(
                     "List length does not match the expected length",
                 ));
             }
 
-            for item in list.iter() {
-                serialize_py(&item, items_type, creator)?;
+            for item in sequence.try_iter()? {
+                serialize_py(&item?, items_type, creator)?;
             }
             Ok(())
         }

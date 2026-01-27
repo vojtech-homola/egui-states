@@ -23,8 +23,6 @@ module-name = "egui_states._core"
 include = ["egui_states/version.py"]
 manifest-path = "crates/egui-states-server/Cargo.toml"
 features = ["python"]
-auditwheel = "repair"
-manylinux = "2_28"
 
 [tool.ruff]
 line-length = 120

@@ -12,7 +12,8 @@ use crate::graphs::ValueGraphs;
 use crate::image::ValueImage;
 use crate::list::ValueList;
 use crate::map::ValueMap;
-use crate::values::{GetQueueType, Signal, Value, ValueStatic};
+use crate::values::{GetQueueType, Signal, Static, StaticAtomic, Value, ValueAtomic};
+use crate::values_atomic::Atomic;
 
 pub trait StatesCreator {
     fn add_substate<S: State>(&mut self, name: &str) -> S;
@@ -29,7 +30,20 @@ pub trait StatesCreator {
             + 'static,
         Q: GetQueueType;
 
-    fn add_static<T>(&mut self, name: &'static str, value: T) -> Arc<ValueStatic<T>>
+    fn add_atomic<T, Q>(&mut self, name: &'static str, value: T) -> Arc<ValueAtomic<T, Q>>
+    where
+        T: for<'a> Deserialize<'a>
+            + Serialize
+            + GetType
+            + Send
+            + Sync
+            + Clone
+            + GetInitValue
+            + Atomic
+            + 'static,
+        Q: GetQueueType;
+
+    fn add_static<T>(&mut self, name: &'static str, value: T) -> Arc<Static<T>>
     where
         T: for<'a> Deserialize<'a>
             + Serialize
@@ -38,6 +52,18 @@ pub trait StatesCreator {
             + Send
             + Sync
             + GetInitValue
+            + 'static;
+
+    fn add_static_atomic<T>(&mut self, name: &'static str, value: T) -> Arc<StaticAtomic<T>>
+    where
+        T: for<'a> Deserialize<'a>
+            + Serialize
+            + GetType
+            + Clone
+            + Send
+            + Sync
+            + GetInitValue
+            + Atomic
             + 'static;
 
     fn add_signal<T, Q>(&mut self, name: &'static str) -> Arc<Signal<T, Q>>

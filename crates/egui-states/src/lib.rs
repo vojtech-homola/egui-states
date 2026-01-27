@@ -10,11 +10,10 @@ mod map;
 mod sender;
 mod states_creator;
 mod values;
+mod values_atomic;
 
-// #[cfg(any(feature = "client", feature = "client-wasm"))]
 mod client;
 
-// #[cfg(any(feature = "client", feature = "client-wasm"))]
 pub use client::ClientBuilder;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -30,7 +29,11 @@ pub use image::ValueImage;
 pub use list::ValueList;
 pub use map::ValueMap;
 pub use states_creator::StatesCreator;
-pub use values::{Diff, Queue, Signal, NoQueue, Value, ValueStatic};
+pub use values::{
+    Diff, DiffAtomic, NoQueue, Queue, Signal, Static, StaticAtomic, Value, ValueAtomic,
+};
+
+pub use values_atomic::{Atomic, AtomicLock};
 
 pub trait State {
     const NAME: &'static str;

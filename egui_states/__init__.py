@@ -11,7 +11,7 @@ from egui_states.structures import (
     ValueImage,
     ValueList,
     ValueMap,
-    ValueStatic,
+    Static,
 )
 from egui_states.version import __version__
 
@@ -25,7 +25,7 @@ __all__ = [
     "ValueGraphs",
     "ValueImage",
     "ValueList",
-    "ValueStatic",
+    "Static",
     "Graph",
     "LogLevel",
 ]
