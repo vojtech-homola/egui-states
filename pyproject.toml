@@ -44,6 +44,3 @@ ignore = [
     "PLR0912", # too-many-branches
     "D100",    # undocumented-public-module
 ]
-
-[tool.uv.config-settings]
-"maturin.build-args" = "--manylinux 2_28 --auditwheel repair --compression-level 9"
