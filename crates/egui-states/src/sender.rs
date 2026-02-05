@@ -6,7 +6,6 @@ pub(crate) enum ChannelMessage {
     Value(u64, bool, MessageData),
     Signal(u64, MessageData),
     Ack(u64),
-    Error(String),
 }
 
 #[derive(Clone)]

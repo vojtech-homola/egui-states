@@ -13,7 +13,6 @@ pub(crate) enum ClientMessage {
     Value(u64, bool, Bytes),
     Signal(u64, Bytes),
     Ack(u64),
-    Error(String),
     Handshake(u16, u64, NoHashMap<u64, u64>),
 }
 
@@ -74,12 +73,6 @@ impl SocketReader {
                         }
                         Ok(ClientMessage::Ack(id))
                     }
-                    ClientHeader::Error(err) => {
-                        if pointer + size < data.len() {
-                            self.previous = Some((data, pointer + size, copy));
-                        }
-                        Ok(ClientMessage::Error(err))
-                    }
                     ClientHeader::Handshake(protocol_version, client_id, state_ids) => {
                         if pointer + size < data.len() {
                             self.previous = Some((data, pointer + size, copy));
@@ -131,12 +124,6 @@ impl SocketReader {
                                 self.previous = Some((msg, size, copy));
                             }
                             Ok(ClientMessage::Ack(id))
-                        }
-                        ClientHeader::Error(err) => {
-                            if size < msg.len() {
-                                self.previous = Some((msg, size, copy));
-                            }
-                            Ok(ClientMessage::Error(err))
                         }
                         ClientHeader::Handshake(protocol_version, client_id, state_ids) => {
                             if size < msg.len() {

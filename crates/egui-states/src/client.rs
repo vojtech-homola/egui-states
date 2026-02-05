@@ -26,13 +26,13 @@ async fn start_gui_client(
     vals: ValuesList,
     mut rx: UnboundedReceiver<Option<ChannelMessage>>,
     sender: MessageSender,
-    ui_state: Client,
+    client: Client,
     handshake: u64,
 ) {
     loop {
         // wait for the connection signal
-        ui_state.wait_connection().await;
-        ui_state.set_state(ConnectionState::NotConnected);
+        client.wait_connection().await;
+        client.set_state(ConnectionState::NotConnected);
 
         // try to connect to the server
         let res = build_ws(addr).await;
@@ -59,7 +59,7 @@ async fn start_gui_client(
 
         // read -----------------------------------------
         let th_vals = vals.clone();
-        let th_ui_state = ui_state.clone();
+        let th_client = client.clone();
         let th_sender = sender.clone();
 
         let recv_future = async move {
@@ -67,9 +67,12 @@ async fn start_gui_client(
                 // read the message
                 match socket_read.read().await {
                     Ok(msg) => {
-                        if let Err(e) = handle_message(msg, &th_vals, &th_ui_state).await {
+                        if let Err(e) = handle_message(msg, &th_vals, &th_client).await {
                             let error = format!("handling message from server failed: {:?}", e);
-                            th_sender.send(ChannelMessage::Error(error));
+                            #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
+                            println!("{}", error);
+                            #[cfg(all(debug_assertions, target_arch = "wasm32"))]
+                            log::error!("{}", error);
                             // break; TODO: decide if we want to break the loop on error
                         }
                     }
@@ -141,7 +144,7 @@ async fn start_gui_client(
         #[cfg(not(target_arch = "wasm32"))]
         let send_future = tokio::spawn(send_future);
 
-        ui_state.set_state(ConnectionState::Connected);
+        client.set_state(ConnectionState::Connected);
 
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -158,7 +161,7 @@ async fn start_gui_client(
             rx = rx_;
         }
 
-        ui_state.set_state(ConnectionState::Disconnected);
+        client.set_state(ConnectionState::Disconnected);
     }
 }
 
