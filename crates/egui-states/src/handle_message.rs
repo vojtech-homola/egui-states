@@ -27,10 +27,6 @@ pub(crate) fn parse_to_send(message: ChannelMessage, data: FastVec<64>) -> FastV
             let header = ClientHeader::Ack(id);
             serialize_to_data(&header, data).unwrap()
         }
-        ChannelMessage::Error(err) => {
-            let header = ClientHeader::Error(err);
-            serialize_to_data(&header, data).unwrap()
-        }
     }
 }
 

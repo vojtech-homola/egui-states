@@ -11,7 +11,7 @@ python = ["dep:pyo3"]
 rust = []
 
 [dependencies]
-pyo3 = { version = "0.27", optional = true, features = ["extension-module"] }
+pyo3 = { version = "0.28", optional = true, features = ["extension-module"] }
 
 bytes = { workspace = true }
 tokio-tungstenite = { workspace = true }

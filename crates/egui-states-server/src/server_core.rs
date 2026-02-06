@@ -265,9 +265,6 @@ async fn reader(
                 }
                 None => signals.error(&format!("value with id {} not found", id)),
             },
-            Ok(ClientMessage::Error(err)) => {
-                signals.error(&format!("Error message from client: {}", err));
-            }
             Ok(ClientMessage::Handshake(_, _, _)) => {
                 signals.error("unexpected handshake message after connection established");
             }

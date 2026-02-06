@@ -219,7 +219,6 @@ pub enum ClientHeader {
     Value(u64, bool, u32),
     Signal(u64, u32),
     Ack(u64),
-    Error(String),
     Handshake(u16, u64, NoHashMap<u64, u64>),
 }
 
