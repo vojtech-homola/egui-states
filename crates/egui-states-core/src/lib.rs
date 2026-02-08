@@ -11,7 +11,7 @@ mod hasher;
 use crate::hasher::StableHasher;
 use std::hash::{Hash, Hasher};
 
-pub const PROTOCOL_VERSION: u16 = 1;
+pub const PROTOCOL_VERSION: u16 = 2;
 
 pub fn generate_value_id(name: &str) -> u64 {
     let mut hasher = StableHasher::new();
