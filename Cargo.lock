@@ -998,7 +998,7 @@ dependencies = [
 
 [[package]]
 name = "egui_states"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "bytes",
  "egui",
@@ -1016,7 +1016,7 @@ dependencies = [
 
 [[package]]
 name = "egui_states_core"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "bytes",
  "postcard",
@@ -1027,7 +1027,7 @@ dependencies = [
 
 [[package]]
 name = "egui_states_macros"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1036,7 +1036,7 @@ dependencies = [
 
 [[package]]
 name = "egui_states_server"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "bytes",
  "egui_states_core",
@@ -1051,7 +1051,7 @@ dependencies = [
 
 [[package]]
 name = "egui_states_widgets"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "egui",
  "egui_states",
@@ -1554,7 +1554,7 @@ dependencies = [
 
 [[package]]
 name = "gui"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "eframe",
  "egui",
