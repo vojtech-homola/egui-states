@@ -1,5 +1,6 @@
-docker run --rm -v "$PWD:/io" -w /io quay.io/pypa/manylinux_2_28_x86_64 bash -lc '
+docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp/home -v "$PWD:/io" -w /io quay.io/pypa/manylinux_2_28_x86_64 bash -lc '
   set -eux
+  mkdir -p "$HOME"
   export CARGO_TARGET_DIR=/tmp/cargo-target
 
   curl -LsSf https://astral.sh/uv/install.sh | sh
