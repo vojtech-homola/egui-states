@@ -9,7 +9,7 @@ pub fn print_histogram(
     position: &ValueAtomic<(f32, f32)>,
 ) {
     let size = ui.available_size();
-    const X_MARGIN: f32 = 5.;
+    const X_MARGIN: f32 = 12.;
 
     let (main_response, painter) = ui.allocate_painter(size, egui::Sense::click());
     let rect = main_response.rect;
@@ -104,23 +104,43 @@ pub fn print_histogram(
     let mut lines_rect = rect;
     lines_rect.min.x += X_MARGIN + hist_range.0 * w - 3.;
     lines_rect.max.x = lines_rect.min.x + 7.;
+    lines_rect.max.y -= 10.;
 
-    let response = ui
-        .allocate_rect(lines_rect, egui::Sense::drag())
+    let grap_rect =
+        Rect::from_center_size(pos2(lines_rect.center().x, rect.max.y - 5.), vec2(10., 10.));
+    let response_grap = ui
+        .allocate_rect(grap_rect, egui::Sense::drag())
         .on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
 
-    painter.rect_filled(response.rect.shrink2(vec2(3., 0.)), 0., Color32::WHITE);
+    painter.rect_filled(lines_rect.shrink2(vec2(3., 0.)), 0., Color32::WHITE);
+
+    lines_rect.min.y += 10.;
+    let response_line = ui
+        .allocate_rect(lines_rect, egui::Sense::drag())
+        .on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
 
     let mut save = false;
     let mut new_range = hist_range.clone();
 
-    if let Some(pos) = response.interact_pointer_pos() {
-        if hist_range.0 == 0.0 && pos.x < main_response.rect.min.x {
+    if let Some(pos) = response_line.interact_pointer_pos() {
+        if hist_range.0 == 0.0 && pos.x < main_response.rect.min.x + X_MARGIN {
             // do nothing
-        } else if hist_range.0 == hist_range.1 && pos.x > response.rect.max.x {
+        } else if hist_range.0 == hist_range.1 && pos.x > response_line.rect.max.x {
             // do nothing
         } else {
-            let delta = response.drag_delta().x / w;
+            let delta = response_line.drag_delta().x / w;
+            new_range.0 = (hist_range.0 + delta).clamp(0.0, hist_range.1);
+            save = true;
+        }
+    }
+
+    if let Some(pos) = response_grap.interact_pointer_pos() {
+        if hist_range.0 == 0.0 && pos.x < main_response.rect.min.x + X_MARGIN {
+            // do nothing
+        } else if hist_range.0 == hist_range.1 && pos.x > response_line.rect.max.x {
+            // do nothing
+        } else {
+            let delta = response_grap.drag_delta().x / w;
             new_range.0 = (hist_range.0 + delta).clamp(0.0, hist_range.1);
             save = true;
         }
@@ -136,33 +156,58 @@ pub fn print_histogram(
         Color32::from_rgba_premultiplied(0, 0, 32, 128),
     );
 
+    // paint here to cover max range zone
+    painter.circle_filled(grap_rect.center(), 5., Color32::WHITE);
+
     let mut lines_rect = rect;
     lines_rect.min.x += X_MARGIN + hist_range.1 * w - 3.;
     lines_rect.max.x = lines_rect.min.x + 7.;
+    lines_rect.min.y += 10.;
 
-    let response = ui
+    let grap_rect = Rect::from_center_size(
+        pos2(lines_rect.center().x, rect.min.y + 5.),
+        vec2(10., 10.),
+    );
+    let response_grap = ui
+        .allocate_rect(grap_rect, egui::Sense::drag())
+        .on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
+
+    painter.rect_filled(lines_rect.shrink2(vec2(3., 0.)), 0., Color32::WHITE);
+
+    lines_rect.max.y -= 10.;
+    let response_line = ui
         .allocate_rect(lines_rect, egui::Sense::drag())
         .on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
 
-    painter.rect_filled(response.rect.shrink2(vec2(3., 0.)), 0., Color32::WHITE);
+    painter.circle_filled(
+        pos2(response_line.rect.center().x, rect.min.y + 5.),
+        5.,
+        Color32::WHITE,
+    );
 
-    if let Some(pos) = response.interact_pointer_pos() {
-        if hist_range.1 == 1.0 && pos.x > main_response.rect.max.x {
+    if let Some(pos) = response_line.interact_pointer_pos() {
+        if hist_range.1 == 1.0 && pos.x > main_response.rect.max.x - X_MARGIN {
             // do nothing
-        } else if hist_range.1 == hist_range.0 && pos.x < response.rect.min.x {
+        } else if hist_range.1 == hist_range.0 && pos.x < response_line.rect.min.x {
             // do nothing
         } else {
-            let delta = response.drag_delta().x / w;
+            let delta = response_line.drag_delta().x / w;
             new_range.1 = (hist_range.1 + delta).clamp(hist_range.0, 1.0);
             save = true;
         }
     }
 
-    // if response.dragged() && response.hovered() {
-    //     let delta = response.drag_delta().x / w;
-    //     new_range.1 = (hist_range.1 + delta).clamp(hist_range.0, 1.0);
-    //     save = true;
-    // }
+    if let Some(pos) = response_grap.interact_pointer_pos() {
+        if hist_range.1 == 1.0 && pos.x > main_response.rect.max.x - X_MARGIN {
+            // do nothing
+        } else if hist_range.1 == hist_range.0 && pos.x < response_line.rect.min.x {
+            // do nothing
+        } else {
+            let delta = response_grap.drag_delta().x / w;
+            new_range.1 = (hist_range.1 + delta).clamp(hist_range.0, 1.0);
+            save = true;
+        }
+    }
 
     if save {
         position.set_signal(new_range);
