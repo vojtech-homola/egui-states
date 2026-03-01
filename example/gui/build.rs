@@ -1,4 +1,4 @@
-use egui_states::build_script::python;
+use egui_states::build_scripts::python;
 
 #[path = "src/states.rs"]
 #[allow(dead_code)]

@@ -3,19 +3,31 @@ use std::hash::Hash;
 use serde::{Deserialize, Serialize};
 
 use egui_states_core::generate_value_id;
-use egui_states_core::graphs::GraphElement;
-use egui_states_core::types::GetType;
+use egui_states_core::graphs::{GraphElement, GraphType};
+use egui_states_core::types::{GetType, ObjectType};
 
 use crate::State;
-use crate::build_script::values_info::{GetInitValue, StateType};
 use crate::graphs::ValueGraphs;
 use crate::image::ValueImage;
+use crate::initial_value::{GetInitValue, InitValue};
 use crate::list::ValueList;
 use crate::map::ValueMap;
 use crate::sender::MessageSender;
 use crate::states_creator::StatesCreator;
 use crate::values::{GetQueueType, Signal, Static, StaticAtomic, Value, ValueAtomic};
 use crate::values_atomic::Atomic;
+
+#[derive(Clone)]
+pub enum StateType {
+    Value(String, ObjectType, InitValue, bool),
+    Static(String, ObjectType, InitValue),
+    Image(String),
+    Map(String, ObjectType, ObjectType),
+    List(String, ObjectType),
+    Graphs(String, GraphType),
+    Signal(String, ObjectType, bool),
+    SubState(String, &'static str, Vec<StateType>),
+}
 
 pub struct StatesCreatorBuild {
     states: Vec<StateType>,

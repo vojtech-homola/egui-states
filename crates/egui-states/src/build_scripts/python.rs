@@ -7,8 +7,9 @@ use egui_states_core::graphs::GraphType;
 use egui_states_core::types::ObjectType;
 
 use crate::State;
-use crate::build_script::scripts;
-use crate::build_script::values_info::{InitValue, StateType};
+use crate::build_scripts::scripts;
+use crate::build_scripts::state_creator::StateType;
+use crate::initial_value::InitValue;
 
 fn type_to_pytype(type_info: &ObjectType) -> String {
     match type_info {
@@ -285,7 +286,10 @@ fn state_to_line(state: &StateType, types_map: &HashMap<String, usize>) -> Strin
         }
         StateType::Image(name) => {
             let last_name = name.split('.').last().unwrap();
-            format!("        self.{}: s.ValueImage = s.ValueImage()\n", last_name)
+            format!(
+                "        self.{}: s.ValueImage = s.ValueImage()\n",
+                last_name
+            )
         }
         StateType::SubState(name, state_class, _) => {
             let last_name = name.split('.').last().unwrap();
@@ -462,7 +466,8 @@ class StatesServer(StateServerBase):
     """The main class for the SteteServer for UI.""""#;
         file.write_all(text.as_bytes()).unwrap();
 
-        file.write_all(format!("\n\n    states: {}\n", root_name).as_bytes()).unwrap();
+        file.write_all(format!("\n\n    states: {}\n", root_name).as_bytes())
+            .unwrap();
 
         let text = r#"
     def __init__(

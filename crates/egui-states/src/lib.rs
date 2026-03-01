@@ -1,10 +1,9 @@
-mod client_base;
 // mod data;
-pub mod build_script;
-mod client_states;
 mod graphs;
+mod build_scripts;
 mod handle_message;
 mod image;
+mod initial_value;
 mod list;
 mod map;
 mod sender;
@@ -22,15 +21,16 @@ mod websocket;
 #[cfg(target_arch = "wasm32")]
 mod websocket_wasm;
 
-pub use build_script::values_info::{GetInitValue, InitValue};
-pub use client_base::{Client, ConnectionState};
+pub use client::{Client, ConnectionState};
 pub use graphs::ValueGraphs;
 pub use image::ValueImage;
+pub use initial_value::{GetInitValue, InitValue};
 pub use list::ValueList;
 pub use map::ValueMap;
 pub use states_creator::StatesCreator;
 pub use values::{
-    Diff, DiffAtomic, NoQueue, Queue, Signal, Static, StaticAtomic, Value, ValueAtomic,
+    Diff, DiffAtomic, GetQueueType, NoQueue, Queue, Signal, Static, StaticAtomic, Value,
+    ValueAtomic,
 };
 
 pub use values_atomic::{Atomic, AtomicLock};

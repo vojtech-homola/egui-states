@@ -1,20 +1,5 @@
 use std::collections::HashMap;
 
-use egui_states_core::graphs::GraphType;
-use egui_states_core::types::ObjectType;
-
-#[derive(Clone)]
-pub enum StateType {
-    Value(String, ObjectType, InitValue, bool),
-    Static(String, ObjectType, InitValue),
-    Image(String),
-    Map(String, ObjectType, ObjectType),
-    List(String, ObjectType),
-    Graphs(String, GraphType),
-    Signal(String, ObjectType, bool),
-    SubState(String, &'static str, Vec<StateType>),
-}
-
 #[derive(Clone)]
 pub enum InitValue {
     U8(u8),

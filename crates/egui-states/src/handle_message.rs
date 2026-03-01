@@ -5,9 +5,9 @@ use egui_states_core::graphs::GraphHeader;
 use egui_states_core::image::ImageHeader;
 use egui_states_core::serialization::{ClientHeader, FastVec, ServerHeader, serialize_to_data};
 
-use crate::client_base::Client;
-use crate::client_states::ValuesList;
+use crate::client::Client;
 use crate::sender::ChannelMessage;
+use crate::states_creator::ValuesList;
 
 pub(crate) fn parse_to_send(message: ChannelMessage, data: FastVec<64>) -> FastVec<64> {
     match message {
@@ -134,14 +134,12 @@ impl MessagesParser {
                 if self.pointer > self.data.len() {
                     return Err("Incomplete data for Graph message");
                 }
-                let data =match header {
+                let data = match header {
                     GraphHeader::AddPoints(_, _) | GraphHeader::Set(_, _) => {
                         self.is_empty = true;
                         self.data.slice(self.pointer..)
                     }
-                    GraphHeader::Reset | GraphHeader::Remove(_) => {
-                        Bytes::new()
-                    }
+                    GraphHeader::Reset | GraphHeader::Remove(_) => Bytes::new(),
                 };
                 ServerMessage::Graph(id, update, header, data)
             }
