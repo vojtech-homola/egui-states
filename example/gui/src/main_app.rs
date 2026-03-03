@@ -6,7 +6,7 @@ use egui_states::{Client, ClientBuilder, ConnectionState, Diff};
 
 use egui_states_widgets::WheelBoxF;
 
-use crate::states::States;
+use crate::states::{States, TestEnum};
 
 pub struct MainApp {
     states: States,
@@ -91,6 +91,17 @@ impl eframe::App for MainApp {
 
             let s = self.states.my_sub_state.stat.get();
             ui.label(format!("Static atomic value: [{}, {}]", s[0], s[1]));
+
+            let text = match self.states.test_enum.get() {
+                TestEnum::A => "A",
+                TestEnum::B => "B",
+                TestEnum::C => "C",
+            };
+            ui.label(format!("Test enum: {}", text));
+
+            if ui.button("Set test enum to C").clicked() {
+                self.states.test_enum.set_signal(TestEnum::C);
+            }
 
             //map --------------------------------------------------
             self.states.collections.map.read(|m| {

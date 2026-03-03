@@ -9,5 +9,5 @@ use states::States;
 fn main() {
     println!("cargo:rerun-if-changed=../gui/src/states.rs");
 
-    python::generate::<States>("../states-server/states.py").unwrap();
+    python::generate::<States>("../states-server/states_server.py").unwrap();
 }

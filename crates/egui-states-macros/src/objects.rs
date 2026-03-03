@@ -1,5 +1,5 @@
 use proc_macro::TokenStream;
-use quote::quote;
+use quote::{quote, format_ident};
 use syn::{self, Lit, parse_macro_input};
 
 pub(crate) fn impl_struct(input: TokenStream) -> TokenStream {
@@ -118,6 +118,8 @@ pub(crate) fn impl_enum(input: TokenStream) -> TokenStream {
         values.push(actual);
         actual += 1;
     }
+    let values2 = values.clone();
+    let private_ident = format_ident!("__Private{}", ident);
 
     let out = quote!(
         #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -152,6 +154,32 @@ pub(crate) fn impl_enum(input: TokenStream) -> TokenStream {
                     ]
                 )
             }
+        }
+
+        pub struct #private_ident(std::sync::atomic::AtomicI64);
+
+        unsafe impl egui_states::AtomicLock<#ident> for #private_ident {
+            #[inline]
+            fn new(value: #ident) -> Self {
+                Self(std::sync::atomic::AtomicI64::new(value as i64))
+            }
+
+            #[inline]
+            fn load(&self) -> #ident {
+                match self.0.load(std::sync::atomic::Ordering::Acquire) {
+                    #(#values2 => #ident::#names),*,
+                    _ => panic!("Invalid enum value"),
+                }
+            }
+
+            #[inline]
+            fn store(&self, value: #ident) {
+                self.0.store(value as i64, std::sync::atomic::Ordering::Release);
+            }
+        }
+
+        unsafe impl egui_states::Atomic for #ident {
+            type Lock = #private_ident;
         }
     );
 
