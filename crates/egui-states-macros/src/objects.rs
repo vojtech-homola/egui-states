@@ -95,7 +95,7 @@ pub(crate) fn impl_enum(input: TokenStream) -> TokenStream {
     let variants = variants.clone().into_iter().map(|v| v);
     let mut names = Vec::new();
     let mut values = Vec::new();
-    let mut actual = 0i64;
+    let mut actual = 0i32;
     for variant in variants.clone() {
         if variant.fields != syn::Fields::Unit {
             panic!("Enum variants must be unit variants");
@@ -104,7 +104,7 @@ pub(crate) fn impl_enum(input: TokenStream) -> TokenStream {
         if let Some((_, expr)) = &variant.discriminant {
             if let syn::Expr::Lit(syn::ExprLit { lit, .. }) = expr {
                 if let Lit::Int(lit) = lit {
-                    let v = lit.base10_parse::<i64>().unwrap();
+                    let v = lit.base10_parse::<i32>().unwrap();
                     actual = v;
                 } else {
                     panic!("Enum discriminants must be integers");
@@ -120,6 +120,7 @@ pub(crate) fn impl_enum(input: TokenStream) -> TokenStream {
     }
     let values2 = values.clone();
     let private_ident = format_ident!("__Private{}", ident);
+    let private_mod = format_ident!("__private_{}", ident);
 
     let out = quote!(
         #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -156,30 +157,38 @@ pub(crate) fn impl_enum(input: TokenStream) -> TokenStream {
             }
         }
 
-        pub struct #private_ident(std::sync::atomic::AtomicI64);
-
-        unsafe impl egui_states::AtomicLock<#ident> for #private_ident {
+        #[allow(non_snake_case)]
+        mod #private_mod {
+            use std::sync::atomic::AtomicI32;
+            pub struct #private_ident(pub AtomicI32);
+        }
+        
+        unsafe impl egui_states::AtomicLock<#ident> for #private_mod::#private_ident {
             #[inline]
             fn new(value: #ident) -> Self {
-                Self(std::sync::atomic::AtomicI64::new(value as i64))
+                Self(std::sync::atomic::AtomicI32::new(value as i32))
             }
 
             #[inline]
             fn load(&self) -> #ident {
                 match self.0.load(std::sync::atomic::Ordering::Acquire) {
                     #(#values2 => #ident::#names),*,
-                    _ => panic!("Invalid enum value"),
+                    raw => panic!(
+                        "Invalid enum value for {}: {}",
+                        stringify!(#ident),
+                        raw
+                    ),
                 }
             }
 
             #[inline]
             fn store(&self, value: #ident) {
-                self.0.store(value as i64, std::sync::atomic::Ordering::Release);
+                self.0.store(value as i32, std::sync::atomic::Ordering::Release);
             }
         }
 
         unsafe impl egui_states::Atomic for #ident {
-            type Lock = #private_ident;
+            type Lock = #private_mod::#private_ident;
         }
     );
 

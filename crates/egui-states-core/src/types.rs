@@ -17,7 +17,7 @@ pub enum ObjectType {
     F32,
     String,
     Bool,
-    Enum(String, Vec<(String, i64)>),
+    Enum(String, Vec<(String, i32)>),
     Struct(String, Vec<(String, ObjectType)>),
     Tuple(Vec<ObjectType>),
     List(u32, Box<ObjectType>),

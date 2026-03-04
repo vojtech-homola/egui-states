@@ -81,17 +81,17 @@ impl ObjectType {
                 let enum_type = obj.bind(py);
                 // let members = enum_type
                 //     .call_method0("_get_members")?
-                //     .extract::<Vec<(String, i64)>>()?;
+                //     .extract::<Vec<(String, i32)>>()?;
                 let member_map = enum_type.getattr("_member_map_")?;
                 let members = member_map
                     .cast::<PyDict>()?
                     .iter()
                     .map(|(name, value)| {
                         let name = name.extract::<String>()?;
-                        let value = value.getattr("value")?.extract::<i64>()?;
+                        let value = value.getattr("value")?.extract::<i32>()?;
                         Ok((name, value))
                     })
-                    .collect::<PyResult<Vec<(String, i64)>>>()?;
+                    .collect::<PyResult<Vec<(String, i32)>>>()?;
 
                 let name = enum_type.getattr("__name__")?.extract::<String>()?;
                 CoreObjectType::Enum(name, members)
