@@ -104,7 +104,8 @@ pub(crate) fn impl_enum(input: TokenStream) -> TokenStream {
         if let Some((_, expr)) = &variant.discriminant {
             if let syn::Expr::Lit(syn::ExprLit { lit, .. }) = expr {
                 if let Lit::Int(lit) = lit {
-                    let v = lit.base10_parse::<i32>().unwrap();
+                    let v = lit.base10_parse::<i32>()
+                        .expect("Enum discriminants must fit in i32");
                     actual = v;
                 } else {
                     panic!("Enum discriminants must be integers");

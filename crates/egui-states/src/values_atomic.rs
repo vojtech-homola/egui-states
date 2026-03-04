@@ -17,11 +17,8 @@ pub unsafe trait AtomicLock<T: Copy>: Sync + Send {
 // ----------------------------------------------------
 // implemntation basic --------------------------------
 // 64
-mod private {
-    use super::*;
-    pub struct U64Lock(pub AtomicU64);
-    pub struct I64Lock(pub AtomicI64);
-}
+pub struct U64Lock(pub AtomicU64);
+pub struct I64Lock(pub AtomicI64);
 
 macro_rules! ImplAtomic64 {
     ($t:ty, $lock:ty, $atomic:ty) => {
@@ -47,8 +44,8 @@ macro_rules! ImplAtomic64 {
     };
 }
 
-ImplAtomic64!(u64, private::U64Lock, AtomicU64);
-ImplAtomic64!(i64, private::I64Lock, AtomicI64);
+ImplAtomic64!(u64, U64Lock, AtomicU64);
+ImplAtomic64!(i64, I64Lock, AtomicI64);
 
 // basics
 pub struct U32Lock(AtomicU32);
@@ -92,7 +89,7 @@ ImplAtomic!(i8, I8Lock, AtomicI8);
 ImplAtomic!(bool, BoolLock, AtomicBool);
 
 // f64
-unsafe impl AtomicLock<f64> for private::U64Lock {
+unsafe impl AtomicLock<f64> for U64Lock {
     fn new(value: f64) -> Self {
         Self(AtomicU64::new(value.to_bits()))
     }
@@ -109,7 +106,7 @@ unsafe impl AtomicLock<f64> for private::U64Lock {
 }
 
 unsafe impl Atomic for f64 {
-    type Lock = private::U64Lock;
+    type Lock = U64Lock;
 }
 
 // f32
@@ -135,7 +132,7 @@ unsafe impl Atomic for f32 {
 
 // F32F32
 #[cfg(target_has_atomic = "64")]
-unsafe impl AtomicLock<(f32, f32)> for private::U64Lock {
+unsafe impl AtomicLock<(f32, f32)> for U64Lock {
     fn new(value: (f32, f32)) -> Self {
         let combined = ((value.0.to_bits() as u64) << 32) | (value.1.to_bits() as u64);
         Self(AtomicU64::new(combined))
@@ -156,10 +153,10 @@ unsafe impl AtomicLock<(f32, f32)> for private::U64Lock {
     }
 }
 unsafe impl Atomic for (f32, f32) {
-    type Lock = private::U64Lock;
+    type Lock = U64Lock;
 }
 
-unsafe impl AtomicLock<[f32; 2]> for private::U64Lock {
+unsafe impl AtomicLock<[f32; 2]> for U64Lock {
     fn new(value: [f32; 2]) -> Self {
         let combined = ((value[0].to_bits() as u64) << 32) | (value[1].to_bits() as u64);
         Self(AtomicU64::new(combined))
@@ -180,5 +177,5 @@ unsafe impl AtomicLock<[f32; 2]> for private::U64Lock {
     }
 }
 unsafe impl Atomic for [f32; 2] {
-    type Lock = private::U64Lock;
+    type Lock = U64Lock;
 }
