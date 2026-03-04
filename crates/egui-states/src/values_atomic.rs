@@ -17,8 +17,8 @@ pub unsafe trait AtomicLock<T: Copy>: Sync + Send {
 // ----------------------------------------------------
 // implemntation basic --------------------------------
 // 64
-pub struct U64Lock(AtomicU64);
-pub struct I64Lock(AtomicI64);
+pub struct U64Lock(pub AtomicU64);
+pub struct I64Lock(pub AtomicI64);
 
 macro_rules! ImplAtomic64 {
     ($t:ty, $lock:ty, $atomic:ty) => {
