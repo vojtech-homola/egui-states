@@ -1,3 +1,4 @@
+use parking_lot::{RwLock};
 use std::sync::atomic::{
     AtomicBool, AtomicI8, AtomicI16, AtomicI32, AtomicI64, AtomicU8, AtomicU16, AtomicU32,
     AtomicU64,
@@ -12,6 +13,25 @@ pub unsafe trait AtomicLock<T: Copy>: Sync + Send {
     fn new(value: T) -> Self;
     fn load(&self) -> T;
     fn store(&self, value: T);
+}
+
+pub struct FallbackLock<T: Copy>(RwLock<T>);
+
+unsafe impl<T: Copy + Send + Sync> AtomicLock<T> for FallbackLock<T> {
+    #[inline]
+    fn new(value: T) -> Self {
+        Self(RwLock::new(value))
+    }
+
+    #[inline]
+    fn load(&self) -> T {
+        *self.0.read()
+    }
+
+    #[inline]
+    fn store(&self, value: T) {
+        *self.0.write() = value;
+    }
 }
 
 // ----------------------------------------------------
@@ -39,7 +59,10 @@ macro_rules! ImplAtomic64 {
         }
 
         unsafe impl Atomic for $t {
+            #[cfg(target_has_atomic = "64")]
             type Lock = $lock;
+            #[cfg(not(target_has_atomic = "64"))]
+            type Lock = FallbackLock<$t>;
         }
     };
 }
@@ -106,7 +129,10 @@ unsafe impl AtomicLock<f64> for U64Lock {
 }
 
 unsafe impl Atomic for f64 {
+    #[cfg(target_has_atomic = "64")]
     type Lock = U64Lock;
+    #[cfg(not(target_has_atomic = "64"))]
+    type Lock = FallbackLock<f64>;
 }
 
 // f32
@@ -131,7 +157,6 @@ unsafe impl Atomic for f32 {
 }
 
 // F32F32
-#[cfg(target_has_atomic = "64")]
 unsafe impl AtomicLock<(f32, f32)> for U64Lock {
     fn new(value: (f32, f32)) -> Self {
         let combined = ((value.0.to_bits() as u64) << 32) | (value.1.to_bits() as u64);
@@ -153,7 +178,10 @@ unsafe impl AtomicLock<(f32, f32)> for U64Lock {
     }
 }
 unsafe impl Atomic for (f32, f32) {
+    #[cfg(target_has_atomic = "64")]
     type Lock = U64Lock;
+    #[cfg(not(target_has_atomic = "64"))]
+    type Lock = FallbackLock<(f32, f32)>;
 }
 
 unsafe impl AtomicLock<[f32; 2]> for U64Lock {
@@ -177,5 +205,8 @@ unsafe impl AtomicLock<[f32; 2]> for U64Lock {
     }
 }
 unsafe impl Atomic for [f32; 2] {
+    #[cfg(target_has_atomic = "64")]
     type Lock = U64Lock;
+    #[cfg(not(target_has_atomic = "64"))]
+    type Lock = FallbackLock<[f32; 2]>;
 }
