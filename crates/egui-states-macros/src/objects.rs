@@ -161,10 +161,11 @@ pub(crate) fn impl_enum(input: TokenStream) -> TokenStream {
         #[allow(non_snake_case)]
         mod #private_mod {
             use std::sync::atomic::AtomicI32;
+
             pub struct #private_ident(pub AtomicI32);
         }
         
-        unsafe impl egui_states::AtomicLock<#ident> for #private_mod::#private_ident {
+        unsafe impl egui_states::AtomicLockStatic<#ident> for #private_mod::#private_ident {
             #[inline]
             fn new(value: #ident) -> Self {
                 Self(std::sync::atomic::AtomicI32::new(value as i32))
@@ -188,8 +189,12 @@ pub(crate) fn impl_enum(input: TokenStream) -> TokenStream {
             }
         }
 
-        unsafe impl egui_states::Atomic for #ident {
+        unsafe impl egui_states::AtomicStatic for #ident {
             type Lock = #private_mod::#private_ident;
+        }
+
+        unsafe impl egui_states::Atomic for #ident {
+            type Lock = egui_states::UpdateLock<#private_mod::#private_ident>;
         }
     );
 

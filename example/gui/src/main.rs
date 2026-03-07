@@ -51,7 +51,7 @@ fn main() {
 
         // log::info!("Hostname: {hostname}");
         // log::info!("Starting eframe WebRunner with port {}", port);
-        let port = 8081;
+        let port = 8091;
 
         eframe::WebRunner::new()
             .start(

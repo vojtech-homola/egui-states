@@ -4,7 +4,7 @@ from egui_states import LogLevel
 
 from states_server import StatesServer, TestEnum
 
-server = StatesServer(port=8081)
+server = StatesServer(port=8091)
 server.start()
 states = server.states
 

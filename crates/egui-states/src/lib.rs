@@ -33,7 +33,7 @@ pub use values::{
     Diff, DiffAtomic, NoQueue, Queue, Signal, Static, StaticAtomic, Value, ValueAtomic,
 };
 
-pub use values_atomic::{Atomic, AtomicLock, FallbackLock};
+pub use values_atomic::{Atomic, AtomicLock, AtomicLockStatic, AtomicStatic, FallbackLock, UpdateLock};
 
 pub trait State {
     const NAME: &'static str;
