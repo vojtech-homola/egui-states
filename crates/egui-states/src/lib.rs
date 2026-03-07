@@ -33,7 +33,7 @@ pub use values::{
     ValueAtomic,
 };
 
-pub use values_atomic::{Atomic, AtomicLock};
+pub use values_atomic::{Atomic, AtomicLock, AtomicLockStatic, AtomicStatic, FallbackLock, UpdateLock};
 
 pub trait State {
     const NAME: &'static str;

@@ -15,7 +15,7 @@ use crate::map::ValueMap;
 use crate::sender::MessageSender;
 use crate::states_creator::StatesCreator;
 use crate::values::{GetQueueType, Signal, Static, StaticAtomic, Value, ValueAtomic};
-use crate::values_atomic::Atomic;
+use crate::values_atomic::{Atomic, AtomicStatic};
 
 #[derive(Clone)]
 pub enum StateType {
@@ -119,7 +119,7 @@ impl StatesCreator for StatesCreatorBuild {
             + Send
             + Sync
             + GetInitValue
-            + Atomic
+            + AtomicStatic
             + 'static,
     {
         let name = format!("{}.{}", self.parent, name);

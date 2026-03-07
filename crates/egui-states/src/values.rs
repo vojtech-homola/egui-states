@@ -1,4 +1,4 @@
-use parking_lot::{Mutex, RwLock};
+use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
 use std::sync::Arc;
@@ -6,7 +6,7 @@ use std::sync::Arc;
 use egui_states_core::serialization::{deserialize, to_message};
 
 use crate::sender::{ChannelMessage, MessageSender};
-use crate::values_atomic::{Atomic, AtomicLock};
+use crate::values_atomic::{Atomic, AtomicLock, AtomicLockStatic, AtomicStatic};
 
 pub struct Diff<'a, T> {
     pub v: T,
@@ -194,14 +194,9 @@ impl<T, Q: GetQueueType> Clone for Value<T, Q> {
     }
 }
 
-enum ValueLock<T: Atomic> {
-    Atomic(Mutex<()>, T::Lock),
-    Fallback(RwLock<T>),
-}
-
 pub struct ValueAtomic<T: Atomic, Q: GetQueueType = NoQueue> {
     id: u64,
-    inner: Arc<(ValueLock<T>, MessageSender)>,
+    inner: Arc<(T::Lock, MessageSender)>,
     _phantom: PhantomData<Q>,
 }
 
@@ -210,50 +205,25 @@ where
     T: Serialize + Clone + Atomic,
 {
     pub(crate) fn new(id: u64, value: T, sender: MessageSender) -> Self {
-        let value = if std::mem::size_of::<T>() > 4 && !cfg!(target_has_atomic = "64") {
-            ValueLock::Fallback(RwLock::new(value))
-        } else {
-            ValueLock::Atomic(Mutex::new(()), T::Lock::new(value))
-        };
-
         Self {
             id,
-            inner: Arc::new((value, sender)),
+            inner: Arc::new((T::Lock::new(value), sender)),
             _phantom: PhantomData,
         }
     }
 
     pub fn get(&self) -> T {
-        match &self.inner.0 {
-            ValueLock::Atomic(_, lock) => lock.load(),
-            ValueLock::Fallback(rwlock) => *rwlock.read(),
-        }
+        self.inner.0.load()
     }
 
     pub fn set(&self, value: T) {
         let message = ChannelMessage::Value(self.id, false, to_message(&value));
-        self.set_raw(value, message);
+        self.inner.0.update(value, || self.inner.1.send(message));
     }
 
     pub fn set_signal(&self, value: T) {
         let message = ChannelMessage::Value(self.id, true, to_message(&value));
-        self.set_raw(value, message);
-    }
-
-    #[inline]
-    fn set_raw(&self, value: T, message: ChannelMessage) {
-        match &self.inner.0 {
-            ValueLock::Atomic(lock, val) => {
-                let _g = lock.lock();
-                self.inner.1.send(message);
-                val.store(value);
-            }
-            ValueLock::Fallback(rwlock) => {
-                let mut w = rwlock.write();
-                self.inner.1.send(message);
-                *w = value;
-            }
-        }
+        self.inner.0.update(value, || self.inner.1.send(message));
     }
 }
 
@@ -264,20 +234,9 @@ impl<T: for<'a> Deserialize<'a> + Atomic + Send + Sync, Q: GetQueueType + Send +
         let value = deserialize(data)
             .map_err(|e| format!("Parse error: {} for value id: {}", e, self.id))?;
 
-        let message = ChannelMessage::Ack(self.id);
-
-        match &self.inner.0 {
-            ValueLock::Atomic(lock, val) => {
-                let _g = lock.lock();
-                self.inner.1.send(message);
-                val.store(value);
-            }
-            ValueLock::Fallback(rwlock) => {
-                let mut w = rwlock.write();
-                self.inner.1.send(message);
-                *w = value;
-            }
-        }
+        self.inner
+            .0
+            .update(value, || self.inner.1.send(ChannelMessage::Ack(self.id)));
 
         Ok(())
     }
@@ -335,12 +294,12 @@ impl<T> Clone for Static<T> {
     }
 }
 
-pub struct StaticAtomic<T: Atomic> {
+pub struct StaticAtomic<T: AtomicStatic> {
     id: u64,
     value: Arc<T::Lock>,
 }
 
-impl<T: Atomic> StaticAtomic<T> {
+impl<T: AtomicStatic> StaticAtomic<T> {
     pub(crate) fn new(id: u64, value: T) -> Self {
         Self {
             id,
@@ -353,7 +312,7 @@ impl<T: Atomic> StaticAtomic<T> {
     }
 }
 
-impl<T: for<'a> Deserialize<'a> + Atomic + Send + Sync> UpdateValue for StaticAtomic<T> {
+impl<T: for<'a> Deserialize<'a> + AtomicStatic + Send + Sync> UpdateValue for StaticAtomic<T> {
     fn update_value(&self, data: &[u8]) -> Result<(), String> {
         let value = deserialize(data)
             .map_err(|e| format!("Parse error: {} for value id: {}", e, self.id))?;
@@ -362,7 +321,7 @@ impl<T: for<'a> Deserialize<'a> + Atomic + Send + Sync> UpdateValue for StaticAt
     }
 }
 
-impl<T: Atomic> Clone for StaticAtomic<T> {
+impl<T: AtomicStatic> Clone for StaticAtomic<T> {
     fn clone(&self) -> Self {
         Self {
             id: self.id,

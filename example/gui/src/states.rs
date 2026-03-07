@@ -75,7 +75,7 @@ pub struct States {
     pub(crate) empty_signal: Signal<(), Queue>,
     pub(crate) image: ValueImage,
     pub(crate) graphs: ValueGraphs<f32>,
-    pub(crate) test_enum: Static<TestEnum>,
+    pub(crate) test_enum: Value<TestEnum>,
     pub(crate) test_struct: Value<TestStruct>,
     pub(crate) test_enum2: Value<TestEnum2>,
     pub(crate) test_struct2: Value<TestStruct2>,
@@ -94,7 +94,7 @@ impl State for States {
             empty_signal: c.signal("empty_signal"),
             image: c.image("image"),
             graphs: c.graphs("graphs"),
-            test_enum: c.add_static("test_enum", TestEnum::B),
+            test_enum: c.value("test_enum", TestEnum::B),
             test_struct: c.value(
                 "test_struct",
                 TestStruct {

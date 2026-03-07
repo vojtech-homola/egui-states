@@ -16,7 +16,7 @@ use crate::sender::MessageSender;
 use crate::list::{ValueList, UpdateList};
 use crate::map::{ValueMap, UpdateMap};
 use crate::values::{GetQueueType, Signal, Static, StaticAtomic, Value, ValueAtomic, UpdateValue};
-use crate::values_atomic::Atomic;
+use crate::values_atomic::{Atomic, AtomicStatic};
 
 pub trait StatesCreator {
     fn substate<S: State>(&mut self, name: &str) -> S;
@@ -66,7 +66,7 @@ pub trait StatesCreator {
             + Send
             + Sync
             + GetInitValue
-            + Atomic
+            + AtomicStatic
             + 'static;
 
     fn signal<T, Q>(&mut self, name: &'static str) -> Signal<T, Q>
@@ -219,7 +219,7 @@ impl StatesCreator for StatesCreatorClient {
             + Send
             + Sync
             + crate::GetInitValue
-            + Atomic
+            + AtomicStatic
             + 'static,
     {
         let name = format!("{}.{}", self.parent, name);

@@ -2,11 +2,11 @@
 import numpy as np
 from egui_states import LogLevel
 
-from states import StatesServer
+from states_server import StatesServer, TestEnum
 
-state_server = StatesServer(port=8081)
-state_server.start()
-states = state_server.states
+server = StatesServer(port=8091)
+server.start()
+states = server.states
 
 image = (np.random.default_rng(0).random((256, 256)) * 255).astype(np.uint8)
 # image = np.ones((256, 256), dtype=np.uint8) * 60
@@ -32,10 +32,10 @@ def print_error(e: str):
     print("Error:", e)
 
 
-state_server.logging.add_logger(LogLevel.Debug, print_debug)
-state_server.logging.add_logger(LogLevel.Info, print_info)
-state_server.logging.add_logger(LogLevel.Warning, print_warning)
-state_server.logging.add_logger(LogLevel.Error, print_error)
+server.logging.add_logger(LogLevel.Debug, print_debug)
+server.logging.add_logger(LogLevel.Info, print_info)
+server.logging.add_logger(LogLevel.Warning, print_warning)
+server.logging.add_logger(LogLevel.Error, print_error)
 
 
 def on_value(value: float):
@@ -57,3 +57,10 @@ def on_value2(value: float):
 
 
 states.value2.connect(on_value2)
+
+
+def on_test_enum(value: TestEnum):
+    print("Test enum changed:", type(value))
+
+
+states.test_enum.connect(on_test_enum)
