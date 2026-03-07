@@ -12,7 +12,7 @@ use crate::image::ValueImage;
 use crate::list::ValueList;
 use crate::map::ValueMap;
 use crate::values::{GetQueueType, Signal, Static, StaticAtomic, Value, ValueAtomic};
-use crate::values_atomic::Atomic;
+use crate::values_atomic::{Atomic, AtomicStatic};
 
 pub trait StatesCreator {
     fn substate<S: State>(&mut self, name: &str) -> S;
@@ -62,7 +62,7 @@ pub trait StatesCreator {
             + Send
             + Sync
             + GetInitValue
-            + Atomic
+            + AtomicStatic
             + 'static;
 
     fn signal<T, Q>(&mut self, name: &'static str) -> Signal<T, Q>
