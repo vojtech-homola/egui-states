@@ -107,7 +107,9 @@ pub(crate) fn impl_enum(input: TokenStream) -> TokenStream {
         impl egui_states::GetInitValue for #ident {
             #[inline]
             fn init_value(&self) -> egui_states::InitValue {
-                egui_states::InitValue::Enum(format!("{}::{:?}", stringify!(#ident), self))
+                egui_states::InitValue::Enum(match self {
+                    #(Self::#names => concat!(stringify!(#ident), "::", stringify!(#names)).to_string()),*
+                })
             }
         }
 

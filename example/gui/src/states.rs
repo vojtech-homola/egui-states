@@ -4,14 +4,14 @@ use egui_states::{
     ValueList, ValueMap,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize, StateEnum)]
+#[derive(Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize, StateEnum)]
 pub(crate) enum TestEnum {
     A,
     B,
     C,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize, StateEnum)]
+#[derive(Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize, StateEnum)]
 pub(crate) enum TestEnum2 {
     X,
     Y,
