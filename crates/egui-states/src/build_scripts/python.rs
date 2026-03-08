@@ -3,13 +3,12 @@ use std::collections::VecDeque;
 use std::string::ToString;
 use std::{fs, io::Write};
 
-use egui_states_core::graphs::GraphType;
-use egui_states_core::types::ObjectType;
-
 use crate::State;
 use crate::build_scripts::scripts;
 use crate::build_scripts::state_creator::StateType;
+use crate::graphs::GraphType;
 use crate::initial_value::InitValue;
+use crate::types::ObjectType;
 
 fn type_to_pytype(type_info: &ObjectType) -> String {
     match type_info {
@@ -342,7 +341,7 @@ fn order_structs(items: &Vec<(String, ObjectType)>, order: &mut VecDeque<String>
     }
 }
 
-pub fn generate<S: State>(path: impl ToString) -> Result<(), String> {
+pub fn generate_python<S: State>(path: impl ToString) -> Result<(), String> {
     let states = scripts::parse_states::<S>();
 
     let mut values_list = Vec::new();

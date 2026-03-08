@@ -1004,16 +1004,18 @@ dependencies = [
 
 [[package]]
 name = "egui_states"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "bytes",
  "egui",
- "egui_states_core",
  "egui_states_macros",
  "futures-util",
  "log",
  "parking_lot",
+ "postcard",
+ "pyo3",
  "serde",
+ "sha2",
  "tokio",
  "tokio-tungstenite",
  "wasm-bindgen-futures",
@@ -1021,19 +1023,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "egui_states_core"
-version = "0.12.0"
-dependencies = [
- "bytes",
- "postcard",
- "serde",
- "sha2",
- "tokio",
-]
-
-[[package]]
 name = "egui_states_macros"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1041,18 +1032,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "egui_states_server"
-version = "0.12.0"
+name = "egui_states_python"
+version = "0.13.0"
 dependencies = [
- "bytes",
- "egui_states_core",
- "egui_states_macros",
- "futures-util",
- "parking_lot",
+ "egui_states",
  "pyo3",
- "serde",
- "tokio",
- "tokio-tungstenite",
 ]
 
 [[package]]
@@ -1564,7 +1548,7 @@ dependencies = [
 
 [[package]]
 name = "gui"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "eframe",
  "egui",
@@ -1875,9 +1859,9 @@ checksum = "09edd9e8b54e49e587e4f6295a7d29c3ea94d469cb40ab8ca70b288248a81db2"
 
 [[package]]
 name = "libc"
-version = "0.2.182"
+version = "0.2.183"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6800badb6cb2082ffd7b6a67e6125bb39f18782f793520caee8cb8846be06112"
+checksum = "b5b646652bf6661599e1da8901b3b9522896f01e736bad5f723fe7a3a27f899d"
 
 [[package]]
 name = "libloading"

@@ -2,7 +2,7 @@ use std::error::Error;
 
 use eframe::{App, CreationContext};
 use egui::{Color32, ColorImage, Rect};
-use egui_states::{Client, ClientBuilder, ConnectionState, Diff};
+use egui_states::{Client, ClientBuilder, ConnectionState};
 
 use crate::states::{States, TestEnum};
 

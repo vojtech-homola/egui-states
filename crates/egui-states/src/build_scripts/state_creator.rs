@@ -2,20 +2,19 @@ use std::hash::Hash;
 
 use serde::{Deserialize, Serialize};
 
-use egui_states_core::generate_value_id;
-use egui_states_core::graphs::{GraphElement, GraphType};
-use egui_states_core::types::{GetType, ObjectType};
-
 use crate::State;
-use crate::graphs::ValueGraphs;
-use crate::image::ValueImage;
+use crate::client::graphs::ValueGraphs;
+use crate::client::image::ValueImage;
+use crate::client::list::ValueList;
+use crate::client::map::ValueMap;
+use crate::client::sender::MessageSender;
+use crate::client::states_creator::StatesCreator;
+use crate::client::values::{GetQueueType, Signal, Static, StaticAtomic, Value, ValueAtomic};
+use crate::client::values_atomic::{Atomic, AtomicStatic};
+use crate::graphs::{GraphElement, GraphType};
+use crate::hashing::generate_value_id;
 use crate::initial_value::{GetInitValue, InitValue};
-use crate::list::ValueList;
-use crate::map::ValueMap;
-use crate::sender::MessageSender;
-use crate::states_creator::StatesCreator;
-use crate::values::{GetQueueType, Signal, Static, StaticAtomic, Value, ValueAtomic};
-use crate::values_atomic::{Atomic, AtomicStatic};
+use crate::types::{GetType, ObjectType};
 
 #[derive(Clone)]
 pub enum StateType {
@@ -29,7 +28,7 @@ pub enum StateType {
     SubState(String, &'static str, Vec<StateType>),
 }
 
-pub struct StatesCreatorBuild {
+pub(crate) struct StatesCreatorBuild {
     states: Vec<StateType>,
     parent: String,
     sender: MessageSender,

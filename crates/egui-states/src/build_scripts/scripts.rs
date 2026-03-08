@@ -1,9 +1,8 @@
 use std::collections::BTreeMap;
 
-use egui_states_core::types::ObjectType;
-
 use crate::State;
 use crate::build_scripts::state_creator::{StateType, StatesCreatorBuild};
+use crate::types::ObjectType;
 
 pub(crate) fn parse_states<S: State>() -> StateType {
     let mut creator = StatesCreatorBuild::new("root");

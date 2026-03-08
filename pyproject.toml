@@ -21,8 +21,8 @@ bindings = "pyo3"
 python-packages = ["egui_states"]
 module-name = "egui_states._core"
 include = ["egui_states/version.py"]
-manifest-path = "crates/egui-states-server/Cargo.toml"
-features = ["python"]
+manifest-path = "crates/egui-states-python/Cargo.toml"
+# features = ["python"]
 
 [tool.ruff]
 line-length = 120
