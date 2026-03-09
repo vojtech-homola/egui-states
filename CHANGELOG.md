@@ -1,10 +1,21 @@
 # Changelog
 
-## [unreleased]
+## [0.13.0] - 2026-03-09
+
+### 🚀 Features
+
+- Improve atomics values [#28](https://github.com/vojtech-homola/egui-states/pull/28)
+
+### 🚜 Refactor
+
+- Change project structure [#29](https://github.com/vojtech-homola/egui-states/pull/29)
+
+## [0.12.0] - 2026-03-04
 
 ### 🚀 Features
 
 - Improve histogram range selection
+- Support atomics for enums [#27](https://github.com/vojtech-homola/egui-states/pull/27)
 
 ## [0.11.0] - 2026-02-08
 
