@@ -12,7 +12,6 @@ serde = "*"
 eframe = "0.33"
 egui = { version = "0.33", features = ["rayon"] }
 egui_states = { workspace = true }
-egui_states_widgets = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen-futures = "0.4"
@@ -20,5 +19,5 @@ web-sys = "0.3"
 log = "0.4"
 
 [build-dependencies]
-egui_states = { workspace = true }
+egui_states = { workspace = true, features = ["build_scripts"] }
 serde = "*"

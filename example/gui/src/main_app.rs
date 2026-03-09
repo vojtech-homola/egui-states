@@ -2,9 +2,7 @@ use std::error::Error;
 
 use eframe::{App, CreationContext};
 use egui::{Color32, ColorImage, Rect};
-use egui_states::{Client, ClientBuilder, ConnectionState, Diff};
-
-use egui_states_widgets::WheelBoxF;
+use egui_states::{Client, ClientBuilder, ConnectionState};
 
 use crate::states::{States, TestEnum};
 
@@ -81,13 +79,13 @@ impl eframe::App for MainApp {
             }
 
             // value2 --------------------------------------------------
-            let mut value2 = Diff::new(&self.states.value2);
-            let mut step = 0.01;
-            let box_ = WheelBoxF::new(&mut value2.v, 3)
-                .desired_width(100.0)
-                .single_step(&mut step);
-            ui.add(box_);
-            value2.set_signal();
+            // let mut value2 = Diff::new(&self.states.value2);
+            // let mut step = 0.01;
+            // let box_ = WheelBoxF::new(&mut value2.v, 3)
+            //     .desired_width(100.0)
+            //     .single_step(&mut step);
+            // ui.add(box_);
+            // value2.set_signal();
 
             let s = self.states.my_sub_state.stat.get();
             ui.label(format!("Static atomic value: [{}, {}]", s[0], s[1]));

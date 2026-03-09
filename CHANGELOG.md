@@ -1,5 +1,11 @@
 # Changelog
 
+## [unreleased]
+
+### 🚀 Features
+
+- Improve histogram range selection
+
 ## [0.11.0] - 2026-02-08
 
 ### 🚀 Features

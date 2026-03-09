@@ -1,4 +1,4 @@
-use egui_states::build_script::python;
+use egui_states::build_scripts::generate_python;
 
 #[path = "src/states.rs"]
 #[allow(dead_code)]
@@ -9,5 +9,5 @@ use states::States;
 fn main() {
     println!("cargo:rerun-if-changed=../gui/src/states.rs");
 
-    python::generate::<States>("../states-server/states_server.py").unwrap();
+    generate_python::<States>("../states-server/states_server.py").unwrap();
 }

@@ -1,18 +1,26 @@
 use proc_macro::TokenStream;
-use quote::{quote, format_ident};
+use quote::{format_ident, quote};
 use syn::{self, Lit, parse_macro_input};
 
-pub(crate) fn impl_struct(input: TokenStream) -> TokenStream {
+pub(crate) fn impl_transportable(input: TokenStream) -> TokenStream {
+    let input_clone = input.clone();
+    let input = parse_macro_input!(input as syn::DeriveInput);
+
+    match input.data {
+        syn::Data::Struct(_) => impl_struct(input_clone),
+        syn::Data::Enum(_) => impl_enum(input_clone),
+        syn::Data::Union(_) => panic!("Unions are not supported"),
+    }
+}
+
+fn impl_struct(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as syn::ItemStruct);
 
     let syn::ItemStruct {
-        attrs,
-        vis,
-        struct_token,
         ident,
         generics,
         fields,
-        semi_token,
+        ..
     } = input;
 
     if generics.lt_token.is_some() {
@@ -30,26 +38,11 @@ pub(crate) fn impl_struct(input: TokenStream) -> TokenStream {
             panic!("Struct fields must be named");
         }
     }
-    // let types2 = types.clone();
 
     let out = quote!(
-        #[derive(Clone, serde::Serialize, serde::Deserialize)]
-        #(#attrs)*
-        #vis #struct_token #ident #fields #semi_token
-
-        // impl egui_states::values_info::GetTypeInfo for #ident {
-        //     #[inline]
-        //     fn type_info() -> egui_states::values_info::TypeInfo {
-        //         egui_states::values_info::TypeInfo::Struct(stringify!(#ident) ,vec![
-        //             #((stringify!(#names), <#types as egui_states::values_info::GetTypeInfo>::type_info())),*
-        //         ])
-        //     }
-        // }
-
-        impl egui_states::GetInitValue for #ident {
+        impl egui_states::Transportable for #ident {
             #[inline]
             fn init_value(&self) -> egui_states::InitValue {
-                //egui_states::InitValue::Tuple(vec![#(self.#names.init_value()),*])
                 egui_states::InitValue::Struct(
                     stringify!(#ident),
                     vec![
@@ -57,15 +50,13 @@ pub(crate) fn impl_struct(input: TokenStream) -> TokenStream {
                     ]
                 )
             }
-        }
 
-        impl egui_states::GetType for #ident {
             #[inline]
             fn get_type() -> egui_states::ObjectType {
                 egui_states::ObjectType::Struct(
                     stringify!(#ident).to_string(),
                     vec![
-                        #((stringify!(#names).to_string(), <#types as egui_states::GetType>::get_type())),*
+                        #((stringify!(#names).to_string(), <#types as egui_states::Transportable>::get_type())),*
                     ]
                 )
             }
@@ -75,13 +66,10 @@ pub(crate) fn impl_struct(input: TokenStream) -> TokenStream {
     out.into()
 }
 
-pub(crate) fn impl_enum(input: TokenStream) -> TokenStream {
+fn impl_enum(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as syn::ItemEnum);
 
     let syn::ItemEnum {
-        attrs,
-        vis,
-        enum_token,
         ident,
         generics,
         variants,
@@ -104,7 +92,8 @@ pub(crate) fn impl_enum(input: TokenStream) -> TokenStream {
         if let Some((_, expr)) = &variant.discriminant {
             if let syn::Expr::Lit(syn::ExprLit { lit, .. }) = expr {
                 if let Lit::Int(lit) = lit {
-                    let v = lit.base10_parse::<i32>()
+                    let v = lit
+                        .base10_parse::<i32>()
                         .expect("Enum discriminants must fit in i32");
                     actual = v;
                 } else {
@@ -124,29 +113,14 @@ pub(crate) fn impl_enum(input: TokenStream) -> TokenStream {
     let private_mod = format_ident!("__private_{}", ident);
 
     let out = quote!(
-        #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
-        #(#attrs)*
-        #vis #enum_token #ident {
-            #(#variants),*
-        }
-
-        // impl egui_states::values_info::GetTypeInfo for #ident {
-        //     #[inline]
-        //     fn type_info() -> egui_states::values_info::TypeInfo {
-        //         egui_states::values_info::TypeInfo::Enum(stringify!(#ident), vec![
-        //             #((stringify!(#names), #values as isize)),*
-        //         ])
-        //     }
-        // }
-
-        impl egui_states::GetInitValue for #ident {
+        impl egui_states::Transportable for #ident {
             #[inline]
             fn init_value(&self) -> egui_states::InitValue {
-                egui_states::InitValue::Enum(format!("{}::{:?}", stringify!(#ident), self))
+                egui_states::InitValue::Enum(match self {
+                    #(Self::#names => stringify!(#names).to_string()),*
+                })
             }
-        }
 
-        impl egui_states::GetType for #ident {
             #[inline]
             fn get_type() -> egui_states::ObjectType {
                 egui_states::ObjectType::Enum(
@@ -164,7 +138,7 @@ pub(crate) fn impl_enum(input: TokenStream) -> TokenStream {
 
             pub struct #private_ident(pub AtomicI32);
         }
-        
+
         unsafe impl egui_states::AtomicLockStatic<#ident> for #private_mod::#private_ident {
             #[inline]
             fn new(value: #ident) -> Self {

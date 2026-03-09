@@ -1,0 +1,13 @@
+[package]
+name = "egui_states_python"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+path = "lib.rs"
+
+[dependencies]
+pyo3 = { version = "0.28", features = ["extension-module"] }
+
+egui_states = { workspace = true, features = ["python"] }

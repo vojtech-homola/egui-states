@@ -52,11 +52,11 @@ def on_empty_signal():
 states.empty_signal.connect(on_empty_signal)
 
 
-def on_value2(value: float):
-    print("Value2 changed:", value)
+# def on_value2(value: float):
+#     print("Value2 changed:", value)
 
 
-states.value2.connect(on_value2)
+# states.value2.connect(on_value2)
 
 
 def on_test_enum(value: TestEnum):
