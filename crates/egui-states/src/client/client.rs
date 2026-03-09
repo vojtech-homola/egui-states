@@ -98,14 +98,14 @@ async fn start_gui_client(
             loop {
                 match rx.recv().await.unwrap() {
                     Some(msg) => {
-                        let message = FastVec::<64>::new();
-                        let mut message = parse_to_send(msg, message);
+                        let mut message = FastVec::<64>::new();
+                        parse_to_send(msg, &mut message);
                         let mut counter = 0;
                         let stop = loop {
                             match rx.try_recv() {
                                 Ok(Some(msg)) => {
                                     counter += 1;
-                                    message = parse_to_send(msg, message);
+                                    parse_to_send(msg, &mut message);
 
                                     if counter > MAX_MSG_COUNT || message.len() > MSG_SIZE_THRESHOLD
                                     {

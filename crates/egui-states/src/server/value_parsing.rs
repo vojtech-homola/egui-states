@@ -22,27 +22,22 @@ impl ValueParser {
 }
 
 pub(crate) struct ValueCreator {
-    data: Option<FastVec<32>>,
+    data: FastVec<32>,
 }
 
 impl ValueCreator {
     pub(crate) fn new() -> Self {
         Self {
-            data: Some(FastVec::new()),
+            data: FastVec::new(),
         }
     }
 
+    #[inline]
     pub(crate) fn add<T: Serialize>(&mut self, value: &T) -> Result<(), ()> {
-        if let Some(data) = self.data.take() {
-            self.data = Some(serialize_to_data(value, data)?);
-        }
-        Ok(())
+        serialize_to_data(value, &mut self.data)
     }
 
     pub(crate) fn finalize(self) -> Bytes {
-        match self.data {
-            Some(data) => data.to_bytes(),
-            None => Bytes::new(), // Should not happen
-        }
+        self.data.to_bytes()
     }
 }

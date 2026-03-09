@@ -1,31 +1,31 @@
-use egui_states::StateEnum;
+use egui_states::Transportable;
 use egui_states::{
     Queue, Signal, State, StatesCreator, StaticAtomic, Value, ValueAtomic, ValueGraphs, ValueImage,
     ValueList, ValueMap,
 };
 
-#[derive(Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize, StateEnum)]
+#[derive(Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize, Transportable)]
 pub(crate) enum TestEnum {
     A,
     B,
     C,
 }
 
-#[derive(Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize, StateEnum)]
+#[derive(Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize, Transportable)]
 pub(crate) enum TestEnum2 {
     X,
     Y,
     Z,
 }
 
-// #[derive(Clone, serde::Serialize, serde::Deserialize, StateStruct)]
+// #[derive(Clone, serde::Serialize, serde::Deserialize, Transportable)]
 // pub(crate) struct TestStruct {
 //     x: f32,
 //     y: f32,
 //     label: String,
 // }
 
-// #[derive(Clone, serde::Serialize, serde::Deserialize, StateStruct)]
+// #[derive(Clone, serde::Serialize, serde::Deserialize, Transportable)]
 // pub(crate) struct TestStruct2 {
 //     x: f32,
 //     y: f32,

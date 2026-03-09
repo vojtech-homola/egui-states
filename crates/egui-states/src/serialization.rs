@@ -190,7 +190,8 @@ impl ServerHeader {
         value_data: &[u8],
     ) -> Result<FastVec<N>, ()> {
         let header = ServerHeader::Value(id, update, value_data.len() as u32);
-        let mut data = serialize_to_data(&header, FastVec::<N>::new())?;
+        let mut data = FastVec::<N>::new();
+        serialize_to_data(&header, &mut data)?;
         data.extend_from_slice(value_data);
         Ok(data)
     }
@@ -201,7 +202,8 @@ impl ServerHeader {
         value_data: &[u8],
     ) -> Result<FastVec<N>, ()> {
         let header = ServerHeader::Static(id, update, value_data.len() as u32);
-        let mut data = serialize_to_data(&header, FastVec::<N>::new())?;
+        let mut data = FastVec::<N>::new();
+        serialize_to_data(&header, &mut data)?;
         data.extend_from_slice(value_data);
         Ok(data)
     }
@@ -280,13 +282,35 @@ where
         .map_err(|_| ())
 }
 
+struct FastVecRef<'a, const N: usize>(&'a mut FastVec<N>);
+
+impl<'a, const N: usize> Flavor for FastVecRef<'a, N> {
+    type Output = ();
+
+    #[inline]
+    fn try_push(&mut self, data: u8) -> postcard::Result<()> {
+        self.0.try_push(data)
+    }
+
+    #[inline]
+    fn try_extend(&mut self, data: &[u8]) -> postcard::Result<()> {
+        self.0.try_extend(data)
+    }
+
+    #[inline]
+    fn finalize(self) -> postcard::Result<Self::Output> {
+        Ok(())
+    }
+}
+
 #[inline]
-pub(crate) fn serialize_to_data<T, const N: usize>(
+pub(crate) fn serialize_to_data<'a, T, const N: usize>(
     value: &T,
-    data: FastVec<N>,
-) -> Result<FastVec<N>, ()>
+    data: &'a mut FastVec<N>,
+) -> Result<(), ()>
 where
     T: Serialize,
 {
-    postcard::serialize_with_flavor::<T, FastVec<N>, FastVec<N>>(value, data).map_err(|_| ())
+    let data_ref = FastVecRef(data);
+    postcard::serialize_with_flavor::<T, FastVecRef<N>, ()>(value, data_ref).map_err(|_| ())
 }

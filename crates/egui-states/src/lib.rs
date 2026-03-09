@@ -1,11 +1,10 @@
 mod collections;
 mod event_async;
 mod graphs;
-mod image;
-mod initial_value;
 mod hashing;
+mod image;
 mod serialization;
-mod types;
+mod transport;
 
 #[cfg(feature = "build_scripts")]
 pub mod build_scripts;
@@ -39,9 +38,8 @@ pub trait State {
     fn new(c: &mut impl StatesCreator) -> Self;
 }
 
-pub use crate::types::{GetType, ObjectType};
-pub use egui_states_macros::{StateEnum, StateStruct};
-pub use initial_value::{GetInitValue, InitValue};
+pub use egui_states_macros::Transportable;
 pub use serde;
+pub use transport::{InitValue, ObjectType, Transportable};
 
 pub(crate) const PROTOCOL_VERSION: u16 = 2;

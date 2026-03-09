@@ -203,9 +203,9 @@ impl SignalsManager {
 
     fn serialize_message(level: u8, text: impl ToString) -> Result<Bytes, ()> {
         let data = text.to_string();
-        let message = FastVec::<64>::new();
-        let message = serialize_to_data(&level, message)?;
-        let message = serialize_to_data(&data, message)?;
+        let mut message = FastVec::<64>::new();
+        serialize_to_data(&level, &mut message)?;
+        serialize_to_data(&data, &mut message)?;
         Ok(message.to_bytes())
     }
 

@@ -7,8 +7,7 @@ use crate::State;
 use crate::build_scripts::scripts;
 use crate::build_scripts::state_creator::StateType;
 use crate::graphs::GraphType;
-use crate::initial_value::InitValue;
-use crate::types::ObjectType;
+use crate::transport::{InitValue, ObjectType};
 
 fn type_to_pytype(type_info: &ObjectType) -> String {
     match type_info {
@@ -150,53 +149,54 @@ fn type_info_to_python_type(info: &ObjectType, list_comment: bool) -> String {
     }
 }
 
-fn init_to_python_value(init: &InitValue) -> String {
-    match init {
-        InitValue::U8(v) => format!("{}", v),
-        InitValue::U16(v) => format!("{}", v),
-        InitValue::U32(v) => format!("{}", v),
-        InitValue::U64(v) => format!("{}", v),
-        InitValue::I8(v) => format!("{}", v),
-        InitValue::I16(v) => format!("{}", v),
-        InitValue::I32(v) => format!("{}", v),
-        InitValue::I64(v) => format!("{}", v),
-        InitValue::F64(v) => format!("{}", v),
-        InitValue::F32(v) => format!("{}", v),
-        InitValue::String(v) => format!("\"{}\"", v),
-        InitValue::Bool(v) => match v {
+fn init_to_python_value(init: &InitValue, object_type: &ObjectType) -> String {
+    match (init, object_type) {
+        (InitValue::U8(v), ObjectType::U8) => format!("{}", v),
+        (InitValue::U16(v), ObjectType::U16) => format!("{}", v),
+        (InitValue::U32(v), ObjectType::U32) => format!("{}", v),
+        (InitValue::U64(v), ObjectType::U64) => format!("{}", v),
+        (InitValue::I8(v), ObjectType::I8) => format!("{}", v),
+        (InitValue::I16(v), ObjectType::I16) => format!("{}", v),
+        (InitValue::I32(v), ObjectType::I32) => format!("{}", v),
+        (InitValue::I64(v), ObjectType::I64) => format!("{}", v),
+        (InitValue::F64(v), ObjectType::F64) => format!("{}", v),
+        (InitValue::F32(v), ObjectType::F32) => format!("{}", v),
+        (InitValue::String(v), ObjectType::String) => format!("\"{}\"", v),
+        (InitValue::Bool(v), ObjectType::Bool) => match v {
             true => "True".to_string(),
             false => "False".to_string(),
         },
-        InitValue::Enum(v) => {
-            let value = v.replace("::", ".");
-            format!("{}", value)
+        (InitValue::Enum(v), ObjectType::Enum(name, _)) => {
+            format!("{}.{}", name, v)
         }
-        InitValue::Option(opt) => match opt {
-            Some(boxed) => init_to_python_value(boxed),
+        (InitValue::Option(opt), ObjectType::Option(inner)) => match opt {
+            Some(boxed) => init_to_python_value(boxed, inner),
             None => "None".to_string(),
         },
-        InitValue::Tuple(elems) => {
-            let elem_strs: Vec<String> = elems.iter().map(|e| init_to_python_value(e)).collect();
+        (InitValue::Tuple(elems), ObjectType::Tuple(types)) => {
+            let elem_strs: Vec<String> = elems.iter().zip(types.iter()).map(|(e, t)| init_to_python_value(e, t)).collect();
             format!("({})", elem_strs.join(", "))
         }
-        InitValue::List(elems) | InitValue::Vec(elems) => {
-            let elem_strs: Vec<String> = elems.iter().map(|e| init_to_python_value(e)).collect();
+        (InitValue::List(elems), ObjectType::List(_, element)) | (InitValue::Vec(elems), ObjectType::Vec(element)) => {
+            let elem_strs: Vec<String> = elems.iter().map(|e| init_to_python_value(e, element)).collect();
             format!("[{}]", elem_strs.join(", "))
         }
-        InitValue::Map(pairs) => {
+        (InitValue::Map(pairs), ObjectType::Map(key, value)) => {
             let pair_strs: Vec<String> = pairs
                 .iter()
-                .map(|(k, v)| format!("{}: {}", init_to_python_value(k), init_to_python_value(v)))
+                .map(|(k, v)| format!("{}: {}", init_to_python_value(k, key), init_to_python_value(v, value)))
                 .collect();
             format!("{{{}}}", pair_strs.join(", "))
         }
-        InitValue::Struct(name, items) => {
+        (InitValue::Struct(name, items), ObjectType::Struct(_, field_types)) => {
             let field_strs: Vec<String> = items
                 .iter()
-                .map(|(_, value)| init_to_python_value(value))
+                .zip(field_types.iter())
+                .map(|((_, value), (_, field_type))| init_to_python_value(value, field_type))
                 .collect();
             format!("{}({})", name, field_strs.join(", "))
         }
+        _ => panic!("Mismatched InitValue and ObjectType."),
     }
 }
 
@@ -205,7 +205,7 @@ fn state_to_line(state: &StateType, types_map: &HashMap<String, usize>) -> Strin
         StateType::Value(name, state_type, init, queue) => {
             let last_name = name.split('.').last().unwrap();
             let py_type = type_info_to_python_type(state_type, false);
-            let init_value = init_to_python_value(init);
+            let init_value = init_to_python_value(init, state_type);
             let index = types_map.get(name).unwrap();
             let queue_str = match queue {
                 true => ", True",
@@ -219,7 +219,7 @@ fn state_to_line(state: &StateType, types_map: &HashMap<String, usize>) -> Strin
         StateType::Static(name, state_type, init) => {
             let last_name = name.split('.').last().unwrap();
             let py_type = type_info_to_python_type(state_type, false);
-            let init_value = init_to_python_value(init);
+            let init_value = init_to_python_value(init, state_type);
             let index = types_map.get(name).unwrap();
             format!(
                 "        self.{}: s.Static[{}] = s.Static[{}]({}, {})\n",

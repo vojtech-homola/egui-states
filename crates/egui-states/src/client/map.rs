@@ -7,7 +7,7 @@ use serde::Deserialize;
 
 use crate::collections::MapHeader;
 use crate::serialization::deserialize;
-use crate::types::GetType;
+use crate::transport::Transportable;
 
 pub(crate) trait UpdateMap: Sync + Send {
     fn update_map(&self, header: MapHeader, data: &[u8]) -> Result<(), String>;
@@ -20,8 +20,8 @@ pub struct ValueMap<K, V> {
 
 impl<K, V> ValueMap<K, V>
 where
-    K: GetType + Clone + Hash + Eq,
-    V: GetType + Clone,
+    K: Transportable + Clone + Hash + Eq,
+    V: Transportable + Clone,
 {
     pub(crate) fn new(id: u64) -> Self {
         Self {

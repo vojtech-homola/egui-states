@@ -8,23 +8,21 @@ use crate::graphs::GraphHeader;
 use crate::image::ImageHeader;
 use crate::serialization::{ClientHeader, FastVec, ServerHeader, serialize_to_data};
 
-pub(crate) fn parse_to_send(message: ChannelMessage, data: FastVec<64>) -> FastVec<64> {
+pub(crate) fn parse_to_send(message: ChannelMessage, data: &mut FastVec<64>) {
     match message {
         ChannelMessage::Value(id, signal, msg_data) => {
             let header = ClientHeader::Value(id, signal, msg_data.len() as u32);
-            let mut message = serialize_to_data(&header, data).unwrap();
-            message.extend_from_data(&msg_data);
-            message
+            serialize_to_data(&header, data).unwrap();
+            data.extend_from_data(&msg_data);
         }
         ChannelMessage::Signal(id, msg_data) => {
             let header = ClientHeader::Signal(id, msg_data.len() as u32);
-            let mut message = serialize_to_data(&header, data).unwrap();
-            message.extend_from_data(&msg_data);
-            message
+            serialize_to_data(&header, data).unwrap();
+            data.extend_from_data(&msg_data);
         }
         ChannelMessage::Ack(id) => {
             let header = ClientHeader::Ack(id);
-            serialize_to_data(&header, data).unwrap()
+            serialize_to_data(&header, data).unwrap();
         }
     }
 }

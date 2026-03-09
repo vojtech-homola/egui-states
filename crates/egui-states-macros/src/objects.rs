@@ -2,7 +2,18 @@ use proc_macro::TokenStream;
 use quote::{format_ident, quote};
 use syn::{self, Lit, parse_macro_input};
 
-pub(crate) fn impl_struct(input: TokenStream) -> TokenStream {
+pub(crate) fn impl_transportable(input: TokenStream) -> TokenStream {
+    let input_clone = input.clone();
+    let input = parse_macro_input!(input as syn::DeriveInput);
+
+    match input.data {
+        syn::Data::Struct(_) => impl_struct(input_clone),
+        syn::Data::Enum(_) => impl_enum(input_clone),
+        syn::Data::Union(_) => panic!("Unions are not supported"),
+    }
+}
+
+fn impl_struct(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as syn::ItemStruct);
 
     let syn::ItemStruct {
@@ -29,7 +40,7 @@ pub(crate) fn impl_struct(input: TokenStream) -> TokenStream {
     }
 
     let out = quote!(
-        impl egui_states::GetInitValue for #ident {
+        impl egui_states::Transportable for #ident {
             #[inline]
             fn init_value(&self) -> egui_states::InitValue {
                 egui_states::InitValue::Struct(
@@ -39,15 +50,13 @@ pub(crate) fn impl_struct(input: TokenStream) -> TokenStream {
                     ]
                 )
             }
-        }
 
-        impl egui_states::GetType for #ident {
             #[inline]
             fn get_type() -> egui_states::ObjectType {
                 egui_states::ObjectType::Struct(
                     stringify!(#ident).to_string(),
                     vec![
-                        #((stringify!(#names).to_string(), <#types as egui_states::GetType>::get_type())),*
+                        #((stringify!(#names).to_string(), <#types as egui_states::Transportable>::get_type())),*
                     ]
                 )
             }
@@ -57,7 +66,7 @@ pub(crate) fn impl_struct(input: TokenStream) -> TokenStream {
     out.into()
 }
 
-pub(crate) fn impl_enum(input: TokenStream) -> TokenStream {
+fn impl_enum(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as syn::ItemEnum);
 
     let syn::ItemEnum {
@@ -104,16 +113,14 @@ pub(crate) fn impl_enum(input: TokenStream) -> TokenStream {
     let private_mod = format_ident!("__private_{}", ident);
 
     let out = quote!(
-        impl egui_states::GetInitValue for #ident {
+        impl egui_states::Transportable for #ident {
             #[inline]
             fn init_value(&self) -> egui_states::InitValue {
                 egui_states::InitValue::Enum(match self {
-                    #(Self::#names => concat!(stringify!(#ident), "::", stringify!(#names)).to_string()),*
+                    #(Self::#names => stringify!(#names).to_string()),*
                 })
             }
-        }
 
-        impl egui_states::GetType for #ident {
             #[inline]
             fn get_type() -> egui_states::ObjectType {
                 egui_states::ObjectType::Enum(

@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use crate::State;
 use crate::build_scripts::state_creator::{StateType, StatesCreatorBuild};
-use crate::types::ObjectType;
+use crate::transport::ObjectType;
 
 pub(crate) fn parse_states<S: State>() -> StateType {
     let mut creator = StatesCreatorBuild::new("root");

@@ -5,7 +5,7 @@ use serde::Deserialize;
 
 use crate::collections::ListHeader;
 use crate::serialization::deserialize;
-use crate::types::GetType;
+use crate::transport::Transportable;
 
 pub(crate) trait UpdateList: Sync + Send {
     fn update_list(&self, header: ListHeader, data: &[u8]) -> Result<(), String>;
@@ -16,7 +16,7 @@ pub struct ValueList<T> {
     list: Arc<RwLock<Vec<T>>>,
 }
 
-impl<T: GetType + Clone> ValueList<T> {
+impl<T: Transportable + Clone> ValueList<T> {
     pub(crate) fn new(id: u64) -> Self {
         Self {
             id,
