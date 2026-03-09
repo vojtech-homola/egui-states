@@ -3,8 +3,8 @@ use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
 use std::sync::Arc;
 
+use crate::client::atomics::{Atomic, AtomicLock, AtomicLockStatic, AtomicStatic};
 use crate::client::sender::{ChannelMessage, MessageSender};
-use crate::client::values_atomic::{Atomic, AtomicLock, AtomicLockStatic, AtomicStatic};
 use crate::serialization::{deserialize, to_message};
 
 pub struct Diff<'a, T> {

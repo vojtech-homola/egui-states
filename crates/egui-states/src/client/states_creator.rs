@@ -4,6 +4,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use crate::State;
+use crate::client::atomics::{Atomic, AtomicStatic};
 use crate::client::graphs::{UpdateGraph, ValueGraphs};
 use crate::client::image::ValueImage;
 use crate::client::list::{UpdateList, ValueList};
@@ -12,7 +13,6 @@ use crate::client::sender::MessageSender;
 use crate::client::values::{
     GetQueueType, Signal, Static, StaticAtomic, UpdateValue, Value, ValueAtomic,
 };
-use crate::client::values_atomic::{Atomic, AtomicStatic};
 use crate::graphs::GraphElement;
 use crate::hashing::{NoHashMap, generate_value_id};
 use crate::transport::{ObjectType, Transportable};
@@ -22,13 +22,7 @@ pub trait StatesCreator {
 
     fn value<T, Q>(&mut self, name: &'static str, value: T) -> Value<T, Q>
     where
-        T: for<'a> Deserialize<'a>
-            + Serialize
-            + Transportable
-            + Send
-            + Sync
-            + Clone
-            + 'static,
+        T: for<'a> Deserialize<'a> + Serialize + Transportable + Send + Sync + Clone + 'static,
         Q: GetQueueType;
 
     fn atomic<T, Q>(&mut self, name: &'static str, value: T) -> ValueAtomic<T, Q>
@@ -45,13 +39,7 @@ pub trait StatesCreator {
 
     fn add_static<T>(&mut self, name: &'static str, value: T) -> Static<T>
     where
-        T: for<'a> Deserialize<'a>
-            + Serialize
-            + Transportable
-            + Clone
-            + Send
-            + Sync
-            + 'static;
+        T: for<'a> Deserialize<'a> + Serialize + Transportable + Clone + Send + Sync + 'static;
 
     fn static_atomic<T>(&mut self, name: &'static str, value: T) -> StaticAtomic<T>
     where

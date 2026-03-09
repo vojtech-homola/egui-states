@@ -10,7 +10,7 @@ use crate::client::map::ValueMap;
 use crate::client::sender::MessageSender;
 use crate::client::states_creator::StatesCreator;
 use crate::client::values::{GetQueueType, Signal, Static, StaticAtomic, Value, ValueAtomic};
-use crate::client::values_atomic::{Atomic, AtomicStatic};
+use crate::client::atomics::{Atomic, AtomicStatic};
 use crate::graphs::{GraphElement, GraphType};
 use crate::hashing::generate_value_id;
 use crate::transport::{InitValue, ObjectType, Transportable};

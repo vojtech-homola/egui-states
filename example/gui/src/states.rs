@@ -11,9 +11,10 @@ pub(crate) enum TestEnum {
     C,
 }
 
-#[derive(Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize, Transportable)]
+#[derive(Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize, Transportable, Default)]
 pub(crate) enum TestEnum2 {
     X,
+    #[default]
     Y,
     Z,
 }
@@ -31,42 +32,20 @@ pub(crate) enum TestEnum2 {
 //     y: f32,
 // }
 
+#[derive(State)]
 pub(crate) struct MySubState {
     // pub sub_value: Value<Option<i32>>,
     // pub test_enum: Value<TestEnum, Queue>,
     pub stat: StaticAtomic<[f32; 2]>,
+    pub enum_atomic: ValueAtomic<TestEnum2>,
     // pub test_signal: Signal<f64>,
     // pub signal_emp: Signal<()>,
 }
 
-impl State for MySubState {
-    const NAME: &'static str = "MySubState";
-
-    fn new(c: &mut impl StatesCreator) -> Self {
-        Self {
-            // sub_value: c.value("sub_value", None),
-            // test_enum: c.value("test_enum", TestEnum::A),
-            stat: c.static_atomic("stat", [0.0, 0.0]),
-            // test_signal: c.signal("test_signal"),
-            // signal_emp: c.signal("signal_emp"),
-        }
-    }
-}
-
+#[derive(State)]
 pub(crate) struct Collections {
     pub list: ValueList<i32>,
     pub map: ValueMap<u16, u32>,
-}
-
-impl State for Collections {
-    const NAME: &'static str = "Collections";
-
-    fn new(c: &mut impl StatesCreator) -> Self {
-        Self {
-            list: c.list("list"),
-            map: c.map("map"),
-        }
-    }
 }
 
 pub struct States {
