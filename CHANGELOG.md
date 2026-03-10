@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.13.1] - 2026-03-10
+
+### 🚀 Features
+
+- Improve debugging with values names [#31](https://github.com/vojtech-homola/egui-states/pull/31)
+
 ## [0.13.0] - 2026-03-09
 
 ### 🚀 Features
