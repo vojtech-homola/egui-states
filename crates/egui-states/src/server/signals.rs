@@ -131,7 +131,7 @@ impl ChangedInner {
     }
 
     fn get(&mut self, last_id: Option<u64>) -> Option<(u64, Bytes)> {
-        let res = match last_id {
+        match last_id {
             // previous call was made
             Some(last_id) => {
                 if self.blocked_list.contains(&last_id) {
@@ -139,39 +139,39 @@ impl ChangedInner {
                     match val {
                         Some(v) => Some((last_id, v)),
                         None => {
-                            let val = self.values.pop_first();
                             self.blocked_list.remove(&last_id);
-
-                            if let Some((id, _)) = val {
-                                self.blocked_list.insert(id);
+                            let val = self.values.pop_first();
+                            if let Some((id, _)) = &val {
+                                if self.registered.contains(id) {
+                                    self.blocked_list.insert(*id);
+                                    return val;
+                                }
                             }
-                            val
+                            return None;
                         }
                     }
                 } else {
                     let val = self.values.pop_first();
-                    if let Some((id, _)) = val {
-                        self.blocked_list.insert(id);
+                    if let Some((id, _)) = &val {
+                        if self.registered.contains(id) {
+                            self.blocked_list.insert(*id);
+                            return val;
+                        }
                     }
-                    val
+                    return None;
                 }
             }
             // this is first time
             None => {
                 let val = self.values.pop_first();
-                if let Some((id, _)) = val {
-                    self.blocked_list.insert(id);
+                if let Some((id, _)) = &val {
+                    if self.registered.contains(id) {
+                        self.blocked_list.insert(*id);
+                        return val;
+                    }
                 }
-                val
+                return None;
             }
-        };
-
-        match &res {
-            Some((id, _)) => match self.registered.contains(id) {
-                true => res,
-                false => None,
-            },
-            None => None,
         }
     }
 }
@@ -247,7 +247,9 @@ impl SignalsManager {
         if register {
             self.values.lock().registered.insert(id);
         } else {
-            self.values.lock().registered.remove(&id);
+            let mut w = self.values.lock();
+            w.registered.remove(&id);
+            w.blocked_list.remove(&id);
         }
     }
 
