@@ -14,7 +14,7 @@ pub(crate) trait UpdateMap: Sync + Send {
 }
 
 pub struct ValueMap<K, V> {
-    _id: u64,
+    name: String,
     dict: Arc<RwLock<HashMap<K, V>>>,
 }
 
@@ -23,9 +23,9 @@ where
     K: Transportable + Clone + Hash + Eq,
     V: Transportable + Clone,
 {
-    pub(crate) fn new(id: u64) -> Self {
+    pub(crate) fn new(name: String) -> Self {
         Self {
-            _id: id,
+            name,
             dict: Arc::new(RwLock::new(HashMap::new())),
         }
     }
@@ -61,18 +61,18 @@ where
         match header {
             MapHeader::All => {
                 let map = deserialize::<HashMap<K, V>>(data)
-                    .map_err(|e| format!("Error deserializing dict for id {}: {}", self._id, e))?;
+                    .map_err(|e| format!("Error deserializing dict for {}: {}", self.name, e))?;
                 *self.dict.write() = map;
             }
             MapHeader::Set => {
                 let (key, value): (K, V) = deserialize(data).map_err(|e| {
-                    format!("Error deserializing dict item for id {}: {}", self._id, e)
+                    format!("Error deserializing dict item for {}: {}", self.name, e)
                 })?;
                 self.dict.write().insert(key, value);
             }
             MapHeader::Remove => {
                 let key: K = deserialize(data).map_err(|e| {
-                    format!("Error deserializing dict key for id {}: {}", self._id, e)
+                    format!("Error deserializing dict key for {}: {}", self.name, e)
                 })?;
                 self.dict.write().remove(&key);
             }
@@ -84,7 +84,7 @@ where
 impl<K, V> Clone for ValueMap<K, V> {
     fn clone(&self) -> Self {
         Self {
-            _id: self._id,
+            name: self.name.clone(),
             dict: self.dict.clone(),
         }
     }

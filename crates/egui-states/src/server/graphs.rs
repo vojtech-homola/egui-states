@@ -17,6 +17,7 @@ pub(crate) struct GraphData {
 }
 
 pub(crate) struct ValueGraphs {
+    pub(crate) name: String,
     id: u64,
     graphs: RwLock<NoHashMap<u16, GraphTyped>>,
     graph_type: GraphType,
@@ -27,12 +28,14 @@ pub(crate) struct ValueGraphs {
 
 impl ValueGraphs {
     pub(crate) fn new(
+        name: String,
         id: u64,
         sender: MessageSender,
         graph_type: GraphType,
         connected: Arc<AtomicBool>,
     ) -> Arc<Self> {
         Arc::new(Self {
+            name,
             id,
             graphs: RwLock::new(NoHashMap::default()),
             graph_type,

@@ -11,6 +11,7 @@ use crate::server::sender::{MessageSender, SenderData};
 use crate::server::server::{EnableTrait, SyncTrait};
 
 pub(crate) struct ValueMap {
+    pub(crate) name: String,
     id: u64,
     map: RwLock<HashMap<Bytes, Bytes>>,
     sender: MessageSender,
@@ -19,8 +20,9 @@ pub(crate) struct ValueMap {
 }
 
 impl ValueMap {
-    pub(crate) fn new(id: u64, sender: MessageSender, connected: Arc<AtomicBool>) -> Arc<Self> {
+    pub(crate) fn new(name: String, id: u64, sender: MessageSender, connected: Arc<AtomicBool>) -> Arc<Self> {
         Arc::new(Self {
+            name,
             id,
             map: RwLock::new(HashMap::new()),
             sender,

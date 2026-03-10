@@ -11,7 +11,7 @@ use crate::server::signals::SignalsManager;
 
 // Value --------------------------------------------------
 pub(crate) struct Value {
-    name: String,
+    pub(crate) name: String,
     id: u64,
     value: RwLock<(Bytes, usize)>,
     sender: MessageSender,
@@ -114,6 +114,7 @@ impl EnableTrait for Value {
 
 // ValueStatic --------------------------------------------
 pub(crate) struct ValueStatic {
+    pub(crate) name: String,
     id: u64,
     value: RwLock<Bytes>,
     sender: MessageSender,
@@ -123,12 +124,14 @@ pub(crate) struct ValueStatic {
 
 impl ValueStatic {
     pub(crate) fn new(
+        name: String,
         id: u64,
         value: Bytes,
         sender: MessageSender,
         connected: Arc<AtomicBool>,
     ) -> Arc<Self> {
         Arc::new(Self {
+            name,
             id,
             value: RwLock::new(value),
             sender,
@@ -178,7 +181,7 @@ impl EnableTrait for ValueStatic {
 
 // Signals --------------------------------------------
 pub(crate) struct Signal {
-    name: String,
+    pub(crate) name: String,
     id: u64,
     signals: SignalsManager,
     enabled: AtomicBool,

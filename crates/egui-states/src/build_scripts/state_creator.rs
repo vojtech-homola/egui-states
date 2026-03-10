@@ -3,6 +3,7 @@ use std::hash::Hash;
 use serde::{Deserialize, Serialize};
 
 use crate::State;
+use crate::client::atomics::{Atomic, AtomicStatic};
 use crate::client::graphs::ValueGraphs;
 use crate::client::image::ValueImage;
 use crate::client::list::ValueList;
@@ -10,7 +11,6 @@ use crate::client::map::ValueMap;
 use crate::client::sender::MessageSender;
 use crate::client::states_creator::StatesCreator;
 use crate::client::values::{GetQueueType, Signal, Static, StaticAtomic, Value, ValueAtomic};
-use crate::client::atomics::{Atomic, AtomicStatic};
 use crate::graphs::{GraphElement, GraphType};
 use crate::hashing::generate_value_id;
 use crate::transport::{InitValue, ObjectType, Transportable};
@@ -70,7 +70,7 @@ impl StatesCreator for StatesCreatorBuild {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
         let init = value.init_value();
-        let value = Value::new(id, value, self.sender.clone());
+        let value = Value::new(name.clone(), id, value, self.sender.clone());
 
         self.states
             .push(StateType::Value(name, T::get_type(), init, Q::is_queue()));
@@ -86,7 +86,7 @@ impl StatesCreator for StatesCreatorBuild {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
         let init = value.init_value();
-        let value = ValueAtomic::new(id, value, self.sender.clone());
+        let value = ValueAtomic::new(name.clone(), id, value, self.sender.clone());
 
         self.states
             .push(StateType::Value(name, T::get_type(), init, Q::is_queue()));
@@ -101,7 +101,7 @@ impl StatesCreator for StatesCreatorBuild {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
         let init = value.init_value();
-        let value = Static::new(id, value);
+        let value = Static::new(name.clone(), id, value);
 
         self.states
             .push(StateType::Static(name, T::get_type(), init));
@@ -122,7 +122,7 @@ impl StatesCreator for StatesCreatorBuild {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
         let init = value.init_value();
-        let value = StaticAtomic::new(id, value);
+        let value = StaticAtomic::new(name.clone(), id, value);
 
         self.states
             .push(StateType::Static(name, T::get_type(), init));
@@ -132,7 +132,7 @@ impl StatesCreator for StatesCreatorBuild {
     fn image(&mut self, name: &'static str) -> ValueImage {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
-        let value = ValueImage::new(id, self.sender.clone());
+        let value = ValueImage::new(name.clone(), id, self.sender.clone());
 
         self.states.push(StateType::Image(name));
 
@@ -160,8 +160,7 @@ impl StatesCreator for StatesCreatorBuild {
         V: Clone + for<'a> Deserialize<'a> + Transportable,
     {
         let name = format!("{}.{}", self.parent, name);
-        let id = generate_value_id(&name);
-        let value = ValueMap::new(id);
+        let value = ValueMap::new(name.clone());
 
         self.states
             .push(StateType::Map(name, K::get_type(), V::get_type()));
@@ -173,8 +172,7 @@ impl StatesCreator for StatesCreatorBuild {
         T: Clone + for<'a> Deserialize<'a> + Transportable,
     {
         let name = format!("{}.{}", self.parent, name);
-        let id = generate_value_id(&name);
-        let value = ValueList::new(id);
+        let value = ValueList::new(name.clone());
 
         self.states.push(StateType::List(name, T::get_type()));
 
@@ -186,8 +184,7 @@ impl StatesCreator for StatesCreatorBuild {
         T: for<'a> Deserialize<'a> + GraphElement,
     {
         let name = format!("{}.{}", self.parent, name);
-        let id = generate_value_id(&name);
-        let value = ValueGraphs::new(id);
+        let value = ValueGraphs::new(name.clone());
 
         self.states.push(StateType::Graphs(name, T::graph_type()));
 

@@ -12,14 +12,14 @@ pub(crate) trait UpdateList: Sync + Send {
 }
 
 pub struct ValueList<T> {
-    id: u64,
+    name: String,
     list: Arc<RwLock<Vec<T>>>,
 }
 
 impl<T: Transportable + Clone> ValueList<T> {
-    pub(crate) fn new(id: u64) -> Self {
+    pub(crate) fn new(name: String) -> Self {
         Self {
-            id,
+            name,
             list: Arc::new(RwLock::new(Vec::new())),
         }
     }
@@ -48,13 +48,13 @@ impl<T: for<'a> Deserialize<'a> + Send + Sync> UpdateList for ValueList<T> {
         match header {
             ListHeader::All => {
                 let list: Vec<T> = deserialize(data)
-                    .map_err(|e| format!("Error deserializing list for id {}: {}", self.id, e))?;
+                    .map_err(|e| format!("Error deserializing list for {}: {}", self.name, e))?;
                 *self.list.write() = list;
                 Ok(())
             }
             ListHeader::Set(idx) => {
                 let value: T = deserialize(data).map_err(|e| {
-                    format!("Error deserializing list item for id {}: {}", self.id, e)
+                    format!("Error deserializing list item for {}: {}", self.name, e)
                 })?;
                 let mut list = self.list.write();
                 let idx = idx as usize;
@@ -65,7 +65,7 @@ impl<T: for<'a> Deserialize<'a> + Send + Sync> UpdateList for ValueList<T> {
             }
             ListHeader::Add => {
                 let value: T = deserialize(data).map_err(|e| {
-                    format!("Error deserializing list item for id {}: {}", self.id, e)
+                    format!("Error deserializing list item for {}: {}", self.name, e)
                 })?;
                 self.list.write().push(value);
                 Ok(())
@@ -85,7 +85,7 @@ impl<T: for<'a> Deserialize<'a> + Send + Sync> UpdateList for ValueList<T> {
 impl<T> Clone for ValueList<T> {
     fn clone(&self) -> Self {
         Self {
-            id: self.id,
+            name: self.name.clone(),
             list: self.list.clone(),
         }
     }

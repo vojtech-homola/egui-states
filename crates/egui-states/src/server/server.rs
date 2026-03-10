@@ -328,7 +328,13 @@ impl Server {
             return Err(format!("Static value with id {} already exists", id));
         }
 
-        let val = ValueStatic::new(id, value, self.sender.clone(), self.connected.clone());
+        let val = ValueStatic::new(
+            name.to_string(),
+            id,
+            value,
+            self.sender.clone(),
+            self.connected.clone(),
+        );
 
         self.states.types.insert(id, type_id);
         self.states.static_values.insert(id, val);
@@ -372,7 +378,12 @@ impl Server {
             return Err(format!("List with id {} already exists", id));
         }
 
-        let val = ValueList::new(id, self.sender.clone(), self.connected.clone());
+        let val = ValueList::new(
+            name.to_string(),
+            id,
+            self.sender.clone(),
+            self.connected.clone(),
+        );
 
         self.states.types.insert(id, type_id);
         self.states.lists.insert(id, val);
@@ -389,7 +400,12 @@ impl Server {
             return Err(format!("Map with id {} already exists", id));
         }
 
-        let val = ValueMap::new(id, self.sender.clone(), self.connected.clone());
+        let val = ValueMap::new(
+            name.to_string(),
+            id,
+            self.sender.clone(),
+            self.connected.clone(),
+        );
 
         self.states.types.insert(id, type_id);
         self.states.maps.insert(id, val);
@@ -407,7 +423,12 @@ impl Server {
             return Err(format!("Image with id {} already exists", id));
         }
 
-        let val = ValueImage::new(id, self.sender.clone(), self.connected.clone());
+        let val = ValueImage::new(
+            name.to_string(),
+            id,
+            self.sender.clone(),
+            self.connected.clone(),
+        );
 
         self.states.types.insert(id, 42);
         self.states.images.insert(id, val);
@@ -424,7 +445,13 @@ impl Server {
             return Err(format!("Graphs with id {} already exists", id));
         }
 
-        let val = ValueGraphs::new(id, self.sender.clone(), graphs_type, self.connected.clone());
+        let val = ValueGraphs::new(
+            name.to_string(),
+            id,
+            self.sender.clone(),
+            graphs_type,
+            self.connected.clone(),
+        );
 
         self.states
             .types

@@ -33,6 +33,7 @@ pub(crate) struct ImageData {
 }
 
 pub(crate) struct ValueImage {
+    pub(crate) name: String,
     id: u64,
     image: RwLock<ImageDataInner>,
     sender: MessageSender,
@@ -42,11 +43,12 @@ pub(crate) struct ValueImage {
 }
 
 impl ValueImage {
-    pub(crate) fn new(id: u64, sender: MessageSender, connected: Arc<AtomicBool>) -> Arc<Self> {
+    pub(crate) fn new(name: String, id: u64, sender: MessageSender, connected: Arc<AtomicBool>) -> Arc<Self> {
         let event = Event::new();
         event.set(); // initially set so the first send does not block
 
         Arc::new(Self {
+            name,
             id,
             image: RwLock::new(ImageDataInner {
                 data: Vec::with_capacity(0),

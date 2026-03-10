@@ -15,13 +15,15 @@ const TEXTURE_OPTIONS: egui::TextureOptions = egui::TextureOptions {
 };
 
 pub struct ValueImage {
+    name: String,
     id: u64,
     inner: Arc<(RwLock<Option<(TextureHandle, [usize; 2])>>, MessageSender)>,
 }
 
 impl ValueImage {
-    pub(crate) fn new(id: u64, sender: MessageSender) -> Self {
+    pub(crate) fn new(name: String, id: u64, sender: MessageSender) -> Self {
         Self {
+            name,
             id,
             inner: Arc::new((RwLock::new(None), sender)),
         }
@@ -75,7 +77,10 @@ impl ValueImage {
         let size = match rect {
             Some(r) => {
                 if r[0] + r[2] > image_size[0] || r[1] + r[3] > image_size[1] {
-                    return Err("Rectangle is out of bounds".to_string());
+                    return Err(format!(
+                        "Rectangle is out of bounds for image: {}",
+                        self.name
+                    ));
                 }
                 [r[3] as usize, r[2] as usize]
             }
@@ -140,10 +145,10 @@ impl ValueImage {
                     if save_size[0] != image_size[1] as usize
                         || save_size[1] != image_size[0] as usize
                     {
-                        return Err(
-                            "Rectangle is set but the image size is different from texture"
-                                .to_string(),
-                        );
+                        return Err(format!(
+                            "Rectangle is set but the image size is different from texture for image: {}",
+                            self.name
+                        ));
                     }
                     texture_handle.set_partial(
                         [rec[1] as usize, rec[0] as usize],
@@ -165,6 +170,7 @@ impl ValueImage {
 impl Clone for ValueImage {
     fn clone(&self) -> Self {
         Self {
+            name: self.name.clone(),
             id: self.id,
             inner: self.inner.clone(),
         }

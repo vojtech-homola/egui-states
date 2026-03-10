@@ -55,6 +55,9 @@ pub(crate) fn set_image(
     let contiguous = image.is_c_contiguous();
     let image_type = check_image_type(shape, strides)?;
     let size = [shape[0], shape[1]];
+    if size[0] == 0 || size[1] == 0 {
+        return Err(PyValueError::new_err("Image dimensions cannot be zero"));
+    }
 
     // get data stride
     let stride = if contiguous {
