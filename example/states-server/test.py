@@ -9,6 +9,7 @@ server.start()
 states = server.states
 
 image = (np.random.default_rng(0).random((256, 256)) * 255).astype(np.uint8)
+empty_image = np.zeros((1, 0), dtype=np.uint8)
 # image = np.ones((256, 256), dtype=np.uint8) * 60
 states.image.set(image, update=True)
 

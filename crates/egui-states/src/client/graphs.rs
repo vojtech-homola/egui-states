@@ -11,14 +11,14 @@ pub(crate) trait UpdateGraph: Sync + Send {
 }
 
 pub struct ValueGraphs<T> {
-    _id: u64,
+    name: String,
     graphs: Arc<RwLock<NoHashMap<u16, (Graph<T>, bool)>>>,
 }
 
 impl<T: Clone + Copy> ValueGraphs<T> {
-    pub(crate) fn new(id: u64) -> Self {
+    pub(crate) fn new(name: String) -> Self {
         Self {
-            _id: id,
+            name,
             graphs: Arc::new(RwLock::new(NoHashMap::default())),
         }
     }
@@ -53,12 +53,15 @@ where
     fn update_graph(&self, header: GraphHeader, data: &[u8]) -> Result<(), String> {
         match header {
             GraphHeader::Set(idx, info) => {
-                let graph = Graph::from_graph_data(info, data)?;
+                let graph = Graph::from_graph_data(info, data)
+                    .map_err(|e| format!("Error updating graph {}: {}", self.name, e))?;
                 self.graphs.write().insert(idx, (graph, true));
             }
             GraphHeader::AddPoints(idx, info) => {
                 if let Some((graph, changed)) = self.graphs.write().get_mut(&idx) {
-                    graph.add_points_from_data(info, data)?;
+                    graph
+                        .add_points_from_data(info, data)
+                        .map_err(|e| format!("Error updating graph {}: {}", self.name, e))?;
                     *changed = true;
                 }
             }
@@ -77,7 +80,7 @@ where
 impl<T> Clone for ValueGraphs<T> {
     fn clone(&self) -> Self {
         Self {
-            _id: self._id,
+            name: self.name.clone(),
             graphs: self.graphs.clone(),
         }
     }

@@ -10,6 +10,7 @@ use crate::server::sender::{MessageSender, SenderData};
 use crate::server::server::{EnableTrait, SyncTrait};
 
 pub(crate) struct ValueList {
+    pub(crate) name: String,
     id: u64,
     list: RwLock<Vec<Bytes>>,
     sender: MessageSender,
@@ -18,8 +19,9 @@ pub(crate) struct ValueList {
 }
 
 impl ValueList {
-    pub(crate) fn new(id: u64, sender: MessageSender, connected: Arc<AtomicBool>) -> Arc<Self> {
+    pub(crate) fn new(name: String, id: u64, sender: MessageSender, connected: Arc<AtomicBool>) -> Arc<Self> {
         Arc::new(Self {
+            name,
             id,
             list: RwLock::new(Vec::new()),
             sender,

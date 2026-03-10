@@ -60,6 +60,7 @@ impl WsClientRead {
                         Ok(message)
                     }
                     Message::Close(_) => Err("Connection closed by server"),
+                    // TODO: handle also ping and pong messages?
                     _ => {
                         #[cfg(debug_assertions)]
                         println!("Unexpected message from server: {:?}", message);

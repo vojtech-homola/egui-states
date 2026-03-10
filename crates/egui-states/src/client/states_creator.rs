@@ -154,7 +154,7 @@ impl StatesCreator for StatesCreatorClient {
     {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
-        let value = Value::new(id, value, self.sender.clone());
+        let value = Value::new(name, id, value, self.sender.clone());
 
         self.val.values.insert(id, Arc::new(value.clone()));
         self.val.types.insert(id, T::get_type().get_hash());
@@ -175,7 +175,7 @@ impl StatesCreator for StatesCreatorClient {
     {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
-        let value = ValueAtomic::new(id, value, self.sender.clone());
+        let value = ValueAtomic::new(name, id, value, self.sender.clone());
 
         self.val.values.insert(id, Arc::new(value.clone()));
         self.val.types.insert(id, T::get_type().get_hash());
@@ -188,7 +188,7 @@ impl StatesCreator for StatesCreatorClient {
     {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
-        let value = Static::new(id, value);
+        let value = Static::new(name, id, value);
 
         self.val.static_values.insert(id, Arc::new(value.clone()));
         self.val.types.insert(id, T::get_type().get_hash());
@@ -208,7 +208,7 @@ impl StatesCreator for StatesCreatorClient {
     {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
-        let value = StaticAtomic::new(id, value);
+        let value = StaticAtomic::new(name, id, value);
 
         self.val.static_values.insert(id, Arc::new(value.clone()));
         self.val.types.insert(id, T::get_type().get_hash());
@@ -218,7 +218,7 @@ impl StatesCreator for StatesCreatorClient {
     fn image(&mut self, name: &str) -> ValueImage {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
-        let value = ValueImage::new(id, self.sender.clone());
+        let value = ValueImage::new(name, id, self.sender.clone());
 
         self.val.images.insert(id, value.clone());
         self.val.types.insert(id, 42);
@@ -245,7 +245,7 @@ impl StatesCreator for StatesCreatorClient {
     {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
-        let value = ValueMap::new(id);
+        let value = ValueMap::new(name);
 
         self.val.maps.insert(id, Arc::new(value.clone()));
         self.val.types.insert(
@@ -261,7 +261,7 @@ impl StatesCreator for StatesCreatorClient {
     {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
-        let value = ValueList::new(id);
+        let value = ValueList::new(name);
 
         self.val.lists.insert(id, Arc::new(value.clone()));
         self.val
@@ -276,7 +276,7 @@ impl StatesCreator for StatesCreatorClient {
     {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
-        let value = ValueGraphs::new(id);
+        let value = ValueGraphs::new(name);
 
         self.val.graphs.insert(id, Arc::new(value.clone()));
         self.val.types.insert(id, T::bytes_size() as u64);

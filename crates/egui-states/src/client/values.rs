@@ -97,6 +97,7 @@ impl GetQueueType for Queue {
 
 // Value --------------------------------------------
 pub struct Value<T, Q: GetQueueType = NoQueue> {
+    name: String,
     id: u64,
     inner: Arc<(RwLock<T>, MessageSender)>,
     _phantom: PhantomData<Q>,
@@ -106,8 +107,9 @@ impl<T, Q: GetQueueType> Value<T, Q>
 where
     T: Serialize + Clone,
 {
-    pub(crate) fn new(id: u64, value: T, sender: MessageSender) -> Self {
+    pub(crate) fn new(name: String, id: u64, value: T, sender: MessageSender) -> Self {
         Self {
+            name,
             id,
             inner: Arc::new((RwLock::new(value), sender)),
             _phantom: PhantomData,
@@ -173,7 +175,7 @@ impl<T: for<'a> Deserialize<'a> + Send + Sync, Q: GetQueueType + Send + Sync> Up
 {
     fn update_value(&self, data: &[u8]) -> Result<(), String> {
         let value = deserialize(data)
-            .map_err(|e| format!("Parse error: {} for value id: {}", e, self.id))?;
+            .map_err(|e| format!("Parse error: {} for value: {}", e, self.name))?;
 
         let mut w = self.inner.0.write();
         self.inner.1.send(ChannelMessage::Ack(self.id));
@@ -186,6 +188,7 @@ impl<T: for<'a> Deserialize<'a> + Send + Sync, Q: GetQueueType + Send + Sync> Up
 impl<T, Q: GetQueueType> Clone for Value<T, Q> {
     fn clone(&self) -> Self {
         Self {
+            name: self.name.clone(),
             id: self.id,
             inner: self.inner.clone(),
             _phantom: PhantomData,
@@ -194,6 +197,7 @@ impl<T, Q: GetQueueType> Clone for Value<T, Q> {
 }
 
 pub struct ValueAtomic<T: Atomic, Q: GetQueueType = NoQueue> {
+    name: String,
     id: u64,
     inner: Arc<(T::Lock, MessageSender)>,
     _phantom: PhantomData<Q>,
@@ -203,8 +207,9 @@ impl<T, Q: GetQueueType> ValueAtomic<T, Q>
 where
     T: Serialize + Clone + Atomic,
 {
-    pub(crate) fn new(id: u64, value: T, sender: MessageSender) -> Self {
+    pub(crate) fn new(name: String, id: u64, value: T, sender: MessageSender) -> Self {
         Self {
+            name,
             id,
             inner: Arc::new((T::Lock::new(value), sender)),
             _phantom: PhantomData,
@@ -244,6 +249,7 @@ impl<T: for<'a> Deserialize<'a> + Atomic + Send + Sync, Q: GetQueueType + Send +
 impl<T: Atomic, Q: GetQueueType> Clone for ValueAtomic<T, Q> {
     fn clone(&self) -> Self {
         Self {
+            name: self.name.clone(),
             id: self.id,
             inner: self.inner.clone(),
             _phantom: PhantomData,
@@ -253,13 +259,15 @@ impl<T: Atomic, Q: GetQueueType> Clone for ValueAtomic<T, Q> {
 
 // Static --------------------------------------------
 pub struct Static<T> {
+    name: String,
     id: u64,
     value: Arc<RwLock<T>>,
 }
 
 impl<T: Clone> Static<T> {
-    pub(crate) fn new(id: u64, value: T) -> Self {
+    pub(crate) fn new(name: String, id: u64, value: T) -> Self {
         Self {
+            name,
             id,
             value: Arc::new(RwLock::new(value)),
         }
@@ -278,7 +286,7 @@ impl<T: Clone> Static<T> {
 impl<T: for<'a> Deserialize<'a> + Send + Sync> UpdateValue for Static<T> {
     fn update_value(&self, data: &[u8]) -> Result<(), String> {
         let value = deserialize(data)
-            .map_err(|e| format!("Parse error: {} for value id: {}", e, self.id))?;
+            .map_err(|e| format!("Parse error: {} for value: {}", e, self.name))?;
         *self.value.write() = value;
         Ok(())
     }
@@ -287,6 +295,7 @@ impl<T: for<'a> Deserialize<'a> + Send + Sync> UpdateValue for Static<T> {
 impl<T> Clone for Static<T> {
     fn clone(&self) -> Self {
         Self {
+            name: self.name.clone(),
             id: self.id,
             value: self.value.clone(),
         }
@@ -294,13 +303,15 @@ impl<T> Clone for Static<T> {
 }
 
 pub struct StaticAtomic<T: AtomicStatic> {
+    name: String,
     id: u64,
     value: Arc<T::Lock>,
 }
 
 impl<T: AtomicStatic> StaticAtomic<T> {
-    pub(crate) fn new(id: u64, value: T) -> Self {
+    pub(crate) fn new(name: String, id: u64, value: T) -> Self {
         Self {
+            name,
             id,
             value: Arc::new(T::Lock::new(value)),
         }
@@ -314,7 +325,7 @@ impl<T: AtomicStatic> StaticAtomic<T> {
 impl<T: for<'a> Deserialize<'a> + AtomicStatic + Send + Sync> UpdateValue for StaticAtomic<T> {
     fn update_value(&self, data: &[u8]) -> Result<(), String> {
         let value = deserialize(data)
-            .map_err(|e| format!("Parse error: {} for value id: {}", e, self.id))?;
+            .map_err(|e| format!("Parse error: {} for value: {}", e, self.name))?;
         self.value.store(value);
         Ok(())
     }
@@ -323,6 +334,7 @@ impl<T: for<'a> Deserialize<'a> + AtomicStatic + Send + Sync> UpdateValue for St
 impl<T: AtomicStatic> Clone for StaticAtomic<T> {
     fn clone(&self) -> Self {
         Self {
+            name: self.name.clone(),
             id: self.id,
             value: self.value.clone(),
         }

@@ -253,6 +253,33 @@ impl StateServerCore {
             .map_err(|_| PyRuntimeError::new_err("Update failed."))
     }
 
+    fn id_to_name(&self, value_id: u64) -> PyResult<String> {
+        let values = self.get_values()?;
+        if let Some((value, _)) = values.values.get(&value_id) {
+            return Ok(value.name.clone());
+        }
+        if let Some((value, _)) = values.static_values.get(&value_id) {
+            return Ok(value.name.clone());
+        }
+        if let Some((signal, _)) = values.signals.get(&value_id) {
+            return Ok(signal.name.clone());
+        }
+        if let Some((map, _)) = values.maps.get(&value_id) {
+            return Ok(map.name.clone());
+        }
+        if let Some((list, _)) = values.lists.get(&value_id) {
+            return Ok(list.name.clone());
+        }
+        if let Some(image) = values.images.get(&value_id) {
+            return Ok(image.name.clone());
+        }
+        if let Some(graphs) = values.graphs.get(&value_id) {
+            return Ok(graphs.name.clone());
+        }
+
+        Err(PyRuntimeError::new_err("Value not found."))
+    }
+
     // values -----------------------------------------------------------
     fn value_get<'py>(&self, py: Python<'py>, value_id: u64) -> PyResult<Bound<'py, PyAny>> {
         let (value, object_type) = self.inner_values(value_id)?;
