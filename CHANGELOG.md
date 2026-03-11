@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.13.2] - 2026-03-11
+
+### 🐛 Bug Fixes
+
+- Bug in processing signals for callbacks
+
 ## [0.13.1] - 2026-03-10
 
 ### 🚀 Features
