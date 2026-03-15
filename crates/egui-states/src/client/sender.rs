@@ -5,6 +5,7 @@ use crate::serialization::MessageData;
 pub(crate) enum ChannelMessage {
     Value(u64, bool, MessageData),
     Signal(u64, MessageData),
+    Data(u64, bool, MessageData, Vec<u8>),
     Ack(u64),
 }
 

@@ -69,7 +69,7 @@ impl<'a, T: Serialize + Clone + PartialEq + Atomic> DiffAtomic<'a, T> {
     }
 }
 
-pub trait UpdateValue: Sync + Send {
+pub(crate) trait UpdateValue: Sync + Send {
     fn update_value(&self, data: &[u8]) -> Result<(), String>;
 }
 
@@ -120,12 +120,12 @@ where
         self.inner.0.read().clone()
     }
 
-    pub fn read<R>(&self, mut f: impl FnMut(&T) -> R) -> R {
+    pub fn read<R>(&self, f: impl Fn(&T) -> R) -> R {
         let r = self.inner.0.read();
         f(&r)
     }
 
-    pub fn write<R>(&self, mut f: impl FnMut(&mut T) -> R) -> R {
+    pub fn write<R>(&self, f: impl Fn(&mut T) -> R) -> R {
         let mut w = self.inner.0.write();
 
         let result = f(&mut w);
@@ -137,7 +137,7 @@ where
         result
     }
 
-    pub fn write_signal<R>(&self, mut f: impl FnMut(&mut T) -> R) -> R {
+    pub fn write_signal<R>(&self, f: impl Fn(&mut T) -> R) -> R {
         let mut w = self.inner.0.write();
 
         let result = f(&mut w);
@@ -277,7 +277,7 @@ impl<T: Clone> Static<T> {
         self.value.read().clone()
     }
 
-    pub fn read<R>(&self, mut f: impl FnMut(&T) -> R) -> R {
+    pub fn read<R>(&self, f: impl Fn(&T) -> R) -> R {
         let r = self.value.read();
         f(&r)
     }
