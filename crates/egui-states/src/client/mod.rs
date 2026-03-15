@@ -1,14 +1,15 @@
 mod handle_message;
 pub(crate) mod sender;
 
-pub mod atomics;
-pub mod client;
-pub mod graphs;
-pub mod image;
-pub mod list;
-pub mod map;
-pub mod states_creator;
-pub mod values;
+pub(crate) mod atomics;
+pub(crate) mod client;
+pub(crate) mod graphs;
+pub(crate) mod image;
+pub(crate) mod list;
+pub(crate) mod map;
+pub(crate) mod states_creator;
+pub(crate) mod values;
+pub(crate) mod data;
 
 #[cfg(not(target_arch = "wasm32"))]
 mod websocket;
