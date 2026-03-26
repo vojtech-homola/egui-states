@@ -80,7 +80,11 @@ impl ValueGraphs {
             .ok_or_else(|| "Graph index not found.".to_string())?;
 
         if graph_data.x.is_some() != graph.x.is_some() {
-            return Err("Graph linearity mismatch.".to_string());
+            if graph_data.x.is_some() {
+                return Err("Existing graph is linear, but new data has x values.".to_string());
+            } else {
+                return Err("Existing graph has x values, but new data is linear.".to_string());
+            }
         }
 
         add_data_to_graph(&graph_data, graph);

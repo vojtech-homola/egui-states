@@ -261,7 +261,7 @@ class ValueImage(_StaticBase):
             image(Buffer): The image to set.
             origin(list[int] | tuple[int, int], optional): If set only inner rectangle with given origin (top, left).
                 Defaults to None.
-            update(bool, optional): Whether to update the UI. Defaults to True.
+            update(bool, optional): Whether to update the UI. Defaults to False.
         """
         self._server.image_set(self._value_id, image, update, origin)
 
