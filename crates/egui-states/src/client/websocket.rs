@@ -70,6 +70,7 @@ impl WsClientRead {
                 Err(e) => {
                     #[cfg(debug_assertions)]
                     println!("Reading message from server failed: {:?}", e);
+                    let _ = e;
                     Err("Reading message from server failed")
                 }
             },
@@ -96,9 +97,9 @@ impl WsClientSend {
         let message = Message::Binary(data.to_bytes());
         match self.sink.send(message).await {
             Ok(_) => Ok(()),
-            Err(e) => {
+            Err(_e) => {
                 #[cfg(debug_assertions)]
-                println!("Sending message to socket failed: {:?}", e);
+                println!("Sending message to socket failed: {:?}", _e);
                 Err(())
             }
         }

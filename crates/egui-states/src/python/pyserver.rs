@@ -13,7 +13,7 @@ use crate::graphs::GraphType;
 use crate::hashing::NoHashMap;
 use crate::python::{
     pygraphs, pyimage, pyparsing,
-    pytypes::{ObjectType, PyObjectType},
+    pytypes::{PyObjectType, PyObjectClass},
 };
 use crate::server::server::Server;
 use crate::server::signals::SignalsManager;
@@ -22,12 +22,12 @@ use crate::server::values::{Signal, Value, ValueStatic};
 use crate::server::{graphs::ValueGraphs, image::ValueImage, list::ValueList, map::ValueMap};
 
 struct ValuesInner {
-    values: NoHashMap<u64, (Arc<Value>, ObjectType)>,
-    static_values: NoHashMap<u64, (Arc<ValueStatic>, ObjectType)>,
-    signals: NoHashMap<u64, (Arc<Signal>, ObjectType)>,
-    signals_types: NoHashMap<u64, ObjectType>,
-    maps: NoHashMap<u64, (Arc<ValueMap>, ObjectType)>,
-    lists: NoHashMap<u64, (Arc<ValueList>, ObjectType)>,
+    values: NoHashMap<u64, (Arc<Value>, PyObjectType)>,
+    static_values: NoHashMap<u64, (Arc<ValueStatic>, PyObjectType)>,
+    signals: NoHashMap<u64, (Arc<Signal>, PyObjectType)>,
+    signals_types: NoHashMap<u64, PyObjectType>,
+    maps: NoHashMap<u64, (Arc<ValueMap>, PyObjectType)>,
+    lists: NoHashMap<u64, (Arc<ValueList>, PyObjectType)>,
     images: NoHashMap<u64, Arc<ValueImage>>,
     graphs: NoHashMap<u64, Arc<ValueGraphs>>,
 }
@@ -37,7 +37,7 @@ pub(crate) struct StateServerCore {
     server: RwLock<Server>,
     signals: SignalsManager,
     inner: OnceLock<ValuesInner>,
-    temps: RwLock<Option<NoHashMap<u64, ObjectType>>>,
+    temps: RwLock<Option<NoHashMap<u64, PyObjectType>>>,
 }
 
 impl StateServerCore {
@@ -50,7 +50,7 @@ impl StateServerCore {
     }
 
     #[inline]
-    fn inner_values(&self, value_id: u64) -> PyResult<(&Arc<Value>, &ObjectType)> {
+    fn inner_values(&self, value_id: u64) -> PyResult<(&Arc<Value>, &PyObjectType)> {
         match self.get_values()?.values.get(&value_id) {
             Some((value, object_type)) => Ok((value, object_type)),
             _ => Err(PyValueError::new_err("Value with ID not found.")),
@@ -58,7 +58,7 @@ impl StateServerCore {
     }
 
     #[inline]
-    fn inner_static(&self, value_id: u64) -> PyResult<(&Arc<ValueStatic>, &ObjectType)> {
+    fn inner_static(&self, value_id: u64) -> PyResult<(&Arc<ValueStatic>, &PyObjectType)> {
         match self.get_values()?.static_values.get(&value_id) {
             Some((value, object_type)) => Ok((value, object_type)),
             _ => Err(PyValueError::new_err("Static value with ID not found.")),
@@ -66,7 +66,7 @@ impl StateServerCore {
     }
 
     #[inline]
-    fn inner_list(&self, value_id: u64) -> PyResult<(&Arc<ValueList>, &ObjectType)> {
+    fn inner_list(&self, value_id: u64) -> PyResult<(&Arc<ValueList>, &PyObjectType)> {
         match self.get_values()?.lists.get(&value_id) {
             Some((list, value_type)) => Ok((list, value_type)),
             _ => Err(PyValueError::new_err("List with ID not found.")),
@@ -74,9 +74,9 @@ impl StateServerCore {
     }
 
     #[inline]
-    fn inner_map(&self, value_id: u64) -> PyResult<(&Arc<ValueMap>, &ObjectType, &ObjectType)> {
+    fn inner_map(&self, value_id: u64) -> PyResult<(&Arc<ValueMap>, &PyObjectType, &PyObjectType)> {
         match self.get_values()?.maps.get(&value_id) {
-            Some((map, ObjectType::Map(key_type, value_type))) => Ok((map, key_type, value_type)),
+            Some((map, PyObjectType::Map(key_type, value_type))) => Ok((map, key_type, value_type)),
             _ => Err(PyValueError::new_err(
                 "Map with ID not found or type mismatch.",
             )),
@@ -121,7 +121,7 @@ impl StateServerCore {
         let signals = server.get_signals_manager();
 
         // register logging signal type
-        let logging_object_type = ObjectType::Tuple(vec![ObjectType::U8, ObjectType::String]);
+        let logging_object_type = PyObjectType::Tuple(vec![PyObjectType::U8, PyObjectType::String]);
         let mut types = NoHashMap::default();
         types.insert(signals.get_logging_id(), logging_object_type);
 
@@ -719,7 +719,7 @@ impl StateServerCore {
         &self,
         py: Python,
         name: String,
-        object_type: &Bound<PyObjectType>,
+        object_type: &Bound<PyObjectClass>,
         initial_value: &Bound<PyAny>,
         queue: bool,
     ) -> PyResult<u64> {
@@ -748,7 +748,7 @@ impl StateServerCore {
         &self,
         py: Python,
         name: String,
-        object_type: &Bound<PyObjectType>,
+        object_type: &Bound<PyObjectClass>,
         initial_value: &Bound<PyAny>,
     ) -> PyResult<u64> {
         let object_type = object_type.borrow().object_type.clone_py(py);
@@ -774,7 +774,7 @@ impl StateServerCore {
         &self,
         py: Python,
         name: String,
-        object_type: &Bound<PyObjectType>,
+        object_type: &Bound<PyObjectClass>,
         queue: bool,
     ) -> PyResult<u64> {
         let object_type = object_type.borrow().object_type.clone_py(py);
@@ -796,7 +796,7 @@ impl StateServerCore {
         &self,
         py: Python,
         name: String,
-        object_type: &Bound<PyObjectType>,
+        object_type: &Bound<PyObjectClass>,
     ) -> PyResult<u64> {
         let object_type = object_type.borrow().object_type.clone_py(py);
         let type_id = object_type.get_hash(py)?;
@@ -817,7 +817,7 @@ impl StateServerCore {
         &self,
         py: Python,
         name: String,
-        object_type: &Bound<PyObjectType>,
+        object_type: &Bound<PyObjectClass>,
     ) -> PyResult<u64> {
         let object_type = object_type.borrow().object_type.clone_py(py);
         let type_id = object_type.get_hash(py)?;

@@ -8,7 +8,7 @@ use pyo3::prelude::*;
 
 pub fn init_module(m: &Bound<PyModule>) -> PyResult<()> {
     m.add_class::<pyserver::StateServerCore>()?;
-    m.add_class::<pytypes::PyObjectType>()?;
+    m.add_class::<pytypes::PyObjectClass>()?;
 
     m.add("u8", pytypes::U8)?;
     m.add("u16", pytypes::U16)?;

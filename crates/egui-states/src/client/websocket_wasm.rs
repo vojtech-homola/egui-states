@@ -85,6 +85,7 @@ impl WsClientSend {
             Err(e) => {
                 #[cfg(debug_assertions)]
                 log::error!("Sending message to socket failed: {:?}", e);
+                let _ = e;
                 Err(())
             }
         }

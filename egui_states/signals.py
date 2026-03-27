@@ -1,6 +1,7 @@
 import threading
 import traceback
 from collections.abc import Callable
+from typing import Any
 
 from egui_states._core import StateServerCore
 
@@ -15,12 +16,12 @@ class SignalsManager:
         error_handler: Callable[[Exception], None] | None,
     ):
         """Initialize the SignalsManager."""
-        self._callbacks: dict[int, list[Callable]] = {}
-        self._server = server
+        self._callbacks: dict[int, list[Callable[..., Any]]] = {}
+        self._server: StateServerCore = server
 
-        self._workers_count = workers
+        self._workers_count: int = workers
         self._workers: list[threading.Thread] = []
-        self._error_handler = error_handler or self._default_error_handler
+        self._error_handler: Callable[[Exception], None] = error_handler or self._default_error_handler
 
     def start_manager(self) -> None:
         """Start the signals manager."""
@@ -66,7 +67,7 @@ class SignalsManager:
         """Set custom error handler."""
         self._error_handler = error_handler or self._default_error_handler
 
-    def add_callback(self, value_id: int, callback: Callable) -> None:
+    def add_callback(self, value_id: int, callback: Callable[..., Any]) -> None:
         """Add a callback to a signal."""
         if value_id in self._callbacks:
             self._callbacks[value_id].append(callback)
@@ -74,7 +75,7 @@ class SignalsManager:
             self._callbacks[value_id] = [callback]
         self._server.signal_set_register(value_id, True)
 
-    def remove_callback(self, value_id: int, callback: Callable) -> None:
+    def remove_callback(self, value_id: int, callback: Callable[..., Any]) -> None:
         """Remove a callback from a signal."""
         if value_id in self._callbacks:
             if callback in self._callbacks[value_id]:
