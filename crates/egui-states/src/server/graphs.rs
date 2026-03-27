@@ -14,6 +14,7 @@ pub(crate) struct GraphData {
     pub y: *const u8,
     pub x: Option<*const u8>,
     pub size: usize,
+    pub count: usize,
 }
 
 pub(crate) struct ValueGraphs {
@@ -78,6 +79,14 @@ impl ValueGraphs {
             .get_mut(&idx)
             .ok_or_else(|| "Graph index not found.".to_string())?;
 
+        if graph_data.x.is_some() != graph.x.is_some() {
+            if graph_data.x.is_some() {
+                return Err("Existing graph is linear, but new data has x values.".to_string());
+            } else {
+                return Err("Existing graph has x values, but new data is linear.".to_string());
+            }
+        }
+
         add_data_to_graph(&graph_data, graph);
 
         if self.connected.load(Ordering::Relaxed) && self.enabled.load(Ordering::Relaxed) {
@@ -85,7 +94,7 @@ impl ValueGraphs {
                 self.id,
                 idx,
                 update,
-                Some(graph_data.size / self.graph_type.bytes_size()),
+                Some(graph_data.count),
             );
             self.sender.send_single(SenderData::from_vec(data));
         }
@@ -102,7 +111,7 @@ impl ValueGraphs {
     }
 
     pub(crate) fn len(&self, idx: u16) -> Option<usize> {
-        self.graphs.read().get(&idx).map(|g| g.y.len())
+        self.graphs.read().get(&idx).map(|g| g.count)
     }
 
     pub(crate) fn remove(&self, idx: u16, update: bool) -> Result<(), ()> {
@@ -173,6 +182,8 @@ fn add_data_to_graph(graph_data: &GraphData, graph: &mut GraphTyped) {
             }
         }
     }
+
+    graph.count += graph_data.count;
 }
 
 fn data_to_graph(graph_data: &GraphData) -> GraphTyped {
@@ -198,6 +209,7 @@ fn data_to_graph(graph_data: &GraphData) -> GraphTyped {
         graph_type: graph_data.graph_type,
         y,
         x,
+        count: graph_data.count,
     }
 }
 
@@ -206,6 +218,7 @@ pub(crate) struct GraphTyped {
     pub y: Vec<u8>,
     pub x: Option<Vec<u8>>,
     pub graph_type: GraphType,
+    pub count: usize,
 }
 
 impl GraphTyped {
@@ -228,15 +241,15 @@ impl GraphTyped {
                     is_linear: self.x.is_none(),
                 };
                 let header = GraphHeader::AddPoints(graph_id, info);
-                data_offset = size - points;
-                size = points;
+                let add_data_size = points * self.graph_type.bytes_size();
+                data_offset = size - add_data_size;
+                size = add_data_size;
                 header
             }
             None => {
-                let points = self.y.len() / self.graph_type.bytes_size();
                 let info = GraphDataInfo {
                     graph_type: self.graph_type,
-                    points: points as u64,
+                    points: self.count as u64,
                     is_linear: self.x.is_none(),
                 };
                 GraphHeader::Set(graph_id, info)
@@ -246,9 +259,6 @@ impl GraphTyped {
         let offset = postcard::to_slice(&header, head_buffer[0..].as_mut())
             .expect("Failed to serialize graph data info")
             .len();
-
-        size *= self.graph_type.bytes_size();
-        data_offset *= self.graph_type.bytes_size();
 
         match self.x {
             Some(ref x) => {

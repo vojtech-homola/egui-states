@@ -111,6 +111,8 @@ impl<T: GraphElement> Graph<T> {
 
         #[cfg(target_endian = "little")]
         {
+            // TODO: Do some checks to make sure the incoming data is compatible with
+            // the existing graph
             match (&mut self.x, is_linear) {
                 (Some(x), false) => {
                     let old_size = x.len();

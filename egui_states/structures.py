@@ -260,8 +260,8 @@ class ValueImage(_StaticBase):
         Args:
             image(Buffer): The image to set.
             origin(list[int] | tuple[int, int], optional): If set only inner rectangle with given origin (top, left).
-                                                           Defaults to None.
-            update(bool, optional): Whether to update the UI. Defaults to True.
+                Defaults to None.
+            update(bool, optional): Whether to update the UI. Defaults to False.
         """
         self._server.image_set(self._value_id, image, update, origin)
 
@@ -435,11 +435,11 @@ class Graph:
 
     def __init__(self, value_id: int, idx: int, server: StateServerCore):
         """Initialize the Graph."""
-        self._value_id = value_id
-        self._idx = idx
-        self._server = server
+        self._value_id: int = value_id
+        self._idx: int = idx
+        self._server: StateServerCore = server
 
-        self._deleted = False
+        self._deleted: bool = False
 
     @property
     def idx(self) -> int:
