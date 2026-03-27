@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.13.3] - 2026-03-27
+
+### 🐛 Bug Fixes
+
+- Bugs in grpahs on server side [#33](https://github.com/vojtech-homola/egui-states/pull/33)
+
 ## [0.13.2] - 2026-03-11
 
 ### 🐛 Bug Fixes
