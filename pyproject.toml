@@ -14,7 +14,7 @@ readme = "README.md"
 dependencies = ["numpy"]
 
 [dependency-groups]
-dev = ["ipython", "matplotlib"]
+dev = ["ipython", "matplotlib", "maturin", "git-cliff"]
 
 [tool.maturin]
 bindings = "pyo3"
@@ -122,7 +122,7 @@ sort_commits = "oldest"
 recurse_submodules = false
 # skip_tags = "^(0\\.[0-7]\\.|old-|legacy-)"
 commit_preprocessors = [
-  { pattern = "\\s*\\(#(\\d+)\\)$", replace = " [#$1](https://github.com/vojtech-homola/egui-states/pull/$1)" },
+    { pattern = "\\s*\\(#(\\d+)\\)$", replace = " [#$1](https://github.com/vojtech-homola/egui-states/pull/$1)" },
 ]
 
 # [remote.github]

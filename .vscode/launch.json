@@ -40,9 +40,9 @@
                     "gui",
                 ]
             },
-            // "env": {
-            //     "WAYLAND_DISPLAY": ""
-            // }
+            "env": {
+                "WAYLAND_DISPLAY": ""
+            }
         },
     ]
 }
