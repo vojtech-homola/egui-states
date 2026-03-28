@@ -273,12 +273,12 @@ where
 }
 
 #[cfg(feature = "client")]
-pub(crate) struct Deserialzer<'a> {
+pub(crate) struct Deserializer<'a> {
     data: &'a [u8],
 }
 
 #[cfg(feature = "client")]
-impl<'a> Deserialzer<'a> {
+impl<'a> Deserializer<'a> {
     pub(crate) fn new(data: &'a [u8]) -> Self {
         Self { data }
     }

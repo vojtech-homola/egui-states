@@ -6,7 +6,7 @@ use std::sync::Arc;
 use serde::Deserialize;
 
 use crate::collections::MapHeader;
-use crate::serialization::{Deserialzer, deserialize};
+use crate::serialization::{Deserializer, deserialize};
 use crate::transport::Transportable;
 
 pub(crate) trait UpdateMap: Sync + Send {
@@ -60,7 +60,7 @@ where
     fn update_map(&self, header: MapHeader, data: &[u8]) -> Result<(), String> {
         match header {
             MapHeader::All(size) => {
-                let mut deserializer = Deserialzer::new(data);
+                let mut deserializer = Deserializer::new(data);
 
                 let mut map = self.dict.write();
                 map.clear();

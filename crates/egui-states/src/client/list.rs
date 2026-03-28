@@ -4,7 +4,7 @@ use std::sync::Arc;
 use serde::Deserialize;
 
 use crate::collections::VecHeader;
-use crate::serialization::{Deserialzer, deserialize};
+use crate::serialization::{Deserializer, deserialize};
 use crate::transport::Transportable;
 
 pub(crate) trait UpdateList: Sync + Send {
@@ -47,7 +47,7 @@ impl<T: for<'a> Deserialize<'a> + Send + Sync> UpdateList for ValueVec<T> {
     fn update_list(&self, header: VecHeader, data: &[u8]) -> Result<(), String> {
         match header {
             VecHeader::All(size) => {
-                let mut deserializer = Deserialzer::new(data);
+                let mut deserializer = Deserializer::new(data);
 
                 let mut list = self.list.write();
                 list.clear();

@@ -290,12 +290,12 @@ class ValueMap[K, V](_StaticBase):
 
     def __init__(self, key_id: int, value_id: int) -> None:
         self._key_id = key_id
-        self._value_id = value_id
+        self._value_type_id = value_id
 
     def _initialize(self, name: str, types: list[PyObjectType]) -> None:
-        self._value_id = self._server.add_map(name, types[self._key_id], types[self._value_id])
+        self._value_id = self._server.add_map(name, types[self._key_id], types[self._value_type_id])
         del self._key_id
-        del self._value_id
+        del self._value_type_id
 
     def set(self, value: dict[K, V], update: bool = False) -> None:
         """Set the dict in the UI dict.

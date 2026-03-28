@@ -103,7 +103,7 @@ impl MessagesParser {
             ServerHeader::ValueVec(id, update, header, size) => {
                 let size = size as usize;
                 if size + self.pointer > self.data.len() {
-                    return Err("Incomplete data for List message");
+                    return Err("Incomplete data for ValueVec message");
                 }
                 let data = self.data.slice(self.pointer..self.pointer + size);
                 self.pointer += size;
