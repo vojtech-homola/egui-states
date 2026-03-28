@@ -6,7 +6,7 @@ use crate::State;
 use crate::client::atomics::{Atomic, AtomicStatic};
 use crate::client::graphs::ValueGraphs;
 use crate::client::image::ValueImage;
-use crate::client::list::ValueList;
+use crate::client::list::ValueVec;
 use crate::client::map::ValueMap;
 use crate::client::sender::MessageSender;
 use crate::client::states_creator::StatesCreator;
@@ -20,8 +20,8 @@ pub enum StateType {
     Value(String, ObjectType, InitValue, bool),
     Static(String, ObjectType, InitValue),
     Image(String),
-    Map(String, ObjectType, ObjectType),
-    List(String, ObjectType),
+    ValueMap(String, ObjectType, ObjectType),
+    ValueVec(String, ObjectType),
     Graphs(String, GraphType),
     Signal(String, ObjectType, bool),
     SubState(String, &'static str, Vec<StateType>),
@@ -163,18 +163,18 @@ impl StatesCreator for StatesCreatorBuild {
         let value = ValueMap::new(name.clone());
 
         self.states
-            .push(StateType::Map(name, K::get_type(), V::get_type()));
+            .push(StateType::ValueMap(name, K::get_type(), V::get_type()));
         value
     }
 
-    fn list<T>(&mut self, name: &'static str) -> ValueList<T>
+    fn vec<T>(&mut self, name: &'static str) -> ValueVec<T>
     where
         T: Clone + for<'a> Deserialize<'a> + Transportable,
     {
         let name = format!("{}.{}", self.parent, name);
-        let value = ValueList::new(name.clone());
+        let value = ValueVec::new(name.clone());
 
-        self.states.push(StateType::List(name, T::get_type()));
+        self.states.push(StateType::ValueVec(name, T::get_type()));
 
         value
     }

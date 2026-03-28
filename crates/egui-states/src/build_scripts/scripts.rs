@@ -118,13 +118,13 @@ pub(crate) fn get_all_enums_struct(
                 collect_enums(info, &mut enums);
                 collect_structs(info, &mut structs);
             }
-            StateType::Map(_, key_info, value_info) => {
+            StateType::ValueMap(_, key_info, value_info) => {
                 collect_enums(key_info, &mut enums);
                 collect_enums(value_info, &mut enums);
                 collect_structs(key_info, &mut structs);
                 collect_structs(value_info, &mut structs);
             }
-            StateType::List(_, elem_info) => {
+            StateType::ValueVec(_, elem_info) => {
                 collect_enums(elem_info, &mut enums);
                 collect_structs(elem_info, &mut structs);
             }

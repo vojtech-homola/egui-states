@@ -3,7 +3,7 @@ use bytes::Bytes;
 use crate::client::client::Client;
 use crate::client::sender::ChannelMessage;
 use crate::client::states_creator::ValuesList;
-use crate::collections::{ListHeader, MapHeader};
+use crate::collections::{VecHeader, MapHeader};
 use crate::graphs::GraphHeader;
 use crate::image::ImageHeader;
 use crate::serialization::{ClientHeader, FastVec, ServerHeader, serialize_to_data};
@@ -32,8 +32,8 @@ pub(crate) enum ServerMessage {
     Static(u64, bool, Bytes),
     Image(u64, bool, ImageHeader, Bytes),
     Graph(u64, bool, GraphHeader, Bytes),
-    List(u64, bool, ListHeader, Bytes),
-    Map(u64, bool, MapHeader, Bytes),
+    ValueVec(u64, bool, VecHeader, Bytes),
+    ValueMap(u64, bool, MapHeader, Bytes),
     Update(f32),
 }
 
@@ -100,23 +100,23 @@ impl MessagesParser {
                 self.pointer += size;
                 ServerMessage::Static(id, update, data)
             }
-            ServerHeader::List(id, update, header, size) => {
+            ServerHeader::ValueVec(id, update, header, size) => {
                 let size = size as usize;
                 if size + self.pointer > self.data.len() {
                     return Err("Incomplete data for List message");
                 }
                 let data = self.data.slice(self.pointer..self.pointer + size);
                 self.pointer += size;
-                ServerMessage::List(id, update, header, data)
+                ServerMessage::ValueVec(id, update, header, data)
             }
-            ServerHeader::Map(id, update, header, size) => {
+            ServerHeader::ValueMapMap(id, update, header, size) => {
                 let size = size as usize;
                 if size + self.pointer > self.data.len() {
                     return Err("Incomplete data for Map message");
                 }
                 let data = self.data.slice(self.pointer..self.pointer + size);
                 self.pointer += size;
-                ServerMessage::Map(id, update, header, data)
+                ServerMessage::ValueMap(id, update, header, data)
             }
             ServerHeader::Update(dt) => ServerMessage::Update(dt),
             ServerHeader::Image(id, update, header) => {
@@ -177,14 +177,14 @@ pub(crate) async fn handle_message(
             }
             update
         }
-        ServerMessage::List(id, update, list_header, data) => {
+        ServerMessage::ValueVec(id, update, list_header, data) => {
             match vals.lists.get(&id) {
                 Some(value) => value.update_list(list_header, &data)?,
                 None => return Err(format!("List with id {} not found", id)),
             }
             update
         }
-        ServerMessage::Map(id, update, map_header, data) => {
+        ServerMessage::ValueMap(id, update, map_header, data) => {
             match vals.maps.get(&id) {
                 Some(value) => value.update_map(map_header, &data)?,
                 None => return Err(format!("Map with id {} not found", id)),

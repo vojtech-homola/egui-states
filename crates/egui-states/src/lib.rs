@@ -24,7 +24,7 @@ pub use client::{
     client::{Client, ConnectionState},
     graphs::ValueGraphs,
     image::ValueImage,
-    list::ValueList,
+    list::ValueVec,
     map::ValueMap,
     states_creator::StatesCreator,
     values::{
@@ -46,4 +46,4 @@ pub use egui_states_macros::Transportable;
 pub use serde;
 pub use transport::{InitValue, ObjectType, Transportable};
 
-pub(crate) const PROTOCOL_VERSION: u16 = 3;
+pub(crate) const PROTOCOL_VERSION: u16 = 4;

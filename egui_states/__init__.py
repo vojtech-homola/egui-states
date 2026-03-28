@@ -6,12 +6,12 @@ from egui_states.structures import (
     Graph,
     Signal,
     SignalEmpty,
+    Static,
     Value,
     ValueGraphs,
     ValueImage,
-    ValueList,
     ValueMap,
-    Static,
+    ValueVec,
 )
 from egui_states.version import __version__
 
@@ -24,7 +24,7 @@ __all__ = [
     "ValueMap",
     "ValueGraphs",
     "ValueImage",
-    "ValueList",
+    "ValueVec",
     "Static",
     "Graph",
     "LogLevel",

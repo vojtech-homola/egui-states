@@ -368,14 +368,14 @@ impl Server {
         Ok(id)
     }
 
-    pub(crate) fn add_list(&mut self, name: &str, type_id: u64) -> Result<u64, String> {
+    pub(crate) fn add_vec(&mut self, name: &str, type_id: u64) -> Result<u64, String> {
         if self.states_server.is_some() {
             return Err("Cannot add new values after server has been finalized".to_string());
         }
 
         let id = generate_value_id(&name);
         if self.states.lists.contains_key(&id) {
-            return Err(format!("List with id {} already exists", id));
+            return Err(format!("Vec with id {} already exists", id));
         }
 
         let val = ValueList::new(

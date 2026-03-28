@@ -4,8 +4,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use tokio_tungstenite::tungstenite::Bytes;
 
-use crate::collections::ListHeader;
-use crate::serialization::{FastVec, ServerHeader, serialize};
+use crate::collections::VecHeader;
+use crate::serialization::{ServerHeader, serialize};
 use crate::server::sender::{MessageSender, SenderData};
 use crate::server::server::{EnableTrait, SyncTrait};
 
@@ -19,7 +19,12 @@ pub(crate) struct ValueList {
 }
 
 impl ValueList {
-    pub(crate) fn new(name: String, id: u64, sender: MessageSender, connected: Arc<AtomicBool>) -> Arc<Self> {
+    pub(crate) fn new(
+        name: String,
+        id: u64,
+        sender: MessageSender,
+        connected: Arc<AtomicBool>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             name,
             id,
@@ -32,16 +37,13 @@ impl ValueList {
 
     fn serialize_all(&self, vec: &Vec<Bytes>, update: bool) -> Result<SenderData, ()> {
         let len = vec.len() as u64;
-        let len_data: FastVec<10> = serialize(&len)?;
         let mut size = 0;
         vec.iter().for_each(|b| {
             size += b.len();
         });
-        let all_size = (size + len_data.len()) as u32;
-        let header = ServerHeader::List(self.id, update, ListHeader::All, all_size);
+        let header = ServerHeader::ValueVec(self.id, update, VecHeader::All(len), size as u32);
 
         let mut data = serialize(&header)?;
-        data.extend_from_data(&len_data);
         vec.iter().for_each(|b| {
             data.extend_from_slice(&b);
         });
@@ -77,13 +79,14 @@ impl ValueList {
         }
 
         if self.connected.load(Ordering::Relaxed) && self.enabled.load(Ordering::Relaxed) {
-            let header = ServerHeader::List(
+            let header = ServerHeader::ValueVec(
                 self.id,
                 update,
-                ListHeader::Set(idx as u64),
+                VecHeader::Set(idx as u64),
                 value.len() as u32,
             );
-            let message = serialize(&header).map_err(|_| "Serialization error")?;
+            let mut message = serialize(&header).map_err(|_| "Serialization error")?;
+            message.extend_from_slice(&value);
             self.sender.send(message);
         }
 
@@ -111,7 +114,7 @@ impl ValueList {
         let value = w.remove(idx);
 
         if self.connected.load(Ordering::Relaxed) && self.enabled.load(Ordering::Relaxed) {
-            let header = ServerHeader::List(self.id, update, ListHeader::Remove(idx as u64), 0);
+            let header = ServerHeader::ValueVec(self.id, update, VecHeader::Remove(idx as u64), 0);
             let message = serialize(&header).map_err(|_| "Serialization error")?;
             self.sender.send(message);
         }
@@ -122,8 +125,10 @@ impl ValueList {
     pub(crate) fn append_item(&self, value: Bytes, update: bool) -> Result<(), ()> {
         let mut w = self.list.write();
         if self.connected.load(Ordering::Relaxed) && self.enabled.load(Ordering::Relaxed) {
-            let header = ServerHeader::List(self.id, update, ListHeader::Add, value.len() as u32);
-            let message = serialize(&header)?;
+            let header =
+                ServerHeader::ValueVec(self.id, update, VecHeader::Add, value.len() as u32);
+            let mut message = serialize(&header)?;
+            message.extend_from_slice(&value);
             self.sender.send(message);
         }
         w.push(value);
