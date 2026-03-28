@@ -81,9 +81,6 @@ impl PyObjectType {
             PyObjectType::Bool => ObjectType::Bool,
             PyObjectType::Enum(obj) => {
                 let enum_type = obj.bind(py);
-                // let members = enum_type
-                //     .call_method0("_get_members")?
-                //     .extract::<Vec<(String, i32)>>()?;
                 let member_map = enum_type.getattr("_member_map_")?;
                 let members = member_map
                     .cast::<PyDict>()?

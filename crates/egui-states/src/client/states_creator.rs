@@ -7,7 +7,7 @@ use crate::State;
 use crate::client::atomics::{Atomic, AtomicStatic};
 use crate::client::graphs::{UpdateGraph, ValueGraphs};
 use crate::client::image::ValueImage;
-use crate::client::list::{UpdateList, ValueList};
+use crate::client::list::{UpdateList, ValueVec};
 use crate::client::map::{UpdateMap, ValueMap};
 use crate::client::sender::MessageSender;
 use crate::client::values::{
@@ -64,7 +64,7 @@ pub trait StatesCreator {
         K: Hash + Eq + Clone + for<'a> Deserialize<'a> + Send + Sync + Transportable + 'static,
         V: Clone + for<'a> Deserialize<'a> + Send + Sync + Transportable + 'static;
 
-    fn list<T>(&mut self, name: &'static str) -> ValueList<T>
+    fn vec<T>(&mut self, name: &'static str) -> ValueVec<T>
     where
         T: Clone + for<'a> Deserialize<'a> + Send + Sync + Transportable + 'static;
 
@@ -255,18 +255,16 @@ impl StatesCreator for StatesCreatorClient {
         value
     }
 
-    fn list<T>(&mut self, name: &str) -> ValueList<T>
+    fn vec<T>(&mut self, name: &str) -> ValueVec<T>
     where
         T: Clone + for<'a> Deserialize<'a> + Send + Sync + Transportable + 'static,
     {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
-        let value = ValueList::new(name);
+        let value = ValueVec::new(name);
 
         self.val.lists.insert(id, Arc::new(value.clone()));
-        self.val
-            .types
-            .insert(id, ObjectType::Vec(Box::new(T::get_type())).get_hash());
+        self.val.types.insert(id, T::get_type().get_hash());
         value
     }
 

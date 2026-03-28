@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tokio_tungstenite::tungstenite::Bytes;
 
 use crate::collections::MapHeader;
-use crate::serialization::{FastVec, ServerHeader, serialize};
+use crate::serialization::{ServerHeader, serialize};
 use crate::server::sender::{MessageSender, SenderData};
 use crate::server::server::{EnableTrait, SyncTrait};
 
@@ -20,7 +20,12 @@ pub(crate) struct ValueMap {
 }
 
 impl ValueMap {
-    pub(crate) fn new(name: String, id: u64, sender: MessageSender, connected: Arc<AtomicBool>) -> Arc<Self> {
+    pub(crate) fn new(
+        name: String,
+        id: u64,
+        sender: MessageSender,
+        connected: Arc<AtomicBool>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             name,
             id,
@@ -33,17 +38,14 @@ impl ValueMap {
 
     fn serialize_all(&self, map: &HashMap<Bytes, Bytes>, update: bool) -> Result<SenderData, ()> {
         let len = map.len() as u64;
-        let len_data: FastVec<10> = serialize(&len)?;
         let mut size = 0;
         map.iter().for_each(|(k, v)| {
             size += k.len();
             size += v.len();
         });
-        let all_size = (size + len_data.len()) as u32;
-        let header = ServerHeader::Map(self.id, update, MapHeader::All, all_size);
+        let header = ServerHeader::ValueMapMap(self.id, update, MapHeader::All(len), size as u32);
 
         let mut data = serialize(&header)?;
-        data.extend_from_data(&len_data);
         map.iter().for_each(|(k, v)| {
             data.extend_from_slice(&k);
             data.extend_from_slice(&v);
@@ -72,7 +74,7 @@ impl ValueMap {
         let mut w = self.map.write();
 
         if self.connected.load(Ordering::Relaxed) && self.enabled.load(Ordering::Relaxed) {
-            let header = ServerHeader::Map(
+            let header = ServerHeader::ValueMapMap(
                 self.id,
                 update,
                 MapHeader::Set,
@@ -108,7 +110,8 @@ impl ValueMap {
         };
 
         if self.connected.load(Ordering::Relaxed) && self.enabled.load(Ordering::Relaxed) {
-            let header = ServerHeader::Map(self.id, update, MapHeader::Remove, key.len() as u32);
+            let header =
+                ServerHeader::ValueMapMap(self.id, update, MapHeader::Remove, key.len() as u32);
             let mut data = serialize(&header)?;
             data.extend_from_slice(&key);
             self.sender.send(data);

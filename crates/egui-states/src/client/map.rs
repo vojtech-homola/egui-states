@@ -6,7 +6,7 @@ use std::sync::Arc;
 use serde::Deserialize;
 
 use crate::collections::MapHeader;
-use crate::serialization::deserialize;
+use crate::serialization::{Deserializer, deserialize};
 use crate::transport::Transportable;
 
 pub(crate) trait UpdateMap: Sync + Send {
@@ -59,10 +59,22 @@ where
 {
     fn update_map(&self, header: MapHeader, data: &[u8]) -> Result<(), String> {
         match header {
-            MapHeader::All => {
-                let map = deserialize::<HashMap<K, V>>(data)
-                    .map_err(|e| format!("Error deserializing dict for {}: {}", self.name, e))?;
-                *self.dict.write() = map;
+            MapHeader::All(size) => {
+                let mut deserializer = Deserializer::new(data);
+
+                let mut map = self.dict.write();
+                map.clear();
+                map.reserve(size as usize);
+
+                for _ in 0..size {
+                    let key: K = deserializer.get().map_err(|e| {
+                        format!("Error deserializing dict key for {}: {}", self.name, e)
+                    })?;
+                    let value: V = deserializer.get().map_err(|e| {
+                        format!("Error deserializing dict value for {}: {}", self.name, e)
+                    })?;
+                    map.insert(key, value);
+                }
             }
             MapHeader::Set => {
                 let (key, value): (K, V) = deserialize(data).map_err(|e| {

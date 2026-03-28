@@ -1,7 +1,7 @@
 use postcard::ser_flavors::Flavor;
 use serde::{Deserialize, Serialize};
 
-use crate::collections::{ListHeader, MapHeader};
+use crate::collections::{MapHeader, VecHeader};
 use crate::graphs::GraphHeader;
 use crate::hashing::NoHashMap;
 use crate::image::ImageHeader;
@@ -173,8 +173,8 @@ pub(crate) enum ServerHeader {
     Static(u64, bool, u32),
     Image(u64, bool, ImageHeader),
     Graph(u64, bool, GraphHeader),
-    List(u64, bool, ListHeader, u32),
-    Map(u64, bool, MapHeader, u32),
+    ValueVec(u64, bool, VecHeader, u32),
+    ValueMapMap(u64, bool, MapHeader, u32),
     Update(f32),
 }
 
@@ -270,6 +270,25 @@ where
 {
     let (value, new_data) = postcard::take_from_bytes::<T>(data).map_err(|_| ())?;
     Ok((value, data.len() - new_data.len()))
+}
+
+#[cfg(feature = "client")]
+pub(crate) struct Deserializer<'a> {
+    data: &'a [u8],
+}
+
+#[cfg(feature = "client")]
+impl<'a> Deserializer<'a> {
+    pub(crate) fn new(data: &'a [u8]) -> Self {
+        Self { data }
+    }
+
+    pub(crate) fn get<T: for<'b> Deserialize<'b>>(&mut self) -> Result<T, String> {
+        let (value, new_data) =
+            postcard::take_from_bytes::<T>(&self.data).map_err(|e| e.to_string())?;
+        self.data = new_data;
+        Ok(value)
+    }
 }
 
 #[cfg(feature = "server")]
