@@ -132,10 +132,11 @@ impl PyObjectType {
         Ok(obj)
     }
 
-    // pub(crate) fn get_hash(&self, py: Python) -> PyResult<u64> {
-    //     let res = self.get_core_type(py)?.get_hash();
-    //     Ok(res)
-    // }
+    #[inline]
+    pub(crate) fn get_hash(&self, py: Python) -> PyResult<u32> {
+        let res = self.get_core_type(py)?.get_hash();
+        Ok(res)
+    }
 }
 
 #[pyclass(name = "PyObjectType")]

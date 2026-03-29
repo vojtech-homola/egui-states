@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
-use crate::graphs::GraphType;
 use crate::hashing::StableHasher;
 
 #[derive(Clone)]
@@ -114,58 +113,11 @@ impl Hash for ObjectType {
     }
 }
 
-// impl ObjectType {
-//     pub fn get_hash(&self) -> u64 {
-//         let mut hasher = StableHasher::new();
-//         self.hash(&mut hasher);
-//         hasher.finish()
-//     }
-// }
-
-pub(crate) enum StateType {
-    Value(ObjectType),
-    Static(ObjectType),
-    Image,
-    ValueMap(ObjectType, ObjectType),
-    ValueVec(ObjectType),
-    Graphs(GraphType),
-    Signal(ObjectType),
-}
-
-impl StateType {
-    pub(crate) fn get_hash(&self) -> u64 {
+impl ObjectType {
+    pub fn get_hash(&self) -> u32 {
         let mut hasher = StableHasher::new();
-        match self {
-            Self::Value(obj_type) => {
-                0u8.hash(&mut hasher);
-                obj_type.hash(&mut hasher);
-            }
-            Self::Static(obj_type) => {
-                1u8.hash(&mut hasher);
-                obj_type.hash(&mut hasher);
-            }
-            Self::Image => {
-                42u8.hash(&mut hasher);
-            }
-            Self::ValueMap(key_type, value_type) => {
-                2u8.hash(&mut hasher);
-                key_type.hash(&mut hasher);
-                value_type.hash(&mut hasher);
-            }
-            Self::ValueVec(value_type) => {
-                3u8.hash(&mut hasher);
-                value_type.hash(&mut hasher);
-            }
-            Self::Graphs(graph_type) => {
-                4u8.hash(&mut hasher);
-                graph_type.bytes_size().hash(&mut hasher);
-            }
-            Self::Signal(obj_type) => {
-                5u8.hash(&mut hasher);
-                obj_type.hash(&mut hasher);
-            }
-        }
-        hasher.finish()
+        self.hash(&mut hasher);
+        hasher.finish_u32()
     }
 }
 

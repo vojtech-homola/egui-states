@@ -8,18 +8,20 @@ use crate::serialization::{Deserializer, deserialize};
 use crate::transport::Transportable;
 
 pub(crate) trait UpdateList: Sync + Send {
-    fn update_list(&self, header: VecHeader, data: &[u8]) -> Result<(), String>;
+    fn update_list(&self, type_id: u32, header: VecHeader, data: &[u8]) -> Result<(), String>;
 }
 
 pub struct ValueVec<T> {
     name: String,
+    type_id: u32,
     list: Arc<RwLock<Vec<T>>>,
 }
 
 impl<T: Transportable + Clone> ValueVec<T> {
-    pub(crate) fn new(name: String) -> Self {
+    pub(crate) fn new(name: String, type_id: u32) -> Self {
         Self {
             name,
+            type_id,
             list: Arc::new(RwLock::new(Vec::new())),
         }
     }
@@ -44,7 +46,11 @@ impl<T: Transportable + Clone> ValueVec<T> {
 }
 
 impl<T: for<'a> Deserialize<'a> + Send + Sync> UpdateList for ValueVec<T> {
-    fn update_list(&self, header: VecHeader, data: &[u8]) -> Result<(), String> {
+    fn update_list(&self, type_id: u32, header: VecHeader, data: &[u8]) -> Result<(), String> {
+        if type_id != self.type_id {
+            return Err(format!("Type id mismatch for list {}", self.name));
+        }
+
         match header {
             VecHeader::All(size) => {
                 let mut deserializer = Deserializer::new(data);
@@ -92,6 +98,7 @@ impl<T> Clone for ValueVec<T> {
     fn clone(&self) -> Self {
         Self {
             name: self.name.clone(),
+            type_id: self.type_id,
             list: self.list.clone(),
         }
     }

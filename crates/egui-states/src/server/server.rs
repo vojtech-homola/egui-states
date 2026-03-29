@@ -25,10 +25,6 @@ pub(crate) trait SyncTrait: Sync + Send {
     fn sync(&self) -> Result<(), ()>;
 }
 
-pub(crate) trait EnableTrait: Sync + Send {
-    fn enable(&self, enable: bool);
-}
-
 pub(crate) trait Acknowledge: Sync + Send {
     fn acknowledge(&self);
 }
@@ -42,50 +38,38 @@ pub(crate) struct StatesList {
     pub(crate) maps: NoHashMap<u64, Arc<ValueMap>>,
     pub(crate) lists: NoHashMap<u64, Arc<ValueList>>,
     pub(crate) graphs: NoHashMap<u64, Arc<ValueGraphs>>,
-    pub(crate) types: NoHashMap<u64, u64>,
 }
 
 impl StatesList {
     fn get_server_list(&self) -> ServerStatesList {
         let mut server_list = ServerStatesList::default();
 
-        server_list.types = self.types.clone();
         server_list.values.extend(self.values.clone());
         server_list.signals.extend(self.signals.clone());
 
         for (id, value) in self.values.iter() {
             server_list.sync.push(value.clone());
             server_list.ack.insert(*id, value.clone());
-            server_list.enable.insert(*id, value.clone());
         }
 
-        for (id, value) in self.static_values.iter() {
-            server_list.enable.insert(*id, value.clone());
+        for value in self.static_values.values() {
             server_list.sync.push(value.clone());
-        }
-
-        for (id, signal) in self.signals.iter() {
-            server_list.enable.insert(*id, signal.clone());
         }
 
         for (id, image) in self.images.iter() {
             server_list.sync.push(image.clone());
             server_list.ack.insert(*id, image.clone());
-            server_list.enable.insert(*id, image.clone());
         }
 
-        for (id, map) in self.maps.iter() {
-            server_list.enable.insert(*id, map.clone());
+        for map in self.maps.values() {
             server_list.sync.push(map.clone());
         }
 
-        for (id, list) in self.lists.iter() {
-            server_list.enable.insert(*id, list.clone());
+        for list in self.lists.values() {
             server_list.sync.push(list.clone());
         }
 
-        for (id, graphs) in self.graphs.iter() {
-            server_list.enable.insert(*id, graphs.clone());
+        for graphs in self.graphs.values() {
             server_list.sync.push(graphs.clone());
         }
 
@@ -98,9 +82,7 @@ pub(crate) struct ServerStatesList {
     pub(crate) values: NoHashMap<u64, Arc<Value>>,
     pub(crate) signals: NoHashMap<u64, Arc<Signal>>,
     pub(crate) ack: NoHashMap<u64, Arc<dyn Acknowledge>>,
-    pub(crate) enable: NoHashMap<u64, Arc<dyn EnableTrait>>,
     pub(crate) sync: Vec<Arc<dyn SyncTrait>>,
-    pub(crate) types: NoHashMap<u64, u64>,
 }
 
 enum RunnerState {
@@ -281,7 +263,7 @@ impl Server {
     pub(crate) fn add_value(
         &mut self,
         name: &str,
-        type_id: u64,
+        type_id: u32,
         value: Bytes,
         queue: bool,
     ) -> Result<u64, String> {
@@ -297,13 +279,13 @@ impl Server {
         let val = Value::new(
             name.to_string(),
             id,
+            type_id,
             value,
             self.sender.clone(),
             self.connected.clone(),
             self.signals.clone(),
         );
 
-        self.states.types.insert(id, type_id);
         self.states.values.insert(id, val);
 
         if queue {
@@ -316,7 +298,7 @@ impl Server {
     pub(crate) fn add_static(
         &mut self,
         name: &str,
-        type_id: u64,
+        type_id: u32,
         value: Bytes,
     ) -> Result<u64, String> {
         if self.states_server.is_some() {
@@ -331,12 +313,12 @@ impl Server {
         let val = ValueStatic::new(
             name.to_string(),
             id,
+            type_id,
             value,
             self.sender.clone(),
             self.connected.clone(),
         );
 
-        self.states.types.insert(id, type_id);
         self.states.static_values.insert(id, val);
         Ok(id)
     }
@@ -344,7 +326,7 @@ impl Server {
     pub(crate) fn add_signal(
         &mut self,
         name: &str,
-        type_id: u64,
+        type_id: u32,
         queue: bool,
     ) -> Result<u64, String> {
         if self.states_server.is_some() {
@@ -356,9 +338,8 @@ impl Server {
             return Err(format!("Signal with id {} already exists", id));
         }
 
-        let val = Signal::new(name.to_string(), id, self.signals.clone());
+        let val = Signal::new(name.to_string(), id, type_id, self.signals.clone());
 
-        self.states.types.insert(id, type_id);
         self.states.signals.insert(id, val);
 
         if queue {
@@ -368,7 +349,7 @@ impl Server {
         Ok(id)
     }
 
-    pub(crate) fn add_vec(&mut self, name: &str, type_id: u64) -> Result<u64, String> {
+    pub(crate) fn add_vec(&mut self, name: &str, type_id: u32) -> Result<u64, String> {
         if self.states_server.is_some() {
             return Err("Cannot add new values after server has been finalized".to_string());
         }
@@ -381,16 +362,16 @@ impl Server {
         let val = ValueList::new(
             name.to_string(),
             id,
+            type_id,
             self.sender.clone(),
             self.connected.clone(),
         );
 
-        self.states.types.insert(id, type_id);
         self.states.lists.insert(id, val);
         Ok(id)
     }
 
-    pub(crate) fn add_map(&mut self, name: &str, type_id: u64) -> Result<u64, String> {
+    pub(crate) fn add_map(&mut self, name: &str, type_id: u32) -> Result<u64, String> {
         if self.states_server.is_some() {
             return Err("Cannot add new values after server has been finalized".to_string());
         }
@@ -403,11 +384,11 @@ impl Server {
         let val = ValueMap::new(
             name.to_string(),
             id,
+            type_id,
             self.sender.clone(),
             self.connected.clone(),
         );
 
-        self.states.types.insert(id, type_id);
         self.states.maps.insert(id, val);
 
         Ok(id)
@@ -430,7 +411,6 @@ impl Server {
             self.connected.clone(),
         );
 
-        self.states.types.insert(id, 42);
         self.states.images.insert(id, val);
         Ok(id)
     }
@@ -453,9 +433,6 @@ impl Server {
             self.connected.clone(),
         );
 
-        self.states
-            .types
-            .insert(id, graphs_type.bytes_size() as u64);
         self.states.graphs.insert(id, val);
         Ok(id)
     }

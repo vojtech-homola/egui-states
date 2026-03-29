@@ -98,7 +98,7 @@ pub(crate) async fn run(
                 connected.store(false, Ordering::Release);
                 continue;
             }
-            Ok(ClientMessage::Handshake(p, h, types)) => {
+            Ok(ClientMessage::Handshake(p, h)) => {
                 if p != PROTOCOL_VERSION {
                     let message = format!(
                         "attempted to connect with wrong protocol version: expected {}, got {}",
@@ -121,9 +121,6 @@ pub(crate) async fn run(
                         #[cfg(debug_assertions)]
                         signals.debug("terminating previous connection");
                         connected.store(false, Ordering::Release);
-                        for (_, v) in &values.enable {
-                            v.enable(false);
-                        }
                         sender.close();
                         handler.await.expect("joining communication handler failed")
                     }
@@ -133,16 +130,6 @@ pub(crate) async fn run(
                 // clean mesage queue and send sync signals
                 while !rx.is_empty() {
                     let _ = rx.recv().await;
-                }
-
-                for (id, client_type) in types {
-                    if let Some(server_type) = values.types.get(&id) {
-                        if client_type == *server_type {
-                            if let Some(v) = values.enable.get(&id) {
-                                v.enable(true);
-                            }
-                        }
-                    }
                 }
 
                 // std::thread::sleep(std::time::Duration::from_millis(100));
@@ -201,9 +188,6 @@ pub(crate) async fn run(
             #[cfg(debug_assertions)]
             signals.debug("terminating previous connection");
             connected.store(false, Ordering::Release);
-            for (_, v) in &values.enable {
-                v.enable(false);
-            }
             sender.close();
             handler.await.expect("joining communication handler failed")
         }
@@ -248,23 +232,23 @@ async fn reader(
                     }
                 }
             }
-            Ok(ClientMessage::Value(id, signal, data)) => match values.values.get(&id) {
+            Ok(ClientMessage::Value(id, type_id, signal, data)) => match values.values.get(&id) {
                 Some(val) => {
-                    if let Err(e) = val.update_value(signal, data) {
+                    if let Err(e) = val.update_value(type_id, signal, data) {
                         signals.error(&format!("value updating failed: {}", e));
                     }
                 }
                 None => signals.error(&format!("value with id {} not found", id)),
             },
-            Ok(ClientMessage::Signal(id, data)) => match values.signals.get(&id) {
+            Ok(ClientMessage::Signal(id, type_id, data)) => match values.signals.get(&id) {
                 Some(val) => {
-                    if let Err(e) = val.update_signal(data) {
+                    if let Err(e) = val.update_signal(type_id, data) {
                         signals.error(&format!("signal updating failed: {}", e));
                     }
                 }
                 None => signals.error(&format!("value with id {} not found", id)),
             },
-            Ok(ClientMessage::Handshake(_, _, _)) => {
+            Ok(ClientMessage::Handshake(_, _)) => {
                 signals.error("unexpected handshake message after connection established");
             }
         }

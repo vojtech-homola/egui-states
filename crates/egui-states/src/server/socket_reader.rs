@@ -4,16 +4,15 @@ use tokio::net::TcpStream;
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::hashing::NoHashMap;
 use crate::serialization::ClientHeader;
 
 const COPY_SIZE: usize = 1024; // 1 KB
 
 pub(crate) enum ClientMessage {
-    Value(u64, bool, Bytes),
-    Signal(u64, Bytes),
+    Value(u64, u32, bool, Bytes),
+    Signal(u64, u32, Bytes),
     Ack(u64),
-    Handshake(u16, u64, NoHashMap<u64, u64>),
+    Handshake(u16, u64),
 }
 
 pub(crate) struct SocketReader {
@@ -35,7 +34,7 @@ impl SocketReader {
                 let (header, size) = ClientHeader::deserialize(&data[pointer..])
                     .map_err(|_| "Failed to deserialize message header".to_string())?;
                 match header {
-                    ClientHeader::Value(id, signal, data_size) => {
+                    ClientHeader::Value(id, type_id, signal, data_size) => {
                         let all_size = size + data_size as usize;
                         if all_size > data.len() - pointer {
                             return Err("Incomplete data received".to_string());
@@ -49,9 +48,9 @@ impl SocketReader {
                         if pointer + all_size < data.len() {
                             self.previous = Some((data, pointer + all_size, copy));
                         }
-                        Ok(ClientMessage::Value(id, signal, header_data))
+                        Ok(ClientMessage::Value(id, type_id, signal, header_data))
                     }
-                    ClientHeader::Signal(id, data_size) => {
+                    ClientHeader::Signal(id, type_id, data_size) => {
                         let all_size = size + data_size as usize;
                         if all_size > data.len() - pointer {
                             return Err("Incomplete data received".to_string());
@@ -65,7 +64,7 @@ impl SocketReader {
                         if pointer + all_size < data.len() {
                             self.previous = Some((data, pointer + all_size, copy));
                         }
-                        Ok(ClientMessage::Signal(id, header_data))
+                        Ok(ClientMessage::Signal(id, type_id, header_data))
                     }
                     ClientHeader::Ack(id) => {
                         if pointer + size < data.len() {
@@ -73,15 +72,11 @@ impl SocketReader {
                         }
                         Ok(ClientMessage::Ack(id))
                     }
-                    ClientHeader::Handshake(protocol_version, client_id, state_ids) => {
+                    ClientHeader::Handshake(protocol_version, client_id) => {
                         if pointer + size < data.len() {
                             self.previous = Some((data, pointer + size, copy));
                         }
-                        Ok(ClientMessage::Handshake(
-                            protocol_version,
-                            client_id,
-                            state_ids,
-                        ))
+                        Ok(ClientMessage::Handshake(protocol_version, client_id))
                     }
                 }
             }
@@ -91,7 +86,7 @@ impl SocketReader {
                     let (header, size) = ClientHeader::deserialize(&msg)
                         .map_err(|_| "Failed to deserialize message header".to_string())?;
                     match header {
-                        ClientHeader::Value(id, signal, data_size) => {
+                        ClientHeader::Value(id, type_id, signal, data_size) => {
                             let all_size = size + data_size as usize;
                             if all_size > msg.len() {
                                 return Err("Incomplete data received".to_string());
@@ -103,9 +98,9 @@ impl SocketReader {
                             if msg.len() > all_size {
                                 self.previous = Some((msg, all_size, copy));
                             }
-                            Ok(ClientMessage::Value(id, signal, data))
+                            Ok(ClientMessage::Value(id, type_id, signal, data))
                         }
-                        ClientHeader::Signal(id, data_size) => {
+                        ClientHeader::Signal(id, type_id, data_size) => {
                             let all_size = size + data_size as usize;
                             if all_size > msg.len() {
                                 return Err("Incomplete data received".to_string());
@@ -117,7 +112,7 @@ impl SocketReader {
                             if msg.len() > all_size {
                                 self.previous = Some((msg, all_size, copy));
                             }
-                            Ok(ClientMessage::Signal(id, data))
+                            Ok(ClientMessage::Signal(id, type_id, data))
                         }
                         ClientHeader::Ack(id) => {
                             if size < msg.len() {
@@ -125,15 +120,11 @@ impl SocketReader {
                             }
                             Ok(ClientMessage::Ack(id))
                         }
-                        ClientHeader::Handshake(protocol_version, client_id, state_ids) => {
+                        ClientHeader::Handshake(protocol_version, client_id) => {
                             if size < msg.len() {
                                 self.previous = Some((msg, size, copy));
                             }
-                            Ok(ClientMessage::Handshake(
-                                protocol_version,
-                                client_id,
-                                state_ids,
-                            ))
+                            Ok(ClientMessage::Handshake(protocol_version, client_id))
                         }
                     }
                 }

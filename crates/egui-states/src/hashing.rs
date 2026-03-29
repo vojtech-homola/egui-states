@@ -60,6 +60,11 @@ impl StableHasher {
             hasher: Sha256::new(),
         }
     }
+
+    pub fn finish_u32(&self) -> u32 {
+        let result = self.hasher.clone().finalize();
+        u32::from_le_bytes(result[0..4].try_into().unwrap())
+    }
 }
 
 impl Hasher for StableHasher {
