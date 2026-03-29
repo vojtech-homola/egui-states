@@ -16,7 +16,7 @@ use crate::hashing::generate_value_id;
 use crate::transport::{InitValue, ObjectType, Transportable};
 
 #[derive(Clone)]
-pub enum StateType {
+pub(crate) enum StateType {
     Value(String, ObjectType, InitValue, bool),
     Static(String, ObjectType, InitValue),
     Image(String),

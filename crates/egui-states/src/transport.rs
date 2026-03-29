@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
+use crate::graphs::GraphType;
 use crate::hashing::StableHasher;
 
 #[derive(Clone)]
@@ -113,15 +114,62 @@ impl Hash for ObjectType {
     }
 }
 
-impl ObjectType {
-    pub fn get_hash(&self) -> u64 {
+// impl ObjectType {
+//     pub fn get_hash(&self) -> u64 {
+//         let mut hasher = StableHasher::new();
+//         self.hash(&mut hasher);
+//         hasher.finish()
+//     }
+// }
+
+pub(crate) enum StateType {
+    Value(ObjectType),
+    Static(ObjectType),
+    Image,
+    ValueMap(ObjectType, ObjectType),
+    ValueVec(ObjectType),
+    Graphs(GraphType),
+    Signal(ObjectType),
+}
+
+impl StateType {
+    pub(crate) fn get_hash(&self) -> u64 {
         let mut hasher = StableHasher::new();
-        self.hash(&mut hasher);
+        match self {
+            Self::Value(obj_type) => {
+                0u8.hash(&mut hasher);
+                obj_type.hash(&mut hasher);
+            }
+            Self::Static(obj_type) => {
+                1u8.hash(&mut hasher);
+                obj_type.hash(&mut hasher);
+            }
+            Self::Image => {
+                42u8.hash(&mut hasher);
+            }
+            Self::ValueMap(key_type, value_type) => {
+                2u8.hash(&mut hasher);
+                key_type.hash(&mut hasher);
+                value_type.hash(&mut hasher);
+            }
+            Self::ValueVec(value_type) => {
+                3u8.hash(&mut hasher);
+                value_type.hash(&mut hasher);
+            }
+            Self::Graphs(graph_type) => {
+                4u8.hash(&mut hasher);
+                graph_type.bytes_size().hash(&mut hasher);
+            }
+            Self::Signal(obj_type) => {
+                5u8.hash(&mut hasher);
+                obj_type.hash(&mut hasher);
+            }
+        }
         hasher.finish()
     }
 }
 
-pub trait Transportable {
+pub unsafe trait Transportable {
     fn init_value(&self) -> InitValue;
     fn get_type() -> ObjectType;
 }
@@ -129,7 +177,7 @@ pub trait Transportable {
 macro_rules! impl_transportable_base {
     ($(($type:ty, $type_variant:ident, $init_variant:ident)),* $(,)?) => {
         $(
-            impl Transportable for $type {
+            unsafe impl Transportable for $type {
                 #[inline]
                 fn init_value(&self) -> InitValue {
                     InitValue::$init_variant(*self)
@@ -158,7 +206,7 @@ impl_transportable_base! {
     (f64, F64, F64)
 }
 
-impl Transportable for String {
+unsafe impl Transportable for String {
     #[inline]
     fn init_value(&self) -> InitValue {
         InitValue::String(self.clone())
@@ -170,7 +218,7 @@ impl Transportable for String {
     }
 }
 
-impl Transportable for () {
+unsafe impl Transportable for () {
     #[inline]
     fn init_value(&self) -> InitValue {
         InitValue::Tuple(Vec::new())
@@ -182,7 +230,7 @@ impl Transportable for () {
     }
 }
 
-impl<T> Transportable for Option<T>
+unsafe impl<T> Transportable for Option<T>
 where
     T: Transportable,
 {
@@ -203,7 +251,7 @@ where
 macro_rules! impl_transportable_tuple {
     ($(($($idx:tt: $T:ident),*)),* $(,)?) => {
         $(
-            impl<$($T),*> Transportable for ($($T,)*)
+            unsafe impl<$($T),*> Transportable for ($($T,)*)
             where
                 $($T: Transportable,)*
             {
@@ -234,7 +282,7 @@ impl_transportable_tuple! {
     (0: T0, 1: T1, 2: T2, 3: T3, 4: T4, 5: T5, 6: T6, 7: T7, 8: T8, 9: T9)
 }
 
-impl<T, const N: usize> Transportable for [T; N]
+unsafe impl<T, const N: usize> Transportable for [T; N]
 where
     T: Transportable,
 {
@@ -249,7 +297,7 @@ where
     }
 }
 
-impl<T> Transportable for Vec<T>
+unsafe impl<T> Transportable for Vec<T>
 where
     T: Transportable,
 {
@@ -264,7 +312,7 @@ where
     }
 }
 
-impl<K, V> Transportable for HashMap<K, V>
+unsafe impl<K, V> Transportable for HashMap<K, V>
 where
     K: Transportable,
     V: Transportable,

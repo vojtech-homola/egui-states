@@ -65,7 +65,7 @@ impl PyObjectType {
         }
     }
 
-    fn get_core_type(&self, py: Python) -> PyResult<ObjectType> {
+    pub(crate) fn get_core_type(&self, py: Python) -> PyResult<ObjectType> {
         let obj = match self {
             PyObjectType::U8 => ObjectType::U8,
             PyObjectType::U16 => ObjectType::U16,
@@ -132,10 +132,10 @@ impl PyObjectType {
         Ok(obj)
     }
 
-    pub(crate) fn get_hash(&self, py: Python) -> PyResult<u64> {
-        let res = self.get_core_type(py)?.get_hash();
-        Ok(res)
-    }
+    // pub(crate) fn get_hash(&self, py: Python) -> PyResult<u64> {
+    //     let res = self.get_core_type(py)?.get_hash();
+    //     Ok(res)
+    // }
 }
 
 #[pyclass(name = "PyObjectType")]

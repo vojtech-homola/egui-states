@@ -724,7 +724,7 @@ impl StateServerCore {
         queue: bool,
     ) -> PyResult<u64> {
         let object_type = object_type.borrow().object_type.clone_py(py);
-        let type_id = object_type.get_hash(py)?;
+        let type_id = object_type.get_core_type(py)?;
 
         let mut creator = ValueCreator::new();
         pyparsing::serialize_py(initial_value, &object_type, &mut creator)?;
