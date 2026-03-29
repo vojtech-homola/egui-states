@@ -71,6 +71,7 @@ async fn start_gui_client(
                         if let Err(e) = handle_message(msg, &th_vals, &th_client).await {
                             let error = format!("handling message from server failed: {:?}", e);
                             print_error(&error);
+                            // TODO: implement sending error message to server
                             // break; TODO: decide if we want to break the loop on error
                         }
                     }
