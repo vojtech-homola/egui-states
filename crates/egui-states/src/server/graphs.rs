@@ -7,7 +7,7 @@ use crate::graphs::{GraphDataInfo, GraphHeader, GraphType};
 use crate::hashing::NoHashMap;
 use crate::serialization::{ServerHeader, serialize};
 use crate::server::sender::{MessageSender, SenderData};
-use crate::server::server::{EnableTrait, SyncTrait};
+use crate::server::server::SyncTrait;
 
 pub(crate) struct GraphData {
     pub graph_type: GraphType,
@@ -24,7 +24,6 @@ pub(crate) struct ValueGraphs {
     graph_type: GraphType,
     sender: MessageSender,
     connected: Arc<AtomicBool>,
-    enabled: AtomicBool,
 }
 
 impl ValueGraphs {
@@ -42,7 +41,6 @@ impl ValueGraphs {
             graph_type,
             sender,
             connected,
-            enabled: AtomicBool::new(false),
         })
     }
 
@@ -61,7 +59,7 @@ impl ValueGraphs {
         let graph = data_to_graph(&graph_data);
 
         let mut w = self.graphs.write();
-        if self.connected.load(Ordering::Relaxed) && self.enabled.load(Ordering::Relaxed) {
+        if self.connected.load(Ordering::Relaxed) {
             let data = graph.to_data(self.id, idx, update, None);
             self.sender.send_single(SenderData::from_vec(data));
         }
@@ -89,13 +87,8 @@ impl ValueGraphs {
 
         add_data_to_graph(&graph_data, graph);
 
-        if self.connected.load(Ordering::Relaxed) && self.enabled.load(Ordering::Relaxed) {
-            let data = graph.to_data(
-                self.id,
-                idx,
-                update,
-                Some(graph_data.count),
-            );
+        if self.connected.load(Ordering::Relaxed) {
+            let data = graph.to_data(self.id, idx, update, Some(graph_data.count));
             self.sender.send_single(SenderData::from_vec(data));
         }
 
@@ -117,7 +110,7 @@ impl ValueGraphs {
     pub(crate) fn remove(&self, idx: u16, update: bool) -> Result<(), ()> {
         let mut w = self.graphs.write();
         w.remove(&idx);
-        if self.connected.load(Ordering::Relaxed) && self.enabled.load(Ordering::Relaxed) {
+        if self.connected.load(Ordering::Relaxed) {
             let header = ServerHeader::Graph(self.id, update, GraphHeader::Remove(idx));
             let data = serialize(&header)?;
             self.sender.send(data);
@@ -128,7 +121,7 @@ impl ValueGraphs {
     pub(crate) fn reset(&self, update: bool) -> Result<(), ()> {
         let mut w = self.graphs.write();
         w.clear();
-        if self.connected.load(Ordering::Relaxed) && self.enabled.load(Ordering::Relaxed) {
+        if self.connected.load(Ordering::Relaxed) {
             let header = ServerHeader::Graph(self.id, update, GraphHeader::Reset);
             let data = serialize(&header)?;
             self.sender.send(data);
@@ -137,18 +130,8 @@ impl ValueGraphs {
     }
 }
 
-impl EnableTrait for ValueGraphs {
-    fn enable(&self, enable: bool) {
-        self.enabled.store(enable, Ordering::Relaxed);
-    }
-}
-
 impl SyncTrait for ValueGraphs {
     fn sync(&self) -> Result<(), ()> {
-        if !self.enabled.load(Ordering::Relaxed) {
-            return Ok(());
-        }
-
         let w = self.graphs.read();
 
         let header = ServerHeader::Graph(self.id, false, GraphHeader::Reset);

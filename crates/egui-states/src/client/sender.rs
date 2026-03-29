@@ -3,8 +3,8 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use crate::serialization::MessageData;
 
 pub(crate) enum ChannelMessage {
-    Value(u64, bool, MessageData),
-    Signal(u64, MessageData),
+    Value(u64, u32, bool, MessageData),
+    Signal(u64, u32, MessageData),
     Ack(u64),
 }
 

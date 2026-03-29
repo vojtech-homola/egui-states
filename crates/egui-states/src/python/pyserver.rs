@@ -724,7 +724,7 @@ impl StateServerCore {
         queue: bool,
     ) -> PyResult<u64> {
         let object_type = object_type.borrow().object_type.clone_py(py);
-        let type_id = object_type.get_hash(py)?;
+        let type_id = object_type.get_core_type(py)?.get_hash();
 
         let mut creator = ValueCreator::new();
         pyparsing::serialize_py(initial_value, &object_type, &mut creator)?;
@@ -823,8 +823,8 @@ impl StateServerCore {
         let key_object_type = key_type.borrow().object_type.clone_py(py);
         let value_object_type = value_type.borrow().object_type.clone_py(py);
 
+        let type_id = key_object_type.get_hash(py)? ^ value_object_type.get_hash(py)?;
         let object_type = PyObjectType::Map(Box::new(key_object_type), Box::new(value_object_type));
-        let type_id = object_type.get_hash(py)?;
 
         let value_id = self
             .server

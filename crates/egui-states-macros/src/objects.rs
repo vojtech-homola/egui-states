@@ -40,7 +40,7 @@ fn impl_struct(input: TokenStream) -> TokenStream {
     }
 
     let out = quote!(
-        impl egui_states::Transportable for #ident {
+        unsafe impl egui_states::Transportable for #ident {
             #[inline]
             fn init_value(&self) -> egui_states::InitValue {
                 egui_states::InitValue::Struct(
@@ -113,7 +113,7 @@ fn impl_enum(input: TokenStream) -> TokenStream {
     let private_mod = format_ident!("__private_{}", ident);
 
     let out = quote!(
-        impl egui_states::Transportable for #ident {
+        unsafe impl egui_states::Transportable for #ident {
             #[inline]
             fn init_value(&self) -> egui_states::InitValue {
                 egui_states::InitValue::Enum(match self {

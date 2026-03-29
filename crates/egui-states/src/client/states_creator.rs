@@ -15,7 +15,7 @@ use crate::client::values::{
 };
 use crate::graphs::GraphElement;
 use crate::hashing::{NoHashMap, generate_value_id};
-use crate::transport::{ObjectType, Transportable};
+use crate::transport::Transportable;
 
 pub trait StatesCreator {
     fn substate<S: State>(&mut self, name: &str) -> S;
@@ -81,7 +81,6 @@ pub(crate) struct ValuesList {
     pub(crate) maps: NoHashMap<u64, Arc<dyn UpdateMap>>,
     pub(crate) lists: NoHashMap<u64, Arc<dyn UpdateList>>,
     pub(crate) graphs: NoHashMap<u64, Arc<dyn UpdateGraph>>,
-    pub(crate) types: NoHashMap<u64, u64>,
 }
 
 impl ValuesList {
@@ -93,7 +92,6 @@ impl ValuesList {
             maps: NoHashMap::default(),
             lists: NoHashMap::default(),
             graphs: NoHashMap::default(),
-            types: NoHashMap::default(),
         }
     }
 
@@ -104,7 +102,6 @@ impl ValuesList {
         self.maps.shrink_to_fit();
         self.lists.shrink_to_fit();
         self.graphs.shrink_to_fit();
-        self.types.shrink_to_fit();
     }
 }
 
@@ -142,7 +139,6 @@ impl StatesCreator for StatesCreatorClient {
         self.val.maps.extend(creator.val.maps);
         self.val.lists.extend(creator.val.lists);
         self.val.graphs.extend(creator.val.graphs);
-        self.val.types.extend(creator.val.types);
 
         substate
     }
@@ -154,10 +150,10 @@ impl StatesCreator for StatesCreatorClient {
     {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
-        let value = Value::new(name, id, value, self.sender.clone());
+        let type_id = T::get_type().get_hash();
+        let value = Value::new(name, id, type_id, value, self.sender.clone());
 
         self.val.values.insert(id, Arc::new(value.clone()));
-        self.val.types.insert(id, T::get_type().get_hash());
         value
     }
 
@@ -175,10 +171,10 @@ impl StatesCreator for StatesCreatorClient {
     {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
-        let value = ValueAtomic::new(name, id, value, self.sender.clone());
+        let type_id = T::get_type().get_hash();
+        let value = ValueAtomic::new(name, id, type_id, value, self.sender.clone());
 
         self.val.values.insert(id, Arc::new(value.clone()));
-        self.val.types.insert(id, T::get_type().get_hash());
         value
     }
 
@@ -188,10 +184,10 @@ impl StatesCreator for StatesCreatorClient {
     {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
-        let value = Static::new(name, id, value);
+        let type_id = T::get_type().get_hash();
+        let value = Static::new(name, id, type_id, value);
 
         self.val.static_values.insert(id, Arc::new(value.clone()));
-        self.val.types.insert(id, T::get_type().get_hash());
         value
     }
 
@@ -208,10 +204,10 @@ impl StatesCreator for StatesCreatorClient {
     {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
-        let value = StaticAtomic::new(name, id, value);
+        let type_id = T::get_type().get_hash();
+        let value = StaticAtomic::new(name, id, type_id, value);
 
         self.val.static_values.insert(id, Arc::new(value.clone()));
-        self.val.types.insert(id, T::get_type().get_hash());
         value
     }
 
@@ -221,7 +217,6 @@ impl StatesCreator for StatesCreatorClient {
         let value = ValueImage::new(name, id, self.sender.clone());
 
         self.val.images.insert(id, value.clone());
-        self.val.types.insert(id, 42);
         value
     }
 
@@ -232,8 +227,8 @@ impl StatesCreator for StatesCreatorClient {
     {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
-        let signal = Signal::new(id, self.sender.clone());
-        self.val.types.insert(id, T::get_type().get_hash());
+        let type_id = T::get_type().get_hash();
+        let signal = Signal::new(id, type_id, self.sender.clone());
 
         signal
     }
@@ -245,13 +240,10 @@ impl StatesCreator for StatesCreatorClient {
     {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
-        let value = ValueMap::new(name);
+        let type_id = K::get_type().get_hash() ^ V::get_type().get_hash();
+        let value = ValueMap::new(name, type_id);
 
         self.val.maps.insert(id, Arc::new(value.clone()));
-        self.val.types.insert(
-            id,
-            ObjectType::Map(Box::new(K::get_type()), Box::new(V::get_type())).get_hash(),
-        );
         value
     }
 
@@ -261,10 +253,10 @@ impl StatesCreator for StatesCreatorClient {
     {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
-        let value = ValueVec::new(name);
+        let type_id = T::get_type().get_hash();
+        let value = ValueVec::new(name, type_id);
 
         self.val.lists.insert(id, Arc::new(value.clone()));
-        self.val.types.insert(id, T::get_type().get_hash());
         value
     }
 
@@ -277,7 +269,6 @@ impl StatesCreator for StatesCreatorClient {
         let value = ValueGraphs::new(name);
 
         self.val.graphs.insert(id, Arc::new(value.clone()));
-        self.val.types.insert(id, T::bytes_size() as u64);
         value
     }
 }

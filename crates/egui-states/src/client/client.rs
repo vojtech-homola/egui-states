@@ -49,8 +49,7 @@ async fn start_gui_client(
         }
 
         // communicate handshake and initialization -------------------------
-        let message =
-            ClientHeader::serialize_handshake(PROTOCOL_VERSION, handshake, vals.types.clone());
+        let message = ClientHeader::serialize_handshake(PROTOCOL_VERSION, handshake);
         if let Err(_) = socket_send.send(message).await {
             #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
             println!("Sending handshake failed.");
@@ -72,6 +71,7 @@ async fn start_gui_client(
                         if let Err(e) = handle_message(msg, &th_vals, &th_client).await {
                             let error = format!("handling message from server failed: {:?}", e);
                             print_error(&error);
+                            // TODO: implement sending error message to server
                             // break; TODO: decide if we want to break the loop on error
                         }
                     }

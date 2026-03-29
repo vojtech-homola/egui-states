@@ -114,14 +114,14 @@ impl Hash for ObjectType {
 }
 
 impl ObjectType {
-    pub fn get_hash(&self) -> u64 {
+    pub fn get_hash(&self) -> u32 {
         let mut hasher = StableHasher::new();
         self.hash(&mut hasher);
-        hasher.finish()
+        hasher.finish_u32()
     }
 }
 
-pub trait Transportable {
+pub unsafe trait Transportable {
     fn init_value(&self) -> InitValue;
     fn get_type() -> ObjectType;
 }
@@ -129,7 +129,7 @@ pub trait Transportable {
 macro_rules! impl_transportable_base {
     ($(($type:ty, $type_variant:ident, $init_variant:ident)),* $(,)?) => {
         $(
-            impl Transportable for $type {
+            unsafe impl Transportable for $type {
                 #[inline]
                 fn init_value(&self) -> InitValue {
                     InitValue::$init_variant(*self)
@@ -158,7 +158,7 @@ impl_transportable_base! {
     (f64, F64, F64)
 }
 
-impl Transportable for String {
+unsafe impl Transportable for String {
     #[inline]
     fn init_value(&self) -> InitValue {
         InitValue::String(self.clone())
@@ -170,7 +170,7 @@ impl Transportable for String {
     }
 }
 
-impl Transportable for () {
+unsafe impl Transportable for () {
     #[inline]
     fn init_value(&self) -> InitValue {
         InitValue::Tuple(Vec::new())
@@ -182,7 +182,7 @@ impl Transportable for () {
     }
 }
 
-impl<T> Transportable for Option<T>
+unsafe impl<T> Transportable for Option<T>
 where
     T: Transportable,
 {
@@ -203,7 +203,7 @@ where
 macro_rules! impl_transportable_tuple {
     ($(($($idx:tt: $T:ident),*)),* $(,)?) => {
         $(
-            impl<$($T),*> Transportable for ($($T,)*)
+            unsafe impl<$($T),*> Transportable for ($($T,)*)
             where
                 $($T: Transportable,)*
             {
@@ -234,7 +234,7 @@ impl_transportable_tuple! {
     (0: T0, 1: T1, 2: T2, 3: T3, 4: T4, 5: T5, 6: T6, 7: T7, 8: T8, 9: T9)
 }
 
-impl<T, const N: usize> Transportable for [T; N]
+unsafe impl<T, const N: usize> Transportable for [T; N]
 where
     T: Transportable,
 {
@@ -249,7 +249,7 @@ where
     }
 }
 
-impl<T> Transportable for Vec<T>
+unsafe impl<T> Transportable for Vec<T>
 where
     T: Transportable,
 {
@@ -264,7 +264,7 @@ where
     }
 }
 
-impl<K, V> Transportable for HashMap<K, V>
+unsafe impl<K, V> Transportable for HashMap<K, V>
 where
     K: Transportable,
     V: Transportable,
