@@ -15,7 +15,7 @@ pub struct ValueGraphs<T> {
     graphs: Arc<RwLock<NoHashMap<u16, (Graph<T>, bool)>>>,
 }
 
-impl<T: Clone + Copy> ValueGraphs<T> {
+impl<T: GraphElement + Clone + Copy> ValueGraphs<T> {
     pub(crate) fn new(name: String) -> Self {
         Self {
             name,
@@ -111,6 +111,8 @@ impl<T: GraphElement> Graph<T> {
 
         #[cfg(target_endian = "little")]
         {
+            // TODO: Do some checks to make sure the incoming data is compatible with
+            // the existing graph
             match (&mut self.x, is_linear) {
                 (Some(x), false) => {
                     let old_size = x.len();

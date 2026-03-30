@@ -27,10 +27,10 @@ impl MainApp {
 }
 
 impl eframe::App for MainApp {
-    fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
-        egui::TopBottomPanel::top("top-panlel")
+    fn ui(&mut self, ui: &mut egui::Ui, _: &mut eframe::Frame) {
+        egui::Panel::top("top-panlel")
             .show_separator_line(false)
-            .show(ctx, |ui| {
+            .show_inside(ui, |ui| {
                 ui.horizontal(|ui| {
                     let button = match self.client.get_state() {
                         ConnectionState::NotConnected => egui::Button::new("Connect"),
@@ -47,7 +47,7 @@ impl eframe::App for MainApp {
                 });
             });
 
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::CentralPanel::default().show_inside(ui, |ui| {
             // image --------------------------------------------------
             let texture_id = self.states.image.get_id();
             const UV: Rect = Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));

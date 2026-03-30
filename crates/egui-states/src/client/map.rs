@@ -6,15 +6,16 @@ use std::sync::Arc;
 use serde::Deserialize;
 
 use crate::collections::MapHeader;
-use crate::serialization::deserialize;
+use crate::serialization::{Deserializer, deserialize};
 use crate::transport::Transportable;
 
 pub(crate) trait UpdateMap: Sync + Send {
-    fn update_map(&self, header: MapHeader, data: &[u8]) -> Result<(), String>;
+    fn update_map(&self, type_id: u32, header: MapHeader, data: &[u8]) -> Result<(), String>;
 }
 
 pub struct ValueMap<K, V> {
     name: String,
+    type_id: u32,
     dict: Arc<RwLock<HashMap<K, V>>>,
 }
 
@@ -23,9 +24,10 @@ where
     K: Transportable + Clone + Hash + Eq,
     V: Transportable + Clone,
 {
-    pub(crate) fn new(name: String) -> Self {
+    pub(crate) fn new(name: String, type_id: u32) -> Self {
         Self {
             name,
+            type_id,
             dict: Arc::new(RwLock::new(HashMap::new())),
         }
     }
@@ -57,12 +59,28 @@ where
     K: for<'a> Deserialize<'a> + Eq + Hash + Send + Sync,
     V: for<'a> Deserialize<'a> + Send + Sync,
 {
-    fn update_map(&self, header: MapHeader, data: &[u8]) -> Result<(), String> {
+    fn update_map(&self, type_id: u32, header: MapHeader, data: &[u8]) -> Result<(), String> {
+        if type_id != self.type_id {
+            return Err(format!("Type id mismatch for map {}", self.name));
+        }
+
         match header {
-            MapHeader::All => {
-                let map = deserialize::<HashMap<K, V>>(data)
-                    .map_err(|e| format!("Error deserializing dict for {}: {}", self.name, e))?;
-                *self.dict.write() = map;
+            MapHeader::All(size) => {
+                let mut deserializer = Deserializer::new(data);
+
+                let mut map = self.dict.write();
+                map.clear();
+                map.reserve(size as usize);
+
+                for _ in 0..size {
+                    let key: K = deserializer.get().map_err(|e| {
+                        format!("Error deserializing dict key for {}: {}", self.name, e)
+                    })?;
+                    let value: V = deserializer.get().map_err(|e| {
+                        format!("Error deserializing dict value for {}: {}", self.name, e)
+                    })?;
+                    map.insert(key, value);
+                }
             }
             MapHeader::Set => {
                 let (key, value): (K, V) = deserialize(data).map_err(|e| {
@@ -85,6 +103,7 @@ impl<K, V> Clone for ValueMap<K, V> {
     fn clone(&self) -> Self {
         Self {
             name: self.name.clone(),
+            type_id: self.type_id,
             dict: self.dict.clone(),
         }
     }

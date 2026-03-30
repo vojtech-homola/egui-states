@@ -260,8 +260,8 @@ class ValueImage(_StaticBase):
         Args:
             image(Buffer): The image to set.
             origin(list[int] | tuple[int, int], optional): If set only inner rectangle with given origin (top, left).
-                                                           Defaults to None.
-            update(bool, optional): Whether to update the UI. Defaults to True.
+                Defaults to None.
+            update(bool, optional): Whether to update the UI. Defaults to False.
         """
         self._server.image_set(self._value_id, image, update, origin)
 
@@ -288,12 +288,14 @@ class ValueImage(_StaticBase):
 class ValueMap[K, V](_StaticBase):
     """Dict UI element."""
 
-    def __init__(self, obj_id: int) -> None:
-        self._obj_id = obj_id
+    def __init__(self, key_id: int, value_id: int) -> None:
+        self._key_id = key_id
+        self._value_type_id = value_id
 
     def _initialize(self, name: str, types: list[PyObjectType]) -> None:
-        self._value_id = self._server.add_map(name, types[self._obj_id])
-        del self._obj_id
+        self._value_id = self._server.add_map(name, types[self._key_id], types[self._value_type_id])
+        del self._key_id
+        del self._value_type_id
 
     def set(self, value: dict[K, V], update: bool = False) -> None:
         """Set the dict in the UI dict.
@@ -355,14 +357,14 @@ class ValueMap[K, V](_StaticBase):
         self.remove_item(key, update=False)
 
 
-class ValueList[T](_StaticBase):
-    """List UI element."""
+class ValueVec[T](_StaticBase):
+    """Vec UI element."""
 
     def __init__(self, obj_id: int) -> None:
         self._obj_id = obj_id
 
     def _initialize(self, name: str, types: list[PyObjectType]) -> None:
-        self._value_id = self._server.add_list(name, types[self._obj_id])
+        self._value_id = self._server.add_vec(name, types[self._obj_id])
         del self._obj_id
 
     def set(self, value: list[T], update: bool = False) -> None:
@@ -435,11 +437,11 @@ class Graph:
 
     def __init__(self, value_id: int, idx: int, server: StateServerCore):
         """Initialize the Graph."""
-        self._value_id = value_id
-        self._idx = idx
-        self._server = server
+        self._value_id: int = value_id
+        self._idx: int = idx
+        self._server: StateServerCore = server
 
-        self._deleted = False
+        self._deleted: bool = False
 
     @property
     def idx(self) -> int:

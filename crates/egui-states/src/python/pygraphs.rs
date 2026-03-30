@@ -32,6 +32,7 @@ pub(crate) fn buffer_to_data<T: GraphElement>(buffer: &PyBuffer<T>) -> PyResult<
             y: buffer.get_ptr(&[0]) as *const u8,
             x: None,
             size: shape[0] * T::bytes_size(),
+            count: shape[0],
         }
     } else if shape.len() == 2 {
         if shape[0] != 2 {
@@ -47,9 +48,11 @@ pub(crate) fn buffer_to_data<T: GraphElement>(buffer: &PyBuffer<T>) -> PyResult<
 
         GraphData {
             graph_type: T::graph_type(),
-            y: buffer.get_ptr(&[0, 0]) as *const u8,
-            x: Some(buffer.get_ptr(&[1, 0]) as *const u8),
+            x: Some(buffer.get_ptr(&[0, 0]) as *const u8),
+            y: buffer.get_ptr(&[1, 0]) as *const u8,
             size: shape[1] * T::bytes_size(),
+            count: shape[1],
+
         }
     } else {
         return Err(PyValueError::new_err(
@@ -66,7 +69,7 @@ pub(crate) fn graph_to_buffer<'py, T: GraphElement>(
 ) -> PyResult<Bound<'py, PyTuple>> {
     match graph.x {
         Some(ref x) => {
-            let size = (x.len() + graph.y.len()) * size_of::<T>();
+            let size = x.len() + graph.y.len();
             let bytes = PyBytes::new_with(py, size, |buf| {
                 let mut ptr = buf.as_mut_ptr();
                 unsafe {
@@ -76,13 +79,13 @@ pub(crate) fn graph_to_buffer<'py, T: GraphElement>(
                 };
                 Ok(())
             })?;
-            (bytes, size_of::<T>(), (2, graph.y.len())).into_pyobject(py)
+            (bytes, size_of::<T>(), (2, graph.count)).into_pyobject(py)
         }
         None => {
-            let size = graph.y.len() * size_of::<T>();
+            let size = graph.y.len();
             let data = unsafe { from_raw_parts(graph.y.as_ptr(), size) };
             let bytes = PyBytes::new(py, data);
-            (bytes, size_of::<T>(), (1, graph.y.len())).into_pyobject(py)
+            (bytes, size_of::<T>(), (1, graph.count)).into_pyobject(py)
         }
     }
 }

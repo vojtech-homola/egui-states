@@ -9,8 +9,8 @@ path = "src/main.rs"
 
 [dependencies]
 serde = "*"
-eframe = "0.33"
-egui = { version = "0.33", features = ["rayon"] }
+eframe = "0.34"
+egui = { version = "0.34", features = ["rayon"] }
 egui_states = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

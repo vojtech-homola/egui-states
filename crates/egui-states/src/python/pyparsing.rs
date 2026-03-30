@@ -2,72 +2,71 @@ use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::types::{PyDict, PyList, PyNone, PySequence, PySequenceMethods, PyTuple};
 use pyo3::{IntoPyObjectExt, prelude::*};
 
-use crate::python::pytypes::ObjectType;
+use crate::python::pytypes::PyObjectType;
 use crate::server::value_parsing::{ValueCreator, ValueParser};
 
 pub(crate) fn serialize_py(
     obj: &Bound<PyAny>,
-    object_type: &ObjectType,
+    object_type: &PyObjectType,
     creator: &mut ValueCreator,
 ) -> PyResult<()> {
     match object_type {
-        ObjectType::U8 => {
+        PyObjectType::U8 => {
             let value: u8 = obj.extract()?;
             creator.add(&value)
         }
-        ObjectType::U16 => {
+        PyObjectType::U16 => {
             let value: u16 = obj.extract()?;
             creator.add(&value)
         }
-        ObjectType::U32 => {
+        PyObjectType::U32 => {
             let value: u32 = obj.extract()?;
             creator.add(&value)
         }
-        ObjectType::U64 => {
+        PyObjectType::U64 => {
             let value: u64 = obj.extract()?;
             creator.add(&value)
         }
-        ObjectType::I8 => {
+        PyObjectType::I8 => {
             let value: i8 = obj.extract()?;
             creator.add(&value)
         }
-        ObjectType::I16 => {
+        PyObjectType::I16 => {
             let value: i16 = obj.extract()?;
             creator.add(&value)
         }
-        ObjectType::I32 => {
+        PyObjectType::I32 => {
             let value: i32 = obj.extract()?;
             creator.add(&value)
         }
-        ObjectType::I64 => {
+        PyObjectType::I64 => {
             let value: i64 = obj.extract()?;
             creator.add(&value)
         }
-        ObjectType::F32 => {
+        PyObjectType::F32 => {
             let value: f32 = obj.extract()?;
             creator.add(&value)
         }
-        ObjectType::F64 => {
+        PyObjectType::F64 => {
             let value: f64 = obj.extract()?;
             creator.add(&value)
         }
-        ObjectType::Bool => {
+        PyObjectType::Bool => {
             let value: bool = obj.extract()?;
             creator.add(&value)
         }
-        ObjectType::String => {
+        PyObjectType::String => {
             let value: String = obj.extract()?;
             creator.add(&value)
         }
-        ObjectType::Enum(_) => {
+        PyObjectType::Enum(_) => {
             let member_names = obj.getattr("_member_names_")?;
             let name = obj.getattr("name")?;
             let value = member_names.cast::<PyList>()?.index(name)? as u32;
 
-            // let value: u32 = obj.call_method0("index")?.extract()?;
             creator.add(&value)
         }
-        ObjectType::Tuple(vec) => {
+        PyObjectType::Tuple(vec) => {
             let sequence = obj.cast::<PySequence>()?;
             if sequence.len()? != vec.len() {
                 return Err(PyValueError::new_err(
@@ -81,7 +80,7 @@ pub(crate) fn serialize_py(
             }
             Ok(())
         }
-        ObjectType::Class(vec, _) => {
+        PyObjectType::Class(vec, _) => {
             let list = obj.call_method0("__getstate__")?.cast::<PyDict>()?.values();
             for (i, item_type) in vec.iter().enumerate() {
                 let item = list.get_item(i)?;
@@ -89,7 +88,7 @@ pub(crate) fn serialize_py(
             }
             Ok(())
         }
-        ObjectType::List(size, items_type) => {
+        PyObjectType::List(size, items_type) => {
             let sequence = obj.cast::<pyo3::types::PySequence>()?;
             if sequence.len()? != *size as usize {
                 return Err(PyValueError::new_err(
@@ -102,7 +101,7 @@ pub(crate) fn serialize_py(
             }
             Ok(())
         }
-        ObjectType::Vec(items_type) => {
+        PyObjectType::Vec(items_type) => {
             let list = obj.cast::<pyo3::types::PyList>()?;
             creator
                 .add::<u64>(&(list.len() as u64))
@@ -113,7 +112,7 @@ pub(crate) fn serialize_py(
             }
             Ok(())
         }
-        ObjectType::Map(key_type, value_type) => {
+        PyObjectType::Map(key_type, value_type) => {
             let dict = obj.cast::<pyo3::types::PyDict>()?;
             creator
                 .add(&(dict.len() as u64))
@@ -125,7 +124,7 @@ pub(crate) fn serialize_py(
             }
             Ok(())
         }
-        ObjectType::Option(object_type) => {
+        PyObjectType::Option(object_type) => {
             if obj.is_none() {
                 creator
                     .add(&0u8)
@@ -138,7 +137,7 @@ pub(crate) fn serialize_py(
             }
             Ok(())
         }
-        ObjectType::Empty => Ok(()),
+        PyObjectType::Empty => Ok(()),
     }
     .map_err(|_| PyRuntimeError::new_err("Failed to serialize value."))
 }
@@ -146,100 +145,99 @@ pub(crate) fn serialize_py(
 pub(crate) fn deserialize_py<'py, 'a>(
     py: Python<'py>,
     parser: &'a mut ValueParser,
-    object_type: &'a ObjectType,
+    object_type: &'a PyObjectType,
 ) -> PyResult<Bound<'py, PyAny>> {
     match object_type {
-        ObjectType::U8 => {
+        PyObjectType::U8 => {
             let mut value = 0u8;
             parser
                 .get(&mut value)
                 .map_err(|_| PyValueError::new_err("Failed to parse u8"))?;
             value.into_bound_py_any(py)
         }
-        ObjectType::U16 => {
+        PyObjectType::U16 => {
             let mut value = 0u16;
             parser
                 .get(&mut value)
                 .map_err(|_| PyValueError::new_err("Failed to parse u16"))?;
             value.into_bound_py_any(py)
         }
-        ObjectType::U32 => {
+        PyObjectType::U32 => {
             let mut value = 0u32;
             parser
                 .get(&mut value)
                 .map_err(|_| PyValueError::new_err("Failed to parse u32"))?;
             value.into_bound_py_any(py)
         }
-        ObjectType::U64 => {
+        PyObjectType::U64 => {
             let mut value = 0u64;
             parser
                 .get(&mut value)
                 .map_err(|_| PyValueError::new_err("Failed to parse u64"))?;
             value.into_bound_py_any(py)
         }
-        ObjectType::I8 => {
+        PyObjectType::I8 => {
             let mut value = 0i8;
             parser
                 .get(&mut value)
                 .map_err(|_| PyValueError::new_err("Failed to parse i8"))?;
             value.into_bound_py_any(py)
         }
-        ObjectType::I16 => {
+        PyObjectType::I16 => {
             let mut value = 0i16;
             parser
                 .get(&mut value)
                 .map_err(|_| PyValueError::new_err("Failed to parse i16"))?;
             value.into_bound_py_any(py)
         }
-        ObjectType::I32 => {
+        PyObjectType::I32 => {
             let mut value = 0i32;
             parser
                 .get(&mut value)
                 .map_err(|_| PyValueError::new_err("Failed to parse i32"))?;
             value.into_bound_py_any(py)
         }
-        ObjectType::I64 => {
+        PyObjectType::I64 => {
             let mut value = 0i64;
             parser
                 .get(&mut value)
                 .map_err(|_| PyValueError::new_err("Failed to parse i64"))?;
             value.into_bound_py_any(py)
         }
-        ObjectType::F32 => {
+        PyObjectType::F32 => {
             let mut value = 0f32;
             parser
                 .get(&mut value)
                 .map_err(|_| PyValueError::new_err("Failed to parse f32"))?;
             value.into_bound_py_any(py)
         }
-        ObjectType::F64 => {
+        PyObjectType::F64 => {
             let mut value = 0f64;
             parser
                 .get(&mut value)
                 .map_err(|_| PyValueError::new_err("Failed to parse f64"))?;
             value.into_bound_py_any(py)
         }
-        ObjectType::Bool => {
+        PyObjectType::Bool => {
             let mut value = false;
             parser
                 .get(&mut value)
                 .map_err(|_| PyValueError::new_err("Failed to parse bool"))?;
             value.into_bound_py_any(py)
         }
-        ObjectType::String => {
+        PyObjectType::String => {
             let mut value = String::new();
             parser
                 .get(&mut value)
                 .map_err(|_| PyValueError::new_err("Failed to parse string"))?;
             value.into_bound_py_any(py)
         }
-        ObjectType::Enum(py_enum) => {
+        PyObjectType::Enum(py_enum) => {
             let mut value = 0u32;
             parser
                 .get(&mut value)
                 .map_err(|_| PyValueError::new_err("Failed to parse enum"))?;
 
-            // py_enum.bind(py).call_method1("from_index", (value,))
             let obj = py_enum.bind(py);
             let name = obj
                 .getattr("_member_names_")?
@@ -253,7 +251,7 @@ pub(crate) fn deserialize_py<'py, 'a>(
             let res = enum_value.ok_or(PyValueError::new_err("Failed to get enum member"))?;
             Ok(res.into_any())
         }
-        ObjectType::Tuple(vec) => {
+        PyObjectType::Tuple(vec) => {
             let mut items = Vec::with_capacity(vec.len());
             for item_type in vec.iter() {
                 let item = deserialize_py(py, parser, item_type)?;
@@ -261,7 +259,7 @@ pub(crate) fn deserialize_py<'py, 'a>(
             }
             Ok(PyTuple::new(py, items)?.into_any())
         }
-        ObjectType::Class(vec, py_class) => {
+        PyObjectType::Class(vec, py_class) => {
             let mut items = Vec::with_capacity(vec.len());
             for item_type in vec.iter() {
                 let item = deserialize_py(py, parser, item_type)?;
@@ -270,7 +268,7 @@ pub(crate) fn deserialize_py<'py, 'a>(
             let tuple = PyTuple::new(py, items)?;
             py_class.bind(py).call1(tuple)
         }
-        ObjectType::List(size, items_type) => {
+        PyObjectType::List(size, items_type) => {
             let list = PyList::empty(py);
 
             for _ in 0..*size {
@@ -280,7 +278,7 @@ pub(crate) fn deserialize_py<'py, 'a>(
 
             Ok(list.into_any())
         }
-        ObjectType::Vec(items_type) => {
+        PyObjectType::Vec(items_type) => {
             let mut vec_size = 0u64;
             parser
                 .get(&mut vec_size)
@@ -294,7 +292,7 @@ pub(crate) fn deserialize_py<'py, 'a>(
 
             Ok(list.into_any())
         }
-        ObjectType::Map(key_type, value_type) => {
+        PyObjectType::Map(key_type, value_type) => {
             let mut map_size = 0u64;
             parser
                 .get(&mut map_size)
@@ -309,7 +307,7 @@ pub(crate) fn deserialize_py<'py, 'a>(
 
             Ok(dict.into_any())
         }
-        ObjectType::Option(object_type) => {
+        PyObjectType::Option(object_type) => {
             let mut has_value = 0u8;
             parser
                 .get(&mut has_value)
@@ -321,6 +319,6 @@ pub(crate) fn deserialize_py<'py, 'a>(
                 deserialize_py(py, parser, object_type)
             }
         }
-        ObjectType::Empty => Ok(PyTuple::empty(py).into_any()),
+        PyObjectType::Empty => Ok(PyTuple::empty(py).into_any()),
     }
 }

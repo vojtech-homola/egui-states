@@ -2,15 +2,16 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize)]
 pub(crate) enum MapHeader {
-    All,
+    All(u64),
     Set,
     Remove,
 }
 
 #[derive(Serialize, Deserialize)]
-pub(crate) enum ListHeader {
-    All,
+pub(crate) enum VecHeader {
+    All(u64),
     Set(u64),
     Add,
     Remove(u64),
 }
+

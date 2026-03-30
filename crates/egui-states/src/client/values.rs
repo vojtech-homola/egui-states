@@ -70,7 +70,7 @@ impl<'a, T: Serialize + Clone + PartialEq + Atomic> DiffAtomic<'a, T> {
 }
 
 pub(crate) trait UpdateValue: Sync + Send {
-    fn update_value(&self, data: &[u8]) -> Result<(), String>;
+    fn update_value(&self, type_id: u32, data: &[u8]) -> Result<(), String>;
 }
 
 pub trait GetQueueType: Sync + Send + 'static {
@@ -99,6 +99,7 @@ impl GetQueueType for Queue {
 pub struct Value<T, Q: GetQueueType = NoQueue> {
     name: String,
     id: u64,
+    type_id: u32,
     inner: Arc<(RwLock<T>, MessageSender)>,
     _phantom: PhantomData<Q>,
 }
@@ -107,10 +108,17 @@ impl<T, Q: GetQueueType> Value<T, Q>
 where
     T: Serialize + Clone,
 {
-    pub(crate) fn new(name: String, id: u64, value: T, sender: MessageSender) -> Self {
+    pub(crate) fn new(
+        name: String,
+        id: u64,
+        type_id: u32,
+        value: T,
+        sender: MessageSender,
+    ) -> Self {
         Self {
             name,
             id,
+            type_id,
             inner: Arc::new((RwLock::new(value), sender)),
             _phantom: PhantomData,
         }
@@ -133,7 +141,7 @@ where
         let data = to_message(&*w);
         self.inner
             .1
-            .send(ChannelMessage::Value(self.id, false, data));
+            .send(ChannelMessage::Value(self.id, self.type_id, false, data));
         result
     }
 
@@ -145,7 +153,7 @@ where
         let data = to_message(&*w);
         self.inner
             .1
-            .send(ChannelMessage::Value(self.id, true, data));
+            .send(ChannelMessage::Value(self.id, self.type_id, true, data));
         result
     }
 
@@ -155,7 +163,7 @@ where
         let mut w = self.inner.0.write();
         self.inner
             .1
-            .send(ChannelMessage::Value(self.id, false, data));
+            .send(ChannelMessage::Value(self.id, self.type_id, false, data));
         *w = value;
     }
 
@@ -165,7 +173,7 @@ where
         let mut w = self.inner.0.write();
         self.inner
             .1
-            .send(ChannelMessage::Value(self.id, true, data));
+            .send(ChannelMessage::Value(self.id, self.type_id, true, data));
         *w = value;
     }
 }
@@ -173,7 +181,11 @@ where
 impl<T: for<'a> Deserialize<'a> + Send + Sync, Q: GetQueueType + Send + Sync> UpdateValue
     for Value<T, Q>
 {
-    fn update_value(&self, data: &[u8]) -> Result<(), String> {
+    fn update_value(&self, type_id: u32, data: &[u8]) -> Result<(), String> {
+        if type_id != self.type_id {
+            self.inner.1.send(ChannelMessage::Ack(self.id));
+            return Err(format!("Type id mismatch for Value: {}", self.name));
+        }
         let value = deserialize(data)
             .map_err(|e| format!("Parse error: {} for value: {}", e, self.name))?;
 
@@ -190,6 +202,7 @@ impl<T, Q: GetQueueType> Clone for Value<T, Q> {
         Self {
             name: self.name.clone(),
             id: self.id,
+            type_id: self.type_id,
             inner: self.inner.clone(),
             _phantom: PhantomData,
         }
@@ -199,6 +212,7 @@ impl<T, Q: GetQueueType> Clone for Value<T, Q> {
 pub struct ValueAtomic<T: Atomic, Q: GetQueueType = NoQueue> {
     name: String,
     id: u64,
+    type_id: u32,
     inner: Arc<(T::Lock, MessageSender)>,
     _phantom: PhantomData<Q>,
 }
@@ -207,10 +221,17 @@ impl<T, Q: GetQueueType> ValueAtomic<T, Q>
 where
     T: Serialize + Clone + Atomic,
 {
-    pub(crate) fn new(name: String, id: u64, value: T, sender: MessageSender) -> Self {
+    pub(crate) fn new(
+        name: String,
+        id: u64,
+        type_id: u32,
+        value: T,
+        sender: MessageSender,
+    ) -> Self {
         Self {
             name,
             id,
+            type_id,
             inner: Arc::new((T::Lock::new(value), sender)),
             _phantom: PhantomData,
         }
@@ -221,12 +242,12 @@ where
     }
 
     pub fn set(&self, value: T) {
-        let message = ChannelMessage::Value(self.id, false, to_message(&value));
+        let message = ChannelMessage::Value(self.id, self.type_id, false, to_message(&value));
         self.inner.0.update(value, || self.inner.1.send(message));
     }
 
     pub fn set_signal(&self, value: T) {
-        let message = ChannelMessage::Value(self.id, true, to_message(&value));
+        let message = ChannelMessage::Value(self.id, self.type_id, true, to_message(&value));
         self.inner.0.update(value, || self.inner.1.send(message));
     }
 }
@@ -234,7 +255,11 @@ where
 impl<T: for<'a> Deserialize<'a> + Atomic + Send + Sync, Q: GetQueueType + Send + Sync> UpdateValue
     for ValueAtomic<T, Q>
 {
-    fn update_value(&self, data: &[u8]) -> Result<(), String> {
+    fn update_value(&self, type_id: u32, data: &[u8]) -> Result<(), String> {
+        if type_id != self.type_id {
+            self.inner.1.send(ChannelMessage::Ack(self.id));
+            return Err(format!("Type id mismatch for ValueAtomic: {}", self.name));
+        }
         let value = deserialize(data)
             .map_err(|e| format!("Parse error: {} for value id: {}", e, self.id))?;
 
@@ -251,6 +276,7 @@ impl<T: Atomic, Q: GetQueueType> Clone for ValueAtomic<T, Q> {
         Self {
             name: self.name.clone(),
             id: self.id,
+            type_id: self.type_id,
             inner: self.inner.clone(),
             _phantom: PhantomData,
         }
@@ -261,14 +287,16 @@ impl<T: Atomic, Q: GetQueueType> Clone for ValueAtomic<T, Q> {
 pub struct Static<T> {
     name: String,
     id: u64,
+    type_id: u32,
     value: Arc<RwLock<T>>,
 }
 
 impl<T: Clone> Static<T> {
-    pub(crate) fn new(name: String, id: u64, value: T) -> Self {
+    pub(crate) fn new(name: String, id: u64, type_id: u32, value: T) -> Self {
         Self {
             name,
             id,
+            type_id,
             value: Arc::new(RwLock::new(value)),
         }
     }
@@ -284,7 +312,10 @@ impl<T: Clone> Static<T> {
 }
 
 impl<T: for<'a> Deserialize<'a> + Send + Sync> UpdateValue for Static<T> {
-    fn update_value(&self, data: &[u8]) -> Result<(), String> {
+    fn update_value(&self, type_id: u32, data: &[u8]) -> Result<(), String> {
+        if type_id != self.type_id {
+            return Err(format!("Type id mismatch for Static: {}", self.name));
+        }
         let value = deserialize(data)
             .map_err(|e| format!("Parse error: {} for value: {}", e, self.name))?;
         *self.value.write() = value;
@@ -297,6 +328,7 @@ impl<T> Clone for Static<T> {
         Self {
             name: self.name.clone(),
             id: self.id,
+            type_id: self.type_id,
             value: self.value.clone(),
         }
     }
@@ -305,14 +337,16 @@ impl<T> Clone for Static<T> {
 pub struct StaticAtomic<T: AtomicStatic> {
     name: String,
     id: u64,
+    type_id: u32,
     value: Arc<T::Lock>,
 }
 
 impl<T: AtomicStatic> StaticAtomic<T> {
-    pub(crate) fn new(name: String, id: u64, value: T) -> Self {
+    pub(crate) fn new(name: String, id: u64, type_id: u32, value: T) -> Self {
         Self {
             name,
             id,
+            type_id,
             value: Arc::new(T::Lock::new(value)),
         }
     }
@@ -323,7 +357,10 @@ impl<T: AtomicStatic> StaticAtomic<T> {
 }
 
 impl<T: for<'a> Deserialize<'a> + AtomicStatic + Send + Sync> UpdateValue for StaticAtomic<T> {
-    fn update_value(&self, data: &[u8]) -> Result<(), String> {
+    fn update_value(&self, type_id: u32, data: &[u8]) -> Result<(), String> {
+        if type_id != self.type_id {
+            return Err(format!("Type id mismatch for AtomicStatic: {}", self.name));
+        }
         let value = deserialize(data)
             .map_err(|e| format!("Parse error: {} for value: {}", e, self.name))?;
         self.value.store(value);
@@ -336,6 +373,7 @@ impl<T: AtomicStatic> Clone for StaticAtomic<T> {
         Self {
             name: self.name.clone(),
             id: self.id,
+            type_id: self.type_id,
             value: self.value.clone(),
         }
     }
@@ -344,14 +382,16 @@ impl<T: AtomicStatic> Clone for StaticAtomic<T> {
 // Signal --------------------------------------------
 pub struct Signal<T, Q: GetQueueType = NoQueue> {
     id: u64,
+    type_id: u32,
     sender: Arc<MessageSender>,
     phantom: PhantomData<(T, Q)>,
 }
 
 impl<T: Serialize + Clone, Q: GetQueueType> Signal<T, Q> {
-    pub(crate) fn new(id: u64, sender: MessageSender) -> Self {
+    pub(crate) fn new(id: u64, type_id: u32, sender: MessageSender) -> Self {
         Self {
             id,
+            type_id,
             sender: Arc::new(sender),
             phantom: PhantomData,
         }
@@ -359,7 +399,8 @@ impl<T: Serialize + Clone, Q: GetQueueType> Signal<T, Q> {
 
     pub fn set(&self, value: impl Into<T>) {
         let message = to_message(&value.into());
-        self.sender.send(ChannelMessage::Signal(self.id, message));
+        self.sender
+            .send(ChannelMessage::Signal(self.id, self.type_id, message));
     }
 }
 
@@ -367,6 +408,7 @@ impl<T, Q: GetQueueType> Clone for Signal<T, Q> {
     fn clone(&self) -> Self {
         Self {
             id: self.id,
+            type_id: self.type_id,
             sender: self.sender.clone(),
             phantom: PhantomData,
         }

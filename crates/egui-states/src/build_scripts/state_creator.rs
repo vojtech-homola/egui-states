@@ -6,7 +6,7 @@ use crate::State;
 use crate::client::atomics::{Atomic, AtomicStatic};
 use crate::client::graphs::ValueGraphs;
 use crate::client::image::ValueImage;
-use crate::client::list::ValueList;
+use crate::client::list::ValueVec;
 use crate::client::map::ValueMap;
 use crate::client::sender::MessageSender;
 use crate::client::states_creator::StatesCreator;
@@ -16,12 +16,12 @@ use crate::hashing::generate_value_id;
 use crate::transport::{InitValue, ObjectType, Transportable};
 
 #[derive(Clone)]
-pub enum StateType {
+pub(crate) enum StateType {
     Value(String, ObjectType, InitValue, bool),
     Static(String, ObjectType, InitValue),
     Image(String),
-    Map(String, ObjectType, ObjectType),
-    List(String, ObjectType),
+    ValueMap(String, ObjectType, ObjectType),
+    ValueVec(String, ObjectType),
     Graphs(String, GraphType),
     Signal(String, ObjectType, bool),
     SubState(String, &'static str, Vec<StateType>),
@@ -70,7 +70,7 @@ impl StatesCreator for StatesCreatorBuild {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
         let init = value.init_value();
-        let value = Value::new(name.clone(), id, value, self.sender.clone());
+        let value = Value::new(name.clone(), id, 0, value, self.sender.clone());
 
         self.states
             .push(StateType::Value(name, T::get_type(), init, Q::is_queue()));
@@ -86,7 +86,7 @@ impl StatesCreator for StatesCreatorBuild {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
         let init = value.init_value();
-        let value = ValueAtomic::new(name.clone(), id, value, self.sender.clone());
+        let value = ValueAtomic::new(name.clone(), id, 0, value, self.sender.clone());
 
         self.states
             .push(StateType::Value(name, T::get_type(), init, Q::is_queue()));
@@ -101,7 +101,7 @@ impl StatesCreator for StatesCreatorBuild {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
         let init = value.init_value();
-        let value = Static::new(name.clone(), id, value);
+        let value = Static::new(name.clone(), id, 0, value);
 
         self.states
             .push(StateType::Static(name, T::get_type(), init));
@@ -122,7 +122,7 @@ impl StatesCreator for StatesCreatorBuild {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
         let init = value.init_value();
-        let value = StaticAtomic::new(name.clone(), id, value);
+        let value = StaticAtomic::new(name.clone(), id, 0, value);
 
         self.states
             .push(StateType::Static(name, T::get_type(), init));
@@ -146,7 +146,7 @@ impl StatesCreator for StatesCreatorBuild {
     {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
-        let signal = Signal::new(id, self.sender.clone());
+        let signal = Signal::new(id, 0, self.sender.clone());
 
         self.states
             .push(StateType::Signal(name, T::get_type(), Q::is_queue()));
@@ -160,21 +160,21 @@ impl StatesCreator for StatesCreatorBuild {
         V: Clone + for<'a> Deserialize<'a> + Transportable,
     {
         let name = format!("{}.{}", self.parent, name);
-        let value = ValueMap::new(name.clone());
+        let value = ValueMap::new(name.clone(), 0);
 
         self.states
-            .push(StateType::Map(name, K::get_type(), V::get_type()));
+            .push(StateType::ValueMap(name, K::get_type(), V::get_type()));
         value
     }
 
-    fn list<T>(&mut self, name: &'static str) -> ValueList<T>
+    fn vec<T>(&mut self, name: &'static str) -> ValueVec<T>
     where
         T: Clone + for<'a> Deserialize<'a> + Transportable,
     {
         let name = format!("{}.{}", self.parent, name);
-        let value = ValueList::new(name.clone());
+        let value = ValueVec::new(name.clone(), 0);
 
-        self.states.push(StateType::List(name, T::get_type()));
+        self.states.push(StateType::ValueVec(name, T::get_type()));
 
         value
     }

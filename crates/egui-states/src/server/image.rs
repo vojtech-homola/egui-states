@@ -6,7 +6,7 @@ use crate::image::{ImageHeader, ImageType};
 use crate::serialization::ServerHeader;
 use crate::server::event::Event;
 use crate::server::sender::{MessageSender, SenderData};
-use crate::server::server::{Acknowledge, EnableTrait, SyncTrait};
+use crate::server::server::{Acknowledge, SyncTrait};
 
 impl ImageType {
     pub fn bytes_per_pixel(&self) -> usize {
@@ -38,12 +38,16 @@ pub(crate) struct ValueImage {
     image: RwLock<ImageDataInner>,
     sender: MessageSender,
     connected: Arc<AtomicBool>,
-    enabled: AtomicBool,
     event: Event,
 }
 
 impl ValueImage {
-    pub(crate) fn new(name: String, id: u64, sender: MessageSender, connected: Arc<AtomicBool>) -> Arc<Self> {
+    pub(crate) fn new(
+        name: String,
+        id: u64,
+        sender: MessageSender,
+        connected: Arc<AtomicBool>,
+    ) -> Arc<Self> {
         let event = Event::new();
         event.set(); // initially set so the first send does not block
 
@@ -56,7 +60,6 @@ impl ValueImage {
             }),
             sender,
             connected,
-            enabled: AtomicBool::new(false),
             event,
         })
     }
@@ -84,8 +87,7 @@ impl ValueImage {
         // get data pointer and prepare data
         let data_ptr;
         let mut w = self.image.write();
-        let data = if self.connected.load(Ordering::Relaxed) && self.enabled.load(Ordering::Relaxed)
-        {
+        let data = if self.connected.load(Ordering::Relaxed) {
             let new_size = match origin {
                 Some(_) => w.size,  // keep the old size
                 None => image.size, // use the new size
@@ -196,16 +198,10 @@ impl Acknowledge for ValueImage {
     }
 }
 
-impl EnableTrait for ValueImage {
-    fn enable(&self, enable: bool) {
-        self.enabled.store(enable, Ordering::Relaxed);
-    }
-}
-
 impl SyncTrait for ValueImage {
     fn sync(&self) -> Result<(), ()> {
         let w = self.image.read();
-        if !self.enabled.load(Ordering::Relaxed) || w.size[0] == 0 || w.size[1] == 0 {
+        if w.size[0] == 0 || w.size[1] == 0 {
             self.event.set();
             return Ok(());
         }

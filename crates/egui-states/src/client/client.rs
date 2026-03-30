@@ -49,8 +49,7 @@ async fn start_gui_client(
         }
 
         // communicate handshake and initialization -------------------------
-        let message =
-            ClientHeader::serialize_handshake(PROTOCOL_VERSION, handshake, vals.types.clone());
+        let message = ClientHeader::serialize_handshake(PROTOCOL_VERSION, handshake);
         if let Err(_) = socket_send.send(message).await {
             #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
             println!("Sending handshake failed.");
@@ -71,18 +70,13 @@ async fn start_gui_client(
                     Ok(msg) => {
                         if let Err(e) = handle_message(msg, &th_vals, &th_client).await {
                             let error = format!("handling message from server failed: {:?}", e);
-                            #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
-                            println!("{}", error);
-                            #[cfg(all(debug_assertions, target_arch = "wasm32"))]
-                            log::error!("{}", error);
+                            print_error(&error);
+                            // TODO: implement sending error message to server
                             // break; TODO: decide if we want to break the loop on error
                         }
                     }
                     Err(e) => {
-                        #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
-                        println!("Connection with server failed: {:?}", e);
-                        #[cfg(all(debug_assertions, target_arch = "wasm32"))]
-                        log::error!("Connection with server failed: {:?}", e);
+                        print_error(&format!("Connection with server failed: {:?}", e));
                         break;
                     }
                 }
@@ -165,6 +159,14 @@ async fn start_gui_client(
 
         client.set_state(ConnectionState::Disconnected);
     }
+}
+
+fn print_error(error: &str) {
+    #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
+    println!("{}", error);
+    #[cfg(all(debug_assertions, target_arch = "wasm32"))]
+    log::error!("{}", error);
+    let _ = error;
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

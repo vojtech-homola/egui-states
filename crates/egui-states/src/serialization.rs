@@ -1,9 +1,8 @@
 use postcard::ser_flavors::Flavor;
 use serde::{Deserialize, Serialize};
 
-use crate::collections::{ListHeader, MapHeader};
+use crate::collections::{MapHeader, VecHeader};
 use crate::graphs::GraphHeader;
-use crate::hashing::NoHashMap;
 use crate::image::ImageHeader;
 
 pub(crate) struct StackVec<const N: usize>([u8; N], usize);
@@ -169,12 +168,12 @@ pub type MessageData = FastVec<32>;
 
 #[derive(Serialize, Deserialize)]
 pub(crate) enum ServerHeader {
-    Value(u64, bool, u32),
-    Static(u64, bool, u32),
+    Value(u64, u32, bool, u32),
+    Static(u64, u32, bool, u32),
     Image(u64, bool, ImageHeader),
     Graph(u64, bool, GraphHeader),
-    List(u64, bool, ListHeader, u32),
-    Map(u64, bool, MapHeader, u32),
+    ValueVec(u64, u32, bool, VecHeader, u32),
+    ValueMapMap(u64, u32, bool, MapHeader, u32),
     Update(f32),
 }
 
@@ -186,10 +185,11 @@ impl ServerHeader {
 
     pub fn serialize_value<const N: usize>(
         id: u64,
+        type_id: u32,
         update: bool,
         value_data: &[u8],
     ) -> Result<FastVec<N>, ()> {
-        let header = ServerHeader::Value(id, update, value_data.len() as u32);
+        let header = ServerHeader::Value(id, type_id, update, value_data.len() as u32);
         let mut data = FastVec::<N>::new();
         serialize_to_data(&header, &mut data)?;
         data.extend_from_slice(value_data);
@@ -198,10 +198,11 @@ impl ServerHeader {
 
     pub fn serialize_static<const N: usize>(
         id: u64,
+        type_id: u32,
         update: bool,
         value_data: &[u8],
     ) -> Result<FastVec<N>, ()> {
-        let header = ServerHeader::Static(id, update, value_data.len() as u32);
+        let header = ServerHeader::Static(id, type_id, update, value_data.len() as u32);
         let mut data = FastVec::<N>::new();
         serialize_to_data(&header, &mut data)?;
         data.extend_from_slice(value_data);
@@ -220,10 +221,10 @@ impl ServerHeader {
 
 #[derive(Serialize, Deserialize)]
 pub(crate) enum ClientHeader {
-    Value(u64, bool, u32),
-    Signal(u64, u32),
+    Value(u64, u32, bool, u32),
+    Signal(u64, u32, u32),
     Ack(u64),
-    Handshake(u16, u64, NoHashMap<u64, u64>),
+    Handshake(u16, u64),
 }
 
 impl ClientHeader {
@@ -231,9 +232,8 @@ impl ClientHeader {
     pub fn serialize_handshake(
         protocol: u16,
         version: u64,
-        types: NoHashMap<u64, u64>,
     ) -> FastVec<64> {
-        let header = ClientHeader::Handshake(protocol, version, types);
+        let header = ClientHeader::Handshake(protocol, version);
         let data = postcard::to_stdvec(&header).expect("Failed to serialize handshake");
         FastVec::Heap(data)
     }
@@ -270,6 +270,25 @@ where
 {
     let (value, new_data) = postcard::take_from_bytes::<T>(data).map_err(|_| ())?;
     Ok((value, data.len() - new_data.len()))
+}
+
+#[cfg(feature = "client")]
+pub(crate) struct Deserializer<'a> {
+    data: &'a [u8],
+}
+
+#[cfg(feature = "client")]
+impl<'a> Deserializer<'a> {
+    pub(crate) fn new(data: &'a [u8]) -> Self {
+        Self { data }
+    }
+
+    pub(crate) fn get<T: for<'b> Deserialize<'b>>(&mut self) -> Result<T, String> {
+        let (value, new_data) =
+            postcard::take_from_bytes::<T>(&self.data).map_err(|e| e.to_string())?;
+        self.data = new_data;
+        Ok(value)
+    }
 }
 
 #[cfg(feature = "server")]

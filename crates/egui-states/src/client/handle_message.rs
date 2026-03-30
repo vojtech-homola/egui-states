@@ -3,20 +3,20 @@ use bytes::Bytes;
 use crate::client::client::Client;
 use crate::client::sender::ChannelMessage;
 use crate::client::states_creator::ValuesList;
-use crate::collections::{ListHeader, MapHeader};
+use crate::collections::{MapHeader, VecHeader};
 use crate::graphs::GraphHeader;
 use crate::image::ImageHeader;
 use crate::serialization::{ClientHeader, FastVec, ServerHeader, serialize_to_data};
 
 pub(crate) fn parse_to_send(message: ChannelMessage, data: &mut FastVec<64>) {
     match message {
-        ChannelMessage::Value(id, signal, msg_data) => {
-            let header = ClientHeader::Value(id, signal, msg_data.len() as u32);
+        ChannelMessage::Value(id, type_id, signal, msg_data) => {
+            let header = ClientHeader::Value(id, type_id, signal, msg_data.len() as u32);
             serialize_to_data(&header, data).unwrap();
             data.extend_from_data(&msg_data);
         }
-        ChannelMessage::Signal(id, msg_data) => {
-            let header = ClientHeader::Signal(id, msg_data.len() as u32);
+        ChannelMessage::Signal(id, type_id, msg_data) => {
+            let header = ClientHeader::Signal(id, type_id, msg_data.len() as u32);
             serialize_to_data(&header, data).unwrap();
             data.extend_from_data(&msg_data);
         }
@@ -28,12 +28,12 @@ pub(crate) fn parse_to_send(message: ChannelMessage, data: &mut FastVec<64>) {
 }
 
 pub(crate) enum ServerMessage {
-    Value(u64, bool, Bytes),
-    Static(u64, bool, Bytes),
+    Value(u64, u32, bool, Bytes),
+    Static(u64, u32, bool, Bytes),
     Image(u64, bool, ImageHeader, Bytes),
     Graph(u64, bool, GraphHeader, Bytes),
-    List(u64, bool, ListHeader, Bytes),
-    Map(u64, bool, MapHeader, Bytes),
+    ValueVec(u64, u32, bool, VecHeader, Bytes),
+    ValueMap(u64, u32, bool, MapHeader, Bytes),
     Update(f32),
 }
 
@@ -82,41 +82,41 @@ impl MessagesParser {
         self.pointer += size;
 
         let message_data = match header {
-            ServerHeader::Value(id, update, size) => {
+            ServerHeader::Value(id, type_id, update, size) => {
                 let size = size as usize;
                 if size + self.pointer > self.data.len() {
                     return Err("Incomplete data for Value message");
                 }
                 let data = self.data.slice(self.pointer..self.pointer + size);
                 self.pointer += size;
-                ServerMessage::Value(id, update, data)
+                ServerMessage::Value(id, type_id, update, data)
             }
-            ServerHeader::Static(id, update, size) => {
+            ServerHeader::Static(id, type_id, update, size) => {
                 let size = size as usize;
                 if size + self.pointer > self.data.len() {
                     return Err("Incomplete data for Static message");
                 }
                 let data = self.data.slice(self.pointer..self.pointer + size);
                 self.pointer += size;
-                ServerMessage::Static(id, update, data)
+                ServerMessage::Static(id, type_id, update, data)
             }
-            ServerHeader::List(id, update, header, size) => {
+            ServerHeader::ValueVec(id, type_id, update, header, size) => {
                 let size = size as usize;
                 if size + self.pointer > self.data.len() {
-                    return Err("Incomplete data for List message");
+                    return Err("Incomplete data for ValueVec message");
                 }
                 let data = self.data.slice(self.pointer..self.pointer + size);
                 self.pointer += size;
-                ServerMessage::List(id, update, header, data)
+                ServerMessage::ValueVec(id, type_id, update, header, data)
             }
-            ServerHeader::Map(id, update, header, size) => {
+            ServerHeader::ValueMapMap(id, type_id, update, header, size) => {
                 let size = size as usize;
                 if size + self.pointer > self.data.len() {
                     return Err("Incomplete data for Map message");
                 }
                 let data = self.data.slice(self.pointer..self.pointer + size);
                 self.pointer += size;
-                ServerMessage::Map(id, update, header, data)
+                ServerMessage::ValueMap(id, type_id, update, header, data)
             }
             ServerHeader::Update(dt) => ServerMessage::Update(dt),
             ServerHeader::Image(id, update, header) => {
@@ -156,16 +156,16 @@ pub(crate) async fn handle_message(
             client.update(t);
             return Ok(());
         }
-        ServerMessage::Value(id, update, data) => {
+        ServerMessage::Value(id, type_id, update, data) => {
             match vals.values.get(&id) {
-                Some(value) => value.update_value(&data)?,
+                Some(value) => value.update_value(type_id, &data)?,
                 None => return Err(format!("Value with id {} not found", id)),
             }
             update
         }
-        ServerMessage::Static(id, update, data) => {
+        ServerMessage::Static(id, type_id, update, data) => {
             match vals.static_values.get(&id) {
-                Some(value) => value.update_value(&data)?,
+                Some(value) => value.update_value(type_id, &data)?,
                 None => return Err(format!("Static with id {} not found", id)),
             }
             update
@@ -177,16 +177,16 @@ pub(crate) async fn handle_message(
             }
             update
         }
-        ServerMessage::List(id, update, list_header, data) => {
+        ServerMessage::ValueVec(id, type_id, update, list_header, data) => {
             match vals.lists.get(&id) {
-                Some(value) => value.update_list(list_header, &data)?,
+                Some(value) => value.update_list(type_id, list_header, &data)?,
                 None => return Err(format!("List with id {} not found", id)),
             }
             update
         }
-        ServerMessage::Map(id, update, map_header, data) => {
+        ServerMessage::ValueMap(id, type_id, update, map_header, data) => {
             match vals.maps.get(&id) {
-                Some(value) => value.update_map(map_header, &data)?,
+                Some(value) => value.update_map(type_id, map_header, &data)?,
                 None => return Err(format!("Map with id {} not found", id)),
             }
             update
