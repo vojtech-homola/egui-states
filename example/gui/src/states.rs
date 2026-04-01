@@ -1,7 +1,7 @@
 use egui_states::Transportable;
 use egui_states::{
     Queue, Signal, State, StatesCreator, StaticAtomic, Value, ValueAtomic, ValueGraphs, ValueImage,
-    ValueVec, ValueMap,
+    ValueMap, ValueTake, ValueVec,
 };
 
 #[derive(Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize, Transportable)]
@@ -61,6 +61,8 @@ pub struct States {
     pub(crate) my_sub_state: MySubState,
     pub(crate) map: Value<Vec<u32>>,
     pub(crate) collections: Collections,
+    pub(crate) value_take_1: ValueTake<String>,
+    pub(crate) value_take_2: ValueTake<()>,
 }
 
 impl State for States {
@@ -88,6 +90,8 @@ impl State for States {
 
             my_sub_state: c.substate("my_sub_state"),
             collections: c.substate("collections"),
+            value_take_1: c.value_take("value_take_1"),
+            value_take_2: c.value_take("value_take_2"),
         }
     }
 }

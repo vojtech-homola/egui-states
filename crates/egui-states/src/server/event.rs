@@ -37,6 +37,10 @@ impl Event {
         *self.flag.lock() = false;
     }
 
+    pub(crate) fn wait(&self) {
+        self.cond.wait_while(&mut self.flag.lock(), |flag| !*flag);
+    }
+
     pub(crate) fn wait_clear(&self) {
         self.cond.wait_while(&mut self.flag.lock(), |flag| {
             if *flag {

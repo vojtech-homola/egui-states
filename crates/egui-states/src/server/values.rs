@@ -7,7 +7,7 @@ use bytes::Bytes;
 use crate::serialization::ServerHeader;
 use crate::server::sender::MessageSender;
 use crate::server::server::{Acknowledge, SyncTrait};
-use crate::server::signals::SignalsManager;
+use crate::server::{event::Event, signals::SignalsManager};
 
 // Value --------------------------------------------------
 pub(crate) struct Value {
@@ -41,7 +41,12 @@ impl Value {
         })
     }
 
-    pub(crate) fn update_value(&self, type_id: u32, signal: bool, value: Bytes) -> Result<(), String> {
+    pub(crate) fn update_value(
+        &self,
+        type_id: u32,
+        signal: bool,
+        value: Bytes,
+    ) -> Result<(), String> {
         if type_id != self.type_id {
             return Err(format!("Type id mismatch for Value: {}", self.name));
         }
@@ -103,6 +108,68 @@ impl SyncTrait for Value {
         drop(w);
 
         self.sender.send(data);
+        Ok(())
+    }
+}
+
+// ValueTake --------------------------------------------------
+pub(crate) struct ValueTake {
+    id: u64,
+    type_id: u32,
+    event: Event,
+    lock: RwLock<()>,
+    sender: MessageSender,
+    connected: Arc<AtomicBool>,
+}
+
+impl ValueTake {
+    pub(crate) fn new(
+        id: u64,
+        type_id: u32,
+        sender: MessageSender,
+        connected: Arc<AtomicBool>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            id,
+            type_id,
+            event: Event::new(),
+            lock: RwLock::new(()),
+            sender,
+            connected,
+        })
+    }
+
+    pub(crate) fn set(&self, value: Bytes, blocking: bool, update: bool) -> Result<(), ()> {
+        if self.connected.load(Ordering::Relaxed) {
+            let message =
+                ServerHeader::serialize_value_take(self.id, self.type_id, blocking, update, &value)
+                    .map_err(|_| ())?;
+
+            let _guard = self.lock.write();
+
+            match blocking {
+                true => self.event.wait_clear(),
+                false => self.event.wait(),
+            }
+            if !self.connected.load(Ordering::Relaxed) {
+                return Ok(());
+            }
+
+            self.sender.send(message);
+        }
+        Ok(())
+    }
+}
+
+impl Acknowledge for ValueTake {
+    fn acknowledge(&self) {
+        self.event.set();
+    }
+}
+
+impl SyncTrait for ValueTake {
+    fn sync(&self) -> Result<(), ()> {
+        self.event.set();
         Ok(())
     }
 }

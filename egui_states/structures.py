@@ -132,6 +132,52 @@ class Value[T](_SignalBase):
         self._signals_manager.clear_callbacks(self._value_id)
 
 
+class ValueTake[T](_StaticBase):
+    """ValueTake is a value witch can be taken in the UI only once.
+
+    ValueTake does not have a get method, becouse the value is not stored in the server. It is alternative to Signal,
+    but with oposite transport direction.
+    """
+
+    def __init__(self, obj_id: int) -> None:
+        self._obj_id = obj_id
+
+    def _initialize(self, name: str, types: list[PyObjectType]) -> None:
+        self._value_id = self._server.add_value_take(name, types[self._obj_id])
+        del self._obj_id
+
+    def set(self, value: T, blocking: bool = False, update: bool = False) -> None:
+        """Set the value of the UI element.
+
+        Args:
+            value(T): The value to set.
+            blocking(bool, optional): Whether the sending a new value with next call waits for acknowledgment from UI.
+                Defaults to False.
+            update(bool, optional): Whether to update the UI. Defaults to False.
+        """
+        self._server.value_take_set(self._value_id, value, blocking, update)
+
+
+class ValueTakeEmpty(_StaticBase):
+    """ValueTakeEmpty is a value witch can be taken in the UI only once.
+
+    It is alternative to SignalEmpty, but with oposite transport direction.
+    """
+
+    def _initialize(self, name: str, types: list[PyObjectType]) -> None:
+        self._value_id = self._server.add_value_take(name, emp)
+
+    def set(self, blocking: bool = False, update: bool = False) -> None:
+        """Set the value of the UI element.
+
+        Args:
+            blocking(bool, optional): Whether the sending a new value with next call waits for acknowledgment from UI.
+                Defaults to False.
+            update(bool, optional): Whether to update the UI. Defaults to False.
+        """
+        self._server.value_take_set(self._value_id, (), blocking, update)
+
+
 class Static[T](_StaticBase):
     """Numeric static UI value of type T. Static means that the value is not updated in the UI."""
 

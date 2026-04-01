@@ -18,6 +18,7 @@ use crate::transport::{InitValue, ObjectType, Transportable};
 #[derive(Clone)]
 pub(crate) enum StateType {
     Value(String, ObjectType, InitValue, bool),
+    ValueTake(String, ObjectType),
     Static(String, ObjectType, InitValue),
     Image(String),
     ValueMap(String, ObjectType, ObjectType),
@@ -74,6 +75,20 @@ impl StatesCreator for StatesCreatorBuild {
 
         self.states
             .push(StateType::Value(name, T::get_type(), init, Q::is_queue()));
+
+        value
+    }
+
+    fn value_take<T>(&mut self, name: &'static str) -> crate::client::values::ValueTake<T>
+    where
+        T: for<'a> Deserialize<'a> + Serialize + Transportable + Send + Sync + 'static,
+    {
+        let name = format!("{}.{}", self.parent, name);
+        let id = generate_value_id(&name);
+        let value = crate::client::values::ValueTake::new(name.clone(), id, 0, self.sender.clone());
+
+        self.states
+            .push(StateType::ValueTake(name.clone(), T::get_type()));
 
         value
     }

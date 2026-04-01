@@ -9,6 +9,8 @@ use crate::states::{States, TestEnum};
 pub struct MainApp {
     states: States,
     client: Client,
+    take_1: String,
+    take_2: bool,
 }
 
 impl MainApp {
@@ -22,7 +24,7 @@ impl MainApp {
         let image = ColorImage::filled([1024, 1024], Color32::BLACK);
         states.image.initialize(&cc.egui_ctx, image);
 
-        Ok(Box::new(Self { states, client }))
+        Ok(Box::new(Self { states, client, take_1: String::new(), take_2: false }))
     }
 }
 
@@ -127,6 +129,21 @@ impl eframe::App for MainApp {
             // signal --------------------------------------------------
             if ui.button("Emit empty signal").clicked() {
                 self.states.empty_signal.set(());
+            }
+
+            // take --------------------------------------------------
+            if let Some(val) = self.states.value_take_1.take() {
+                ui.label(format!("Take 1 value: {}", val));
+                self.take_1 = val;
+            } else {
+                ui.label(format!("Take 1 value: {}", self.take_1));
+            }
+
+            if let Some(_) = self.states.value_take_2.take() {
+                ui.label(format!("Take 2 value: {}", self.take_2));
+                self.take_2 = !self.take_2;
+            } else {
+                ui.label(format!("Take 2 value: {}", self.take_2));
             }
         });
 

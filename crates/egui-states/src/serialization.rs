@@ -169,6 +169,7 @@ pub type MessageData = FastVec<32>;
 #[derive(Serialize, Deserialize)]
 pub(crate) enum ServerHeader {
     Value(u64, u32, bool, u32),
+    ValueTake(u64, u32, bool, bool, u32),
     Static(u64, u32, bool, u32),
     Image(u64, bool, ImageHeader),
     Graph(u64, bool, GraphHeader),
@@ -208,6 +209,21 @@ impl ServerHeader {
         data.extend_from_slice(value_data);
         Ok(data)
     }
+
+    pub fn serialize_value_take<const N: usize>(
+        id: u64,
+        type_id: u32,
+        blocking: bool,
+        update: bool,
+        value_data: &[u8],
+    ) -> Result<FastVec<N>, ()> {
+        let header =
+            ServerHeader::ValueTake(id, type_id, blocking, update, value_data.len() as u32);
+        let mut data = FastVec::<N>::new();
+        serialize_to_data(&header, &mut data)?;
+        data.extend_from_slice(value_data);
+        Ok(data)
+    }
 }
 
 #[cfg(feature = "client")]
@@ -229,10 +245,7 @@ pub(crate) enum ClientHeader {
 
 impl ClientHeader {
     #[cfg(feature = "client")]
-    pub fn serialize_handshake(
-        protocol: u16,
-        version: u64,
-    ) -> FastVec<64> {
+    pub fn serialize_handshake(protocol: u16, version: u64) -> FastVec<64> {
         let header = ClientHeader::Handshake(protocol, version);
         let data = postcard::to_stdvec(&header).expect("Failed to serialize handshake");
         FastVec::Heap(data)

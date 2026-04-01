@@ -11,7 +11,8 @@ use crate::client::list::{UpdateList, ValueVec};
 use crate::client::map::{UpdateMap, ValueMap};
 use crate::client::sender::MessageSender;
 use crate::client::values::{
-    GetQueueType, Signal, Static, StaticAtomic, UpdateValue, Value, ValueAtomic,
+    GetQueueType, Signal, Static, StaticAtomic, UpdateValue, UpdateValueTake, Value, ValueAtomic,
+    ValueTake,
 };
 use crate::graphs::GraphElement;
 use crate::hashing::{NoHashMap, generate_value_id};
@@ -24,6 +25,10 @@ pub trait StatesCreator {
     where
         T: for<'a> Deserialize<'a> + Serialize + Transportable + Send + Sync + Clone + 'static,
         Q: GetQueueType;
+
+    fn value_take<T>(&mut self, name: &'static str) -> ValueTake<T>
+    where
+        T: for<'a> Deserialize<'a> + Serialize + Transportable + Send + Sync + 'static;
 
     fn atomic<T, Q>(&mut self, name: &'static str, value: T) -> ValueAtomic<T, Q>
     where
@@ -76,6 +81,7 @@ pub trait StatesCreator {
 #[derive(Clone)]
 pub(crate) struct ValuesList {
     pub(crate) values: NoHashMap<u64, Arc<dyn UpdateValue>>,
+    pub(crate) values_take: NoHashMap<u64, Arc<dyn UpdateValueTake>>,
     pub(crate) static_values: NoHashMap<u64, Arc<dyn UpdateValue>>,
     pub(crate) images: NoHashMap<u64, ValueImage>,
     pub(crate) maps: NoHashMap<u64, Arc<dyn UpdateMap>>,
@@ -87,6 +93,7 @@ impl ValuesList {
     fn new() -> Self {
         Self {
             values: NoHashMap::default(),
+            values_take: NoHashMap::default(),
             static_values: NoHashMap::default(),
             images: NoHashMap::default(),
             maps: NoHashMap::default(),
@@ -97,6 +104,7 @@ impl ValuesList {
 
     fn shrink(&mut self) {
         self.values.shrink_to_fit();
+        self.values_take.shrink_to_fit();
         self.static_values.shrink_to_fit();
         self.images.shrink_to_fit();
         self.maps.shrink_to_fit();
@@ -154,6 +162,19 @@ impl StatesCreator for StatesCreatorClient {
         let value = Value::new(name, id, type_id, value, self.sender.clone());
 
         self.val.values.insert(id, Arc::new(value.clone()));
+        value
+    }
+
+    fn value_take<T>(&mut self, name: &str) -> ValueTake<T>
+    where
+        T: for<'a> Deserialize<'a> + Serialize + Transportable + Send + Sync + 'static,
+    {
+        let name = format!("{}.{}", self.parent, name);
+        let id = generate_value_id(&name);
+        let type_id = T::get_type().get_hash();
+        let value = ValueTake::new(name, id, type_id, self.sender.clone());
+
+        self.val.values_take.insert(id, Arc::new(value.clone()));
         value
     }
 

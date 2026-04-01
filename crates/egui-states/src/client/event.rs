@@ -7,6 +7,7 @@ use tokio::sync::Notify;
 
 pub(crate) struct EventUniversal {
     notify: Arc<Notify>,
+    // TODO: use AtomicBool for wasm32 target
     flag: Arc<Mutex<bool>>,
     #[cfg(not(target_arch = "wasm32"))]
     cond: Arc<Condvar>,
@@ -33,9 +34,9 @@ impl EventUniversal {
         }
     }
 
-    pub fn is_set(&self) -> bool {
-        *self.flag.lock()
-    }
+    // pub fn is_set(&self) -> bool {
+    //     *self.flag.lock()
+    // }
 
     pub fn set(&self) {
         *self.flag.lock() = true;
@@ -44,9 +45,9 @@ impl EventUniversal {
         self.cond.notify_all();
     }
 
-    pub fn clear(&self) {
-        *self.flag.lock() = false;
-    }
+    // pub fn clear(&self) {
+    //     *self.flag.lock() = false;
+    // }
 
     pub async fn wait_clear(&self) {
         let notified = self.notify.notified();

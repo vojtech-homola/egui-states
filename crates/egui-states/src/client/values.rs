@@ -6,7 +6,6 @@ use std::sync::Arc;
 use crate::client::atomics::{Atomic, AtomicLock, AtomicLockStatic, AtomicStatic};
 use crate::client::event::EventUniversal;
 use crate::client::sender::{ChannelMessage, MessageSender};
-use crate::client::{NonBlocking, private::IsBlocking};
 use crate::serialization::{deserialize, to_message};
 
 pub struct Diff<'a, T> {
@@ -73,6 +72,10 @@ impl<'a, T: Serialize + Clone + PartialEq + Atomic> DiffAtomic<'a, T> {
 
 pub trait UpdateValue: Sync + Send {
     fn update_value(&self, type_id: u32, data: &[u8]) -> Result<(), String>;
+}
+
+pub trait UpdateValueTake: Sync + Send {
+    fn update_take(&self, type_id: u32, data: &[u8], blocking: bool) -> Result<(), String>;
 }
 
 pub trait GetQueueType: Sync + Send + 'static {
@@ -417,18 +420,17 @@ impl<T, Q: GetQueueType> Clone for Signal<T, Q> {
     }
 }
 
-// TakeValue --------------------------------------------
-pub struct TakeValue<T, B: IsBlocking = NonBlocking> {
+// ValueTake --------------------------------------------
+pub struct ValueTake<T> {
     name: String,
     id: u64,
     type_id: u32,
-    value: Arc<RwLock<Option<T>>>,
+    value: Arc<RwLock<Option<(T, bool)>>>,
     sender: MessageSender,
     event: EventUniversal,
-    _phantom: PhantomData<B>,
 }
 
-impl<T, B: IsBlocking> TakeValue<T, B> {
+impl<T> ValueTake<T> {
     pub(crate) fn new(name: String, id: u64, type_id: u32, sender: MessageSender) -> Self {
         Self {
             name,
@@ -437,16 +439,18 @@ impl<T, B: IsBlocking> TakeValue<T, B> {
             value: Arc::new(RwLock::new(None)),
             sender,
             event: EventUniversal::new(),
-            _phantom: PhantomData,
         }
     }
 
     pub fn take(&self) -> Option<T> {
         let value = self.value.write().take();
-        if B::IS_BLOCKING && value.is_some() {
-            self.sender.send(ChannelMessage::Ack(self.id));
+        if let Some((val, blocking)) = value {
+            if blocking {
+                self.sender.send(ChannelMessage::Ack(self.id));
+            }
+            return Some(val);
         }
-        value
+        None
     }
 
     pub fn is_some(&self) -> bool {
@@ -454,45 +458,71 @@ impl<T, B: IsBlocking> TakeValue<T, B> {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn wait_take(&self) -> Option<T> {
+    pub fn wait(&self) {
+        while self.value.read().is_none() {
+            self.event.wait_clear_blocking();
+        }
+    }
+
+    pub async fn wait_async(&self) {
+        while self.value.read().is_none() {
+            self.event.wait_clear().await;
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn wait_take(&self) -> T {
         loop {
-            if let Some(value) = self.value.write().take() {
-                if B::IS_BLOCKING {
+            if let Some((value, blocking)) = self.value.write().take() {
+                if blocking {
                     self.sender.send(ChannelMessage::Ack(self.id));
                 }
-                return Some(value);
+                return value;
             }
             self.event.wait_clear_blocking();
         }
     }
 
-    pub async fn wait_take_async(&self) -> Option<T> {
+    pub async fn wait_take_async(&self) -> T {
         loop {
-            if let Some(value) = self.value.write().take() {
-                if B::IS_BLOCKING {
+            if let Some((value, blocking)) = self.value.write().take() {
+                if blocking {
                     self.sender.send(ChannelMessage::Ack(self.id));
                 }
-                return Some(value);
+                return value;
             }
             self.event.wait_clear().await;
         }
     }
 }
 
-impl<T> UpdateValue for TakeValue<T>
+impl<T> UpdateValueTake for ValueTake<T>
 where
     T: for<'a> Deserialize<'a> + Send + Sync,
 {
-    fn update_value(&self, type_id: u32, data: &[u8]) -> Result<(), String> {
+    fn update_take(&self, type_id: u32, data: &[u8], blocking: bool) -> Result<(), String> {
         if type_id != self.type_id {
-            return Err(format!("Type id mismatch for TakeValue: {}", self.name));
+            return Err(format!("Type id mismatch for ValueTake: {}", self.name));
         }
 
         let value = deserialize(data)
             .map_err(|e| format!("Parse error: {} for value: {}", e, self.name))?;
-        *self.value.write() = Some(value);
+        *self.value.write() = Some((value, blocking));
         self.event.set();
 
         Ok(())
+    }
+}
+
+impl<T> Clone for ValueTake<T> {
+    fn clone(&self) -> Self {
+        Self {
+            name: self.name.clone(),
+            id: self.id,
+            type_id: self.type_id,
+            value: self.value.clone(),
+            sender: self.sender.clone(),
+            event: self.event.clone(),
+        }
     }
 }
