@@ -19,7 +19,7 @@ use crate::server::map::ValueMap;
 use crate::server::sender::{MessageReceiver, MessageSender};
 use crate::server::server_core;
 use crate::server::signals::SignalsManager;
-use crate::server::values::{Signal, Value, ValueStatic};
+use crate::server::values::{Signal, Value, ValueStatic, ValueTake};
 
 pub(crate) trait SyncTrait: Sync + Send {
     fn sync(&self) -> Result<(), ()>;
@@ -32,6 +32,7 @@ pub(crate) trait Acknowledge: Sync + Send {
 #[derive(Clone, Default)]
 pub(crate) struct StatesList {
     pub(crate) values: NoHashMap<u64, Arc<Value>>,
+    pub(crate) values_take: NoHashMap<u64, Arc<ValueTake>>,
     pub(crate) static_values: NoHashMap<u64, Arc<ValueStatic>>,
     pub(crate) signals: NoHashMap<u64, Arc<Signal>>,
     pub(crate) images: NoHashMap<u64, Arc<ValueImage>>,
@@ -46,6 +47,11 @@ impl StatesList {
 
         server_list.values.extend(self.values.clone());
         server_list.signals.extend(self.signals.clone());
+
+        for (id, value_take) in self.values_take.iter() {
+            server_list.sync.push(value_take.clone());
+            server_list.ack.insert(*id, value_take.clone());
+        }
 
         for (id, value) in self.values.iter() {
             server_list.sync.push(value.clone());
@@ -291,6 +297,29 @@ impl Server {
         if queue {
             self.signals.set_to_queue(id);
         }
+
+        Ok(id)
+    }
+
+    pub(crate) fn add_value_take(&mut self, name: &str, type_id: u32) -> Result<u64, String> {
+        if self.states_server.is_some() {
+            return Err("Cannot add new values after server has been finalized".to_string());
+        }
+
+        let id = generate_value_id(&name);
+        if self.states.values_take.contains_key(&id) {
+            return Err(format!("ValueTake with id {} already exists", id));
+        }
+
+        let val = ValueTake::new(
+            name.to_string(),
+            id,
+            type_id,
+            self.sender.clone(),
+            self.connected.clone(),
+        );
+
+        self.states.values_take.insert(id, val);
 
         Ok(id)
     }

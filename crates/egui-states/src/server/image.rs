@@ -180,7 +180,7 @@ impl ValueImage {
 
         // send the image to the server
         if let Some(data) = data {
-            self.event.wait_lock();
+            self.event.wait_clear();
             if !self.connected.load(Ordering::Relaxed) {
                 return Ok(());
             }

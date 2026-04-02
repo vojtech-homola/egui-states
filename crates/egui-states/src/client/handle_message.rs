@@ -29,6 +29,7 @@ pub(crate) fn parse_to_send(message: ChannelMessage, data: &mut FastVec<64>) {
 
 pub(crate) enum ServerMessage {
     Value(u64, u32, bool, Bytes),
+    ValueTake(u64, u32, bool, bool, Bytes),
     Static(u64, u32, bool, Bytes),
     Image(u64, bool, ImageHeader, Bytes),
     Graph(u64, bool, GraphHeader, Bytes),
@@ -100,6 +101,15 @@ impl MessagesParser {
                 self.pointer += size;
                 ServerMessage::Static(id, type_id, update, data)
             }
+            ServerHeader::ValueTake(id, type_id, blocking, update, size) => {
+                let size = size as usize;
+                if size + self.pointer > self.data.len() {
+                    return Err("Incomplete data for ValueTake message");
+                }
+                let data = self.data.slice(self.pointer..self.pointer + size);
+                self.pointer += size;
+                ServerMessage::ValueTake(id, type_id, blocking, update, data)
+            }
             ServerHeader::ValueVec(id, type_id, update, header, size) => {
                 let size = size as usize;
                 if size + self.pointer > self.data.len() {
@@ -167,6 +177,13 @@ pub(crate) async fn handle_message(
             match vals.static_values.get(&id) {
                 Some(value) => value.update_value(type_id, &data)?,
                 None => return Err(format!("Static with id {} not found", id)),
+            }
+            update
+        }
+        ServerMessage::ValueTake(id, type_id, blocking, update, data) => {
+            match vals.values_take.get(&id) {
+                Some(value) => value.update_take(type_id, &data, blocking)?,
+                None => return Err(format!("ValueTake with id {} not found", id)),
             }
             update
         }

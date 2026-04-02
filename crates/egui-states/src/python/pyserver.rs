@@ -18,11 +18,12 @@ use crate::python::{
 use crate::server::server::Server;
 use crate::server::signals::SignalsManager;
 use crate::server::value_parsing::{ValueCreator, ValueParser};
-use crate::server::values::{Signal, Value, ValueStatic};
+use crate::server::values::{Signal, Value, ValueStatic, ValueTake};
 use crate::server::{graphs::ValueGraphs, image::ValueImage, list::ValueList, map::ValueMap};
 
 struct ValuesInner {
     values: NoHashMap<u64, (Arc<Value>, PyObjectType)>,
+    values_take: NoHashMap<u64, (Arc<ValueTake>, PyObjectType)>,
     static_values: NoHashMap<u64, (Arc<ValueStatic>, PyObjectType)>,
     signals: NoHashMap<u64, (Arc<Signal>, PyObjectType)>,
     signals_types: NoHashMap<u64, PyObjectType>,
@@ -148,6 +149,18 @@ impl StateServerCore {
                     }
                 }
 
+                let mut values_take = NoHashMap::default();
+                for (id, state) in states.values_take {
+                    if let Some(object_type) = types.get(&id) {
+                        values_take.insert(id, (state, object_type.clone_py(py)));
+                    } else {
+                        return Err(PyValueError::new_err(format!(
+                            "Missing type information for value take ID {}",
+                            id
+                        )));
+                    }
+                }
+
                 let mut static_values = NoHashMap::default();
                 for (id, state) in states.static_values {
                     if let Some(object_type) = types.remove(&id) {
@@ -201,6 +214,7 @@ impl StateServerCore {
 
                 let inner = ValuesInner {
                     values,
+                    values_take,
                     static_values,
                     signals,
                     signals_types: types,
@@ -258,6 +272,9 @@ impl StateServerCore {
         if let Some((value, _)) = values.values.get(&value_id) {
             return Ok(value.name.clone());
         }
+        if let Some((value, _)) = values.values_take.get(&value_id) {
+            return Ok(value.name.clone());
+        }
         if let Some((value, _)) = values.static_values.get(&value_id) {
             return Ok(value.name.clone());
         }
@@ -300,6 +317,25 @@ impl StateServerCore {
         let data = creator.finalize();
         val.set(data, set_signal, update)
             .map_err(|_| PyRuntimeError::new_err("Value set failed."))
+    }
+
+    // values take ------------------------------------------------------
+    fn value_take_set(
+        &self,
+        value_id: u64,
+        value: &Bound<PyAny>,
+        blocking: bool,
+        update: bool,
+    ) -> PyResult<()> {
+        let (val, object_type) = match self.get_values()?.values_take.get(&value_id) {
+            Some((value, object_type)) => Ok((value, object_type)),
+            _ => Err(PyValueError::new_err("ValueTake with ID not found.")),
+        }?;
+        let mut creator = ValueCreator::new();
+        pyparsing::serialize_py(value, object_type, &mut creator)?;
+        let data = creator.finalize();
+        val.set(data, blocking, update)
+            .map_err(|_| PyRuntimeError::new_err("ValueTake set failed."))
     }
 
     // static values ----------------------------------------------------
@@ -735,7 +771,30 @@ impl StateServerCore {
             .write()
             .add_value(&name, type_id, data, queue)
             .map_err(|e| {
-                pyo3::exceptions::PyValueError::new_err(format!("Failed to add value: {}", e))
+                pyo3::exceptions::PyValueError::new_err(format!("Failed to add Value: {}", e))
+            })?;
+
+        if let Some(types_map) = self.temps.write().as_mut() {
+            types_map.insert(value_id, object_type);
+        }
+        Ok(value_id)
+    }
+
+    fn add_value_take(
+        &self,
+        py: Python,
+        name: String,
+        object_type: &Bound<PyObjectClass>,
+    ) -> PyResult<u64> {
+        let object_type = object_type.borrow().object_type.clone_py(py);
+        let type_id = object_type.get_core_type(py)?.get_hash();
+
+        let value_id = self
+            .server
+            .write()
+            .add_value_take(&name, type_id)
+            .map_err(|e| {
+                pyo3::exceptions::PyValueError::new_err(format!("Failed to add ValueTake: {}", e))
             })?;
 
         if let Some(types_map) = self.temps.write().as_mut() {
@@ -762,7 +821,7 @@ impl StateServerCore {
             .server
             .write()
             .add_static(&name, type_id, data)
-            .map_err(|e| PyValueError::new_err(format!("Failed to add static: {}", e)))?;
+            .map_err(|e| PyValueError::new_err(format!("Failed to add Static: {}", e)))?;
 
         if let Some(types_map) = self.temps.write().as_mut() {
             types_map.insert(value_id, object_type);
@@ -784,7 +843,7 @@ impl StateServerCore {
             .server
             .write()
             .add_signal(&name, type_id, queue)
-            .map_err(|e| PyValueError::new_err(format!("Failed to add signal: {}", e)))?;
+            .map_err(|e| PyValueError::new_err(format!("Failed to add Signal: {}", e)))?;
 
         if let Some(types_map) = self.temps.write().as_mut() {
             types_map.insert(value_id, object_type);
@@ -805,7 +864,7 @@ impl StateServerCore {
             .server
             .write()
             .add_vec(&name, type_id)
-            .map_err(|e| PyValueError::new_err(format!("Failed to add vec: {}", e)))?;
+            .map_err(|e| PyValueError::new_err(format!("Failed to add ValueVec: {}", e)))?;
 
         if let Some(types_map) = self.temps.write().as_mut() {
             types_map.insert(value_id, object_type);
@@ -830,7 +889,7 @@ impl StateServerCore {
             .server
             .write()
             .add_map(&name, type_id)
-            .map_err(|e| PyValueError::new_err(format!("Failed to add map: {}", e)))?;
+            .map_err(|e| PyValueError::new_err(format!("Failed to add ValueMap: {}", e)))?;
 
         if let Some(types_map) = self.temps.write().as_mut() {
             types_map.insert(value_id, object_type);
@@ -843,7 +902,7 @@ impl StateServerCore {
             .server
             .write()
             .add_image(&name)
-            .map_err(|e| PyValueError::new_err(format!("Failed to add image: {}", e)))?;
+            .map_err(|e| PyValueError::new_err(format!("Failed to add ValueImage: {}", e)))?;
         Ok(value_id)
     }
 
@@ -857,7 +916,7 @@ impl StateServerCore {
             .server
             .write()
             .add_graphs(&name, graph_type)
-            .map_err(|e| PyValueError::new_err(format!("Failed to add graphs: {}", e)))?;
+            .map_err(|e| PyValueError::new_err(format!("Failed to add ValueGraphs: {}", e)))?;
         Ok(value_id)
     }
 }

@@ -239,7 +239,7 @@ impl SignalsManager {
             if let Some(val) = self.values.lock().get(last_id) {
                 return val;
             }
-            self.event.wait_lock();
+            self.event.wait_clear();
         }
     }
 

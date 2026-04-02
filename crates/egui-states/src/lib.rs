@@ -29,7 +29,7 @@ pub use client::{
     states_creator::StatesCreator,
     values::{
         Diff, DiffAtomic, GetQueueType, NoQueue, Queue, Signal, Static, StaticAtomic, Value,
-        ValueAtomic,
+        ValueAtomic, ValueTake,
     },
 };
 
