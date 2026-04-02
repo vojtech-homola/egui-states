@@ -142,6 +142,7 @@ impl StatesCreator for StatesCreatorClient {
         let substate = S::new(&mut creator);
 
         self.val.values.extend(creator.val.values);
+        self.val.values_take.extend(creator.val.values_take);
         self.val.static_values.extend(creator.val.static_values);
         self.val.images.extend(creator.val.images);
         self.val.maps.extend(creator.val.maps);

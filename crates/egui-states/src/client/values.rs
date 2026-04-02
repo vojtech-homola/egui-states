@@ -191,8 +191,10 @@ impl<T: for<'a> Deserialize<'a> + Send + Sync, Q: GetQueueType + Send + Sync> Up
             self.inner.1.send(ChannelMessage::Ack(self.id));
             return Err(format!("Type id mismatch for Value: {}", self.name));
         }
-        let value = deserialize(data)
-            .map_err(|e| format!("Parse error: {} for value: {}", e, self.name))?;
+        let value = deserialize(data).map_err(|e| {
+            self.inner.1.send(ChannelMessage::Ack(self.id));
+            format!("Parse error: {} for value: {}", e, self.name)
+        })?;
 
         let mut w = self.inner.0.write();
         self.inner.1.send(ChannelMessage::Ack(self.id));
@@ -265,8 +267,10 @@ impl<T: for<'a> Deserialize<'a> + Atomic + Send + Sync, Q: GetQueueType + Send +
             self.inner.1.send(ChannelMessage::Ack(self.id));
             return Err(format!("Type id mismatch for ValueAtomic: {}", self.name));
         }
-        let value = deserialize(data)
-            .map_err(|e| format!("Parse error: {} for value id: {}", e, self.id))?;
+        let value = deserialize(data).map_err(|e| {
+            self.inner.1.send(ChannelMessage::Ack(self.id));
+            format!("Parse error: {} for value id: {}", e, self.id)
+        })?;
 
         self.inner
             .0
@@ -502,11 +506,18 @@ where
 {
     fn update_take(&self, type_id: u32, data: &[u8], blocking: bool) -> Result<(), String> {
         if type_id != self.type_id {
+            if blocking {
+                self.sender.send(ChannelMessage::Ack(self.id));
+            }
             return Err(format!("Type id mismatch for ValueTake: {}", self.name));
         }
 
-        let value = deserialize(data)
-            .map_err(|e| format!("Parse error: {} for value: {}", e, self.name))?;
+        let value = deserialize(data).map_err(|e| {
+            if blocking {
+                self.sender.send(ChannelMessage::Ack(self.id));
+            }
+            format!("Parse error: {} for value: {}", e, self.name)
+        })?;
         *self.value.write() = Some((value, blocking));
         self.event.set();
 

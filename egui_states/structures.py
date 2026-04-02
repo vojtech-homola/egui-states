@@ -133,10 +133,10 @@ class Value[T](_SignalBase):
 
 
 class ValueTake[T](_StaticBase):
-    """ValueTake is a value witch can be taken in the UI only once.
+    """ValueTake is a value which can be taken in the UI only once.
 
-    ValueTake does not have a get method, becouse the value is not stored in the server. It is alternative to Signal,
-    but with oposite transport direction.
+    ValueTake does not have a get method, because the value is not stored in the server. It is alternative to Signal,
+    but with opposite transport direction.
     """
 
     def __init__(self, obj_id: int) -> None:
@@ -159,9 +159,9 @@ class ValueTake[T](_StaticBase):
 
 
 class ValueTakeEmpty(_StaticBase):
-    """ValueTakeEmpty is a value witch can be taken in the UI only once.
+    """ValueTakeEmpty is a value which can be taken in the UI only once.
 
-    It is alternative to SignalEmpty, but with oposite transport direction.
+    It is alternative to SignalEmpty, but with opposite transport direction.
     """
 
     def _initialize(self, name: str, types: list[PyObjectType]) -> None:
