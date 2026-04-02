@@ -79,6 +79,7 @@ fn process_type_info(values: &Vec<StateType>) -> (HashMap<String, TypeIndex>, Ve
     for state in values {
         match state {
             StateType::Value(name, obj_type, _, _)
+            | StateType::ValueTake(name, obj_type)
             | StateType::Static(name, obj_type, _)
             | StateType::Signal(name, obj_type, _)
             | StateType::ValueVec(name, obj_type) => {
@@ -243,6 +244,23 @@ fn state_to_line(state: &StateType, types_map: &HashMap<String, TypeIndex>) -> S
                 "        self.{}: s.Value[{}] = s.Value[{}]({}, {}{})\n",
                 last_name, py_type, py_type, index, init_value, queue_str
             )
+        }
+        StateType::ValueTake(name, state_type) => {
+            let last_name = name.split('.').last().unwrap();
+            let py_type = type_info_to_python_type(state_type, false);
+            let index = types_map.get(name).unwrap().get_single();
+            match state_type {
+                ObjectType::Empty => {
+                    format!(
+                        "        self.{}: s.ValueTakeEmpty = s.ValueTakeEmpty()\n",
+                        last_name
+                    )
+                }
+                _ => format!(
+                    "        self.{}: s.ValueTake[{}] = s.ValueTake[{}]({})\n",
+                    last_name, py_type, py_type, index
+                ),
+            }
         }
         StateType::Static(name, state_type, init) => {
             let last_name = name.split('.').last().unwrap();

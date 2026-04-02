@@ -4,6 +4,7 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use crate::client::atomics::{Atomic, AtomicLock, AtomicLockStatic, AtomicStatic};
+use crate::client::event::EventUniversal;
 use crate::client::sender::{ChannelMessage, MessageSender};
 use crate::serialization::{deserialize, to_message};
 
@@ -71,6 +72,10 @@ impl<'a, T: Serialize + Clone + PartialEq + Atomic> DiffAtomic<'a, T> {
 
 pub trait UpdateValue: Sync + Send {
     fn update_value(&self, type_id: u32, data: &[u8]) -> Result<(), String>;
+}
+
+pub trait UpdateValueTake: Sync + Send {
+    fn update_take(&self, type_id: u32, data: &[u8], blocking: bool) -> Result<(), String>;
 }
 
 pub trait GetQueueType: Sync + Send + 'static {
@@ -186,8 +191,10 @@ impl<T: for<'a> Deserialize<'a> + Send + Sync, Q: GetQueueType + Send + Sync> Up
             self.inner.1.send(ChannelMessage::Ack(self.id));
             return Err(format!("Type id mismatch for Value: {}", self.name));
         }
-        let value = deserialize(data)
-            .map_err(|e| format!("Parse error: {} for value: {}", e, self.name))?;
+        let value = deserialize(data).map_err(|e| {
+            self.inner.1.send(ChannelMessage::Ack(self.id));
+            format!("Parse error: {} for value: {}", e, self.name)
+        })?;
 
         let mut w = self.inner.0.write();
         self.inner.1.send(ChannelMessage::Ack(self.id));
@@ -260,8 +267,10 @@ impl<T: for<'a> Deserialize<'a> + Atomic + Send + Sync, Q: GetQueueType + Send +
             self.inner.1.send(ChannelMessage::Ack(self.id));
             return Err(format!("Type id mismatch for ValueAtomic: {}", self.name));
         }
-        let value = deserialize(data)
-            .map_err(|e| format!("Parse error: {} for value id: {}", e, self.id))?;
+        let value = deserialize(data).map_err(|e| {
+            self.inner.1.send(ChannelMessage::Ack(self.id));
+            format!("Parse error: {} for value id: {}", e, self.id)
+        })?;
 
         self.inner
             .0
@@ -411,6 +420,120 @@ impl<T, Q: GetQueueType> Clone for Signal<T, Q> {
             type_id: self.type_id,
             sender: self.sender.clone(),
             phantom: PhantomData,
+        }
+    }
+}
+
+// ValueTake --------------------------------------------
+pub struct ValueTake<T> {
+    name: String,
+    id: u64,
+    type_id: u32,
+    value: Arc<RwLock<Option<(T, bool)>>>,
+    sender: MessageSender,
+    event: EventUniversal,
+}
+
+impl<T> ValueTake<T> {
+    pub(crate) fn new(name: String, id: u64, type_id: u32, sender: MessageSender) -> Self {
+        Self {
+            name,
+            id,
+            type_id,
+            value: Arc::new(RwLock::new(None)),
+            sender,
+            event: EventUniversal::new(),
+        }
+    }
+
+    pub fn take(&self) -> Option<T> {
+        let value = self.value.write().take();
+        if let Some((val, blocking)) = value {
+            if blocking {
+                self.sender.send(ChannelMessage::Ack(self.id));
+            }
+            return Some(val);
+        }
+        None
+    }
+
+    pub fn is_some(&self) -> bool {
+        self.value.read().is_some()
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn wait(&self) {
+        while self.value.read().is_none() {
+            self.event.wait_clear_blocking();
+        }
+    }
+
+    pub async fn wait_async(&self) {
+        while self.value.read().is_none() {
+            self.event.wait_clear().await;
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn wait_take(&self) -> T {
+        loop {
+            if let Some((value, blocking)) = self.value.write().take() {
+                if blocking {
+                    self.sender.send(ChannelMessage::Ack(self.id));
+                }
+                return value;
+            }
+            self.event.wait_clear_blocking();
+        }
+    }
+
+    pub async fn wait_take_async(&self) -> T {
+        loop {
+            if let Some((value, blocking)) = self.value.write().take() {
+                if blocking {
+                    self.sender.send(ChannelMessage::Ack(self.id));
+                }
+                return value;
+            }
+            self.event.wait_clear().await;
+        }
+    }
+}
+
+impl<T> UpdateValueTake for ValueTake<T>
+where
+    T: for<'a> Deserialize<'a> + Send + Sync,
+{
+    fn update_take(&self, type_id: u32, data: &[u8], blocking: bool) -> Result<(), String> {
+        if type_id != self.type_id {
+            if blocking {
+                self.sender.send(ChannelMessage::Ack(self.id));
+            }
+            return Err(format!("Type id mismatch for ValueTake: {}", self.name));
+        }
+
+        let value = deserialize(data).map_err(|e| {
+            if blocking {
+                self.sender.send(ChannelMessage::Ack(self.id));
+            }
+            format!("Parse error: {} for value: {}", e, self.name)
+        })?;
+        *self.value.write() = Some((value, blocking));
+        self.event.set();
+
+        Ok(())
+    }
+}
+
+impl<T> Clone for ValueTake<T> {
+    fn clone(&self) -> Self {
+        Self {
+            name: self.name.clone(),
+            id: self.id,
+            type_id: self.type_id,
+            value: self.value.clone(),
+            sender: self.sender.clone(),
+            event: self.event.clone(),
         }
     }
 }

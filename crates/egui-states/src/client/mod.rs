@@ -1,3 +1,4 @@
+mod event;
 mod handle_message;
 pub(crate) mod sender;
 

@@ -39,21 +39,17 @@ impl Event {
         self.flag.store(false, Ordering::Release);
     }
 
-    // pub async fn wait(&self) {
-    //     loop {
-    //         if self.flag.load(Ordering::Acquire) {
-    //             return;
-    //         }
-    //         self.notify.notified().await;
-    //     }
-    // }
-
     pub async fn wait_clear(&self) {
+        let notified = self.notify.notified();
+        tokio::pin!(notified);
+
         loop {
+            notified.as_mut().enable();
             if self.flag.fetch_and(false, Ordering::AcqRel) {
                 return;
             }
-            self.notify.notified().await;
+            notified.as_mut().await;
+            notified.set(self.notify.notified());
         }
     }
 }
