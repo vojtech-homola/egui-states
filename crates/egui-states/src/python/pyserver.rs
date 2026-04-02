@@ -272,6 +272,9 @@ impl StateServerCore {
         if let Some((value, _)) = values.values.get(&value_id) {
             return Ok(value.name.clone());
         }
+        if let Some((value, _)) = values.values_take.get(&value_id) {
+            return Ok(value.name.clone());
+        }
         if let Some((value, _)) = values.static_values.get(&value_id) {
             return Ok(value.name.clone());
         }

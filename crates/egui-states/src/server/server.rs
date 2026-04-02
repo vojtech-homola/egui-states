@@ -311,7 +311,13 @@ impl Server {
             return Err(format!("ValueTake with id {} already exists", id));
         }
 
-        let val = ValueTake::new(id, type_id, self.sender.clone(), self.connected.clone());
+        let val = ValueTake::new(
+            name.to_string(),
+            id,
+            type_id,
+            self.sender.clone(),
+            self.connected.clone(),
+        );
 
         self.states.values_take.insert(id, val);
 

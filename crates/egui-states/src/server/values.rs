@@ -114,6 +114,7 @@ impl SyncTrait for Value {
 
 // ValueTake --------------------------------------------------
 pub(crate) struct ValueTake {
+    pub(crate) name: String,
     id: u64,
     type_id: u32,
     event: Event,
@@ -124,12 +125,14 @@ pub(crate) struct ValueTake {
 
 impl ValueTake {
     pub(crate) fn new(
+        name: String,
         id: u64,
         type_id: u32,
         sender: MessageSender,
         connected: Arc<AtomicBool>,
     ) -> Arc<Self> {
         Arc::new(Self {
+            name,
             id,
             type_id,
             event: Event::new(),
