@@ -5,7 +5,7 @@ use tokio_tungstenite::connect_async_with_config;
 use tokio_tungstenite::tungstenite::{Message, protocol::WebSocketConfig};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
-use crate::client::handle_message::{MessagesParser, ServerMessage};
+use crate::client::messages::{MessagesParser, ServerMessage};
 use crate::serialization::FastVec;
 
 pub(crate) async fn build_ws(address: SocketAddrV4) -> Result<(WsClientRead, WsClientSend), ()> {

@@ -8,20 +8,16 @@ use tokio::sync::mpsc::UnboundedReceiver;
 
 use crate::PROTOCOL_VERSION;
 use crate::State;
-use crate::client::handle_message::{handle_message, parse_to_send};
-use crate::client::sender::{ChannelMessage, MessageSender};
+use crate::client::messages::{ChannelMessage, MessageSender, handle_message, parse_to_send};
 use crate::client::states_creator::{StatesCreatorClient, ValuesList};
 use crate::event_async::Event;
-use crate::serialization::{ClientHeader, FastVec};
+use crate::serialization::{ClientHeader, FastVec, MAX_MSG_COUNT, MSG_SIZE_THRESHOLD};
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::client::websocket::build_ws;
 
 #[cfg(target_arch = "wasm32")]
 use crate::client::websocket_wasm::build_ws;
-
-const MSG_SIZE_THRESHOLD: usize = 1024 * 1024 * 10; // 10 MB
-const MAX_MSG_COUNT: usize = 10;
 
 async fn start_gui_client(
     addr: SocketAddrV4,

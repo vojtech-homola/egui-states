@@ -2,7 +2,7 @@ use parking_lot::RwLock;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::image::{ImageHeader, ImageType};
+use crate::image_header::{ImageHeader, ImageType};
 use crate::serialization::ServerHeader;
 use crate::server::event::Event;
 use crate::server::sender::{MessageSender, SenderData};

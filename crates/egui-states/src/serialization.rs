@@ -3,7 +3,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::collections::{MapHeader, VecHeader};
 use crate::graphs::GraphHeader;
-use crate::image::ImageHeader;
+use crate::image_header::ImageHeader;
+use crate::data_header;
+
+pub(crate) const VALUE_MAX_SIZE: usize = 1024 * 1024; // 1 MB
+pub(crate) const MSG_SIZE_THRESHOLD: usize = 1024 * 1024 * 10; // 10 MB
+pub(crate) const MAX_MSG_COUNT: usize = 10;
 
 pub(crate) struct StackVec<const N: usize>([u8; N], usize);
 
@@ -172,9 +177,11 @@ pub(crate) enum ServerHeader {
     ValueTake(u64, u32, bool, bool, u32),
     Static(u64, u32, bool, u32),
     Image(u64, bool, ImageHeader),
+    Data(data_header::DataHeader),
+    DataStatic(data_header::DataHeader),
     Graph(u64, bool, GraphHeader),
     ValueVec(u64, u32, bool, VecHeader, u32),
-    ValueMapMap(u64, u32, bool, MapHeader, u32),
+    ValueMap(u64, u32, bool, MapHeader, u32),
     Update(f32),
 }
 

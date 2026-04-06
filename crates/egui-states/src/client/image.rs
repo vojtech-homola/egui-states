@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use egui::{ColorImage, ImageData, TextureHandle};
 
-use crate::client::sender::{ChannelMessage, MessageSender};
-use crate::image::{ImageHeader, ImageType};
+use crate::client::messages::{ChannelMessage, MessageSender};
+use crate::image_header::{ImageHeader, ImageType};
 
 const TEXTURE_OPTIONS: egui::TextureOptions = egui::TextureOptions {
     magnification: egui::TextureFilter::Nearest,

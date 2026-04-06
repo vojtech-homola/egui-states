@@ -1,10 +1,11 @@
 extern crate self as egui_states;
 
 mod collections;
+mod data_header;
 mod event_async;
 mod graphs;
 mod hashing;
-mod image;
+mod image_header;
 mod serialization;
 mod transport;
 
@@ -22,6 +23,7 @@ pub use client::{
     atomics::{Atomic, AtomicLock, AtomicLockStatic, AtomicStatic, FallbackLock, UpdateLock},
     client::ClientBuilder,
     client::{Client, ConnectionState},
+    data::{Data, DataStatic},
     graphs::ValueGraphs,
     image::ValueImage,
     list::ValueVec,

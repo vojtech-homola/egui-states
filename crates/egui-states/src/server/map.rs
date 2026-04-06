@@ -44,7 +44,7 @@ impl ValueMap {
             size += k.len();
             size += v.len();
         });
-        let header = ServerHeader::ValueMapMap(
+        let header = ServerHeader::ValueMap(
             self.id,
             self.type_id,
             update,
@@ -81,7 +81,7 @@ impl ValueMap {
         let mut w = self.map.write();
 
         if self.connected.load(Ordering::Relaxed) {
-            let header = ServerHeader::ValueMapMap(
+            let header = ServerHeader::ValueMap(
                 self.id,
                 self.type_id,
                 update,
@@ -118,7 +118,7 @@ impl ValueMap {
         };
 
         if self.connected.load(Ordering::Relaxed) {
-            let header = ServerHeader::ValueMapMap(
+            let header = ServerHeader::ValueMap(
                 self.id,
                 self.type_id,
                 update,
