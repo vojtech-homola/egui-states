@@ -3,7 +3,9 @@ use std::collections::VecDeque;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use crate::client::client::Client;
-use crate::client::data::{DataMessage, DataMessageAll, DataMessageEnd, DataMessageHead, ChannelMessageData};
+use crate::client::data::{
+    ChannelMessageData, DataMessage, DataMessageAll, DataMessageEnd, DataMessageHead,
+};
 use crate::client::states_creator::ValuesList;
 use crate::collections::{MapHeader, VecHeader};
 use crate::data_header::DataHeader;
@@ -17,7 +19,6 @@ use crate::serialization::{
 pub(crate) enum ChannelMessage {
     Value(u64, u32, bool, MessageData),
     Signal(u64, u32, MessageData),
-    Data(u64, u32, bool, ChannelMessageData),
     Ack(u64),
 }
 
@@ -56,7 +57,6 @@ pub(crate) fn parse_to_send(message: ChannelMessage, data: &mut FastVec<64>) {
             let header = ClientHeader::Ack(id);
             serialize_to_data(&header, data).unwrap();
         }
-        ChannelMessage::Data(id, siganl, head_data, main_data) => {}
     }
 }
 
@@ -103,10 +103,6 @@ impl MessagesSerializer {
                     let header = ClientHeader::Ack(id);
                     serialize_to_data(&header, &mut actual).unwrap();
                 }
-                ChannelMessage::Data(id, stype_id, signal, main_data) => {
-                    
-
-                }
             }
 
             if actual.len() >= MSG_SIZE_THRESHOLD {
@@ -127,7 +123,6 @@ pub(crate) enum ServerMessage {
     ValueVec(u64, u32, bool, VecHeader, Bytes),
     ValueMap(u64, u32, bool, MapHeader, Bytes),
     Data(u64, bool, DataMessage),
-    DataStatic(u64, bool, DataMessage),
     Update(f32),
 }
 

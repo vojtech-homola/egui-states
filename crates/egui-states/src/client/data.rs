@@ -88,55 +88,10 @@ where
         }
     }
 
-    fn set_inner(&self, header: T, data: Vec<u8>, signal: bool) {
-        let header_data = to_message(&header);
-        let data_copy = data.clone();
-        let to_channel = ChannelMessageData {
-            is_add: false,
-            header: header_data,
-            data: data_copy.clone(),
-        };
-
-        let mut inner = self.inner.write();
-        self.sender.send(ChannelMessage::Data(
-            self.id,
-            self.type_id,
-            signal,
-            to_channel,
-        ));
-
-        *inner = (header, data, inner.2);
-    }
-
-    pub fn set(&self, header: T, data: Vec<u8>) {
-        self.set_inner(header, data, false);
-    }
-
-    pub fn set_signal(&self, header: T, data: Vec<u8>) {
-        self.set_inner(header, data, true);
-    }
-
     pub fn read<R>(&self, f: impl Fn((&T, &Vec<u8>, bool)) -> R) -> R {
-        let inner = self.inner.read();
-        f((&inner.0, &inner.1, inner.2))
-    }
-
-    pub fn write<R>(&self, f: impl Fn((&mut T, &mut Vec<u8>)) -> R, signal: bool) -> R {
         let mut inner = self.inner.write();
-        let (header, data, _) = &mut *inner;
-        let result = f((header, data));
-        let header_data = to_message(header);
-        let to_channel = ChannelMessageData {
-            is_add: false,
-            header: header_data,
-            data: data.clone(),
-        };
-        self.sender.send(ChannelMessage::Data(
-            self.id,
-            self.type_id,
-            signal,
-            to_channel,
-        ));
+        let result = f((&inner.0, &inner.1, inner.2));
+        inner.2 = false;
         result
     }
 }
