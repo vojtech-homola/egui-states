@@ -3,9 +3,7 @@ use std::collections::VecDeque;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use crate::client::client::Client;
-use crate::client::data::{
-    ChannelMessageData, DataMessage, DataMessageAll, DataMessageEnd, DataMessageHead,
-};
+use crate::client::data::{DataMessage, DataMessageAll, DataMessageEnd, DataMessageHead};
 use crate::client::states_creator::ValuesList;
 use crate::collections::{MapHeader, VecHeader};
 use crate::data_header::DataHeader;
@@ -238,14 +236,17 @@ impl MessagesParser {
                 };
                 ServerMessage::Graph(id, update, header, data)
             }
-            ServerHeader::Data(data_header) => self._process_data(data_header)?,
-            ServerHeader::DataStatic(data_header) => self._process_data(data_header)?,
+            ServerHeader::Data(id, data_header) => self._process_data(id, data_header)?,
         };
 
         Ok(message_data)
     }
 
-    fn _process_data(&self, data_header: DataHeader) -> Result<ServerMessage, &'static str> {
+    fn _process_data(
+        &self,
+        id: u64,
+        data_header: DataHeader,
+    ) -> Result<ServerMessage, &'static str> {
         let res = match data_header {
             DataHeader::All(header) => {
                 let header_size = header.header_size as usize;
@@ -262,7 +263,7 @@ impl MessagesParser {
                         .data
                         .slice(self.pointer + header_size..self.pointer + header_size + data_size),
                 };
-                ServerMessage::Data(header.id, header.update, DataMessage::All(msg))
+                ServerMessage::Data(id, header.update, DataMessage::All(msg))
             }
             DataHeader::Head(header) => {
                 let header_size = header.header_size as usize;
@@ -279,7 +280,7 @@ impl MessagesParser {
                         .data
                         .slice(self.pointer + header_size..self.pointer + header_size + data_size),
                 };
-                ServerMessage::Data(header.id, false, DataMessage::Head(msg))
+                ServerMessage::Data(id, false, DataMessage::Head(msg))
             }
             DataHeader::Data(header) => {
                 let data_size = header.data_size as usize;
@@ -287,7 +288,7 @@ impl MessagesParser {
                     return Err("Incomplete data for Data/DataStatic message");
                 }
                 let dat = self.data.slice(self.pointer..self.pointer + data_size);
-                ServerMessage::Data(header.id, false, DataMessage::Data(dat))
+                ServerMessage::Data(id, false, DataMessage::Data(dat))
             }
             DataHeader::End(header) => {
                 let data_size = header.data_size as usize;
@@ -296,7 +297,7 @@ impl MessagesParser {
                 }
                 let dat = self.data.slice(self.pointer..self.pointer + data_size);
                 ServerMessage::Data(
-                    header.id,
+                    id,
                     header.update,
                     DataMessage::End(DataMessageEnd {
                         is_add: header.is_add,
@@ -372,13 +373,6 @@ pub(crate) async fn handle_message(
             match vals.datas.get(&id) {
                 Some(value) => value.update_data(message)?,
                 None => return Err(format!("Data with id {} not found", id)),
-            }
-            update
-        }
-        ServerMessage::DataStatic(id, update, message) => {
-            match vals.data_statics.get(&id) {
-                Some(value) => value.update_data(message)?,
-                None => return Err(format!("DataStatic with id {} not found", id)),
             }
             update
         }

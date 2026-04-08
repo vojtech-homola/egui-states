@@ -1,12 +1,14 @@
 mod event;
+mod sender;
+mod server_core;
+mod socket_reader;
+
 pub(crate) mod graphs;
 pub(crate) mod image;
 pub(crate) mod list;
 pub(crate) mod map;
-mod sender;
 pub(crate) mod server;
-mod server_core;
 pub(crate) mod signals;
-mod socket_reader;
 pub(crate) mod value_parsing;
 pub(crate) mod values;
+pub(crate) mod data;

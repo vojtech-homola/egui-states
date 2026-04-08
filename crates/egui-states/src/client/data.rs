@@ -33,12 +33,6 @@ pub(crate) enum DataMessage {
     End(DataMessageEnd),
 }
 
-pub(crate) struct ChannelMessageData {
-    pub is_add: bool,
-    pub header: MessageData,
-    pub data: Vec<u8>,
-}
-
 pub(crate) trait UpdateData: Sync + Send {
     fn update_data(&self, message: DataMessage) -> Result<(), String>;
 }

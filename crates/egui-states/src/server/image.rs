@@ -348,14 +348,6 @@ unsafe fn write_rectangle(
             }
             let x = size[1] * 4;
             for i in 0..size[0] {
-                // for j in 0..size[1] {
-                //     let index = (top + i) * old_stride + left + j;
-                //     let d_index = i * stride + j * 4;
-                //     *old_data.add(index * 4) = *data.add(d_index);
-                //     *old_data.add(index * 4 + 1) = *data.add(d_index + 1);
-                //     *old_data.add(index * 4 + 2) = *data.add(d_index + 2);
-                //     *old_data.add(index * 4 + 3) = *data.add(d_index + 3);
-                // }
                 let index = (top + i) * old_stride + left * 4;
                 let buffer = data.add(i * stride);
                 let data_buffer = old_data.add(index);
