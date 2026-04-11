@@ -49,7 +49,7 @@ impl ValueImage {
         connected: Arc<AtomicBool>,
     ) -> Arc<Self> {
         let event = Event::new();
-        event.set(); // initially set so the first send does not block
+        event.set(); // initially set so the first send does not block 
 
         Arc::new(Self {
             name,
