@@ -1,25 +1,26 @@
-use parking_lot::RwLock;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use bytes::Bytes;
+use parking_lot::{RwLock, RwLockWriteGuard};
 
-use crate::serialization::ServerHeader;
+use crate::data_transport::{DataHeader, DataType, TransportType};
+use crate::serialization::{FastVec, MSG_SIZE_THRESHOLD};
+use crate::server::event::Event;
 use crate::server::sender::MessageSender;
 use crate::server::server::{Acknowledge, SyncTrait};
-use crate::server::{event::Event, signals::SignalsManager};
 
 pub(crate) struct DataHolder {
     pub data: *const u8,
     pub size: usize,
+    pub data_type: DataType,
 }
 
 // Data --------------------------------------------------
 pub(crate) struct Data {
     pub(crate) name: String,
     id: u64,
-    type_id: u32,
-    value: RwLock<(Bytes, Vec<u8>)>,
+    data_type: DataType,
+    value: RwLock<Vec<u8>>,
     sender: MessageSender,
     connected: Arc<AtomicBool>,
     event: Event,
@@ -29,41 +30,265 @@ impl Data {
     pub(crate) fn new(
         name: String,
         id: u64,
-        type_id: u32,
-        header: Bytes,
+        data_type: DataType,
         sender: MessageSender,
         connected: Arc<AtomicBool>,
     ) -> Arc<Self> {
         Arc::new(Self {
             name,
             id,
-            type_id,
-            value: RwLock::new((header, Vec::new())),
+            data_type,
+            value: RwLock::new(Vec::new()),
             sender,
             connected,
             event: Event::new(),
         })
     }
 
-    pub(crate) fn set(&self, header: Bytes, data: DataHolder) -> Result<(), String> {
-        let mut w = self.value.write();
-        if w.0.is_empty() {
-            w.0 = header;
+    fn check_data_type(&self, data: &DataHolder) -> Result<(), String> {
+        if data.data_type != self.data_type {
+            return Err(format!(
+                "Data type mismatch: expected {:?}, got {:?}",
+                self.data_type, data.data_type
+            ));
         }
-        w.1 = data;
-        
+
+        if data.size % self.data_type.element_size() != 0 {
+            return Err(format!(
+                "Data size must be a multiple of element size: expected multiple of {}, got {}",
+                self.data_type.element_size(),
+                data.size
+            ));
+        }
+
         Ok(())
     }
 
-    #[inline]
-    pub(crate) fn get(&self) -> (Bytes, Vec<u8>) {
-        self.value.read().clone()
+    fn pack_data(
+        &self,
+        data: &[u8],
+        transport_type: TransportType,
+        update: bool,
+    ) -> Result<Vec<(FastVec<32>, bool)>, String> {
+        let count = data.len() / MSG_SIZE_THRESHOLD + 1;
+        let mut messages = Vec::with_capacity(count);
+
+        if count == 1 {
+            let header = DataHeader::All(self.data_type, transport_type, update, data.len() as u32);
+            let mut message = header
+                .serialize(true)
+                .map_err(|_| "Failed to serialize header".to_string())?;
+            message.reserve_exact(data.len());
+            message.extend_from_slice(&data);
+            messages.push((message, true));
+        } else {
+            let mut processed = 0;
+            let header = DataHeader::StartBatch(data.len() as u64, MSG_SIZE_THRESHOLD as u32);
+            let mut message = header
+                .serialize(true)
+                .map_err(|_| "Failed to serialize header".to_string())?;
+            message.reserve_exact(MSG_SIZE_THRESHOLD);
+            message.extend_from_slice(&data[..MSG_SIZE_THRESHOLD]);
+            messages.push((message, true));
+            processed += MSG_SIZE_THRESHOLD;
+
+            while processed < data.len() {
+                let remaining = data.len() - processed;
+                if remaining <= MSG_SIZE_THRESHOLD {
+                    let header =
+                        DataHeader::End(self.data_type, transport_type, update, remaining as u32);
+                    let mut message = header
+                        .serialize(true)
+                        .map_err(|_| "Failed to serialize header".to_string())?;
+                    message.extend_from_slice(&data[processed..]);
+                    messages.push((message, false));
+                    break;
+                }
+
+                let header = DataHeader::Batch(MSG_SIZE_THRESHOLD as u32);
+                let mut message = header
+                    .serialize(true)
+                    .map_err(|_| "Failed to serialize header".to_string())?;
+                message.reserve_exact(MSG_SIZE_THRESHOLD);
+                message.extend_from_slice(&data[processed..processed + MSG_SIZE_THRESHOLD]);
+                messages.push((message, true));
+                processed += MSG_SIZE_THRESHOLD;
+            }
+        }
+
+        Ok(messages)
+    }
+
+    pub(crate) fn set(&self, data: DataHolder, update: bool) -> Result<(), String> {
+        self.check_data_type(&data)?;
+
+        let mut vec = Vec::with_capacity(data.size);
+        unsafe {
+            vec.set_len(data.size);
+            std::ptr::copy_nonoverlapping(data.data as *const u8, vec.as_mut_ptr(), data.size);
+        }
+
+        let mut w = self.value.write();
+        *w = vec;
+        let r = RwLockWriteGuard::downgrade(w);
+        if self.connected.load(Ordering::Acquire) {
+            let transport_type = TransportType::Set(data.size as u64);
+            let messages = self.pack_data(&r, transport_type, update)?;
+
+            self.event.wait_clear();
+            if !self.connected.load(Ordering::Acquire) {
+                return Ok(());
+            }
+
+            for (message, single) in messages {
+                self.sender.send_set(message, single);
+            }
+        }
+
+        Ok(())
+    }
+
+    pub(crate) fn add(&self, data: DataHolder, update: bool) -> Result<(), String> {
+        self.check_data_type(&data)?;
+
+        let slice = unsafe { std::slice::from_raw_parts(data.data, data.size) };
+        let mut w = self.value.write();
+        let original_len = w.len();
+        w.extend_from_slice(slice);
+        let r = RwLockWriteGuard::downgrade(w);
+
+        if self.connected.load(Ordering::Acquire) {
+            let transport_type = TransportType::Add(data.size as u64);
+            let messages = self.pack_data(&r[original_len..], transport_type, update)?;
+
+            self.event.wait_clear();
+            if !self.connected.load(Ordering::Acquire) {
+                return Ok(());
+            }
+
+            for (message, single) in messages {
+                self.sender.send_set(message, single);
+            }
+        }
+
+        Ok(())
+    }
+
+    pub(crate) fn replace(
+        &self,
+        data: DataHolder,
+        index: usize,
+        update: bool,
+    ) -> Result<(), String> {
+        self.check_data_type(&data)?;
+
+        let slice = unsafe { std::slice::from_raw_parts(data.data, data.size) };
+        let mut w = self.value.write();
+        if index + data.size > w.len() {
+            return Err(format!(
+                "Replace range out of bounds: index {} + data size {} exceeds current size {}",
+                index,
+                data.size,
+                w.len()
+            ));
+        }
+        w[index..index + data.size].copy_from_slice(slice);
+        let r = RwLockWriteGuard::downgrade(w);
+
+        if self.connected.load(Ordering::Acquire) {
+            let transport_type = TransportType::Replace(data.size as u64, index as u64);
+            let messages = self.pack_data(&r[index..index + data.size], transport_type, update)?;
+
+            self.event.wait_clear();
+            if !self.connected.load(Ordering::Acquire) {
+                return Ok(());
+            }
+
+            for (message, single) in messages {
+                self.sender.send_set(message, single);
+            }
+        }
+
+        Ok(())
+    }
+
+    pub(crate) fn remove(&self, index: usize, size: usize, update: bool) -> Result<(), String> {
+        if size == 0 {
+            return Err("Invalid remove size: size must be greater than 0".to_string());
+        }
+
+        let mut w = self.value.write();
+        if index + size > w.len() {
+            return Err(format!(
+                "Remove range out of bounds: end {} exceeds current size {}",
+                index + size,
+                w.len()
+            ));
+        }
+        w.drain(index..index + size);
+        let _r = RwLockWriteGuard::downgrade(w);
+
+        if self.connected.load(Ordering::Acquire) {
+            let header = DataHeader::Drain(index as u64, size as u64, update);
+            let message = header
+                .serialize(false)
+                .map_err(|_| "Failed to serialize header".to_string())?;
+
+            self.event.wait_clear();
+            if !self.connected.load(Ordering::Acquire) {
+                return Ok(());
+            }
+
+            self.sender.send(message);
+        }
+
+        Ok(())
+    }
+
+    pub(crate) fn clear(&self, update: bool) -> Result<(), String> {
+        let mut w = self.value.write();
+        w.clear();
+        let _r = RwLockWriteGuard::downgrade(w);
+
+        if self.connected.load(Ordering::Acquire) {
+            let header = DataHeader::Clear(update);
+            let message = header
+                .serialize(false)
+                .map_err(|_| "Failed to serialize header".to_string())?;
+
+            self.event.wait_clear();
+            if !self.connected.load(Ordering::Acquire) {
+                return Ok(());
+            }
+            self.sender.send(message);
+        }
+
+        Ok(())
+    }
+
+    pub(crate) fn get<R>(&self, f: impl Fn(&[u8]) -> R) -> R {
+        let value = self.value.read();
+        f(&value)
     }
 }
-
 
 impl Acknowledge for Data {
     fn acknowledge(&self) {
         self.event.set();
+    }
+}
+
+impl SyncTrait for Data {
+    fn sync(&self) -> Result<(), ()> {
+        let r = self.value.read();
+
+        let transport_type = TransportType::Set(r.len() as u64);
+        let messages = self.pack_data(&r, transport_type, false).map_err(|_| ())?;
+
+        self.event.clear();
+        for (message, single) in messages {
+            self.sender.send_set(message, single);
+        }
+        Ok(())
     }
 }

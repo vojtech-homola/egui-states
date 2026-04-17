@@ -12,6 +12,7 @@ use crate::event_async::Event;
 use crate::graphs::GraphType;
 use crate::hashing::{NoHashMap, generate_value_id};
 use crate::serialization::{ServerHeader, serialize};
+use crate::server::data::Data;
 use crate::server::graphs::ValueGraphs;
 use crate::server::image::ValueImage;
 use crate::server::list::ValueList;
@@ -39,6 +40,7 @@ pub(crate) struct StatesList {
     pub(crate) maps: NoHashMap<u64, Arc<ValueMap>>,
     pub(crate) lists: NoHashMap<u64, Arc<ValueList>>,
     pub(crate) graphs: NoHashMap<u64, Arc<ValueGraphs>>,
+    pub(crate) datas: NoHashMap<u64, Arc<Data>>,
 }
 
 impl StatesList {
@@ -77,6 +79,11 @@ impl StatesList {
 
         for graphs in self.graphs.values() {
             server_list.sync.push(graphs.clone());
+        }
+
+        for (id, data) in self.datas.iter() {
+            server_list.sync.push(data.clone());
+            server_list.ack.insert(*id, data.clone());
         }
 
         server_list
@@ -443,6 +450,10 @@ impl Server {
         self.states.images.insert(id, val);
         Ok(id)
     }
+
+    // pub(crate) fn add_data(&mut self, name: &str, type_id: u32, value: Bytes) -> Result<u64, String> {
+    //     self.add_value(name, type_id, value, false)
+    // }
 
     pub(crate) fn add_graphs(&mut self, name: &str, graphs_type: GraphType) -> Result<u64, String> {
         if self.states_server.is_some() {

@@ -1,92 +1,296 @@
-use bytes::Bytes;
-use parking_lot::{Mutex, RwLock};
-use serde::{Deserialize, Serialize};
-use std::marker::PhantomData;
 use std::sync::Arc;
 
-use crate::client::messages::{ChannelMessage, MessageSender};
-use crate::serialization::{MessageData, deserialize, to_message};
+use bytes::Bytes;
+use parking_lot::{Mutex, RwLock};
 
-pub(crate) struct DataMessageAll {
-    pub type_id: u32,
-    pub is_add: bool,
-    pub header: Bytes,
-    pub data: Bytes,
-}
-
-pub(crate) struct DataMessageHead {
-    pub type_id: u32,
-    pub data_size_all: u64,
-    pub header: Bytes,
-    pub data: Bytes,
-}
-
-pub(crate) struct DataMessageEnd {
-    pub is_add: bool,
-    pub data: Bytes,
-}
+use crate::client::messages::MessageSender;
+use crate::data_transport::{DataType, TransportType};
 
 pub(crate) enum DataMessage {
-    All(DataMessageAll),
-    Head(DataMessageHead),
-    Data(Bytes),
-    End(DataMessageEnd),
+    All(DataType, TransportType, Bytes),
+    BatchStart(u64, Bytes),
+    Batch(Bytes),
+    BatchEnd(DataType, TransportType, Bytes),
+    Drain(u64, u64),
+    Clear,
+}
+
+pub unsafe trait GetDataType: Clone + Copy {
+    fn get_type() -> DataType;
 }
 
 pub(crate) trait UpdateData: Sync + Send {
+    // fn set_all(&self, data: &[u8], transport_type: TransportType) -> Result<(), String>;
+    // fn batch_start(&self, data: &[u8], elements_count: u64) -> Result<(), String>;
+    // fn batch(&self, data: &[u8]) -> Result<(), String>;
+    // fn batch_end(&self, data: &[u8], transport_type: TransportType) -> Result<(), String>;
+    // fn drain(&self, index: u64, count: u64) -> Result<(), String>;
+    // fn clear(&self);
     fn update_data(&self, message: DataMessage) -> Result<(), String>;
 }
 
 pub struct Data<T> {
     name: String,
     id: u64,
-    type_id: u32,
-    inner: Arc<RwLock<(T, Vec<u8>, bool)>>,
-    buffer: Arc<Mutex<Option<(T, Vec<u8>)>>>,
+    data_type: DataType,
+    element_size: usize,
+    inner: Arc<RwLock<(Vec<T>, bool)>>,
+    buffer: Arc<Mutex<Option<Vec<T>>>>,
     sender: MessageSender,
 }
 
 impl<T> Data<T>
 where
-    T: Serialize + Clone,
+    T: GetDataType,
 {
-    pub(crate) fn new(
-        name: String,
-        id: u64,
-        type_id: u32,
-        header: T,
-        sender: MessageSender,
-    ) -> Self {
+    pub(crate) fn new(name: String, id: u64, sender: MessageSender) -> Self {
         Self {
             name,
             id,
-            type_id,
-            inner: Arc::new(RwLock::new((header, Vec::new(), false))),
+            data_type: T::get_type(),
+            element_size: T::get_type().element_size(),
+            inner: Arc::new(RwLock::new((Vec::new(), false))),
             buffer: Arc::new(Mutex::new(None)),
             sender,
         }
     }
 
-    pub fn get(&self) -> (T, Vec<u8>) {
+    pub fn get(&self) -> Vec<T> {
         let inner = self.inner.read();
-        (inner.0.clone(), inner.1.clone())
+        inner.0.clone()
     }
 
-    pub fn get_updated(&self) -> Option<(T, Vec<u8>)> {
+    pub fn get_updated(&self) -> Option<Vec<T>> {
         let mut inner = self.inner.write();
-        if inner.2 {
-            inner.2 = false;
-            Some((inner.0.clone(), inner.1.clone()))
+        if inner.1 {
+            inner.1 = false;
+            Some(inner.0.clone())
         } else {
             None
         }
     }
 
-    pub fn read<R>(&self, f: impl Fn((&T, &Vec<u8>, bool)) -> R) -> R {
+    pub fn read<R>(&self, f: impl Fn((&[T], bool)) -> R) -> R {
         let mut inner = self.inner.write();
-        let result = f((&inner.0, &inner.1, inner.2));
-        inner.2 = false;
+        let result = f((&inner.0, inner.1));
+        inner.1 = false;
         result
+    }
+
+    fn save_data(&self, data: Vec<T>, transport_type: TransportType) -> Result<(), String> {
+        match transport_type {
+            TransportType::Set(count) => {
+                if data.len() as u64 != count {
+                    return Err(format!(
+                        "Data size {} does not match expected count {} for Set transport type",
+                        data.len(),
+                        count
+                    ));
+                }
+                *self.inner.write() = (data, true);
+            }
+            TransportType::Add(count) => {
+                if data.len() as u64 != count {
+                    return Err(format!(
+                        "Data size {} does not match expected count {} for Add transport type",
+                        data.len(),
+                        count
+                    ));
+                }
+                let mut w = self.inner.write();
+                w.0.extend(data);
+                w.1 = true;
+            }
+            TransportType::Replace(start, count) => {
+                if data.len() as u64 != count {
+                    return Err(format!(
+                        "Data size {} does not match expected count {} for Replace transport type",
+                        data.len(),
+                        count
+                    ));
+                }
+                let mut w = self.inner.write();
+                if start as usize + data.len() > w.0.len() {
+                    return Err(format!(
+                        "Replace range ({} to {}) exceeds current data size {}",
+                        start,
+                        start + count,
+                        w.0.len()
+                    ));
+                }
+                w.0.splice(start as usize..(start as usize + data.len()), data);
+                w.1 = true;
+            }
+        }
+        Ok(())
+    }
+
+    fn set_all(&self, data: &[u8], transport_type: TransportType) -> Result<(), String> {
+        if data.len() % self.element_size != 0 {
+            return Err(format!(
+                "Data size {} is not a multiple of element size {}",
+                data.len(),
+                self.element_size
+            ));
+        }
+
+        let mut buffer = Vec::with_capacity(data.len() / self.element_size);
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                data.as_ptr(),
+                buffer.as_mut_ptr() as *mut u8,
+                data.len(),
+            );
+            buffer.set_len(data.len() / self.element_size);
+        }
+        self.save_data(buffer, transport_type)
+    }
+
+    fn batch_start(&self, data: &[u8], elements_count: u64) -> Result<(), String> {
+        if data.len() as u64 > elements_count * self.element_size as u64 {
+            return Err(format!(
+                "Batch start data size {} exceeds total data size {}",
+                data.len(),
+                elements_count * self.element_size as u64
+            ));
+        }
+        if data.len() as u64 % self.element_size as u64 != 0 {
+            return Err(format!(
+                "Batch start data size {} is not a multiple of element size {}",
+                data.len(),
+                self.element_size
+            ));
+        }
+
+        let mut buffer = Vec::with_capacity(elements_count as usize);
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                data.as_ptr(),
+                buffer.as_mut_ptr() as *mut u8,
+                data.len(),
+            );
+            buffer.set_len(data.len() / self.element_size);
+        }
+        self.buffer.lock().replace(buffer);
+        Ok(())
+    }
+
+    fn batch(&self, data: &[u8]) -> Result<(), String> {
+        match *self.buffer.lock() {
+            Some(ref mut buffer) => {
+                if buffer.len() * self.element_size + data.len()
+                    > buffer.capacity() * self.element_size
+                {
+                    return Err(format!(
+                        "Batch data size {} exceeds total data size {}",
+                        buffer.len() * self.element_size + data.len(),
+                        buffer.capacity() * self.element_size
+                    ));
+                }
+
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        data.as_ptr(),
+                        buffer.as_mut_ptr().add(buffer.len()) as *mut u8,
+                        data.len(),
+                    );
+                    buffer.set_len(buffer.len() + data.len() / self.element_size);
+                }
+
+                Ok(())
+            }
+            None => Err(format!(
+                "No header found for Data: {} when updating batch",
+                self.name
+            )),
+        }
+    }
+
+    fn batch_end(&self, data: &[u8], transport_type: TransportType) -> Result<(), String> {
+        match self.buffer.lock().take() {
+            Some(mut buffer) => {
+                if buffer.len() * self.element_size + data.len()
+                    != buffer.capacity() * self.element_size
+                {
+                    return Err(format!(
+                        "Batch end data size {} does not match total data size {}",
+                        buffer.len() * self.element_size + data.len(),
+                        buffer.capacity() * self.element_size
+                    ));
+                }
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        data.as_ptr(),
+                        buffer.as_mut_ptr().add(buffer.len()) as *mut u8,
+                        data.len(),
+                    );
+                    buffer.set_len(buffer.len() + data.len() / self.element_size);
+                }
+
+                self.save_data(buffer, transport_type)
+            }
+            None => Err(format!(
+                "No header found for Data: {} when updating batch end",
+                self.name
+            )),
+        }
+    }
+
+    fn drain(&self, index: u64, count: u64) -> Result<(), String> {
+        let mut w = self.inner.write();
+        if index as usize + count as usize > w.0.len() {
+            return Err(format!(
+                "Drain range ({} to {}) exceeds current data size {}",
+                index,
+                index + count,
+                w.0.len()
+            ));
+        }
+        w.0.drain(index as usize..(index as usize + count as usize));
+        w.1 = true;
+
+        Ok(())
+    }
+
+    fn clear(&self) {
+        let mut w = self.inner.write();
+        w.0.clear();
+        w.1 = true;
+    }
+}
+
+impl<T: Sync + Send> UpdateData for Data<T>
+where
+    T: GetDataType,
+{
+    fn update_data(&self, message: DataMessage) -> Result<(), String> {
+        match message {
+            DataMessage::All(data_type, transport_type, data) => {
+                if data_type != self.data_type {
+                    return Err(format!(
+                        "Data type {:?} does not match expected type {:?} for Data: {}",
+                        data_type, self.data_type, self.name
+                    ));
+                }
+                self.set_all(&data, transport_type)
+            }
+            DataMessage::BatchStart(count, data) => self.batch_start(&data, count),
+            DataMessage::Batch(data) => self.batch(&data),
+            DataMessage::BatchEnd(data_type, transport_type, data) => {
+                if data_type != self.data_type {
+                    return Err(format!(
+                        "Data type {:?} does not match expected type {:?} for Data: {}",
+                        data_type, self.data_type, self.name
+                    ));
+                }
+                self.batch_end(&data, transport_type)
+            }
+            DataMessage::Drain(index, count) => self.drain(index, count),
+            DataMessage::Clear => {
+                self.clear();
+                Ok(())
+            }
+        }
     }
 }
 
@@ -95,210 +299,11 @@ impl<T> Clone for Data<T> {
         Self {
             name: self.name.clone(),
             id: self.id,
-            type_id: self.type_id,
+            data_type: self.data_type,
+            element_size: self.element_size,
             inner: self.inner.clone(),
             buffer: self.buffer.clone(),
             sender: self.sender.clone(),
-        }
-    }
-}
-
-impl<T> UpdateData for Data<T>
-where
-    T: for<'a> Deserialize<'a> + Send + Sync,
-{
-    fn update_data(&self, message: DataMessage) -> Result<(), String> {
-        match message {
-            DataMessage::All(msg) => {
-                if self.type_id != msg.type_id {
-                    self.sender.send(ChannelMessage::Ack(self.id));
-                    return Err(format!("Type id mismatch for Data: {}", self.name));
-                }
-                let value = deserialize(&msg.header).map_err(|e| {
-                    self.sender.send(ChannelMessage::Ack(self.id));
-                    format!("Failed to deserialize header: {}", e)
-                })?;
-                if msg.is_add {
-                    let mut w = self.inner.write();
-                    w.0 = value;
-                    w.1.extend_from_slice(&msg.data);
-                    w.2 = true;
-                } else {
-                    let mut w = self.inner.write();
-                    *w = (value, msg.data.to_vec(), true);
-                }
-                self.sender.send(ChannelMessage::Ack(self.id));
-                Ok(())
-            }
-            DataMessage::Head(msg) => {
-                if self.type_id != msg.type_id {
-                    self.sender.send(ChannelMessage::Ack(self.id));
-                    return Err(format!("Type id mismatch for Data: {}", self.name));
-                }
-                let value = deserialize(&msg.header).map_err(|e| {
-                    self.sender.send(ChannelMessage::Ack(self.id));
-                    format!("Failed to deserialize header: {}", e)
-                })?;
-                let mut buffer = Vec::with_capacity(msg.data_size_all as usize);
-                buffer.extend_from_slice(&msg.data);
-                *self.buffer.lock() = Some((value, buffer));
-                Ok(())
-            }
-            DataMessage::Data(data) => {
-                let mut b = self.buffer.lock();
-                if let Some((_, buffer)) = b.as_mut() {
-                    buffer.extend_from_slice(&data);
-                    Ok(())
-                } else {
-                    self.sender.send(ChannelMessage::Ack(self.id));
-                    Err(format!(
-                        "No header found for Data: {} when updating data",
-                        self.name
-                    ))
-                }
-            }
-            DataMessage::End(msg) => {
-                let taken = self.buffer.lock().take();
-                let (header, mut buffer) = taken.ok_or_else(|| {
-                    self.sender.send(ChannelMessage::Ack(self.id));
-                    format!("No header found for Data: {} when updating end", self.name)
-                })?;
-                buffer.extend_from_slice(&msg.data);
-                if msg.is_add {
-                    let mut w = self.inner.write();
-                    w.0 = header;
-                    w.1.extend_from_slice(&buffer);
-                    w.2 = true;
-                } else {
-                    let mut w = self.inner.write();
-                    *w = (header, buffer, true);
-                }
-                self.sender.send(ChannelMessage::Ack(self.id));
-                Ok(())
-            }
-        }
-    }
-}
-
-// DataStatic --------------------------------------------
-pub struct DataStatic<T> {
-    name: String,
-    id: u64,
-    type_id: u32,
-    inner: Arc<RwLock<(T, Vec<u8>, bool)>>,
-    buffer: Arc<Mutex<Option<(T, Vec<u8>)>>>,
-}
-
-impl<T: Clone> DataStatic<T> {
-    pub(crate) fn new(name: String, id: u64, type_id: u32, header: T) -> Self {
-        Self {
-            name,
-            id,
-            type_id,
-            inner: Arc::new(RwLock::new((header, Vec::new(), false))),
-            buffer: Arc::new(Mutex::new(None)),
-        }
-    }
-
-    pub fn get(&self) -> (T, Vec<u8>) {
-        let inner = self.inner.read();
-        (inner.0.clone(), inner.1.clone())
-    }
-
-    pub fn get_updated(&self) -> Option<(T, Vec<u8>)> {
-        let mut inner = self.inner.write();
-        if inner.2 {
-            inner.2 = false;
-            Some((inner.0.clone(), inner.1.clone()))
-        } else {
-            None
-        }
-    }
-
-    pub fn read<R>(&self, f: impl Fn((&T, &Vec<u8>, bool)) -> R) -> R {
-        let inner = self.inner.read();
-        f((&inner.0, &inner.1, inner.2))
-    }
-}
-
-impl<T> Clone for DataStatic<T> {
-    fn clone(&self) -> Self {
-        Self {
-            name: self.name.clone(),
-            id: self.id,
-            type_id: self.type_id,
-            inner: self.inner.clone(),
-            buffer: self.buffer.clone(),
-        }
-    }
-}
-
-impl<T> UpdateData for DataStatic<T>
-where
-    T: for<'a> Deserialize<'a> + Send + Sync,
-{
-    fn update_data(&self, message: DataMessage) -> Result<(), String> {
-        match message {
-            DataMessage::All(msg) => {
-                if self.type_id != msg.type_id {
-                    return Err(format!("Type id mismatch for DataStatic: {}", self.name));
-                }
-                let value = deserialize(&msg.header)
-                    .map_err(|e| format!("Failed to deserialize header: {}", e))?;
-                if msg.is_add {
-                    let mut w = self.inner.write();
-                    w.0 = value;
-                    w.1.extend_from_slice(&msg.data);
-                    w.2 = true;
-                } else {
-                    let mut w = self.inner.write();
-                    *w = (value, msg.data.to_vec(), true);
-                }
-                Ok(())
-            }
-            DataMessage::Head(msg) => {
-                if self.type_id != msg.type_id {
-                    return Err(format!("Type id mismatch for DataStatic: {}", self.name));
-                }
-                let value = deserialize(&msg.header)
-                    .map_err(|e| format!("Failed to deserialize header: {}", e))?;
-                let mut buffer = Vec::with_capacity(msg.data_size_all as usize);
-                buffer.extend_from_slice(&msg.data);
-                *self.buffer.lock() = Some((value, buffer));
-                Ok(())
-            }
-            DataMessage::Data(data) => {
-                let mut b = self.buffer.lock();
-                if let Some((_, buffer)) = b.as_mut() {
-                    buffer.extend_from_slice(&data);
-                    Ok(())
-                } else {
-                    Err(format!(
-                        "No header found for DataStatic: {} when updating data",
-                        self.name
-                    ))
-                }
-            }
-            DataMessage::End(msg) => {
-                let taken = self.buffer.lock().take();
-                let (header, mut buffer) = taken.ok_or_else(|| {
-                    format!(
-                        "No header found for DataStatic: {} when updating end",
-                        self.name
-                    )
-                })?;
-                buffer.extend_from_slice(&msg.data);
-                if msg.is_add {
-                    let mut w = self.inner.write();
-                    w.0 = header;
-                    w.1.extend_from_slice(&buffer);
-                    w.2 = true;
-                } else {
-                    let mut w = self.inner.write();
-                    *w = (header, buffer, true);
-                }
-                Ok(())
-            }
         }
     }
 }

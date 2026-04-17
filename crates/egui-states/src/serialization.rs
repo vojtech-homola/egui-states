@@ -2,10 +2,11 @@ use postcard::ser_flavors::Flavor;
 use serde::{Deserialize, Serialize};
 
 use crate::collections::{MapHeader, VecHeader};
+use crate::data_transport;
 use crate::graphs::GraphHeader;
 use crate::image_header::ImageHeader;
-use crate::data_header;
 
+// TODO: make these constants configurable
 pub(crate) const VALUE_MAX_SIZE: usize = 1024 * 1024; // 1 MB
 pub(crate) const MSG_SIZE_THRESHOLD: usize = 1024 * 1024 * 10; // 10 MB
 pub(crate) const MAX_MSG_COUNT: usize = 10;
@@ -27,6 +28,11 @@ impl<const N: usize> FastVec<N> {
     #[inline]
     pub fn new() -> Self {
         Self::Stack(StackVec([0; N], 0))
+    }
+
+    #[inline]
+    pub(crate) fn new_heap() -> Self {
+        Self::Heap(Vec::new())
     }
 
     #[cfg(feature = "server")]
@@ -58,6 +64,19 @@ impl<const N: usize> FastVec<N> {
         match self {
             Self::Heap(vec) => vec.len(),
             Self::Stack(stack_vec) => stack_vec.1,
+        }
+    }
+
+    pub(crate) fn reserve_exact(&mut self, additional: usize) {
+        match self {
+            Self::Heap(vec) => vec.reserve_exact(additional),
+            Self::Stack(stack_vec) => {
+                if stack_vec.1 + additional > N {
+                    let mut new_vec = Vec::with_capacity(stack_vec.1 + additional);
+                    new_vec.extend_from_slice(&stack_vec.0[..stack_vec.1]);
+                    *self = Self::Heap(new_vec);
+                }
+            }
         }
     }
 
@@ -177,7 +196,7 @@ pub(crate) enum ServerHeader {
     ValueTake(u64, u32, bool, bool, u32),
     Static(u64, u32, bool, u32),
     Image(u64, bool, ImageHeader),
-    Data(u64, data_header::DataHeader),
+    Data(u64, data_transport::DataHeader),
     Graph(u64, bool, GraphHeader),
     ValueVec(u64, u32, bool, VecHeader, u32),
     ValueMap(u64, u32, bool, MapHeader, u32),
@@ -317,6 +336,16 @@ where
     T: Serialize,
 {
     postcard::serialize_with_flavor::<T, FastVec<N>, FastVec<N>>(value, FastVec::new())
+        .map_err(|_| ())
+}
+
+#[cfg(feature = "server")]
+#[inline]
+pub(crate) fn serialize_heap<T, const N: usize>(value: &T) -> Result<FastVec<N>, ()>
+where
+    T: Serialize,
+{
+    postcard::serialize_with_flavor::<T, FastVec<N>, FastVec<N>>(value, FastVec::new_heap())
         .map_err(|_| ())
 }
 

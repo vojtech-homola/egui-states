@@ -15,6 +15,7 @@ use crate::python::{
     pygraphs, pyimage, pyparsing,
     pytypes::{PyObjectClass, PyObjectType},
 };
+use crate::server::data::Data;
 use crate::server::server::Server;
 use crate::server::signals::SignalsManager;
 use crate::server::value_parsing::{ValueCreator, ValueParser};
@@ -30,6 +31,7 @@ struct ValuesInner {
     maps: NoHashMap<u64, (Arc<ValueMap>, PyObjectType)>,
     lists: NoHashMap<u64, (Arc<ValueList>, PyObjectType)>,
     images: NoHashMap<u64, Arc<ValueImage>>,
+    datas: NoHashMap<u64, Arc<Data>>,
     graphs: NoHashMap<u64, Arc<ValueGraphs>>,
 }
 
@@ -211,6 +213,7 @@ impl StateServerCore {
 
                 let images = states.images;
                 let graphs = states.graphs;
+                let datas = states.datas;
 
                 let inner = ValuesInner {
                     values,
@@ -222,6 +225,7 @@ impl StateServerCore {
                     lists,
                     images,
                     graphs,
+                    datas,
                 };
 
                 if self.inner.set(inner).is_err() {

@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::State;
 use crate::client::atomics::{Atomic, AtomicStatic};
-use crate::client::data::{Data, DataStatic, UpdateData};
+use crate::client::data::{Data, GetDataType, UpdateData};
 use crate::client::graphs::{UpdateGraph, ValueGraphs};
 use crate::client::image::ValueImage;
 use crate::client::list::{UpdateList, ValueVec};
@@ -78,13 +78,9 @@ pub trait StatesCreator {
     where
         T: for<'a> Deserialize<'a> + GraphElement + 'static;
 
-    fn data<T>(&mut self, name: &'static str, header: T) -> Data<T>
+    fn data<T>(&mut self, name: &'static str) -> Data<T>
     where
-        T: for<'a> Deserialize<'a> + Serialize + Transportable + Clone + Send + Sync + 'static;
-
-    fn data_static<T>(&mut self, name: &'static str, header: T) -> DataStatic<T>
-    where
-        T: for<'a> Deserialize<'a> + Serialize + Transportable + Clone + Send + Sync + 'static;
+        T: GetDataType + Send + Sync + 'static;
 }
 
 #[derive(Clone)]
@@ -311,29 +307,15 @@ impl StatesCreator for StatesCreatorClient {
         value
     }
 
-    fn data<T>(&mut self, name: &str, header: T) -> Data<T>
+    fn data<T>(&mut self, name: &str) -> Data<T>
     where
-        T: for<'a> Deserialize<'a> + Serialize + Transportable + Clone + Send + Sync + 'static,
+        T: GetDataType + Send + Sync + 'static,
     {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
-        let type_id = T::get_type().get_hash();
-        let value = Data::new(name, id, type_id, header, self.sender.clone());
+        let data = Data::new(name, id, self.sender.clone());
 
-        self.val.datas.insert(id, Arc::new(value.clone()));
-        value
-    }
-
-    fn data_static<T>(&mut self, name: &str, header: T) -> DataStatic<T>
-    where
-        T: for<'a> Deserialize<'a> + Serialize + Transportable + Clone + Send + Sync + 'static,
-    {
-        let name = format!("{}.{}", self.parent, name);
-        let id = generate_value_id(&name);
-        let type_id = T::get_type().get_hash();
-        let value = DataStatic::new(name, id, type_id, header);
-
-        self.val.data_statics.insert(id, Arc::new(value.clone()));
-        value
+        self.val.datas.insert(id, Arc::new(data.clone()));
+        data
     }
 }

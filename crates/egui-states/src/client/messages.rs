@@ -1,18 +1,16 @@
 use bytes::Bytes;
-use std::collections::VecDeque;
+// use sha2::digest::Update;
+// use std::collections::VecDeque;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use crate::client::client::Client;
-use crate::client::data::{DataMessage, DataMessageAll, DataMessageEnd, DataMessageHead};
+use crate::client::data::DataMessage;
 use crate::client::states_creator::ValuesList;
 use crate::collections::{MapHeader, VecHeader};
-use crate::data_header::DataHeader;
+use crate::data_transport::DataHeader;
 use crate::graphs::GraphHeader;
 use crate::image_header::ImageHeader;
-use crate::serialization::{
-    ClientHeader, FastVec, MAX_MSG_COUNT, MSG_SIZE_THRESHOLD, MessageData, ServerHeader,
-    serialize_to_data,
-};
+use crate::serialization::{ClientHeader, FastVec, MessageData, ServerHeader, serialize_to_data};
 
 pub(crate) enum ChannelMessage {
     Value(u64, u32, bool, MessageData),
@@ -58,59 +56,59 @@ pub(crate) fn parse_to_send(message: ChannelMessage, data: &mut FastVec<64>) {
     }
 }
 
-pub(crate) struct MessagesSerializer {
-    queue: VecDeque<ChannelMessage>,
-    temp: VecDeque<FastVec<64>>,
-}
+// pub(crate) struct MessagesSerializer {
+//     queue: VecDeque<ChannelMessage>,
+//     temp: VecDeque<FastVec<64>>,
+// }
 
-impl MessagesSerializer {
-    pub(crate) fn new() -> Self {
-        Self {
-            queue: VecDeque::with_capacity(MAX_MSG_COUNT),
-            temp: VecDeque::new(),
-        }
-    }
+// impl MessagesSerializer {
+//     pub(crate) fn new() -> Self {
+//         Self {
+//             queue: VecDeque::with_capacity(MAX_MSG_COUNT),
+//             temp: VecDeque::new(),
+//         }
+//     }
 
-    pub(crate) fn push(&mut self, message: ChannelMessage) {
-        self.queue.push_back(message);
-    }
+//     pub(crate) fn push(&mut self, message: ChannelMessage) {
+//         self.queue.push_back(message);
+//     }
 
-    pub(crate) fn serialize(&mut self) -> Option<FastVec<64>> {
-        if let Some(message) = self.temp.pop_front() {
-            return Some(message);
-        }
+//     pub(crate) fn serialize(&mut self) -> Option<FastVec<64>> {
+//         if let Some(message) = self.temp.pop_front() {
+//             return Some(message);
+//         }
 
-        if self.queue.is_empty() {
-            return None;
-        }
+//         if self.queue.is_empty() {
+//             return None;
+//         }
 
-        let mut actual = FastVec::<64>::new();
-        while let Some(msg) = self.queue.pop_front() {
-            match msg {
-                ChannelMessage::Value(id, type_id, signal, data) => {
-                    let header = ClientHeader::Value(id, type_id, signal, data.len() as u32);
-                    serialize_to_data(&header, &mut actual).unwrap();
-                    actual.extend_from_data(&data);
-                }
-                ChannelMessage::Signal(id, type_id, data) => {
-                    let header = ClientHeader::Signal(id, type_id, data.len() as u32);
-                    serialize_to_data(&header, &mut actual).unwrap();
-                    actual.extend_from_data(&data);
-                }
-                ChannelMessage::Ack(id) => {
-                    let header = ClientHeader::Ack(id);
-                    serialize_to_data(&header, &mut actual).unwrap();
-                }
-            }
+//         let mut actual = FastVec::<64>::new();
+//         while let Some(msg) = self.queue.pop_front() {
+//             match msg {
+//                 ChannelMessage::Value(id, type_id, signal, data) => {
+//                     let header = ClientHeader::Value(id, type_id, signal, data.len() as u32);
+//                     serialize_to_data(&header, &mut actual).unwrap();
+//                     actual.extend_from_data(&data);
+//                 }
+//                 ChannelMessage::Signal(id, type_id, data) => {
+//                     let header = ClientHeader::Signal(id, type_id, data.len() as u32);
+//                     serialize_to_data(&header, &mut actual).unwrap();
+//                     actual.extend_from_data(&data);
+//                 }
+//                 ChannelMessage::Ack(id) => {
+//                     let header = ClientHeader::Ack(id);
+//                     serialize_to_data(&header, &mut actual).unwrap();
+//                 }
+//             }
 
-            if actual.len() >= MSG_SIZE_THRESHOLD {
-                break;
-            }
-        }
+//             if actual.len() >= MSG_SIZE_THRESHOLD {
+//                 break;
+//             }
+//         }
 
-        Some(actual)
-    }
-}
+//         Some(actual)
+//     }
+// }
 
 pub(crate) enum ServerMessage {
     Value(u64, u32, bool, Bytes),
@@ -243,68 +241,57 @@ impl MessagesParser {
     }
 
     fn _process_data(
-        &self,
+        &mut self,
         id: u64,
         data_header: DataHeader,
     ) -> Result<ServerMessage, &'static str> {
         let res = match data_header {
-            DataHeader::All(header) => {
-                let header_size = header.header_size as usize;
-                let data_size = header.data_size as usize;
-                if self.pointer + header_size + data_size > self.data.len() {
+            DataHeader::All(data_type, transport_type, update, data_size) => {
+                let data_size = data_size as usize;
+                if self.pointer + data_size > self.data.len() {
                     return Err("Incomplete data for Data/DataStatic message");
                 }
 
-                let msg = DataMessageAll {
-                    type_id: header.type_id,
-                    is_add: header.is_add,
-                    header: self.data.slice(self.pointer..self.pointer + header_size),
-                    data: self
-                        .data
-                        .slice(self.pointer + header_size..self.pointer + header_size + data_size),
-                };
-                ServerMessage::Data(id, header.update, DataMessage::All(msg))
+                let dat = self.data.slice(self.pointer..self.pointer + data_size);
+                self.pointer += data_size;
+                ServerMessage::Data(id, update, DataMessage::All(data_type, transport_type, dat))
             }
-            DataHeader::Head(header) => {
-                let header_size = header.header_size as usize;
-                let data_size = header.data_size as usize;
-                if self.pointer + header_size + data_size > self.data.len() {
+            DataHeader::StartBatch(count, data_size) => {
+                let data_size = data_size as usize;
+                if self.pointer + data_size > self.data.len() {
                     return Err("Incomplete data for Data/DataStatic message");
                 }
 
-                let msg = DataMessageHead {
-                    type_id: header.type_id,
-                    data_size_all: header.data_size_all,
-                    header: self.data.slice(self.pointer..self.pointer + header_size),
-                    data: self
-                        .data
-                        .slice(self.pointer + header_size..self.pointer + header_size + data_size),
-                };
-                ServerMessage::Data(id, false, DataMessage::Head(msg))
+                let dat = self.data.slice(self.pointer..self.pointer + data_size);
+                self.pointer += data_size;
+                ServerMessage::Data(id, false, DataMessage::BatchStart(count, dat))
             }
-            DataHeader::Data(header) => {
-                let data_size = header.data_size as usize;
+            DataHeader::Batch(data_size) => {
+                let data_size = data_size as usize;
                 if self.pointer + data_size > self.data.len() {
                     return Err("Incomplete data for Data/DataStatic message");
                 }
                 let dat = self.data.slice(self.pointer..self.pointer + data_size);
-                ServerMessage::Data(id, false, DataMessage::Data(dat))
+                self.pointer += data_size;
+                ServerMessage::Data(id, false, DataMessage::Batch(dat))
             }
-            DataHeader::End(header) => {
-                let data_size = header.data_size as usize;
+            DataHeader::End(data_type, transport_type, update, data_size) => {
+                let data_size = data_size as usize;
                 if self.pointer + data_size > self.data.len() {
                     return Err("Incomplete data for Data/DataStatic message");
                 }
                 let dat = self.data.slice(self.pointer..self.pointer + data_size);
+                self.pointer += data_size;
                 ServerMessage::Data(
                     id,
-                    header.update,
-                    DataMessage::End(DataMessageEnd {
-                        is_add: header.is_add,
-                        data: dat,
-                    }),
+                    update,
+                    DataMessage::BatchEnd(data_type, transport_type, dat),
                 )
             }
+            DataHeader::Drain(start, count, update) => {
+                ServerMessage::Data(id, update, DataMessage::Drain(start, count))
+            }
+            DataHeader::Clear(update) => ServerMessage::Data(id, update, DataMessage::Clear),
         };
         Ok(res)
     }
