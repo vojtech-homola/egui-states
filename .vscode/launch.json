@@ -12,7 +12,7 @@
             "console": "integratedTerminal",
             "args": [
                 "-i",
-                "example/test.py",
+                "example/python/example.py",
                 "--matplotlib"
             ],
         },
@@ -24,7 +24,7 @@
             "console": "integratedTerminal",
             "args": [
                 "-i",
-                "example/test.py",
+                "example/python/example.py",
                 "--matplotlib"
             ],
             "preLaunchTask": "build server",

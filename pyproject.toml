@@ -14,7 +14,7 @@ readme = "README.md"
 dependencies = ["numpy"]
 
 [dependency-groups]
-dev = ["ipython", "matplotlib", "maturin", "git-cliff"]
+dev = ["pytest", "ipython", "matplotlib", "maturin", "git-cliff"]
 
 [tool.maturin]
 bindings = "pyo3"
