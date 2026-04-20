@@ -78,6 +78,7 @@ pub trait StatesCreator {
     where
         T: for<'a> Deserialize<'a> + GraphElement + 'static;
 
+    #[allow(private_bounds)]
     fn data<T>(&mut self, name: &'static str) -> Data<T>
     where
         T: GetDataType + Send + Sync + 'static;

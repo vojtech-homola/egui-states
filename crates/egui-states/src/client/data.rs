@@ -17,9 +17,30 @@ pub(crate) enum DataMessage {
 
 pub(crate) mod private {
     use super::DataType;
-    pub unsafe trait GetDataType: Clone + Copy {
+    pub(crate) unsafe trait GetDataType: Clone + Copy {
         fn get_type() -> DataType;
     }
+
+    macro_rules! impl_get_data_type {
+        ($ty:ty, $variant:expr) => {
+            unsafe impl GetDataType for $ty {
+                fn get_type() -> DataType {
+                    $variant
+                }
+            }
+        };
+    }
+
+    impl_get_data_type!(u8, DataType::U8);
+    impl_get_data_type!(u16, DataType::U16);
+    impl_get_data_type!(u32, DataType::U32);
+    impl_get_data_type!(u64, DataType::U64);
+    impl_get_data_type!(i8, DataType::I8);
+    impl_get_data_type!(i16, DataType::I16);
+    impl_get_data_type!(i32, DataType::I32);
+    impl_get_data_type!(i64, DataType::I64);
+    impl_get_data_type!(f32, DataType::F32);
+    impl_get_data_type!(f64, DataType::F64);
 }
 
 pub(crate) trait UpdateData: Sync + Send {
@@ -36,6 +57,7 @@ pub struct Data<T> {
     sender: MessageSender,
 }
 
+#[allow(private_bounds)]
 impl<T> Data<T>
 where
     T: private::GetDataType,

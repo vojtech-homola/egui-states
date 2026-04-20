@@ -30,6 +30,7 @@ impl<const N: usize> FastVec<N> {
         Self::Stack(StackVec([0; N], 0))
     }
 
+    #[cfg(feature = "server")]
     #[inline]
     pub(crate) fn new_heap() -> Self {
         Self::Heap(Vec::new())
@@ -67,6 +68,7 @@ impl<const N: usize> FastVec<N> {
         }
     }
 
+    #[cfg(feature = "server")]
     pub(crate) fn reserve_exact(&mut self, additional: usize) {
         match self {
             Self::Heap(vec) => vec.reserve_exact(additional),

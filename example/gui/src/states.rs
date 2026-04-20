@@ -1,17 +1,36 @@
 use egui_states::Transportable;
 use egui_states::{
-    Queue, Signal, State, StatesCreator, StaticAtomic, Value, ValueAtomic, ValueGraphs, ValueImage,
-    ValueMap, ValueTake, ValueVec,
+    Data, Queue, Signal, State, Static, StaticAtomic, Value, ValueAtomic, ValueImage, ValueMap,
+    ValueTake, ValueVec,
 };
 
-#[derive(Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize, Transportable)]
+#[derive(
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    Transportable,
+)]
 pub(crate) enum TestEnum {
+    #[default]
     A,
     B,
     C,
 }
 
-#[derive(Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize, Transportable, Default)]
+#[derive(
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    Transportable,
+)]
 pub(crate) enum TestEnum2 {
     X,
     #[default]
@@ -19,79 +38,112 @@ pub(crate) enum TestEnum2 {
     Z,
 }
 
-// #[derive(Clone, serde::Serialize, serde::Deserialize, Transportable)]
-// pub(crate) struct TestStruct {
-//     x: f32,
-//     y: f32,
-//     label: String,
-// }
+#[derive(
+    Clone,
+    Default,
+    PartialEq,
+    serde::Serialize,
+    serde::Deserialize,
+    Transportable,
+)]
+pub(crate) struct TestStruct {
+    pub x: f32,
+    pub y: f32,
+    pub label: String,
+}
 
-// #[derive(Clone, serde::Serialize, serde::Deserialize, Transportable)]
-// pub(crate) struct TestStruct2 {
-//     x: f32,
-//     y: f32,
-// }
-
-#[derive(State)]
-pub(crate) struct MySubState {
-    // pub sub_value: Value<Option<i32>>,
-    // pub test_enum: Value<TestEnum, Queue>,
-    pub stat: StaticAtomic<[f32; 2]>,
-    pub enum_atomic: ValueAtomic<TestEnum2>,
-    // pub test_signal: Signal<f64>,
-    // pub signal_emp: Signal<()>,
+#[derive(
+    Clone,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    Transportable,
+)]
+pub(crate) struct TestStruct2 {
+    pub enabled: bool,
+    pub level: u16,
+    pub name: String,
 }
 
 #[derive(State)]
-pub(crate) struct Collections {
+pub(crate) struct ScalarStates {
+    pub bool_value: Value<bool>,
+    pub count: Value<i32>,
+    pub ratio: ValueAtomic<f64>,
+    pub queued_progress: Value<f32, Queue>,
+    pub title: Value<String>,
+    pub optional_value: Value<Option<i32>>,
+    pub fixed_numbers: Value<[u16; 3]>,
+    pub test_enum: Value<TestEnum>,
+}
+
+#[derive(State)]
+pub(crate) struct StaticStates {
+    pub status_text: Static<String>,
+    pub summary: Static<TestStruct2>,
+    pub pair: StaticAtomic<[f32; 2]>,
+}
+
+#[derive(State)]
+pub(crate) struct CustomStates {
+    pub point: Value<TestStruct>,
+    pub choice: Value<TestEnum2>,
+    pub optional_struct: Value<Option<TestStruct2>>,
+}
+
+#[derive(State)]
+pub(crate) struct CollectionStates {
+    pub plain_vec_value: Value<Vec<u32>>,
     pub list: ValueVec<i32>,
     pub map: ValueMap<u16, u32>,
 }
 
-pub struct States {
-    pub(crate) value: ValueAtomic<f64>,
-    // pub(crate) value2: Value<f32>,
-    pub(crate) empty_signal: Signal<(), Queue>,
-    pub(crate) image: ValueImage,
-    pub(crate) graphs: ValueGraphs<f32>,
-    pub(crate) test_enum: Value<TestEnum>,
-    // pub(crate) test_struct: Value<TestStruct>,
-    // pub(crate) test_enum2: Value<TestEnum2>,
-    // pub(crate) test_struct2: Value<TestStruct2>,
-    pub(crate) my_sub_state: MySubState,
-    pub(crate) map: Value<Vec<u32>>,
-    pub(crate) collections: Collections,
-    pub(crate) value_take_1: ValueTake<String>,
-    pub(crate) value_take_2: ValueTake<()>,
+#[derive(State)]
+pub(crate) struct EventStates {
+    pub empty_signal: Signal<(), Queue>,
+    pub number_signal: Signal<f64>,
+    pub enum_signal: Signal<TestEnum, Queue>,
+    pub take_text: ValueTake<String>,
+    pub take_empty: ValueTake<()>,
 }
 
-impl State for States {
-    const NAME: &'static str = "States";
+#[derive(State)]
+pub(crate) struct DataStates {
+    pub image: ValueImage,
+    pub bytes: Data<u8>,
+    pub samples: Data<f32>,
+}
 
-    fn new(c: &mut impl StatesCreator) -> Self {
-        Self {
-            value: c.atomic("value", 0.0),
-            // value2: c.value("value2", 0.0f32),
-            empty_signal: c.signal("empty_signal"),
-            image: c.image("image"),
-            graphs: c.graphs("graphs"),
-            test_enum: c.value("test_enum", TestEnum::B),
-            // test_struct: c.value(
-            //     "test_struct",
-            //     TestStruct {
-            //         x: 5.0,
-            //         y: 78.0,
-            //         label: "tttt".to_string(),
-            //     },
-            // ),
-            // test_enum2: c.value("test_enum2", TestEnum2::X),
-            // test_struct2: c.value("test_struct2", TestStruct2 { x: 0.0, y: 0.0 }),
-            map: c.value("map", vec![78, 78, 78, 78]),
+#[derive(State)]
+pub(crate) struct NestedLeafStates {
+    pub enabled: Value<bool>,
+    pub message: Value<String>,
+    pub buffer: Data<u16>,
+}
 
-            my_sub_state: c.substate("my_sub_state"),
-            collections: c.substate("collections"),
-            value_take_1: c.value_take("value_take_1"),
-            value_take_2: c.value_take("value_take_2"),
-        }
-    }
+#[derive(State)]
+pub(crate) struct NestedInnerStates {
+    pub selected: Value<Option<TestEnum>>,
+    pub pair: StaticAtomic<[f32; 2]>,
+    pub leaf: NestedLeafStates,
+}
+
+#[derive(State)]
+pub(crate) struct NestedStates {
+    pub label: Static<String>,
+    pub counter: Value<i32, Queue>,
+    pub inner: NestedInnerStates,
+}
+
+#[derive(State)]
+pub struct States {
+    pub(crate) scalars: ScalarStates,
+    pub(crate) statics: StaticStates,
+    pub(crate) custom: CustomStates,
+    pub(crate) collections: CollectionStates,
+    pub(crate) events: EventStates,
+    pub(crate) data: DataStates,
+    pub(crate) nested: NestedStates,
 }

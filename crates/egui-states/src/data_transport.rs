@@ -43,6 +43,7 @@ impl DataType {
         }
     }
 
+    #[cfg(feature = "server")]
     pub(crate) fn from_id(id: u8) -> Result<Self, ()> {
         match id {
             0 => Ok(DataType::U8),
