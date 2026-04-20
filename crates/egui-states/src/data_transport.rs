@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "server")]
-use crate::serialization::{FastVec, serialize, serialize_heap};
+use crate::serialization::{FastVec, ServerHeader, serialize, serialize_heap};
 
 #[derive(Serialize, Deserialize, PartialEq, Clone, Copy, Debug)]
 pub(crate) enum DataType {
@@ -27,7 +27,8 @@ impl DataType {
         }
     }
 
-    pub(crate) fn to_id(&self) -> u8 {
+    #[cfg(feature = "build_scripts")]
+    pub(crate) fn get_id(&self) -> u8 {
         match self {
             DataType::U8 => 0,
             DataType::U16 => 1,
@@ -79,10 +80,11 @@ pub(crate) enum DataHeader {
 impl DataHeader {
     #[cfg(feature = "server")]
     #[inline]
-    pub(crate) fn serialize(self, heap: bool) -> Result<FastVec<32>, ()> {
+    pub(crate) fn serialize(self, id: u64, heap: bool) -> Result<FastVec<32>, ()> {
+        let header = ServerHeader::Data(id, self);
         match heap {
-            true => serialize_heap(&self).map_err(|_| ()),
-            false => serialize(&self).map_err(|_| ()),
+            true => serialize_heap(&header).map_err(|_| ()),
+            false => serialize(&header).map_err(|_| ()),
         }
     }
 }

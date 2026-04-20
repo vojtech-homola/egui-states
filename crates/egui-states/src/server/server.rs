@@ -8,6 +8,7 @@ use std::thread;
 use bytes::Bytes;
 use tokio::runtime::Builder;
 
+use crate::data_transport::DataType;
 use crate::event_async::Event;
 use crate::graphs::GraphType;
 use crate::hashing::{NoHashMap, generate_value_id};
@@ -451,9 +452,33 @@ impl Server {
         Ok(id)
     }
 
-    // pub(crate) fn add_data(&mut self, name: &str, type_id: u32, value: Bytes) -> Result<u64, String> {
-    //     self.add_value(name, type_id, value, false)
-    // }
+    pub(crate) fn add_data(
+        &mut self,
+        name: &str,
+        type_id: u8,
+    ) -> Result<u64, String> {
+        if self.states_server.is_some() {
+            return Err("Cannot add new values after server has been finalized".to_string());
+        }
+
+        let id = generate_value_id(&name);
+        if self.states.datas.contains_key(&id) {
+            return Err(format!("Data with id {} already exists", id));
+        }
+
+        let data_type =
+            DataType::from_id(type_id).map_err(|_| "Invalid data type id".to_string())?;
+        let val = Data::new(
+            name.to_string(),
+            id,
+            data_type,
+            self.sender.clone(),
+            self.connected.clone(),
+        );
+
+        self.states.datas.insert(id, val);
+        Ok(id)
+    }
 
     pub(crate) fn add_graphs(&mut self, name: &str, graphs_type: GraphType) -> Result<u64, String> {
         if self.states_server.is_some() {

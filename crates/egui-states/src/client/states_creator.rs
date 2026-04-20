@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::State;
 use crate::client::atomics::{Atomic, AtomicStatic};
-use crate::client::data::{Data, GetDataType, UpdateData};
+use crate::client::data::{Data, private::GetDataType, UpdateData};
 use crate::client::graphs::{UpdateGraph, ValueGraphs};
 use crate::client::image::ValueImage;
 use crate::client::list::{UpdateList, ValueVec};

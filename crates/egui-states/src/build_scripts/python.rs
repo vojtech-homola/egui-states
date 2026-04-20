@@ -6,6 +6,7 @@ use std::{fs, io::Write};
 use crate::State;
 use crate::build_scripts::scripts;
 use crate::build_scripts::state_creator::StateType;
+use crate::data_transport::DataType;
 use crate::graphs::GraphType;
 use crate::transport::{InitValue, ObjectType};
 
@@ -110,7 +111,10 @@ fn process_type_info(values: &Vec<StateType>) -> (HashMap<String, TypeIndex>, Ve
                 };
                 type_map.insert(name.clone(), TypeIndex::Map(key_pos, value_pos));
             }
-            StateType::SubState(_, _, _) | StateType::Image(_) | StateType::Graphs(_, _) => {}
+            StateType::SubState(_, _, _)
+            | StateType::Image(_)
+            | StateType::Graphs(_, _)
+            | StateType::Data(_, _) => {}
         }
     }
 
@@ -327,6 +331,27 @@ fn state_to_line(state: &StateType, types_map: &HashMap<String, TypeIndex>) -> S
                     GraphType::F32 => "np.float32",
                     GraphType::F64 => "np.float64",
                 }
+            )
+        }
+        StateType::Data(name, data_type) => {
+            let last_name = name.split('.').last().unwrap();
+            let data_id = data_type.get_id();
+            let dtype = match data_type {
+                DataType::U8 => "uint8",
+                DataType::U16 => "uint16",
+                DataType::U32 => "uint32",
+                DataType::U64 => "uint64",
+                DataType::I8 => "int8",
+                DataType::I16 => "int16",
+                DataType::I32 => "int32",
+                DataType::I64 => "int64",
+                DataType::F32 => "float32",
+                DataType::F64 => "float64",
+            };
+            let dtype = format!("np.{}", dtype);
+            format!(
+                "        self.{}: s.Data[{}] = s.Data[{}]({})\n",
+                last_name, dtype, dtype, data_id
             )
         }
         StateType::Image(name) => {

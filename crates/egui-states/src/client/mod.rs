@@ -1,6 +1,4 @@
 mod event;
-mod messages;
-// pub(crate) mod sender;
 
 pub(crate) mod atomics;
 pub(crate) mod client;
@@ -9,6 +7,7 @@ pub(crate) mod graphs;
 pub(crate) mod image;
 pub(crate) mod list;
 pub(crate) mod map;
+pub(crate) mod messages;
 pub(crate) mod states_creator;
 pub(crate) mod values;
 

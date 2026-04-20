@@ -4,7 +4,7 @@ use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::Arc;
 use std::sync::OnceLock;
 
-use pyo3::buffer::PyBuffer;
+use pyo3::buffer::{PyBuffer, PyUntypedBuffer};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyByteArray, PyDict, PyList, PyTuple};
@@ -12,10 +12,11 @@ use pyo3::types::{PyByteArray, PyDict, PyList, PyTuple};
 use crate::graphs::GraphType;
 use crate::hashing::NoHashMap;
 use crate::python::{
+    pydata::check_data_type,
     pygraphs, pyimage, pyparsing,
     pytypes::{PyObjectClass, PyObjectType},
 };
-use crate::server::data::Data;
+use crate::server::data::{Data, DataHolder};
 use crate::server::server::Server;
 use crate::server::signals::SignalsManager;
 use crate::server::value_parsing::{ValueCreator, ValueParser};
@@ -99,6 +100,14 @@ impl StateServerCore {
         match self.get_values()?.graphs.get(&value_id) {
             Some(graphs) => Ok(graphs),
             _ => Err(PyValueError::new_err("Graphs with ID not found.")),
+        }
+    }
+
+    #[inline]
+    fn inner_data(&self, value_id: u64) -> PyResult<&Arc<Data>> {
+        match self.get_values()?.datas.get(&value_id) {
+            Some(data) => Ok(data),
+            _ => Err(PyValueError::new_err("Data with ID not found.")),
         }
     }
 }
@@ -296,6 +305,9 @@ impl StateServerCore {
         }
         if let Some(graphs) = values.graphs.get(&value_id) {
             return Ok(graphs.name.clone());
+        }
+        if let Some(data) = values.datas.get(&value_id) {
+            return Ok(data.name.clone());
         }
 
         Err(PyRuntimeError::new_err("Value not found."))
@@ -644,6 +656,121 @@ impl StateServerCore {
         })
     }
 
+    // data -------------------------------------------------------------
+    fn data_get<'py>(&self, py: Python<'py>, value_id: u64) -> PyResult<Bound<'py, PyByteArray>> {
+        Ok(self
+            .inner_data(value_id)?
+            .get(|data| PyByteArray::new(py, data)))
+    }
+
+    fn data_set(
+        &self,
+        py: Python,
+        value_id: u64,
+        data: &Bound<PyAny>,
+        update: bool,
+    ) -> PyResult<()> {
+        let buffer_untyped = PyUntypedBuffer::get(data)
+            .map_err(|_| PyValueError::new_err("Data must be a bytes-like object."))?;
+
+        let data_value = self.inner_data(value_id)?;
+        check_data_type(&buffer_untyped, data_value.data_type)
+            .map_err(|e| PyValueError::new_err(e))?;
+
+        let data_holder = DataHolder {
+            data: buffer_untyped.buf_ptr() as *const u8,
+            count: buffer_untyped.item_count(),
+            data_size: buffer_untyped.len_bytes(),
+            data_type: data_value.data_type,
+        };
+
+        py.detach(|| {
+            data_value
+                .set(data_holder, update)
+                .map_err(|e| PyValueError::new_err(e))
+        })
+    }
+
+    fn data_add(
+        &self,
+        py: Python,
+        value_id: u64,
+        data: &Bound<PyAny>,
+        update: bool,
+    ) -> PyResult<()> {
+        let buffer_untyped = PyUntypedBuffer::get(data)
+            .map_err(|_| PyValueError::new_err("Data must be a bytes-like object."))?;
+
+        let data_value = self.inner_data(value_id)?;
+        check_data_type(&buffer_untyped, data_value.data_type)
+            .map_err(|e| PyValueError::new_err(e))?;
+
+        let data_holder = DataHolder {
+            data: buffer_untyped.buf_ptr() as *const u8,
+            count: buffer_untyped.item_count(),
+            data_size: buffer_untyped.len_bytes(),
+            data_type: data_value.data_type,
+        };
+
+        py.detach(|| {
+            data_value
+                .add(data_holder, update)
+                .map_err(|e| PyValueError::new_err(e))
+        })
+    }
+
+    fn data_replace(
+        &self,
+        py: Python,
+        value_id: u64,
+        data: &Bound<PyAny>,
+        index: usize,
+        update: bool,
+    ) -> PyResult<()> {
+        let buffer_untyped = PyUntypedBuffer::get(data)
+            .map_err(|_| PyValueError::new_err("Data must be a bytes-like object."))?;
+
+        let data_value = self.inner_data(value_id)?;
+        check_data_type(&buffer_untyped, data_value.data_type)
+            .map_err(|e| PyValueError::new_err(e))?;
+
+        let data_holder = DataHolder {
+            data: buffer_untyped.buf_ptr() as *const u8,
+            count: buffer_untyped.item_count(),
+            data_size: buffer_untyped.len_bytes(),
+            data_type: data_value.data_type,
+        };
+
+        py.detach(|| {
+            data_value
+                .replace(data_holder, index, update)
+                .map_err(|e| PyValueError::new_err(e))
+        })
+    }
+
+    fn data_remove(
+        &self,
+        py: Python,
+        value_id: u64,
+        index: usize,
+        count: usize,
+        update: bool,
+    ) -> PyResult<()> {
+        py.detach(|| {
+            self.inner_data(value_id)?
+                .remove(index, count, update)
+                .map_err(|e| PyValueError::new_err(e))
+        })
+    }
+
+    fn data_clear(&self, py: Python, value_id: u64, update: bool) -> PyResult<()> {
+        py.detach(|| {
+            self.inner_data(value_id)?
+                .clear(update)
+                .map_err(|e| PyValueError::new_err(e))
+        })
+    }
+
     // graphs -----------------------------------------------------------
     fn graphs_set(
         &self,
@@ -921,6 +1048,15 @@ impl StateServerCore {
             .write()
             .add_graphs(&name, graph_type)
             .map_err(|e| PyValueError::new_err(format!("Failed to add ValueGraphs: {}", e)))?;
+        Ok(value_id)
+    }
+
+    fn add_data(&self, name: String, data_type: u8) -> PyResult<u64> {
+        let value_id = self
+            .server
+            .write()
+            .add_data(&name, data_type)
+            .map_err(|e| PyValueError::new_err(format!("Failed to add ValueData: {}", e)))?;
         Ok(value_id)
     }
 }

@@ -478,6 +478,85 @@ class ValueVec[T](_StaticBase):
         self.set_item(idx, value, update=False)
 
 
+_ID_TO_DTYPE = {
+    0: np.uint8,
+    1: np.uint16,
+    2: np.uint32,
+    3: np.uint64,
+    4: np.int8,
+    5: np.int16,
+    6: np.int32,
+    7: np.int64,
+    8: np.float32,
+    9: np.float64,
+}
+
+
+class Data[T: np.generic](_StaticBase):
+    def __init__(self, type_id: int) -> None:
+        self._type_id = type_id
+        self._dtype = _ID_TO_DTYPE[type_id]
+
+    def _initialize(self, name: str, types: list[PyObjectType]) -> None:
+        self._value_id = self._server.add_data(name, self._type_id)
+        del self._type_id
+
+    def get(self) -> npt.NDArray[T]:
+        """Get the data from the UI data.
+
+        Returns:
+            npt.NDArray[T]: The data in the UI data.
+        """
+        data = self._server.data_get(self._value_id)
+        return np.frombuffer(data, dtype=self._dtype)
+
+    def set(self, data: Buffer, update: bool = False) -> None:
+        """Set the data in the UI data.
+
+        Args:
+            data(Buffer): The data to set. Has to implement the buffer protocol (numpy array).
+            update(bool, optional): Whether to update the UI. Defaults to False.
+        """
+        self._server.data_set(self._value_id, data, update)
+
+    def add(self, data: Buffer, update: bool = False) -> None:
+        """Add the data to the UI data.
+
+        Args:
+            data(Buffer): The data to add. Has to implement the buffer protocol (numpy array).
+            update(bool, optional): Whether to update the UI. Defaults to False.
+        """
+        self._server.data_add(self._value_id, data, update)
+
+    def replace(self, data: Buffer, index: int, update: bool = False) -> None:
+        """Replace the data in the UI data.
+
+        Args:
+            data(Buffer): The data to replace. Has to implement the buffer protocol (numpy array).
+            index(int): The index of the data to replace.
+            update(bool, optional): Whether to update the UI. Defaults to False.
+        """
+        self._server.data_replace(self._value_id, data, index, update)
+
+    def remove(self, index: int, count: int, update: bool = False) -> None:
+        """Remove the data from the UI data.
+
+        Args:
+            index(int): The index of the data to remove.
+            count(int): The number of data to remove.
+            update(bool, optional): Whether to update the UI. Defaults to False.
+        """
+        self._server.data_remove(self._value_id, index, count, update)
+
+    def clear(self, update: bool = False) -> None:
+        """Clear the data in the UI data.
+
+        Args:
+            update(bool, optional): Whether to update the UI. Defaults to False.
+        """
+        self._server.data_clear(self._value_id, update)
+
+
 class Graph:
     """Graph UI element."""
 

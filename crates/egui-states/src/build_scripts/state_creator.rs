@@ -4,14 +4,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::State;
 use crate::client::atomics::{Atomic, AtomicStatic};
+use crate::client::data::{Data, private::GetDataType};
 use crate::client::graphs::ValueGraphs;
 use crate::client::image::ValueImage;
 use crate::client::list::ValueVec;
 use crate::client::map::ValueMap;
-use crate::client::sender::MessageSender;
+use crate::client::messages::MessageSender;
 use crate::client::states_creator::StatesCreator;
-use crate::client::data::{Data, DataStatic};
 use crate::client::values::{GetQueueType, Signal, Static, StaticAtomic, Value, ValueAtomic};
+use crate::data_transport::DataType;
 use crate::graphs::{GraphElement, GraphType};
 use crate::hashing::generate_value_id;
 use crate::transport::{InitValue, ObjectType, Transportable};
@@ -26,8 +27,7 @@ pub(crate) enum StateType {
     ValueVec(String, ObjectType),
     Graphs(String, GraphType),
     Signal(String, ObjectType, bool),
-    Data(String, ObjectType, InitValue),
-    DataStatic(String, ObjectType, InitValue),
+    Data(String, DataType),
     SubState(String, &'static str, Vec<StateType>),
 }
 
@@ -209,31 +209,15 @@ impl StatesCreator for StatesCreatorBuild {
         value
     }
 
-    fn data<T>(&mut self, name: &'static str, header: T) -> Data<T>
+    fn data<T>(&mut self, name: &'static str) -> Data<T>
     where
-        T: for<'a> Deserialize<'a> + Serialize + Transportable + Clone + Send + Sync + 'static,
+        T: GetDataType + Send + Sync + 'static,
     {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
-        let init = header.init_value();
-        let value = Data::new(name.clone(), id, 0, header, self.sender.clone());
+        let value = Data::new(name.clone(), id, self.sender.clone());
 
-        self.states
-            .push(StateType::Data(name, T::get_type(), init));
-        value
-    }
-
-    fn data_static<T>(&mut self, name: &'static str, header: T) -> DataStatic<T>
-    where
-        T: for<'a> Deserialize<'a> + Serialize + Transportable + Clone + Send + Sync + 'static,
-    {
-        let name = format!("{}.{}", self.parent, name);
-        let id = generate_value_id(&name);
-        let init = header.init_value();
-        let value = DataStatic::new(name.clone(), id, 0, header);
-
-        self.states
-            .push(StateType::DataStatic(name, T::get_type(), init));
+        self.states.push(StateType::Data(name, T::get_type()));
         value
     }
 }

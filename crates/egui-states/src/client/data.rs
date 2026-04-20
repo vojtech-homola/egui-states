@@ -15,17 +15,14 @@ pub(crate) enum DataMessage {
     Clear,
 }
 
-pub unsafe trait GetDataType: Clone + Copy {
-    fn get_type() -> DataType;
+pub(crate) mod private {
+    use super::DataType;
+    pub unsafe trait GetDataType: Clone + Copy {
+        fn get_type() -> DataType;
+    }
 }
 
 pub(crate) trait UpdateData: Sync + Send {
-    // fn set_all(&self, data: &[u8], transport_type: TransportType) -> Result<(), String>;
-    // fn batch_start(&self, data: &[u8], elements_count: u64) -> Result<(), String>;
-    // fn batch(&self, data: &[u8]) -> Result<(), String>;
-    // fn batch_end(&self, data: &[u8], transport_type: TransportType) -> Result<(), String>;
-    // fn drain(&self, index: u64, count: u64) -> Result<(), String>;
-    // fn clear(&self);
     fn update_data(&self, message: DataMessage) -> Result<(), String>;
 }
 
@@ -41,7 +38,7 @@ pub struct Data<T> {
 
 impl<T> Data<T>
 where
-    T: GetDataType,
+    T: private::GetDataType,
 {
     pub(crate) fn new(name: String, id: u64, sender: MessageSender) -> Self {
         Self {
@@ -261,7 +258,7 @@ where
 
 impl<T: Sync + Send> UpdateData for Data<T>
 where
-    T: GetDataType,
+    T: private::GetDataType,
 {
     fn update_data(&self, message: DataMessage) -> Result<(), String> {
         match message {
