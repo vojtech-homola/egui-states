@@ -3,7 +3,6 @@ extern crate self as egui_states;
 mod collections;
 mod data_transport;
 mod event_async;
-mod graphs;
 mod hashing;
 mod image_header;
 mod serialization;
@@ -24,7 +23,6 @@ pub use client::{
     client::ClientBuilder,
     client::{Client, ConnectionState},
     data::Data,
-    graphs::ValueGraphs,
     image::ValueImage,
     list::ValueVec,
     map::ValueMap,

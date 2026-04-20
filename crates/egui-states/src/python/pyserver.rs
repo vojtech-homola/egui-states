@@ -7,13 +7,12 @@ use std::sync::OnceLock;
 use pyo3::buffer::{PyBuffer, PyUntypedBuffer};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyByteArray, PyDict, PyList, PyTuple};
+use pyo3::types::{PyByteArray, PyDict, PyList};
 
-use crate::graphs::GraphType;
 use crate::hashing::NoHashMap;
 use crate::python::{
     pydata::check_data_type,
-    pygraphs, pyimage, pyparsing,
+    pyimage, pyparsing,
     pytypes::{PyObjectClass, PyObjectType},
 };
 use crate::server::data::{Data, DataHolder};
@@ -21,7 +20,7 @@ use crate::server::server::Server;
 use crate::server::signals::SignalsManager;
 use crate::server::value_parsing::{ValueCreator, ValueParser};
 use crate::server::values::{Signal, Value, ValueStatic, ValueTake};
-use crate::server::{graphs::ValueGraphs, image::ValueImage, list::ValueList, map::ValueMap};
+use crate::server::{image::ValueImage, list::ValueList, map::ValueMap};
 
 struct ValuesInner {
     values: NoHashMap<u64, (Arc<Value>, PyObjectType)>,
@@ -33,7 +32,6 @@ struct ValuesInner {
     lists: NoHashMap<u64, (Arc<ValueList>, PyObjectType)>,
     images: NoHashMap<u64, Arc<ValueImage>>,
     datas: NoHashMap<u64, Arc<Data>>,
-    graphs: NoHashMap<u64, Arc<ValueGraphs>>,
 }
 
 #[pyclass]
@@ -92,14 +90,6 @@ impl StateServerCore {
         match self.get_values()?.images.get(&value_id) {
             Some(image) => Ok(image),
             _ => Err(PyValueError::new_err("Image with ID not found.")),
-        }
-    }
-
-    #[inline]
-    fn inner_graphs(&self, value_id: u64) -> PyResult<&Arc<ValueGraphs>> {
-        match self.get_values()?.graphs.get(&value_id) {
-            Some(graphs) => Ok(graphs),
-            _ => Err(PyValueError::new_err("Graphs with ID not found.")),
         }
     }
 
@@ -221,7 +211,6 @@ impl StateServerCore {
                 }
 
                 let images = states.images;
-                let graphs = states.graphs;
                 let datas = states.datas;
 
                 let inner = ValuesInner {
@@ -233,7 +222,6 @@ impl StateServerCore {
                     maps,
                     lists,
                     images,
-                    graphs,
                     datas,
                 };
 
@@ -302,9 +290,6 @@ impl StateServerCore {
         }
         if let Some(image) = values.images.get(&value_id) {
             return Ok(image.name.clone());
-        }
-        if let Some(graphs) = values.graphs.get(&value_id) {
-            return Ok(graphs.name.clone());
         }
         if let Some(data) = values.datas.get(&value_id) {
             return Ok(data.name.clone());
@@ -771,115 +756,6 @@ impl StateServerCore {
         })
     }
 
-    // graphs -----------------------------------------------------------
-    fn graphs_set(
-        &self,
-        py: Python,
-        value_id: u64,
-        idx: u16,
-        graph: &Bound<PyAny>,
-        update: bool,
-    ) -> PyResult<()> {
-        let graphs = self.inner_graphs(value_id)?;
-        match graphs.graph_type() {
-            GraphType::F32 => {
-                let graph_buffer = PyBuffer::<f32>::extract(graph.as_borrowed())?;
-                py.detach(|| {
-                    let graph_data = pygraphs::buffer_to_data(&graph_buffer)?;
-                    graphs.set(idx, graph_data, update);
-                    Ok(())
-                })
-            }
-            GraphType::F64 => {
-                let graph_buffer = PyBuffer::<f64>::extract(graph.as_borrowed())?;
-                py.detach(|| {
-                    let graph_data = pygraphs::buffer_to_data(&graph_buffer)?;
-                    graphs.set(idx, graph_data, update);
-                    Ok(())
-                })
-            }
-        }
-    }
-
-    fn graphs_add_points(
-        &self,
-        py: Python,
-        value_id: u64,
-        idx: u16,
-        graph: &Bound<PyAny>,
-        update: bool,
-    ) -> PyResult<()> {
-        let graphs = self.inner_graphs(value_id)?;
-        match graphs.graph_type() {
-            GraphType::F32 => {
-                let graph_buffer = PyBuffer::<f32>::extract(graph.as_borrowed())?;
-                py.detach(|| {
-                    let graph_data = pygraphs::buffer_to_data(&graph_buffer)?;
-                    graphs.add_points(idx, graph_data, update).map_err(|e| {
-                        PyValueError::new_err(format!("Failed to add points to graph: {}", e))
-                    })
-                })
-            }
-            GraphType::F64 => {
-                let graph_buffer = PyBuffer::<f64>::extract(graph.as_borrowed())?;
-                py.detach(|| {
-                    let graph_data = pygraphs::buffer_to_data(&graph_buffer)?;
-                    graphs.add_points(idx, graph_data, update).map_err(|e| {
-                        PyValueError::new_err(format!("Failed to add points to graph: {}", e))
-                    })
-                })
-            }
-        }
-    }
-
-    fn graphs_get<'py>(
-        &self,
-        py: Python<'py>,
-        value_id: u64,
-        idx: u16,
-    ) -> PyResult<Bound<'py, PyTuple>> {
-        let graphs = self.inner_graphs(value_id)?;
-        match graphs.graph_type() {
-            GraphType::F32 => graphs
-                .get(idx, |data| pygraphs::graph_to_buffer::<f32>(py, data))
-                .ok_or_else(|| PyValueError::new_err(format!("No graph found at index {}", idx)))?,
-            GraphType::F64 => graphs
-                .get(idx, |data| pygraphs::graph_to_buffer::<f64>(py, data))
-                .ok_or_else(|| PyValueError::new_err(format!("No graph found at index {}", idx)))?,
-        }
-    }
-
-    fn graphs_count(&self, value_id: u64) -> PyResult<usize> {
-        let count = self.inner_graphs(value_id)?.count();
-        Ok(count)
-    }
-
-    fn graphs_len(&self, value_id: u64, idx: u16) -> PyResult<usize> {
-        let len = self
-            .inner_graphs(value_id)?
-            .len(idx)
-            .ok_or_else(|| PyValueError::new_err(format!("No graph found at index {}", idx)))?;
-        Ok(len)
-    }
-
-    fn graphs_remove(&self, value_id: u64, idx: u16, update: bool) -> PyResult<()> {
-        self.inner_graphs(value_id)?
-            .remove(idx, update)
-            .map_err(|_| PyRuntimeError::new_err("Failed to remove graph."))
-    }
-
-    fn graphs_reset(&self, value_id: u64, update: bool) -> PyResult<()> {
-        self.inner_graphs(value_id)?
-            .reset(update)
-            .map_err(|_| PyRuntimeError::new_err("Failed to reset graphs."))
-    }
-
-    fn graphs_is_linear(&self, value_id: u64, idx: u16) -> PyResult<bool> {
-        self.inner_graphs(value_id)?
-            .is_linear(idx)
-            .map_err(|_| PyValueError::new_err(format!("No graph found at index {}", idx)))
-    }
-
     // add states -------------------------------------------------------
     // ------------------------------------------------------------------
     fn add_value(
@@ -1034,20 +910,6 @@ impl StateServerCore {
             .write()
             .add_image(&name)
             .map_err(|e| PyValueError::new_err(format!("Failed to add ValueImage: {}", e)))?;
-        Ok(value_id)
-    }
-
-    fn add_graphs(&self, name: String, is_double: bool) -> PyResult<u64> {
-        let graph_type = match is_double {
-            true => GraphType::F64,
-            false => GraphType::F32,
-        };
-
-        let value_id = self
-            .server
-            .write()
-            .add_graphs(&name, graph_type)
-            .map_err(|e| PyValueError::new_err(format!("Failed to add ValueGraphs: {}", e)))?;
         Ok(value_id)
     }
 

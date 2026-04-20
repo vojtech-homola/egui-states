@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 use crate::State;
 use crate::client::atomics::{Atomic, AtomicStatic};
 use crate::client::data::{Data, private::GetDataType};
-use crate::client::graphs::ValueGraphs;
 use crate::client::image::ValueImage;
 use crate::client::list::ValueVec;
 use crate::client::map::ValueMap;
@@ -13,7 +12,6 @@ use crate::client::messages::MessageSender;
 use crate::client::states_creator::StatesCreator;
 use crate::client::values::{GetQueueType, Signal, Static, StaticAtomic, Value, ValueAtomic};
 use crate::data_transport::DataType;
-use crate::graphs::{GraphElement, GraphType};
 use crate::hashing::generate_value_id;
 use crate::transport::{InitValue, ObjectType, Transportable};
 
@@ -25,7 +23,6 @@ pub(crate) enum StateType {
     Image(String),
     ValueMap(String, ObjectType, ObjectType),
     ValueVec(String, ObjectType),
-    Graphs(String, GraphType),
     Signal(String, ObjectType, bool),
     Data(String, DataType),
     SubState(String, &'static str, Vec<StateType>),
@@ -193,18 +190,6 @@ impl StatesCreator for StatesCreatorBuild {
         let value = ValueVec::new(name.clone(), 0);
 
         self.states.push(StateType::ValueVec(name, T::get_type()));
-
-        value
-    }
-
-    fn graphs<T>(&mut self, name: &'static str) -> ValueGraphs<T>
-    where
-        T: for<'a> Deserialize<'a> + GraphElement,
-    {
-        let name = format!("{}.{}", self.parent, name);
-        let value = ValueGraphs::new(name.clone());
-
-        self.states.push(StateType::Graphs(name, T::graph_type()));
 
         value
     }

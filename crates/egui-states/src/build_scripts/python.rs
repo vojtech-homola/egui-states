@@ -7,7 +7,6 @@ use crate::State;
 use crate::build_scripts::scripts;
 use crate::build_scripts::state_creator::StateType;
 use crate::data_transport::DataType;
-use crate::graphs::GraphType;
 use crate::transport::{InitValue, ObjectType};
 
 fn type_to_pytype(type_info: &ObjectType) -> String {
@@ -113,7 +112,6 @@ fn process_type_info(values: &Vec<StateType>) -> (HashMap<String, TypeIndex>, Ve
             }
             StateType::SubState(_, _, _)
             | StateType::Image(_)
-            | StateType::Graphs(_, _)
             | StateType::Data(_, _) => {}
         }
     }
@@ -320,17 +318,6 @@ fn state_to_line(state: &StateType, types_map: &HashMap<String, TypeIndex>) -> S
             format!(
                 "        self.{}: s.ValueMap[{}, {}] = s.ValueMap[{}, {}]({}, {})\n",
                 last_name, py_key_type, py_value_type, py_key_type, py_value_type, key, value
-            )
-        }
-        StateType::Graphs(name, graph_type) => {
-            let last_name = name.split('.').last().unwrap();
-            format!(
-                "        self.{}: s.ValueGraphs = s.ValueGraphs({})\n",
-                last_name,
-                match graph_type {
-                    GraphType::F32 => "np.float32",
-                    GraphType::F64 => "np.float64",
-                }
             )
         }
         StateType::Data(name, data_type) => {

@@ -8,7 +8,6 @@ use crate::client::data::DataMessage;
 use crate::client::states_creator::ValuesList;
 use crate::collections::{MapHeader, VecHeader};
 use crate::data_transport::DataHeader;
-use crate::graphs::GraphHeader;
 use crate::image_header::ImageHeader;
 use crate::serialization::{ClientHeader, FastVec, MessageData, ServerHeader, serialize_to_data};
 
@@ -115,7 +114,6 @@ pub(crate) enum ServerMessage {
     ValueTake(u64, u32, bool, bool, Bytes),
     Static(u64, u32, bool, Bytes),
     Image(u64, bool, ImageHeader, Bytes),
-    Graph(u64, bool, GraphHeader, Bytes),
     ValueVec(u64, u32, bool, VecHeader, Bytes),
     ValueMap(u64, u32, bool, MapHeader, Bytes),
     Data(u64, bool, DataMessage),
@@ -220,19 +218,6 @@ impl MessagesParser {
                 let data = self.data.slice(self.pointer..);
                 self.is_empty = true;
                 ServerMessage::Image(id, update, header, data)
-            }
-            ServerHeader::Graph(id, update, header) => {
-                if self.pointer > self.data.len() {
-                    return Err("Incomplete data for Graph message");
-                }
-                let data = match header {
-                    GraphHeader::AddPoints(_, _) | GraphHeader::Set(_, _) => {
-                        self.is_empty = true;
-                        self.data.slice(self.pointer..)
-                    }
-                    GraphHeader::Reset | GraphHeader::Remove(_) => Bytes::new(),
-                };
-                ServerMessage::Graph(id, update, header, data)
             }
             ServerHeader::Data(id, data_header) => self._process_data(id, data_header)?,
         };
@@ -346,13 +331,6 @@ pub(crate) async fn handle_message(
             match vals.maps.get(&id) {
                 Some(value) => value.update_map(type_id, map_header, &data)?,
                 None => return Err(format!("Map with id {} not found", id)),
-            }
-            update
-        }
-        ServerMessage::Graph(id, update, header, data) => {
-            match vals.graphs.get(&id) {
-                Some(value) => value.update_graph(header, &data)?,
-                None => return Err(format!("Graph with id {} not found", id)),
             }
             update
         }

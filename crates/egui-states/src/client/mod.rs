@@ -3,7 +3,6 @@ mod event;
 pub(crate) mod atomics;
 pub(crate) mod client;
 pub(crate) mod data;
-pub(crate) mod graphs;
 pub(crate) mod image;
 pub(crate) mod list;
 pub(crate) mod map;

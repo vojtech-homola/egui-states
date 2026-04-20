@@ -3,7 +3,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::collections::{MapHeader, VecHeader};
 use crate::data_transport;
-use crate::graphs::GraphHeader;
 use crate::image_header::ImageHeader;
 
 // TODO: make these constants configurable
@@ -199,7 +198,6 @@ pub(crate) enum ServerHeader {
     Static(u64, u32, bool, u32),
     Image(u64, bool, ImageHeader),
     Data(u64, data_transport::DataHeader),
-    Graph(u64, bool, GraphHeader),
     ValueVec(u64, u32, bool, VecHeader, u32),
     ValueMap(u64, u32, bool, MapHeader, u32),
     Update(f32),

@@ -5,8 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::State;
 use crate::client::atomics::{Atomic, AtomicStatic};
-use crate::client::data::{Data, private::GetDataType, UpdateData};
-use crate::client::graphs::{UpdateGraph, ValueGraphs};
+use crate::client::data::{Data, UpdateData, private::GetDataType};
 use crate::client::image::ValueImage;
 use crate::client::list::{UpdateList, ValueVec};
 use crate::client::map::{UpdateMap, ValueMap};
@@ -15,7 +14,6 @@ use crate::client::values::{
     GetQueueType, Signal, Static, StaticAtomic, UpdateValue, UpdateValueTake, Value, ValueAtomic,
     ValueTake,
 };
-use crate::graphs::GraphElement;
 use crate::hashing::{NoHashMap, generate_value_id};
 use crate::transport::Transportable;
 
@@ -74,10 +72,6 @@ pub trait StatesCreator {
     where
         T: Clone + for<'a> Deserialize<'a> + Send + Sync + Transportable + 'static;
 
-    fn graphs<T>(&mut self, name: &'static str) -> ValueGraphs<T>
-    where
-        T: for<'a> Deserialize<'a> + GraphElement + 'static;
-
     #[allow(private_bounds)]
     fn data<T>(&mut self, name: &'static str) -> Data<T>
     where
@@ -90,11 +84,9 @@ pub(crate) struct ValuesList {
     pub(crate) values_take: NoHashMap<u64, Arc<dyn UpdateValueTake>>,
     pub(crate) static_values: NoHashMap<u64, Arc<dyn UpdateValue>>,
     pub(crate) datas: NoHashMap<u64, Arc<dyn UpdateData>>,
-    pub(crate) data_statics: NoHashMap<u64, Arc<dyn UpdateData>>,
     pub(crate) images: NoHashMap<u64, ValueImage>,
     pub(crate) maps: NoHashMap<u64, Arc<dyn UpdateMap>>,
     pub(crate) lists: NoHashMap<u64, Arc<dyn UpdateList>>,
-    pub(crate) graphs: NoHashMap<u64, Arc<dyn UpdateGraph>>,
 }
 
 impl ValuesList {
@@ -104,11 +96,9 @@ impl ValuesList {
             values_take: NoHashMap::default(),
             static_values: NoHashMap::default(),
             datas: NoHashMap::default(),
-            data_statics: NoHashMap::default(),
             images: NoHashMap::default(),
             maps: NoHashMap::default(),
             lists: NoHashMap::default(),
-            graphs: NoHashMap::default(),
         }
     }
 
@@ -117,11 +107,9 @@ impl ValuesList {
         self.values_take.shrink_to_fit();
         self.static_values.shrink_to_fit();
         self.datas.shrink_to_fit();
-        self.data_statics.shrink_to_fit();
         self.images.shrink_to_fit();
         self.maps.shrink_to_fit();
         self.lists.shrink_to_fit();
-        self.graphs.shrink_to_fit();
     }
 }
 
@@ -157,11 +145,9 @@ impl StatesCreator for StatesCreatorClient {
         self.val.values_take.extend(creator.val.values_take);
         self.val.static_values.extend(creator.val.static_values);
         self.val.datas.extend(creator.val.datas);
-        self.val.data_statics.extend(creator.val.data_statics);
         self.val.images.extend(creator.val.images);
         self.val.maps.extend(creator.val.maps);
         self.val.lists.extend(creator.val.lists);
-        self.val.graphs.extend(creator.val.graphs);
 
         substate
     }
@@ -293,18 +279,6 @@ impl StatesCreator for StatesCreatorClient {
         let value = ValueVec::new(name, type_id);
 
         self.val.lists.insert(id, Arc::new(value.clone()));
-        value
-    }
-
-    fn graphs<T>(&mut self, name: &str) -> ValueGraphs<T>
-    where
-        T: for<'a> Deserialize<'a> + GraphElement + 'static,
-    {
-        let name = format!("{}.{}", self.parent, name);
-        let id = generate_value_id(&name);
-        let value = ValueGraphs::new(name);
-
-        self.val.graphs.insert(id, Arc::new(value.clone()));
         value
     }
 
