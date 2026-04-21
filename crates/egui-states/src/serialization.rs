@@ -196,7 +196,7 @@ pub(crate) enum ServerHeader {
     Value(u64, u32, bool, u32),
     ValueTake(u64, u32, bool, bool, u32),
     Static(u64, u32, bool, u32),
-    Image(u64, bool, ImageHeader),
+    Image(u64, bool, ImageHeader, u32),
     Data(u64, data_transport::DataHeader),
     ValueVec(u64, u32, bool, VecHeader, u32),
     ValueMap(u64, u32, bool, MapHeader, u32),

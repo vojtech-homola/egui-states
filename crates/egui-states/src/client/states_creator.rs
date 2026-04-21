@@ -7,9 +7,9 @@ use crate::State;
 use crate::client::atomics::{Atomic, AtomicStatic};
 use crate::client::data::{Data, UpdateData, private::GetDataType};
 use crate::client::image::ValueImage;
-use crate::client::list::{UpdateList, ValueVec};
-use crate::client::map::{UpdateMap, ValueMap};
 use crate::client::messages::MessageSender;
+use crate::client::value_map::{UpdateMap, ValueMap};
+use crate::client::value_vec::{UpdateList, ValueVec};
 use crate::client::values::{
     GetQueueType, Signal, Static, StaticAtomic, UpdateValue, UpdateValueTake, Value, ValueAtomic,
     ValueTake,

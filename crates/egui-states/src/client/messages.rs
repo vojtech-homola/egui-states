@@ -211,12 +211,13 @@ impl MessagesParser {
                 ServerMessage::ValueMap(id, type_id, update, header, data)
             }
             ServerHeader::Update(dt) => ServerMessage::Update(dt),
-            ServerHeader::Image(id, update, header) => {
-                if self.pointer >= self.data.len() {
+            ServerHeader::Image(id, update, header, size) => {
+                let size = size as usize;
+                if self.pointer + size > self.data.len() {
                     return Err("Incomplete data for Image message");
                 }
-                let data = self.data.slice(self.pointer..);
-                self.is_empty = true;
+                let data = self.data.slice(self.pointer..self.pointer + size);
+                self.pointer += size;
                 ServerMessage::Image(id, update, header, data)
             }
             ServerHeader::Data(id, data_header) => self._process_data(id, data_header)?,

@@ -24,9 +24,9 @@ pub use client::{
     client::{Client, ConnectionState},
     data::Data,
     image::ValueImage,
-    list::ValueVec,
-    map::ValueMap,
     states_creator::StatesCreator,
+    value_map::ValueMap,
+    value_vec::ValueVec,
     values::{
         Diff, DiffAtomic, GetQueueType, NoQueue, Queue, Signal, Static, StaticAtomic, Value,
         ValueAtomic, ValueTake,

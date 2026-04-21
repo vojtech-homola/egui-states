@@ -153,27 +153,29 @@ where
             ));
         }
 
-        let mut buffer = Vec::with_capacity(data.len() / self.element_size);
+        let count = data.len() / self.element_size;
+        let mut buffer = Vec::with_capacity(count);
         unsafe {
             std::ptr::copy_nonoverlapping(
                 data.as_ptr(),
                 buffer.as_mut_ptr() as *mut u8,
                 data.len(),
             );
-            buffer.set_len(data.len() / self.element_size);
+            buffer.set_len(count);
         }
         self.save_data(buffer, transport_type)
     }
 
     fn batch_start(&self, data: &[u8], elements_count: u64) -> Result<(), String> {
-        if data.len() as u64 > elements_count * self.element_size as u64 {
+        let all_data_size = elements_count * self.element_size as u64;
+        if data.len() as u64 > all_data_size {
             return Err(format!(
                 "Batch start data size {} exceeds total data size {}",
                 data.len(),
-                elements_count * self.element_size as u64
+                all_data_size
             ));
         }
-        if data.len() as u64 % self.element_size as u64 != 0 {
+        if data.len() % self.element_size != 0 {
             return Err(format!(
                 "Batch start data size {} is not a multiple of element size {}",
                 data.len(),
@@ -197,13 +199,20 @@ where
     fn batch(&self, data: &[u8]) -> Result<(), String> {
         match *self.buffer.lock() {
             Some(ref mut buffer) => {
-                if buffer.len() * self.element_size + data.len()
-                    > buffer.capacity() * self.element_size
-                {
+                if data.len() % self.element_size != 0 {
+                    return Err(format!(
+                        "Batch data size {} is not a multiple of element size {}",
+                        data.len(),
+                        self.element_size
+                    ));
+                }
+                let count = data.len() / self.element_size;
+
+                if buffer.len() + count > buffer.capacity() {
                     return Err(format!(
                         "Batch data size {} exceeds total data size {}",
-                        buffer.len() * self.element_size + data.len(),
-                        buffer.capacity() * self.element_size
+                        buffer.len() + count,
+                        buffer.capacity()
                     ));
                 }
 
@@ -213,7 +222,7 @@ where
                         buffer.as_mut_ptr().add(buffer.len()) as *mut u8,
                         data.len(),
                     );
-                    buffer.set_len(buffer.len() + data.len() / self.element_size);
+                    buffer.set_len(buffer.len() + count);
                 }
 
                 Ok(())
@@ -228,22 +237,30 @@ where
     fn batch_end(&self, data: &[u8], transport_type: TransportType) -> Result<(), String> {
         match self.buffer.lock().take() {
             Some(mut buffer) => {
-                if buffer.len() * self.element_size + data.len()
-                    != buffer.capacity() * self.element_size
-                {
+                if data.len() % self.element_size != 0 {
                     return Err(format!(
-                        "Batch end data size {} does not match total data size {}",
-                        buffer.len() * self.element_size + data.len(),
-                        buffer.capacity() * self.element_size
+                        "Batch data size {} is not a multiple of element size {}",
+                        data.len(),
+                        self.element_size
                     ));
                 }
+                let count = data.len() / self.element_size;
+
+                if buffer.len() + count != buffer.capacity() {
+                    return Err(format!(
+                        "Batch end data size {} does not match total data size {}",
+                        buffer.len() + count,
+                        buffer.capacity()
+                    ));
+                }
+
                 unsafe {
                     std::ptr::copy_nonoverlapping(
                         data.as_ptr(),
                         buffer.as_mut_ptr().add(buffer.len()) as *mut u8,
                         data.len(),
                     );
-                    buffer.set_len(buffer.len() + data.len() / self.element_size);
+                    buffer.set_len(buffer.len() + count);
                 }
 
                 self.save_data(buffer, transport_type)

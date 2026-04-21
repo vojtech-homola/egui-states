@@ -4,10 +4,10 @@ pub(crate) mod atomics;
 pub(crate) mod client;
 pub(crate) mod data;
 pub(crate) mod image;
-pub(crate) mod list;
-pub(crate) mod map;
 pub(crate) mod messages;
 pub(crate) mod states_creator;
+pub(crate) mod value_map;
+pub(crate) mod value_vec;
 pub(crate) mod values;
 
 #[cfg(not(target_arch = "wasm32"))]

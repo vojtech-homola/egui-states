@@ -3,7 +3,7 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 use crate::image_header::ImageType;
-use crate::server::image::{ImageData, ValueImage};
+use crate::server::image_server::{ImageData, ValueImage};
 
 fn check_image_type(shape: &[usize], strides: &[isize]) -> PyResult<ImageType> {
     match shape.len() {

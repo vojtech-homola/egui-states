@@ -99,13 +99,13 @@ impl ValueImage {
                 image_type: image.image_type,
             };
             let mut head_buff = [0u8; 64];
-            let header = ServerHeader::Image(self.id, update, image_header);
+            let data_size = image.size[0] * image.size[1] * image.image_type.bytes_per_pixel();
+            let header = ServerHeader::Image(self.id, update, image_header, data_size as u32);
             let buff = header
                 .serialize_to_slice(&mut head_buff)
                 .map_err(|_| "Failed to serialize image header")?;
 
             let offset = buff.len();
-            let data_size = image.size[0] * image.size[1] * image.image_type.bytes_per_pixel();
 
             let mut data = Vec::with_capacity(data_size + offset);
             unsafe { data.set_len(data_size + offset) };
@@ -212,7 +212,7 @@ impl SyncTrait for ValueImage {
             rect: None,
             image_type: ImageType::ColorAlpha,
         };
-        let header = ServerHeader::Image(self.id, false, image_header);
+        let header = ServerHeader::Image(self.id, false, image_header, w.data.len() as u32);
         let buff = header.serialize_to_slice(&mut head_buff)?;
 
         let mut data = Vec::with_capacity(buff.len() + w.data.len());
