@@ -37,7 +37,13 @@ class TestStruct(s.CustomStruct):
     label: str
 
 
-class ScalarStates(ISubStates):
+class NestedValueStates(ISubStates):
+    def __init__(self, parent: str):
+        self.secondary_choice: s.Value[TestEnum2] = s.Value[TestEnum2](8, TestEnum2.Y)
+        self.selected_enum: s.Value[TestEnum | None] = s.Value[TestEnum | None](9, None)
+
+
+class ValueStates(ISubStates):
     def __init__(self, parent: str):
         self.bool_value: s.Value[bool] = s.Value[bool](0, False)
         self.count: s.Value[int] = s.Value[int](1, 0)
@@ -47,64 +53,83 @@ class ScalarStates(ISubStates):
         self.optional_value: s.Value[int | None] = s.Value[int | None](5, None)
         self.fixed_numbers: s.Value[list[int]] = s.Value[list[int]](6, [0, 0, 0])
         self.test_enum: s.Value[TestEnum] = s.Value[TestEnum](7, TestEnum.A)
+        self.nested: NestedValueStates = NestedValueStates(parent + ".nested")
+
+
+class SignalStates(ISubStates):
+    def __init__(self, parent: str):
+        self.empty_signal: s.SignalEmpty = s.SignalEmpty(True)
+        self.number_signal: s.Signal[float] = s.Signal[float](2)
+        self.enum_signal: s.Signal[TestEnum] = s.Signal[TestEnum](7, True)
+
+
+class NestedStaticStates(ISubStates):
+    def __init__(self, parent: str):
+        self.label: s.Static[str] = s.Static[str](4, "")
+        self.enum_hint: s.Static[TestEnum] = s.Static[TestEnum](7, TestEnum.A)
 
 
 class StaticStates(ISubStates):
     def __init__(self, parent: str):
         self.status_text: s.Static[str] = s.Static[str](4, "")
-        self.summary: s.Static[TestStruct2] = s.Static[TestStruct2](8, TestStruct2(False, 0, ""))
-        self.pair: s.Static[list[float]] = s.Static[list[float]](9, [0, 0])
+        self.summary: s.Static[TestStruct2] = s.Static[TestStruct2](11, TestStruct2(False, 0, ""))
+        self.pair: s.Static[list[float]] = s.Static[list[float]](12, [0, 0])
+        self.nested: NestedStaticStates = NestedStaticStates(parent + ".nested")
 
 
-class CustomStates(ISubStates):
+class ValueTakeStates(ISubStates):
     def __init__(self, parent: str):
-        self.point: s.Value[TestStruct] = s.Value[TestStruct](10, TestStruct(0, 0, ""))
-        self.choice: s.Value[TestEnum2] = s.Value[TestEnum2](11, TestEnum2.Y)
-        self.optional_struct: s.Value[TestStruct2 | None] = s.Value[TestStruct2 | None](12, None)
-
-
-class CollectionStates(ISubStates):
-    def __init__(self, parent: str):
-        self.plain_vec_value: s.Value[list[int]] = s.Value[list[int]](13, [])
-        self.list: s.ValueVec[int] = s.ValueVec[int](1)
-        self.map: s.ValueMap[int, int] = s.ValueMap[int, int](14, 15)
-
-
-class EventStates(ISubStates):
-    def __init__(self, parent: str):
-        self.empty_signal: s.SignalEmpty = s.SignalEmpty(True)
-        self.number_signal: s.Signal[float] = s.Signal[float](2)
-        self.enum_signal: s.Signal[TestEnum] = s.Signal[TestEnum](7, True)
         self.take_text: s.ValueTake[str] = s.ValueTake[str](4)
         self.take_empty: s.ValueTakeEmpty = s.ValueTakeEmpty()
 
 
-class DataStates(ISubStates):
+class CustomValueStates(ISubStates):
     def __init__(self, parent: str):
-        self.image: s.ValueImage = s.ValueImage()
-        self.bytes: s.Data[np.uint8] = s.Data[np.uint8](0)
-        self.samples: s.Data[np.float32] = s.Data[np.float32](8)
+        self.point: s.Value[TestStruct] = s.Value[TestStruct](13, TestStruct(0, 0, ""))
+        self.optional_struct: s.Value[TestStruct2 | None] = s.Value[TestStruct2 | None](14, None)
 
 
-class NestedLeafStates(ISubStates):
+class ValueVecActionStates(ISubStates):
     def __init__(self, parent: str):
-        self.enabled: s.Value[bool] = s.Value[bool](0, False)
-        self.message: s.Value[str] = s.Value[str](4, "")
+        self.append_item: s.SignalEmpty = s.SignalEmpty()
+        self.remove_last: s.SignalEmpty = s.SignalEmpty()
+        self.reset_demo: s.SignalEmpty = s.SignalEmpty()
+
+
+class ValueVecStates(ISubStates):
+    def __init__(self, parent: str):
+        self.items: s.ValueVec[int] = s.ValueVec[int](1)
+        self.actions: ValueVecActionStates = ValueVecActionStates(parent + ".actions")
+
+
+class ValueMapActionStates(ISubStates):
+    def __init__(self, parent: str):
+        self.insert_next: s.SignalEmpty = s.SignalEmpty()
+        self.remove_lowest: s.SignalEmpty = s.SignalEmpty()
+        self.reset_demo: s.SignalEmpty = s.SignalEmpty()
+
+
+class ValueMapStates(ISubStates):
+    def __init__(self, parent: str):
+        self.items: s.ValueMap[int, int] = s.ValueMap[int, int](15, 16)
+        self.actions: ValueMapActionStates = ValueMapActionStates(parent + ".actions")
+
+
+class NestedDataStates(ISubStates):
+    def __init__(self, parent: str):
         self.buffer: s.Data[np.uint16] = s.Data[np.uint16](1)
 
 
-class NestedInnerStates(ISubStates):
+class DataStates(ISubStates):
     def __init__(self, parent: str):
-        self.selected: s.Value[TestEnum | None] = s.Value[TestEnum | None](17, None)
-        self.pair: s.Static[list[float]] = s.Static[list[float]](9, [0, 0])
-        self.leaf: NestedLeafStates = NestedLeafStates(parent + ".leaf")
+        self.bytes: s.Data[np.uint8] = s.Data[np.uint8](0)
+        self.samples: s.Data[np.float32] = s.Data[np.float32](8)
+        self.nested: NestedDataStates = NestedDataStates(parent + ".nested")
 
 
-class NestedStates(ISubStates):
+class ImageStates(ISubStates):
     def __init__(self, parent: str):
-        self.label: s.Static[str] = s.Static[str](4, "")
-        self.counter: s.Value[int] = s.Value[int](1, 0, True)
-        self.inner: NestedInnerStates = NestedInnerStates(parent + ".inner")
+        self.image: s.ValueImage = s.ValueImage()
 
 
 class States(StatesBase):
@@ -119,28 +144,29 @@ class States(StatesBase):
             s.opt(s.i32),
             s.li(s.u16, 3),
             s.enu(TestEnum),
+            s.enu(TestEnum2),
+            s.opt(s.enu(TestEnum)),
+            s.emp,
             s.cl([s.bo, s.u16, s.st], TestStruct2),
             s.li(s.f32, 2),
             s.cl([s.f32, s.f32, s.st], TestStruct),
-            s.enu(TestEnum2),
             s.opt(s.cl([s.bo, s.u16, s.st], TestStruct2)),
-            s.vec(s.u32),
             s.u16,
             s.u32,
-            s.emp,
-            s.opt(s.enu(TestEnum)),
         ]
 
     def __init__(self, server: StateServerBase):
         super().__init__(server)
         parent = "root"
-        self.scalars: ScalarStates = ScalarStates(parent + ".scalars")
+        self.values: ValueStates = ValueStates(parent + ".values")
+        self.signals: SignalStates = SignalStates(parent + ".signals")
         self.statics: StaticStates = StaticStates(parent + ".statics")
-        self.custom: CustomStates = CustomStates(parent + ".custom")
-        self.collections: CollectionStates = CollectionStates(parent + ".collections")
-        self.events: EventStates = EventStates(parent + ".events")
+        self.value_take: ValueTakeStates = ValueTakeStates(parent + ".value_take")
+        self.custom_values: CustomValueStates = CustomValueStates(parent + ".custom_values")
+        self.value_vec: ValueVecStates = ValueVecStates(parent + ".value_vec")
+        self.value_map: ValueMapStates = ValueMapStates(parent + ".value_map")
         self.data: DataStates = DataStates(parent + ".data")
-        self.nested: NestedStates = NestedStates(parent + ".nested")
+        self.image: ImageStates = ImageStates(parent + ".image")
 
 
 class StatesServer(StateServerBase):

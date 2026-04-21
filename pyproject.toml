@@ -128,3 +128,6 @@ commit_preprocessors = [
 # [remote.github]
 # owner = "vojtech-homola"
 # repo = "egui-states"
+
+[tool.pytest]
+testpaths = ["example/python/tests.py"]

@@ -9,6 +9,9 @@ server = StatesServer(port=PORT)
 server.start()
 states = server.states
 
+DEFAULT_VEC = [10, -3, 27]
+DEFAULT_MAP = {1: 100, 2: 200, 5: 500}
+
 
 def _print_debug(message: str) -> None:
     print("Debug:", message)
@@ -56,59 +59,85 @@ def on_enum_signal(value: TestEnum) -> None:
     print(f"enum signal emitted: {value.name}")
 
 
-states.scalars.ratio.connect(on_ratio)
-states.scalars.title.connect(on_title)
-states.scalars.test_enum.connect(on_enum)
-states.events.empty_signal.connect(on_empty_signal)
-states.events.number_signal.connect(on_number_signal)
-states.events.enum_signal.connect(on_enum_signal)
+def _reset_value_vec() -> None:
+    states.value_vec.items.set(list(DEFAULT_VEC), update=True)
 
-states.scalars.bool_value.set(True)
-states.scalars.count.set(7)
-states.scalars.ratio.set(0.42, set_signal=True)
-states.scalars.queued_progress.set(0.25)
-states.scalars.title.set("Interactive egui-states example", set_signal=True)
-states.scalars.optional_value.set(12)
-states.scalars.fixed_numbers.set([2, 4, 8])
-states.scalars.test_enum.set(TestEnum.C, set_signal=True)
+
+def _append_value_vec() -> None:
+    current = states.value_vec.items.get()
+    next_value = current[-1] + 5 if current else DEFAULT_VEC[0]
+    states.value_vec.items.add_item(next_value, update=True)
+    print(f"value_vec appended: {next_value}")
+
+
+def _remove_last_value_vec() -> None:
+    current = states.value_vec.items.get()
+    if current:
+        states.value_vec.items.remove_item(len(current) - 1, update=True)
+        print("value_vec removed last item")
+
+
+def _reset_value_map() -> None:
+    states.value_map.items.set(dict(DEFAULT_MAP), update=True)
+
+
+def _insert_next_value_map() -> None:
+    current = states.value_map.items.get()
+    next_key = max(current, default=0) + 1
+    states.value_map.items.set_item(next_key, next_key * 100, update=True)
+    print(f"value_map inserted: {next_key} -> {next_key * 100}")
+
+
+def _remove_lowest_value_map() -> None:
+    current = states.value_map.items.get()
+    if current:
+        lowest_key = min(current)
+        states.value_map.items.remove_item(lowest_key, update=True)
+        print(f"value_map removed key: {lowest_key}")
+
+
+states.values.ratio.connect(on_ratio)
+states.values.title.connect(on_title)
+states.values.test_enum.connect(on_enum)
+states.signals.empty_signal.connect(on_empty_signal)
+states.signals.number_signal.connect(on_number_signal)
+states.signals.enum_signal.connect(on_enum_signal)
+
+states.value_vec.actions.append_item.connect(_append_value_vec)
+states.value_vec.actions.remove_last.connect(_remove_last_value_vec)
+states.value_vec.actions.reset_demo.connect(_reset_value_vec)
+
+states.value_map.actions.insert_next.connect(_insert_next_value_map)
+states.value_map.actions.remove_lowest.connect(_remove_lowest_value_map)
+states.value_map.actions.reset_demo.connect(_reset_value_map)
+
+states.values.bool_value.set(True)
+states.values.count.set(7)
+states.values.ratio.set(0.42, set_signal=True)
+states.values.queued_progress.set(0.25)
+states.values.title.set("Interactive egui-states example", set_signal=True)
+states.values.optional_value.set(12)
+states.values.fixed_numbers.set([2, 4, 8])
+states.values.test_enum.set(TestEnum.C, set_signal=True)
+states.values.nested.secondary_choice.set(TestEnum2.Z)
+states.values.nested.selected_enum.set(TestEnum.B)
 
 states.statics.status_text.set("Static values are shown as labels.")
 states.statics.summary.set(TestStruct2(True, 3, "static summary"))
 states.statics.pair.set([0.5, 1.5])
+states.statics.nested.label.set("Nested static label")
+states.statics.nested.enum_hint.set(TestEnum.A)
 
-states.custom.point.set(TestStruct(1.5, -0.75, "editable point"))
-states.custom.choice.set(TestEnum2.Z)
-states.custom.optional_struct.set(TestStruct2(True, 9, "optional payload"))
-
-states.collections.plain_vec_value.set([4, 8, 15, 16, 23, 42])
-states.collections.list.set([10, -3, 27])
-states.collections.map.set({1: 100, 2: 200, 5: 500})
-
-states.nested.label.set("Nested substate")
-states.nested.counter.set(3)
-states.nested.inner.selected.set(TestEnum.B)
-states.nested.inner.pair.set([9.0, 12.0])
-states.nested.inner.leaf.enabled.set(True)
-states.nested.inner.leaf.message.set("Leaf text value")
+states.custom_values.point.set(TestStruct(1.5, -0.75, "editable point"))
+states.custom_values.optional_struct.set(TestStruct2(True, 9, "optional payload"))
 
 states.data.bytes.set(np.arange(32, dtype=np.uint8), update=True)
 states.data.samples.set(np.linspace(0.0, 1.0, 12, dtype=np.float32), update=True)
-states.nested.inner.leaf.buffer.set(np.arange(8, dtype=np.uint16), update=True)
+states.data.nested.buffer.set(np.arange(8, dtype=np.uint16), update=True)
 
-states.events.take_text.set("ValueTake payload from Python", update=True)
-states.events.take_empty.set(update=True)
+states.value_take.take_text.set("ValueTake payload from Python", update=True)
+states.value_take.take_empty.set(update=True)
 
 rng = np.random.default_rng()
 image = (rng.random((256, 256, 3)) * 255).astype(np.uint8)
-states.data.image.set(image, update=True)
-
-
-def emit_demo_events() -> None:
-    states.events.empty_signal.set()
-    states.events.number_signal.set(states.scalars.ratio.get())
-    states.events.enum_signal.set(states.scalars.test_enum.get())
-
-
-def stop_server() -> None:
-    if server.is_running():
-        server.stop()
+states.image.image.set(image, update=True)
