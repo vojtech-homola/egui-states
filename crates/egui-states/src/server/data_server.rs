@@ -284,13 +284,20 @@ impl SyncTrait for Data {
         let r = self.value.read();
 
         let count = r.len() / self.data_type.element_size();
-        let transport_type = TransportType::Set(count as u64);
-        let messages = self.pack_data(&r, transport_type, false).map_err(|_| ())?;
+        if count == 0 {
+            let header = DataHeader::Clear(false);
+            let message = header.serialize(self.id, false).map_err(|_| ())?;
+            self.sender.send(message);
+        } else {
+            let transport_type = TransportType::Set(count as u64);
+            let messages = self.pack_data(&r, transport_type, false).map_err(|_| ())?;
 
-        self.event.clear();
-        for (message, single) in messages {
-            self.sender.send_set(message, single);
+            self.event.clear();
+            for (message, single) in messages {
+                self.sender.send_set(message, single);
+            }
         }
+
         Ok(())
     }
 }
