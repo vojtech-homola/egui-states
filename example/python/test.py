@@ -55,9 +55,6 @@ def server_bundle():
             server.stop()
 
 
-
-
-
 def test_server_lifecycle_and_scalar_roundtrips(server_bundle) -> None:
     server, states, _errors = server_bundle
 
@@ -270,6 +267,7 @@ def test_error_handler_receives_callback_failures() -> None:
     server = StatesServer(port=_free_port(), error_handler=on_error)
     server.start()
     try:
+
         def explode(_value: float) -> None:
             raise ValueError("boom")
 

@@ -8,12 +8,6 @@ PORT = 8091
 server = StatesServer(port=PORT)
 server.start()
 states = server.states
-callback_log: list[str] = []
-
-
-def _record(message: str) -> None:
-    callback_log.append(message)
-    print(message)
 
 
 def _print_debug(message: str) -> None:
@@ -39,27 +33,27 @@ server.logging.add_logger(LogLevel.Error, _print_error)
 
 
 def on_ratio(value: float) -> None:
-    _record(f"ratio changed: {value:.3f}")
+    print(f"ratio changed: {value:.3f}")
 
 
 def on_title(value: str) -> None:
-    _record(f"title changed: {value}")
+    print(f"title changed: {value}")
 
 
 def on_enum(value: TestEnum) -> None:
-    _record(f"enum changed: {value.name}")
+    print(f"enum changed: {value.name}")
 
 
 def on_empty_signal() -> None:
-    _record("empty signal emitted")
+    print("empty signal emitted")
 
 
 def on_number_signal(value: float) -> None:
-    _record(f"number signal emitted: {value:.3f}")
+    print(f"number signal emitted: {value:.3f}")
 
 
 def on_enum_signal(value: TestEnum) -> None:
-    _record(f"enum signal emitted: {value.name}")
+    print(f"enum signal emitted: {value.name}")
 
 
 states.scalars.ratio.connect(on_ratio)
@@ -97,21 +91,16 @@ states.nested.inner.pair.set([9.0, 12.0])
 states.nested.inner.leaf.enabled.set(True)
 states.nested.inner.leaf.message.set("Leaf text value")
 
-image_y = np.linspace(0, 255, 128, dtype=np.uint8)
-image_x = np.linspace(255, 0, 128, dtype=np.uint8)
-image = np.zeros((128, 128, 4), dtype=np.uint8)
-image[..., 0] = image_y[:, None]
-image[..., 1] = image_x[None, :]
-image[..., 2] = 96
-image[..., 3] = 255
-states.data.image.set(image, update=True)
-
 states.data.bytes.set(np.arange(32, dtype=np.uint8), update=True)
 states.data.samples.set(np.linspace(0.0, 1.0, 12, dtype=np.float32), update=True)
 states.nested.inner.leaf.buffer.set(np.arange(8, dtype=np.uint16), update=True)
 
 states.events.take_text.set("ValueTake payload from Python", update=True)
 states.events.take_empty.set(update=True)
+
+rng = np.random.default_rng()
+image = (rng.random((256, 256, 3)) * 255).astype(np.uint8)
+states.data.image.set(image, update=True)
 
 
 def emit_demo_events() -> None:
