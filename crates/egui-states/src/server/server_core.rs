@@ -395,6 +395,8 @@ mod tests {
     use crate::server::server::{Server, ServerStatesList, SyncTrait};
     use crate::server::signals::SignalsManager;
 
+    const SERVER_STARTUP_YIELDS: usize = 32;
+
     fn get_free_addr() -> SocketAddrV4 {
         let listener = StdTcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let addr = listener.local_addr().unwrap();
@@ -602,7 +604,7 @@ mod tests {
             None,
         ));
 
-        for _ in 0..32 {
+        for _ in 0..SERVER_STARTUP_YIELDS {
             tokio::task::yield_now().await;
         }
         let (mut first_socket, _) = connect_async(format!("ws://{addr}/ws")).await.unwrap();
@@ -614,7 +616,7 @@ mod tests {
             .unwrap();
         let _ = first_socket.close(None).await;
 
-        for _ in 0..32 {
+        for _ in 0..SERVER_STARTUP_YIELDS {
             tokio::task::yield_now().await;
         }
         let (mut second_socket, _) = connect_async(format!("ws://{addr}/ws")).await.unwrap();
