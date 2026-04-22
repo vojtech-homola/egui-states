@@ -381,7 +381,7 @@ impl MainApp {
                 .states
                 .data
                 .bytes
-                .read(|(data, updated)| (data.len(), updated, preview_slice(data)));
+                .read(|data, updated| (data.len(), updated, preview_slice(data)));
             ui.label("Data<u8>: root.data.bytes");
             ui.label(format!(
                 "len = {bytes_len}, updated = {bytes_updated}, preview = {bytes_preview}"
@@ -393,7 +393,7 @@ impl MainApp {
                 .states
                 .data
                 .samples
-                .read(|(data, updated)| (data.len(), updated, preview_f32_slice(data)));
+                .read(|data, updated| (data.len(), updated, preview_f32_slice(data)));
             ui.label("Data<f32>: root.data.samples");
             ui.label(format!(
                 "len = {samples_len}, updated = {samples_updated}, preview = {samples_preview}"
@@ -406,7 +406,7 @@ impl MainApp {
                 .data
                 .nested
                 .buffer
-                .read(|(data, updated)| (data.len(), updated, preview_slice(data)));
+                .read(|data, updated| (data.len(), updated, preview_slice(data)));
             ui.label("Nested Data<u16>: root.data.nested.buffer");
             ui.label(format!(
                 "len = {buffer_len}, updated = {buffer_updated}, preview = {buffer_preview}"

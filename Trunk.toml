@@ -5,3 +5,7 @@ filehash = false
 
 [serve]
 port = 8090
+
+[watch]
+watch = ["./example/gui/", "./crates/egui-states/src/client/"]
+ignore = ["./example/gui/web/"]

@@ -132,7 +132,7 @@ states.custom_values.point.set(TestStruct(1.5, -0.75, "editable point"))
 states.custom_values.optional_struct.set(TestStruct2(True, 9, "optional payload"))
 
 states.data.bytes.set(np.arange(32, dtype=np.uint8), update=True)
-states.data.samples.set(np.linspace(0.0, 1.0, 12, dtype=np.float32), update=True)
+states.data.samples.set(np.linspace(0.0, 1.0, 1024 * 20, dtype=np.float32), update=True)
 states.data.nested.buffer.set(np.arange(8, dtype=np.uint16), update=True)
 
 states.value_take.take_text.set("ValueTake payload from Python", update=True)

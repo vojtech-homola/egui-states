@@ -8,10 +8,10 @@ use tokio::sync::mpsc::UnboundedReceiver;
 
 use crate::PROTOCOL_VERSION;
 use crate::State;
-use crate::client::messages::{ChannelMessage, MessageSender, handle_message, parse_to_send};
+use crate::client::messages::{ChannelMessage, MessageSender, MessagesSerializer, handle_message};
 use crate::client::states_creator::{StatesCreatorClient, ValuesList};
 use crate::event_async::Event;
-use crate::serialization::{ClientHeader, FastVec, MAX_MSG_COUNT, MSG_SIZE_THRESHOLD};
+use crate::serialization::ClientHeader;
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::client::websocket::build_ws;
@@ -85,52 +85,16 @@ async fn start_gui_client(
 
         // send -----------------------------------------
         let send_future = async move {
-            loop {
-                match rx.recv().await.unwrap() {
-                    Some(msg) => {
-                        let mut message = FastVec::<64>::new();
-                        parse_to_send(msg, &mut message);
-                        let mut counter = 0;
-                        let stop = loop {
-                            match rx.try_recv() {
-                                Ok(Some(msg)) => {
-                                    counter += 1;
-                                    parse_to_send(msg, &mut message);
+            let mut serializer = MessagesSerializer::new(rx);
 
-                                    if counter > MAX_MSG_COUNT || message.len() > MSG_SIZE_THRESHOLD
-                                    {
-                                        if let Err(_) = socket_send.send(message).await {
-                                            break true;
-                                        }
-                                        message = FastVec::<64>::new();
-                                        counter = 0;
-                                    }
-                                }
-                                Ok(None) => {
-                                    let _ = socket_send.send(message).await;
-                                    break true;
-                                }
-                                Err(_) => {
-                                    if let Err(_) = socket_send.send(message).await {
-                                        break true;
-                                    }
-                                    break false;
-                                }
-                            }
-                        };
-
-                        if stop {
-                            break;
-                        }
-                    }
-                    // check if the message is terminate
-                    None => {
-                        break;
-                    }
+            while let Some(message) = serializer.next().await {
+                if let Err(_) = socket_send.send(message).await {
+                    break;
                 }
             }
+
             socket_send.close().await;
-            rx
+            serializer.close()
         };
 
         #[cfg(not(target_arch = "wasm32"))]

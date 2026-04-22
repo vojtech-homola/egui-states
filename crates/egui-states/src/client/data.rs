@@ -3,7 +3,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 use parking_lot::{Mutex, RwLock};
 
-use crate::client::messages::MessageSender;
+use crate::client::messages::{ChannelMessage, MessageSender};
 use crate::data_transport::{DataType, TransportType};
 
 pub(crate) enum DataMessage {
@@ -89,9 +89,9 @@ where
         }
     }
 
-    pub fn read<R>(&self, f: impl Fn((&[T], bool)) -> R) -> R {
+    pub fn read<R>(&self, f: impl Fn(&[T], bool) -> R) -> R {
         let mut inner = self.inner.write();
-        let result = f((&inner.0, inner.1));
+        let result = f(&inner.0, inner.1);
         inner.1 = false;
         result
     }
@@ -145,6 +145,8 @@ where
     }
 
     fn set_all(&self, data: &[u8], transport_type: TransportType) -> Result<(), String> {
+        self.sender.send(ChannelMessage::Ack(self.id));
+
         if data.len() % self.element_size != 0 {
             return Err(format!(
                 "Data size {} is not a multiple of element size {}",
@@ -235,6 +237,8 @@ where
     }
 
     fn batch_end(&self, data: &[u8], transport_type: TransportType) -> Result<(), String> {
+        self.sender.send(ChannelMessage::Ack(self.id));
+
         match self.buffer.lock().take() {
             Some(mut buffer) => {
                 if data.len() % self.element_size != 0 {
@@ -273,6 +277,8 @@ where
     }
 
     fn drain(&self, index: u64, count: u64) -> Result<(), String> {
+        self.sender.send(ChannelMessage::Ack(self.id));
+
         let mut w = self.inner.write();
         if index as usize + count as usize > w.0.len() {
             return Err(format!(

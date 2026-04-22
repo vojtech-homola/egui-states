@@ -1,7 +1,5 @@
 use bytes::Bytes;
-// use sha2::digest::Update;
-// use std::collections::VecDeque;
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, error, unbounded_channel};
 
 use crate::client::client::Client;
 use crate::client::data::DataMessage;
@@ -9,7 +7,10 @@ use crate::client::states_creator::ValuesList;
 use crate::collections::{MapHeader, VecHeader};
 use crate::data_transport::DataHeader;
 use crate::image_header::ImageHeader;
-use crate::serialization::{ClientHeader, FastVec, MessageData, ServerHeader, serialize_to_data};
+use crate::serialization::{
+    ClientHeader, FastVec, MAX_MSG_COUNT, MSG_SIZE_THRESHOLD, MessageData, ServerHeader,
+    serialize_to_data,
+};
 
 pub(crate) enum ChannelMessage {
     Value(u64, u32, bool, MessageData),
@@ -36,7 +37,7 @@ impl MessageSender {
     }
 }
 
-pub(crate) fn parse_to_send(message: ChannelMessage, data: &mut FastVec<64>) {
+fn parse_to_send(message: ChannelMessage, data: &mut FastVec<64>) {
     match message {
         ChannelMessage::Value(id, type_id, signal, msg_data) => {
             let header = ClientHeader::Value(id, type_id, signal, msg_data.len() as u32);
@@ -55,59 +56,55 @@ pub(crate) fn parse_to_send(message: ChannelMessage, data: &mut FastVec<64>) {
     }
 }
 
-// pub(crate) struct MessagesSerializer {
-//     queue: VecDeque<ChannelMessage>,
-//     temp: VecDeque<FastVec<64>>,
-// }
+pub(crate) struct MessagesSerializer {
+    rx: UnboundedReceiver<Option<ChannelMessage>>,
+    stopped: bool,
+}
 
-// impl MessagesSerializer {
-//     pub(crate) fn new() -> Self {
-//         Self {
-//             queue: VecDeque::with_capacity(MAX_MSG_COUNT),
-//             temp: VecDeque::new(),
-//         }
-//     }
+impl MessagesSerializer {
+    pub(crate) fn new(rx: UnboundedReceiver<Option<ChannelMessage>>) -> Self {
+        Self { rx, stopped: false }
+    }
 
-//     pub(crate) fn push(&mut self, message: ChannelMessage) {
-//         self.queue.push_back(message);
-//     }
+    pub(crate) async fn next(&mut self) -> Option<FastVec<64>> {
+        if self.stopped {
+            return None;
+        }
 
-//     pub(crate) fn serialize(&mut self) -> Option<FastVec<64>> {
-//         if let Some(message) = self.temp.pop_front() {
-//             return Some(message);
-//         }
+        match self.rx.recv().await {
+            Some(Some(msg)) => {
+                let mut message = FastVec::<64>::new();
+                parse_to_send(msg, &mut message);
+                let mut counter = 0;
+                loop {
+                    match self.rx.try_recv() {
+                        Ok(Some(msg)) => {
+                            counter += 1;
+                            parse_to_send(msg, &mut message);
+                            if counter > MAX_MSG_COUNT || message.len() > MSG_SIZE_THRESHOLD {
+                                return Some(message);
+                            }
+                        }
+                        Err(error::TryRecvError::Empty) => {
+                            return Some(message);
+                        }
+                        Ok(None) | Err(error::TryRecvError::Disconnected) => {
+                            self.stopped = true;
+                            return Some(message);
+                        }
+                    }
+                }
+            }
+            None | Some(None) => {
+                return None;
+            }
+        }
+    }
 
-//         if self.queue.is_empty() {
-//             return None;
-//         }
-
-//         let mut actual = FastVec::<64>::new();
-//         while let Some(msg) = self.queue.pop_front() {
-//             match msg {
-//                 ChannelMessage::Value(id, type_id, signal, data) => {
-//                     let header = ClientHeader::Value(id, type_id, signal, data.len() as u32);
-//                     serialize_to_data(&header, &mut actual).unwrap();
-//                     actual.extend_from_data(&data);
-//                 }
-//                 ChannelMessage::Signal(id, type_id, data) => {
-//                     let header = ClientHeader::Signal(id, type_id, data.len() as u32);
-//                     serialize_to_data(&header, &mut actual).unwrap();
-//                     actual.extend_from_data(&data);
-//                 }
-//                 ChannelMessage::Ack(id) => {
-//                     let header = ClientHeader::Ack(id);
-//                     serialize_to_data(&header, &mut actual).unwrap();
-//                 }
-//             }
-
-//             if actual.len() >= MSG_SIZE_THRESHOLD {
-//                 break;
-//             }
-//         }
-
-//         Some(actual)
-//     }
-// }
+    pub(crate) fn close(self) -> UnboundedReceiver<Option<ChannelMessage>> {
+        self.rx
+    }
+}
 
 pub(crate) enum ServerMessage {
     Value(u64, u32, bool, Bytes),
