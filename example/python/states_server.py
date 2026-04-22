@@ -170,7 +170,7 @@ class States(StatesBase):
 
 
 class StatesServer(StateServerBase):
-    """The main class for the SteteServer for UI."""
+    """The main class for the StateServer for UI."""
 
     states: States
 

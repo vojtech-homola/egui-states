@@ -72,6 +72,7 @@ impl Data {
         &self,
         data: &[u8],
         transport_type: TransportType,
+        data_count: u64,
         update: bool,
     ) -> Result<Vec<(FastVec<32>, bool)>, String> {
         let count = data.len() / MSG_SIZE_THRESHOLD + 1;
@@ -87,7 +88,7 @@ impl Data {
             messages.push((message, true));
         } else {
             let mut processed = 0;
-            let header = DataHeader::StartBatch(data.len() as u64, MSG_SIZE_THRESHOLD as u32);
+            let header = DataHeader::StartBatch(data_count, MSG_SIZE_THRESHOLD as u32);
             let mut message = header
                 .serialize(self.id, true)
                 .map_err(|_| "Failed to serialize header".to_string())?;
@@ -136,8 +137,9 @@ impl Data {
         *w = vec;
         let r = RwLockWriteGuard::downgrade(w);
         if self.connected.load(Ordering::Acquire) {
-            let transport_type = TransportType::Set(data.count as u64);
-            let messages = self.pack_data(&r, transport_type, update)?;
+            let count = data.count as u64;
+            let transport_type = TransportType::Set(count);
+            let messages = self.pack_data(&r, transport_type, count, update)?;
 
             self.event.wait_clear();
             if !self.connected.load(Ordering::Acquire) {
@@ -162,8 +164,9 @@ impl Data {
         let r = RwLockWriteGuard::downgrade(w);
 
         if self.connected.load(Ordering::Acquire) {
-            let transport_type = TransportType::Add(data.count as u64);
-            let messages = self.pack_data(&r[original_len..], transport_type, update)?;
+            let count = data.count as u64;
+            let transport_type = TransportType::Add(count);
+            let messages = self.pack_data(&r[original_len..], transport_type, count, update)?;
 
             self.event.wait_clear();
             if !self.connected.load(Ordering::Acquire) {
@@ -200,9 +203,14 @@ impl Data {
         let r = RwLockWriteGuard::downgrade(w);
 
         if self.connected.load(Ordering::Acquire) {
-            let transport_type = TransportType::Replace(data.count as u64, index as u64);
-            let messages =
-                self.pack_data(&r[index..index + data.data_size], transport_type, update)?;
+            let count = data.count as u64;
+            let transport_type = TransportType::Replace(count, index as u64);
+            let messages = self.pack_data(
+                &r[index..index + data.data_size],
+                transport_type,
+                count,
+                update,
+            )?;
 
             self.event.wait_clear();
             if !self.connected.load(Ordering::Acquire) {
@@ -288,9 +296,12 @@ impl SyncTrait for Data {
             let header = DataHeader::Clear(false);
             let message = header.serialize(self.id, false).map_err(|_| ())?;
             self.sender.send(message);
+            self.event.set();
         } else {
             let transport_type = TransportType::Set(count as u64);
-            let messages = self.pack_data(&r, transport_type, false).map_err(|_| ())?;
+            let messages = self
+                .pack_data(&r, transport_type, count as u64, false)
+                .map_err(|_| ())?;
 
             self.event.clear();
             for (message, single) in messages {
