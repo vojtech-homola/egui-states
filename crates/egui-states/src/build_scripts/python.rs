@@ -520,7 +520,7 @@ pub fn generate_python<S: State>(path: impl ToString) -> Result<(), String> {
 
         let text = r#"
 class StatesServer(StateServerBase):
-    """The main class for the SteteServer for UI.""""#;
+    """The main class for the StateServer for UI.""""#;
         file.write_all(text.as_bytes()).unwrap();
 
         file.write_all(format!("\n\n    states: {}\n", root_name).as_bytes())

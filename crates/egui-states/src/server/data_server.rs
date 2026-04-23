@@ -3,7 +3,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use parking_lot::{RwLock, RwLockWriteGuard};
 
+use crate::client::data;
 use crate::data_transport::{DataHeader, DataType, TransportType};
+use crate::hashing::NoHashMap;
 use crate::serialization::{FastVec, MSG_SIZE_THRESHOLD};
 use crate::server::event::Event;
 use crate::server::sender::MessageSender;
@@ -310,5 +312,37 @@ impl SyncTrait for Data {
         }
 
         Ok(())
+    }
+}
+
+pub(crate) struct MultiData {
+    pub(crate) name: String,
+    id: u64,
+    data_type: DataType,
+    values: RwLock<NoHashMap<u32, Arc<Data>>>,
+    sender: MessageSender,
+    connected: Arc<AtomicBool>,
+}
+
+impl MultiData {
+    pub(crate) fn new(
+        name: String,
+        id: u64,
+        data_type: DataType,
+        sender: MessageSender,
+        connected: Arc<AtomicBool>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            name,
+            id,
+            data_type,
+            values: RwLock::new(NoHashMap::default()),
+            sender,
+            connected,
+        })
+    }
+
+    pub(crate) fn get(&self, key: u32) -> Option<Arc<Data>> {
+        self.values.read().get(&key).cloned()
     }
 }

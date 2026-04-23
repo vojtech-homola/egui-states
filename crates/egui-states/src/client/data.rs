@@ -5,6 +5,7 @@ use parking_lot::{Mutex, RwLock};
 
 use crate::client::messages::{ChannelMessage, MessageSender};
 use crate::data_transport::{DataType, TransportType};
+use crate::hashing::NoHashMap;
 
 pub(crate) enum DataMessage {
     All(DataType, TransportType, Bytes),
@@ -347,5 +348,43 @@ impl<T> Clone for Data<T> {
             buffer: self.buffer.clone(),
             sender: self.sender.clone(),
         }
+    }
+}
+
+pub(crate) trait UpdateMultiData: Sync + Send {
+    fn update_multi_data(&self, key: u32, message: DataMessage) -> Result<(), String>;
+}
+
+pub struct MultiData<T> {
+    name: String,
+    id: u64,
+    inner: Arc<RwLock<NoHashMap<u32, Data<T>>>>,
+    sender: MessageSender,
+}
+
+impl<T> MultiData<T>
+where
+    T: private::GetDataType,
+{
+    pub(crate) fn new(name: String, id: u64, sender: MessageSender) -> Self {
+        Self {
+            name,
+            id,
+            inner: Arc::new(RwLock::new(NoHashMap::default())),
+            sender,
+        }
+    }
+
+    pub fn get(&self, key: u32) -> Option<Data<T>> {
+        self.inner.read().get(&key).cloned()
+    }
+
+    pub(crate) fn get_all(&self) -> NoHashMap<u32, Data<T>> {
+        self.inner.read().clone()
+    }
+
+    pub(crate) fn read_all<R>(&self, f: impl Fn(&NoHashMap<u32, Data<T>>) -> R) -> R {
+        let inner = self.inner.read();
+        f(&inner)
     }
 }

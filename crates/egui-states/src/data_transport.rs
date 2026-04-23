@@ -89,3 +89,10 @@ impl DataHeader {
         }
     }
 }
+
+#[derive(Serialize, Deserialize)]
+pub(crate) enum MultiDataHeader {
+    Remove(u32, bool),
+    Modify(u32, DataHeader),
+    Reset(bool),
+}
