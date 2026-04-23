@@ -1,14 +1,43 @@
 use bytes::Bytes;
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, error, unbounded_channel};
 
 use crate::client::client::Client;
-use crate::client::sender::ChannelMessage;
+use crate::client::data::DataMessage;
 use crate::client::states_creator::ValuesList;
 use crate::collections::{MapHeader, VecHeader};
-use crate::graphs::GraphHeader;
-use crate::image::ImageHeader;
-use crate::serialization::{ClientHeader, FastVec, ServerHeader, serialize_to_data};
+use crate::data_transport::DataHeader;
+use crate::image_header::ImageHeader;
+use crate::serialization::{
+    ClientHeader, FastVec, MAX_MSG_COUNT, MSG_SIZE_THRESHOLD, MessageData, ServerHeader,
+    serialize_to_data,
+};
 
-pub(crate) fn parse_to_send(message: ChannelMessage, data: &mut FastVec<64>) {
+pub(crate) enum ChannelMessage {
+    Value(u64, u32, bool, MessageData),
+    Signal(u64, u32, MessageData),
+    Ack(u64),
+}
+
+#[derive(Clone)]
+pub(crate) struct MessageSender {
+    sender: UnboundedSender<Option<ChannelMessage>>,
+}
+impl MessageSender {
+    pub(crate) fn new() -> (Self, UnboundedReceiver<Option<ChannelMessage>>) {
+        let (sender, receiver) = unbounded_channel();
+        (Self { sender }, receiver)
+    }
+
+    pub(crate) fn send(&self, msg: ChannelMessage) {
+        self.sender.send(Some(msg)).unwrap();
+    }
+
+    pub(crate) fn close(&self) {
+        self.sender.send(None).unwrap();
+    }
+}
+
+fn parse_to_send(message: ChannelMessage, data: &mut FastVec<64>) {
     match message {
         ChannelMessage::Value(id, type_id, signal, msg_data) => {
             let header = ClientHeader::Value(id, type_id, signal, msg_data.len() as u32);
@@ -27,14 +56,64 @@ pub(crate) fn parse_to_send(message: ChannelMessage, data: &mut FastVec<64>) {
     }
 }
 
+pub(crate) struct MessagesSerializer {
+    rx: UnboundedReceiver<Option<ChannelMessage>>,
+    stopped: bool,
+}
+
+impl MessagesSerializer {
+    pub(crate) fn new(rx: UnboundedReceiver<Option<ChannelMessage>>) -> Self {
+        Self { rx, stopped: false }
+    }
+
+    pub(crate) async fn next(&mut self) -> Option<FastVec<64>> {
+        if self.stopped {
+            return None;
+        }
+
+        match self.rx.recv().await {
+            Some(Some(msg)) => {
+                let mut message = FastVec::<64>::new();
+                parse_to_send(msg, &mut message);
+                let mut counter = 0;
+                loop {
+                    match self.rx.try_recv() {
+                        Ok(Some(msg)) => {
+                            counter += 1;
+                            parse_to_send(msg, &mut message);
+                            if counter > MAX_MSG_COUNT || message.len() > MSG_SIZE_THRESHOLD {
+                                return Some(message);
+                            }
+                        }
+                        Err(error::TryRecvError::Empty) => {
+                            return Some(message);
+                        }
+                        Ok(None) | Err(error::TryRecvError::Disconnected) => {
+                            self.stopped = true;
+                            return Some(message);
+                        }
+                    }
+                }
+            }
+            None | Some(None) => {
+                return None;
+            }
+        }
+    }
+
+    pub(crate) fn close(self) -> UnboundedReceiver<Option<ChannelMessage>> {
+        self.rx
+    }
+}
+
 pub(crate) enum ServerMessage {
     Value(u64, u32, bool, Bytes),
     ValueTake(u64, u32, bool, bool, Bytes),
     Static(u64, u32, bool, Bytes),
     Image(u64, bool, ImageHeader, Bytes),
-    Graph(u64, bool, GraphHeader, Bytes),
     ValueVec(u64, u32, bool, VecHeader, Bytes),
     ValueMap(u64, u32, bool, MapHeader, Bytes),
+    Data(u64, bool, DataMessage),
     Update(f32),
 }
 
@@ -119,7 +198,7 @@ impl MessagesParser {
                 self.pointer += size;
                 ServerMessage::ValueVec(id, type_id, update, header, data)
             }
-            ServerHeader::ValueMapMap(id, type_id, update, header, size) => {
+            ServerHeader::ValueMap(id, type_id, update, header, size) => {
                 let size = size as usize;
                 if size + self.pointer > self.data.len() {
                     return Err("Incomplete data for Map message");
@@ -129,30 +208,75 @@ impl MessagesParser {
                 ServerMessage::ValueMap(id, type_id, update, header, data)
             }
             ServerHeader::Update(dt) => ServerMessage::Update(dt),
-            ServerHeader::Image(id, update, header) => {
-                if self.pointer >= self.data.len() {
+            ServerHeader::Image(id, update, header, size) => {
+                let size = size as usize;
+                if self.pointer + size > self.data.len() {
                     return Err("Incomplete data for Image message");
                 }
-                let data = self.data.slice(self.pointer..);
-                self.is_empty = true;
+                let data = self.data.slice(self.pointer..self.pointer + size);
+                self.pointer += size;
                 ServerMessage::Image(id, update, header, data)
             }
-            ServerHeader::Graph(id, update, header) => {
-                if self.pointer > self.data.len() {
-                    return Err("Incomplete data for Graph message");
-                }
-                let data = match header {
-                    GraphHeader::AddPoints(_, _) | GraphHeader::Set(_, _) => {
-                        self.is_empty = true;
-                        self.data.slice(self.pointer..)
-                    }
-                    GraphHeader::Reset | GraphHeader::Remove(_) => Bytes::new(),
-                };
-                ServerMessage::Graph(id, update, header, data)
-            }
+            ServerHeader::Data(id, data_header) => self._process_data(id, data_header)?,
         };
 
         Ok(message_data)
+    }
+
+    fn _process_data(
+        &mut self,
+        id: u64,
+        data_header: DataHeader,
+    ) -> Result<ServerMessage, &'static str> {
+        let res = match data_header {
+            DataHeader::All(data_type, transport_type, update, data_size) => {
+                let data_size = data_size as usize;
+                if self.pointer + data_size > self.data.len() {
+                    return Err("Incomplete data for Data/DataStatic message");
+                }
+
+                let dat = self.data.slice(self.pointer..self.pointer + data_size);
+                self.pointer += data_size;
+                ServerMessage::Data(id, update, DataMessage::All(data_type, transport_type, dat))
+            }
+            DataHeader::StartBatch(count, data_size) => {
+                let data_size = data_size as usize;
+                if self.pointer + data_size > self.data.len() {
+                    return Err("Incomplete data for Data/DataStatic message");
+                }
+
+                let dat = self.data.slice(self.pointer..self.pointer + data_size);
+                self.pointer += data_size;
+                ServerMessage::Data(id, false, DataMessage::BatchStart(count, dat))
+            }
+            DataHeader::Batch(data_size) => {
+                let data_size = data_size as usize;
+                if self.pointer + data_size > self.data.len() {
+                    return Err("Incomplete data for Data/DataStatic message");
+                }
+                let dat = self.data.slice(self.pointer..self.pointer + data_size);
+                self.pointer += data_size;
+                ServerMessage::Data(id, false, DataMessage::Batch(dat))
+            }
+            DataHeader::End(data_type, transport_type, update, data_size) => {
+                let data_size = data_size as usize;
+                if self.pointer + data_size > self.data.len() {
+                    return Err("Incomplete data for Data/DataStatic message");
+                }
+                let dat = self.data.slice(self.pointer..self.pointer + data_size);
+                self.pointer += data_size;
+                ServerMessage::Data(
+                    id,
+                    update,
+                    DataMessage::BatchEnd(data_type, transport_type, dat),
+                )
+            }
+            DataHeader::Drain(start, count, update) => {
+                ServerMessage::Data(id, update, DataMessage::Drain(start, count))
+            }
+            DataHeader::Clear(update) => ServerMessage::Data(id, update, DataMessage::Clear),
+        };
+        Ok(res)
     }
 }
 
@@ -208,10 +332,10 @@ pub(crate) async fn handle_message(
             }
             update
         }
-        ServerMessage::Graph(id, update, header, data) => {
-            match vals.graphs.get(&id) {
-                Some(value) => value.update_graph(header, &data)?,
-                None => return Err(format!("Graph with id {} not found", id)),
+        ServerMessage::Data(id, update, message) => {
+            match vals.datas.get(&id) {
+                Some(value) => value.update_data(message)?,
+                None => return Err(format!("Data with id {} not found", id)),
             }
             update
         }

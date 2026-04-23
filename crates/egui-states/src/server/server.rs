@@ -8,18 +8,18 @@ use std::thread;
 use bytes::Bytes;
 use tokio::runtime::Builder;
 
+use crate::data_transport::DataType;
 use crate::event_async::Event;
-use crate::graphs::GraphType;
 use crate::hashing::{NoHashMap, generate_value_id};
 use crate::serialization::{ServerHeader, serialize};
-use crate::server::graphs::ValueGraphs;
-use crate::server::image::ValueImage;
-use crate::server::list::ValueList;
-use crate::server::map::ValueMap;
+use crate::server::data_server::Data;
+use crate::server::image_server::ValueImage;
+use crate::server::map_server::ValueMap;
 use crate::server::sender::{MessageReceiver, MessageSender};
 use crate::server::server_core;
 use crate::server::signals::SignalsManager;
-use crate::server::values::{Signal, Value, ValueStatic, ValueTake};
+use crate::server::values_server::{Signal, Value, ValueStatic, ValueTake};
+use crate::server::vec_server::ValueList;
 
 pub(crate) trait SyncTrait: Sync + Send {
     fn sync(&self) -> Result<(), ()>;
@@ -38,7 +38,7 @@ pub(crate) struct StatesList {
     pub(crate) images: NoHashMap<u64, Arc<ValueImage>>,
     pub(crate) maps: NoHashMap<u64, Arc<ValueMap>>,
     pub(crate) lists: NoHashMap<u64, Arc<ValueList>>,
-    pub(crate) graphs: NoHashMap<u64, Arc<ValueGraphs>>,
+    pub(crate) datas: NoHashMap<u64, Arc<Data>>,
 }
 
 impl StatesList {
@@ -75,8 +75,9 @@ impl StatesList {
             server_list.sync.push(list.clone());
         }
 
-        for graphs in self.graphs.values() {
-            server_list.sync.push(graphs.clone());
+        for (id, data) in self.datas.iter() {
+            server_list.sync.push(data.clone());
+            server_list.ack.insert(*id, data.clone());
         }
 
         server_list
@@ -444,25 +445,27 @@ impl Server {
         Ok(id)
     }
 
-    pub(crate) fn add_graphs(&mut self, name: &str, graphs_type: GraphType) -> Result<u64, String> {
+    pub(crate) fn add_data(&mut self, name: &str, type_id: u8) -> Result<u64, String> {
         if self.states_server.is_some() {
             return Err("Cannot add new values after server has been finalized".to_string());
         }
 
         let id = generate_value_id(&name);
-        if self.states.graphs.contains_key(&id) {
-            return Err(format!("Graphs with id {} already exists", id));
+        if self.states.datas.contains_key(&id) {
+            return Err(format!("Data with id {} already exists", id));
         }
 
-        let val = ValueGraphs::new(
+        let data_type =
+            DataType::from_id(type_id).map_err(|_| "Invalid data type id".to_string())?;
+        let val = Data::new(
             name.to_string(),
             id,
+            data_type,
             self.sender.clone(),
-            graphs_type,
             self.connected.clone(),
         );
 
-        self.states.graphs.insert(id, val);
+        self.states.datas.insert(id, val);
         Ok(id)
     }
 }

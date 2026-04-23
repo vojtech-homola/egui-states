@@ -1,4 +1,4 @@
-mod pygraphs;
+mod pydata;
 mod pyimage;
 mod pyparsing;
 mod pyserver;

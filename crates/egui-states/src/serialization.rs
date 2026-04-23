@@ -2,8 +2,13 @@ use postcard::ser_flavors::Flavor;
 use serde::{Deserialize, Serialize};
 
 use crate::collections::{MapHeader, VecHeader};
-use crate::graphs::GraphHeader;
-use crate::image::ImageHeader;
+use crate::data_transport;
+use crate::image_header::ImageHeader;
+
+// TODO: make these constants configurable
+// pub(crate) const VALUE_MAX_SIZE: usize = 1024 * 1024; // 1 MB
+pub(crate) const MSG_SIZE_THRESHOLD: usize = 1024 * 1024 * 10; // 10 MB
+pub(crate) const MAX_MSG_COUNT: usize = 10;
 
 pub(crate) struct StackVec<const N: usize>([u8; N], usize);
 
@@ -22,6 +27,12 @@ impl<const N: usize> FastVec<N> {
     #[inline]
     pub fn new() -> Self {
         Self::Stack(StackVec([0; N], 0))
+    }
+
+    #[cfg(feature = "server")]
+    #[inline]
+    pub(crate) fn new_heap() -> Self {
+        Self::Heap(Vec::new())
     }
 
     #[cfg(feature = "server")]
@@ -53,6 +64,20 @@ impl<const N: usize> FastVec<N> {
         match self {
             Self::Heap(vec) => vec.len(),
             Self::Stack(stack_vec) => stack_vec.1,
+        }
+    }
+
+    #[cfg(feature = "server")]
+    pub(crate) fn reserve_exact(&mut self, additional: usize) {
+        match self {
+            Self::Heap(vec) => vec.reserve_exact(additional),
+            Self::Stack(stack_vec) => {
+                if stack_vec.1 + additional > N {
+                    let mut new_vec = Vec::with_capacity(stack_vec.1 + additional);
+                    new_vec.extend_from_slice(&stack_vec.0[..stack_vec.1]);
+                    *self = Self::Heap(new_vec);
+                }
+            }
         }
     }
 
@@ -171,10 +196,10 @@ pub(crate) enum ServerHeader {
     Value(u64, u32, bool, u32),
     ValueTake(u64, u32, bool, bool, u32),
     Static(u64, u32, bool, u32),
-    Image(u64, bool, ImageHeader),
-    Graph(u64, bool, GraphHeader),
+    Image(u64, bool, ImageHeader, u32),
+    Data(u64, data_transport::DataHeader),
     ValueVec(u64, u32, bool, VecHeader, u32),
-    ValueMapMap(u64, u32, bool, MapHeader, u32),
+    ValueMap(u64, u32, bool, MapHeader, u32),
     Update(f32),
 }
 
@@ -311,6 +336,16 @@ where
     T: Serialize,
 {
     postcard::serialize_with_flavor::<T, FastVec<N>, FastVec<N>>(value, FastVec::new())
+        .map_err(|_| ())
+}
+
+#[cfg(feature = "server")]
+#[inline]
+pub(crate) fn serialize_heap<T, const N: usize>(value: &T) -> Result<FastVec<N>, ()>
+where
+    T: Serialize,
+{
+    postcard::serialize_with_flavor::<T, FastVec<N>, FastVec<N>>(value, FastVec::new_heap())
         .map_err(|_| ())
 }
 

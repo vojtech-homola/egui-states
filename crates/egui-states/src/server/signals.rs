@@ -26,9 +26,19 @@ impl OrderedMap {
         }
     }
 
-    fn clear(&mut self) {
+    fn clear(&mut self, logging_id: u64) {
+        let log_value = self.values.remove(&logging_id);
+        let log_index = self.indexes.contains(&logging_id);
+
         self.values.clear();
         self.indexes.clear();
+
+        if let Some(log_value) = log_value {
+            self.values.insert(logging_id, log_value);
+        }
+        if log_index {
+            self.indexes.push_back(logging_id);
+        }
     }
 
     fn insert(&mut self, id: u64, value: Bytes) {
@@ -118,9 +128,13 @@ impl ChangedInner {
         }
     }
 
-    fn clear(&mut self) {
-        self.values.clear();
+    fn clear(&mut self, logging_id: u64) {
+        let log_blocked = self.blocked_list.contains(&logging_id);
+        self.values.clear(logging_id);
         self.blocked_list.clear();
+        if log_blocked {
+            self.blocked_list.insert(logging_id);
+        }
     }
 
     fn set(&mut self, id: u64, value: Bytes, event: &Event) {
@@ -198,7 +212,7 @@ impl SignalsManager {
     }
 
     pub(crate) fn reset(&self) {
-        self.values.lock().clear();
+        self.values.lock().clear(self.logging_id);
     }
 
     fn serialize_message(level: u8, text: impl ToString) -> Result<Bytes, ()> {

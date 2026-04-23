@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use crate::client::atomics::{Atomic, AtomicLock, AtomicLockStatic, AtomicStatic};
 use crate::client::event::EventUniversal;
-use crate::client::sender::{ChannelMessage, MessageSender};
+use crate::client::messages::{ChannelMessage, MessageSender};
 use crate::serialization::{deserialize, to_message};
 
 pub struct Diff<'a, T> {
@@ -70,11 +70,11 @@ impl<'a, T: Serialize + Clone + PartialEq + Atomic> DiffAtomic<'a, T> {
     }
 }
 
-pub trait UpdateValue: Sync + Send {
+pub(crate) trait UpdateValue: Sync + Send {
     fn update_value(&self, type_id: u32, data: &[u8]) -> Result<(), String>;
 }
 
-pub trait UpdateValueTake: Sync + Send {
+pub(crate) trait UpdateValueTake: Sync + Send {
     fn update_take(&self, type_id: u32, data: &[u8], blocking: bool) -> Result<(), String>;
 }
 
@@ -133,53 +133,50 @@ where
         self.inner.0.read().clone()
     }
 
-    pub fn read<R>(&self, mut f: impl FnMut(&T) -> R) -> R {
+    pub fn read<R>(&self, f: impl Fn(&T) -> R) -> R {
         let r = self.inner.0.read();
         f(&r)
     }
 
-    pub fn write<R>(&self, mut f: impl FnMut(&mut T) -> R) -> R {
-        let mut w = self.inner.0.write();
-
-        let result = f(&mut w);
-
-        let data = to_message(&*w);
+    #[inline]
+    fn write_inner(&self, value: &T, signal: bool) {
+        let data = to_message(&value);
         self.inner
             .1
-            .send(ChannelMessage::Value(self.id, self.type_id, false, data));
+            .send(ChannelMessage::Value(self.id, self.type_id, signal, data));
+    }
+
+    pub fn write<R>(&self, f: impl Fn(&mut T) -> R) -> R {
+        let mut w = self.inner.0.write();
+        let result = f(&mut w);
+        self.write_inner(&*w, false);
         result
     }
 
-    pub fn write_signal<R>(&self, mut f: impl FnMut(&mut T) -> R) -> R {
+    pub fn write_signal<R>(&self, f: impl Fn(&mut T) -> R) -> R {
         let mut w = self.inner.0.write();
-
         let result = f(&mut w);
+        self.write_inner(&*w, true);
+        result
+    }
 
-        let data = to_message(&*w);
+    #[inline]
+    fn set_inner(&self, value: T, signal: bool) {
+        let data = to_message(&value);
+
+        let mut w = self.inner.0.write();
         self.inner
             .1
-            .send(ChannelMessage::Value(self.id, self.type_id, true, data));
-        result
+            .send(ChannelMessage::Value(self.id, self.type_id, signal, data));
+        *w = value;
     }
 
     pub fn set(&self, value: T) {
-        let data = to_message(&value);
-
-        let mut w = self.inner.0.write();
-        self.inner
-            .1
-            .send(ChannelMessage::Value(self.id, self.type_id, false, data));
-        *w = value;
+        self.set_inner(value, false);
     }
 
     pub fn set_signal(&self, value: T) {
-        let data = to_message(&value);
-
-        let mut w = self.inner.0.write();
-        self.inner
-            .1
-            .send(ChannelMessage::Value(self.id, self.type_id, true, data));
-        *w = value;
+        self.set_inner(value, true);
     }
 }
 
@@ -314,7 +311,7 @@ impl<T: Clone> Static<T> {
         self.value.read().clone()
     }
 
-    pub fn read<R>(&self, mut f: impl FnMut(&T) -> R) -> R {
+    pub fn read<R>(&self, f: impl Fn(&T) -> R) -> R {
         let r = self.value.read();
         f(&r)
     }

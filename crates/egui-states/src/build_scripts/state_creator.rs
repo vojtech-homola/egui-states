@@ -4,14 +4,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::State;
 use crate::client::atomics::{Atomic, AtomicStatic};
-use crate::client::graphs::ValueGraphs;
+use crate::client::data::{Data, private::GetDataType};
 use crate::client::image::ValueImage;
-use crate::client::list::ValueVec;
-use crate::client::map::ValueMap;
-use crate::client::sender::MessageSender;
+use crate::client::value_vec::ValueVec;
+use crate::client::value_map::ValueMap;
+use crate::client::messages::MessageSender;
 use crate::client::states_creator::StatesCreator;
 use crate::client::values::{GetQueueType, Signal, Static, StaticAtomic, Value, ValueAtomic};
-use crate::graphs::{GraphElement, GraphType};
+use crate::data_transport::DataType;
 use crate::hashing::generate_value_id;
 use crate::transport::{InitValue, ObjectType, Transportable};
 
@@ -23,8 +23,8 @@ pub(crate) enum StateType {
     Image(String),
     ValueMap(String, ObjectType, ObjectType),
     ValueVec(String, ObjectType),
-    Graphs(String, GraphType),
     Signal(String, ObjectType, bool),
+    Data(String, DataType),
     SubState(String, &'static str, Vec<StateType>),
 }
 
@@ -194,15 +194,15 @@ impl StatesCreator for StatesCreatorBuild {
         value
     }
 
-    fn graphs<T>(&mut self, name: &'static str) -> ValueGraphs<T>
+    fn data<T>(&mut self, name: &'static str) -> Data<T>
     where
-        T: for<'a> Deserialize<'a> + GraphElement,
+        T: GetDataType + Send + Sync + 'static,
     {
         let name = format!("{}.{}", self.parent, name);
-        let value = ValueGraphs::new(name.clone());
+        let id = generate_value_id(&name);
+        let value = Data::new(name.clone(), id, self.sender.clone());
 
-        self.states.push(StateType::Graphs(name, T::graph_type()));
-
+        self.states.push(StateType::Data(name, T::get_type()));
         value
     }
 }

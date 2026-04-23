@@ -3,12 +3,11 @@
 from egui_states import version
 from egui_states.logging import LogLevel
 from egui_states.structures import (
-    Graph,
+    Data,
     Signal,
     SignalEmpty,
     Static,
     Value,
-    ValueGraphs,
     ValueImage,
     ValueMap,
     ValueVec,
@@ -22,10 +21,9 @@ __all__ = [
     "SignalEmpty",
     "Value",
     "ValueMap",
-    "ValueGraphs",
     "ValueImage",
     "ValueVec",
     "Static",
-    "Graph",
+    "Data",
     "LogLevel",
 ]

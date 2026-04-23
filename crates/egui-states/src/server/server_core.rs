@@ -13,14 +13,11 @@ use tokio_tungstenite::tungstenite::{Message, protocol::WebSocketConfig};
 
 use crate::PROTOCOL_VERSION;
 use crate::event_async::Event;
-use crate::serialization::{ServerHeader, serialize};
+use crate::serialization::{MAX_MSG_COUNT, MSG_SIZE_THRESHOLD, ServerHeader, serialize};
 use crate::server::sender::{MessageReceiver, MessageSender, SenderData};
 use crate::server::server::ServerStatesList;
 use crate::server::signals::SignalsManager;
 use crate::server::socket_reader::{ClientMessage, SocketReader};
-
-const MSG_SIZE_THRESHOLD: usize = 1024 * 1024 * 10; // 10 MB
-const MAX_MSG_COUNT: usize = 10;
 
 enum ChannelHolder {
     Transfer(JoinHandle<MessageReceiver>),

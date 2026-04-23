@@ -2,7 +2,7 @@ use parking_lot::RwLock;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::image::{ImageHeader, ImageType};
+use crate::image_header::{ImageHeader, ImageType};
 use crate::serialization::ServerHeader;
 use crate::server::event::Event;
 use crate::server::sender::{MessageSender, SenderData};
@@ -49,7 +49,7 @@ impl ValueImage {
         connected: Arc<AtomicBool>,
     ) -> Arc<Self> {
         let event = Event::new();
-        event.set(); // initially set so the first send does not block
+        event.set(); // initially set so the first send does not block 
 
         Arc::new(Self {
             name,
@@ -99,13 +99,13 @@ impl ValueImage {
                 image_type: image.image_type,
             };
             let mut head_buff = [0u8; 64];
-            let header = ServerHeader::Image(self.id, update, image_header);
+            let data_size = image.size[0] * image.size[1] * image.image_type.bytes_per_pixel();
+            let header = ServerHeader::Image(self.id, update, image_header, data_size as u32);
             let buff = header
                 .serialize_to_slice(&mut head_buff)
                 .map_err(|_| "Failed to serialize image header")?;
 
             let offset = buff.len();
-            let data_size = image.size[0] * image.size[1] * image.image_type.bytes_per_pixel();
 
             let mut data = Vec::with_capacity(data_size + offset);
             unsafe { data.set_len(data_size + offset) };
@@ -212,7 +212,7 @@ impl SyncTrait for ValueImage {
             rect: None,
             image_type: ImageType::ColorAlpha,
         };
-        let header = ServerHeader::Image(self.id, false, image_header);
+        let header = ServerHeader::Image(self.id, false, image_header, w.data.len() as u32);
         let buff = header.serialize_to_slice(&mut head_buff)?;
 
         let mut data = Vec::with_capacity(buff.len() + w.data.len());
@@ -348,14 +348,6 @@ unsafe fn write_rectangle(
             }
             let x = size[1] * 4;
             for i in 0..size[0] {
-                // for j in 0..size[1] {
-                //     let index = (top + i) * old_stride + left + j;
-                //     let d_index = i * stride + j * 4;
-                //     *old_data.add(index * 4) = *data.add(d_index);
-                //     *old_data.add(index * 4 + 1) = *data.add(d_index + 1);
-                //     *old_data.add(index * 4 + 2) = *data.add(d_index + 2);
-                //     *old_data.add(index * 4 + 3) = *data.add(d_index + 3);
-                // }
                 let index = (top + i) * old_stride + left * 4;
                 let buffer = data.add(i * stride);
                 let data_buffer = old_data.add(index);
