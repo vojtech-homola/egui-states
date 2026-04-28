@@ -3,7 +3,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use parking_lot::{RwLock, RwLockWriteGuard};
 
-use crate::client::data;
 use crate::data_transport::{DataHeader, DataType, TransportType};
 use crate::hashing::NoHashMap;
 use crate::serialization::{FastVec, MSG_SIZE_THRESHOLD};
@@ -21,10 +20,17 @@ pub(crate) struct DataHolder {
 unsafe impl Send for DataHolder {}
 unsafe impl Sync for DataHolder {}
 
+enum DataState {
+    Single,
+    Multi(u32),
+    Removed,
+}
+
 // Data --------------------------------------------------
 pub(crate) struct Data {
     pub(crate) name: String,
     id: u64,
+    index: Option<u32>,
     pub(crate) data_type: DataType,
     value: RwLock<Vec<u8>>,
     sender: MessageSender,
@@ -344,5 +350,32 @@ impl MultiData {
 
     pub(crate) fn get(&self, key: u32) -> Option<Arc<Data>> {
         self.values.read().get(&key).cloned()
+    }
+
+    pub(crate) fn create(&self, key: u32) -> Arc<Data> {
+        let mut w = self.values.write();
+        if let Some(existing) = w.get(&key) {
+            return existing.clone();
+        }
+
+        let data = Data::new(
+            format!("{}[{}]", self.name, key),
+            self.id,
+            self.data_type,
+            self.sender.clone(),
+            self.connected.clone(),
+        );
+        w.insert(key, data.clone());
+        data
+    }
+
+    pub(crate) fn remove(&self, key: u32) {
+        let mut w = self.values.write();
+        w.remove(&key);
+    }
+
+    pub(crate) fn clear(&self) {
+        let mut w = self.values.write();
+        w.clear();
     }
 }

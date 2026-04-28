@@ -1,4 +1,7 @@
-# ruff: noqa: D107 D101 D105 D102 PLC2801
+# ruff: noqa: D107 D105 D102 PLC2801
+from __future__ import annotations
+
+import threading
 from abc import ABC, abstractmethod
 from collections.abc import Buffer, Callable
 from typing import Any
@@ -10,31 +13,31 @@ from egui_states import _core
 from egui_states._core import (
     PyObjectType,
     StateServerCore,
+    bo,
+    cl,
+    emp,
+    enu,
+    f32,
+    f64,
     i8,
     i16,
     i32,
     i64,
+    li,
+    map,
+    opt,
+    st,
+    tu,
     u8,
     u16,
     u32,
     u64,
-    f32,
-    f64,
-    bo,
-    emp,
-    enu,
-    cl,
-    st,
     vec,
-    opt,
-    li,
-    tu,
-    map,
 )
 from egui_states.signals import SignalsManager
 
 
-class CustomStruct:
+class _CustomStruct:
     __getitem__ = object.__getattribute__
 
 
@@ -478,28 +481,26 @@ class ValueVec[T](_StaticBase):
         self.set_item(idx, value, update=False)
 
 
-_ID_TO_DTYPE = {
-    0: np.uint8,
-    1: np.uint16,
-    2: np.uint32,
-    3: np.uint64,
-    4: np.int8,
-    5: np.int16,
-    6: np.int32,
-    7: np.int64,
-    8: np.float32,
-    9: np.float64,
+_DTYPE_TO_ID = {
+    np.uint8: 0,
+    np.uint16: 1,
+    np.uint32: 2,
+    np.uint64: 3,
+    np.int8: 4,
+    np.int16: 5,
+    np.int32: 6,
+    np.int64: 7,
+    np.float32: 8,
+    np.float64: 9,
 }
 
 
 class Data[T: np.generic](_StaticBase):
-    def __init__(self, type_id: int) -> None:
-        self._type_id = type_id
-        self._dtype = _ID_TO_DTYPE[type_id]
+    def __init__(self, dtype: type[T]) -> None:
+        self._dtype = dtype
 
     def _initialize(self, name: str, types: list[PyObjectType]) -> None:
-        self._value_id = self._server.add_data(name, self._type_id)
-        del self._type_id
+        self._value_id = self._server.add_data(name, _DTYPE_TO_ID[np.dtype(self._dtype).type])
 
     def get(self) -> npt.NDArray[T]:
         """Get the data from the UI data.
@@ -557,6 +558,57 @@ class Data[T: np.generic](_StaticBase):
         self._server.data_clear(self._value_id, update)
 
 
+class DataMulti[T: np.generic]:
+    def __init__(
+        self, dtype: type[T], server: StateServerCore, value_id: int, index: int, parent: MultiData[T]
+    ) -> None:
+        self._dtype = dtype
+        self._server = server
+        self._value_id = value_id
+        self._index = index
+        self._parent = parent
+
+
+class MultiData[T: np.generic](_StaticBase):
+    def __init__(self, dtype: type[T]) -> None:
+        self._dtype = dtype
+        self._indexes: set[int] = set()
+        self._lock = threading.Lock()
+
+    def _initialize(self, name: str, types: list[PyObjectType]) -> None:
+        self._value_id = self._server.add_data_multi(name, _DTYPE_TO_ID[np.dtype(self._dtype).type])
+
+    def get(self, index: int) -> DataMulti[T]:
+        """Get the DataMulti object for the given index.
+
+        If the DataMulti object for the given index does not exist, it is created.
+
+        Args:
+            index(int): The index of the DataMulti object.
+
+        Returns:
+            DataMulti[T]: The DataMulti object for the given index.
+        """
+        if index not in self._indexes:
+            with self._lock:
+                self._server.data_multi_add(self._value_id, index)
+                self._indexes.add(index)
+
+        return DataMulti(self._dtype, self._server, self._value_id, index, self)
+
+    def remove(self, index: int, update: bool = False) -> None:
+        """Remove the DataMulti object for the given index.
+
+        Args:
+            index(int): The index of the DataMulti object.
+            update(bool, optional): Whether to update the UI. Defaults to False.
+        """
+        if index in self._indexes:
+            with self._lock:
+                self._server.data_multi_remove(self._value_id, index, update)
+                self._indexes.remove(index)
+
+
 __all__ = [
     "i8",
     "i16",
@@ -578,5 +630,5 @@ __all__ = [
     "li",
     "tu",
     "map",
-    "CustomStruct",
+    "_CustomStruct",
 ]

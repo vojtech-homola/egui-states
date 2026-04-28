@@ -24,14 +24,14 @@ class TestEnum2(IntEnum):
 
 
 @dataclass
-class TestStruct2(s.CustomStruct):
+class TestStruct2(s._CustomStruct):
     enabled: bool
     level: int
     name: str
 
 
 @dataclass
-class TestStruct(s.CustomStruct):
+class TestStruct(s._CustomStruct):
     x: float
     y: float
     label: str

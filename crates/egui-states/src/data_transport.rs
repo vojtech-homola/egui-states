@@ -27,22 +27,6 @@ impl DataType {
         }
     }
 
-    #[cfg(feature = "build_scripts")]
-    pub(crate) fn get_id(&self) -> u8 {
-        match self {
-            DataType::U8 => 0,
-            DataType::U16 => 1,
-            DataType::U32 => 2,
-            DataType::U64 => 3,
-            DataType::I8 => 4,
-            DataType::I16 => 5,
-            DataType::I32 => 6,
-            DataType::I64 => 7,
-            DataType::F32 => 8,
-            DataType::F64 => 9,
-        }
-    }
-
     #[cfg(feature = "server")]
     pub(crate) fn from_id(id: u8) -> Result<Self, ()> {
         match id {
@@ -80,7 +64,6 @@ pub(crate) enum DataHeader {
 
 impl DataHeader {
     #[cfg(feature = "server")]
-    #[inline]
     pub(crate) fn serialize(self, id: u64, heap: bool) -> Result<FastVec<32>, ()> {
         let header = ServerHeader::Data(id, self);
         match heap {
