@@ -358,7 +358,7 @@ pub(crate) trait UpdateMultiData: Sync + Send {
 pub struct MultiData<T> {
     name: String,
     id: u64,
-    inner: Arc<RwLock<NoHashMap<u32, Data<T>>>>,
+    inner: Arc<NoHashMap<u32, RwLock<Vec<T>>>>,
     sender: MessageSender,
 }
 
@@ -370,21 +370,28 @@ where
         Self {
             name,
             id,
-            inner: Arc::new(RwLock::new(NoHashMap::default())),
+            inner: Arc::new(NoHashMap::default()),
             sender,
         }
     }
 
-    pub fn get(&self, key: u32) -> Option<Data<T>> {
-        self.inner.read().get(&key).cloned()
+    pub fn get(&self, key: u32) -> Option<Vec<T>> {
+        self.inner.get(&key).map(|v| v.read().clone())
     }
 
-    pub(crate) fn get_all(&self) -> NoHashMap<u32, Data<T>> {
-        self.inner.read().clone()
+    pub fn read<R>(&self, key: u32, f: impl Fn(Option<&[T]>) -> R) -> R {
+        self.inner
+            .get(&key)
+            .map(|v| f(Some(&v.read())))
+            .unwrap_or_else(|| f(None))
     }
 
-    pub(crate) fn read_all<R>(&self, f: impl Fn(&NoHashMap<u32, Data<T>>) -> R) -> R {
-        let inner = self.inner.read();
-        f(&inner)
+    pub(crate) fn read_all<R, F>(&self, f: F) -> R
+    where
+        F: FnOnce(&dyn Iterator<Item = (&u32, &[T])>) -> R,
+    {
+        let data: Vec<_> = self.inner.iter().map(|(k, v)| (*k, v.read().clone())).collect();
+        let iter = data.iter().map(|(k, v)| (k, v.as_slice()));
+        f(&iter)
     }
 }
