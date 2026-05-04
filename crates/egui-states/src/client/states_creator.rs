@@ -72,7 +72,7 @@ pub trait StatesCreator {
     where
         T: Clone + for<'a> Deserialize<'a> + Send + Sync + Transportable + 'static;
 
-    #[allow(private_bounds)]
+    // #[allow(private_bounds)]
     fn data<T>(&mut self, name: &'static str) -> Data<T>
     where
         T: GetDataType + Send + Sync + 'static;

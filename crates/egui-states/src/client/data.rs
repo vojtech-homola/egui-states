@@ -58,7 +58,7 @@ pub struct Data<T> {
     sender: MessageSender,
 }
 
-#[allow(private_bounds)]
+// #[allow(private_bounds)]
 impl<T> Data<T>
 where
     T: private::GetDataType,
@@ -386,12 +386,13 @@ where
             .unwrap_or_else(|| f(None))
     }
 
-    pub(crate) fn read_all<R, F>(&self, f: F) -> R
+    pub fn for_each<F>(&self, f: F)
     where
-        F: FnOnce(&dyn Iterator<Item = (&u32, &[T])>) -> R,
+        F: Fn(u32, &[T]),
     {
-        let data: Vec<_> = self.inner.iter().map(|(k, v)| (*k, v.read().clone())).collect();
-        let iter = data.iter().map(|(k, v)| (k, v.as_slice()));
-        f(&iter)
+        for (k, v) in self.inner.iter() {
+            let guard = v.read();
+            f(*k, &guard);
+        }
     }
 }
