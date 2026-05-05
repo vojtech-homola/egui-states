@@ -558,9 +558,9 @@ class Data[T: np.generic](_StaticBase):
         self._server.data_clear(self._value_id, update)
 
 
-class DataMulti[T: np.generic]:
+class SingleData[T: np.generic]:
     def __init__(
-        self, dtype: type[T], server: StateServerCore, value_id: int, index: int, parent: MultiData[T]
+        self, dtype: type[T], server: StateServerCore, value_id: int, index: int, parent: DataMulti[T]
     ) -> None:
         self._dtype = dtype
         self._server = server
@@ -569,7 +569,7 @@ class DataMulti[T: np.generic]:
         self._parent = parent
 
 
-class MultiData[T: np.generic](_StaticBase):
+class DataMulti[T: np.generic](_StaticBase):
     def __init__(self, dtype: type[T]) -> None:
         self._dtype = dtype
         self._indexes: set[int] = set()
@@ -578,7 +578,7 @@ class MultiData[T: np.generic](_StaticBase):
     def _initialize(self, name: str, types: list[PyObjectType]) -> None:
         self._value_id = self._server.add_data_multi(name, _DTYPE_TO_ID[np.dtype(self._dtype).type])
 
-    def get(self, index: int) -> DataMulti[T]:
+    def get(self, index: int) -> SingleData[T]:
         """Get the DataMulti object for the given index.
 
         If the DataMulti object for the given index does not exist, it is created.
@@ -594,7 +594,7 @@ class MultiData[T: np.generic](_StaticBase):
                 self._server.data_multi_add(self._value_id, index)
                 self._indexes.add(index)
 
-        return DataMulti(self._dtype, self._server, self._value_id, index, self)
+        return SingleData(self._dtype, self._server, self._value_id, index, self)
 
     def remove(self, index: int, update: bool = False) -> None:
         """Remove the DataMulti object for the given index.

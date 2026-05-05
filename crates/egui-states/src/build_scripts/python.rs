@@ -110,7 +110,10 @@ fn process_type_info(values: &Vec<StateType>) -> (HashMap<String, TypeIndex>, Ve
                 };
                 type_map.insert(name.clone(), TypeIndex::Map(key_pos, value_pos));
             }
-            StateType::SubState(_, _, _) | StateType::Image(_) | StateType::Data(_, _) => {}
+            StateType::SubState(_, _, _)
+            | StateType::Image(_)
+            | StateType::Data(_, _)
+            | StateType::DataMulti(_, _) => {}
         }
     }
 
@@ -229,6 +232,21 @@ fn init_to_python_value(init: &InitValue, object_type: &ObjectType) -> String {
     }
 }
 
+fn data_type_to_dtype(data_type: &DataType) -> &'static str {
+    match data_type {
+        DataType::U8 => "np.uint8",
+        DataType::U16 => "np.uint16",
+        DataType::U32 => "np.uint32",
+        DataType::U64 => "np.uint64",
+        DataType::I8 => "np.int8",
+        DataType::I16 => "np.int16",
+        DataType::I32 => "np.int32",
+        DataType::I64 => "np.int64",
+        DataType::F32 => "np.float32",
+        DataType::F64 => "np.float64",
+    }
+}
+
 fn state_to_line(state: &StateType, types_map: &HashMap<String, TypeIndex>) -> String {
     match state {
         StateType::Value(name, state_type, init, queue) => {
@@ -320,21 +338,19 @@ fn state_to_line(state: &StateType, types_map: &HashMap<String, TypeIndex>) -> S
         }
         StateType::Data(name, data_type) => {
             let last_name = name.split('.').last().unwrap();
-            let dtype = match data_type {
-                DataType::U8 => "uint8",
-                DataType::U16 => "uint16",
-                DataType::U32 => "uint32",
-                DataType::U64 => "uint64",
-                DataType::I8 => "int8",
-                DataType::I16 => "int16",
-                DataType::I32 => "int32",
-                DataType::I64 => "int64",
-                DataType::F32 => "float32",
-                DataType::F64 => "float64",
-            };
+            let dtype = data_type_to_dtype(data_type);
             let dtype = format!("np.{}", dtype);
             format!(
                 "        self.{}: s.Data[{}] = s.Data({})\n",
+                last_name, dtype, dtype
+            )
+        }
+        StateType::DataMulti(name, data_type) => {
+            let last_name = name.split('.').last().unwrap();
+            let dtype = data_type_to_dtype(data_type);
+            let dtype = format!("np.{}", dtype);
+            format!(
+                "        self.{}: s.DataMulti[{}] = s.DataMulti({})\n",
                 last_name, dtype, dtype
             )
         }

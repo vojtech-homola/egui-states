@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use parking_lot::{RwLock, RwLockWriteGuard};
 
-use crate::data_transport::{DataHeader, DataType, TransportType};
+use crate::data_transport::{DataHeader, DataType, MultiDataHeader, TransportType};
 use crate::hashing::NoHashMap;
 use crate::serialization::{FastVec, MSG_SIZE_THRESHOLD};
 use crate::server::event::Event;
@@ -20,17 +20,10 @@ pub(crate) struct DataHolder {
 unsafe impl Send for DataHolder {}
 unsafe impl Sync for DataHolder {}
 
-enum DataState {
-    Single,
-    Multi(u32),
-    Removed,
-}
-
 // Data --------------------------------------------------
 pub(crate) struct Data {
     pub(crate) name: String,
     id: u64,
-    index: Option<u32>,
     pub(crate) data_type: DataType,
     value: RwLock<Vec<u8>>,
     sender: MessageSender,
@@ -76,62 +69,6 @@ impl Data {
         Ok(())
     }
 
-    fn pack_data(
-        &self,
-        data: &[u8],
-        transport_type: TransportType,
-        data_count: u64,
-        update: bool,
-    ) -> Result<Vec<(FastVec<32>, bool)>, String> {
-        let count = data.len() / MSG_SIZE_THRESHOLD + 1;
-        let mut messages = Vec::with_capacity(count);
-
-        if count == 1 {
-            let header = DataHeader::All(self.data_type, transport_type, update, data.len() as u32);
-            let mut message = header
-                .serialize(self.id, true)
-                .map_err(|_| "Failed to serialize header".to_string())?;
-            message.reserve_exact(data.len());
-            message.extend_from_slice(&data);
-            messages.push((message, true));
-        } else {
-            let mut processed = 0;
-            let header = DataHeader::StartBatch(data_count, MSG_SIZE_THRESHOLD as u32);
-            let mut message = header
-                .serialize(self.id, true)
-                .map_err(|_| "Failed to serialize header".to_string())?;
-            message.reserve_exact(MSG_SIZE_THRESHOLD);
-            message.extend_from_slice(&data[..MSG_SIZE_THRESHOLD]);
-            messages.push((message, true));
-            processed += MSG_SIZE_THRESHOLD;
-
-            while processed < data.len() {
-                let remaining = data.len() - processed;
-                if remaining <= MSG_SIZE_THRESHOLD {
-                    let header =
-                        DataHeader::End(self.data_type, transport_type, update, remaining as u32);
-                    let mut message = header
-                        .serialize(self.id, true)
-                        .map_err(|_| "Failed to serialize header".to_string())?;
-                    message.extend_from_slice(&data[processed..]);
-                    messages.push((message, false));
-                    break;
-                }
-
-                let header = DataHeader::Batch(MSG_SIZE_THRESHOLD as u32);
-                let mut message = header
-                    .serialize(self.id, true)
-                    .map_err(|_| "Failed to serialize header".to_string())?;
-                message.reserve_exact(MSG_SIZE_THRESHOLD);
-                message.extend_from_slice(&data[processed..processed + MSG_SIZE_THRESHOLD]);
-                messages.push((message, true));
-                processed += MSG_SIZE_THRESHOLD;
-            }
-        }
-
-        Ok(messages)
-    }
-
     pub(crate) fn set(&self, data: DataHolder, update: bool) -> Result<(), String> {
         self.check_data_type(&data)?;
 
@@ -147,7 +84,15 @@ impl Data {
         if self.connected.load(Ordering::Acquire) {
             let count = data.count as u64;
             let transport_type = TransportType::Set(count);
-            let messages = self.pack_data(&r, transport_type, count, update)?;
+            let messages = pack_data(
+                self.id,
+                &r,
+                transport_type,
+                count,
+                self.data_type,
+                None,
+                update,
+            )?;
 
             self.event.wait_clear();
             if !self.connected.load(Ordering::Acquire) {
@@ -174,7 +119,15 @@ impl Data {
         if self.connected.load(Ordering::Acquire) {
             let count = data.count as u64;
             let transport_type = TransportType::Add(count);
-            let messages = self.pack_data(&r[original_len..], transport_type, count, update)?;
+            let messages = pack_data(
+                self.id,
+                &r[original_len..],
+                transport_type,
+                count,
+                self.data_type,
+                None,
+                update,
+            )?;
 
             self.event.wait_clear();
             if !self.connected.load(Ordering::Acquire) {
@@ -213,10 +166,13 @@ impl Data {
         if self.connected.load(Ordering::Acquire) {
             let count = data.count as u64;
             let transport_type = TransportType::Replace(count, index as u64);
-            let messages = self.pack_data(
+            let messages = pack_data(
+                self.id,
                 &r[index..index + data.data_size],
                 transport_type,
                 count,
+                self.data_type,
+                None,
                 update,
             )?;
 
@@ -307,9 +263,16 @@ impl SyncTrait for Data {
             self.event.set();
         } else {
             let transport_type = TransportType::Set(count as u64);
-            let messages = self
-                .pack_data(&r, transport_type, count as u64, false)
-                .map_err(|_| ())?;
+            let messages = pack_data(
+                self.id,
+                &r,
+                transport_type,
+                count as u64,
+                self.data_type,
+                None,
+                false,
+            )
+            .map_err(|_| ())?;
 
             self.event.clear();
             for (message, single) in messages {
@@ -321,16 +284,17 @@ impl SyncTrait for Data {
     }
 }
 
-pub(crate) struct MultiData {
+// DataMulti --------------------------------------------------
+pub(crate) struct DataMulti {
     pub(crate) name: String,
     id: u64,
     data_type: DataType,
-    values: RwLock<NoHashMap<u32, Arc<Data>>>,
+    values: RwLock<NoHashMap<u32, Vec<u8>>>,
     sender: MessageSender,
     connected: Arc<AtomicBool>,
 }
 
-impl MultiData {
+impl DataMulti {
     pub(crate) fn new(
         name: String,
         id: u64,
@@ -348,25 +312,8 @@ impl MultiData {
         })
     }
 
-    pub(crate) fn get(&self, key: u32) -> Option<Arc<Data>> {
+    pub(crate) fn get(&self, key: u32) -> Option<Vec<u8>> {
         self.values.read().get(&key).cloned()
-    }
-
-    pub(crate) fn create(&self, key: u32) -> Arc<Data> {
-        let mut w = self.values.write();
-        if let Some(existing) = w.get(&key) {
-            return existing.clone();
-        }
-
-        let data = Data::new(
-            format!("{}[{}]", self.name, key),
-            self.id,
-            self.data_type,
-            self.sender.clone(),
-            self.connected.clone(),
-        );
-        w.insert(key, data.clone());
-        data
     }
 
     pub(crate) fn remove(&self, key: u32) {
@@ -378,4 +325,70 @@ impl MultiData {
         let mut w = self.values.write();
         w.clear();
     }
+}
+
+// functions ------------------------------------------------
+fn pack_data(
+    id: u64,
+    data: &[u8],
+    transport_type: TransportType,
+    data_count: u64,
+    data_type: DataType,
+    modify: Option<u32>,
+    update: bool,
+) -> Result<Vec<(FastVec<32>, bool)>, String> {
+    let count = data.len() / MSG_SIZE_THRESHOLD + 1;
+    let mut messages = Vec::with_capacity(count);
+
+    if count == 1 {
+        let header = DataHeader::All(data_type, transport_type, update, data.len() as u32);
+        let mut message = match modify {
+            None => header.serialize(id, true),
+            Some(index) => MultiDataHeader::serialize_modify(id, index, header),
+        }
+        .map_err(|_| "Failed to serialize header".to_string())?;
+        message.reserve_exact(data.len());
+        message.extend_from_slice(&data);
+        messages.push((message, true));
+    } else {
+        let mut processed = 0;
+        let header = DataHeader::StartBatch(data_count, MSG_SIZE_THRESHOLD as u32);
+        let mut message = match modify {
+            None => header.serialize(id, true),
+            Some(index) => MultiDataHeader::serialize_modify(id, index, header),
+        }
+        .map_err(|_| "Failed to serialize header".to_string())?;
+        message.reserve_exact(MSG_SIZE_THRESHOLD);
+        message.extend_from_slice(&data[..MSG_SIZE_THRESHOLD]);
+        messages.push((message, true));
+        processed += MSG_SIZE_THRESHOLD;
+
+        while processed < data.len() {
+            let remaining = data.len() - processed;
+            if remaining <= MSG_SIZE_THRESHOLD {
+                let header = DataHeader::End(data_type, transport_type, update, remaining as u32);
+                let mut message = match modify {
+                    None => header.serialize(id, true),
+                    Some(index) => MultiDataHeader::serialize_modify(id, index, header),
+                }
+                .map_err(|_| "Failed to serialize header".to_string())?;
+                message.extend_from_slice(&data[processed..]);
+                messages.push((message, false));
+                break;
+            }
+
+            let header = DataHeader::Batch(MSG_SIZE_THRESHOLD as u32);
+            let mut message = match modify {
+                None => header.serialize(id, true),
+                Some(index) => MultiDataHeader::serialize_modify(id, index, header),
+            }
+            .map_err(|_| "Failed to serialize header".to_string())?;
+            message.reserve_exact(MSG_SIZE_THRESHOLD);
+            message.extend_from_slice(&data[processed..processed + MSG_SIZE_THRESHOLD]);
+            messages.push((message, true));
+            processed += MSG_SIZE_THRESHOLD;
+        }
+    }
+
+    Ok(messages)
 }

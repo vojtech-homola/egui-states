@@ -62,8 +62,8 @@ pub(crate) enum DataHeader {
     Clear(bool),           // update flag
 }
 
+#[cfg(feature = "server")]
 impl DataHeader {
-    #[cfg(feature = "server")]
     pub(crate) fn serialize(self, id: u64, heap: bool) -> Result<FastVec<32>, ()> {
         let header = ServerHeader::Data(id, self);
         match heap {
@@ -78,4 +78,16 @@ pub(crate) enum MultiDataHeader {
     Remove(u32, bool),
     Modify(u32, DataHeader),
     Reset(bool),
+}
+
+#[cfg(feature = "server")]
+impl MultiDataHeader {
+    pub(crate) fn serialize_modify(
+        id: u64,
+        index: u32,
+        header: DataHeader,
+    ) -> Result<FastVec<32>, ()> {
+        let header = ServerHeader::MultiData(id, MultiDataHeader::Modify(index, header));
+        serialize_heap(&header).map_err(|_| ())
+    }
 }

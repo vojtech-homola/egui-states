@@ -222,10 +222,7 @@ impl MainApp {
                         .changed();
                 });
             if enum_changed {
-                self.states
-                    .signals
-                    .enum_signal
-                    .set(self.enum_signal_value);
+                self.states.signals.enum_signal.set(self.enum_signal_value);
             }
         });
     }
@@ -377,40 +374,34 @@ impl MainApp {
 
     fn show_data(&self, ui: &mut egui::Ui) {
         ui.collapsing("data", |ui| {
-            let (bytes_len, bytes_updated, bytes_preview) = self
+            let (bytes_len, bytes_preview) = self
                 .states
                 .data
                 .bytes
-                .read(|data, updated| (data.len(), updated, preview_slice(data)));
+                .read(|data| (data.len(), preview_slice(data)));
             ui.label("Data<u8>: root.data.bytes");
-            ui.label(format!(
-                "len = {bytes_len}, updated = {bytes_updated}, preview = {bytes_preview}"
-            ));
+            ui.label(format!("len = {bytes_len}, preview = {bytes_preview}"));
 
             ui.separator();
 
-            let (samples_len, samples_updated, samples_preview) = self
+            let (samples_len, samples_preview) = self
                 .states
                 .data
                 .samples
-                .read(|data, updated| (data.len(), updated, preview_f32_slice(data)));
+                .read(|data| (data.len(), preview_f32_slice(data)));
             ui.label("Data<f32>: root.data.samples");
-            ui.label(format!(
-                "len = {samples_len}, updated = {samples_updated}, preview = {samples_preview}"
-            ));
+            ui.label(format!("len = {samples_len}, preview = {samples_preview}"));
 
             ui.separator();
 
-            let (buffer_len, buffer_updated, buffer_preview) = self
+            let (buffer_len, buffer_preview) = self
                 .states
                 .data
                 .nested
                 .buffer
-                .read(|data, updated| (data.len(), updated, preview_slice(data)));
+                .read(|data| (data.len(), preview_slice(data)));
             ui.label("Nested Data<u16>: root.data.nested.buffer");
-            ui.label(format!(
-                "len = {buffer_len}, updated = {buffer_updated}, preview = {buffer_preview}"
-            ));
+            ui.label(format!("len = {buffer_len}, preview = {buffer_preview}"));
         });
     }
 

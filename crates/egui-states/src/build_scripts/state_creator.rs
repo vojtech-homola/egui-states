@@ -6,10 +6,10 @@ use crate::State;
 use crate::client::atomics::{Atomic, AtomicStatic};
 use crate::client::data::{Data, private::GetDataType};
 use crate::client::image::ValueImage;
-use crate::client::value_vec::ValueVec;
-use crate::client::value_map::ValueMap;
 use crate::client::messages::MessageSender;
 use crate::client::states_creator::StatesCreator;
+use crate::client::value_map::ValueMap;
+use crate::client::value_vec::ValueVec;
 use crate::client::values::{GetQueueType, Signal, Static, StaticAtomic, Value, ValueAtomic};
 use crate::data_transport::DataType;
 use crate::hashing::generate_value_id;
@@ -25,6 +25,7 @@ pub(crate) enum StateType {
     ValueVec(String, ObjectType),
     Signal(String, ObjectType, bool),
     Data(String, DataType),
+    DataMulti(String, DataType),
     SubState(String, &'static str, Vec<StateType>),
 }
 
@@ -203,6 +204,18 @@ impl StatesCreator for StatesCreatorBuild {
         let value = Data::new(name.clone(), id, self.sender.clone());
 
         self.states.push(StateType::Data(name, T::get_type()));
+        value
+    }
+
+    fn data_multi<T>(&mut self, name: &'static str) -> crate::client::data::DataMulti<T>
+    where
+        T: GetDataType + Send + Sync + 'static,
+    {
+        let name = format!("{}.{}", self.parent, name);
+        let id = generate_value_id(&name);
+        let value = crate::client::data::DataMulti::new(name.clone(), id, self.sender.clone());
+
+        self.states.push(StateType::DataMulti(name, T::get_type()));
         value
     }
 }
