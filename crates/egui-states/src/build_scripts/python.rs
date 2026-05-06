@@ -339,7 +339,7 @@ fn state_to_line(state: &StateType, types_map: &HashMap<String, TypeIndex>) -> S
         StateType::Data(name, data_type) => {
             let last_name = name.split('.').last().unwrap();
             let dtype = data_type_to_dtype(data_type);
-            let dtype = format!("np.{}", dtype);
+            let dtype = format!("{}", dtype);
             format!(
                 "        self.{}: s.Data[{}] = s.Data({})\n",
                 last_name, dtype, dtype
@@ -348,7 +348,7 @@ fn state_to_line(state: &StateType, types_map: &HashMap<String, TypeIndex>) -> S
         StateType::DataMulti(name, data_type) => {
             let last_name = name.split('.').last().unwrap();
             let dtype = data_type_to_dtype(data_type);
-            let dtype = format!("np.{}", dtype);
+            let dtype = format!("{}", dtype);
             format!(
                 "        self.{}: s.DataMulti[{}] = s.DataMulti({})\n",
                 last_name, dtype, dtype
@@ -466,7 +466,7 @@ pub fn generate_python<S: State>(path: impl ToString) -> Result<(), String> {
     for struct_name in &order_list {
         let fields = &structs[struct_name];
         file.write_all(
-            format!("\n\n@dataclass\nclass {}(s.CustomStruct):\n", struct_name).as_bytes(),
+            format!("\n\n@dataclass\nclass {}(s._CustomStruct):\n", struct_name).as_bytes(),
         )
         .unwrap();
 

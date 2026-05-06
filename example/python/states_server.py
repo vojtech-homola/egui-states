@@ -24,14 +24,14 @@ class TestEnum2(IntEnum):
 
 
 @dataclass
-class TestStruct2(s.CustomStruct):
+class TestStruct2(s._CustomStruct):
     enabled: bool
     level: int
     name: str
 
 
 @dataclass
-class TestStruct(s.CustomStruct):
+class TestStruct(s._CustomStruct):
     x: float
     y: float
     label: str
@@ -117,13 +117,13 @@ class ValueMapStates(ISubStates):
 
 class NestedDataStates(ISubStates):
     def __init__(self, parent: str):
-        self.buffer: s.Data[np.np.uint16] = s.Data(np.np.uint16)
+        self.buffer: s.Data[np.uint16] = s.Data(np.uint16)
 
 
 class DataStates(ISubStates):
     def __init__(self, parent: str):
-        self.bytes: s.Data[np.np.uint8] = s.Data(np.np.uint8)
-        self.samples: s.Data[np.np.float32] = s.Data(np.np.float32)
+        self.bytes: s.Data[np.uint8] = s.Data(np.uint8)
+        self.samples: s.Data[np.float32] = s.Data(np.float32)
         self.nested: NestedDataStates = NestedDataStates(parent + ".nested")
 
 

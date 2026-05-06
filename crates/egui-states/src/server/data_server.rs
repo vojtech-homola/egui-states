@@ -165,7 +165,7 @@ impl Data {
 
         if self.connected.load(Ordering::Acquire) {
             let count = data.count as u64;
-            let transport_type = TransportType::Replace(count, index as u64);
+            let transport_type = TransportType::Replace(index as u64, count);
             let messages = pack_data(
                 self.id,
                 &r[index..index + data.data_size],
@@ -195,7 +195,7 @@ impl Data {
         }
 
         let mut w = self.value.write();
-        if index + size > w.len() {
+        if index + size > w.len() * self {
             return Err(format!(
                 "Remove range out of bounds: end {} exceeds current size {}",
                 index + size,
