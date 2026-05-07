@@ -25,6 +25,7 @@ pub(crate) struct Data {
     pub(crate) name: String,
     id: u64,
     pub(crate) data_type: DataType,
+    item_size: usize,
     value: RwLock<Vec<u8>>,
     sender: MessageSender,
     connected: Arc<AtomicBool>,
@@ -43,6 +44,7 @@ impl Data {
             name,
             id,
             data_type,
+            item_size: data_type.element_size(),
             value: RwLock::new(Vec::new()),
             sender,
             connected,
@@ -195,7 +197,7 @@ impl Data {
         }
 
         let mut w = self.value.write();
-        if index + size > w.len() * self {
+        if index + size > w.len() {
             return Err(format!(
                 "Remove range out of bounds: end {} exceeds current size {}",
                 index + size,
@@ -225,7 +227,6 @@ impl Data {
     pub(crate) fn clear(&self, update: bool) -> Result<(), String> {
         let mut w = self.value.write();
         w.clear();
-        let _r = RwLockWriteGuard::downgrade(w);
 
         if self.connected.load(Ordering::Acquire) {
             let header = DataHeader::Clear(update);
@@ -337,10 +338,9 @@ fn pack_data(
     modify: Option<u32>,
     update: bool,
 ) -> Result<Vec<(FastVec<32>, bool)>, String> {
-    let count = data.len() / MSG_SIZE_THRESHOLD + 1;
-    let mut messages = Vec::with_capacity(count);
+    let mut messages = Vec::with_capacity(1);
 
-    if count == 1 {
+    if data.len() <= MSG_SIZE_THRESHOLD {
         let header = DataHeader::All(data_type, transport_type, update, data.len() as u32);
         let mut message = match modify {
             None => header.serialize(id, true),
