@@ -26,7 +26,7 @@ pub(crate) struct Data {
     id: u64,
     pub(crate) data_type: DataType,
     item_size: usize,
-    value: RwLock<Vec<u8>>,
+    value: RwLock<(Vec<u8>, usize)>,
     sender: MessageSender,
     connected: Arc<AtomicBool>,
     event: Event,
@@ -45,7 +45,7 @@ impl Data {
             id,
             data_type,
             item_size: data_type.element_size(),
-            value: RwLock::new(Vec::new()),
+            value: RwLock::new((Vec::new(), 0)),
             sender,
             connected,
             event: Event::new(),
@@ -60,11 +60,10 @@ impl Data {
             ));
         }
 
-        if data.data_size % self.data_type.element_size() != 0 {
+        if data.data_size % self.item_size != 0 {
             return Err(format!(
                 "Data size must be a multiple of element size: expected multiple of {}, got {}",
-                self.data_type.element_size(),
-                data.data_size
+                self.item_size, data.data_size
             ));
         }
 
@@ -81,14 +80,14 @@ impl Data {
         }
 
         let mut w = self.value.write();
-        *w = vec;
+        *w = (vec, data.count);
         let r = RwLockWriteGuard::downgrade(w);
         if self.connected.load(Ordering::Acquire) {
             let count = data.count as u64;
             let transport_type = TransportType::Set(count);
             let messages = pack_data(
                 self.id,
-                &r,
+                &r.0,
                 transport_type,
                 count,
                 self.data_type,
@@ -114,8 +113,9 @@ impl Data {
 
         let slice = unsafe { std::slice::from_raw_parts(data.data, data.data_size) };
         let mut w = self.value.write();
-        let original_len = w.len();
-        w.extend_from_slice(slice);
+        let original_len = w.0.len();
+        w.0.extend_from_slice(slice);
+        w.1 += data.count;
         let r = RwLockWriteGuard::downgrade(w);
 
         if self.connected.load(Ordering::Acquire) {
@@ -123,7 +123,7 @@ impl Data {
             let transport_type = TransportType::Add(count);
             let messages = pack_data(
                 self.id,
-                &r[original_len..],
+                &r.0[original_len..],
                 transport_type,
                 count,
                 self.data_type,
@@ -154,15 +154,14 @@ impl Data {
 
         let slice = unsafe { std::slice::from_raw_parts(data.data, data.data_size) };
         let mut w = self.value.write();
-        if index + data.data_size > w.len() {
+        if index + data.count > w.1 {
             return Err(format!(
-                "Replace range out of bounds: index {} + data size {} exceeds current size {}",
-                index,
-                data.data_size,
-                w.len()
+                "Replace range out of bounds: index {} + data count {} exceeds current size {}",
+                index, data.count, w.1
             ));
         }
-        w[index..index + data.data_size].copy_from_slice(slice);
+        let byte_index = index * self.item_size;
+        w.0[byte_index..byte_index + data.data_size].copy_from_slice(slice);
         let r = RwLockWriteGuard::downgrade(w);
 
         if self.connected.load(Ordering::Acquire) {
@@ -170,7 +169,7 @@ impl Data {
             let transport_type = TransportType::Replace(index as u64, count);
             let messages = pack_data(
                 self.id,
-                &r[index..index + data.data_size],
+                &r.0[byte_index..byte_index + data.data_size],
                 transport_type,
                 count,
                 self.data_type,
@@ -197,14 +196,16 @@ impl Data {
         }
 
         let mut w = self.value.write();
-        if index + size > w.len() {
+        if index + size > w.1 {
             return Err(format!(
                 "Remove range out of bounds: end {} exceeds current size {}",
                 index + size,
-                w.len()
+                w.1
             ));
         }
-        w.drain(index..index + size);
+        let byte_index = index * self.item_size;
+        w.0.drain(byte_index..byte_index + size * self.item_size);
+        w.1 -= size;
         let _r = RwLockWriteGuard::downgrade(w);
 
         if self.connected.load(Ordering::Acquire) {
@@ -226,7 +227,8 @@ impl Data {
 
     pub(crate) fn clear(&self, update: bool) -> Result<(), String> {
         let mut w = self.value.write();
-        w.clear();
+        w.0.clear();
+        w.1 = 0;
 
         if self.connected.load(Ordering::Acquire) {
             let header = DataHeader::Clear(update);
@@ -242,7 +244,7 @@ impl Data {
 
     pub(crate) fn get<R>(&self, f: impl Fn(&[u8]) -> R) -> R {
         let value = self.value.read();
-        f(&value)
+        f(&value.0)
     }
 }
 
@@ -256,7 +258,7 @@ impl SyncTrait for Data {
     fn sync(&self) -> Result<(), ()> {
         let r = self.value.read();
 
-        let count = r.len() / self.data_type.element_size();
+        let count = r.0.len() / self.data_type.element_size();
         if count == 0 {
             let header = DataHeader::Clear(false);
             let message = header.serialize(self.id, false).map_err(|_| ())?;
@@ -266,7 +268,7 @@ impl SyncTrait for Data {
             let transport_type = TransportType::Set(count as u64);
             let messages = pack_data(
                 self.id,
-                &r,
+                &r.0,
                 transport_type,
                 count as u64,
                 self.data_type,
@@ -290,6 +292,7 @@ pub(crate) struct DataMulti {
     pub(crate) name: String,
     id: u64,
     data_type: DataType,
+    element_size: usize,
     values: RwLock<NoHashMap<u32, Vec<u8>>>,
     sender: MessageSender,
     connected: Arc<AtomicBool>,
@@ -307,6 +310,7 @@ impl DataMulti {
             name,
             id,
             data_type,
+            element_size: data_type.element_size(),
             values: RwLock::new(NoHashMap::default()),
             sender,
             connected,
@@ -351,21 +355,23 @@ fn pack_data(
         message.extend_from_slice(&data);
         messages.push((message, true));
     } else {
+        let element_size = data_type.element_size();
+        let chunk_size = MSG_SIZE_THRESHOLD / element_size * element_size;
         let mut processed = 0;
-        let header = DataHeader::StartBatch(data_count, MSG_SIZE_THRESHOLD as u32);
+        let header = DataHeader::StartBatch(data_count, chunk_size as u32);
         let mut message = match modify {
             None => header.serialize(id, true),
             Some(index) => MultiDataHeader::serialize_modify(id, index, header),
         }
         .map_err(|_| "Failed to serialize header".to_string())?;
-        message.reserve_exact(MSG_SIZE_THRESHOLD);
-        message.extend_from_slice(&data[..MSG_SIZE_THRESHOLD]);
+        message.reserve_exact(chunk_size);
+        message.extend_from_slice(&data[..chunk_size]);
         messages.push((message, true));
-        processed += MSG_SIZE_THRESHOLD;
+        processed += chunk_size;
 
         while processed < data.len() {
             let remaining = data.len() - processed;
-            if remaining <= MSG_SIZE_THRESHOLD {
+            if remaining <= chunk_size {
                 let header = DataHeader::End(data_type, transport_type, update, remaining as u32);
                 let mut message = match modify {
                     None => header.serialize(id, true),
@@ -377,16 +383,16 @@ fn pack_data(
                 break;
             }
 
-            let header = DataHeader::Batch(MSG_SIZE_THRESHOLD as u32);
+            let header = DataHeader::Batch(chunk_size as u32);
             let mut message = match modify {
                 None => header.serialize(id, true),
                 Some(index) => MultiDataHeader::serialize_modify(id, index, header),
             }
             .map_err(|_| "Failed to serialize header".to_string())?;
-            message.reserve_exact(MSG_SIZE_THRESHOLD);
-            message.extend_from_slice(&data[processed..processed + MSG_SIZE_THRESHOLD]);
+            message.reserve_exact(chunk_size);
+            message.extend_from_slice(&data[processed..processed + chunk_size]);
             messages.push((message, true));
-            processed += MSG_SIZE_THRESHOLD;
+            processed += chunk_size;
         }
     }
 
