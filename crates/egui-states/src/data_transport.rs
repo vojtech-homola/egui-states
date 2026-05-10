@@ -18,7 +18,7 @@ pub(crate) enum DataType {
 }
 
 impl DataType {
-    pub(crate) fn element_size(&self) -> usize {
+    pub(crate) fn item_size(&self) -> usize {
         match self {
             DataType::U8 | DataType::I8 => 1,
             DataType::U16 | DataType::I16 => 2,
@@ -75,9 +75,9 @@ impl DataHeader {
 
 #[derive(Serialize, Deserialize)]
 pub(crate) enum MultiDataHeader {
-    Remove(u32, bool),
-    Modify(u32, DataHeader),
-    Reset(bool),
+    Remove(u32, bool),       // remove index from data collection
+    Modify(u32, DataHeader), // modify index in data collection
+    Reset(bool),             // reset data collection to empty
 }
 
 #[cfg(feature = "server")]

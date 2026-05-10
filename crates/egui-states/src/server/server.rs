@@ -12,7 +12,7 @@ use crate::data_transport::DataType;
 use crate::event_async::Event;
 use crate::hashing::{NoHashMap, generate_value_id};
 use crate::serialization::{ServerHeader, serialize};
-use crate::server::data_server::Data;
+use crate::server::data_server::{Data, DataMulti};
 use crate::server::image_server::ValueImage;
 use crate::server::map_server::ValueMap;
 use crate::server::sender::{MessageReceiver, MessageSender};
@@ -38,7 +38,8 @@ pub(crate) struct StatesList {
     pub(crate) images: NoHashMap<u64, Arc<ValueImage>>,
     pub(crate) maps: NoHashMap<u64, Arc<ValueMap>>,
     pub(crate) lists: NoHashMap<u64, Arc<ValueList>>,
-    pub(crate) datas: NoHashMap<u64, Arc<Data>>,
+    pub(crate) data: NoHashMap<u64, Arc<Data>>,
+    pub(crate) data_multi: NoHashMap<u64, Arc<DataMulti>>,
 }
 
 impl StatesList {
@@ -75,9 +76,14 @@ impl StatesList {
             server_list.sync.push(list.clone());
         }
 
-        for (id, data) in self.datas.iter() {
+        for (id, data) in self.data.iter() {
             server_list.sync.push(data.clone());
             server_list.ack.insert(*id, data.clone());
+        }
+
+        for (id, data_multi) in self.data_multi.iter() {
+            server_list.sync.push(data_multi.clone());
+            server_list.ack.insert(*id, data_multi.clone());
         }
 
         server_list
@@ -451,7 +457,7 @@ impl Server {
         }
 
         let id = generate_value_id(&name);
-        if self.states.datas.contains_key(&id) {
+        if self.states.data.contains_key(&id) {
             return Err(format!("Data with id {} already exists", id));
         }
 
@@ -465,7 +471,31 @@ impl Server {
             self.connected.clone(),
         );
 
-        self.states.datas.insert(id, val);
+        self.states.data.insert(id, val);
+        Ok(id)
+    }
+
+    pub(crate) fn add_data_multi(&mut self, name: &str, type_id: u8) -> Result<u64, String> {
+        if self.states_server.is_some() {
+            return Err("Cannot add new values after server has been finalized".to_string());
+        }
+
+        let id = generate_value_id(&name);
+        if self.states.data_multi.contains_key(&id) {
+            return Err(format!("DataMulti with id {} already exists", id));
+        }
+
+        let data_type =
+            DataType::from_id(type_id).map_err(|_| "Invalid data type id".to_string())?;
+        let val = DataMulti::new(
+            name.to_string(),
+            id,
+            data_type,
+            self.sender.clone(),
+            self.connected.clone(),
+        );
+
+        self.states.data_multi.insert(id, val);
         Ok(id)
     }
 }

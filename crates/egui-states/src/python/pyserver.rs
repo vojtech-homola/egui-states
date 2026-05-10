@@ -211,7 +211,7 @@ impl StateServerCore {
                 }
 
                 let images = states.images;
-                let datas = states.datas;
+                let datas = states.data;
 
                 let inner = ValuesInner {
                     values,
@@ -756,6 +756,11 @@ impl StateServerCore {
         })
     }
 
+    // data multi -------------------------------------------------------
+    fn data_multi_get(&self, py: Python, value_id: u64, index: usize, count: usize) -> PyResult<Vec<u8>> {
+
+    }
+
     // add states -------------------------------------------------------
     // ------------------------------------------------------------------
     fn add_value(
@@ -918,7 +923,16 @@ impl StateServerCore {
             .server
             .write()
             .add_data(&name, data_type)
-            .map_err(|e| PyValueError::new_err(format!("Failed to add ValueData: {}", e)))?;
+            .map_err(|e| PyValueError::new_err(format!("Failed to add Data: {}", e)))?;
+        Ok(value_id)
+    }
+
+    fn add_data_multi(&self, name: String, data_type: u8) -> PyResult<u64> {
+        let value_id = self
+            .server
+            .write()
+            .add_data_multi(&name, data_type)
+            .map_err(|e| PyValueError::new_err(format!("Failed to add DataMulti: {}", e)))?;
         Ok(value_id)
     }
 }

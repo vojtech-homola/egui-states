@@ -1,11 +1,12 @@
+use std::collections::hash_map::Entry;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use parking_lot::{RwLock, RwLockWriteGuard};
+use parking_lot::{Mutex, RwLock, RwLockWriteGuard};
 
 use crate::data_transport::{DataHeader, DataType, MultiDataHeader, TransportType};
 use crate::hashing::NoHashMap;
-use crate::serialization::{FastVec, MSG_SIZE_THRESHOLD};
+use crate::serialization::{FastVec, MSG_SIZE_THRESHOLD, ServerHeader, serialize_heap};
 use crate::server::event::Event;
 use crate::server::sender::MessageSender;
 use crate::server::server::{Acknowledge, SyncTrait};
@@ -44,7 +45,7 @@ impl Data {
             name,
             id,
             data_type,
-            item_size: data_type.element_size(),
+            item_size: data_type.item_size(),
             value: RwLock::new((Vec::new(), 0)),
             sender,
             connected,
@@ -52,26 +53,8 @@ impl Data {
         })
     }
 
-    fn check_data_type(&self, data: &DataHolder) -> Result<(), String> {
-        if data.data_type != self.data_type {
-            return Err(format!(
-                "Data type mismatch: expected {:?}, got {:?}",
-                self.data_type, data.data_type
-            ));
-        }
-
-        if data.data_size % self.item_size != 0 {
-            return Err(format!(
-                "Data size must be a multiple of element size: expected multiple of {}, got {}",
-                self.item_size, data.data_size
-            ));
-        }
-
-        Ok(())
-    }
-
     pub(crate) fn set(&self, data: DataHolder, update: bool) -> Result<(), String> {
-        self.check_data_type(&data)?;
+        check_data_type(&data, self.data_type, self.item_size)?;
 
         let mut vec = Vec::with_capacity(data.data_size);
         unsafe {
@@ -109,7 +92,7 @@ impl Data {
     }
 
     pub(crate) fn add(&self, data: DataHolder, update: bool) -> Result<(), String> {
-        self.check_data_type(&data)?;
+        check_data_type(&data, self.data_type, self.item_size)?;
 
         let slice = unsafe { std::slice::from_raw_parts(data.data, data.data_size) };
         let mut w = self.value.write();
@@ -150,7 +133,7 @@ impl Data {
         index: usize,
         update: bool,
     ) -> Result<(), String> {
-        self.check_data_type(&data)?;
+        check_data_type(&data, self.data_type, self.item_size)?;
 
         let slice = unsafe { std::slice::from_raw_parts(data.data, data.data_size) };
         let mut w = self.value.write();
@@ -258,7 +241,7 @@ impl SyncTrait for Data {
     fn sync(&self) -> Result<(), ()> {
         let r = self.value.read();
 
-        let count = r.0.len() / self.data_type.element_size();
+        let count = r.0.len() / self.data_type.item_size();
         if count == 0 {
             let header = DataHeader::Clear(false);
             let message = header.serialize(self.id, false).map_err(|_| ())?;
@@ -292,10 +275,12 @@ pub(crate) struct DataMulti {
     pub(crate) name: String,
     id: u64,
     data_type: DataType,
-    element_size: usize,
-    values: RwLock<NoHashMap<u32, Vec<u8>>>,
+    item_size: usize,
+    values: RwLock<NoHashMap<u32, (Vec<u8>, usize)>>,
+    sync_counter: Mutex<usize>,
     sender: MessageSender,
     connected: Arc<AtomicBool>,
+    event: Event,
 }
 
 impl DataMulti {
@@ -310,43 +295,327 @@ impl DataMulti {
             name,
             id,
             data_type,
-            element_size: data_type.element_size(),
+            item_size: data_type.item_size(),
             values: RwLock::new(NoHashMap::default()),
+            sync_counter: Mutex::new(0),
             sender,
             connected,
+            event: Event::new(),
         })
     }
 
-    pub(crate) fn get(&self, key: u32) -> Option<Vec<u8>> {
-        self.values.read().get(&key).cloned()
-    }
-
-    pub(crate) fn remove(&self, key: u32) {
+    pub(crate) fn remove_data(&self, key: u32) {
         let mut w = self.values.write();
         w.remove(&key);
     }
 
-    pub(crate) fn clear(&self) {
+    pub(crate) fn clear_all(&self) {
         let mut w = self.values.write();
         w.clear();
+    }
+
+    pub(crate) fn set(&self, index: u32, data: DataHolder, update: bool) -> Result<(), String> {
+        check_data_type(&data, self.data_type, self.item_size)?;
+
+        let mut vec = Vec::with_capacity(data.data_size);
+        unsafe {
+            vec.set_len(data.data_size);
+            std::ptr::copy_nonoverlapping(data.data, vec.as_mut_ptr(), data.data_size);
+        }
+
+        let mut w = self.values.write();
+        w.insert(index, (vec, data.count));
+        let r = RwLockWriteGuard::downgrade(w);
+
+        if self.connected.load(Ordering::Acquire) {
+            let count = data.count as u64;
+            let transport_type = TransportType::Set(count);
+            let entry = r
+                .get(&index)
+                .expect("DataMulti index was just inserted but is missing");
+            let messages = pack_data(
+                self.id,
+                &entry.0,
+                transport_type,
+                count,
+                self.data_type,
+                Some(index),
+                update,
+            )?;
+
+            self.event.wait_clear();
+            if !self.connected.load(Ordering::Acquire) {
+                return Ok(());
+            }
+
+            for (message, single) in messages {
+                self.sender.send_set(message, single);
+            }
+        }
+
+        Ok(())
+    }
+
+    pub(crate) fn add(&self, index: u32, data: DataHolder, update: bool) -> Result<(), String> {
+        check_data_type(&data, self.data_type, self.item_size)?;
+
+        let slice = unsafe { std::slice::from_raw_parts(data.data, data.data_size) };
+        let mut w = self.values.write();
+        let entry = w
+            .get_mut(&index)
+            .ok_or_else(|| format!("DataMulti index {} does not exist", index))?;
+        let original_len = entry.0.len();
+        entry.0.extend_from_slice(slice);
+        entry.1 += data.count;
+        let r = RwLockWriteGuard::downgrade(w);
+
+        if self.connected.load(Ordering::Acquire) {
+            let count = data.count as u64;
+            let transport_type = TransportType::Add(count);
+            let entry = r
+                .get(&index)
+                .expect("DataMulti index was just inserted but is missing");
+            let messages = pack_data(
+                self.id,
+                &entry.0[original_len..],
+                transport_type,
+                count,
+                self.data_type,
+                Some(index),
+                update,
+            )?;
+
+            self.event.wait_clear();
+            if !self.connected.load(Ordering::Acquire) {
+                return Ok(());
+            }
+
+            for (message, single) in messages {
+                self.sender.send_set(message, single);
+            }
+        }
+
+        Ok(())
+    }
+
+    pub(crate) fn replace(
+        &self,
+        index: u32,
+        data_index: usize,
+        data: DataHolder,
+        update: bool,
+    ) -> Result<(), String> {
+        check_data_type(&data, self.data_type, self.item_size)?;
+
+        let slice = unsafe { std::slice::from_raw_parts(data.data, data.data_size) };
+        let mut w = self.values.write();
+        let entry = w
+            .get_mut(&index)
+            .ok_or_else(|| format!("DataMulti index {} does not exist", index))?;
+        if data_index + data.count > entry.1 {
+            return Err(format!(
+                "Replace range out of bounds for DataMulti index {}: data_index {} + data count {} exceeds current size {}",
+                index, data_index, data.count, entry.1
+            ));
+        }
+        let byte_index = data_index * self.item_size;
+        entry.0[byte_index..byte_index + data.data_size].copy_from_slice(slice);
+        let r = RwLockWriteGuard::downgrade(w);
+
+        if self.connected.load(Ordering::Acquire) {
+            let count = data.count as u64;
+            let transport_type = TransportType::Replace(data_index as u64, count);
+            let entry = r
+                .get(&index)
+                .ok_or_else(|| format!("DataMulti index {} does not exist", index))?;
+            let messages = pack_data(
+                self.id,
+                &entry.0[byte_index..byte_index + data.data_size],
+                transport_type,
+                count,
+                self.data_type,
+                Some(index),
+                update,
+            )?;
+
+            self.event.wait_clear();
+            if !self.connected.load(Ordering::Acquire) {
+                return Ok(());
+            }
+
+            for (message, single) in messages {
+                self.sender.send_set(message, single);
+            }
+        }
+
+        Ok(())
+    }
+
+    pub(crate) fn remove(
+        &self,
+        index: u32,
+        data_index: usize,
+        size: usize,
+        update: bool,
+    ) -> Result<(), String> {
+        if size == 0 {
+            return Err("Invalid remove size: size must be greater than 0".to_string());
+        }
+
+        let mut w = self.values.write();
+        let value = w
+            .get_mut(&index)
+            .ok_or_else(|| format!("DataMulti index {} does not exist", index))?;
+        if data_index + size > value.1 {
+            return Err(format!(
+                "Remove range out of bounds for DataMulti index {}: data_index {} + size {} exceeds current size {}",
+                index, data_index, size, value.1
+            ));
+        }
+        let byte_index = data_index * self.item_size;
+        value
+            .0
+            .drain(byte_index..byte_index + size * self.item_size);
+        value.1 -= size;
+        let _r = RwLockWriteGuard::downgrade(w);
+
+        if self.connected.load(Ordering::Acquire) {
+            let header = DataHeader::Drain(data_index as u64, size as u64, update);
+            let message = MultiDataHeader::serialize_modify(self.id, index, header)
+                .map_err(|_| "Failed to serialize header".to_string())?;
+
+            self.event.wait_clear();
+            if !self.connected.load(Ordering::Acquire) {
+                return Ok(());
+            }
+
+            self.sender.send(message);
+        }
+
+        Ok(())
+    }
+
+    pub(crate) fn clear(&self, index: u32, update: bool) -> Result<(), String> {
+        let mut w = self.values.write();
+        let value = w
+            .get_mut(&index)
+            .ok_or_else(|| "Index not found".to_string())?;
+        value.0.clear();
+        value.1 = 0;
+
+        let _r = RwLockWriteGuard::downgrade(w);
+        if self.connected.load(Ordering::Acquire) {
+            let header = DataHeader::Clear(update);
+            let message = MultiDataHeader::serialize_modify(self.id, index, header)
+                .map_err(|_| "Failed to serialize header".to_string())?;
+
+            self.event.wait_clear();
+            if !self.connected.load(Ordering::Acquire) {
+                return Ok(());
+            }
+
+            self.sender.send(message);
+        }
+
+        Ok(())
+    }
+
+    pub(crate) fn get<R>(&self, key: u32, f: impl Fn(Option<&[u8]>) -> R) -> R {
+        f(self
+            .values
+            .read()
+            .get(&key)
+            .map(|(data, _)| data.as_slice()))
+    }
+}
+
+impl Acknowledge for DataMulti {
+    fn acknowledge(&self) {
+        let mut w = self.sync_counter.lock();
+        if *w > 0 {
+            *w = w.saturating_sub(1);
+            if *w > 0 {
+                return;
+            }
+        }
+
+        self.event.set();
+    }
+}
+
+impl SyncTrait for DataMulti {
+    fn sync(&self) -> Result<(), ()> {
+        let r = self.values.read();
+
+        if r.is_empty() {
+            let header = ServerHeader::MultiData(self.id, MultiDataHeader::Reset(false));
+            let message = serialize_heap(&header).map_err(|_| ())?;
+            self.sender.send(message);
+            self.event.set();
+        } else {
+            self.event.clear();
+            let mut w = self.sync_counter.lock();
+            *w = r.len();
+            for (index, (data, count)) in r.iter() {
+                let transport_type = TransportType::Set(*count as u64);
+                let messages = pack_data(
+                    self.id,
+                    data,
+                    transport_type,
+                    *count as u64,
+                    self.data_type,
+                    Some(*index),
+                    false,
+                )
+                .map_err(|_| ())?;
+
+                for (message, single) in messages {
+                    self.sender.send_set(message, single);
+                }
+
+                if !self.connected.load(Ordering::Acquire) {
+                    return Ok(());
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 
 // functions ------------------------------------------------
+fn check_data_type(data: &DataHolder, data_type: DataType, item_size: usize) -> Result<(), String> {
+    if data.data_type != data_type {
+        return Err(format!(
+            "Data type mismatch: expected {:?}, got {:?}",
+            data_type, data.data_type
+        ));
+    }
+
+    if data.data_size % item_size != 0 {
+        return Err(format!(
+            "Data size must be a multiple of element size: expected multiple of {}, got {}",
+            item_size, data.data_size
+        ));
+    }
+
+    Ok(())
+}
+
 fn pack_data(
     id: u64,
     data: &[u8],
     transport_type: TransportType,
     data_count: u64,
     data_type: DataType,
-    modify: Option<u32>,
+    multi_data: Option<u32>,
     update: bool,
 ) -> Result<Vec<(FastVec<32>, bool)>, String> {
     let mut messages = Vec::with_capacity(1);
 
     if data.len() <= MSG_SIZE_THRESHOLD {
         let header = DataHeader::All(data_type, transport_type, update, data.len() as u32);
-        let mut message = match modify {
+        let mut message = match multi_data {
             None => header.serialize(id, true),
             Some(index) => MultiDataHeader::serialize_modify(id, index, header),
         }
@@ -355,11 +624,11 @@ fn pack_data(
         message.extend_from_slice(&data);
         messages.push((message, true));
     } else {
-        let element_size = data_type.element_size();
+        let element_size = data_type.item_size();
         let chunk_size = MSG_SIZE_THRESHOLD / element_size * element_size;
         let mut processed = 0;
         let header = DataHeader::StartBatch(data_count, chunk_size as u32);
-        let mut message = match modify {
+        let mut message = match multi_data {
             None => header.serialize(id, true),
             Some(index) => MultiDataHeader::serialize_modify(id, index, header),
         }
@@ -373,7 +642,7 @@ fn pack_data(
             let remaining = data.len() - processed;
             if remaining <= chunk_size {
                 let header = DataHeader::End(data_type, transport_type, update, remaining as u32);
-                let mut message = match modify {
+                let mut message = match multi_data {
                     None => header.serialize(id, true),
                     Some(index) => MultiDataHeader::serialize_modify(id, index, header),
                 }
@@ -384,7 +653,7 @@ fn pack_data(
             }
 
             let header = DataHeader::Batch(chunk_size as u32);
-            let mut message = match modify {
+            let mut message = match multi_data {
                 None => header.serialize(id, true),
                 Some(index) => MultiDataHeader::serialize_modify(id, index, header),
             }
