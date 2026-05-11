@@ -135,6 +135,19 @@ states.data.bytes.set(np.arange(32, dtype=np.uint8), update=True)
 states.data.samples.set(np.linspace(0.0, 1.0, 1024 * 20, dtype=np.float32), update=True)
 states.data.nested.buffer.set(np.arange(8, dtype=np.uint16), update=True)
 
+states.multi_data.bytes[0].set(np.arange(12, dtype=np.uint8), update=True)
+states.multi_data.bytes[0].replace(np.array([200, 201], dtype=np.uint8), 4, update=True)
+states.multi_data.bytes[1].set(np.array([10, 20, 30], dtype=np.uint8), update=True)
+states.multi_data.bytes[1].add(np.array([40, 50], dtype=np.uint8), update=True)
+
+states.multi_data.samples[0].set(np.linspace(0.0, 1.0, 8, dtype=np.float32), update=True)
+states.multi_data.samples[2].set(np.linspace(-1.0, 1.0, 5, dtype=np.float32), update=True)
+states.multi_data.samples[2].add(np.array([1.5, 2.0], dtype=np.float32), update=True)
+
+states.multi_data.nested.buffer[0].set(np.arange(4, dtype=np.uint16), update=True)
+states.multi_data.nested.buffer[0].add(np.array([10, 11], dtype=np.uint16), update=True)
+states.multi_data.nested.buffer[3].set(np.array([100, 110, 120], dtype=np.uint16), update=True)
+
 states.value_take.take_text.set("ValueTake payload from Python", update=True)
 states.value_take.take_empty.set(update=True)
 

@@ -24,14 +24,14 @@ class TestEnum2(IntEnum):
 
 
 @dataclass
-class TestStruct2(s.CustomStruct):
+class TestStruct2(s._CustomStruct):
     enabled: bool
     level: int
     name: str
 
 
 @dataclass
-class TestStruct(s.CustomStruct):
+class TestStruct(s._CustomStruct):
     x: float
     y: float
     label: str
@@ -117,14 +117,26 @@ class ValueMapStates(ISubStates):
 
 class NestedDataStates(ISubStates):
     def __init__(self, parent: str):
-        self.buffer: s.Data[np.uint16] = s.Data[np.uint16](1)
+        self.buffer: s.Data[np.uint16] = s.Data(np.uint16)
 
 
 class DataStates(ISubStates):
     def __init__(self, parent: str):
-        self.bytes: s.Data[np.uint8] = s.Data[np.uint8](0)
-        self.samples: s.Data[np.float32] = s.Data[np.float32](8)
+        self.bytes: s.Data[np.uint8] = s.Data(np.uint8)
+        self.samples: s.Data[np.float32] = s.Data(np.float32)
         self.nested: NestedDataStates = NestedDataStates(parent + ".nested")
+
+
+class NestedMultiDataStates(ISubStates):
+    def __init__(self, parent: str):
+        self.buffer: s.DataMulti[np.uint16] = s.DataMulti(np.uint16)
+
+
+class MultiDataStates(ISubStates):
+    def __init__(self, parent: str):
+        self.bytes: s.DataMulti[np.uint8] = s.DataMulti(np.uint8)
+        self.samples: s.DataMulti[np.float32] = s.DataMulti(np.float32)
+        self.nested: NestedMultiDataStates = NestedMultiDataStates(parent + ".nested")
 
 
 class ImageStates(ISubStates):
@@ -166,6 +178,7 @@ class States(StatesBase):
         self.value_vec: ValueVecStates = ValueVecStates(parent + ".value_vec")
         self.value_map: ValueMapStates = ValueMapStates(parent + ".value_map")
         self.data: DataStates = DataStates(parent + ".data")
+        self.multi_data: MultiDataStates = MultiDataStates(parent + ".multi_data")
         self.image: ImageStates = ImageStates(parent + ".image")
 
 

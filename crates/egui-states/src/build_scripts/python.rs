@@ -112,7 +112,8 @@ fn process_type_info(values: &Vec<StateType>) -> (HashMap<String, TypeIndex>, Ve
             }
             StateType::SubState(_, _, _)
             | StateType::Image(_)
-            | StateType::Data(_, _) => {}
+            | StateType::Data(_, _)
+            | StateType::DataMulti(_, _) => {}
         }
     }
 
@@ -231,6 +232,21 @@ fn init_to_python_value(init: &InitValue, object_type: &ObjectType) -> String {
     }
 }
 
+fn data_type_to_dtype(data_type: &DataType) -> &'static str {
+    match data_type {
+        DataType::U8 => "np.uint8",
+        DataType::U16 => "np.uint16",
+        DataType::U32 => "np.uint32",
+        DataType::U64 => "np.uint64",
+        DataType::I8 => "np.int8",
+        DataType::I16 => "np.int16",
+        DataType::I32 => "np.int32",
+        DataType::I64 => "np.int64",
+        DataType::F32 => "np.float32",
+        DataType::F64 => "np.float64",
+    }
+}
+
 fn state_to_line(state: &StateType, types_map: &HashMap<String, TypeIndex>) -> String {
     match state {
         StateType::Value(name, state_type, init, queue) => {
@@ -322,23 +338,20 @@ fn state_to_line(state: &StateType, types_map: &HashMap<String, TypeIndex>) -> S
         }
         StateType::Data(name, data_type) => {
             let last_name = name.split('.').last().unwrap();
-            let data_id = data_type.get_id();
-            let dtype = match data_type {
-                DataType::U8 => "uint8",
-                DataType::U16 => "uint16",
-                DataType::U32 => "uint32",
-                DataType::U64 => "uint64",
-                DataType::I8 => "int8",
-                DataType::I16 => "int16",
-                DataType::I32 => "int32",
-                DataType::I64 => "int64",
-                DataType::F32 => "float32",
-                DataType::F64 => "float64",
-            };
-            let dtype = format!("np.{}", dtype);
+            let dtype = data_type_to_dtype(data_type);
+            let dtype = format!("{}", dtype);
             format!(
-                "        self.{}: s.Data[{}] = s.Data[{}]({})\n",
-                last_name, dtype, dtype, data_id
+                "        self.{}: s.Data[{}] = s.Data({})\n",
+                last_name, dtype, dtype
+            )
+        }
+        StateType::DataMulti(name, data_type) => {
+            let last_name = name.split('.').last().unwrap();
+            let dtype = data_type_to_dtype(data_type);
+            let dtype = format!("{}", dtype);
+            format!(
+                "        self.{}: s.DataMulti[{}] = s.DataMulti({})\n",
+                last_name, dtype, dtype
             )
         }
         StateType::Image(name) => {
@@ -453,7 +466,7 @@ pub fn generate_python<S: State>(path: impl ToString) -> Result<(), String> {
     for struct_name in &order_list {
         let fields = &structs[struct_name];
         file.write_all(
-            format!("\n\n@dataclass\nclass {}(s.CustomStruct):\n", struct_name).as_bytes(),
+            format!("\n\n@dataclass\nclass {}(s._CustomStruct):\n", struct_name).as_bytes(),
         )
         .unwrap();
 
@@ -520,7 +533,7 @@ pub fn generate_python<S: State>(path: impl ToString) -> Result<(), String> {
 
         let text = r#"
 class StatesServer(StateServerBase):
-    """The main class for the SteteServer for UI.""""#;
+    """The main class for the StateServer for UI.""""#;
         file.write_all(text.as_bytes()).unwrap();
 
         file.write_all(format!("\n\n    states: {}\n", root_name).as_bytes())

@@ -1,18 +1,11 @@
 use egui_states::Transportable;
 use egui_states::{
-    Data, Queue, Signal, State, StatesCreator, Static, StaticAtomic, Value, ValueAtomic,
+    Data, DataMulti, Queue, Signal, State, StatesCreator, Static, StaticAtomic, Value, ValueAtomic,
     ValueImage, ValueMap, ValueTake, ValueVec,
 };
 
 #[derive(
-    Clone,
-    Copy,
-    Default,
-    PartialEq,
-    Eq,
-    serde::Serialize,
-    serde::Deserialize,
-    Transportable,
+    Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, Transportable,
 )]
 pub(crate) enum TestEnum {
     #[default]
@@ -22,14 +15,7 @@ pub(crate) enum TestEnum {
 }
 
 #[derive(
-    Clone,
-    Copy,
-    Default,
-    PartialEq,
-    Eq,
-    serde::Serialize,
-    serde::Deserialize,
-    Transportable,
+    Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, Transportable,
 )]
 pub(crate) enum TestEnum2 {
     X,
@@ -38,29 +24,14 @@ pub(crate) enum TestEnum2 {
     Z,
 }
 
-#[derive(
-    Clone,
-    Default,
-    PartialEq,
-    serde::Serialize,
-    serde::Deserialize,
-    Transportable,
-)]
+#[derive(Clone, Default, PartialEq, serde::Serialize, serde::Deserialize, Transportable)]
 pub(crate) struct TestStruct {
     pub x: f32,
     pub y: f32,
     pub label: String,
 }
 
-#[derive(
-    Clone,
-    Default,
-    PartialEq,
-    Eq,
-    serde::Serialize,
-    serde::Deserialize,
-    Transportable,
-)]
+#[derive(Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, Transportable)]
 pub(crate) struct TestStruct2 {
     pub enabled: bool,
     pub level: u16,
@@ -154,6 +125,16 @@ pub(crate) struct DataStates {
     pub nested: NestedDataStates,
 }
 
+pub(crate) struct NestedMultiDataStates {
+    pub buffer: DataMulti<u16>,
+}
+
+pub(crate) struct MultiDataStates {
+    pub bytes: DataMulti<u8>,
+    pub samples: DataMulti<f32>,
+    pub nested: NestedMultiDataStates,
+}
+
 #[derive(State)]
 pub(crate) struct ImageStates {
     pub image: ValueImage,
@@ -168,6 +149,7 @@ pub struct States {
     pub(crate) value_vec: ValueVecStates,
     pub(crate) value_map: ValueMapStates,
     pub(crate) data: DataStates,
+    pub(crate) multi_data: MultiDataStates,
     pub(crate) image: ImageStates,
 }
 
@@ -186,7 +168,9 @@ impl State for NestedDataStates {
     const NAME: &'static str = "NestedDataStates";
 
     fn new(c: &mut impl StatesCreator) -> Self {
-        Self { buffer: c.data("buffer") }
+        Self {
+            buffer: c.data("buffer"),
+        }
     }
 }
 
@@ -197,6 +181,28 @@ impl State for DataStates {
         Self {
             bytes: c.data("bytes"),
             samples: c.data("samples"),
+            nested: c.substate("nested"),
+        }
+    }
+}
+
+impl State for NestedMultiDataStates {
+    const NAME: &'static str = "NestedMultiDataStates";
+
+    fn new(c: &mut impl StatesCreator) -> Self {
+        Self {
+            buffer: c.data_multi("buffer"),
+        }
+    }
+}
+
+impl State for MultiDataStates {
+    const NAME: &'static str = "MultiDataStates";
+
+    fn new(c: &mut impl StatesCreator) -> Self {
+        Self {
+            bytes: c.data_multi("bytes"),
+            samples: c.data_multi("samples"),
             nested: c.substate("nested"),
         }
     }
@@ -215,6 +221,7 @@ impl State for States {
             value_vec: c.substate("value_vec"),
             value_map: c.substate("value_map"),
             data: c.substate("data"),
+            multi_data: c.substate("multi_data"),
             image: c.substate("image"),
         }
     }

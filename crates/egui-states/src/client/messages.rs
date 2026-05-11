@@ -2,10 +2,10 @@ use bytes::Bytes;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, error, unbounded_channel};
 
 use crate::client::client::Client;
-use crate::client::data::DataMessage;
+use crate::client::data::{DataMessage, DataMultiMessage};
 use crate::client::states_creator::ValuesList;
 use crate::collections::{MapHeader, VecHeader};
-use crate::data_transport::DataHeader;
+use crate::data_transport::{DataHeader, MultiDataHeader};
 use crate::image_header::ImageHeader;
 use crate::serialization::{
     ClientHeader, FastVec, MAX_MSG_COUNT, MSG_SIZE_THRESHOLD, MessageData, ServerHeader,
@@ -114,6 +114,7 @@ pub(crate) enum ServerMessage {
     ValueVec(u64, u32, bool, VecHeader, Bytes),
     ValueMap(u64, u32, bool, MapHeader, Bytes),
     Data(u64, bool, DataMessage),
+    DataMulti(u64, bool, DataMultiMessage),
     Update(f32),
 }
 
@@ -217,7 +218,26 @@ impl MessagesParser {
                 self.pointer += size;
                 ServerMessage::Image(id, update, header, data)
             }
-            ServerHeader::Data(id, data_header) => self._process_data(id, data_header)?,
+            ServerHeader::Data(id, data_header) => {
+                let (data_message, update) = self._process_data(data_header)?;
+                ServerMessage::Data(id, update, data_message)
+            }
+            ServerHeader::MultiData(id, multi_data_header) => match multi_data_header {
+                MultiDataHeader::Remove(key, update) => {
+                    ServerMessage::DataMulti(id, update, DataMultiMessage::Remove(key))
+                }
+                MultiDataHeader::Reset(update) => {
+                    ServerMessage::DataMulti(id, update, DataMultiMessage::Reset)
+                }
+                MultiDataHeader::Modify(key, data_header) => {
+                    let (data_message, update) = self._process_data(data_header)?;
+                    ServerMessage::DataMulti(
+                        id,
+                        update,
+                        DataMultiMessage::Modify(key, data_message),
+                    )
+                }
+            },
         };
 
         Ok(message_data)
@@ -225,9 +245,8 @@ impl MessagesParser {
 
     fn _process_data(
         &mut self,
-        id: u64,
         data_header: DataHeader,
-    ) -> Result<ServerMessage, &'static str> {
+    ) -> Result<(DataMessage, bool), &'static str> {
         let res = match data_header {
             DataHeader::All(data_type, transport_type, update, data_size) => {
                 let data_size = data_size as usize;
@@ -237,7 +256,7 @@ impl MessagesParser {
 
                 let dat = self.data.slice(self.pointer..self.pointer + data_size);
                 self.pointer += data_size;
-                ServerMessage::Data(id, update, DataMessage::All(data_type, transport_type, dat))
+                (DataMessage::All(data_type, transport_type, dat), update)
             }
             DataHeader::StartBatch(count, data_size) => {
                 let data_size = data_size as usize;
@@ -247,7 +266,7 @@ impl MessagesParser {
 
                 let dat = self.data.slice(self.pointer..self.pointer + data_size);
                 self.pointer += data_size;
-                ServerMessage::Data(id, false, DataMessage::BatchStart(count, dat))
+                (DataMessage::BatchStart(count, dat), false)
             }
             DataHeader::Batch(data_size) => {
                 let data_size = data_size as usize;
@@ -256,7 +275,7 @@ impl MessagesParser {
                 }
                 let dat = self.data.slice(self.pointer..self.pointer + data_size);
                 self.pointer += data_size;
-                ServerMessage::Data(id, false, DataMessage::Batch(dat))
+                (DataMessage::Batch(dat), false)
             }
             DataHeader::End(data_type, transport_type, update, data_size) => {
                 let data_size = data_size as usize;
@@ -265,16 +284,13 @@ impl MessagesParser {
                 }
                 let dat = self.data.slice(self.pointer..self.pointer + data_size);
                 self.pointer += data_size;
-                ServerMessage::Data(
-                    id,
-                    update,
+                (
                     DataMessage::BatchEnd(data_type, transport_type, dat),
+                    update,
                 )
             }
-            DataHeader::Drain(start, count, update) => {
-                ServerMessage::Data(id, update, DataMessage::Drain(start, count))
-            }
-            DataHeader::Clear(update) => ServerMessage::Data(id, update, DataMessage::Clear),
+            DataHeader::Drain(start, count, update) => (DataMessage::Drain(start, count), update),
+            DataHeader::Clear(update) => (DataMessage::Clear, update),
         };
         Ok(res)
     }
@@ -333,9 +349,22 @@ pub(crate) async fn handle_message(
             update
         }
         ServerMessage::Data(id, update, message) => {
-            match vals.datas.get(&id) {
-                Some(value) => value.update_data(message)?,
+            match vals.data.get(&id) {
+                Some(data) => data.update_data(message)?,
                 None => return Err(format!("Data with id {} not found", id)),
+            }
+            update
+        }
+        ServerMessage::DataMulti(id, update, message) => {
+            match vals.multi_data.get(&id) {
+                Some(multi_data) => match message {
+                    DataMultiMessage::Remove(key) => multi_data.remove(key),
+                    DataMultiMessage::Reset => multi_data.reset(),
+                    DataMultiMessage::Modify(key, data_message) => {
+                        multi_data.update(key, data_message)?
+                    }
+                },
+                None => return Err(format!("MultiData with id {} not found", id)),
             }
             update
         }

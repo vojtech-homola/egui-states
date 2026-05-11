@@ -222,10 +222,7 @@ impl MainApp {
                         .changed();
                 });
             if enum_changed {
-                self.states
-                    .signals
-                    .enum_signal
-                    .set(self.enum_signal_value);
+                self.states.signals.enum_signal.set(self.enum_signal_value);
             }
         });
     }
@@ -377,40 +374,69 @@ impl MainApp {
 
     fn show_data(&self, ui: &mut egui::Ui) {
         ui.collapsing("data", |ui| {
-            let (bytes_len, bytes_updated, bytes_preview) = self
+            let (bytes_len, bytes_preview) = self
                 .states
                 .data
                 .bytes
-                .read(|data, updated| (data.len(), updated, preview_slice(data)));
+                .read(|data| (data.len(), preview_slice(data)));
             ui.label("Data<u8>: root.data.bytes");
-            ui.label(format!(
-                "len = {bytes_len}, updated = {bytes_updated}, preview = {bytes_preview}"
-            ));
+            ui.label(format!("len = {bytes_len}, preview = {bytes_preview}"));
 
             ui.separator();
 
-            let (samples_len, samples_updated, samples_preview) = self
+            let (samples_len, samples_preview) = self
                 .states
                 .data
                 .samples
-                .read(|data, updated| (data.len(), updated, preview_f32_slice(data)));
+                .read(|data| (data.len(), preview_f32_slice(data)));
             ui.label("Data<f32>: root.data.samples");
-            ui.label(format!(
-                "len = {samples_len}, updated = {samples_updated}, preview = {samples_preview}"
-            ));
+            ui.label(format!("len = {samples_len}, preview = {samples_preview}"));
 
             ui.separator();
 
-            let (buffer_len, buffer_updated, buffer_preview) = self
+            let (buffer_len, buffer_preview) = self
                 .states
                 .data
                 .nested
                 .buffer
-                .read(|data, updated| (data.len(), updated, preview_slice(data)));
+                .read(|data| (data.len(), preview_slice(data)));
             ui.label("Nested Data<u16>: root.data.nested.buffer");
-            ui.label(format!(
-                "len = {buffer_len}, updated = {buffer_updated}, preview = {buffer_preview}"
-            ));
+            ui.label(format!("len = {buffer_len}, preview = {buffer_preview}"));
+        });
+    }
+
+    fn show_multi_data(&self, ui: &mut egui::Ui) {
+        ui.collapsing("multi data", |ui| {
+            let mut bytes_items = self.states.multi_data.bytes.read_all(|data| {
+                data.iter()
+                    .map(|(index, values)| (*index, values.len(), preview_slice(values)))
+                    .collect::<Vec<_>>()
+            });
+            bytes_items.sort_by_key(|(index, _, _)| *index);
+            ui.label("DataMulti<u8>: root.multi_data.bytes");
+            show_multi_data_preview(ui, &bytes_items);
+
+            ui.separator();
+
+            let mut samples_items = self.states.multi_data.samples.read_all(|data| {
+                data.iter()
+                    .map(|(index, values)| (*index, values.len(), preview_f32_slice(values)))
+                    .collect::<Vec<_>>()
+            });
+            samples_items.sort_by_key(|(index, _, _)| *index);
+            ui.label("DataMulti<f32>: root.multi_data.samples");
+            show_multi_data_preview(ui, &samples_items);
+
+            ui.separator();
+
+            let mut buffer_items = self.states.multi_data.nested.buffer.read_all(|data| {
+                data.iter()
+                    .map(|(index, values)| (*index, values.len(), preview_slice(values)))
+                    .collect::<Vec<_>>()
+            });
+            buffer_items.sort_by_key(|(index, _, _)| *index);
+            ui.label("Nested DataMulti<u16>: root.multi_data.nested.buffer");
+            show_multi_data_preview(ui, &buffer_items);
         });
     }
 
@@ -466,6 +492,8 @@ impl eframe::App for MainApp {
                 ui.separator();
                 self.show_data(ui);
                 ui.separator();
+                self.show_multi_data(ui);
+                ui.separator();
                 self.show_image_section(ui);
             });
         });
@@ -505,6 +533,16 @@ fn preview_f32_slice(values: &[f32]) -> String {
         format!("[{}, ...]", preview.join(", "))
     } else {
         format!("[{}]", preview.join(", "))
+    }
+}
+
+fn show_multi_data_preview(ui: &mut egui::Ui, items: &[(u32, usize, String)]) {
+    if items.is_empty() {
+        ui.label("no indices");
+    } else {
+        for (index, len, preview) in items {
+            ui.label(format!("[{index}] len = {len}, preview = {preview}"));
+        }
     }
 }
 

@@ -15,7 +15,7 @@ use crate::python::{
     pyimage, pyparsing,
     pytypes::{PyObjectClass, PyObjectType},
 };
-use crate::server::data_server::{Data, DataHolder};
+use crate::server::data_server::{Data, DataHolder, DataMulti};
 use crate::server::server::Server;
 use crate::server::signals::SignalsManager;
 use crate::server::value_parsing::{ValueCreator, ValueParser};
@@ -31,7 +31,8 @@ struct ValuesInner {
     maps: NoHashMap<u64, (Arc<ValueMap>, PyObjectType)>,
     lists: NoHashMap<u64, (Arc<ValueList>, PyObjectType)>,
     images: NoHashMap<u64, Arc<ValueImage>>,
-    datas: NoHashMap<u64, Arc<Data>>,
+    data: NoHashMap<u64, Arc<Data>>,
+    data_multi: NoHashMap<u64, Arc<DataMulti>>,
 }
 
 #[pyclass]
@@ -95,9 +96,17 @@ impl StateServerCore {
 
     #[inline]
     fn inner_data(&self, value_id: u64) -> PyResult<&Arc<Data>> {
-        match self.get_values()?.datas.get(&value_id) {
+        match self.get_values()?.data.get(&value_id) {
             Some(data) => Ok(data),
             _ => Err(PyValueError::new_err("Data with ID not found.")),
+        }
+    }
+
+    #[inline]
+    fn inner_data_multi(&self, value_id: u64) -> PyResult<&Arc<DataMulti>> {
+        match self.get_values()?.data_multi.get(&value_id) {
+            Some(data_multi) => Ok(data_multi),
+            _ => Err(PyValueError::new_err("DataMulti with ID not found.")),
         }
     }
 }
@@ -211,7 +220,8 @@ impl StateServerCore {
                 }
 
                 let images = states.images;
-                let datas = states.datas;
+                let data = states.data;
+                let data_multi = states.data_multi;
 
                 let inner = ValuesInner {
                     values,
@@ -222,7 +232,8 @@ impl StateServerCore {
                     maps,
                     lists,
                     images,
-                    datas,
+                    data,
+                    data_multi,
                 };
 
                 if self.inner.set(inner).is_err() {
@@ -291,8 +302,11 @@ impl StateServerCore {
         if let Some(image) = values.images.get(&value_id) {
             return Ok(image.name.clone());
         }
-        if let Some(data) = values.datas.get(&value_id) {
+        if let Some(data) = values.data.get(&value_id) {
             return Ok(data.name.clone());
+        }
+        if let Some(data_multi) = values.data_multi.get(&value_id) {
+            return Ok(data_multi.name.clone());
         }
 
         Err(PyRuntimeError::new_err("Value not found."))
@@ -756,6 +770,142 @@ impl StateServerCore {
         })
     }
 
+    // data multi -------------------------------------------------------
+    fn data_multi_get<'py>(
+        &self,
+        py: Python<'py>,
+        value_id: u64,
+        index: u32,
+    ) -> PyResult<Bound<'py, PyByteArray>> {
+        let data_multi = self.inner_data_multi(value_id)?;
+        data_multi.get(index, |data| match data {
+            Some(data) => Ok(PyByteArray::new(py, data)),
+            None => Err(PyValueError::new_err("DataMulti index not found.")),
+        })
+    }
+
+    fn data_multi_set(
+        &self,
+        py: Python,
+        value_id: u64,
+        index: u32,
+        data: &Bound<PyAny>,
+        update: bool,
+    ) -> PyResult<()> {
+        let buffer_untyped = PyUntypedBuffer::get(data)
+            .map_err(|_| PyValueError::new_err("Data must be a bytes-like object."))?;
+
+        let data_value = self.inner_data_multi(value_id)?;
+        check_data_type(&buffer_untyped, data_value.data_type)
+            .map_err(|e| PyValueError::new_err(e))?;
+
+        let data_holder = DataHolder {
+            data: buffer_untyped.buf_ptr() as *const u8,
+            count: buffer_untyped.item_count(),
+            data_size: buffer_untyped.len_bytes(),
+            data_type: data_value.data_type,
+        };
+
+        py.detach(|| {
+            data_value
+                .set(index, data_holder, update)
+                .map_err(|e| PyValueError::new_err(e))
+        })
+    }
+
+    fn data_multi_add(
+        &self,
+        py: Python,
+        value_id: u64,
+        index: u32,
+        data: &Bound<PyAny>,
+        update: bool,
+    ) -> PyResult<()> {
+        let buffer_untyped = PyUntypedBuffer::get(data)
+            .map_err(|_| PyValueError::new_err("Data must be a bytes-like object."))?;
+
+        let data_value = self.inner_data_multi(value_id)?;
+        check_data_type(&buffer_untyped, data_value.data_type)
+            .map_err(|e| PyValueError::new_err(e))?;
+
+        let data_holder = DataHolder {
+            data: buffer_untyped.buf_ptr() as *const u8,
+            count: buffer_untyped.item_count(),
+            data_size: buffer_untyped.len_bytes(),
+            data_type: data_value.data_type,
+        };
+
+        py.detach(|| {
+            data_value
+                .add(index, data_holder, update)
+                .map_err(|e| PyValueError::new_err(e))
+        })
+    }
+
+    fn data_multi_replace(
+        &self,
+        py: Python,
+        value_id: u64,
+        index: u32,
+        data: &Bound<PyAny>,
+        data_index: usize,
+        update: bool,
+    ) -> PyResult<()> {
+        let buffer_untyped = PyUntypedBuffer::get(data)
+            .map_err(|_| PyValueError::new_err("Data must be a bytes-like object."))?;
+
+        let data_value = self.inner_data_multi(value_id)?;
+        check_data_type(&buffer_untyped, data_value.data_type)
+            .map_err(|e| PyValueError::new_err(e))?;
+
+        let data_holder = DataHolder {
+            data: buffer_untyped.buf_ptr() as *const u8,
+            count: buffer_untyped.item_count(),
+            data_size: buffer_untyped.len_bytes(),
+            data_type: data_value.data_type,
+        };
+
+        py.detach(|| {
+            data_value
+                .replace(index, data_index, data_holder, update)
+                .map_err(|e| PyValueError::new_err(e))
+        })
+    }
+
+    fn data_multi_remove(
+        &self,
+        py: Python,
+        value_id: u64,
+        index: u32,
+        data_index: usize,
+        count: usize,
+        update: bool,
+    ) -> PyResult<()> {
+        py.detach(|| {
+            self.inner_data_multi(value_id)?
+                .remove(index, data_index, count, update)
+                .map_err(|e| PyValueError::new_err(e))
+        })
+    }
+
+    fn data_multi_clear(&self, value_id: u64, index: u32, update: bool) -> PyResult<()> {
+        self.inner_data_multi(value_id)?
+            .clear(index, update)
+            .map_err(|e| PyValueError::new_err(e))
+    }
+
+    fn data_multi_remove_index(&self, value_id: u64, index: u32, update: bool) -> PyResult<()> {
+        self.inner_data_multi(value_id)?
+            .remove_index(index, update)
+            .map_err(|e| PyValueError::new_err(e))
+    }
+
+    fn data_multi_reset(&self, value_id: u64, update: bool) -> PyResult<()> {
+        self.inner_data_multi(value_id)?
+            .reset(update)
+            .map_err(|e| PyValueError::new_err(e))
+    }
+
     // add states -------------------------------------------------------
     // ------------------------------------------------------------------
     fn add_value(
@@ -918,7 +1068,16 @@ impl StateServerCore {
             .server
             .write()
             .add_data(&name, data_type)
-            .map_err(|e| PyValueError::new_err(format!("Failed to add ValueData: {}", e)))?;
+            .map_err(|e| PyValueError::new_err(format!("Failed to add Data: {}", e)))?;
+        Ok(value_id)
+    }
+
+    fn add_data_multi(&self, name: String, data_type: u8) -> PyResult<u64> {
+        let value_id = self
+            .server
+            .write()
+            .add_data_multi(&name, data_type)
+            .map_err(|e| PyValueError::new_err(format!("Failed to add DataMulti: {}", e)))?;
         Ok(value_id)
     }
 }

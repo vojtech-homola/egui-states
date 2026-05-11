@@ -18,28 +18,12 @@ pub(crate) enum DataType {
 }
 
 impl DataType {
-    pub(crate) fn element_size(&self) -> usize {
+    pub(crate) fn item_size(&self) -> usize {
         match self {
             DataType::U8 | DataType::I8 => 1,
             DataType::U16 | DataType::I16 => 2,
             DataType::U32 | DataType::I32 | DataType::F32 => 4,
             DataType::U64 | DataType::I64 | DataType::F64 => 8,
-        }
-    }
-
-    #[cfg(feature = "build_scripts")]
-    pub(crate) fn get_id(&self) -> u8 {
-        match self {
-            DataType::U8 => 0,
-            DataType::U16 => 1,
-            DataType::U32 => 2,
-            DataType::U64 => 3,
-            DataType::I8 => 4,
-            DataType::I16 => 5,
-            DataType::I32 => 6,
-            DataType::I64 => 7,
-            DataType::F32 => 8,
-            DataType::F64 => 9,
         }
     }
 
@@ -78,14 +62,37 @@ pub(crate) enum DataHeader {
     Clear(bool),           // update flag
 }
 
+#[cfg(feature = "server")]
 impl DataHeader {
-    #[cfg(feature = "server")]
-    #[inline]
     pub(crate) fn serialize(self, id: u64, heap: bool) -> Result<FastVec<32>, ()> {
         let header = ServerHeader::Data(id, self);
         match heap {
             true => serialize_heap(&header).map_err(|_| ()),
             false => serialize(&header).map_err(|_| ()),
         }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+pub(crate) enum MultiDataHeader {
+    Remove(u32, bool),       // remove index from data collection
+    Modify(u32, DataHeader), // modify index in data collection
+    Reset(bool),             // reset data collection to empty
+}
+
+#[cfg(feature = "server")]
+impl MultiDataHeader {
+    pub(crate) fn serialize_modify(
+        id: u64,
+        index: u32,
+        header: DataHeader,
+    ) -> Result<FastVec<32>, ()> {
+        let header = ServerHeader::MultiData(id, MultiDataHeader::Modify(index, header));
+        serialize_heap(&header).map_err(|_| ())
+    }
+
+    pub(crate) fn serialize(self, id: u64) -> Result<FastVec<32>, ()> {
+        let message = ServerHeader::MultiData(id, self);
+        serialize(&message).map_err(|_| ())
     }
 }
