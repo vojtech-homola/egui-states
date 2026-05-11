@@ -206,7 +206,7 @@ def test_multi_data_methods(server_bundle: tuple[StatesServer, States, list[Exce
     bytes_one.set(np.array([9, 8, 7], dtype=np.uint8))
     bytes_one.add(np.array([6], dtype=np.uint8))
     np.testing.assert_array_equal(bytes_one.get(), np.array([9, 8, 7, 6], dtype=np.uint8))
-    bytes_one.remove_index()
+    states.multi_data.bytes.remove_index(1)
     with pytest.raises(ValueError, match="DataMulti index not found"):
         states.multi_data.bytes[1].get()
 

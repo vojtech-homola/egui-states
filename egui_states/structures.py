@@ -619,14 +619,6 @@ class SingleData[T: np.generic]:
         """
         self._server.data_multi_clear(self._value_id, self._index, update)
 
-    def remove_index(self, update: bool = False) -> None:
-        """Remove this index from the parent DataMulti.
-
-        Args:
-            update(bool, optional): Whether to update the UI. Defaults to False.
-        """
-        self._server.data_multi_remove_index(self._value_id, self._index, update)
-
 
 class DataMulti[T: np.generic](_StaticBase):
     def __init__(self, dtype: type[T]) -> None:

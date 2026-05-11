@@ -306,10 +306,10 @@ impl DataMulti {
         if let Some(_) = w.remove(&index) {
             let _r = RwLockWriteGuard::downgrade(w);
             if self.connected.load(std::sync::atomic::Ordering::Relaxed) {
-                let header = MultiDataHeader::Reset(update);
+                let header = MultiDataHeader::Remove(index, update);
                 let message = header
                     .serialize(self.id)
-                    .map_err(|_| format!("Failed to serialize reset header"))?;
+                    .map_err(|_| format!("Failed to serialize remove index header"))?;
                 self.sender.send(message);
             }
         }
