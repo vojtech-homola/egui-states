@@ -130,7 +130,7 @@ def test_server_lifecycle_and_value_roundtrips(server_bundle: tuple[StatesServer
     assert states.custom_values.optional_struct.get() == optional_struct
 
 
-def test_static_data_image_and_value_take_methods(server_bundle: tuple[StatesServer, States, list[Exception]]) -> None:
+def test_static_value_roundtrips(server_bundle: tuple[StatesServer, States, list[Exception]]) -> None:
     _server, states, _errors = server_bundle
 
     summary = ExampleTestStruct2(True, 9, "summary")
@@ -146,6 +146,10 @@ def test_static_data_image_and_value_take_methods(server_bundle: tuple[StatesSer
     assert states.statics.nested.label.get() == "nested static"
     assert states.statics.nested.enum_hint.get() == ExampleTestEnum.B
 
+
+def test_image_value_roundtrip(server_bundle: tuple[StatesServer, States, list[Exception]]) -> None:
+    _server, states, _errors = server_bundle
+
     image = np.zeros((8, 8, 4), dtype=np.uint8)
     image[..., 0] = 10
     image[..., 3] = 255
@@ -156,6 +160,10 @@ def test_static_data_image_and_value_take_methods(server_bundle: tuple[StatesSer
     assert image_result.shape == (8, 8, 4)
     assert image_result[0, 0, 0] == 10
     assert np.all(image_result[..., 3] == 255)
+
+
+def test_data_array_methods(server_bundle: tuple[StatesServer, States, list[Exception]]) -> None:
+    _server, states, _errors = server_bundle
 
     bytes_data = np.arange(6, dtype=np.uint8)
     states.data.bytes.set(bytes_data)
@@ -180,6 +188,60 @@ def test_static_data_image_and_value_take_methods(server_bundle: tuple[StatesSer
         states.data.nested.buffer.get(),
         np.array([0, 1, 2, 3, 4, 5], dtype=np.uint16),
     )
+
+
+def test_multi_data_methods(server_bundle: tuple[StatesServer, States, list[Exception]]) -> None:
+    _server, states, _errors = server_bundle
+
+    bytes_zero = states.multi_data.bytes[0]
+    bytes_zero.set(np.array([0, 1, 2, 3], dtype=np.uint8))
+    bytes_zero.add(np.array([4, 5], dtype=np.uint8))
+    bytes_zero.replace(np.array([50, 51], dtype=np.uint8), 2)
+    bytes_zero.remove(1, 2)
+    np.testing.assert_array_equal(bytes_zero.get(), np.array([0, 51, 4, 5], dtype=np.uint8))
+    bytes_zero.clear()
+    np.testing.assert_array_equal(bytes_zero.get(), np.array([], dtype=np.uint8))
+
+    bytes_one = states.multi_data.bytes.get(1)
+    bytes_one.set(np.array([9, 8, 7], dtype=np.uint8))
+    bytes_one.add(np.array([6], dtype=np.uint8))
+    np.testing.assert_array_equal(bytes_one.get(), np.array([9, 8, 7, 6], dtype=np.uint8))
+    bytes_one.remove_index()
+    with pytest.raises(ValueError, match="DataMulti index not found"):
+        states.multi_data.bytes[1].get()
+
+    states.multi_data.bytes[2].set(np.array([42, 43], dtype=np.uint8))
+    states.multi_data.bytes.remove_index(2)
+    with pytest.raises(ValueError, match="DataMulti index not found"):
+        states.multi_data.bytes[2].get()
+
+    samples = np.linspace(0.0, 1.0, 5, dtype=np.float32)
+    states.multi_data.samples[3].set(samples)
+    states.multi_data.samples[3].add(np.array([1.25], dtype=np.float32))
+    np.testing.assert_allclose(
+        states.multi_data.samples[3].get(),
+        np.array([0.0, 0.25, 0.5, 0.75, 1.0, 1.25], dtype=np.float32),
+    )
+
+    nested_buffer = states.multi_data.nested.buffer[4]
+    nested_buffer.set(np.array([0, 1, 2, 3], dtype=np.uint16))
+    nested_buffer.replace(np.array([10, 11], dtype=np.uint16), 1)
+    nested_buffer.add(np.array([12], dtype=np.uint16))
+    np.testing.assert_array_equal(
+        nested_buffer.get(),
+        np.array([0, 10, 11, 3, 12], dtype=np.uint16),
+    )
+
+    states.multi_data.bytes[5].set(np.array([1, 2, 3], dtype=np.uint8))
+    states.multi_data.bytes.reset()
+    with pytest.raises(ValueError, match="DataMulti index not found"):
+        states.multi_data.bytes[0].get()
+    with pytest.raises(ValueError, match="DataMulti index not found"):
+        states.multi_data.bytes[5].get()
+
+
+def test_value_take_methods(server_bundle: tuple[StatesServer, States, list[Exception]]) -> None:
+    _server, states, _errors = server_bundle
 
     states.value_take.take_text.set("queued take", update=True)
     states.value_take.take_empty.set(update=True)
