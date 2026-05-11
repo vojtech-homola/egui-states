@@ -1,4 +1,3 @@
-use std::collections::hash_map::Entry;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -6,7 +5,7 @@ use parking_lot::{Mutex, RwLock, RwLockWriteGuard};
 
 use crate::data_transport::{DataHeader, DataType, MultiDataHeader, TransportType};
 use crate::hashing::NoHashMap;
-use crate::serialization::{FastVec, MSG_SIZE_THRESHOLD, ServerHeader, serialize_heap};
+use crate::serialization::{FastVec, MSG_SIZE_THRESHOLD};
 use crate::server::event::Event;
 use crate::server::sender::MessageSender;
 use crate::server::server::{Acknowledge, SyncTrait};
@@ -56,14 +55,12 @@ impl Data {
     pub(crate) fn set(&self, data: DataHolder, update: bool) -> Result<(), String> {
         check_data_type(&data, self.data_type, self.item_size)?;
 
-        let mut vec = Vec::with_capacity(data.data_size);
-        unsafe {
-            vec.set_len(data.data_size);
-            std::ptr::copy_nonoverlapping(data.data as *const u8, vec.as_mut_ptr(), data.data_size);
-        }
-
         let mut w = self.value.write();
-        *w = (vec, data.count);
+        let slice = unsafe { std::slice::from_raw_parts(data.data as *const u8, data.data_size) };
+        w.0.clear();
+        w.0.extend_from_slice(slice);
+        w.1 = data.count;
+
         let r = RwLockWriteGuard::downgrade(w);
         if self.connected.load(Ordering::Acquire) {
             let count = data.count as u64;
@@ -274,7 +271,7 @@ impl SyncTrait for Data {
 pub(crate) struct DataMulti {
     pub(crate) name: String,
     id: u64,
-    data_type: DataType,
+    pub(crate) data_type: DataType,
     item_size: usize,
     values: RwLock<NoHashMap<u32, (Vec<u8>, usize)>>,
     sync_counter: Mutex<usize>,
@@ -304,29 +301,62 @@ impl DataMulti {
         })
     }
 
-    pub(crate) fn remove_data(&self, key: u32) {
+    pub(crate) fn remove_index(&self, index: u32, update: bool) -> Result<(), String> {
         let mut w = self.values.write();
-        w.remove(&key);
+        if let Some(_) = w.remove(&index) {
+            let _r = RwLockWriteGuard::downgrade(w);
+            if self.connected.load(std::sync::atomic::Ordering::Relaxed) {
+                let header = MultiDataHeader::Reset(update);
+                let message = header
+                    .serialize(self.id)
+                    .map_err(|_| format!("Failed to serialize reset header"))?;
+                self.sender.send(message);
+            }
+        }
+
+        Ok(())
     }
 
-    pub(crate) fn clear_all(&self) {
+    pub(crate) fn reset(&self, update: bool) -> Result<(), String> {
         let mut w = self.values.write();
-        w.clear();
+        if !w.is_empty() {
+            w.clear();
+
+            let _r = RwLockWriteGuard::downgrade(w);
+            if self.connected.load(std::sync::atomic::Ordering::Relaxed) {
+                let header = MultiDataHeader::Reset(update);
+                let message = header
+                    .serialize(self.id)
+                    .map_err(|_| format!("Failed to serialize reset header"))?;
+                self.sender.send(message);
+            }
+        }
+
+        Ok(())
     }
 
     pub(crate) fn set(&self, index: u32, data: DataHolder, update: bool) -> Result<(), String> {
         check_data_type(&data, self.data_type, self.item_size)?;
 
-        let mut vec = Vec::with_capacity(data.data_size);
-        unsafe {
-            vec.set_len(data.data_size);
-            std::ptr::copy_nonoverlapping(data.data, vec.as_mut_ptr(), data.data_size);
+        let mut w = self.values.write();
+        match w.get_mut(&index) {
+            Some((vec, size)) => {
+                vec.clear();
+                let slice = unsafe { std::slice::from_raw_parts(data.data, data.data_size) };
+                vec.extend_from_slice(slice);
+                *size = data.count;
+            }
+            None => {
+                let mut vec = Vec::with_capacity(data.data_size);
+                unsafe {
+                    vec.set_len(data.data_size);
+                    std::ptr::copy_nonoverlapping(data.data, vec.as_mut_ptr(), data.data_size);
+                }
+                w.insert(index, (vec, data.count));
+            }
         }
 
-        let mut w = self.values.write();
-        w.insert(index, (vec, data.count));
         let r = RwLockWriteGuard::downgrade(w);
-
         if self.connected.load(Ordering::Acquire) {
             let count = data.count as u64;
             let transport_type = TransportType::Set(count);
@@ -409,17 +439,17 @@ impl DataMulti {
 
         let slice = unsafe { std::slice::from_raw_parts(data.data, data.data_size) };
         let mut w = self.values.write();
-        let entry = w
+        let value = w
             .get_mut(&index)
             .ok_or_else(|| format!("DataMulti index {} does not exist", index))?;
-        if data_index + data.count > entry.1 {
+        if data_index + data.count > value.1 {
             return Err(format!(
                 "Replace range out of bounds for DataMulti index {}: data_index {} + data count {} exceeds current size {}",
-                index, data_index, data.count, entry.1
+                index, data_index, data.count, value.1
             ));
         }
         let byte_index = data_index * self.item_size;
-        entry.0[byte_index..byte_index + data.data_size].copy_from_slice(slice);
+        value.0[byte_index..byte_index + data.data_size].copy_from_slice(slice);
         let r = RwLockWriteGuard::downgrade(w);
 
         if self.connected.load(Ordering::Acquire) {
@@ -505,14 +535,10 @@ impl DataMulti {
 
         let _r = RwLockWriteGuard::downgrade(w);
         if self.connected.load(Ordering::Acquire) {
-            let header = DataHeader::Clear(update);
-            let message = MultiDataHeader::serialize_modify(self.id, index, header)
+            let header = MultiDataHeader::Modify(index, DataHeader::Clear(update));
+            let message = header
+                .serialize(self.id)
                 .map_err(|_| "Failed to serialize header".to_string())?;
-
-            self.event.wait_clear();
-            if !self.connected.load(Ordering::Acquire) {
-                return Ok(());
-            }
 
             self.sender.send(message);
         }
@@ -548,8 +574,7 @@ impl SyncTrait for DataMulti {
         let r = self.values.read();
 
         if r.is_empty() {
-            let header = ServerHeader::MultiData(self.id, MultiDataHeader::Reset(false));
-            let message = serialize_heap(&header).map_err(|_| ())?;
+            let message = MultiDataHeader::Reset(false).serialize(self.id)?;
             self.sender.send(message);
             self.event.set();
         } else {

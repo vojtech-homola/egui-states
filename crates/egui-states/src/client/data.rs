@@ -624,34 +624,34 @@ impl<T> UpdateMultiData for DataMulti<T>
 where
     T: private::GetDataType + Sync + Send,
 {
-    fn update(&self, key: u32, message: DataMessage) -> Result<(), String> {
+    fn update(&self, index: u32, message: DataMessage) -> Result<(), String> {
         match message {
             DataMessage::All(data_type, transport_type, data) => {
                 check_data_type(self.data_type, data_type, &self.name)?;
-                self.set_all(key, &data, transport_type)
+                self.set_all(index, &data, transport_type)
             }
-            DataMessage::BatchStart(count, data) => self.batch_start(key, &data, count),
-            DataMessage::Batch(data) => self.batch(key, &data),
+            DataMessage::BatchStart(count, data) => self.batch_start(index, &data, count),
+            DataMessage::Batch(data) => self.batch(index, &data),
             DataMessage::BatchEnd(data_type, transport_type, data) => {
                 check_data_type(self.data_type, data_type, &self.name)?;
-                self.batch_end(key, &data, transport_type)
+                self.batch_end(index, &data, transport_type)
             }
-            DataMessage::Drain(index, count) => self.drain(key, index, count),
+            DataMessage::Drain(start, count) => self.drain(index, start, count),
             DataMessage::Clear => {
-                self.remove(key);
+                if let Some(val) = self.inner.write().get_mut(&index) {
+                    val.clear();
+                }
                 Ok(())
             }
         }
     }
 
-    fn remove(&self, key: u32) {
-        self.inner.write().remove(&key);
-        self.buffers.lock().remove(&key);
+    fn remove(&self, index: u32) {
+        self.inner.write().remove(&index);
     }
 
     fn reset(&self) {
         self.inner.write().clear();
-        self.buffers.lock().clear();
     }
 }
 

@@ -90,4 +90,9 @@ impl MultiDataHeader {
         let header = ServerHeader::MultiData(id, MultiDataHeader::Modify(index, header));
         serialize_heap(&header).map_err(|_| ())
     }
+
+    pub(crate) fn serialize(self, id: u64) -> Result<FastVec<32>, ()> {
+        let message = ServerHeader::MultiData(id, self);
+        serialize(&message).map_err(|_| ())
+    }
 }
