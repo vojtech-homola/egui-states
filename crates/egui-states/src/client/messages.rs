@@ -2,10 +2,10 @@ use bytes::Bytes;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, error, unbounded_channel};
 
 use crate::client::client::Client;
-use crate::client::data::{DataMessage, DataMultiMessage};
+use crate::client::data::{DataMessage, DataMultiMessage, DataTakeMessage};
 use crate::client::states_creator::ValuesList;
 use crate::collections::{MapHeader, VecHeader};
-use crate::data_transport::{DataHeader, MultiDataHeader};
+use crate::data_transport::{DataHeader, DataTakeHeader, MultiDataHeader};
 use crate::image_header::ImageHeader;
 use crate::serialization::{
     ClientHeader, FastVec, MAX_MSG_COUNT, MSG_SIZE_THRESHOLD, MessageData, ServerHeader,
@@ -114,6 +114,7 @@ pub(crate) enum ServerMessage {
     ValueVec(u64, u32, bool, VecHeader, Bytes),
     ValueMap(u64, u32, bool, MapHeader, Bytes),
     Data(u64, bool, DataMessage),
+    DataTake(u64, bool, bool, DataTakeMessage),
     DataMulti(u64, bool, DataMultiMessage),
     Update(f32),
 }
@@ -222,6 +223,10 @@ impl MessagesParser {
                 let (data_message, update) = self._process_data(data_header)?;
                 ServerMessage::Data(id, update, data_message)
             }
+            ServerHeader::DataTake(id, data_take_header, blocking) => {
+                let (data_take_message, update) = self._process_data_take(data_take_header)?;
+                ServerMessage::DataTake(id, blocking, update, data_take_message)
+            }
             ServerHeader::MultiData(id, multi_data_header) => match multi_data_header {
                 MultiDataHeader::Remove(key, update) => {
                     ServerMessage::DataMulti(id, update, DataMultiMessage::Remove(key))
@@ -294,6 +299,53 @@ impl MessagesParser {
         };
         Ok(res)
     }
+
+    fn _process_data_take(
+        &mut self,
+        data_header: DataTakeHeader,
+    ) -> Result<(DataTakeMessage, bool), &'static str> {
+        let res = match data_header {
+            DataTakeHeader::All(data_type, count, update, data_size) => {
+                let data_size = data_size as usize;
+                if self.pointer + data_size > self.data.len() {
+                    return Err("Incomplete data for DataTake message");
+                }
+
+                let dat = self.data.slice(self.pointer..self.pointer + data_size);
+                self.pointer += data_size;
+                (DataTakeMessage::All(data_type, count, dat), update)
+            }
+            DataTakeHeader::StartBatch(count, data_size) => {
+                let data_size = data_size as usize;
+                if self.pointer + data_size > self.data.len() {
+                    return Err("Incomplete data for DataTake message");
+                }
+
+                let dat = self.data.slice(self.pointer..self.pointer + data_size);
+                self.pointer += data_size;
+                (DataTakeMessage::BatchStart(count, dat), false)
+            }
+            DataTakeHeader::Batch(data_size) => {
+                let data_size = data_size as usize;
+                if self.pointer + data_size > self.data.len() {
+                    return Err("Incomplete data for DataTake message");
+                }
+                let dat = self.data.slice(self.pointer..self.pointer + data_size);
+                self.pointer += data_size;
+                (DataTakeMessage::Batch(dat), false)
+            }
+            DataTakeHeader::End(data_type, count, update, data_size) => {
+                let data_size = data_size as usize;
+                if self.pointer + data_size > self.data.len() {
+                    return Err("Incomplete data for DataTake message");
+                }
+                let dat = self.data.slice(self.pointer..self.pointer + data_size);
+                self.pointer += data_size;
+                (DataTakeMessage::BatchEnd(data_type, count, dat), update)
+            }
+        };
+        Ok(res)
+    }
 }
 
 pub(crate) async fn handle_message(
@@ -352,6 +404,13 @@ pub(crate) async fn handle_message(
             match vals.data.get(&id) {
                 Some(data) => data.update_data(message)?,
                 None => return Err(format!("Data with id {} not found", id)),
+            }
+            update
+        }
+        ServerMessage::DataTake(id, blocking, update, message) => {
+            match vals.data_take.get(&id) {
+                Some(data_take) => data_take.update_take(message, blocking)?,
+                None => return Err(format!("DataTake with id {} not found", id)),
             }
             update
         }

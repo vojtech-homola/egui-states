@@ -384,3 +384,13 @@ def test_error_handler_receives_callback_failures() -> None:
     finally:
         if server.is_running():
             server.stop()
+
+
+def test_data_take_methods(server_bundle: tuple[StatesServer, States, list[Exception]]) -> None:
+    _server, states, _errors = server_bundle
+
+    buffer_data = np.array([0, 1, 2, 3, 4], dtype=np.uint8)
+    states.data_take.take_buffer.set(buffer_data, blocking=True, update=True)
+
+    samples = np.linspace(0.0, 1.0, 5, dtype=np.float32)
+    states.data_take.take_samples.set(samples, blocking=False, update=True)

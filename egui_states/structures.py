@@ -557,6 +557,30 @@ class Data[T: np.generic](_StaticBase):
         self._server.data_clear(self._value_id, update)
 
 
+class DataTake[T: np.generic](_StaticBase):
+    def __init__(self, dtype: type[T]) -> None:
+        self._dtype = dtype
+
+    def _initialize(self, name: str, types: list[PyObjectType]) -> None:
+        self._value_id = self._server.add_data_take(name, _DTYPE_TO_ID[np.dtype(self._dtype).type])
+
+    def set(self, data: Buffer, blocking: bool = False, update: bool = False, cache: bool = False) -> None:
+        """Set the data in the UI DataTake.
+
+        DataTake does not have a get method, because the data is not stored in the server.
+        It is alternative to Signal, but with opposite transport direction.
+
+        Args:
+            data(Buffer): The data to set. Has to implement the buffer protocol (numpy array).
+            blocking(bool, optional): Whether the sending a new value with next call waits for acknowledgment from UI.
+                Defaults to False.
+            update(bool, optional): Whether to update the UI. Defaults to False.
+            cache(bool, optional): Whether to cache the data in the server. Defaults to False. If True, the last sent
+                data is cached in the server and synced with the UI during initialization of the UI.
+        """
+        self._server.data_take_set(self._value_id, data, blocking, update, cache)
+
+
 class SingleData[T: np.generic]:
     def __init__(self, dtype: type[T], server: StateServerCore, value_id: int, index: int) -> None:
         self._dtype = dtype

@@ -113,6 +113,7 @@ fn process_type_info(values: &Vec<StateType>) -> (HashMap<String, TypeIndex>, Ve
             StateType::SubState(_, _, _)
             | StateType::Image(_)
             | StateType::Data(_, _)
+            | StateType::DataTake(_, _)
             | StateType::DataMulti(_, _) => {}
         }
     }
@@ -351,6 +352,15 @@ fn state_to_line(state: &StateType, types_map: &HashMap<String, TypeIndex>) -> S
             let dtype = format!("{}", dtype);
             format!(
                 "        self.{}: s.DataMulti[{}] = s.DataMulti({})\n",
+                last_name, dtype, dtype
+            )
+        }
+        StateType::DataTake(name, data_type) => {
+            let last_name = name.split('.').last().unwrap();
+            let dtype = data_type_to_dtype(data_type);
+            let dtype = format!("{}", dtype);
+            format!(
+                "        self.{}: s.DataTake[{}] = s.DataTake({})\n",
                 last_name, dtype, dtype
             )
         }

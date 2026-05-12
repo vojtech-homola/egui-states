@@ -15,7 +15,7 @@ use crate::python::{
     pyimage, pyparsing,
     pytypes::{PyObjectClass, PyObjectType},
 };
-use crate::server::data_server::{Data, DataHolder, DataMulti};
+use crate::server::data_server::{Data, DataHolder, DataMulti, DataTake};
 use crate::server::server::Server;
 use crate::server::signals::SignalsManager;
 use crate::server::value_parsing::{ValueCreator, ValueParser};
@@ -32,6 +32,7 @@ struct ValuesInner {
     lists: NoHashMap<u64, (Arc<ValueList>, PyObjectType)>,
     images: NoHashMap<u64, Arc<ValueImage>>,
     data: NoHashMap<u64, Arc<Data>>,
+    data_take: NoHashMap<u64, Arc<DataTake>>,
     data_multi: NoHashMap<u64, Arc<DataMulti>>,
 }
 
@@ -107,6 +108,14 @@ impl StateServerCore {
         match self.get_values()?.data_multi.get(&value_id) {
             Some(data_multi) => Ok(data_multi),
             _ => Err(PyValueError::new_err("DataMulti with ID not found.")),
+        }
+    }
+
+    #[inline]
+    fn inner_data_take(&self, value_id: u64) -> PyResult<&Arc<DataTake>> {
+        match self.get_values()?.data_take.get(&value_id) {
+            Some(data_take) => Ok(data_take),
+            _ => Err(PyValueError::new_err("DataTake with ID not found.")),
         }
     }
 }
@@ -221,6 +230,7 @@ impl StateServerCore {
 
                 let images = states.images;
                 let data = states.data;
+                let data_take = states.data_take;
                 let data_multi = states.data_multi;
 
                 let inner = ValuesInner {
@@ -233,6 +243,7 @@ impl StateServerCore {
                     lists,
                     images,
                     data,
+                    data_take,
                     data_multi,
                 };
 
@@ -307,6 +318,9 @@ impl StateServerCore {
         }
         if let Some(data_multi) = values.data_multi.get(&value_id) {
             return Ok(data_multi.name.clone());
+        }
+        if let Some(data_take) = values.data_take.get(&value_id) {
+            return Ok(data_take.name.clone());
         }
 
         Err(PyRuntimeError::new_err("Value not found."))
@@ -770,6 +784,37 @@ impl StateServerCore {
         })
     }
 
+    // data take -------------------------------------------------------
+    fn data_take_set(
+        &self,
+        py: Python,
+        value_id: u64,
+        data: &Bound<PyAny>,
+        blocking: bool,
+        update: bool,
+        cache: bool,
+    ) -> PyResult<()> {
+        let buffer_untyped = PyUntypedBuffer::get(data)
+            .map_err(|_| PyValueError::new_err("Data must be a bytes-like object."))?;
+
+        let data_value = self.inner_data_take(value_id)?;
+        check_data_type(&buffer_untyped, data_value.data_type)
+            .map_err(|e| PyValueError::new_err(e))?;
+
+        let data_holder = DataHolder {
+            data: buffer_untyped.buf_ptr() as *const u8,
+            count: buffer_untyped.item_count(),
+            data_size: buffer_untyped.len_bytes(),
+            data_type: data_value.data_type,
+        };
+
+        py.detach(|| {
+            data_value
+                .set(data_holder, blocking, update, cache)
+                .map_err(|e| PyValueError::new_err(e))
+        })
+    }
+
     // data multi -------------------------------------------------------
     fn data_multi_get<'py>(
         &self,
@@ -1078,6 +1123,15 @@ impl StateServerCore {
             .write()
             .add_data_multi(&name, data_type)
             .map_err(|e| PyValueError::new_err(format!("Failed to add DataMulti: {}", e)))?;
+        Ok(value_id)
+    }
+
+    fn add_data_take(&self, name: String, data_type: u8) -> PyResult<u64> {
+        let value_id = self
+            .server
+            .write()
+            .add_data_take(&name, data_type)
+            .map_err(|e| PyValueError::new_err(format!("Failed to add DataTake: {}", e)))?;
         Ok(value_id)
     }
 }

@@ -151,6 +151,9 @@ states.multi_data.nested.buffer[3].set(np.array([100, 110, 120], dtype=np.uint16
 states.value_take.take_text.set("ValueTake payload from Python", update=True)
 states.value_take.take_empty.set(update=True)
 
+states.data_take.take_buffer.set(np.arange(16, dtype=np.uint8), update=True)
+states.data_take.take_samples.set(np.linspace(0.0, 1.0, 8, dtype=np.float32), update=True)
+
 rng = np.random.default_rng()
 image = (rng.random((256, 256, 3)) * 255).astype(np.uint8)
 states.image.image.set(image, update=True)

@@ -74,6 +74,25 @@ impl DataHeader {
 }
 
 #[derive(Serialize, Deserialize)]
+pub(crate) enum DataTakeHeader {
+    All(DataType, u64, bool, u32), // data type, element count, update flag, data size
+    StartBatch(u64, u32),          // total element count, size of first batch
+    Batch(u32),                    // size of batch
+    End(DataType, u64, bool, u32), // data type, element count, update flag, size of last batch
+}
+
+#[cfg(feature = "server")]
+impl DataTakeHeader {
+    pub(crate) fn serialize(self, id: u64, blocking: bool, heap: bool) -> Result<FastVec<32>, ()> {
+        let header = ServerHeader::DataTake(id, self, blocking);
+        match heap {
+            true => serialize_heap(&header).map_err(|_| ()),
+            false => serialize(&header).map_err(|_| ()),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
 pub(crate) enum MultiDataHeader {
     Remove(u32, bool),       // remove index from data collection
     Modify(u32, DataHeader), // modify index in data collection

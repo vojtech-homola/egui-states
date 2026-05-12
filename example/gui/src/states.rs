@@ -1,6 +1,6 @@
 use egui_states::Transportable;
 use egui_states::{
-    Data, DataMulti, Queue, Signal, State, StatesCreator, Static, StaticAtomic, Value, ValueAtomic,
+    Data, DataMulti, DataTake, Queue, Signal, State, StatesCreator, Static, StaticAtomic, Value, ValueAtomic,
     ValueImage, ValueMap, ValueTake, ValueVec,
 };
 
@@ -135,6 +135,11 @@ pub(crate) struct MultiDataStates {
     pub nested: NestedMultiDataStates,
 }
 
+pub(crate) struct DataTakeStates {
+    pub take_buffer: DataTake<u8>,
+    pub take_samples: DataTake<f32>,
+}
+
 #[derive(State)]
 pub(crate) struct ImageStates {
     pub image: ValueImage,
@@ -149,6 +154,7 @@ pub struct States {
     pub(crate) value_vec: ValueVecStates,
     pub(crate) value_map: ValueMapStates,
     pub(crate) data: DataStates,
+    pub(crate) data_take: DataTakeStates,
     pub(crate) multi_data: MultiDataStates,
     pub(crate) image: ImageStates,
 }
@@ -160,6 +166,17 @@ impl State for ValueTakeStates {
         Self {
             take_text: c.value_take("take_text"),
             take_empty: c.value_take("take_empty"),
+        }
+    }
+}
+
+impl State for DataTakeStates {
+    const NAME: &'static str = "DataTakeStates";
+
+    fn new(c: &mut impl StatesCreator) -> Self {
+        Self {
+            take_buffer: c.data_take("take_buffer"),
+            take_samples: c.data_take("take_samples"),
         }
     }
 }
@@ -221,6 +238,7 @@ impl State for States {
             value_vec: c.substate("value_vec"),
             value_map: c.substate("value_map"),
             data: c.substate("data"),
+            data_take: c.substate("data_take"),
             multi_data: c.substate("multi_data"),
             image: c.substate("image"),
         }

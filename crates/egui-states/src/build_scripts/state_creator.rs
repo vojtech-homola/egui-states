@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::State;
 use crate::client::atomics::{Atomic, AtomicStatic};
-use crate::client::data::{Data, private::GetDataType};
+use crate::client::data::{Data, DataMulti, DataTake, private::GetDataType};
 use crate::client::image::ValueImage;
 use crate::client::messages::MessageSender;
 use crate::client::states_creator::StatesCreator;
@@ -25,6 +25,7 @@ pub(crate) enum StateType {
     ValueVec(String, ObjectType),
     Signal(String, ObjectType, bool),
     Data(String, DataType),
+    DataTake(String, DataType),
     DataMulti(String, DataType),
     SubState(String, &'static str, Vec<StateType>),
 }
@@ -207,15 +208,27 @@ impl StatesCreator for StatesCreatorBuild {
         value
     }
 
-    fn data_multi<T>(&mut self, name: &'static str) -> crate::client::data::DataMulti<T>
+    fn data_multi<T>(&mut self, name: &'static str) -> DataMulti<T>
     where
         T: GetDataType + Send + Sync + 'static,
     {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
-        let value = crate::client::data::DataMulti::new(name.clone(), id, self.sender.clone());
+        let value = DataMulti::new(name.clone(), id, self.sender.clone());
 
         self.states.push(StateType::DataMulti(name, T::get_type()));
+        value
+    }
+
+    fn data_take<T>(&mut self, name: &'static str) -> DataTake<T>
+    where
+        T: GetDataType + Send + Sync + 'static,
+    {
+        let name = format!("{}.{}", self.parent, name);
+        let id = generate_value_id(&name);
+        let value = DataTake::new(name.clone(), id, self.sender.clone());
+
+        self.states.push(StateType::DataTake(name, T::get_type()));
         value
     }
 }
