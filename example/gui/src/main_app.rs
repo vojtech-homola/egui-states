@@ -14,6 +14,8 @@ pub struct MainApp {
     empty_take_count: u32,
     number_signal_value: f64,
     enum_signal_value: TestEnum,
+    last_take_buffer: Vec<u8>,
+    last_take_samples: Vec<f32>,
 }
 
 impl MainApp {
@@ -34,6 +36,8 @@ impl MainApp {
             empty_take_count: 0,
             number_signal_value: 0.0,
             enum_signal_value: TestEnum::default(),
+            last_take_buffer: Vec::new(),
+            last_take_samples: Vec::new(),
         }))
     }
 
@@ -44,6 +48,14 @@ impl MainApp {
 
         if self.states.value_take.take_empty.take().is_some() {
             self.empty_take_count += 1;
+        }
+
+        if let Some(value) = self.states.data_take.take_buffer.take() {
+            self.last_take_buffer = value;
+        }
+
+        if let Some(value) = self.states.data_take.take_samples.take() {
+            self.last_take_samples = value;
         }
     }
 
@@ -267,6 +279,20 @@ impl MainApp {
         });
     }
 
+    fn show_data_take(&self, ui: &mut egui::Ui) {
+        ui.collapsing("data_take", |ui| {
+            ui.label("DataTake<u8>: root.data_take.take_buffer");
+            let buffer_preview = preview_slice(&self.last_take_buffer);
+            ui.label(format!("last received: len = {}, preview = {}", self.last_take_buffer.len(), buffer_preview));
+
+            ui.separator();
+
+            ui.label("DataTake<f32>: root.data_take.take_samples");
+            let samples_preview = preview_f32_slice(&self.last_take_samples);
+            ui.label(format!("last received: len = {}, preview = {}", self.last_take_samples.len(), samples_preview));
+        });
+    }
+
     fn show_custom_values(&mut self, ui: &mut egui::Ui) {
         ui.collapsing("custom values", |ui| {
             ui.label("Value<TestStruct>: root.custom_values.point");
@@ -483,6 +509,8 @@ impl eframe::App for MainApp {
                 self.show_statics(ui);
                 ui.separator();
                 self.show_value_take(ui);
+                ui.separator();
+                self.show_data_take(ui);
                 ui.separator();
                 self.show_custom_values(ui);
                 ui.separator();

@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::State;
 use crate::client::atomics::{Atomic, AtomicStatic};
-use crate::client::data::{Data, DataMulti, UpdateData, UpdateMultiData, private::GetDataType};
+use crate::client::data::{Data, DataMulti, DataTake, UpdateData, UpdateDataTake, UpdateMultiData, private::GetDataType};
 use crate::client::image::ValueImage;
 use crate::client::messages::MessageSender;
 use crate::client::value_map::{UpdateMap, ValueMap};
@@ -81,6 +81,11 @@ pub trait StatesCreator {
     fn data_multi<T>(&mut self, name: &'static str) -> DataMulti<T>
     where
         T: GetDataType + Send + Sync + 'static;
+
+    #[allow(private_bounds)]
+    fn data_take<T>(&mut self, name: &'static str) -> DataTake<T>
+    where
+        T: GetDataType + Send + Sync + 'static;
 }
 
 #[derive(Clone)]
@@ -89,6 +94,7 @@ pub(crate) struct ValuesList {
     pub(crate) values_take: NoHashMap<u64, Arc<dyn UpdateValueTake>>,
     pub(crate) static_values: NoHashMap<u64, Arc<dyn UpdateValue>>,
     pub(crate) data: NoHashMap<u64, Arc<dyn UpdateData>>,
+    pub(crate) data_take: NoHashMap<u64, Arc<dyn UpdateDataTake>>,
     pub(crate) multi_data: NoHashMap<u64, Arc<dyn UpdateMultiData>>,
     pub(crate) images: NoHashMap<u64, ValueImage>,
     pub(crate) maps: NoHashMap<u64, Arc<dyn UpdateMap>>,
@@ -102,6 +108,7 @@ impl ValuesList {
             values_take: NoHashMap::default(),
             static_values: NoHashMap::default(),
             data: NoHashMap::default(),
+            data_take: NoHashMap::default(),
             multi_data: NoHashMap::default(),
             images: NoHashMap::default(),
             maps: NoHashMap::default(),
@@ -114,6 +121,7 @@ impl ValuesList {
         self.values_take.shrink_to_fit();
         self.static_values.shrink_to_fit();
         self.data.shrink_to_fit();
+        self.data_take.shrink_to_fit();
         self.multi_data.shrink_to_fit();
         self.images.shrink_to_fit();
         self.maps.shrink_to_fit();
@@ -153,6 +161,7 @@ impl StatesCreator for StatesCreatorClient {
         self.val.values_take.extend(creator.val.values_take);
         self.val.static_values.extend(creator.val.static_values);
         self.val.data.extend(creator.val.data);
+        self.val.data_take.extend(creator.val.data_take);
         self.val.multi_data.extend(creator.val.multi_data);
         self.val.images.extend(creator.val.images);
         self.val.maps.extend(creator.val.maps);
@@ -313,5 +322,17 @@ impl StatesCreator for StatesCreatorClient {
 
         self.val.multi_data.insert(id, Arc::new(multi_data.clone()));
         multi_data
+    }
+
+    fn data_take<T>(&mut self, name: &'static str) -> DataTake<T>
+    where
+        T: GetDataType + Send + Sync + 'static
+    {
+        let name = format!("{}.{}", self.parent, name);
+        let id = generate_value_id(&name);
+        let data_take = DataTake::new(name, id, self.sender.clone());
+
+        self.val.data_take.insert(id, Arc::new(data_take.clone()));
+        data_take
     }
 }

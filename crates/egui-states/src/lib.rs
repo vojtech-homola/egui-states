@@ -22,7 +22,7 @@ pub use client::{
     atomics::{Atomic, AtomicLock, AtomicLockStatic, AtomicStatic, FallbackLock, UpdateLock},
     client::ClientBuilder,
     client::{Client, ConnectionState},
-    data::{Data, DataMulti},
+    data::{Data, DataMulti, DataTake},
     image::ValueImage,
     states_creator::StatesCreator,
     value_map::ValueMap,

@@ -82,6 +82,8 @@ fn field_initializer(field: &syn::Field) -> syn::Result<proc_macro2::TokenStream
         "ValueMap" => quote!(c.map(#field_name)),
         "ValueVec" => quote!(c.vec(#field_name)),
         "Data" => quote!(c.data(#field_name)),
+        "DataTake" => quote!(c.data_take(#field_name)),
+        "DataMulti" => quote!(c.data_multi(#field_name)),
         _ => quote!(c.substate(#field_name)),
     };
 

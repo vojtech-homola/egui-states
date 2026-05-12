@@ -127,6 +127,12 @@ class DataStates(ISubStates):
         self.nested: NestedDataStates = NestedDataStates(parent + ".nested")
 
 
+class DataTakeStates(ISubStates):
+    def __init__(self, parent: str):
+        self.take_buffer: s.DataTake[np.uint8] = s.DataTake(np.uint8)
+        self.take_samples: s.DataTake[np.float32] = s.DataTake(np.float32)
+
+
 class NestedMultiDataStates(ISubStates):
     def __init__(self, parent: str):
         self.buffer: s.DataMulti[np.uint16] = s.DataMulti(np.uint16)
@@ -178,6 +184,7 @@ class States(StatesBase):
         self.value_vec: ValueVecStates = ValueVecStates(parent + ".value_vec")
         self.value_map: ValueMapStates = ValueMapStates(parent + ".value_map")
         self.data: DataStates = DataStates(parent + ".data")
+        self.data_take: DataTakeStates = DataTakeStates(parent + ".data_take")
         self.multi_data: MultiDataStates = MultiDataStates(parent + ".multi_data")
         self.image: ImageStates = ImageStates(parent + ".image")
 
