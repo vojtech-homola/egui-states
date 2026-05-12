@@ -320,6 +320,11 @@ impl DataTake {
                 update,
             )?;
 
+            match blocking {
+                true => self.event.wait_clear(), // ← clear flag for next call to block
+                false => self.event.wait(),      // ← leave flag set, next call sends immediately
+            }
+
             let mut guard = self.lock.lock();
             if cache {
                 *guard = Some((slice.to_vec(), data.count as usize));
@@ -327,10 +332,6 @@ impl DataTake {
                 *guard = None;
             }
 
-            match blocking {
-                true => self.event.wait_clear(),
-                false => self.event.wait(),
-            }
             if !self.connected.load(Ordering::Acquire) {
                 return Ok(());
             }

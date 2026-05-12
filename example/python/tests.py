@@ -394,4 +394,3 @@ def test_data_take_methods(server_bundle: tuple[StatesServer, States, list[Excep
 
     samples = np.linspace(0.0, 1.0, 5, dtype=np.float32)
     states.data_take.take_samples.set(samples, blocking=False, update=True)
-

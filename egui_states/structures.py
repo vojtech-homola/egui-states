@@ -575,7 +575,7 @@ class DataTake[T: np.generic](_StaticBase):
             blocking(bool, optional): Whether the sending a new value with next call waits for acknowledgment from UI.
                 Defaults to False.
             update(bool, optional): Whether to update the UI. Defaults to False.
-            cache(bool, optional): Whether to cache the data in the server. Defaults to False. If True, the last sended
+            cache(bool, optional): Whether to cache the data in the server. Defaults to False. If True, the last sent
                 data is cached in the server and synced with the UI during initialization of the UI.
         """
         self._server.data_take_set(self._value_id, data, blocking, update, cache)
