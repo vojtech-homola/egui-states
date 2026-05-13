@@ -4,6 +4,8 @@ from egui_states import version
 from egui_states.logging import LogLevel
 from egui_states.structures import (
     Data,
+    DataTake,
+    DataMulti,
     Signal,
     SignalEmpty,
     Static,
@@ -25,5 +27,7 @@ __all__ = [
     "ValueVec",
     "Static",
     "Data",
+    "DataTake",
+    "DataMulti",
     "LogLevel",
 ]

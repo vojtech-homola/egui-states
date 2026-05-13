@@ -353,8 +353,8 @@ impl Acknowledge for DataTake {
 
 impl SyncTrait for DataTake {
     fn sync(&self) -> Result<(), ()> {
-        let mut g = self.lock.lock();
-        match g.take() {
+        let g = self.lock.lock();
+        match g.clone() {
             Some((data, count)) => {
                 let messages =
                     pack_data_take(self.id, &data, count as u64, self.data_type, false, false)
