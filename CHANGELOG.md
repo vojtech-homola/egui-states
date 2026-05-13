@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.14.0] - 2026-05-13
+
+### 🚀 Features
+
+- Improve type checking [#35](https://github.com/vojtech-homola/egui-states/pull/35)
+- Add ValueTake [#36](https://github.com/vojtech-homola/egui-states/pull/36)
+- General Data states [#32](https://github.com/vojtech-homola/egui-states/pull/32)
+- Add DataMulti [#38](https://github.com/vojtech-homola/egui-states/pull/38)
+- Add DataTake [#39](https://github.com/vojtech-homola/egui-states/pull/39)
+
+### 🐛 Bug Fixes
+
+- Fix bugs in collections [#34](https://github.com/vojtech-homola/egui-states/pull/34)
+- DataTake incorrectly synchronizes [#40](https://github.com/vojtech-homola/egui-states/pull/40)
+
 ## [0.13.3] - 2026-03-27
 
 ### 🐛 Bug Fixes
