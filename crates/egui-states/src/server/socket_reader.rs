@@ -129,14 +129,15 @@ impl SocketReader {
                     }
                 }
                 Some(Ok(Message::Close(_))) => Err(None),
-                Some(Ok(message)) => {
-                    match message {
-                        Message::Text(_) => Err(Some("Received text message, expected binary".to_string())),
-                        Message::Ping(_) | Message::Pong(_) => Err(Some("Received ping/pong message, expected binary".to_string())),
-                        Message::Frame(_) => Err(Some("Received frame message, expected binary".to_string())),
-                        Message::Binary(_) | Message::Close(_) => unreachable!(),
-                    }
-                },
+                Some(Ok(Message::Text(_))) => {
+                    Err(Some("Received text message, expected binary".to_string()))
+                }
+                Some(Ok(Message::Ping(_))) | Some(Ok(Message::Pong(_))) => Err(Some(
+                    "Received ping/pong message, expected binary".to_string(),
+                )),
+                Some(Ok(Message::Frame(_))) => {
+                    Err(Some("Received frame message, expected binary".to_string()))
+                }
                 Some(Err(e)) => Err(Some(format!("Reading message from client failed: {:?}", e))),
                 None => Err(Some("Connection was closed by the client".to_string())),
             },
