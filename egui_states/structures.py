@@ -564,7 +564,13 @@ class DataTake[T: np.generic](_StaticBase):
     def _initialize(self, name: str, types: list[PyObjectType]) -> None:
         self._value_id = self._server.add_data_take(name, _DTYPE_TO_ID[np.dtype(self._dtype).type])
 
-    def set(self, data: Buffer, blocking: bool = False, update: bool = False, cache: bool = False) -> None:
+    def set(
+        self,
+        data: Buffer,
+        blocking: bool = False,
+        update: bool = False,
+        cache: bool = False,
+    ) -> None:
         """Set the data in the UI DataTake.
 
         DataTake does not have a get method, because the data is not stored in the server.
@@ -680,6 +686,77 @@ class DataMulti[T: np.generic](_StaticBase):
         self._server.data_multi_reset(self._value_id, update)
 
     def __getitem__(self, index: int) -> SingleData[T]:
+        if isinstance(index, int):
+            return self.get(index)
+        raise TypeError("index must be an integer")
+
+
+class SingleDataTake[T: np.generic]:
+    def __init__(self, dtype: type[T], server: StateServerCore, value_id: int, index: int) -> None:
+        self._dtype = dtype
+        self._server = server
+        self._value_id = value_id
+        self._index = index
+
+    def set(self, data: Buffer, blocking: bool = False, update: bool = False, cache: bool = False) -> None:
+        """Set the data in the UI DataMultiTake at this index.
+
+        Args:
+            data(Buffer): The data to set. Has to implement the buffer protocol (numpy array).
+            blocking(bool, optional): Whether the sending a new value with next call waits for acknowledgment from UI.
+                Defaults to False.
+            update(bool, optional): Whether to update the UI. Defaults to False.
+            cache(bool, optional): Whether to cache the data in the server. Defaults to False.
+        """
+        self._server.data_multi_take_set(
+            self._value_id,
+            self._index,
+            data,
+            blocking,
+            update,
+            cache,
+        )
+
+
+class DataMultiTake[T: np.generic](_StaticBase):
+    def __init__(self, dtype: type[T]) -> None:
+        self._dtype = dtype
+
+    def _initialize(self, name: str, types: list[PyObjectType]) -> None:
+        self._value_id = self._server.add_data_multi_take(
+            name,
+            _DTYPE_TO_ID[np.dtype(self._dtype).type],
+        )
+
+    def get(self, index: int) -> SingleDataTake[T]:
+        """Get the SingleDataTake object for the given index.
+
+        Args:
+            index(int): The index of the SingleDataTake object.
+
+        Returns:
+            SingleDataTake[T]: The SingleDataTake object for the given index.
+        """
+        return SingleDataTake(self._dtype, self._server, self._value_id, index)
+
+    def remove_index(self, index: int, update: bool = False) -> None:
+        """Remove the given index from the DataMultiTake.
+
+        Args:
+            index(int): The index to remove.
+            update(bool, optional): Whether to update the UI. Defaults to False.
+        """
+        self._server.data_multi_take_remove_index(self._value_id, index, update)
+
+    def reset(self, update: bool = False) -> None:
+        """Reset (clear all indices) in the DataMultiTake.
+
+        Args:
+            update(bool, optional): Whether to update the UI. Defaults to False.
+        """
+        self._server.data_multi_take_reset(self._value_id, update)
+
+    def __getitem__(self, index: int) -> SingleDataTake[T]:
         if isinstance(index, int):
             return self.get(index)
         raise TypeError("index must be an integer")

@@ -6,6 +6,7 @@ from egui_states.structures import (
     Data,
     DataTake,
     DataMulti,
+    DataMultiTake,
     Signal,
     SignalEmpty,
     Static,
@@ -29,5 +30,6 @@ __all__ = [
     "Data",
     "DataTake",
     "DataMulti",
+    "DataMultiTake",
     "LogLevel",
 ]

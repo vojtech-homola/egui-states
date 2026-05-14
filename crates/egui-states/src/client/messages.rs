@@ -2,10 +2,10 @@ use bytes::Bytes;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, error, unbounded_channel};
 
 use crate::client::client::Client;
-use crate::client::data::{DataMessage, DataMultiMessage, DataTakeMessage};
+use crate::client::data::{DataMessage, DataMultiMessage, DataMultiTakeMessage, DataTakeMessage};
 use crate::client::states_creator::ValuesList;
 use crate::collections::{MapHeader, VecHeader};
-use crate::data_transport::{DataHeader, DataTakeHeader, MultiDataHeader};
+use crate::data_transport::{DataHeader, DataMultiTakeHeader, DataTakeHeader, MultiDataHeader};
 use crate::image_header::ImageHeader;
 use crate::serialization::{
     ClientHeader, FastVec, MAX_MSG_COUNT, MSG_SIZE_THRESHOLD, MessageData, ServerHeader,
@@ -116,6 +116,7 @@ pub(crate) enum ServerMessage {
     Data(u64, bool, DataMessage),
     DataTake(u64, bool, bool, DataTakeMessage),
     DataMulti(u64, bool, DataMultiMessage),
+    DataMultiTake(u64, bool, DataMultiTakeMessage),
     Update(f32),
 }
 
@@ -240,6 +241,23 @@ impl MessagesParser {
                         id,
                         update,
                         DataMultiMessage::Modify(key, data_message),
+                    )
+                }
+            },
+            ServerHeader::DataMultiTake(id, data_multi_take_header) => match data_multi_take_header
+            {
+                DataMultiTakeHeader::Remove(key, update) => {
+                    ServerMessage::DataMultiTake(id, update, DataMultiTakeMessage::Remove(key))
+                }
+                DataMultiTakeHeader::Reset(update) => {
+                    ServerMessage::DataMultiTake(id, update, DataMultiTakeMessage::Reset)
+                }
+                DataMultiTakeHeader::Modify(key, data_take_header, blocking) => {
+                    let (data_take_message, update) = self._process_data_take(data_take_header)?;
+                    ServerMessage::DataMultiTake(
+                        id,
+                        update,
+                        DataMultiTakeMessage::Modify(key, data_take_message, blocking),
                     )
                 }
             },
@@ -424,6 +442,19 @@ pub(crate) async fn handle_message(
                     }
                 },
                 None => return Err(format!("MultiData with id {} not found", id)),
+            }
+            update
+        }
+        ServerMessage::DataMultiTake(id, update, message) => {
+            match vals.data_multi_take.get(&id) {
+                Some(data_multi_take) => match message {
+                    DataMultiTakeMessage::Remove(key) => data_multi_take.remove(key),
+                    DataMultiTakeMessage::Reset => data_multi_take.reset(),
+                    DataMultiTakeMessage::Modify(key, data_take_message, blocking) => {
+                        data_multi_take.update_take(key, data_take_message, blocking)?
+                    }
+                },
+                None => return Err(format!("DataMultiTake with id {} not found", id)),
             }
             update
         }
