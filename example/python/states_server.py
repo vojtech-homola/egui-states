@@ -145,6 +145,18 @@ class MultiDataStates(ISubStates):
         self.nested: NestedMultiDataStates = NestedMultiDataStates(parent + ".nested")
 
 
+class NestedMultiDataTakeStates(ISubStates):
+    def __init__(self, parent: str):
+        self.buffer: s.DataMultiTake[np.uint16] = s.DataMultiTake(np.uint16)
+
+
+class MultiDataTakeStates(ISubStates):
+    def __init__(self, parent: str):
+        self.bytes: s.DataMultiTake[np.uint8] = s.DataMultiTake(np.uint8)
+        self.samples: s.DataMultiTake[np.float32] = s.DataMultiTake(np.float32)
+        self.nested: NestedMultiDataTakeStates = NestedMultiDataTakeStates(parent + ".nested")
+
+
 class ImageStates(ISubStates):
     def __init__(self, parent: str):
         self.image: s.ValueImage = s.ValueImage()
@@ -186,6 +198,7 @@ class States(StatesBase):
         self.data: DataStates = DataStates(parent + ".data")
         self.data_take: DataTakeStates = DataTakeStates(parent + ".data_take")
         self.multi_data: MultiDataStates = MultiDataStates(parent + ".multi_data")
+        self.data_multi_take: MultiDataTakeStates = MultiDataTakeStates(parent + ".data_multi_take")
         self.image: ImageStates = ImageStates(parent + ".image")
 
 

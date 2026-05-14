@@ -151,8 +151,17 @@ states.multi_data.nested.buffer[3].set(np.array([100, 110, 120], dtype=np.uint16
 states.value_take.take_text.set("ValueTake payload from Python", update=True)
 states.value_take.take_empty.set(update=True)
 
-states.data_take.take_buffer.set(np.arange(16, dtype=np.uint8), update=True)
-states.data_take.take_samples.set(np.linspace(0.0, 1.0, 8, dtype=np.float32), update=True)
+states.data_take.take_buffer.set(np.arange(16, dtype=np.uint8), update=True, cache=True)
+states.data_take.take_samples.set(np.linspace(0.0, 1.0, 8, dtype=np.float32), update=True, cache=True)
+
+states.data_multi_take.bytes[0].set(np.arange(6, dtype=np.uint8), update=True, cache=True)
+states.data_multi_take.bytes[1].set(np.array([10, 20, 30], dtype=np.uint8), update=True, cache=True)
+
+states.data_multi_take.samples[0].set(np.linspace(0.0, 1.0, 4, dtype=np.float32), update=True, cache=True)
+states.data_multi_take.samples[2].set(np.linspace(-1.0, 1.0, 3, dtype=np.float32), update=True, cache=True)
+
+states.data_multi_take.nested.buffer[0].set(np.arange(4, dtype=np.uint16), update=True, cache=True)
+states.data_multi_take.nested.buffer[3].set(np.array([100, 110], dtype=np.uint16), update=True, cache=True)
 
 rng = np.random.default_rng()
 image = (rng.random((256, 256, 3)) * 255).astype(np.uint8)

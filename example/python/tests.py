@@ -394,3 +394,21 @@ def test_data_take_methods(server_bundle: tuple[StatesServer, States, list[Excep
 
     samples = np.linspace(0.0, 1.0, 5, dtype=np.float32)
     states.data_take.take_samples.set(samples, blocking=False, update=True)
+
+
+def test_data_multi_take_methods(server_bundle: tuple[StatesServer, States, list[Exception]]) -> None:
+    _server, states, _errors = server_bundle
+
+    states.data_multi_take.bytes[0].set(np.array([1, 2, 3], dtype=np.uint8), update=True)
+    states.data_multi_take.bytes[1].set(np.array([4, 5], dtype=np.uint8), blocking=True, update=True)
+
+    states.data_multi_take.samples[0].set(
+        np.linspace(0.0, 1.0, 4, dtype=np.float32), update=True
+    )
+
+    states.data_multi_take.nested.buffer[2].set(
+        np.array([100, 200], dtype=np.uint16), update=True
+    )
+
+    states.data_multi_take.bytes.remove_index(0, update=True)
+    states.data_multi_take.bytes.reset(update=True)

@@ -1,6 +1,6 @@
 use egui_states::Transportable;
 use egui_states::{
-    Data, DataMulti, DataTake, Queue, Signal, State, StatesCreator, Static, StaticAtomic, Value, ValueAtomic,
+    Data, DataMulti, DataMultiTake, DataTake, Queue, Signal, State, StatesCreator, Static, StaticAtomic, Value, ValueAtomic,
     ValueImage, ValueMap, ValueTake, ValueVec,
 };
 
@@ -140,6 +140,16 @@ pub(crate) struct DataTakeStates {
     pub take_samples: DataTake<f32>,
 }
 
+pub(crate) struct NestedMultiDataTakeStates {
+    pub buffer: DataMultiTake<u16>,
+}
+
+pub(crate) struct MultiDataTakeStates {
+    pub bytes: DataMultiTake<u8>,
+    pub samples: DataMultiTake<f32>,
+    pub nested: NestedMultiDataTakeStates,
+}
+
 #[derive(State)]
 pub(crate) struct ImageStates {
     pub image: ValueImage,
@@ -156,6 +166,7 @@ pub struct States {
     pub(crate) data: DataStates,
     pub(crate) data_take: DataTakeStates,
     pub(crate) multi_data: MultiDataStates,
+    pub(crate) data_multi_take: MultiDataTakeStates,
     pub(crate) image: ImageStates,
 }
 
@@ -177,6 +188,28 @@ impl State for DataTakeStates {
         Self {
             take_buffer: c.data_take("take_buffer"),
             take_samples: c.data_take("take_samples"),
+        }
+    }
+}
+
+impl State for NestedMultiDataTakeStates {
+    const NAME: &'static str = "NestedMultiDataTakeStates";
+
+    fn new(c: &mut impl StatesCreator) -> Self {
+        Self {
+            buffer: c.data_multi_take("buffer"),
+        }
+    }
+}
+
+impl State for MultiDataTakeStates {
+    const NAME: &'static str = "MultiDataTakeStates";
+
+    fn new(c: &mut impl StatesCreator) -> Self {
+        Self {
+            bytes: c.data_multi_take("bytes"),
+            samples: c.data_multi_take("samples"),
+            nested: c.substate("nested"),
         }
     }
 }
@@ -240,6 +273,7 @@ impl State for States {
             data: c.substate("data"),
             data_take: c.substate("data_take"),
             multi_data: c.substate("multi_data"),
+            data_multi_take: c.substate("data_multi_take"),
             image: c.substate("image"),
         }
     }

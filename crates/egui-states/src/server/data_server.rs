@@ -341,6 +341,13 @@ impl DataTake {
             for (message, single) in messages {
                 self.sender.send_set(message, single);
             }
+        } else {
+            let mut guard = self.lock.lock();
+            if cache {
+                *guard = Some((slice.to_vec(), data.count as usize));
+            } else {
+                *guard = None;
+            }
         }
 
         Ok(())

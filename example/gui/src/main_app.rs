@@ -16,6 +16,9 @@ pub struct MainApp {
     enum_signal_value: TestEnum,
     last_take_buffer: Vec<u8>,
     last_take_samples: Vec<f32>,
+    last_multi_take_bytes: Vec<(u32, Vec<u8>)>,
+    last_multi_take_samples: Vec<(u32, Vec<f32>)>,
+    last_multi_take_nested: Vec<(u32, Vec<u16>)>,
 }
 
 impl MainApp {
@@ -38,6 +41,9 @@ impl MainApp {
             enum_signal_value: TestEnum::default(),
             last_take_buffer: Vec::new(),
             last_take_samples: Vec::new(),
+            last_multi_take_bytes: Vec::new(),
+            last_multi_take_samples: Vec::new(),
+            last_multi_take_nested: Vec::new(),
         }))
     }
 
@@ -56,6 +62,30 @@ impl MainApp {
 
         if let Some(value) = self.states.data_take.take_samples.take() {
             self.last_take_samples = value;
+        }
+
+        for key in 0..4 {
+            if let Some(value) = self.states.data_multi_take.bytes.take(key) {
+                if let Some(entry) = self.last_multi_take_bytes.iter_mut().find(|(k, _)| *k == key) {
+                    entry.1 = value;
+                } else {
+                    self.last_multi_take_bytes.push((key, value));
+                }
+            }
+            if let Some(value) = self.states.data_multi_take.samples.take(key) {
+                if let Some(entry) = self.last_multi_take_samples.iter_mut().find(|(k, _)| *k == key) {
+                    entry.1 = value;
+                } else {
+                    self.last_multi_take_samples.push((key, value));
+                }
+            }
+            if let Some(value) = self.states.data_multi_take.nested.buffer.take(key) {
+                if let Some(entry) = self.last_multi_take_nested.iter_mut().find(|(k, _)| *k == key) {
+                    entry.1 = value;
+                } else {
+                    self.last_multi_take_nested.push((key, value));
+                }
+            }
         }
     }
 
@@ -466,6 +496,47 @@ impl MainApp {
         });
     }
 
+    fn show_multi_data_take(&self, ui: &mut egui::Ui) {
+        ui.collapsing("multi_data_take", |ui| {
+            ui.label("DataMultiTake<u8>: root.data_multi_take.bytes");
+            let mut bytes_items = self.last_multi_take_bytes.clone();
+            bytes_items.sort_by_key(|(index, _)| *index);
+            for (index, values) in bytes_items {
+                let preview = preview_slice(&values);
+                ui.label(format!("  key {}: len = {}, preview = {}", index, values.len(), preview));
+            }
+            if self.last_multi_take_bytes.is_empty() {
+                ui.label("  (no takes yet)");
+            }
+
+            ui.separator();
+
+            ui.label("DataMultiTake<f32>: root.data_multi_take.samples");
+            let mut samples_items = self.last_multi_take_samples.clone();
+            samples_items.sort_by_key(|(index, _)| *index);
+            for (index, values) in samples_items {
+                let preview = preview_f32_slice(&values);
+                ui.label(format!("  key {}: len = {}, preview = {}", index, values.len(), preview));
+            }
+            if self.last_multi_take_samples.is_empty() {
+                ui.label("  (no takes yet)");
+            }
+
+            ui.separator();
+
+            ui.label("Nested DataMultiTake<u16>: root.data_multi_take.nested.buffer");
+            let mut buffer_items = self.last_multi_take_nested.clone();
+            buffer_items.sort_by_key(|(index, _)| *index);
+            for (index, values) in buffer_items {
+                let preview = preview_slice(&values);
+                ui.label(format!("  key {}: len = {}, preview = {}", index, values.len(), preview));
+            }
+            if self.last_multi_take_nested.is_empty() {
+                ui.label("  (no takes yet)");
+            }
+        });
+    }
+
     fn show_image_section(&self, ui: &mut egui::Ui) {
         ui.collapsing("image", |ui| {
             ui.label("ValueImage: root.image.image");
@@ -521,6 +592,8 @@ impl eframe::App for MainApp {
                 self.show_data(ui);
                 ui.separator();
                 self.show_multi_data(ui);
+                ui.separator();
+                self.show_multi_data_take(ui);
                 ui.separator();
                 self.show_image_section(ui);
             });

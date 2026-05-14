@@ -28,7 +28,7 @@ impl SocketReader {
         }
     }
 
-    pub(crate) async fn next(&mut self) -> Result<ClientMessage, String> {
+    pub(crate) async fn next(&mut self) -> Result<ClientMessage, Option<String>> {
         match self.previous.take() {
             Some((data, pointer, copy)) => {
                 let (header, size) = ClientHeader::deserialize(&data[pointer..])
@@ -37,7 +37,7 @@ impl SocketReader {
                     ClientHeader::Value(id, type_id, signal, data_size) => {
                         let all_size = size + data_size as usize;
                         if all_size > data.len() - pointer {
-                            return Err("Incomplete data received".to_string());
+                            return Err(Some("Incomplete data received".to_string()));
                         }
                         let header_data = match copy {
                             true => data.slice(pointer + size..pointer + all_size),
@@ -53,7 +53,7 @@ impl SocketReader {
                     ClientHeader::Signal(id, type_id, data_size) => {
                         let all_size = size + data_size as usize;
                         if all_size > data.len() - pointer {
-                            return Err("Incomplete data received".to_string());
+                            return Err(Some("Incomplete data received".to_string()));
                         }
                         let header_data = match copy {
                             true => data.slice(pointer + size..pointer + all_size),
@@ -89,7 +89,7 @@ impl SocketReader {
                         ClientHeader::Value(id, type_id, signal, data_size) => {
                             let all_size = size + data_size as usize;
                             if all_size > msg.len() {
-                                return Err("Incomplete data received".to_string());
+                                return Err(Some("Incomplete data received".to_string()));
                             }
                             let data = match copy {
                                 true => msg.slice(size..all_size),
@@ -103,7 +103,7 @@ impl SocketReader {
                         ClientHeader::Signal(id, type_id, data_size) => {
                             let all_size = size + data_size as usize;
                             if all_size > msg.len() {
-                                return Err("Incomplete data received".to_string());
+                                return Err(Some("Incomplete data received".to_string()));
                             }
                             let data = match copy {
                                 true => msg.slice(size..all_size),
@@ -128,9 +128,17 @@ impl SocketReader {
                         }
                     }
                 }
-                Some(Ok(_)) => Err("Received non-binary message".to_string()),
-                Some(Err(e)) => Err(format!("Reading message from client failed: {:?}", e)),
-                None => Err("Connection was closed by the client".to_string()),
+                Some(Ok(Message::Close(_))) => Err(None),
+                Some(Ok(message)) => {
+                    match message {
+                        Message::Text(_) => Err(Some("Received text message, expected binary".to_string())),
+                        Message::Ping(_) | Message::Pong(_) => Err(Some("Received ping/pong message, expected binary".to_string())),
+                        Message::Frame(_) => Err(Some("Received frame message, expected binary".to_string())),
+                        Message::Binary(_) | Message::Close(_) => unreachable!(),
+                    }
+                },
+                Some(Err(e)) => Err(Some(format!("Reading message from client failed: {:?}", e))),
+                None => Err(Some("Connection was closed by the client".to_string())),
             },
         }
     }
