@@ -2,8 +2,8 @@ use bytes::Bytes;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, error, unbounded_channel};
 
 use crate::client::client::Client;
-use crate::client::data::{DataMessage, DataTakeMessage};
-use crate::client::data_multi::{DataMultiMessage, DataMultiTakeMessage};
+use crate::client::data::{DataMessage, DataMultiMessage};
+use crate::client::data_take::{DataMultiTakeMessage, DataTakeMessage};
 use crate::client::states_creator::ValuesList;
 use crate::collections::{MapHeader, VecHeader};
 use crate::data_transport::{DataHeader, DataMultiTakeHeader, DataTakeHeader, MultiDataHeader};
@@ -428,7 +428,7 @@ pub(crate) async fn handle_message(
         }
         ServerMessage::DataTake(id, blocking, update, message) => {
             match vals.data_take.get(&id) {
-                Some(data_take) => data_take.update_take(message, blocking)?,
+                Some(data_take) => data_take.update(message, blocking)?,
                 None => return Err(format!("DataTake with id {} not found", id)),
             }
             update
@@ -452,7 +452,7 @@ pub(crate) async fn handle_message(
                     DataMultiTakeMessage::Remove(key) => data_multi_take.remove(key),
                     DataMultiTakeMessage::Reset => data_multi_take.reset(),
                     DataMultiTakeMessage::Modify(key, data_take_message, blocking) => {
-                        data_multi_take.update_take(key, data_take_message, blocking)?
+                        data_multi_take.update(key, data_take_message, blocking)?
                     }
                 },
                 None => return Err(format!("DataMultiTake with id {} not found", id)),

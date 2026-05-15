@@ -6,10 +6,10 @@ use serde::{Deserialize, Serialize};
 use crate::State;
 use crate::client::atomics::{Atomic, AtomicStatic};
 use crate::client::data::{
-    Data, DataTake, UpdateData, UpdateDataTake, private::GetDataType,
+    Data, DataMulti, UpdateData, UpdateMultiData, private::GetDataType,
 };
-use crate::client::data_multi::{
-    DataMulti, DataMultiTake, UpdateDataMultiTake, UpdateMultiData,
+use crate::client::data_take::{
+    DataMultiTake, DataTake, UpdateDataMultiTake, UpdateDataTake,
 };
 use crate::client::image::ValueImage;
 use crate::client::messages::MessageSender;

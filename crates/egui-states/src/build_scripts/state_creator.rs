@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::State;
 use crate::client::atomics::{Atomic, AtomicStatic};
-use crate::client::data::{Data, DataTake, private::GetDataType};
-use crate::client::data_multi::{DataMulti, DataMultiTake};
+use crate::client::data::{Data, DataMulti, private::GetDataType};
+use crate::client::data_take::{DataMultiTake, DataTake};
 use crate::client::image::ValueImage;
 use crate::client::messages::MessageSender;
 use crate::client::states_creator::StatesCreator;
