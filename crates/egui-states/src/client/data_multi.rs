@@ -1,0 +1,631 @@
+use std::collections::hash_map::Entry;
+use std::sync::Arc;
+
+use parking_lot::{Mutex, RwLock};
+
+use crate::client::data::{DataMessage, DataTakeMessage, check_data_type};
+use crate::client::data::private;
+use crate::client::event::EventUniversal;
+use crate::client::messages::{ChannelMessage, MessageSender};
+use crate::data_transport::{DataType, TransportType};
+use crate::hashing::NoHashMap;
+
+pub(crate) enum DataMultiMessage {
+    Remove(u32),
+    Modify(u32, DataMessage),
+    Reset,
+}
+
+pub(crate) enum DataMultiTakeMessage {
+    Remove(u32),
+    Modify(u32, DataTakeMessage, bool),
+    Reset,
+}
+
+// DataMultiTake ----------------------------------------------------------------
+pub(crate) trait UpdateDataMultiTake: Sync + Send {
+    fn update_take(&self, key: u32, message: DataTakeMessage, blocking: bool)
+    -> Result<(), String>;
+    fn remove(&self, key: u32);
+    fn reset(&self);
+}
+
+pub struct DataMultiTake<T> {
+    name: Arc<String>,
+    id: u64,
+    data_type: DataType,
+    element_size: usize,
+    inner: Arc<RwLock<NoHashMap<u32, (Vec<T>, bool)>>>,
+    buffers: Arc<Mutex<NoHashMap<u32, Vec<T>>>>,
+    sender: MessageSender,
+    event: EventUniversal,
+}
+
+#[allow(private_bounds)]
+impl<T> DataMultiTake<T>
+where
+    T: private::GetDataType,
+{
+    pub(crate) fn new(name: String, id: u64, sender: MessageSender) -> Self {
+        Self {
+            name: Arc::new(name),
+            id,
+            data_type: T::get_type(),
+            element_size: T::get_type().item_size(),
+            inner: Arc::new(RwLock::new(NoHashMap::default())),
+            buffers: Arc::new(Mutex::new(NoHashMap::default())),
+            sender,
+            event: EventUniversal::new(),
+        }
+    }
+
+    pub fn take(&self, key: u32) -> Option<Vec<T>> {
+        let inner = self.inner.write().remove(&key);
+        if let Some((val, blocking)) = inner {
+            if blocking {
+                self.sender.send(ChannelMessage::Ack(self.id));
+            }
+            return Some(val);
+        }
+        None
+    }
+
+    pub fn is_some(&self, key: u32) -> bool {
+        self.inner.read().contains_key(&key)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn wait(&self, key: u32) {
+        while !self.inner.read().contains_key(&key) {
+            self.event.wait_clear_blocking();
+        }
+    }
+
+    pub async fn wait_async(&self, key: u32) {
+        while !self.inner.read().contains_key(&key) {
+            self.event.wait_clear().await;
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn wait_take(&self, key: u32) -> Vec<T> {
+        loop {
+            if let Some((value, blocking)) = self.inner.write().remove(&key) {
+                if blocking {
+                    self.sender.send(ChannelMessage::Ack(self.id));
+                }
+                return value;
+            }
+            self.event.wait_clear_blocking();
+        }
+    }
+
+    pub async fn wait_take_async(&self, key: u32) -> Vec<T> {
+        loop {
+            if let Some((value, blocking)) = self.inner.write().remove(&key) {
+                if blocking {
+                    self.sender.send(ChannelMessage::Ack(self.id));
+                }
+                return value;
+            }
+            self.event.wait_clear().await;
+        }
+    }
+}
+
+impl<T> Clone for DataMultiTake<T> {
+    fn clone(&self) -> Self {
+        Self {
+            name: self.name.clone(),
+            id: self.id,
+            data_type: self.data_type,
+            element_size: self.element_size,
+            inner: self.inner.clone(),
+            buffers: self.buffers.clone(),
+            sender: self.sender.clone(),
+            event: self.event.clone(),
+        }
+    }
+}
+
+#[allow(private_bounds)]
+impl<T> UpdateDataMultiTake for DataMultiTake<T>
+where
+    T: private::GetDataType + Send + Sync,
+{
+    fn update_take(
+        &self,
+        key: u32,
+        message: DataTakeMessage,
+        blocking: bool,
+    ) -> Result<(), String> {
+        match message {
+            DataTakeMessage::All(data_type, count, data) => {
+                if data_type != self.data_type {
+                    return Err(format!(
+                        "Data type {:?} does not match expected type {:?} for DataMultiTake: {}",
+                        data_type, self.data_type, self.name
+                    ));
+                }
+                if data.len() as u64 != count * self.element_size as u64 {
+                    return Err(format!(
+                        "Data size {} does not match expected count {} for DataMultiTake: {}",
+                        data.len(),
+                        count,
+                        self.name
+                    ));
+                }
+                let mut buffer = Vec::with_capacity(count as usize);
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        data.as_ptr(),
+                        buffer.as_mut_ptr() as *mut u8,
+                        data.len(),
+                    );
+                    buffer.set_len(count as usize);
+                }
+                self.inner.write().insert(key, (buffer, blocking));
+                self.event.set();
+                Ok(())
+            }
+            DataTakeMessage::BatchStart(count, data) => {
+                let all_data_size = count * self.element_size as u64;
+                if data.len() as u64 > all_data_size {
+                    return Err(format!(
+                        "Batch start data size {} exceeds total data size {}",
+                        data.len(),
+                        all_data_size
+                    ));
+                }
+                if data.len() % self.element_size != 0 {
+                    return Err(format!(
+                        "Batch start data size {} is not a multiple of element size {}",
+                        data.len(),
+                        self.element_size
+                    ));
+                }
+
+                let mut buffer = Vec::with_capacity(count as usize);
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        data.as_ptr(),
+                        buffer.as_mut_ptr() as *mut u8,
+                        data.len(),
+                    );
+                    buffer.set_len(data.len() / self.element_size);
+                }
+                self.buffers.lock().insert(key, buffer);
+                Ok(())
+            }
+            DataTakeMessage::Batch(data) => match self.buffers.lock().get_mut(&key) {
+                Some(ref mut buffer) => {
+                    if data.len() % self.element_size != 0 {
+                        return Err(format!(
+                            "Batch data size {} is not a multiple of element size {}",
+                            data.len(),
+                            self.element_size
+                        ));
+                    }
+                    let count = data.len() / self.element_size;
+
+                    if buffer.len() + count > buffer.capacity() {
+                        return Err(format!(
+                            "Batch data size {} exceeds total data size {}",
+                            buffer.len() + count,
+                            buffer.capacity()
+                        ));
+                    }
+
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(
+                            data.as_ptr(),
+                            buffer.as_mut_ptr().add(buffer.len()) as *mut u8,
+                            data.len(),
+                        );
+                        buffer.set_len(buffer.len() + count);
+                    }
+
+                    Ok(())
+                }
+                None => Err(format!(
+                    "No header found for DataMultiTake: {} key {} when updating batch",
+                    self.name, key
+                )),
+            },
+            DataTakeMessage::BatchEnd(data_type, count, data) => {
+                if data_type != self.data_type {
+                    return Err(format!(
+                        "Data type {:?} does not match expected type {:?} for DataMultiTake: {}",
+                        data_type, self.data_type, self.name
+                    ));
+                }
+                match self.buffers.lock().remove(&key) {
+                    Some(mut buffer) => {
+                        if data.len() % self.element_size != 0 {
+                            return Err(format!(
+                                "Batch data size {} is not a multiple of element size {}",
+                                data.len(),
+                                self.element_size
+                            ));
+                        }
+                        let count_add = data.len() / self.element_size;
+
+                        if buffer.len() + count_add != count as usize {
+                            return Err(format!(
+                                "Batch end data size {} does not match total data size {}",
+                                buffer.len() + count_add,
+                                count
+                            ));
+                        }
+
+                        unsafe {
+                            std::ptr::copy_nonoverlapping(
+                                data.as_ptr(),
+                                buffer.as_mut_ptr().add(buffer.len()) as *mut u8,
+                                data.len(),
+                            );
+                            buffer.set_len(buffer.len() + count_add);
+                        }
+
+                        self.inner.write().insert(key, (buffer, blocking));
+                        self.event.set();
+                        Ok(())
+                    }
+                    None => Err(format!(
+                        "No header found for DataMultiTake: {} key {} when updating batch end",
+                        self.name, key
+                    )),
+                }
+            }
+        }
+    }
+
+    fn remove(&self, key: u32) {
+        self.inner.write().remove(&key);
+        self.buffers.lock().remove(&key);
+    }
+
+    fn reset(&self) {
+        self.inner.write().clear();
+        self.buffers.lock().clear();
+    }
+}
+
+// MultiData -------------------------------------------------------------------
+pub(crate) trait UpdateMultiData: Sync + Send {
+    fn update(&self, key: u32, message: DataMessage) -> Result<(), String>;
+    fn remove(&self, key: u32);
+    fn reset(&self);
+}
+
+pub struct DataMulti<T> {
+    name: Arc<String>,
+    id: u64,
+    data_type: DataType,
+    element_size: usize,
+    inner: Arc<RwLock<NoHashMap<u32, Vec<T>>>>,
+    buffers: Arc<Mutex<NoHashMap<u32, Vec<T>>>>,
+    sender: MessageSender,
+}
+
+#[allow(private_bounds)]
+impl<T> DataMulti<T>
+where
+    T: private::GetDataType,
+{
+    pub(crate) fn new(name: String, id: u64, sender: MessageSender) -> Self {
+        Self {
+            name: Arc::new(name),
+            id,
+            data_type: T::get_type(),
+            element_size: T::get_type().item_size(),
+            inner: Arc::new(RwLock::new(NoHashMap::default())),
+            buffers: Arc::new(Mutex::new(NoHashMap::default())),
+            sender,
+        }
+    }
+
+    #[inline]
+    pub fn get(&self, key: u32) -> Option<Vec<T>> {
+        self.inner.read().get(&key).cloned()
+    }
+
+    #[inline]
+    pub fn read<R>(&self, key: u32, f: impl Fn(Option<&[T]>) -> R) -> R {
+        self.inner
+            .read()
+            .get(&key)
+            .map(|v| f(Some(&v)))
+            .unwrap_or_else(|| f(None))
+    }
+
+    #[inline]
+    pub fn read_all<R>(&self, f: impl Fn(&NoHashMap<u32, Vec<T>>) -> R) -> R {
+        f(&self.inner.read())
+    }
+
+    #[inline]
+    pub fn for_each<F>(&self, f: impl Fn(u32, &[T])) {
+        self.inner.read().iter().for_each(|(k, v)| f(*k, &v));
+    }
+
+    fn set_all(&self, key: u32, data: &[u8], transport_type: TransportType) -> Result<(), String> {
+        self.sender.send(ChannelMessage::Ack(self.id));
+
+        if data.len() % self.element_size != 0 {
+            return Err(format!(
+                "Data size {} is not a multiple of element size {}",
+                data.len(),
+                self.element_size
+            ));
+        }
+
+        let count = data.len() / self.element_size;
+        let mut buffer = Vec::with_capacity(count);
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                data.as_ptr(),
+                buffer.as_mut_ptr() as *mut u8,
+                data.len(),
+            );
+            buffer.set_len(count);
+        }
+        self.save_data(key, buffer, transport_type)
+    }
+
+    fn batch_start(&self, key: u32, data: &[u8], elements_count: u64) -> Result<(), String> {
+        let all_data_size = elements_count * self.element_size as u64;
+        if data.len() as u64 > all_data_size {
+            return Err(format!(
+                "Batch start data size {} exceeds total data size {}",
+                data.len(),
+                all_data_size
+            ));
+        }
+        if data.len() % self.element_size != 0 {
+            return Err(format!(
+                "Batch start data size {} is not a multiple of element size {}",
+                data.len(),
+                self.element_size
+            ));
+        }
+
+        let mut buffer = Vec::with_capacity(elements_count as usize);
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                data.as_ptr(),
+                buffer.as_mut_ptr() as *mut u8,
+                data.len(),
+            );
+            buffer.set_len(data.len() / self.element_size);
+        }
+        self.buffers.lock().insert(key, buffer);
+        Ok(())
+    }
+
+    fn batch(&self, key: u32, data: &[u8]) -> Result<(), String> {
+        match self.buffers.lock().get_mut(&key) {
+            Some(ref mut buffer) => {
+                if data.len() % self.element_size != 0 {
+                    return Err(format!(
+                        "Batch data size {} is not a multiple of element size {}",
+                        data.len(),
+                        self.element_size
+                    ));
+                }
+                let count = data.len() / self.element_size;
+
+                if buffer.len() + count > buffer.capacity() {
+                    return Err(format!(
+                        "Batch data size {} exceeds total data size {}",
+                        buffer.len() + count,
+                        buffer.capacity()
+                    ));
+                }
+
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        data.as_ptr(),
+                        buffer.as_mut_ptr().add(buffer.len()) as *mut u8,
+                        data.len(),
+                    );
+                    buffer.set_len(buffer.len() + count);
+                }
+
+                Ok(())
+            }
+            None => Err(format!(
+                "No header found for Data: {} when updating batch",
+                self.name
+            )),
+        }
+    }
+
+    fn batch_end(
+        &self,
+        key: u32,
+        data: &[u8],
+        transport_type: TransportType,
+    ) -> Result<(), String> {
+        self.sender.send(ChannelMessage::Ack(self.id));
+
+        match self.buffers.lock().remove(&key) {
+            Some(mut buffer) => {
+                if data.len() % self.element_size != 0 {
+                    return Err(format!(
+                        "Batch data size {} is not a multiple of element size {}",
+                        data.len(),
+                        self.element_size
+                    ));
+                }
+                let count = data.len() / self.element_size;
+
+                if buffer.len() + count != buffer.capacity() {
+                    return Err(format!(
+                        "Batch end data size {} does not match total data size {}",
+                        buffer.len() + count,
+                        buffer.capacity()
+                    ));
+                }
+
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        data.as_ptr(),
+                        buffer.as_mut_ptr().add(buffer.len()) as *mut u8,
+                        data.len(),
+                    );
+                    buffer.set_len(buffer.len() + count);
+                }
+
+                self.save_data(key, buffer, transport_type)
+            }
+            None => Err(format!(
+                "No header found for Data: {} when updating batch end",
+                self.name
+            )),
+        }
+    }
+
+    fn drain(&self, key: u32, index: u64, count: u64) -> Result<(), String> {
+        self.sender.send(ChannelMessage::Ack(self.id));
+
+        if let Some(data) = self.inner.write().get_mut(&key) {
+            if index as usize + count as usize > data.len() {
+                return Err(format!(
+                    "Drain range ({} to {}) exceeds current data size {}",
+                    index,
+                    index + count,
+                    data.len()
+                ));
+            }
+            data.drain(index as usize..(index as usize + count as usize));
+            return Ok(());
+        }
+
+        Err(format!(
+            "Key {} does not exist for Drain transport type in MultiData: {}",
+            key, self.name
+        ))
+    }
+
+    fn save_data(
+        &self,
+        key: u32,
+        data: Vec<T>,
+        transport_type: TransportType,
+    ) -> Result<(), String> {
+        match transport_type {
+            TransportType::Set(count) => {
+                if data.len() as u64 != count {
+                    return Err(format!(
+                        "Data size {} does not match expected count {} for Set transport type",
+                        data.len(),
+                        count
+                    ));
+                }
+                self.inner.write().insert(key, data);
+            }
+            TransportType::Add(count) => {
+                if data.len() as u64 != count {
+                    return Err(format!(
+                        "Data size {} does not match expected count {} for Add transport type",
+                        data.len(),
+                        count
+                    ));
+                }
+                match self.inner.write().entry(key) {
+                    Entry::Occupied(mut entry) => {
+                        entry.get_mut().extend(data);
+                    }
+                    Entry::Vacant(_) => {
+                        return Err(format!(
+                            "Key {} does not exist for Add transport type in MultiData: {}",
+                            key, self.name
+                        ));
+                    }
+                }
+            }
+            TransportType::Replace(start, count) => {
+                if data.len() as u64 != count {
+                    return Err(format!(
+                        "Data size {} does not match expected count {} for Replace transport type",
+                        data.len(),
+                        count
+                    ));
+                }
+                match self.inner.write().entry(key) {
+                    Entry::Occupied(mut entry) => {
+                        let w = entry.get_mut();
+                        if start as usize + data.len() > w.len() {
+                            return Err(format!(
+                                "Replace range ({} to {}) exceeds current data size {} for key {} in MultiData: {}",
+                                start,
+                                start + count,
+                                w.len(),
+                                key,
+                                self.name
+                            ));
+                        }
+                        w.splice(start as usize..(start as usize + data.len()), data);
+                    }
+                    Entry::Vacant(_) => {
+                        return Err(format!(
+                            "Key {} does not exist for Replace transport type in MultiData: {}",
+                            key, self.name
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl<T> UpdateMultiData for DataMulti<T>
+where
+    T: private::GetDataType + Sync + Send,
+{
+    fn update(&self, index: u32, message: DataMessage) -> Result<(), String> {
+        match message {
+            DataMessage::All(data_type, transport_type, data) => {
+                check_data_type(self.data_type, data_type, &self.name)?;
+                self.set_all(index, &data, transport_type)
+            }
+            DataMessage::BatchStart(count, data) => self.batch_start(index, &data, count),
+            DataMessage::Batch(data) => self.batch(index, &data),
+            DataMessage::BatchEnd(data_type, transport_type, data) => {
+                check_data_type(self.data_type, data_type, &self.name)?;
+                self.batch_end(index, &data, transport_type)
+            }
+            DataMessage::Drain(start, count) => self.drain(index, start, count),
+            DataMessage::Clear => {
+                if let Some(val) = self.inner.write().get_mut(&index) {
+                    val.clear();
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn remove(&self, index: u32) {
+        self.inner.write().remove(&index);
+    }
+
+    fn reset(&self) {
+        self.inner.write().clear();
+    }
+}
+
+impl<T> Clone for DataMulti<T> {
+    fn clone(&self) -> Self {
+        Self {
+            name: self.name.clone(),
+            id: self.id,
+            data_type: self.data_type,
+            element_size: self.element_size,
+            inner: self.inner.clone(),
+            buffers: self.buffers.clone(),
+            sender: self.sender.clone(),
+        }
+    }
+}

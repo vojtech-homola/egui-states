@@ -15,7 +15,8 @@ use crate::python::{
     pyimage, pyparsing,
     pytypes::{PyObjectClass, PyObjectType},
 };
-use crate::server::data_server::{Data, DataHolder, DataMulti, DataMultiTake, DataTake};
+use crate::server::data_server::{Data, DataHolder, DataTake};
+use crate::server::data_multi_server::{DataMulti, DataMultiTake};
 use crate::server::server::Server;
 use crate::server::signals::SignalsManager;
 use crate::server::value_parsing::{ValueCreator, ValueParser};

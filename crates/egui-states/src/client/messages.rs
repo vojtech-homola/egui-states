@@ -2,7 +2,8 @@ use bytes::Bytes;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, error, unbounded_channel};
 
 use crate::client::client::Client;
-use crate::client::data::{DataMessage, DataMultiMessage, DataMultiTakeMessage, DataTakeMessage};
+use crate::client::data::{DataMessage, DataTakeMessage};
+use crate::client::data_multi::{DataMultiMessage, DataMultiTakeMessage};
 use crate::client::states_creator::ValuesList;
 use crate::collections::{MapHeader, VecHeader};
 use crate::data_transport::{DataHeader, DataMultiTakeHeader, DataTakeHeader, MultiDataHeader};
