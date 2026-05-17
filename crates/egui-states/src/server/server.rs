@@ -4,6 +4,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 use std::thread;
+use std::time::Duration;
 
 use bytes::Bytes;
 use tokio::runtime::Builder;
@@ -27,6 +28,10 @@ pub(crate) trait SyncTrait: Sync + Send {
 
 pub(crate) trait Acknowledge: Sync + Send {
     fn acknowledge(&self);
+
+    fn reset(&self) {
+        self.acknowledge();
+    }
 }
 
 #[derive(Clone, Default)]
@@ -131,14 +136,12 @@ pub(crate) struct Server {
     handshake: Option<Vec<u64>>,
 
     runner_state: RunnerState,
-    runner_threads: usize,
 }
 
 impl Server {
     pub(crate) fn new(
         addr: SocketAddrV4,
         handshake: Option<Vec<u64>>,
-        runner_threads: usize,
     ) -> Self {
         let connected = Arc::new(AtomicBool::new(false));
         let (sender, rx) = MessageSender::new();
@@ -154,7 +157,6 @@ impl Server {
             signals,
             handshake,
             runner_state: RunnerState::Stopped(rx),
-            runner_threads,
         };
 
         obj
@@ -182,10 +184,12 @@ impl Server {
                 Ok(())
             }
             (RunnerState::Stopped(rx), Some(states_server)) => {
-                let runtime = Builder::new_current_thread()
+                let runtime = Builder::new_multi_thread()
                     .thread_name("ServerRuntime")
                     .enable_io()
-                    .worker_threads(self.runner_threads)
+                    .worker_threads(2)
+                    .max_blocking_threads(1)
+                    .thread_keep_alive(Duration::from_hours(1))
                     .build()
                     .unwrap();
 

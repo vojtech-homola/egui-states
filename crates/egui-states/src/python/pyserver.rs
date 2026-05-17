@@ -123,13 +123,8 @@ impl StateServerCore {
 #[pymethods]
 impl StateServerCore {
     #[new]
-    #[pyo3(signature = (port, ip_addr=None, handshake=None, runner_threads=3))]
-    fn new(
-        port: u16,
-        ip_addr: Option<[u8; 4]>,
-        handshake: Option<Vec<u64>>,
-        runner_threads: usize,
-    ) -> PyResult<Self> {
+    #[pyo3(signature = (port, ip_addr=None, handshake=None))]
+    fn new(port: u16, ip_addr: Option<[u8; 4]>, handshake: Option<Vec<u64>>) -> PyResult<Self> {
         let addr = match ip_addr {
             Some(addr) => {
                 SocketAddrV4::new(Ipv4Addr::new(addr[0], addr[1], addr[2], addr[3]), port)
@@ -137,7 +132,7 @@ impl StateServerCore {
             None => SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), port),
         };
 
-        let server = Server::new(addr, handshake, runner_threads);
+        let server = Server::new(addr, handshake);
         let signals = server.get_signals_manager();
 
         // register logging signal type
