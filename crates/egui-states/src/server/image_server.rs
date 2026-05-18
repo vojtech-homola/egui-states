@@ -8,17 +8,6 @@ use crate::server::event::Event;
 use crate::server::sender::{MessageSender, SenderData};
 use crate::server::server::{Acknowledge, SyncTrait};
 
-impl ImageType {
-    pub fn bytes_per_pixel(&self) -> usize {
-        match self {
-            ImageType::Color => 3,
-            ImageType::ColorAlpha => 4,
-            ImageType::Gray => 1,
-            ImageType::GrayAlpha => 2,
-        }
-    }
-}
-
 struct ImageDataInner {
     data: Vec<u8>,
     size: [usize; 2],

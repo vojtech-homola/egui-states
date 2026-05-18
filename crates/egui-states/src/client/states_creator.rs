@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::State;
 use crate::client::atomics::{Atomic, AtomicStatic};
 use crate::client::data::{Data, DataMulti, DataTake, UpdateData, UpdateDataTake, UpdateMultiData, private::GetDataType};
-use crate::client::image::ValueImage;
+use crate::client::image::Image;
 use crate::client::messages::MessageSender;
 use crate::client::value_map::{UpdateMap, ValueMap};
 use crate::client::value_vec::{UpdateList, ValueVec};
@@ -251,10 +251,10 @@ impl StatesCreator for StatesCreatorClient {
         value
     }
 
-    fn image(&mut self, name: &str) -> ValueImage {
+    fn image(&mut self, name: &str) -> Image {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
-        let value = ValueImage::new(name, id, self.sender.clone());
+        let value = Image::new(name, id, self.sender.clone());
 
         self.val.images.insert(id, value.clone());
         value

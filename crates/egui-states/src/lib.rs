@@ -23,7 +23,7 @@ pub use client::{
     client::ClientBuilder,
     client::{Client, ConnectionState},
     data::{Data, DataMulti, DataTake},
-    image::ValueImage,
+    image::Image,
     states_creator::StatesCreator,
     value_map::ValueMap,
     value_vec::ValueVec,
