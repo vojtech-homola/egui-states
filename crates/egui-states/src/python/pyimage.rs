@@ -80,6 +80,6 @@ pub(crate) fn set_image(
     };
 
     image_value
-        .set_image(image_data, origin, update)
+        .set_image_old(image_data, origin, update)
         .map_err(|e| PyValueError::new_err(format!("Failed to set image: {}", e)))
 }

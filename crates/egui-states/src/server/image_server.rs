@@ -1,6 +1,8 @@
-use parking_lot::RwLock;
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+
+use parking_lot::{RwLock, Mutex};
 
 use crate::image_header::{ImageHeader, ImageType};
 use crate::serialization::ServerHeader;
@@ -25,6 +27,7 @@ pub(crate) struct ValueImage {
     pub(crate) name: String,
     id: u64,
     image: RwLock<ImageDataInner>,
+    send_buffer: Mutex<Option<([usize; 2], VecDeque<u8>)>>,
     sender: MessageSender,
     connected: Arc<AtomicBool>,
     event: Event,
@@ -47,6 +50,7 @@ impl ValueImage {
                 data: Vec::with_capacity(0),
                 size: [0, 0],
             }),
+            send_buffer: Mutex::new(None),
             sender,
             connected,
             event,
@@ -62,9 +66,22 @@ impl ValueImage {
         getter((&w.data, &w.size))
     }
 
+    pub(crate) fn set_image(&self, image: ImageData, update: bool) -> Result<(), String> {
+        let mut stride = image.stride;
+        let mut contiguous = image.contiguous;
+
+        // this is main lock for set and update operation
+        let mut buffer = self.send_buffer.lock();
+        let mut w = self.image.write();
+
+
+        buffer.take();
+        Ok(())
+    }
+
     // Function is complex because it needs to handle different image types and also not contiguous
     // data. Also it tries to avoid copying data if possible.
-    pub(crate) fn set_image(
+    pub(crate) fn set_image_old(
         &self,
         image: ImageData,
         origin: Option<[u32; 2]>,
