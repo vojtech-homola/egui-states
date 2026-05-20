@@ -61,7 +61,7 @@ pub trait StatesCreator {
         T: Serialize + Transportable + Clone + Send + Sync + 'static,
         Q: GetQueueType;
 
-    fn image(&mut self, name: &'static str) -> ValueImage;
+    fn image(&mut self, name: &'static str) -> Image;
 
     fn map<K, V>(&mut self, name: &'static str) -> ValueMap<K, V>
     where
@@ -96,7 +96,7 @@ pub(crate) struct ValuesList {
     pub(crate) data: NoHashMap<u64, Arc<dyn UpdateData>>,
     pub(crate) data_take: NoHashMap<u64, Arc<dyn UpdateDataTake>>,
     pub(crate) multi_data: NoHashMap<u64, Arc<dyn UpdateMultiData>>,
-    pub(crate) images: NoHashMap<u64, ValueImage>,
+    pub(crate) images: NoHashMap<u64, Image>,
     pub(crate) maps: NoHashMap<u64, Arc<dyn UpdateMap>>,
     pub(crate) lists: NoHashMap<u64, Arc<dyn UpdateList>>,
 }
