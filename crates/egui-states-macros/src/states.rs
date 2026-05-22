@@ -78,7 +78,7 @@ fn field_initializer(field: &syn::Field) -> syn::Result<proc_macro2::TokenStream
         "StaticAtomic" => quote!(c.static_atomic(#field_name, #value_default)),
         "Signal" => quote!(c.signal(#field_name)),
         "ValueTake" => quote!(c.value_take(#field_name)),
-        "ValueImage" => quote!(c.image(#field_name)),
+        "Image" => quote!(c.image(#field_name)),
         "ValueMap" => quote!(c.map(#field_name)),
         "ValueVec" => quote!(c.vec(#field_name)),
         "Data" => quote!(c.data(#field_name)),

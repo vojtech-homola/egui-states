@@ -5,7 +5,7 @@ use std::sync::Arc;
 use egui::{ColorImage, ImageData, TextureHandle};
 
 use crate::client::messages::{ChannelMessage, MessageSender};
-use crate::image_header::ImageType;
+use crate::image_transport::ImageType;
 
 const TEXTURE_OPTIONS: egui::TextureOptions = egui::TextureOptions {
     magnification: egui::TextureFilter::Nearest,
@@ -101,45 +101,45 @@ impl Image {
                     *save_size = image_size;
                 }
             }
-            ImageSetMessage::Start(size, lines) => {
-                let lines = lines as usize;
+            ImageSetMessage::Start(size, pixels) => {
+                let pixels = pixels as usize;
                 let size = [size[0] as usize, size[1] as usize];
                 let mut c_image = ColorImage::filled(size, egui::Color32::WHITE);
-                self.update_c_image(&mut c_image, 0, lines, data, image_type)?;
-                *self.buffer.lock() = Some((c_image, lines))
+                self.update_c_image(&mut c_image, 0, pixels, data, image_type)?;
+                *self.buffer.lock() = Some((c_image, pixels))
             }
-            ImageSetMessage::Batch(lines) => {
-                let lines = lines as usize;
-                if let Some((ref mut c_image, ref mut actual_line)) = *self.buffer.lock() {
-                    let actual = *actual_line as usize;
+            ImageSetMessage::Batch(pixels) => {
+                let pixels = pixels as usize;
+                if let Some((ref mut c_image, ref mut actual_pixel)) = *self.buffer.lock() {
+                    let actual = *actual_pixel as usize;
 
-                    if actual + lines >= c_image.height() {
-                        return Err(format!("Lines exceed image height in {}", self.name));
+                    if actual + pixels >= c_image.pixels.len() {
+                        return Err(format!("Pixels exceed image size in {}", self.name));
                     }
 
-                    self.update_c_image(c_image, actual, lines, data, image_type)?;
-                    *actual_line += lines;
+                    self.update_c_image(c_image, actual, pixels, data, image_type)?;
+                    *actual_pixel += pixels;
                 } else {
                     return Err(format!("No image buffer found for image: {}", self.name));
                 }
             }
-            ImageSetMessage::End(lines) => {
+            ImageSetMessage::End(pixels) => {
                 self.inner.1.send(ChannelMessage::Ack(self.id));
-                let lines = lines as usize;
-                if let Some((c_image, actual_line)) = self.buffer.lock().take() {
-                    if actual_line + lines != c_image.height() {
+                let pixels = pixels as usize;
+                if let Some((c_image, actual_pixel)) = self.buffer.lock().take() {
+                    if actual_pixel + pixels != c_image.pixels.len() {
                         return Err(format!(
-                            "Lines do not match expected size in {}: {} vs {}",
+                            "Pixels do not match expected size in {}: {} vs {}",
                             self.name,
-                            actual_line + lines,
-                            c_image.height()
+                            actual_pixel + pixels,
+                            c_image.pixels.len()
                         ));
                     }
 
                     self.update_c_image(
                         &mut c_image.clone(),
-                        actual_line,
-                        lines,
+                        actual_pixel,
+                        pixels,
                         data,
                         image_type,
                     )?;
@@ -203,17 +203,16 @@ impl Image {
     fn update_c_image(
         &self,
         image: &mut ColorImage,
-        actual_line: usize,
-        lines: usize,
+        actual_pixel: usize,
+        pixels: usize,
         data: &[u8],
         image_type: ImageType,
     ) -> Result<(), String> {
-        if actual_line + lines > image.height() {
-            return Err(format!("Lines exceed image height in {}", self.name));
+        if actual_pixel + pixels > image.pixels.len() {
+            return Err(format!("Pixels exceed image size in {}", self.name));
         }
 
-        let pixel_count = image.width() * lines;
-        if image_type.bytes_per_pixel() * pixel_count != data.len() {
+        if image_type.bytes_per_pixel() * pixels != data.len() {
             return Err(format!(
                 "Data length does not match expected size in {}",
                 self.name
@@ -222,10 +221,10 @@ impl Image {
 
         let data_ptr = data.as_ptr();
         let image_ptr =
-            unsafe { image.pixels.as_mut_ptr().add(image.width() * actual_line) as *mut u8 };
+            unsafe { image.pixels.as_mut_ptr().add(actual_pixel) as *mut u8 };
 
         unsafe {
-            fill_c_image(image_type, data_ptr, image_ptr, pixel_count);
+            fill_c_image(image_type, data_ptr, image_ptr, pixels);
         }
 
         Ok(())

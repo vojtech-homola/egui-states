@@ -23,6 +23,10 @@ impl Event {
         }
     }
 
+    pub(crate) fn is_set(&self) -> bool {
+        *self.flag.lock()
+    }
+
     pub(crate) fn set_one(&self) {
         *self.flag.lock() = true;
         self.cond.notify_one();

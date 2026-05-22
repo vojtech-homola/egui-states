@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::collections::{MapHeader, VecHeader};
 use crate::data_transport;
-use crate::image_header::ImageHeader;
+use crate::image_transport::ImageHeader;
 
 // TODO: make these constants configurable
 // pub(crate) const VALUE_MAX_SIZE: usize = 1024 * 1024; // 1 MB

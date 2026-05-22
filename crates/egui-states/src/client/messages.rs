@@ -7,7 +7,7 @@ use crate::client::image::{ImageMessage, ImageSetMessage};
 use crate::client::states_creator::ValuesList;
 use crate::collections::{MapHeader, VecHeader};
 use crate::data_transport::{DataHeader, DataTakeHeader, MultiDataHeader};
-use crate::image_header::{ImageHeader, ImageSetHeader};
+use crate::image_transport::{ImageHeader, ImageSetHeader};
 use crate::serialization::{
     ClientHeader, FastVec, MAX_MSG_COUNT, MSG_SIZE_THRESHOLD, MessageData, ServerHeader,
     serialize_to_data,

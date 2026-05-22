@@ -4,7 +4,7 @@ mod collections;
 mod data_transport;
 mod event_async;
 mod hashing;
-mod image_header;
+mod image_transport;
 mod serialization;
 mod transport;
 
