@@ -11,6 +11,11 @@ use crate::server::event::Event;
 use crate::server::sender::{MessageSender, SenderData};
 use crate::server::server::{Acknowledge, SyncTrait};
 
+enum Buffer {
+    Set(Vec<(FastVec<32>, bool)>),
+    Update([usize; 4], VecDeque<(FastVec<32>, bool)>),
+}
+
 struct ImageDataInner {
     data: Vec<u8>,
     size: [usize; 2],
@@ -25,15 +30,15 @@ pub(crate) struct ImageData {
     pub data: *const u8,
 }
 
-enum SetData {
-    Single(FastVec<32>),
-    Multi(Vec<(FastVec<32>, bool)>),
-}
+// enum SetData {
+//     Single(FastVec<32>),
+//     Multi(Vec<(FastVec<32>, bool)>),
+// }
 
-enum SetDataUpdate {
-    Single(FastVec<32>),
-    Multi(VecDeque<(FastVec<32>, bool)>),
-}
+// enum UpdateData {
+//     Single(FastVec<32>),
+//     Multi(VecDeque<(FastVec<32>, bool)>),
+// }
 
 pub(crate) struct ValueImage {
     pub(crate) name: String,
@@ -61,8 +66,7 @@ impl ValueImage {
             image: RwLock::new(ImageDataInner {
                 data: Vec::with_capacity(0),
                 size: [0, 0],
-                update_rect: [0, 0, 0, 0],
-                buffer: VecDeque::new(),
+                buffer: None,
             }),
             lock: Mutex::new(()),
             sender,
@@ -91,7 +95,7 @@ impl ValueImage {
         let pixels_count = image.size[0] * image.size[1];
 
         // this is main lock for set and update operation
-        let _lock = self.lock.lock();
+        let lock = self.lock.lock();
         let mut w = self.image.write();
 
         // only allocate new data if size has changed
@@ -125,7 +129,7 @@ impl ValueImage {
             };
         }
 
-        w.buffer.clear();
+        w.buffer = None;
         drop(w);
 
         if let Some(to_send) = to_send {
@@ -145,6 +149,7 @@ impl ValueImage {
                 }
             }
         }
+        drop(lock);
 
         Ok(())
     }
@@ -154,7 +159,7 @@ impl ValueImage {
         origin: &[usize; 2],
         image: ImageData,
         update: bool,
-        force: bool,
+        mut force: bool,
     ) -> Result<(), String> {
         let to_send = if self.connected.load(Ordering::Relaxed) {
             Some(pack_update_data(self.id, origin, &image, update)?)
@@ -184,158 +189,84 @@ impl ValueImage {
             );
         }
 
-        if let Some(to_send) = to_send {
-            let new_rect = [origin[0], origin[1], image.size[0], image.size[1]];
-
-            if let Some((rect, buffer)) = &mut w.buffer {
-                if force && *rect == new_rect {
-                    if self.event.is_set() {
-                        match to_send {
-                            SetDataUpdate::Single(data) => {
-                                self.sender.send_single(data);
-                                w.buffer = None;
-                            }
-                            SetDataUpdate::Multi(mut data) => {
-                                if let Some((d, flag)) = data.pop_front() {
-                                    self.sender.send_set(d, flag);
-                                }
-                                *buffer = data;
-                            }
-                        }
-                    } else {
-                        match to_send {
-                            SetDataUpdate::Single(data) => {
-                                buffer.clear();
-                                buffer.push_back((data, true));
-                            }
-                            SetDataUpdate::Multi(data) => {
-                                *buffer = data;
-                            }
-                        }
-                    }
-                } else {
-
-                }
-            } else {
-            }
-        }
-
-        Ok(())
-    }
-
-    // Function is complex because it needs to handle different image types and also not contiguous
-    // data. Also it tries to avoid copying data if possible.
-    pub(crate) fn set_image_old(
-        &self,
-        image: ImageData,
-        origin: Option<[u32; 2]>,
-        update: bool,
-    ) -> Result<(), String> {
-        let mut stride = image.stride;
-        let mut contiguous = image.contiguous;
-
-        // get data pointer and prepare data
-        let data_ptr;
-        let mut w = self.image.write();
-        let data = if self.connected.load(Ordering::Relaxed) {
-            let new_size = match origin {
-                Some(_) => w.size,  // keep the old size
-                None => image.size, // use the new size
-            };
-
-            let image_header = ImageHeader {
-                image_size: [new_size[0] as u32, new_size[1] as u32],
-                rect: origin.map(|o| [o[0], o[1], image.size[0] as u32, image.size[1] as u32]),
-                image_type: image.image_type,
-            };
-            let mut head_buff = [0u8; 64];
-            let data_size = image.size[0] * image.size[1] * image.image_type.bytes_per_pixel();
-            let header = ServerHeader::Image(self.id, update, image_header, data_size as u32);
-            let buff = header
-                .serialize_to_slice(&mut head_buff)
-                .map_err(|_| "Failed to serialize image header")?;
-
-            let offset = buff.len();
-
-            let mut data = Vec::with_capacity(data_size + offset);
-            unsafe { data.set_len(data_size + offset) };
-            data[..offset].copy_from_slice(&buff);
-
-            if contiguous {
-                let buffer = image.data;
-                let data_ptr = unsafe { data.as_mut_ptr().add(offset) };
-                unsafe {
-                    std::ptr::copy_nonoverlapping(buffer, data_ptr, data_size);
-                }
-            } else {
-                let image_ptr = image.data;
-                let data_ptr = unsafe { data.as_mut_ptr().add(offset) };
-                let line_size = image.size[1] * image.image_type.bytes_per_pixel();
-                for i in 0..image.size[0] {
-                    let buffer = unsafe { image_ptr.add(i * stride) };
-                    let data_buffer = unsafe { data_ptr.add(i * line_size) };
-                    unsafe { std::ptr::copy_nonoverlapping(buffer, data_buffer, line_size) };
-                }
-                contiguous = true;
-                stride = 0;
-            }
-
-            data_ptr = unsafe { data.as_ptr().add(offset) };
-            Some(data)
-        } else {
-            data_ptr = image.data;
-            None
+        let Some(to_send) = to_send else {
+            return Ok(());
         };
 
-        // write data to the image
-        match origin {
-            Some(origin) => {
-                let origin = [origin[0] as usize, origin[1] as usize];
-                let original_size = w.size;
+        let new_rect = [origin[0], origin[1], image.size[0], image.size[1]];
 
-                // check if the rectangle fits in the original image
-                if origin[0] + image.size[0] > original_size[0]
-                    || origin[1] + image.size[1] > original_size[1]
-                {
-                    return Err(format!(
-                        "rectangle {:?} does not fit in the original image with size {:?}",
-                        origin, original_size
-                    ));
-                }
-
-                let old_data_ptr = w.data.as_mut_ptr();
-                unsafe {
-                    write_rectangle(
-                        data_ptr,
-                        stride,
-                        old_data_ptr,
-                        original_size[1],
-                        &origin,
-                        &image.size,
-                        image.image_type,
-                    );
-                }
+        if let Some((rect, buffer)) = &mut w.buffer {
+            if force && *rect != new_rect {
+                force = false;
             }
-            None => {
-                if contiguous {
-                    w.data = unsafe { write_all_new(data_ptr, &image.size, image.image_type) };
-                } else {
-                    w.data = unsafe {
-                        write_all_new_stride(data_ptr, stride, &image.size, image.image_type)
-                    };
-                }
-                w.size = image.size;
-            }
+        } else {
+            force = true;
         }
 
-        // send the image to the server
-        if let Some(data) = data {
-            self.event.wait_clear();
-            if !self.connected.load(Ordering::Relaxed) {
-                return Ok(());
-            }
+        if let Some((rect, buffer)) = &mut w.buffer {
+            if force && *rect == new_rect {
+                if self.event.is_set() {
+                    match to_send {
+                        UpdateData::Single(data) => {
+                            self.sender.send_single(data);
+                            w.buffer = None;
+                        }
+                        UpdateData::Multi(mut data) => {
+                            if let Some((d, flag)) = data.pop_front() {
+                                self.sender.send_set(d, flag);
+                            }
+                            *buffer = data;
+                        }
+                    }
+                    self.event.clear();
+                } else {
+                    match to_send {
+                        UpdateData::Single(data) => {
+                            buffer.clear();
+                            buffer.push_back((data, true));
+                        }
+                        UpdateData::Multi(data) => {
+                            *buffer = data;
+                        }
+                    }
+                }
+            } else {
+                drop(w); // release lock for acknowledge can be received
+                self.event.wait_clear();
+                if !self.connected.load(Ordering::Acquire) {
+                    return Ok(());
+                }
 
-            self.sender.send_single(SenderData::from_vec(data));
+                match to_send {
+                    UpdateData::Single(data) => {
+                        self.sender.send_single(data);
+                    }
+                    UpdateData::Multi(mut data) => {
+                        if let Some((d, flag)) = data.pop_front() {
+                            self.sender.send_set(d, flag);
+                        }
+                        let mut w = self.image.write();
+                        w.buffer = Some((new_rect, data));
+                    }
+                }
+            }
+        } else {
+            if self.event.is_set() {
+                match to_send {
+                    UpdateData::Single(data) => {
+                        self.sender.send_single(data);
+                    }
+                    UpdateData::Multi(mut data) => {
+                        if let Some((d, flag)) = data.pop_front() {
+                            self.sender.send_set(d, flag);
+                        }
+                        // let mut w = self.image.write();
+                        w.buffer = Some((new_rect, data));
+                    }
+                }
+                self.event.clear();
+            } else {
+            }
         }
 
         Ok(())
@@ -344,11 +275,29 @@ impl ValueImage {
 
 impl Acknowledge for ValueImage {
     fn acknowledge(&self) {
-        self.event.set();
+        let mut w = self.image.write();
+
+        let buffer = w.buffer.take();
+        match buffer {
+            Some((size, mut queqe)) => {
+                if let Some((data, flag)) = queqe.pop_front() {
+                    self.sender.send_set(data, flag);
+                } else {
+                    self.event.set();
+                    return;
+                }
+                if !queqe.is_empty() {
+                    w.buffer = Some((size, queqe));
+                }
+            }
+            None => {
+                self.event.set();
+            }
+        }
     }
 
     fn reset(&self) {
-        self.acknowledge();
+        self.event.set();
     }
 }
 
@@ -381,7 +330,7 @@ impl SyncTrait for ValueImage {
     }
 }
 
-fn pack_set_data(id: u64, image: &ImageData, update: bool) -> Result<SetData, String> {
+fn pack_set_data(id: u64, image: &ImageData, update: bool) -> Result<Vec<(FastVec<32>, bool)>, String> {
     let size = [image.size[1] as u32, image.size[0] as u32]; // reverse for egui
     let bytes_size = image.size[0] * image.size[1] * image.image_type.bytes_per_pixel();
     let data = unsafe { std::slice::from_raw_parts(image.data, bytes_size) };
@@ -394,7 +343,7 @@ fn pack_set_data(id: u64, image: &ImageData, update: bool) -> Result<SetData, St
 
         message.reserve_exact(bytes_size);
         message.extend_from_slice(data);
-        return Ok(SetData::Single(message, true));
+        return Ok(vec![(message, true)]);
     } else {
         let mut messages = Vec::new();
         let pixel_size = image.image_type.bytes_per_pixel();
@@ -440,7 +389,7 @@ fn pack_set_data(id: u64, image: &ImageData, update: bool) -> Result<SetData, St
             processed += chunk_size;
         }
 
-        return Ok(SetData::Multi(messages));
+        return Ok(messages);
     }
 }
 
@@ -449,7 +398,7 @@ fn pack_update_data(
     origin: &[usize; 2],
     image: &ImageData,
     update: bool,
-) -> Result<SetDataUpdate, String> {
+) -> Result<VecDeque<(FastVec<32>, bool)>, String> {
     let bytes_line_size = image.size[1] * image.image_type.bytes_per_pixel();
     let bytes_size = image.size[0] * bytes_line_size;
 
@@ -487,7 +436,9 @@ fn pack_update_data(
 
         message.reserve_exact(bytes_size);
         append_lines(&mut message, 0, image.size[0]);
-        return Ok(SetDataUpdate::Single(message, true));
+        let mut result = VecDeque::with_capacity(1);
+        result.push_back((message, update));
+        return Ok(result);
     } else {
         let mut messages = VecDeque::new();
         let chunk_lines = (MSG_SIZE_THRESHOLD / bytes_line_size).max(1);
@@ -517,7 +468,7 @@ fn pack_update_data(
             processed_lines += lines;
         }
 
-        return Ok(SetDataUpdate::Multi(messages));
+        return Ok(messages);
     }
 }
 

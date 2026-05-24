@@ -33,7 +33,7 @@ pub(crate) enum ImageSetHeader {
 
 #[cfg(feature = "server")]
 impl ImageSetHeader {
-    pub(crate) fn serialize(self, id, image_type: ImageType, size: u32) -> Result<FastVec<32>, ()> {
+    pub(crate) fn serialize(self, id: u64, image_type: ImageType, size: u32) -> Result<FastVec<32>, ()> {
         let header = &ServerHeader::Image(id, ImageHeader::Set(self, image_type), size);
         serialize_heap(header)
     }

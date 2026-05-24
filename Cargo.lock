@@ -1053,6 +1053,7 @@ dependencies = [
  "bytes",
  "egui",
  "egui_states_macros",
+ "event-listener",
  "futures-util",
  "log",
  "parking_lot",
