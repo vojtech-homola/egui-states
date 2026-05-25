@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use parking_lot::{Mutex, RwLock};
 
@@ -337,8 +337,31 @@ fn pack_set_data(
     update: bool,
 ) -> Result<Vec<(FastVec<32>, bool)>, String> {
     let size = [image.size[1] as u32, image.size[0] as u32]; // reverse for egui
-    let bytes_size = image.size[0] * image.size[1] * image.image_type.bytes_per_pixel();
-    let data = unsafe { std::slice::from_raw_parts(image.data, bytes_size) };
+    let bytes_line_size = image.size[1] * image.image_type.bytes_per_pixel();
+    let bytes_size = image.size[0] * bytes_line_size;
+
+    let append_data = |message: &mut FastVec<32>, start: usize, size: usize| {
+        if image.contiguous {
+            let data = unsafe { std::slice::from_raw_parts(image.data.add(start), size) };
+            message.extend_from_slice(data);
+        } else {
+            let mut processed = 0;
+            while processed < size {
+                let offset = start + processed;
+                let line = offset / bytes_line_size;
+                let line_offset = offset % bytes_line_size;
+                let copy_size = (bytes_line_size - line_offset).min(size - processed);
+                let data = unsafe {
+                    std::slice::from_raw_parts(
+                        image.data.add(line * image.stride + line_offset),
+                        copy_size,
+                    )
+                };
+                message.extend_from_slice(data);
+                processed += copy_size;
+            }
+        }
+    };
 
     if bytes_size <= MSG_SIZE_THRESHOLD {
         let header = ImageSetHeader::All(size, update);
@@ -347,7 +370,7 @@ fn pack_set_data(
             .map_err(|_| format!("Failed to serialize header for image {}", id))?;
 
         message.reserve_exact(bytes_size);
-        message.extend_from_slice(data);
+        append_data(&mut message, 0, bytes_size);
         return Ok(vec![(message, true)]);
     } else {
         let mut messages = Vec::new();
@@ -365,7 +388,7 @@ fn pack_set_data(
             .serialize(id, image.image_type, first_size as u32)
             .map_err(|_| format!("Failed to serialize header for image {}", id))?;
         message.reserve_exact(first_size);
-        message.extend_from_slice(&data[..first_size]);
+        append_data(&mut message, 0, first_size);
         messages.push((message, true));
         processed_pixels += first_pixels;
         processed += first_size;
@@ -378,7 +401,7 @@ fn pack_set_data(
                 let mut message = header
                     .serialize(id, image.image_type, remaining_size as u32)
                     .map_err(|_| format!("Failed to serialize header for image {}", id))?;
-                message.extend_from_slice(&data[processed..]);
+                append_data(&mut message, processed, remaining_size);
                 messages.push((message, false));
                 break;
             }
@@ -388,7 +411,7 @@ fn pack_set_data(
                 .serialize(id, image.image_type, chunk_size as u32)
                 .map_err(|_| format!("Failed to serialize header for image {}", id))?;
             message.reserve_exact(chunk_size);
-            message.extend_from_slice(&data[processed..processed + chunk_size]);
+            append_data(&mut message, processed, chunk_size);
             messages.push((message, true));
             processed_pixels += chunk_pixels;
             processed += chunk_size;

@@ -126,7 +126,7 @@ impl Image {
             ImageSetMessage::End(pixels) => {
                 self.inner.1.send(ChannelMessage::Ack(self.id));
                 let pixels = pixels as usize;
-                if let Some((c_image, actual_pixel)) = self.buffer.lock().take() {
+                if let Some((mut c_image, actual_pixel)) = self.buffer.lock().take() {
                     if actual_pixel + pixels != c_image.pixels.len() {
                         return Err(format!(
                             "Pixels do not match expected size in {}: {} vs {}",
@@ -137,7 +137,7 @@ impl Image {
                     }
 
                     self.update_c_image(
-                        &mut c_image.clone(),
+                        &mut c_image,
                         actual_pixel,
                         pixels,
                         data,
