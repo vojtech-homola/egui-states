@@ -35,11 +35,11 @@ impl<const N: usize> FastVec<N> {
         Self::Heap(Vec::new())
     }
 
-    #[cfg(feature = "server")]
-    #[inline]
-    pub fn from_vec(vec: Vec<u8>) -> Self {
-        Self::Heap(vec)
-    }
+    // #[cfg(feature = "server")]
+    // #[inline]
+    // pub fn from_vec(vec: Vec<u8>) -> Self {
+    //     Self::Heap(vec)
+    // }
 
     #[cfg(not(target_arch = "wasm32"))]
     #[inline]
@@ -207,9 +207,9 @@ pub(crate) enum ServerHeader {
 
 #[cfg(feature = "server")]
 impl ServerHeader {
-    pub fn serialize_to_slice<'a, 'b>(&'b self, buffer: &'a mut [u8]) -> Result<&'a mut [u8], ()> {
-        postcard::to_slice::<ServerHeader>(self, buffer).map_err(|_| ())
-    }
+    // pub fn serialize_to_slice<'a, 'b>(&'b self, buffer: &'a mut [u8]) -> Result<&'a mut [u8], ()> {
+    //     postcard::to_slice::<ServerHeader>(self, buffer).map_err(|_| ())
+    // }
 
     pub fn serialize_value<const N: usize>(
         id: u64,

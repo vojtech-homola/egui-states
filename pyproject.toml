@@ -36,7 +36,7 @@ unfixable = [
 ]
 
 ignore = [
-    "PLW0717"  # too-many-statements-in-try-clause
+    "PLW0717", # too-many-statements-in-try-clause
     "PLR0904", # too-many-public-methods
     "PLR0913", # too-many-arguments
     "PLR2004", # magic-value-comparison

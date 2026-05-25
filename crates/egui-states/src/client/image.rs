@@ -242,7 +242,7 @@ impl Image {
             ));
         }
 
-        let mut c_image = ColorImage::default();
+        let mut c_image = ColorImage::filled(image_size, egui::Color32::TRANSPARENT);
         let pixel_count = image_size[0] * image_size[1];
 
         let data_ptr = data.as_ptr();

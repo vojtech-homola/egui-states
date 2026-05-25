@@ -1,15 +1,76 @@
-use parking_lot::{Condvar, Mutex};
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+
+// use parking_lot::{Condvar, Mutex};
+use event_listener::{Event as ListenerEvent, Listener};
+
+// pub(crate) struct Event {
+//     cond: Arc<Condvar>,
+//     flag: Arc<Mutex<bool>>,
+// }
+
+// impl Clone for Event {
+//     fn clone(&self) -> Self {
+//         Self {
+//             cond: self.cond.clone(),
+//             flag: self.flag.clone(),
+//         }
+//     }
+// }
+
+// impl Event {
+//     pub(crate) fn new() -> Self {
+//         Self {
+//             cond: Arc::new(Condvar::new()),
+//             flag: Arc::new(Mutex::new(false)),
+//         }
+//     }
+
+//     pub(crate) fn is_set(&self) -> bool {
+//         *self.flag.lock()
+//     }
+
+//     pub(crate) fn set_one(&self) {
+//         *self.flag.lock() = true;
+//         self.cond.notify_one();
+//     }
+
+//     pub(crate) fn set(&self) {
+//         *self.flag.lock() = true;
+//         self.cond.notify_all();
+//     }
+
+//     pub(crate) fn clear(&self) {
+//         *self.flag.lock() = false;
+//     }
+
+//     pub(crate) fn wait(&self) {
+//         self.cond.wait_while(&mut self.flag.lock(), |flag| !*flag);
+//     }
+
+//     pub(crate) fn wait_clear(&self) {
+//         self.cond.wait_while(&mut self.flag.lock(), |flag| {
+//             if *flag {
+//                 *flag = false;
+//                 false
+//             } else {
+//                 true
+//             }
+//         });
+//     }
+// }
 
 pub(crate) struct Event {
-    cond: Arc<Condvar>,
-    flag: Arc<Mutex<bool>>,
+    notify: Arc<ListenerEvent>,
+    flag: Arc<AtomicBool>,
 }
 
 impl Clone for Event {
     fn clone(&self) -> Self {
         Self {
-            cond: self.cond.clone(),
+            notify: self.notify.clone(),
             flag: self.flag.clone(),
         }
     }
@@ -18,41 +79,66 @@ impl Clone for Event {
 impl Event {
     pub(crate) fn new() -> Self {
         Self {
-            cond: Arc::new(Condvar::new()),
-            flag: Arc::new(Mutex::new(false)),
+            notify: Arc::new(ListenerEvent::new()),
+            flag: Arc::new(AtomicBool::new(false)),
         }
     }
 
     pub(crate) fn is_set(&self) -> bool {
-        *self.flag.lock()
+        self.flag.load(Ordering::Acquire)
     }
 
     pub(crate) fn set_one(&self) {
-        *self.flag.lock() = true;
-        self.cond.notify_one();
+        self.flag.store(true, Ordering::Release);
+        self.notify.notify(1);
     }
 
     pub(crate) fn set(&self) {
-        *self.flag.lock() = true;
-        self.cond.notify_all();
+        self.flag.store(true, Ordering::Release);
+        self.notify.notify(usize::MAX);
     }
 
     pub(crate) fn clear(&self) {
-        *self.flag.lock() = false;
+        self.flag.store(false, Ordering::Release);
     }
 
     pub(crate) fn wait(&self) {
-        self.cond.wait_while(&mut self.flag.lock(), |flag| !*flag);
+        loop {
+            if self.flag.load(Ordering::Acquire) {
+                return;
+            }
+
+            let listener = self.notify.listen();
+
+            if self.flag.load(Ordering::Acquire) {
+                return;
+            }
+
+            listener.wait();
+        }
     }
 
     pub(crate) fn wait_clear(&self) {
-        self.cond.wait_while(&mut self.flag.lock(), |flag| {
-            if *flag {
-                *flag = false;
-                false
-            } else {
-                true
+        loop {
+            if self
+                .flag
+                .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                return;
             }
-        });
+
+            let listener = self.notify.listen();
+
+            if self
+                .flag
+                .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                return;
+            }
+
+            listener.wait();
+        }
     }
 }

@@ -19,7 +19,6 @@ enum Buffer {
 struct ImageDataInner {
     data: Vec<u8>,
     size: [usize; 2],
-    // buffer: Option<([usize; 4], VecDeque<(FastVec<32>, bool)>)>,
     buffer: Buffer,
 }
 

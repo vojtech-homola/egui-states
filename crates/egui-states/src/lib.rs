@@ -2,7 +2,6 @@ extern crate self as egui_states;
 
 mod collections;
 mod data_transport;
-mod event;
 mod event_async;
 mod hashing;
 mod image_transport;
