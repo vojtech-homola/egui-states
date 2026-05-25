@@ -8,7 +8,7 @@ use crate::image_transport::{ImageHeader, ImageSetHeader, ImageType};
 use crate::serialization::ServerHeader;
 use crate::serialization::{FastVec, MSG_SIZE_THRESHOLD};
 use crate::server::event::Event;
-use crate::server::sender::{MessageSender, SenderData};
+use crate::server::sender::MessageSender;
 use crate::server::server::{Acknowledge, SyncTrait};
 
 enum Buffer {
@@ -19,7 +19,8 @@ enum Buffer {
 struct ImageDataInner {
     data: Vec<u8>,
     size: [usize; 2],
-    buffer: Option<([usize; 4], VecDeque<(FastVec<32>, bool)>)>,
+    // buffer: Option<([usize; 4], VecDeque<(FastVec<32>, bool)>)>,
+    buffer: Buffer,
 }
 
 pub(crate) struct ImageData {
@@ -29,16 +30,6 @@ pub(crate) struct ImageData {
     pub image_type: ImageType,
     pub data: *const u8,
 }
-
-// enum SetData {
-//     Single(FastVec<32>),
-//     Multi(Vec<(FastVec<32>, bool)>),
-// }
-
-// enum UpdateData {
-//     Single(FastVec<32>),
-//     Multi(VecDeque<(FastVec<32>, bool)>),
-// }
 
 pub(crate) struct ValueImage {
     pub(crate) name: String,
@@ -66,7 +57,7 @@ impl ValueImage {
             image: RwLock::new(ImageDataInner {
                 data: Vec::with_capacity(0),
                 size: [0, 0],
-                buffer: None,
+                buffer: Buffer::Set(Vec::new()),
             }),
             lock: Mutex::new(()),
             sender,
@@ -129,26 +120,49 @@ impl ValueImage {
             };
         }
 
-        w.buffer = None;
-        drop(w);
+        let Some(to_send) = to_send else {
+            return Ok(());
+        };
 
-        if let Some(to_send) = to_send {
-            self.event.wait_clear();
-            if !self.connected.load(Ordering::Relaxed) {
-                return Ok(());
-            }
-
-            match to_send {
-                SetData::Single(data) => {
-                    self.sender.send_single(data);
-                }
-                SetData::Multi(data) => {
-                    for (message, send_now) in data {
+        if let Buffer::Set(ref mut dat) = w.buffer {
+            if dat.is_empty() {
+                if self.event.is_set() {
+                    self.event.clear();
+                    for (message, send_now) in to_send {
                         self.sender.send_set(message, send_now);
                     }
+                    return Ok(());
+                } else {
+                    dat.extend(to_send);
+                    return Ok(());
                 }
             }
+        } else {
+            //rewrite any update buffer, set has always priority over update
+            if self.event.is_set() {
+                self.event.clear();
+                for (message, send_now) in to_send {
+                    self.sender.send_set(message, send_now);
+                }
+                return Ok(());
+            } else {
+                w.buffer = Buffer::Set(to_send);
+                return Ok(());
+            }
         }
+
+        // drop lock to allow acknowledge to process the buffer and send data while we prepare the next one
+        drop(w);
+
+        self.event.wait_clear();
+        if !self.connected.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+
+        for (message, send_now) in to_send {
+            self.sender.send_set(message, send_now);
+        }
+
         drop(lock);
 
         Ok(())
@@ -159,7 +173,7 @@ impl ValueImage {
         origin: &[usize; 2],
         image: ImageData,
         update: bool,
-        mut force: bool,
+        force: bool,
     ) -> Result<(), String> {
         let to_send = if self.connected.load(Ordering::Relaxed) {
             Some(pack_update_data(self.id, origin, &image, update)?)
@@ -189,85 +203,69 @@ impl ValueImage {
             );
         }
 
-        let Some(to_send) = to_send else {
+        let Some(mut to_send) = to_send else {
             return Ok(());
         };
 
         let new_rect = [origin[0], origin[1], image.size[0], image.size[1]];
 
-        if let Some((rect, buffer)) = &mut w.buffer {
-            if force && *rect != new_rect {
-                force = false;
-            }
-        } else {
-            force = true;
-        }
+        match w.buffer {
+            Buffer::Update(ref mut rect, ref mut dat) => {
+                if dat.is_empty() {
+                    *rect = new_rect;
+                    if self.event.is_set() {
+                        self.event.clear();
+                        if let Some((message, send_now)) = to_send.pop_back() {
+                            self.sender.send_set(message, send_now);
+                        }
 
-        if let Some((rect, buffer)) = &mut w.buffer {
-            if force && *rect == new_rect {
-                if self.event.is_set() {
-                    match to_send {
-                        UpdateData::Single(data) => {
-                            self.sender.send_single(data);
-                            w.buffer = None;
+                        if !to_send.is_empty() {
+                            dat.extend(to_send);
                         }
-                        UpdateData::Multi(mut data) => {
-                            if let Some((d, flag)) = data.pop_front() {
-                                self.sender.send_set(d, flag);
-                            }
-                            *buffer = data;
-                        }
-                    }
-                    self.event.clear();
-                } else {
-                    match to_send {
-                        UpdateData::Single(data) => {
-                            buffer.clear();
-                            buffer.push_back((data, true));
-                        }
-                        UpdateData::Multi(data) => {
-                            *buffer = data;
-                        }
+
+                        return Ok(());
+                    } else {
+                        dat.extend(to_send);
+                        return Ok(());
                     }
                 }
-            } else {
-                drop(w); // release lock for acknowledge can be received
-                self.event.wait_clear();
-                if !self.connected.load(Ordering::Acquire) {
+
+                if force && new_rect == *rect {
+                    dat.clear();
+                    dat.extend(to_send);
                     return Ok(());
                 }
-
-                match to_send {
-                    UpdateData::Single(data) => {
-                        self.sender.send_single(data);
-                    }
-                    UpdateData::Multi(mut data) => {
-                        if let Some((d, flag)) = data.pop_front() {
-                            self.sender.send_set(d, flag);
-                        }
-                        let mut w = self.image.write();
-                        w.buffer = Some((new_rect, data));
-                    }
-                }
             }
-        } else {
-            if self.event.is_set() {
-                match to_send {
-                    UpdateData::Single(data) => {
-                        self.sender.send_single(data);
-                    }
-                    UpdateData::Multi(mut data) => {
-                        if let Some((d, flag)) = data.pop_front() {
-                            self.sender.send_set(d, flag);
+            Buffer::Set(ref dat) => {
+                if dat.is_empty() {
+                    if self.event.is_set() {
+                        self.event.clear();
+                        if let Some((message, send_now)) = to_send.pop_back() {
+                            self.sender.send_set(message, send_now);
                         }
-                        // let mut w = self.image.write();
-                        w.buffer = Some((new_rect, data));
+                        w.buffer = Buffer::Update(new_rect, to_send);
+
+                        return Ok(());
+                    } else {
+                        w.buffer = Buffer::Update(new_rect, to_send);
+                        return Ok(());
                     }
                 }
-                self.event.clear();
-            } else {
             }
         }
+
+        drop(w);
+
+        self.event.wait_clear();
+        if !self.connected.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+
+        let mut w = self.image.write();
+        if let Some((message, send_now)) = to_send.pop_back() {
+            self.sender.send_set(message, send_now);
+        }
+        w.buffer = Buffer::Update(new_rect, to_send);
 
         Ok(())
     }
@@ -277,60 +275,68 @@ impl Acknowledge for ValueImage {
     fn acknowledge(&self) {
         let mut w = self.image.write();
 
-        let buffer = w.buffer.take();
-        match buffer {
-            Some((size, mut queqe)) => {
-                if let Some((data, flag)) = queqe.pop_front() {
-                    self.sender.send_set(data, flag);
-                } else {
+        match w.buffer {
+            Buffer::Set(ref mut dat) => {
+                if dat.is_empty() {
                     self.event.set();
                     return;
                 }
-                if !queqe.is_empty() {
-                    w.buffer = Some((size, queqe));
+
+                for (message, send_now) in dat.drain(..) {
+                    self.sender.send_set(message, send_now);
                 }
             }
-            None => {
-                self.event.set();
-            }
+            Buffer::Update(_, ref mut dat) => match dat.pop_front() {
+                Some((message, send_now)) => {
+                    self.sender.send_set(message, send_now);
+                }
+                None => {
+                    self.event.set();
+                    return;
+                }
+            },
         }
     }
 
     fn reset(&self) {
         self.event.set();
+        let mut w = self.image.write();
+        w.buffer = Buffer::Set(Vec::new());
     }
 }
 
 impl SyncTrait for ValueImage {
     fn sync(&self) -> Result<(), ()> {
-        let w = self.image.read();
+        let mut w = self.image.write();
         if w.size[0] == 0 || w.size[1] == 0 {
             self.event.set();
             return Ok(());
         }
 
-        let mut head_buff = [0u8; 64];
-        let image_header = ImageHeader {
-            image_size: [w.size[0] as u32, w.size[1] as u32],
-            rect: None,
+        let image_data = ImageData {
+            size: w.size,
+            stride: 0,
+            contiguous: true,
             image_type: ImageType::ColorAlpha,
+            data: w.data.as_ptr(),
         };
-        let header = ServerHeader::Image(self.id, false, image_header, w.data.len() as u32);
-        let buff = header.serialize_to_slice(&mut head_buff)?;
 
-        let mut data = Vec::with_capacity(buff.len() + w.data.len());
-        unsafe { data.set_len(buff.len() + w.data.len()) };
-        data[..buff.len()].copy_from_slice(buff);
-        data[buff.len()..].copy_from_slice(&w.data);
-        drop(w);
+        let data = pack_set_data(self.id, &image_data, false).map_err(|_| ())?;
 
+        w.buffer = Buffer::Set(Vec::new());
         self.event.clear();
-        self.sender.send_single(SenderData::from_vec(data));
+        for (message, send_now) in data {
+            self.sender.send_set(message, send_now);
+        }
         Ok(())
     }
 }
 
-fn pack_set_data(id: u64, image: &ImageData, update: bool) -> Result<Vec<(FastVec<32>, bool)>, String> {
+fn pack_set_data(
+    id: u64,
+    image: &ImageData,
+    update: bool,
+) -> Result<Vec<(FastVec<32>, bool)>, String> {
     let size = [image.size[1] as u32, image.size[0] as u32]; // reverse for egui
     let bytes_size = image.size[0] * image.size[1] * image.image_type.bytes_per_pixel();
     let data = unsafe { std::slice::from_raw_parts(image.data, bytes_size) };
@@ -587,9 +593,9 @@ unsafe fn write_rectangle(
             }
             let x = size[1] * 4;
             for i in 0..size[0] {
-                let index = (top + i) * old_stride + left * 4;
+                let index = (top + i) * old_stride + left;
                 let buffer = data.add(i * stride);
-                let data_buffer = old_data.add(index);
+                let data_buffer = old_data.add(index * 4);
                 std::ptr::copy_nonoverlapping(buffer, data_buffer, x);
             }
         },

@@ -88,7 +88,14 @@ class StateServerCore:
         value_id: int,
         image: Buffer,
         update: bool,
-        origin: list[int] | tuple[int, int] | None = None,
+    ) -> None: ...
+    def image_update(
+        self,
+        value_id: int,
+        image: Buffer,
+        origin: list[int] | tuple[int, int],
+        update: bool,
+        force: bool = False,
     ) -> None: ...
     def image_get(self, value_id: int) -> tuple[bytearray, tuple[int, int]]: ...
     def image_size(self, value_id: int) -> tuple[int, int]: ...

@@ -21,11 +21,6 @@ impl MessageSender {
     }
 
     #[inline]
-    pub(crate) fn send_single(&self, msg: SenderData) {
-        let _ = self.sender.send(Some((msg, true)));
-    }
-
-    #[inline]
     pub(crate) fn send_set(&self, msg: SenderData, single: bool) {
         let _ = self.sender.send(Some((msg, single)));
     }

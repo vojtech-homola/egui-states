@@ -649,18 +649,37 @@ impl StateServerCore {
         Ok((array, size))
     }
 
-    #[pyo3(signature = (value_id, image, update, origin=None))]
+    #[pyo3(signature = (value_id, image, update))]
     fn image_set(
         &self,
         py: Python,
         value_id: u64,
         image: PyBuffer<u8>,
         update: bool,
-        origin: Option<[u32; 2]>,
     ) -> PyResult<()> {
         py.detach(|| {
             let image_val = self.inner_image(value_id)?;
-            pyimage::set_image(&image, image_val, origin, update)
+            let image_data = pyimage::image_data(&image)?;
+            image_val.set_image(image_data, update).map_err(|e| PyValueError::new_err(e))
+        })
+    }
+
+    #[pyo3(signature = (value_id, image, origin, update, force=false))]
+    fn image_update(
+        &self,
+        py: Python,
+        value_id: u64,
+        image: PyBuffer<u8>,
+        origin: [usize; 2],
+        update: bool,
+        force: bool,
+    ) -> PyResult<()> {
+        py.detach(|| {
+            let image_val = self.inner_image(value_id)?;
+            let image_data = pyimage::image_data(&image)?;
+            image_val
+                .update_image(&origin, image_data, update, force)
+                .map_err(|e| PyValueError::new_err(e))
         })
     }
 

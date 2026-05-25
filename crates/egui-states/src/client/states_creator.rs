@@ -5,7 +5,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::State;
 use crate::client::atomics::{Atomic, AtomicStatic};
-use crate::client::data::{Data, DataMulti, DataTake, UpdateData, UpdateDataTake, UpdateMultiData, private::GetDataType};
+use crate::client::data::{
+    Data, DataMulti, DataTake, UpdateData, UpdateDataTake, UpdateMultiData, private::GetDataType,
+};
 use crate::client::image::Image;
 use crate::client::messages::MessageSender;
 use crate::client::value_map::{UpdateMap, ValueMap};
@@ -314,7 +316,7 @@ impl StatesCreator for StatesCreatorClient {
 
     fn data_multi<T>(&mut self, name: &'static str) -> DataMulti<T>
     where
-        T: GetDataType + Send + Sync + 'static
+        T: GetDataType + Send + Sync + 'static,
     {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
@@ -326,7 +328,7 @@ impl StatesCreator for StatesCreatorClient {
 
     fn data_take<T>(&mut self, name: &'static str) -> DataTake<T>
     where
-        T: GetDataType + Send + Sync + 'static
+        T: GetDataType + Send + Sync + 'static,
     {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);

@@ -139,10 +139,7 @@ pub(crate) struct Server {
 }
 
 impl Server {
-    pub(crate) fn new(
-        addr: SocketAddrV4,
-        handshake: Option<Vec<u64>>,
-    ) -> Self {
+    pub(crate) fn new(addr: SocketAddrV4, handshake: Option<Vec<u64>>) -> Self {
         let connected = Arc::new(AtomicBool::new(false));
         let (sender, rx) = MessageSender::new();
         let signals = SignalsManager::new();

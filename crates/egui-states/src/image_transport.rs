@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "server")]
-use crate::serialization::{FastVec, serialize_heap, ServerHeader};
+use crate::serialization::{FastVec, ServerHeader, serialize_heap};
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
 pub(crate) enum ImageType {
@@ -33,7 +33,12 @@ pub(crate) enum ImageSetHeader {
 
 #[cfg(feature = "server")]
 impl ImageSetHeader {
-    pub(crate) fn serialize(self, id: u64, image_type: ImageType, size: u32) -> Result<FastVec<32>, ()> {
+    pub(crate) fn serialize(
+        self,
+        id: u64,
+        image_type: ImageType,
+        size: u32,
+    ) -> Result<FastVec<32>, ()> {
         let header = &ServerHeader::Image(id, ImageHeader::Set(self, image_type), size);
         serialize_heap(header)
     }
@@ -41,6 +46,6 @@ impl ImageSetHeader {
 
 #[derive(Serialize, Deserialize)]
 pub(crate) enum ImageHeader {
-    Set(ImageSetHeader, ImageType),          // header
+    Set(ImageSetHeader, ImageType),    // header
     Update([u32; 4], ImageType, bool), // [y, x, h, w], image_type, update
 }

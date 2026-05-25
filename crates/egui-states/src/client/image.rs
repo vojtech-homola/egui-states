@@ -220,8 +220,7 @@ impl Image {
         }
 
         let data_ptr = data.as_ptr();
-        let image_ptr =
-            unsafe { image.pixels.as_mut_ptr().add(actual_pixel) as *mut u8 };
+        let image_ptr = unsafe { image.pixels.as_mut_ptr().add(actual_pixel) as *mut u8 };
 
         unsafe {
             fill_c_image(image_type, data_ptr, image_ptr, pixels);
