@@ -2,8 +2,8 @@ use pyo3::buffer::PyBuffer;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
-use crate::image_header::ImageType;
-use crate::server::image_server::{ImageData, ValueImage};
+use crate::image_transport::ImageType;
+use crate::server::image_server::ImageData;
 
 fn check_image_type(shape: &[usize], strides: &[isize]) -> PyResult<ImageType> {
     match shape.len() {
@@ -44,12 +44,7 @@ fn check_image_type(shape: &[usize], strides: &[isize]) -> PyResult<ImageType> {
     }
 }
 
-pub(crate) fn set_image(
-    image: &PyBuffer<u8>,
-    image_value: &ValueImage,
-    origin: Option<[u32; 2]>,
-    update: bool,
-) -> PyResult<()> {
+pub(crate) fn image_data(image: &PyBuffer<u8>) -> PyResult<ImageData> {
     let shape = image.shape();
     let strides = image.strides();
     let contiguous = image.is_c_contiguous();
@@ -71,15 +66,11 @@ pub(crate) fn set_image(
 
     let data = image.buf_ptr() as *const u8;
 
-    let image_data = ImageData {
+    Ok(ImageData {
         size,
         stride,
         contiguous,
         image_type,
         data,
-    };
-
-    image_value
-        .set_image(image_data, origin, update)
-        .map_err(|e| PyValueError::new_err(format!("Failed to set image: {}", e)))
+    })
 }

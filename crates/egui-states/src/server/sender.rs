@@ -7,31 +7,26 @@ pub(crate) type MessageReceiver = UnboundedReceiver<Option<(SenderData, bool)>>;
 
 #[derive(Clone)]
 pub(crate) struct MessageSender {
-    sender: UnboundedSender<Option<(SenderData, bool)>>,
+    internal_sender: UnboundedSender<Option<(SenderData, bool)>>,
 }
 impl MessageSender {
     pub(crate) fn new() -> (Self, MessageReceiver) {
         let (sender, receiver) = unbounded_channel();
-        (Self { sender }, receiver)
+        (Self { internal_sender: sender }, receiver)
     }
 
     #[inline]
     pub(crate) fn send(&self, msg: SenderData) {
-        let _ = self.sender.send(Some((msg, false)));
-    }
-
-    #[inline]
-    pub(crate) fn send_single(&self, msg: SenderData) {
-        let _ = self.sender.send(Some((msg, true)));
+        let _ = self.internal_sender.send(Some((msg, false)));
     }
 
     #[inline]
     pub(crate) fn send_set(&self, msg: SenderData, single: bool) {
-        let _ = self.sender.send(Some((msg, single)));
+        let _ = self.internal_sender.send(Some((msg, single)));
     }
 
     #[inline]
     pub(crate) fn close(&self) {
-        let _ = self.sender.send(None);
+        let _ = self.internal_sender.send(None);
     }
 }

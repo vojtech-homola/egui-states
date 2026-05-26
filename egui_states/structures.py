@@ -291,7 +291,7 @@ class SignalEmpty(_SignalBase):
         self._signals_manager.clear_callbacks(self._value_id)
 
 
-class ValueImage(_StaticBase):
+class Image(_StaticBase):
     """Image UI element."""
 
     def _initialize(self, name: str, types: list[PyObjectType]) -> None:
@@ -300,18 +300,32 @@ class ValueImage(_StaticBase):
     def set(
         self,
         image: Buffer,
-        origin: list[int] | tuple[int, int] | None = None,
         update: bool = False,
     ) -> None:
         """Set the image in the UI image.
 
         Args:
             image(Buffer): The image to set.
-            origin(list[int] | tuple[int, int], optional): If set only inner rectangle with given origin (top, left).
-                Defaults to None.
             update(bool, optional): Whether to update the UI. Defaults to False.
         """
-        self._server.image_set(self._value_id, image, update, origin)
+        self._server.image_set(self._value_id, image, update)
+
+    def update(
+        self,
+        image: Buffer,
+        origin: list[int] | tuple[int, int],
+        update: bool = False,
+        force: bool = False,
+    ) -> None:
+        """Update a rectangular part of the image.
+
+        Args:
+            image(Buffer): The image rectangle to write.
+            origin(list[int] | tuple[int, int]): Top-left origin as (height, width) or (y, x).
+            update(bool, optional): Whether to update the UI. Defaults to False.
+            force(bool, optional): Whether to replace a pending update for the same rectangle. Defaults to False.
+        """
+        self._server.image_update(self._value_id, image, origin, update, force)
 
     def get(self) -> npt.NDArray[np.uint8]:
         """Get the image in the UI image.
@@ -333,7 +347,7 @@ class ValueImage(_StaticBase):
         return self._server.image_size(self._value_id)
 
 
-class ValueMap[K, V](_StaticBase):
+class Map[K, V](_StaticBase):
     """Dict UI element."""
 
     def __init__(self, key_id: int, value_id: int) -> None:
@@ -405,7 +419,7 @@ class ValueMap[K, V](_StaticBase):
         self.remove_item(key, update=False)
 
 
-class ValueVec[T](_StaticBase):
+class Vec[T](_StaticBase):
     """Vec UI element."""
 
     def __init__(self, obj_id: int) -> None:

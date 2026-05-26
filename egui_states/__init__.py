@@ -4,15 +4,15 @@ from egui_states import version
 from egui_states.logging import LogLevel
 from egui_states.structures import (
     Data,
-    DataTake,
     DataMulti,
+    DataTake,
+    Image,
+    Map,
     Signal,
     SignalEmpty,
     Static,
     Value,
-    ValueImage,
-    ValueMap,
-    ValueVec,
+    Vec,
 )
 from egui_states.version import __version__
 
@@ -22,9 +22,9 @@ __all__ = [
     "Signal",
     "SignalEmpty",
     "Value",
-    "ValueMap",
-    "ValueImage",
-    "ValueVec",
+    "Map",
+    "Image",
+    "Vec",
     "Static",
     "Data",
     "DataTake",

@@ -157,3 +157,7 @@ states.data_take.take_samples.set(np.linspace(0.0, 1.0, 8, dtype=np.float32), up
 rng = np.random.default_rng()
 image = (rng.random((256, 256, 3)) * 255).astype(np.uint8)
 states.image.image.set(image, update=True)
+image_patch = np.zeros((64, 64, 4), dtype=np.uint8)
+image_patch[..., 1] = 220
+image_patch[..., 3] = 255
+states.image.image.update(image_patch, origin=(96, 96), update=True)

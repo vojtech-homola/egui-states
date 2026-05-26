@@ -14,4 +14,3 @@ pub(crate) enum VecHeader {
     Add,
     Remove(u64),
 }
-

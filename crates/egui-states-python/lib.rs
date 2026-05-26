@@ -1,5 +1,5 @@
-use pyo3::prelude::*;
 use egui_states::python::init_module;
+use pyo3::prelude::*;
 
 #[pymodule(gil_used = false)]
 #[pyo3(name = "_core")]

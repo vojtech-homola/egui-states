@@ -283,13 +283,21 @@ impl MainApp {
         ui.collapsing("data_take", |ui| {
             ui.label("DataTake<u8>: root.data_take.take_buffer");
             let buffer_preview = preview_slice(&self.last_take_buffer);
-            ui.label(format!("last received: len = {}, preview = {}", self.last_take_buffer.len(), buffer_preview));
+            ui.label(format!(
+                "last received: len = {}, preview = {}",
+                self.last_take_buffer.len(),
+                buffer_preview
+            ));
 
             ui.separator();
 
             ui.label("DataTake<f32>: root.data_take.take_samples");
             let samples_preview = preview_f32_slice(&self.last_take_samples);
-            ui.label(format!("last received: len = {}, preview = {}", self.last_take_samples.len(), samples_preview));
+            ui.label(format!(
+                "last received: len = {}, preview = {}",
+                self.last_take_samples.len(),
+                samples_preview
+            ));
         });
     }
 
@@ -468,7 +476,7 @@ impl MainApp {
 
     fn show_image_section(&self, ui: &mut egui::Ui) {
         ui.collapsing("image", |ui| {
-            ui.label("ValueImage: root.image.image");
+            ui.label("Image: root.image.image");
             show_image(ui, &self.states.image.image.get_id());
             if let Some(size) = self.states.image.image.get_size() {
                 ui.label(format!("size = {} x {}", size[1], size[0]));

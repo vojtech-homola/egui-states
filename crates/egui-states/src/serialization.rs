@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::collections::{MapHeader, VecHeader};
 use crate::data_transport;
-use crate::image_header::ImageHeader;
+use crate::image_transport::ImageHeader;
 
 // TODO: make these constants configurable
 // pub(crate) const VALUE_MAX_SIZE: usize = 1024 * 1024; // 1 MB
@@ -35,11 +35,11 @@ impl<const N: usize> FastVec<N> {
         Self::Heap(Vec::new())
     }
 
-    #[cfg(feature = "server")]
-    #[inline]
-    pub fn from_vec(vec: Vec<u8>) -> Self {
-        Self::Heap(vec)
-    }
+    // #[cfg(feature = "server")]
+    // #[inline]
+    // pub fn from_vec(vec: Vec<u8>) -> Self {
+    //     Self::Heap(vec)
+    // }
 
     #[cfg(not(target_arch = "wasm32"))]
     #[inline]
@@ -196,7 +196,7 @@ pub(crate) enum ServerHeader {
     Value(u64, u32, bool, u32),
     ValueTake(u64, u32, bool, bool, u32),
     Static(u64, u32, bool, u32),
-    Image(u64, bool, ImageHeader, u32),
+    Image(u64, ImageHeader, u32),
     Data(u64, data_transport::DataHeader),
     DataTake(u64, data_transport::DataTakeHeader, bool),
     MultiData(u64, data_transport::MultiDataHeader),
@@ -207,9 +207,9 @@ pub(crate) enum ServerHeader {
 
 #[cfg(feature = "server")]
 impl ServerHeader {
-    pub fn serialize_to_slice<'a, 'b>(&'b self, buffer: &'a mut [u8]) -> Result<&'a mut [u8], ()> {
-        postcard::to_slice::<ServerHeader>(self, buffer).map_err(|_| ())
-    }
+    // pub fn serialize_to_slice<'a, 'b>(&'b self, buffer: &'a mut [u8]) -> Result<&'a mut [u8], ()> {
+    //     postcard::to_slice::<ServerHeader>(self, buffer).map_err(|_| ())
+    // }
 
     pub fn serialize_value<const N: usize>(
         id: u64,
