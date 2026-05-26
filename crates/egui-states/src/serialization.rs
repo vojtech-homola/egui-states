@@ -200,6 +200,7 @@ pub(crate) enum ServerHeader {
     Data(u64, data_transport::DataHeader),
     DataTake(u64, data_transport::DataTakeHeader, bool),
     MultiData(u64, data_transport::MultiDataHeader),
+    DataMultiTake(u64, data_transport::DataMultiTakeHeader),
     ValueVec(u64, u32, bool, VecHeader, u32),
     ValueMap(u64, u32, bool, MapHeader, u32),
     Update(f32),

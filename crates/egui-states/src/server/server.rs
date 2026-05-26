@@ -13,7 +13,8 @@ use crate::data_transport::DataType;
 use crate::event_async::Event;
 use crate::hashing::{NoHashMap, generate_value_id};
 use crate::serialization::{ServerHeader, serialize};
-use crate::server::data_server::{Data, DataMulti, DataTake};
+use crate::server::data_server::{Data, DataMulti};
+use crate::server::data_take_server::{DataMultiTake, DataTake};
 use crate::server::image_server::Image;
 use crate::server::map_server::ValueMap;
 use crate::server::sender::{MessageReceiver, MessageSender};
@@ -46,6 +47,7 @@ pub(crate) struct StatesList {
     pub(crate) data: NoHashMap<u64, Arc<Data>>,
     pub(crate) data_take: NoHashMap<u64, Arc<DataTake>>,
     pub(crate) data_multi: NoHashMap<u64, Arc<DataMulti>>,
+    pub(crate) data_multi_take: NoHashMap<u64, Arc<DataMultiTake>>,
 }
 
 impl StatesList {
@@ -95,6 +97,11 @@ impl StatesList {
         for (id, data_take) in self.data_take.iter() {
             server_list.sync.push(data_take.clone());
             server_list.ack.insert(*id, data_take.clone());
+        }
+
+        for (id, data_multi_take) in self.data_multi_take.iter() {
+            server_list.sync.push(data_multi_take.clone());
+            server_list.ack.insert(*id, data_multi_take.clone());
         }
 
         server_list
@@ -526,6 +533,30 @@ impl Server {
         );
 
         self.states.data_take.insert(id, val);
+        Ok(id)
+    }
+
+    pub(crate) fn add_data_multi_take(&mut self, name: &str, type_id: u8) -> Result<u64, String> {
+        if self.states_server.is_some() {
+            return Err("Cannot add new values after server has been finalized".to_string());
+        }
+
+        let id = generate_value_id(&name);
+        if self.states.data_multi_take.contains_key(&id) {
+            return Err(format!("DataMultiTake with id {} already exists", id));
+        }
+
+        let data_type =
+            DataType::from_id(type_id).map_err(|_| "Invalid data type id".to_string())?;
+        let val = DataMultiTake::new(
+            name.to_string(),
+            id,
+            data_type,
+            self.sender.clone(),
+            self.connected.clone(),
+        );
+
+        self.states.data_multi_take.insert(id, val);
         Ok(id)
     }
 }

@@ -115,3 +115,29 @@ impl MultiDataHeader {
         serialize(&message).map_err(|_| ())
     }
 }
+
+#[derive(Serialize, Deserialize)]
+pub(crate) enum DataMultiTakeHeader {
+    Remove(u32, bool),                 // remove index from data collection
+    Modify(u32, DataTakeHeader, bool), // modify index in data collection, blocking flag
+    Reset(bool),                       // reset data collection to empty
+}
+
+#[cfg(feature = "server")]
+impl DataMultiTakeHeader {
+    pub(crate) fn serialize_modify(
+        id: u64,
+        index: u32,
+        header: DataTakeHeader,
+        blocking: bool,
+    ) -> Result<FastVec<32>, ()> {
+        let header =
+            ServerHeader::DataMultiTake(id, DataMultiTakeHeader::Modify(index, header, blocking));
+        serialize_heap(&header).map_err(|_| ())
+    }
+
+    pub(crate) fn serialize(self, id: u64) -> Result<FastVec<32>, ()> {
+        let message = ServerHeader::DataMultiTake(id, self);
+        serialize(&message).map_err(|_| ())
+    }
+}

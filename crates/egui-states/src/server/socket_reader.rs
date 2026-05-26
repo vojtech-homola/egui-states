@@ -28,7 +28,7 @@ impl SocketReader {
         }
     }
 
-    pub(crate) async fn next(&mut self) -> Result<ClientMessage, String> {
+    pub(crate) async fn next(&mut self) -> Result<ClientMessage, Option<String>> {
         let (data, pointer, copy) = match self.previous.take() {
             Some(prev) => prev,
             None => match self.socket.next().await {
@@ -36,19 +36,32 @@ impl SocketReader {
                     let copy = msg.len() > COPY_SIZE;
                     (msg, 0, copy)
                 }
-                Some(Ok(_)) => return Err("Received non-binary message".to_string()),
-                Some(Err(e)) => return Err(format!("Reading message from client failed: {:?}", e)),
-                None => return Err("Connection was closed by the client".to_string()),
+                Some(Ok(Message::Close(_))) => return Err(None),
+                Some(Ok(Message::Text(_))) => {
+                    return Err(Some("Received text message, expected binary".to_string()));
+                }
+                Some(Ok(Message::Ping(_))) | Some(Ok(Message::Pong(_))) => {
+                    return Err(Some(
+                        "Received ping/pong message, expected binary".to_string(),
+                    ));
+                }
+                Some(Ok(Message::Frame(_))) => {
+                    return Err(Some("Received frame message, expected binary".to_string()));
+                }
+                Some(Err(e)) => {
+                    return Err(Some(format!("Reading message from client failed: {:?}", e)));
+                }
+                None => return Err(Some("Connection was closed by the client".to_string())),
             },
         };
 
         let (header, size) = ClientHeader::deserialize(&data[pointer..])
-            .map_err(|_| "Failed to deserialize message header".to_string())?;
+            .map_err(|_| Some("Failed to deserialize message header".to_string()))?;
         match header {
             ClientHeader::Value(id, type_id, signal, data_size) => {
                 let all_size = size + data_size as usize;
                 if all_size > data.len() - pointer {
-                    return Err("Incomplete data received".to_string());
+                    return Err(Some("Incomplete data received".to_string()));
                 }
                 let header_data = if copy {
                     data.slice(pointer + size..pointer + all_size)
@@ -63,7 +76,7 @@ impl SocketReader {
             ClientHeader::Signal(id, type_id, data_size) => {
                 let all_size = size + data_size as usize;
                 if all_size > data.len() - pointer {
-                    return Err("Incomplete data received".to_string());
+                    return Err(Some("Incomplete data received".to_string()));
                 }
                 let header_data = if copy {
                     data.slice(pointer + size..pointer + all_size)

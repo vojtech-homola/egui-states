@@ -91,7 +91,9 @@ pub(crate) async fn run(
 
         match socket_reader.next().await {
             Err(e) => {
-                signals.error(e);
+                if let Some(e) = e {
+                    signals.error(e);
+                }
                 connected.store(false, Ordering::Release);
                 continue;
             }
@@ -213,7 +215,9 @@ async fn reader(
 
         match result_message {
             Err(e) => {
-                signals.error(e);
+                if let Some(e) = e {
+                    signals.error(e);
+                }
                 connected.store(false, Ordering::Release);
                 signals.reset();
                 break;

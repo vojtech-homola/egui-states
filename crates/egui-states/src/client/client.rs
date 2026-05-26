@@ -258,7 +258,7 @@ impl ClientBuilder {
             use std::thread;
             use tokio::runtime::Builder;
 
-            let runtime = Builder::new_current_thread()
+            let runtime = Builder::new_multi_thread()
                 .thread_name("Client Runtime")
                 .enable_io()
                 .worker_threads(2)
