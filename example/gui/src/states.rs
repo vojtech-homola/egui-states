@@ -1,7 +1,7 @@
 use egui_states::Transportable;
 use egui_states::{
     Data, DataMulti, DataMultiTake, DataTake, Image, MapState, Queue, Signal, State, StatesCreator,
-    Static, StaticAtomic, Value, ValueAtomic, ValueImage, ValueMap, ValueTake, ValueVec, VecState,
+    Static, StaticAtomic, Value, ValueAtomic, ValueTake, VecState,
 };
 
 #[derive(
