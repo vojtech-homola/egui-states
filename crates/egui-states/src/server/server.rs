@@ -185,7 +185,6 @@ impl Server {
                     .thread_name("ServerRuntime")
                     .enable_io()
                     .worker_threads(2)
-                    .max_blocking_threads(1)
                     .thread_keep_alive(Duration::from_hours(1))
                     .build()
                     .unwrap();

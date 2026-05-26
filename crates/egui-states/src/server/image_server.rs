@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use parking_lot::{Mutex, RwLock};
 
@@ -214,7 +214,7 @@ impl ValueImage {
                     *rect = new_rect;
                     if self.event.is_set() {
                         self.event.clear();
-                        if let Some((message, send_now)) = to_send.pop_back() {
+                        if let Some((message, send_now)) = to_send.pop_front() {
                             self.sender.send_set(message, send_now);
                         }
 
@@ -239,7 +239,7 @@ impl ValueImage {
                 if dat.is_empty() {
                     if self.event.is_set() {
                         self.event.clear();
-                        if let Some((message, send_now)) = to_send.pop_back() {
+                        if let Some((message, send_now)) = to_send.pop_front() {
                             self.sender.send_set(message, send_now);
                         }
                         w.buffer = Buffer::Update(new_rect, to_send);
@@ -261,7 +261,7 @@ impl ValueImage {
         }
 
         let mut w = self.image.write();
-        if let Some((message, send_now)) = to_send.pop_back() {
+        if let Some((message, send_now)) = to_send.pop_front() {
             self.sender.send_set(message, send_now);
         }
         w.buffer = Buffer::Update(new_rect, to_send);
@@ -478,10 +478,10 @@ fn pack_update_data(
             let data_size = lines * bytes_line_size;
             let is_last = lines == remaining_lines;
             let rect = [
-                (origin[0] + processed_lines) as u32,
                 origin[1] as u32,
-                lines as u32,
+                (origin[0] + processed_lines) as u32,
                 image.size[1] as u32,
+                lines as u32,
             ];
             let header = ServerHeader::Image(
                 id,
@@ -492,7 +492,7 @@ fn pack_update_data(
                 .map_err(|_| format!("Failed to serialize update header for image {}", id))?;
             message.reserve_exact(data_size);
             append_lines(&mut message, processed_lines, lines);
-            messages.push_front((message, !is_last));
+            messages.push_back((message, !is_last));
             processed_lines += lines;
         }
 

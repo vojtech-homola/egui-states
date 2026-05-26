@@ -25,8 +25,8 @@ impl ImageType {
 
 #[derive(Serialize, Deserialize)]
 pub(crate) enum ImageSetHeader {
-    All([u32; 2], bool),  // [y, x], update
-    Start([u32; 2], u32), // [y, x], pixels
+    All([u32; 2], bool),  // [x, y], update
+    Start([u32; 2], u32), // [x, y], pixels
     Batch(u32),           // pixels
     End(u32, bool),       // pixels, update
 }
@@ -47,5 +47,5 @@ impl ImageSetHeader {
 #[derive(Serialize, Deserialize)]
 pub(crate) enum ImageHeader {
     Set(ImageSetHeader, ImageType),    // header
-    Update([u32; 4], ImageType, bool), // [y, x, h, w], image_type, update
+    Update([u32; 4], ImageType, bool), // [x, y, w, h], image_type, update
 }

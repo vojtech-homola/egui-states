@@ -46,4 +46,4 @@ pub use egui_states_macros::Transportable;
 pub use serde;
 pub use transport::{InitValue, ObjectType, Transportable};
 
-pub(crate) const PROTOCOL_VERSION: u16 = 4;
+pub(crate) const PROTOCOL_VERSION: u16 = 5;
