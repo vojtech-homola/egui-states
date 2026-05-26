@@ -6,11 +6,12 @@ use crate::State;
 use crate::client::atomics::{Atomic, AtomicStatic};
 use crate::client::data::{Data, DataMulti, private::GetDataType};
 use crate::client::data_take::{DataMultiTake, DataTake};
-use crate::client::image::ValueImage;
+use crate::client::image::Image;
+
 use crate::client::messages::MessageSender;
 use crate::client::states_creator::StatesCreator;
-use crate::client::value_map::ValueMap;
-use crate::client::value_vec::ValueVec;
+use crate::client::value_map::MapState;
+use crate::client::value_vec::VecState;
 use crate::client::values::{GetQueueType, Signal, Static, StaticAtomic, Value, ValueAtomic};
 use crate::data_transport::DataType;
 use crate::hashing::generate_value_id;
@@ -148,10 +149,10 @@ impl StatesCreator for StatesCreatorBuild {
         value
     }
 
-    fn image(&mut self, name: &'static str) -> ValueImage {
+    fn image(&mut self, name: &'static str) -> Image {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
-        let value = ValueImage::new(name.clone(), id, self.sender.clone());
+        let value = Image::new(name.clone(), id, self.sender.clone());
 
         self.states.push(StateType::Image(name));
 
@@ -173,25 +174,25 @@ impl StatesCreator for StatesCreatorBuild {
         signal
     }
 
-    fn map<K, V>(&mut self, name: &'static str) -> ValueMap<K, V>
+    fn map<K, V>(&mut self, name: &'static str) -> MapState<K, V>
     where
         K: Hash + Eq + Clone + for<'a> Deserialize<'a> + Transportable,
         V: Clone + for<'a> Deserialize<'a> + Transportable,
     {
         let name = format!("{}.{}", self.parent, name);
-        let value = ValueMap::new(name.clone(), 0);
+        let value = MapState::new(name.clone(), 0);
 
         self.states
             .push(StateType::ValueMap(name, K::get_type(), V::get_type()));
         value
     }
 
-    fn vec<T>(&mut self, name: &'static str) -> ValueVec<T>
+    fn vec<T>(&mut self, name: &'static str) -> VecState<T>
     where
         T: Clone + for<'a> Deserialize<'a> + Transportable,
     {
         let name = format!("{}.{}", self.parent, name);
-        let value = ValueVec::new(name.clone(), 0);
+        let value = VecState::new(name.clone(), 0);
 
         self.states.push(StateType::ValueVec(name, T::get_type()));
 

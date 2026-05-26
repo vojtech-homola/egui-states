@@ -20,6 +20,7 @@ parking_lot = "0.12"
 bytes = "1.11"
 sha2 = "0.11"
 serde = "1"
+event-listener = "5.4"
 
 egui_states_macros = { workspace = true }
 

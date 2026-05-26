@@ -13,13 +13,13 @@ pub(crate) trait UpdateMap: Sync + Send {
     fn update_map(&self, type_id: u32, header: MapHeader, data: &[u8]) -> Result<(), String>;
 }
 
-pub struct ValueMap<K, V> {
+pub struct MapState<K, V> {
     name: String,
     type_id: u32,
     dict: Arc<RwLock<HashMap<K, V>>>,
 }
 
-impl<K, V> ValueMap<K, V>
+impl<K, V> MapState<K, V>
 where
     K: Transportable + Clone + Hash + Eq,
     V: Transportable + Clone,
@@ -54,7 +54,7 @@ where
     }
 }
 
-impl<K, V> UpdateMap for ValueMap<K, V>
+impl<K, V> UpdateMap for MapState<K, V>
 where
     K: for<'a> Deserialize<'a> + Eq + Hash + Send + Sync,
     V: for<'a> Deserialize<'a> + Send + Sync,
@@ -99,7 +99,7 @@ where
     }
 }
 
-impl<K, V> Clone for ValueMap<K, V> {
+impl<K, V> Clone for MapState<K, V> {
     fn clone(&self) -> Self {
         Self {
             name: self.name.clone(),

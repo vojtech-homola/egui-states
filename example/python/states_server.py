@@ -98,7 +98,7 @@ class ValueVecActionStates(ISubStates):
 
 class ValueVecStates(ISubStates):
     def __init__(self, parent: str):
-        self.items: s.ValueVec[int] = s.ValueVec[int](1)
+        self.items: s.Vec[int] = s.Vec[int](1)
         self.actions: ValueVecActionStates = ValueVecActionStates(parent + ".actions")
 
 
@@ -111,7 +111,7 @@ class ValueMapActionStates(ISubStates):
 
 class ValueMapStates(ISubStates):
     def __init__(self, parent: str):
-        self.items: s.ValueMap[int, int] = s.ValueMap[int, int](15, 16)
+        self.items: s.Map[int, int] = s.Map[int, int](15, 16)
         self.actions: ValueMapActionStates = ValueMapActionStates(parent + ".actions")
 
 
@@ -159,7 +159,7 @@ class MultiDataTakeStates(ISubStates):
 
 class ImageStates(ISubStates):
     def __init__(self, parent: str):
-        self.image: s.ValueImage = s.ValueImage()
+        self.image: s.Image = s.Image()
 
 
 class States(StatesBase):
@@ -214,7 +214,6 @@ class StatesServer(StateServerBase):
         error_handler: Callable[[Exception], None] | None = None,
         ip_addr: tuple[int, int, int, int] | None = None,
         handshake: list[int] | None = None,
-        runner_threads: int = 3,
     ) -> None:
         """Initialize the StateServer.
 
@@ -224,6 +223,5 @@ class StatesServer(StateServerBase):
             error_handler (Callable[[Exception], None] | None, optional): Error handler function. Defaults to None.
             ip_addr (tuple[int, int, int, int] | None, optional): IP address to bind to. Defaults to None.
             handshake (list[int] | None, optional): Handshake bytes. Defaults to None.
-            runner_threads (int): The number of threads for running the server.
         """
-        super().__init__(States, port, signals_workers, error_handler, ip_addr, handshake, runner_threads)
+        super().__init__(States, port, signals_workers, error_handler, ip_addr, handshake)

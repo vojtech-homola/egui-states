@@ -4,10 +4,11 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, error, unbounded_cha
 use crate::client::client::Client;
 use crate::client::data::{DataMessage, DataMultiMessage};
 use crate::client::data_take::{DataMultiTakeMessage, DataTakeMessage};
+use crate::client::image::{ImageMessage, ImageSetMessage};
 use crate::client::states_creator::ValuesList;
 use crate::collections::{MapHeader, VecHeader};
 use crate::data_transport::{DataHeader, DataMultiTakeHeader, DataTakeHeader, MultiDataHeader};
-use crate::image_header::ImageHeader;
+use crate::image_transport::{ImageHeader, ImageSetHeader};
 use crate::serialization::{
     ClientHeader, FastVec, MAX_MSG_COUNT, MSG_SIZE_THRESHOLD, MessageData, ServerHeader,
     serialize_to_data,
@@ -111,7 +112,7 @@ pub(crate) enum ServerMessage {
     Value(u64, u32, bool, Bytes),
     ValueTake(u64, u32, bool, bool, Bytes),
     Static(u64, u32, bool, Bytes),
-    Image(u64, bool, ImageHeader, Bytes),
+    Image(u64, bool, ImageMessage, Bytes),
     ValueVec(u64, u32, bool, VecHeader, Bytes),
     ValueMap(u64, u32, bool, MapHeader, Bytes),
     Data(u64, bool, DataMessage),
@@ -212,14 +213,45 @@ impl MessagesParser {
                 ServerMessage::ValueMap(id, type_id, update, header, data)
             }
             ServerHeader::Update(dt) => ServerMessage::Update(dt),
-            ServerHeader::Image(id, update, header, size) => {
+            ServerHeader::Image(id, header, size) => {
                 let size = size as usize;
                 if self.pointer + size > self.data.len() {
                     return Err("Incomplete data for Image message");
                 }
                 let data = self.data.slice(self.pointer..self.pointer + size);
                 self.pointer += size;
-                ServerMessage::Image(id, update, header, data)
+
+                match header {
+                    ImageHeader::Set(set_header, image_type) => {
+                        let mut update = false;
+                        let set_message = match set_header {
+                            ImageSetHeader::All(size, upd) => {
+                                update = upd;
+                                ImageSetMessage::All(size)
+                            }
+                            ImageSetHeader::Start(size, lines) => {
+                                ImageSetMessage::Start(size, lines)
+                            }
+                            ImageSetHeader::Batch(lines) => ImageSetMessage::Batch(lines),
+                            ImageSetHeader::End(lines, upd) => {
+                                update = upd;
+                                ImageSetMessage::End(lines)
+                            }
+                        };
+                        ServerMessage::Image(
+                            id,
+                            update,
+                            ImageMessage::Set(set_message, image_type),
+                            data,
+                        )
+                    }
+                    ImageHeader::Update(size, image_type, update) => ServerMessage::Image(
+                        id,
+                        update,
+                        ImageMessage::Update(size, image_type),
+                        data,
+                    ),
+                }
             }
             ServerHeader::Data(id, data_header) => {
                 let (data_message, update) = self._process_data(data_header)?;
@@ -398,15 +430,22 @@ pub(crate) async fn handle_message(
             }
             update
         }
-        ServerMessage::Image(id, update, image_header, data) => {
+        ServerMessage::Image(id, update, image_message, data) => {
             match vals.images.get(&id) {
-                Some(value) => value.update_image(image_header, &data)?,
+                Some(value) => match image_message {
+                    ImageMessage::Set(set_message, image_type) => {
+                        value.set_image(set_message, image_type, &data)?;
+                    }
+                    ImageMessage::Update(size, image_type) => {
+                        value.update_image(size, image_type, &data)?
+                    }
+                },
                 None => return Err(format!("Image with id {} not found", id)),
             }
             update
         }
         ServerMessage::ValueVec(id, type_id, update, list_header, data) => {
-            match vals.lists.get(&id) {
+            match vals.vecs.get(&id) {
                 Some(value) => value.update_list(type_id, list_header, &data)?,
                 None => return Err(format!("List with id {} not found", id)),
             }

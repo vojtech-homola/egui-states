@@ -166,3 +166,7 @@ states.data_multi_take.nested.buffer[3].set(np.array([100, 110], dtype=np.uint16
 rng = np.random.default_rng()
 image = (rng.random((256, 256, 3)) * 255).astype(np.uint8)
 states.image.image.set(image, update=True)
+image_patch = np.zeros((64, 64, 4), dtype=np.uint8)
+image_patch[..., 1] = 220
+image_patch[..., 3] = 255
+states.image.image.update(image_patch, origin=(96, 96), update=True)

@@ -255,9 +255,9 @@ async fn reader(
         }
     }
 
-    // acknowledge all pending values
+    // reset all pendings values
     for v in values.ack.values() {
-        v.acknowledge();
+        v.reset();
     }
 
     // send close signal to writing thread if reading fails

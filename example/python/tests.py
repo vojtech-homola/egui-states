@@ -13,11 +13,19 @@ if str(THIS_DIR) not in sys.path:
     sys.path.insert(0, str(THIS_DIR))
 
 from states_server import (
-    StatesServer,
     States,
+    StatesServer,
+)
+from states_server import (
     TestEnum as ExampleTestEnum,
+)
+from states_server import (
     TestEnum2 as ExampleTestEnum2,
+)
+from states_server import (
     TestStruct as ExampleTestStruct,
+)
+from states_server import (
     TestStruct2 as ExampleTestStruct2,
 )
 
@@ -160,6 +168,17 @@ def test_image_value_roundtrip(server_bundle: tuple[StatesServer, States, list[E
     assert image_result.shape == (8, 8, 4)
     assert image_result[0, 0, 0] == 10
     assert np.all(image_result[..., 3] == 255)
+
+    patch = np.zeros((2, 3, 4), dtype=np.uint8)
+    patch[..., 1] = 80
+    patch[..., 3] = 200
+    states.image.image.update(patch, origin=(3, 2), update=True)
+
+    image_result = states.image.image.get()
+    np.testing.assert_array_equal(image_result[3:5, 2:5], patch)
+    assert image_result[2, 2, 0] == 10
+    assert image_result[5, 5, 0] == 10
+    assert states.image.image.shape() == (8, 8)
 
 
 def test_data_array_methods(server_bundle: tuple[StatesServer, States, list[Exception]]) -> None:

@@ -4,7 +4,7 @@ mod collections;
 mod data_transport;
 mod event_async;
 mod hashing;
-mod image_header;
+mod image_transport;
 mod serialization;
 mod transport;
 
@@ -26,8 +26,8 @@ pub use client::{
     data_take::{DataMultiTake, DataTake},
     image::ValueImage,
     states_creator::StatesCreator,
-    value_map::ValueMap,
-    value_vec::ValueVec,
+    value_map::MapState,
+    value_vec::VecState,
     values::{
         Diff, DiffAtomic, GetQueueType, NoQueue, Queue, Signal, Static, StaticAtomic, Value,
         ValueAtomic, ValueTake,
@@ -47,4 +47,4 @@ pub use egui_states_macros::Transportable;
 pub use serde;
 pub use transport::{InitValue, ObjectType, Transportable};
 
-pub(crate) const PROTOCOL_VERSION: u16 = 4;
+pub(crate) const PROTOCOL_VERSION: u16 = 5;

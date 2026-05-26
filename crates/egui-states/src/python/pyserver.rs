@@ -21,7 +21,7 @@ use crate::server::server::Server;
 use crate::server::signals::SignalsManager;
 use crate::server::value_parsing::{ValueCreator, ValueParser};
 use crate::server::values_server::{Signal, Value, ValueStatic, ValueTake};
-use crate::server::{image_server::ValueImage, map_server::ValueMap, vec_server::ValueList};
+use crate::server::{image_server::Image, map_server::ValueMap, vec_server::ValueList};
 
 struct ValuesInner {
     values: NoHashMap<u64, (Arc<Value>, PyObjectType)>,
@@ -31,7 +31,7 @@ struct ValuesInner {
     signals_types: NoHashMap<u64, PyObjectType>,
     maps: NoHashMap<u64, (Arc<ValueMap>, PyObjectType)>,
     lists: NoHashMap<u64, (Arc<ValueList>, PyObjectType)>,
-    images: NoHashMap<u64, Arc<ValueImage>>,
+    images: NoHashMap<u64, Arc<Image>>,
     data: NoHashMap<u64, Arc<Data>>,
     data_take: NoHashMap<u64, Arc<DataTake>>,
     data_multi: NoHashMap<u64, Arc<DataMulti>>,
@@ -90,7 +90,7 @@ impl StateServerCore {
     }
 
     #[inline]
-    fn inner_image(&self, value_id: u64) -> PyResult<&Arc<ValueImage>> {
+    fn inner_image(&self, value_id: u64) -> PyResult<&Arc<Image>> {
         match self.get_values()?.images.get(&value_id) {
             Some(image) => Ok(image),
             _ => Err(PyValueError::new_err("Image with ID not found.")),
@@ -133,13 +133,8 @@ impl StateServerCore {
 #[pymethods]
 impl StateServerCore {
     #[new]
-    #[pyo3(signature = (port, ip_addr=None, handshake=None, runner_threads=3))]
-    fn new(
-        port: u16,
-        ip_addr: Option<[u8; 4]>,
-        handshake: Option<Vec<u64>>,
-        runner_threads: usize,
-    ) -> PyResult<Self> {
+    #[pyo3(signature = (port, ip_addr=None, handshake=None))]
+    fn new(port: u16, ip_addr: Option<[u8; 4]>, handshake: Option<Vec<u64>>) -> PyResult<Self> {
         let addr = match ip_addr {
             Some(addr) => {
                 SocketAddrV4::new(Ipv4Addr::new(addr[0], addr[1], addr[2], addr[3]), port)
@@ -147,7 +142,7 @@ impl StateServerCore {
             None => SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), port),
         };
 
-        let server = Server::new(addr, handshake, runner_threads);
+        let server = Server::new(addr, handshake);
         let signals = server.get_signals_manager();
 
         // register logging signal type
@@ -669,18 +664,44 @@ impl StateServerCore {
         Ok((array, size))
     }
 
-    #[pyo3(signature = (value_id, image, update, origin=None))]
+    #[pyo3(signature = (value_id, image, update))]
     fn image_set(
         &self,
         py: Python,
         value_id: u64,
         image: PyBuffer<u8>,
         update: bool,
-        origin: Option<[u32; 2]>,
     ) -> PyResult<()> {
         py.detach(|| {
             let image_val = self.inner_image(value_id)?;
-            pyimage::set_image(&image, image_val, origin, update)
+            let image_data = pyimage::image_data(&image)?;
+            image_val
+                .set_image(image_data, update)
+                .map_err(|e| PyValueError::new_err(e))
+        })
+    }
+
+    #[pyo3(signature = (value_id, image, origin, update, force=false))]
+    fn image_update(
+        &self,
+        py: Python,
+        value_id: u64,
+        image: PyBuffer<u8>,
+        origin: [u32; 2],
+        update: bool,
+        force: bool,
+    ) -> PyResult<()> {
+        py.detach(|| {
+            let image_val = self.inner_image(value_id)?;
+            let image_data = pyimage::image_data(&image)?;
+            image_val
+                .update_image(
+                    &[origin[0] as usize, origin[1] as usize],
+                    image_data,
+                    update,
+                    force,
+                )
+                .map_err(|e| PyValueError::new_err(e))
         })
     }
 

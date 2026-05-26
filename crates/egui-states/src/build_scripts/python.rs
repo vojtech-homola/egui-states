@@ -324,7 +324,7 @@ fn state_to_line(state: &StateType, types_map: &HashMap<String, TypeIndex>) -> S
             let py_type = type_info_to_python_type(state_type, false);
             let index = types_map.get(name).unwrap().get_single();
             format!(
-                "        self.{}: s.ValueVec[{}] = s.ValueVec[{}]({})\n",
+                "        self.{}: s.Vec[{}] = s.Vec[{}]({})\n",
                 last_name, py_type, py_type, index
             )
         }
@@ -334,7 +334,7 @@ fn state_to_line(state: &StateType, types_map: &HashMap<String, TypeIndex>) -> S
             let py_value_type = type_info_to_python_type(value_type, false);
             let (key, value) = types_map.get(name).unwrap().get_map();
             format!(
-                "        self.{}: s.ValueMap[{}, {}] = s.ValueMap[{}, {}]({}, {})\n",
+                "        self.{}: s.Map[{}, {}] = s.Map[{}, {}]({}, {})\n",
                 last_name, py_key_type, py_value_type, py_key_type, py_value_type, key, value
             )
         }
@@ -377,7 +377,7 @@ fn state_to_line(state: &StateType, types_map: &HashMap<String, TypeIndex>) -> S
         StateType::Image(name) => {
             let last_name = name.split('.').last().unwrap();
             format!(
-                "        self.{}: s.ValueImage = s.ValueImage()\n",
+                "        self.{}: s.Image = s.Image()\n",
                 last_name
             )
         }
@@ -567,7 +567,6 @@ class StatesServer(StateServerBase):
         error_handler: Callable[[Exception], None] | None = None,
         ip_addr: tuple[int, int, int, int] | None = None,
         handshake: list[int] | None = None,
-        runner_threads: int = 3,
     ) -> None:
         """Initialize the StateServer.
 
@@ -577,14 +576,13 @@ class StatesServer(StateServerBase):
             error_handler (Callable[[Exception], None] | None, optional): Error handler function. Defaults to None.
             ip_addr (tuple[int, int, int, int] | None, optional): IP address to bind to. Defaults to None.
             handshake (list[int] | None, optional): Handshake bytes. Defaults to None.
-            runner_threads (int): The number of threads for running the server.
         """
         "#;
         file.write_all(text.as_bytes()).unwrap();
 
         file.write_all(
             format!(
-                "super().__init__({}, port, signals_workers, error_handler, ip_addr, handshake, runner_threads)\n",
+                "super().__init__({}, port, signals_workers, error_handler, ip_addr, handshake)\n",
                 root_name
             )
             .as_bytes(),

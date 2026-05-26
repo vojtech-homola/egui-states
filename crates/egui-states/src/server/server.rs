@@ -4,6 +4,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 use std::thread;
+use std::time::Duration;
 
 use bytes::Bytes;
 use tokio::runtime::Builder;
@@ -14,7 +15,7 @@ use crate::hashing::{NoHashMap, generate_value_id};
 use crate::serialization::{ServerHeader, serialize};
 use crate::server::data_server::{Data, DataMulti};
 use crate::server::data_take_server::{DataMultiTake, DataTake};
-use crate::server::image_server::ValueImage;
+use crate::server::image_server::Image;
 use crate::server::map_server::ValueMap;
 use crate::server::sender::{MessageReceiver, MessageSender};
 use crate::server::server_core;
@@ -28,6 +29,10 @@ pub(crate) trait SyncTrait: Sync + Send {
 
 pub(crate) trait Acknowledge: Sync + Send {
     fn acknowledge(&self);
+
+    fn reset(&self) {
+        self.acknowledge();
+    }
 }
 
 #[derive(Clone, Default)]
@@ -36,7 +41,7 @@ pub(crate) struct StatesList {
     pub(crate) values_take: NoHashMap<u64, Arc<ValueTake>>,
     pub(crate) static_values: NoHashMap<u64, Arc<ValueStatic>>,
     pub(crate) signals: NoHashMap<u64, Arc<Signal>>,
-    pub(crate) images: NoHashMap<u64, Arc<ValueImage>>,
+    pub(crate) images: NoHashMap<u64, Arc<Image>>,
     pub(crate) maps: NoHashMap<u64, Arc<ValueMap>>,
     pub(crate) lists: NoHashMap<u64, Arc<ValueList>>,
     pub(crate) data: NoHashMap<u64, Arc<Data>>,
@@ -138,15 +143,10 @@ pub(crate) struct Server {
     handshake: Option<Vec<u64>>,
 
     runner_state: RunnerState,
-    runner_threads: usize,
 }
 
 impl Server {
-    pub(crate) fn new(
-        addr: SocketAddrV4,
-        handshake: Option<Vec<u64>>,
-        runner_threads: usize,
-    ) -> Self {
+    pub(crate) fn new(addr: SocketAddrV4, handshake: Option<Vec<u64>>) -> Self {
         let connected = Arc::new(AtomicBool::new(false));
         let (sender, rx) = MessageSender::new();
         let signals = SignalsManager::new();
@@ -161,7 +161,6 @@ impl Server {
             signals,
             handshake,
             runner_state: RunnerState::Stopped(rx),
-            runner_threads,
         };
 
         obj
@@ -189,10 +188,11 @@ impl Server {
                 Ok(())
             }
             (RunnerState::Stopped(rx), Some(states_server)) => {
-                let runtime = Builder::new_current_thread()
+                let runtime = Builder::new_multi_thread()
                     .thread_name("ServerRuntime")
                     .enable_io()
-                    .worker_threads(self.runner_threads)
+                    .worker_threads(2)
+                    .thread_keep_alive(Duration::from_hours(1))
                     .build()
                     .unwrap();
 
@@ -453,7 +453,7 @@ impl Server {
             return Err(format!("Image with id {} already exists", id));
         }
 
-        let val = ValueImage::new(
+        let val = Image::new(
             name.to_string(),
             id,
             self.sender.clone(),

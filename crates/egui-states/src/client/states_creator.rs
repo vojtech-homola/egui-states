@@ -11,10 +11,10 @@ use crate::client::data::{
 use crate::client::data_take::{
     DataMultiTake, DataTake, UpdateDataMultiTake, UpdateDataTake,
 };
-use crate::client::image::ValueImage;
+use crate::client::image::Image;
 use crate::client::messages::MessageSender;
-use crate::client::value_map::{UpdateMap, ValueMap};
-use crate::client::value_vec::{UpdateList, ValueVec};
+use crate::client::value_map::{UpdateMap, MapState};
+use crate::client::value_vec::{UpdateList, VecState};
 use crate::client::values::{
     GetQueueType, Signal, Static, StaticAtomic, UpdateValue, UpdateValueTake, Value, ValueAtomic,
     ValueTake,
@@ -66,14 +66,14 @@ pub trait StatesCreator {
         T: Serialize + Transportable + Clone + Send + Sync + 'static,
         Q: GetQueueType;
 
-    fn image(&mut self, name: &'static str) -> ValueImage;
+    fn image(&mut self, name: &'static str) -> Image;
 
-    fn map<K, V>(&mut self, name: &'static str) -> ValueMap<K, V>
+    fn map<K, V>(&mut self, name: &'static str) -> MapState<K, V>
     where
         K: Hash + Eq + Clone + for<'a> Deserialize<'a> + Send + Sync + Transportable + 'static,
         V: Clone + for<'a> Deserialize<'a> + Send + Sync + Transportable + 'static;
 
-    fn vec<T>(&mut self, name: &'static str) -> ValueVec<T>
+    fn vec<T>(&mut self, name: &'static str) -> VecState<T>
     where
         T: Clone + for<'a> Deserialize<'a> + Send + Sync + Transportable + 'static;
 
@@ -107,9 +107,9 @@ pub(crate) struct ValuesList {
     pub(crate) data_take: NoHashMap<u64, Arc<dyn UpdateDataTake>>,
     pub(crate) multi_data: NoHashMap<u64, Arc<dyn UpdateMultiData>>,
     pub(crate) data_multi_take: NoHashMap<u64, Arc<dyn UpdateDataMultiTake>>,
-    pub(crate) images: NoHashMap<u64, ValueImage>,
+    pub(crate) images: NoHashMap<u64, Image>,
     pub(crate) maps: NoHashMap<u64, Arc<dyn UpdateMap>>,
-    pub(crate) lists: NoHashMap<u64, Arc<dyn UpdateList>>,
+    pub(crate) vecs: NoHashMap<u64, Arc<dyn UpdateList>>,
 }
 
 impl ValuesList {
@@ -124,7 +124,7 @@ impl ValuesList {
             data_multi_take: NoHashMap::default(),
             images: NoHashMap::default(),
             maps: NoHashMap::default(),
-            lists: NoHashMap::default(),
+            vecs: NoHashMap::default(),
         }
     }
 
@@ -138,7 +138,7 @@ impl ValuesList {
         self.data_multi_take.shrink_to_fit();
         self.images.shrink_to_fit();
         self.maps.shrink_to_fit();
-        self.lists.shrink_to_fit();
+        self.vecs.shrink_to_fit();
     }
 }
 
@@ -179,7 +179,7 @@ impl StatesCreator for StatesCreatorClient {
         self.val.data_multi_take.extend(creator.val.data_multi_take);
         self.val.images.extend(creator.val.images);
         self.val.maps.extend(creator.val.maps);
-        self.val.lists.extend(creator.val.lists);
+        self.val.vecs.extend(creator.val.vecs);
 
         substate
     }
@@ -265,10 +265,10 @@ impl StatesCreator for StatesCreatorClient {
         value
     }
 
-    fn image(&mut self, name: &str) -> ValueImage {
+    fn image(&mut self, name: &str) -> Image {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
-        let value = ValueImage::new(name, id, self.sender.clone());
+        let value = Image::new(name, id, self.sender.clone());
 
         self.val.images.insert(id, value.clone());
         value
@@ -287,7 +287,7 @@ impl StatesCreator for StatesCreatorClient {
         signal
     }
 
-    fn map<K, V>(&mut self, name: &str) -> ValueMap<K, V>
+    fn map<K, V>(&mut self, name: &str) -> MapState<K, V>
     where
         K: Hash + Eq + Clone + for<'a> Deserialize<'a> + Send + Sync + Transportable + 'static,
         V: Clone + for<'a> Deserialize<'a> + Send + Sync + Transportable + 'static,
@@ -295,22 +295,22 @@ impl StatesCreator for StatesCreatorClient {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
         let type_id = K::get_type().get_hash() ^ V::get_type().get_hash();
-        let value = ValueMap::new(name, type_id);
+        let value = MapState::new(name, type_id);
 
         self.val.maps.insert(id, Arc::new(value.clone()));
         value
     }
 
-    fn vec<T>(&mut self, name: &str) -> ValueVec<T>
+    fn vec<T>(&mut self, name: &str) -> VecState<T>
     where
         T: Clone + for<'a> Deserialize<'a> + Send + Sync + Transportable + 'static,
     {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
         let type_id = T::get_type().get_hash();
-        let value = ValueVec::new(name, type_id);
+        let value = VecState::new(name, type_id);
 
-        self.val.lists.insert(id, Arc::new(value.clone()));
+        self.val.vecs.insert(id, Arc::new(value.clone()));
         value
     }
 

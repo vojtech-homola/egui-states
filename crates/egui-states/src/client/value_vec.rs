@@ -11,13 +11,13 @@ pub(crate) trait UpdateList: Sync + Send {
     fn update_list(&self, type_id: u32, header: VecHeader, data: &[u8]) -> Result<(), String>;
 }
 
-pub struct ValueVec<T> {
+pub struct VecState<T> {
     name: String,
     type_id: u32,
     list: Arc<RwLock<Vec<T>>>,
 }
 
-impl<T: Transportable + Clone> ValueVec<T> {
+impl<T: Transportable + Clone> VecState<T> {
     pub(crate) fn new(name: String, type_id: u32) -> Self {
         Self {
             name,
@@ -45,7 +45,7 @@ impl<T: Transportable + Clone> ValueVec<T> {
     }
 }
 
-impl<T: for<'a> Deserialize<'a> + Send + Sync> UpdateList for ValueVec<T> {
+impl<T: for<'a> Deserialize<'a> + Send + Sync> UpdateList for VecState<T> {
     fn update_list(&self, type_id: u32, header: VecHeader, data: &[u8]) -> Result<(), String> {
         if type_id != self.type_id {
             return Err(format!("Type id mismatch for list {}", self.name));
@@ -94,7 +94,7 @@ impl<T: for<'a> Deserialize<'a> + Send + Sync> UpdateList for ValueVec<T> {
     }
 }
 
-impl<T> Clone for ValueVec<T> {
+impl<T> Clone for VecState<T> {
     fn clone(&self) -> Self {
         Self {
             name: self.name.clone(),
