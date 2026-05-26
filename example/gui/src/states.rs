@@ -1,7 +1,7 @@
 use egui_states::Transportable;
 use egui_states::{
     Data, DataMulti, DataTake, Image, Queue, Signal, State, StatesCreator, Static, StaticAtomic,
-    Value, ValueAtomic, ValueMap, ValueTake, ValueVec,
+    Value, ValueAtomic, MapState, ValueTake, VecState,
 };
 
 #[derive(
@@ -98,7 +98,7 @@ pub(crate) struct ValueVecActionStates {
 
 #[derive(State)]
 pub(crate) struct ValueVecStates {
-    pub items: ValueVec<i32>,
+    pub items: VecState<i32>,
     pub actions: ValueVecActionStates,
 }
 
@@ -111,7 +111,7 @@ pub(crate) struct ValueMapActionStates {
 
 #[derive(State)]
 pub(crate) struct ValueMapStates {
-    pub items: ValueMap<u16, u32>,
+    pub items: MapState<u16, u32>,
     pub actions: ValueMapActionStates,
 }
 

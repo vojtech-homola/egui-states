@@ -30,7 +30,7 @@ pub(crate) struct ImageData {
     pub data: *const u8,
 }
 
-pub(crate) struct ValueImage {
+pub(crate) struct Image {
     pub(crate) name: String,
     id: u64,
     image: RwLock<ImageDataInner>,
@@ -40,7 +40,7 @@ pub(crate) struct ValueImage {
     event: Event,
 }
 
-impl ValueImage {
+impl Image {
     pub(crate) fn new(
         name: String,
         id: u64,
@@ -270,7 +270,7 @@ impl ValueImage {
     }
 }
 
-impl Acknowledge for ValueImage {
+impl Acknowledge for Image {
     fn acknowledge(&self) {
         let mut w = self.image.write();
 
@@ -304,7 +304,7 @@ impl Acknowledge for ValueImage {
     }
 }
 
-impl SyncTrait for ValueImage {
+impl SyncTrait for Image {
     fn sync(&self) -> Result<(), ()> {
         let mut w = self.image.write();
         if w.size[0] == 0 || w.size[1] == 0 {

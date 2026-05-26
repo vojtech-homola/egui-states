@@ -14,7 +14,7 @@ use crate::event_async::Event;
 use crate::hashing::{NoHashMap, generate_value_id};
 use crate::serialization::{ServerHeader, serialize};
 use crate::server::data_server::{Data, DataMulti, DataTake};
-use crate::server::image_server::ValueImage;
+use crate::server::image_server::Image;
 use crate::server::map_server::ValueMap;
 use crate::server::sender::{MessageReceiver, MessageSender};
 use crate::server::server_core;
@@ -40,7 +40,7 @@ pub(crate) struct StatesList {
     pub(crate) values_take: NoHashMap<u64, Arc<ValueTake>>,
     pub(crate) static_values: NoHashMap<u64, Arc<ValueStatic>>,
     pub(crate) signals: NoHashMap<u64, Arc<Signal>>,
-    pub(crate) images: NoHashMap<u64, Arc<ValueImage>>,
+    pub(crate) images: NoHashMap<u64, Arc<Image>>,
     pub(crate) maps: NoHashMap<u64, Arc<ValueMap>>,
     pub(crate) lists: NoHashMap<u64, Arc<ValueList>>,
     pub(crate) data: NoHashMap<u64, Arc<Data>>,
@@ -446,7 +446,7 @@ impl Server {
             return Err(format!("Image with id {} already exists", id));
         }
 
-        let val = ValueImage::new(
+        let val = Image::new(
             name.to_string(),
             id,
             self.sender.clone(),

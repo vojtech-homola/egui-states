@@ -20,7 +20,7 @@ use crate::server::server::Server;
 use crate::server::signals::SignalsManager;
 use crate::server::value_parsing::{ValueCreator, ValueParser};
 use crate::server::values_server::{Signal, Value, ValueStatic, ValueTake};
-use crate::server::{image_server::ValueImage, map_server::ValueMap, vec_server::ValueList};
+use crate::server::{image_server::Image, map_server::ValueMap, vec_server::ValueList};
 
 struct ValuesInner {
     values: NoHashMap<u64, (Arc<Value>, PyObjectType)>,
@@ -30,7 +30,7 @@ struct ValuesInner {
     signals_types: NoHashMap<u64, PyObjectType>,
     maps: NoHashMap<u64, (Arc<ValueMap>, PyObjectType)>,
     lists: NoHashMap<u64, (Arc<ValueList>, PyObjectType)>,
-    images: NoHashMap<u64, Arc<ValueImage>>,
+    images: NoHashMap<u64, Arc<Image>>,
     data: NoHashMap<u64, Arc<Data>>,
     data_take: NoHashMap<u64, Arc<DataTake>>,
     data_multi: NoHashMap<u64, Arc<DataMulti>>,
@@ -88,7 +88,7 @@ impl StateServerCore {
     }
 
     #[inline]
-    fn inner_image(&self, value_id: u64) -> PyResult<&Arc<ValueImage>> {
+    fn inner_image(&self, value_id: u64) -> PyResult<&Arc<Image>> {
         match self.get_values()?.images.get(&value_id) {
             Some(image) => Ok(image),
             _ => Err(PyValueError::new_err("Image with ID not found.")),
@@ -660,7 +660,9 @@ impl StateServerCore {
         py.detach(|| {
             let image_val = self.inner_image(value_id)?;
             let image_data = pyimage::image_data(&image)?;
-            image_val.set_image(image_data, update).map_err(|e| PyValueError::new_err(e))
+            image_val
+                .set_image(image_data, update)
+                .map_err(|e| PyValueError::new_err(e))
         })
     }
 
@@ -670,7 +672,7 @@ impl StateServerCore {
         py: Python,
         value_id: u64,
         image: PyBuffer<u8>,
-        origin: [usize; 2],
+        origin: [u32; 2],
         update: bool,
         force: bool,
     ) -> PyResult<()> {
@@ -678,7 +680,12 @@ impl StateServerCore {
             let image_val = self.inner_image(value_id)?;
             let image_data = pyimage::image_data(&image)?;
             image_val
-                .update_image(&origin, image_data, update, force)
+                .update_image(
+                    &[origin[0] as usize, origin[1] as usize],
+                    image_data,
+                    update,
+                    force,
+                )
                 .map_err(|e| PyValueError::new_err(e))
         })
     }

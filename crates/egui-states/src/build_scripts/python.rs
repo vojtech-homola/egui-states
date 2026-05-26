@@ -323,7 +323,7 @@ fn state_to_line(state: &StateType, types_map: &HashMap<String, TypeIndex>) -> S
             let py_type = type_info_to_python_type(state_type, false);
             let index = types_map.get(name).unwrap().get_single();
             format!(
-                "        self.{}: s.ValueVec[{}] = s.ValueVec[{}]({})\n",
+                "        self.{}: s.Vec[{}] = s.Vec[{}]({})\n",
                 last_name, py_type, py_type, index
             )
         }
@@ -333,7 +333,7 @@ fn state_to_line(state: &StateType, types_map: &HashMap<String, TypeIndex>) -> S
             let py_value_type = type_info_to_python_type(value_type, false);
             let (key, value) = types_map.get(name).unwrap().get_map();
             format!(
-                "        self.{}: s.ValueMap[{}, {}] = s.ValueMap[{}, {}]({}, {})\n",
+                "        self.{}: s.Map[{}, {}] = s.Map[{}, {}]({}, {})\n",
                 last_name, py_key_type, py_value_type, py_key_type, py_value_type, key, value
             )
         }
@@ -367,7 +367,7 @@ fn state_to_line(state: &StateType, types_map: &HashMap<String, TypeIndex>) -> S
         StateType::Image(name) => {
             let last_name = name.split('.').last().unwrap();
             format!(
-                "        self.{}: s.ValueImage = s.ValueImage()\n",
+                "        self.{}: s.Image = s.Image()\n",
                 last_name
             )
         }

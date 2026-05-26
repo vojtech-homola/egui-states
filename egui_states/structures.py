@@ -291,7 +291,7 @@ class SignalEmpty(_SignalBase):
         self._signals_manager.clear_callbacks(self._value_id)
 
 
-class ValueImage(_StaticBase):
+class Image(_StaticBase):
     """Image UI element."""
 
     def _initialize(self, name: str, types: list[PyObjectType]) -> None:
@@ -347,7 +347,7 @@ class ValueImage(_StaticBase):
         return self._server.image_size(self._value_id)
 
 
-class ValueMap[K, V](_StaticBase):
+class Map[K, V](_StaticBase):
     """Dict UI element."""
 
     def __init__(self, key_id: int, value_id: int) -> None:
@@ -419,7 +419,7 @@ class ValueMap[K, V](_StaticBase):
         self.remove_item(key, update=False)
 
 
-class ValueVec[T](_StaticBase):
+class Vec[T](_StaticBase):
     """Vec UI element."""
 
     def __init__(self, obj_id: int) -> None:

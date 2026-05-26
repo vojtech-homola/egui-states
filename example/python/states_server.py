@@ -98,7 +98,7 @@ class ValueVecActionStates(ISubStates):
 
 class ValueVecStates(ISubStates):
     def __init__(self, parent: str):
-        self.items: s.ValueVec[int] = s.ValueVec[int](1)
+        self.items: s.Vec[int] = s.Vec[int](1)
         self.actions: ValueVecActionStates = ValueVecActionStates(parent + ".actions")
 
 
@@ -111,7 +111,7 @@ class ValueMapActionStates(ISubStates):
 
 class ValueMapStates(ISubStates):
     def __init__(self, parent: str):
-        self.items: s.ValueMap[int, int] = s.ValueMap[int, int](15, 16)
+        self.items: s.Map[int, int] = s.Map[int, int](15, 16)
         self.actions: ValueMapActionStates = ValueMapActionStates(parent + ".actions")
 
 
@@ -147,7 +147,7 @@ class MultiDataStates(ISubStates):
 
 class ImageStates(ISubStates):
     def __init__(self, parent: str):
-        self.image: s.ValueImage = s.ValueImage()
+        self.image: s.Image = s.Image()
 
 
 class States(StatesBase):

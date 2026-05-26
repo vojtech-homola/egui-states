@@ -10,8 +10,8 @@ use crate::client::data::{
 };
 use crate::client::image::Image;
 use crate::client::messages::MessageSender;
-use crate::client::value_map::{UpdateMap, ValueMap};
-use crate::client::value_vec::{UpdateList, ValueVec};
+use crate::client::value_map::{UpdateMap, MapState};
+use crate::client::value_vec::{UpdateList, VecState};
 use crate::client::values::{
     GetQueueType, Signal, Static, StaticAtomic, UpdateValue, UpdateValueTake, Value, ValueAtomic,
     ValueTake,
@@ -65,12 +65,12 @@ pub trait StatesCreator {
 
     fn image(&mut self, name: &'static str) -> Image;
 
-    fn map<K, V>(&mut self, name: &'static str) -> ValueMap<K, V>
+    fn map<K, V>(&mut self, name: &'static str) -> MapState<K, V>
     where
         K: Hash + Eq + Clone + for<'a> Deserialize<'a> + Send + Sync + Transportable + 'static,
         V: Clone + for<'a> Deserialize<'a> + Send + Sync + Transportable + 'static;
 
-    fn vec<T>(&mut self, name: &'static str) -> ValueVec<T>
+    fn vec<T>(&mut self, name: &'static str) -> VecState<T>
     where
         T: Clone + for<'a> Deserialize<'a> + Send + Sync + Transportable + 'static;
 
@@ -275,7 +275,7 @@ impl StatesCreator for StatesCreatorClient {
         signal
     }
 
-    fn map<K, V>(&mut self, name: &str) -> ValueMap<K, V>
+    fn map<K, V>(&mut self, name: &str) -> MapState<K, V>
     where
         K: Hash + Eq + Clone + for<'a> Deserialize<'a> + Send + Sync + Transportable + 'static,
         V: Clone + for<'a> Deserialize<'a> + Send + Sync + Transportable + 'static,
@@ -283,20 +283,20 @@ impl StatesCreator for StatesCreatorClient {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
         let type_id = K::get_type().get_hash() ^ V::get_type().get_hash();
-        let value = ValueMap::new(name, type_id);
+        let value = MapState::new(name, type_id);
 
         self.val.maps.insert(id, Arc::new(value.clone()));
         value
     }
 
-    fn vec<T>(&mut self, name: &str) -> ValueVec<T>
+    fn vec<T>(&mut self, name: &str) -> VecState<T>
     where
         T: Clone + for<'a> Deserialize<'a> + Send + Sync + Transportable + 'static,
     {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
         let type_id = T::get_type().get_hash();
-        let value = ValueVec::new(name, type_id);
+        let value = VecState::new(name, type_id);
 
         self.val.lists.insert(id, Arc::new(value.clone()));
         value

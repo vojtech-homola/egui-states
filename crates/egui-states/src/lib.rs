@@ -25,8 +25,8 @@ pub use client::{
     data::{Data, DataMulti, DataTake},
     image::Image,
     states_creator::StatesCreator,
-    value_map::ValueMap,
-    value_vec::ValueVec,
+    value_map::MapState,
+    value_vec::VecState,
     values::{
         Diff, DiffAtomic, GetQueueType, NoQueue, Queue, Signal, Static, StaticAtomic, Value,
         ValueAtomic, ValueTake,
