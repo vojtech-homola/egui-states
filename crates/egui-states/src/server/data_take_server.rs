@@ -105,21 +105,18 @@ impl Acknowledge for DataTake {
 impl SyncTrait for DataTake {
     fn sync(&self) -> Result<(), ()> {
         let g = self.lock.lock();
-        match g.clone() {
-            Some((data, count)) => {
-                let messages =
-                    pack_data_take(self.id, &data, count as u64, self.data_type, false, false)
-                        .map_err(|_| ())?;
 
-                self.event.clear();
-                for (message, single) in messages {
-                    self.sender.send_set(message, single);
-                }
-            }
-            None => {
-                self.event.set();
+        if let Some((ref data, count)) = *g {
+            let messages =
+                pack_data_take(self.id, data, count as u64, self.data_type, false, false)
+                    .map_err(|_| ())?;
+
+            for (message, single) in messages {
+                self.sender.send_set(message, single);
             }
         }
+
+        self.event.set();
 
         Ok(())
     }
@@ -253,7 +250,6 @@ impl SyncTrait for DataMultiTake {
             self.sender.send(message);
             self.event.set();
         } else {
-            self.event.clear();
             for (index, (data, count)) in r.iter() {
                 let messages = pack_data_multi_take(
                     self.id,
@@ -274,6 +270,7 @@ impl SyncTrait for DataMultiTake {
                     return Ok(());
                 }
             }
+            self.event.set();
         }
 
         Ok(())
