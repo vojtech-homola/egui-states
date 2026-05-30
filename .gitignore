@@ -13,7 +13,7 @@ __pycache__
 /dist
 /*.egg-info
 /build
-/web
+**/web/
 
 # version
 /egui_states/version.py
