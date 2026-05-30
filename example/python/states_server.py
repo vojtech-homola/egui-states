@@ -162,7 +162,7 @@ class ImageStates(ISubStates):
         self.image: s.Image = s.Image()
 
 
-class States(StatesBase):
+class State(StatesBase):
     @staticmethod
     def _get_obj_types() -> list[s.PyObjectType]:
         return [
@@ -205,7 +205,7 @@ class States(StatesBase):
 class StatesServer(StateServerBase):
     """The main class for the StateServer for UI."""
 
-    states: States
+    states: State
 
     def __init__(
         self,
@@ -224,4 +224,4 @@ class StatesServer(StateServerBase):
             ip_addr (tuple[int, int, int, int] | None, optional): IP address to bind to. Defaults to None.
             handshake (list[int] | None, optional): Handshake bytes. Defaults to None.
         """
-        super().__init__(States, port, signals_workers, error_handler, ip_addr, handshake)
+        super().__init__(State, port, signals_workers, error_handler, ip_addr, handshake)

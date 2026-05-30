@@ -3,7 +3,9 @@ members = [
     "crates/egui-states",
     "crates/egui-states-macros",
     "crates/egui-states-python",
-    "example/gui",
+
+    "example/gui-core",
+    "example/gui"
 ]
 resolver = "3"
 
@@ -14,3 +16,4 @@ edition = "2024"
 [workspace.dependencies]
 egui_states_macros = { path = "crates/egui-states-macros" }
 egui_states = { path = "crates/egui-states" }
+gui_core = { path = "example/gui-core" }

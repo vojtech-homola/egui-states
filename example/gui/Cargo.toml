@@ -2,22 +2,23 @@
 name = "gui"
 version.workspace = true
 edition.workspace = true
+description = "Special crate for building the servers binding"
 
 [[bin]]
 name = "GuiTest"
-path = "src/main.rs"
+path = "main.rs"
 
 [dependencies]
-serde = "*"
+gui_core = { workspace = true }
 eframe = "0.34"
-egui = { version = "0.34", features = ["rayon"] }
-egui_states = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen-futures = "0.4"
-web-sys = "0.3"
 log = "0.4"
+web-sys = "0.3"
 
 [build-dependencies]
 egui_states = { workspace = true, features = ["build_scripts"] }
 serde = "*"
+
+gui_core = { workspace = true }
