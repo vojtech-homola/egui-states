@@ -13,7 +13,7 @@ if str(THIS_DIR) not in sys.path:
     sys.path.insert(0, str(THIS_DIR))
 
 from states_server import (
-    States,
+    State,
     StatesServer,
 )
 from states_server import (
@@ -101,7 +101,7 @@ def server_bundle():
             server.stop()
 
 
-def test_server_lifecycle_and_value_roundtrips(server_bundle: tuple[StatesServer, States, list[Exception]]) -> None:
+def test_server_lifecycle_and_value_roundtrips(server_bundle: tuple[StatesServer, State, list[Exception]]) -> None:
     server, states, _errors = server_bundle
 
     assert server.is_running()
@@ -138,7 +138,7 @@ def test_server_lifecycle_and_value_roundtrips(server_bundle: tuple[StatesServer
     assert states.custom_values.optional_struct.get() == optional_struct
 
 
-def test_static_value_roundtrips(server_bundle: tuple[StatesServer, States, list[Exception]]) -> None:
+def test_static_value_roundtrips(server_bundle: tuple[StatesServer, State, list[Exception]]) -> None:
     _server, states, _errors = server_bundle
 
     summary = ExampleTestStruct2(True, 9, "summary")
@@ -155,7 +155,7 @@ def test_static_value_roundtrips(server_bundle: tuple[StatesServer, States, list
     assert states.statics.nested.enum_hint.get() == ExampleTestEnum.B
 
 
-def test_image_value_roundtrip(server_bundle: tuple[StatesServer, States, list[Exception]]) -> None:
+def test_image_value_roundtrip(server_bundle: tuple[StatesServer, State, list[Exception]]) -> None:
     _server, states, _errors = server_bundle
 
     image = np.zeros((8, 8, 4), dtype=np.uint8)
@@ -181,7 +181,7 @@ def test_image_value_roundtrip(server_bundle: tuple[StatesServer, States, list[E
     assert states.image.image.shape() == (8, 8)
 
 
-def test_data_array_methods(server_bundle: tuple[StatesServer, States, list[Exception]]) -> None:
+def test_data_array_methods(server_bundle: tuple[StatesServer, State, list[Exception]]) -> None:
     _server, states, _errors = server_bundle
 
     bytes_data = np.arange(6, dtype=np.uint8)
@@ -209,7 +209,7 @@ def test_data_array_methods(server_bundle: tuple[StatesServer, States, list[Exce
     )
 
 
-def test_multi_data_methods(server_bundle: tuple[StatesServer, States, list[Exception]]) -> None:
+def test_multi_data_methods(server_bundle: tuple[StatesServer, State, list[Exception]]) -> None:
     _server, states, _errors = server_bundle
 
     bytes_zero = states.multi_data.bytes[0]
@@ -259,7 +259,7 @@ def test_multi_data_methods(server_bundle: tuple[StatesServer, States, list[Exce
         states.multi_data.bytes[5].get()
 
 
-def test_value_take_methods(server_bundle: tuple[StatesServer, States, list[Exception]]) -> None:
+def test_value_take_methods(server_bundle: tuple[StatesServer, State, list[Exception]]) -> None:
     _server, states, _errors = server_bundle
 
     states.value_take.take_text.set("queued take", update=True)
@@ -267,7 +267,7 @@ def test_value_take_methods(server_bundle: tuple[StatesServer, States, list[Exce
 
 
 def test_value_vec_and_value_map_follow_action_signals(
-    server_bundle: tuple[StatesServer, States, list[Exception]],
+    server_bundle: tuple[StatesServer, State, list[Exception]],
 ) -> None:
     _server, states, _errors = server_bundle
     _wire_collection_actions(states)
@@ -292,7 +292,7 @@ def test_value_vec_and_value_map_follow_action_signals(
 
 
 def test_value_callbacks_disconnect_and_signal_mode(
-    server_bundle: tuple[StatesServer, States, list[Exception]],
+    server_bundle: tuple[StatesServer, State, list[Exception]],
 ) -> None:
     _server, states, _errors = server_bundle
 
@@ -336,7 +336,7 @@ def test_value_callbacks_disconnect_and_signal_mode(
 
 
 def test_signal_callbacks_and_disconnect_all(
-    server_bundle: tuple[StatesServer, States, list[Exception]],
+    server_bundle: tuple[StatesServer, State, list[Exception]],
 ) -> None:
     _server, states, _errors = server_bundle
 
@@ -405,7 +405,7 @@ def test_error_handler_receives_callback_failures() -> None:
             server.stop()
 
 
-def test_data_take_methods(server_bundle: tuple[StatesServer, States, list[Exception]]) -> None:
+def test_data_take_methods(server_bundle: tuple[StatesServer, State, list[Exception]]) -> None:
     _server, states, _errors = server_bundle
 
     buffer_data = np.array([0, 1, 2, 3, 4], dtype=np.uint8)
@@ -415,7 +415,7 @@ def test_data_take_methods(server_bundle: tuple[StatesServer, States, list[Excep
     states.data_take.take_samples.set(samples, blocking=False, update=True)
 
 
-def test_data_multi_take_methods(server_bundle: tuple[StatesServer, States, list[Exception]]) -> None:
+def test_data_multi_take_methods(server_bundle: tuple[StatesServer, State, list[Exception]]) -> None:
     _server, states, _errors = server_bundle
 
     states.data_multi_take.bytes[0].set(np.array([1, 2, 3], dtype=np.uint8), update=True)
