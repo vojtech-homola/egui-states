@@ -10,13 +10,14 @@ use crate::collections::{MapHeader, VecHeader};
 use crate::data_transport::{DataHeader, DataMultiTakeHeader, DataTakeHeader, MultiDataHeader};
 use crate::image_transport::{ImageHeader, ImageSetHeader};
 use crate::serialization::{
-    ClientHeader, FastVec, MAX_MSG_COUNT, MSG_SIZE_THRESHOLD, MessageData, ServerHeader,
+    ClientHeader, FastVec, MAX_MSG_COUNT, MSG_SIZE_THRESHOLD, MessageData, ServerHeader, serialize,
     serialize_to_data,
 };
 
 pub(crate) enum ChannelMessage {
     Value(u64, u32, bool, MessageData),
     Signal(u64, u32, MessageData),
+    Message(MessageData),
     Ack(u64),
 }
 
@@ -32,6 +33,11 @@ impl MessageSender {
 
     pub(crate) fn send(&self, msg: ChannelMessage) {
         self.sender.send(Some(msg)).unwrap();
+    }
+
+    pub(crate) fn send_message(&self, msg: &String) {
+        let data = serialize(msg).unwrap();
+        self.send(ChannelMessage::Message(data));
     }
 
     pub(crate) fn close(&self) {
@@ -54,6 +60,11 @@ fn parse_to_send(message: ChannelMessage, data: &mut FastVec<64>) {
         ChannelMessage::Ack(id) => {
             let header = ClientHeader::Ack(id);
             serialize_to_data(&header, data).unwrap();
+        }
+        ChannelMessage::Message(msg_data) => {
+            let header = ClientHeader::Message(msg_data.len() as u32);
+            serialize_to_data(&header, data).unwrap();
+            data.extend_from_data(&msg_data);
         }
     }
 }

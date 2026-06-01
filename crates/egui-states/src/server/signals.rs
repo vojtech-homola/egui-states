@@ -4,9 +4,14 @@ use std::sync::Arc;
 use bytes::Bytes;
 use parking_lot::Mutex;
 
-use crate::hashing::{NoHashMap, NoHashSet, generate_value_id};
-use crate::serialization::{FastVec, serialize_to_data};
+use crate::hashing::{NoHashMap, NoHashSet};
+use crate::serialization::{FastVec, serialize, serialize_to_data};
 use crate::server::event::Event;
+
+pub(crate) const LOGGING_ID: u64 = 0;
+pub(crate) const ON_CONNECT_ID: u64 = 1;
+pub(crate) const ON_DISCONNECT_ID: u64 = 2;
+pub(crate) const CLIENT_MESSAGE_ID: u64 = 3;
 
 enum Signal {
     Single(Bytes),
@@ -26,19 +31,9 @@ impl OrderedMap {
         }
     }
 
-    fn clear(&mut self, logging_id: u64) {
-        let log_value = self.values.remove(&logging_id);
-        let log_index = self.indexes.contains(&logging_id);
-
-        self.values.clear();
-        self.indexes.clear();
-
-        if let Some(log_value) = log_value {
-            self.values.insert(logging_id, log_value);
-        }
-        if log_index {
-            self.indexes.push_back(logging_id);
-        }
+    fn clear(&mut self) {
+        self.values.retain(|id, _| *id <= 9);
+        self.indexes.retain(|id| *id <= 9);
     }
 
     fn insert(&mut self, id: u64, value: Bytes) {
@@ -128,13 +123,9 @@ impl ChangedInner {
         }
     }
 
-    fn clear(&mut self, logging_id: u64) {
-        let log_blocked = self.blocked_list.contains(&logging_id);
-        self.values.clear(logging_id);
-        self.blocked_list.clear();
-        if log_blocked {
-            self.blocked_list.insert(logging_id);
-        }
+    fn clear(&mut self) {
+        self.values.clear();
+        self.blocked_list.retain(|id| *id <= 9);
     }
 
     fn set(&mut self, id: u64, value: Bytes, event: &Event) {
@@ -194,16 +185,13 @@ impl ChangedInner {
 pub(crate) struct SignalsManager {
     event: Event,
     values: Arc<Mutex<ChangedInner>>,
-    logging_id: u64,
 }
 
 impl SignalsManager {
     pub(crate) fn new() -> Self {
-        let logging_id = generate_value_id("__egui_states_logging");
         Self {
             event: Event::new(),
             values: Arc::new(Mutex::new(ChangedInner::new())),
-            logging_id,
         }
     }
 
@@ -212,7 +200,7 @@ impl SignalsManager {
     }
 
     pub(crate) fn reset(&self) {
-        self.values.lock().clear(self.logging_id);
+        self.values.lock().clear();
     }
 
     fn serialize_message(level: u8, text: impl ToString) -> Result<Bytes, ()> {
@@ -224,28 +212,49 @@ impl SignalsManager {
     }
 
     #[allow(dead_code)]
+    #[inline]
     pub(crate) fn debug(&self, message: impl ToString) {
         if let Ok(data) = Self::serialize_message(0u8, message) {
-            self.set(self.logging_id, data);
+            self.set(LOGGING_ID, data);
         }
     }
 
+    #[inline]
     pub(crate) fn info(&self, message: impl ToString) {
         if let Ok(data) = Self::serialize_message(1u8, message) {
-            self.set(self.logging_id, data);
+            self.set(LOGGING_ID, data);
         }
     }
 
+    #[inline]
     pub(crate) fn warning(&self, message: impl ToString) {
         if let Ok(data) = Self::serialize_message(2u8, message) {
-            self.set(self.logging_id, data);
+            self.set(LOGGING_ID, data);
         }
     }
 
+    #[inline]
     pub(crate) fn error(&self, message: impl ToString) {
         if let Ok(data) = Self::serialize_message(3u8, message) {
-            self.set(self.logging_id, data);
+            self.set(LOGGING_ID, data);
         }
+    }
+
+    #[inline]
+    pub(crate) fn on_connect(&self, peer_addr: String) {
+        if let Ok(result) = serialize::<String, 32>(&peer_addr) {
+            self.set(ON_CONNECT_ID, result.to_bytes());
+        }
+    }
+
+    #[inline]
+    pub(crate) fn on_disconnect(&self) {
+        self.set(ON_DISCONNECT_ID, Bytes::new());
+    }
+
+    #[inline]
+    pub(crate) fn client_message(&self, message: Bytes) {
+        self.set(CLIENT_MESSAGE_ID, message);
     }
 
     pub(crate) fn wait_changed_value(&self, last_id: Option<u64>) -> (u64, Bytes) {
@@ -273,9 +282,5 @@ impl SignalsManager {
 
     pub(crate) fn set_to_single(&self, id: u64) {
         self.values.lock().values.set_to_single(id);
-    }
-
-    pub(crate) fn get_logging_id(&self) -> u64 {
-        self.logging_id
     }
 }

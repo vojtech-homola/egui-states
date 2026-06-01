@@ -18,7 +18,7 @@ use crate::python::{
 use crate::server::data_server::{Data, DataHolder, DataMulti};
 use crate::server::data_take_server::{DataMultiTake, DataTake};
 use crate::server::server::Server;
-use crate::server::signals::SignalsManager;
+use crate::server::signals::{self, SignalsManager};
 use crate::server::value_parsing::{ValueCreator, ValueParser};
 use crate::server::values_server::{Signal, Value, ValueStatic, ValueTake};
 use crate::server::{image_server::Image, map_server::ValueMap, vec_server::ValueList};
@@ -145,10 +145,14 @@ impl StateServerCore {
         let server = Server::new(addr, handshake);
         let signals = server.get_signals_manager();
 
-        // register logging signal type
-        let logging_object_type = PyObjectType::Tuple(vec![PyObjectType::U8, PyObjectType::String]);
         let mut types = NoHashMap::default();
-        types.insert(signals.get_logging_id(), logging_object_type);
+
+        // register reserved signal types
+        let logging_object_type = PyObjectType::Tuple(vec![PyObjectType::U8, PyObjectType::String]);
+        types.insert(signals::LOGGING_ID, logging_object_type);
+        types.insert(signals::ON_DISCONNECT_ID, PyObjectType::String);
+        types.insert(signals::ON_CONNECT_ID, PyObjectType::Empty);
+        types.insert(signals::CLIENT_MESSAGE_ID, PyObjectType::String);
 
         Ok(Self {
             server: RwLock::new(server),
@@ -440,10 +444,6 @@ impl StateServerCore {
 
     fn signal_set_to_single(&self, value_id: u64) {
         self.signals.set_to_single(value_id);
-    }
-
-    fn signal_get_logging_id(&self) -> u64 {
-        self.signals.get_logging_id()
     }
 
     // lists ------------------------------------------------------------

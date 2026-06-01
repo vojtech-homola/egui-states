@@ -12,7 +12,12 @@ pub(crate) struct MessageSender {
 impl MessageSender {
     pub(crate) fn new() -> (Self, MessageReceiver) {
         let (sender, receiver) = unbounded_channel();
-        (Self { internal_sender: sender }, receiver)
+        (
+            Self {
+                internal_sender: sender,
+            },
+            receiver,
+        )
     }
 
     #[inline]

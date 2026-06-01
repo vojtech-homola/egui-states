@@ -74,7 +74,9 @@ impl Hasher for StableHasher {
 
     fn finish(&self) -> u64 {
         let result = self.hasher.clone().finalize();
-        u64::from_le_bytes(result[0..8].try_into().unwrap())
+        let hash = u64::from_le_bytes(result[0..8].try_into().unwrap());
+        // Avoid reserved IDs 0-9
+        10 + hash % (u64::MAX - 9)
     }
 }
 

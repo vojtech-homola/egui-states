@@ -5,15 +5,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::State;
 use crate::client::atomics::{Atomic, AtomicStatic};
-use crate::client::data::{
-    Data, DataMulti, UpdateData, UpdateMultiData, private::GetDataType,
-};
-use crate::client::data_take::{
-    DataMultiTake, DataTake, UpdateDataMultiTake, UpdateDataTake,
-};
+use crate::client::data::{Data, DataMulti, UpdateData, UpdateMultiData, private::GetDataType};
+use crate::client::data_take::{DataMultiTake, DataTake, UpdateDataMultiTake, UpdateDataTake};
 use crate::client::image::Image;
 use crate::client::messages::MessageSender;
-use crate::client::value_map::{UpdateMap, MapState};
+use crate::client::value_map::{MapState, UpdateMap};
 use crate::client::value_vec::{UpdateList, VecState};
 use crate::client::values::{
     GetQueueType, Signal, Static, StaticAtomic, UpdateValue, UpdateValueTake, Value, ValueAtomic,

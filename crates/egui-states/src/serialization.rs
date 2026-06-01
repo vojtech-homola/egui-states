@@ -268,6 +268,7 @@ pub(crate) enum ClientHeader {
     Value(u64, u32, bool, u32),
     Signal(u64, u32, u32),
     Ack(u64),
+    Message(u32),
     Handshake(u16, u64),
 }
 
@@ -332,7 +333,6 @@ impl<'a> Deserializer<'a> {
     }
 }
 
-#[cfg(feature = "server")]
 #[inline]
 pub(crate) fn serialize<T, const N: usize>(value: &T) -> Result<FastVec<N>, ()>
 where

@@ -12,6 +12,7 @@ pub(crate) enum ClientMessage {
     Value(u64, u32, bool, Bytes),
     Signal(u64, u32, Bytes),
     Ack(u64),
+    Message(Bytes),
     Handshake(u16, u64),
 }
 
@@ -33,6 +34,7 @@ impl SocketReader {
             Some(prev) => prev,
             None => match self.socket.next().await {
                 Some(Ok(Message::Binary(msg))) => {
+                    // Copy data rather than reference it if it's too large
                     let copy = msg.len() > COPY_SIZE;
                     (msg, 0, copy)
                 }
@@ -93,6 +95,21 @@ impl SocketReader {
                     self.previous = Some((data, pointer + size, copy));
                 }
                 Ok(ClientMessage::Ack(id))
+            }
+            ClientHeader::Message(data_size) => {
+                let all_size = size + data_size as usize;
+                if all_size > data.len() - pointer {
+                    return Err(Some("Incomplete data received".to_string()));
+                }
+                let message_data = if copy {
+                    data.slice(pointer + size..pointer + all_size)
+                } else {
+                    Bytes::copy_from_slice(&data[pointer + size..pointer + all_size])
+                };
+                if pointer + all_size < data.len() {
+                    self.previous = Some((data, pointer + all_size, copy));
+                }
+                Ok(ClientMessage::Message(message_data))
             }
             ClientHeader::Handshake(protocol_version, client_id) => {
                 if pointer + size < data.len() {

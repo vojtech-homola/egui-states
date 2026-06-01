@@ -376,10 +376,7 @@ fn state_to_line(state: &StateType, types_map: &HashMap<String, TypeIndex>) -> S
         }
         StateType::Image(name) => {
             let last_name = name.split('.').last().unwrap();
-            format!(
-                "        self.{}: s.Image = s.Image()\n",
-                last_name
-            )
+            format!("        self.{}: s.Image = s.Image()\n", last_name)
         }
         StateType::SubState(name, state_class, _) => {
             let last_name = name.split('.').last().unwrap();
