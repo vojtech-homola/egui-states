@@ -228,7 +228,10 @@ impl SignalsManager {
         } else {
             let mut w = self.values.lock();
             w.registered.remove(&id);
-            w.values.remove(&id);
+            if let Some(Signal::Queue(mut q)) = w.values.remove(&id) {
+                q.clear();
+                w.values.insert(id, Signal::Queue(q));
+            }
             w.indexes.retain(|queued_id| *queued_id != id);
         }
     }
