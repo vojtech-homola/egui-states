@@ -145,13 +145,14 @@ impl StateServerCore {
         let server = Server::new(addr, handshake);
         let signals = server.get_signals_manager();
 
+
         let mut types = NoHashMap::default();
 
         // register reserved signal types
         let logging_object_type = PyObjectType::Tuple(vec![PyObjectType::U8, PyObjectType::String]);
         types.insert(signals::LOGGING_ID, logging_object_type);
-        types.insert(signals::ON_DISCONNECT_ID, PyObjectType::String);
-        types.insert(signals::ON_CONNECT_ID, PyObjectType::Empty);
+        types.insert(signals::ON_CONNECT_ID, PyObjectType::String);
+        types.insert(signals::ON_DISCONNECT_ID, PyObjectType::Empty);
         types.insert(signals::CLIENT_MESSAGE_ID, PyObjectType::String);
 
         Ok(Self {
@@ -415,7 +416,7 @@ impl StateServerCore {
     }
 
     // signal callbacks -------------------------------------------------
-    fn signal_set_register(&self, value_id: u64, register: bool) {
+    fn signal_register(&self, value_id: u64, register: bool) {
         self.signals.set_register(value_id, register);
     }
 

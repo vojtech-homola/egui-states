@@ -18,27 +18,36 @@ enum Signal {
     Queue(VecDeque<Bytes>),
 }
 
-struct OrderedMap {
-    values: NoHashMap<u64, Signal>,
-    indexes: VecDeque<u64>,
+struct ChangedInner {
+    values: NoHashMap<u64, Signal>, // stored signals
+    indexes: Vec<u64>,              // scheduling order; may contain stale duplicate IDs
+    blocked_list: NoHashSet<u64>,   // ids blocked by some thread
+    registered: NoHashSet<u64>,     // ids which are registered to be signaled
 }
 
-impl OrderedMap {
+impl ChangedInner {
     fn new() -> Self {
         Self {
             values: NoHashMap::default(),
-            indexes: VecDeque::new(),
+            indexes: Vec::new(),
+            blocked_list: NoHashSet::default(),
+            registered: NoHashSet::default(),
         }
     }
 
     fn clear(&mut self) {
         self.values.retain(|id, _| *id <= 9);
         self.indexes.retain(|id| *id <= 9);
+        self.blocked_list.retain(|id| *id <= 9);
     }
 
-    fn insert(&mut self, id: u64, value: Bytes) {
-        let entry = self.values.entry(id);
-        match entry {
+    fn set(&mut self, id: u64, value: Bytes, event: &Event) {
+        if !self.registered.contains(&id) {
+            return;
+        }
+
+        self.indexes.push(id);
+        match self.values.entry(id) {
             Entry::Vacant(e) => {
                 e.insert(Signal::Single(value));
             }
@@ -47,30 +56,54 @@ impl OrderedMap {
                 Signal::Queue(v) => v.push_back(value),
             },
         }
-        self.indexes.push_back(id);
-    }
 
-    fn pop(&mut self, id: u64) -> Option<Bytes> {
-        match self.values.get_mut(&id) {
-            None => None,
-            Some(Signal::Single(_)) => match self.values.remove(&id).unwrap() {
-                Signal::Single(v) => Some(v),
-                _ => unreachable!(),
-            },
-            Some(Signal::Queue(queue)) => queue.pop_front(),
+        if !self.blocked_list.contains(&id) {
+            event.set_one();
         }
     }
 
-    fn pop_first(&mut self) -> Option<(u64, Bytes)> {
-        while let Some(id) = self.indexes.pop_front() {
-            if let Some(value) = self.pop(id) {
-                return Some((id, value));
-            } else {
-                while self.indexes.front().map_or(false, |next| *next == id) {
-                    self.indexes.pop_front();
-                }
+    fn get_id(&mut self, id: u64) -> Option<Bytes> {
+        match self.values.remove(&id) {
+            None => None,
+            Some(Signal::Single(v)) => {
+                self.indexes.retain(|&single_id| single_id != id);
+                Some(v)
+            }
+            Some(Signal::Queue(mut queue)) => {
+                let val = queue.pop_front();
+                self.values.insert(id, Signal::Queue(queue));
+                val
             }
         }
+    }
+
+    fn get(&mut self, last_id: Option<u64>) -> Option<(u64, Bytes)> {
+        if let Some(last_id) = last_id {
+            self.blocked_list.remove(&last_id);
+        }
+
+        let mut pos = 0;
+        while pos < self.indexes.len() {
+            let id = self.indexes[pos];
+
+            if self.blocked_list.contains(&id) {
+                pos += 1;
+                continue;
+            }
+
+            self.indexes.remove(pos);
+
+            if !self.registered.contains(&id) {
+                self.values.remove(&id);
+                continue;
+            }
+
+            if let Some(value) = self.get_id(id) {
+                self.blocked_list.insert(id);
+                return Some((id, value));
+            }
+        }
+
         None
     }
 
@@ -99,83 +132,6 @@ impl OrderedMap {
 
             if let Some(res) = res {
                 self.values.insert(id, Signal::Single(res));
-            }
-        }
-    }
-}
-
-struct ChangedInner {
-    values: OrderedMap,           // values not blocked
-    blocked_list: NoHashSet<u64>, // ids blocked by some thread
-    registered: NoHashSet<u64>,   // ids which are registered to be signaled
-}
-
-/*
-    Getting signals value in that way that if there is new signal with the same id which is
-    currently processed, it will wait for the same thread. So id is processed in order.
-*/
-impl ChangedInner {
-    fn new() -> Self {
-        Self {
-            values: OrderedMap::new(),
-            blocked_list: NoHashSet::default(),
-            registered: NoHashSet::default(),
-        }
-    }
-
-    fn clear(&mut self) {
-        self.values.clear();
-        self.blocked_list.retain(|id| *id <= 9);
-    }
-
-    fn set(&mut self, id: u64, value: Bytes, event: &Event) {
-        self.values.insert(id, value);
-        if !self.blocked_list.contains(&id) {
-            event.set_one();
-        }
-    }
-
-    fn get(&mut self, last_id: Option<u64>) -> Option<(u64, Bytes)> {
-        match last_id {
-            // previous call was made
-            Some(last_id) => {
-                if self.blocked_list.contains(&last_id) {
-                    let val = self.values.pop(last_id);
-                    match val {
-                        Some(v) => Some((last_id, v)),
-                        None => {
-                            self.blocked_list.remove(&last_id);
-                            let val = self.values.pop_first();
-                            if let Some((id, _)) = &val {
-                                if self.registered.contains(id) {
-                                    self.blocked_list.insert(*id);
-                                    return val;
-                                }
-                            }
-                            return None;
-                        }
-                    }
-                } else {
-                    let val = self.values.pop_first();
-                    if let Some((id, _)) = &val {
-                        if self.registered.contains(id) {
-                            self.blocked_list.insert(*id);
-                            return val;
-                        }
-                    }
-                    return None;
-                }
-            }
-            // this is first time
-            None => {
-                let val = self.values.pop_first();
-                if let Some((id, _)) = &val {
-                    if self.registered.contains(id) {
-                        self.blocked_list.insert(*id);
-                        return val;
-                    }
-                }
-                return None;
             }
         }
     }
@@ -272,15 +228,16 @@ impl SignalsManager {
         } else {
             let mut w = self.values.lock();
             w.registered.remove(&id);
-            w.blocked_list.remove(&id);
+            w.values.remove(&id);
+            w.indexes.retain(|queued_id| *queued_id != id);
         }
     }
 
     pub(crate) fn set_to_queue(&self, id: u64) {
-        self.values.lock().values.set_to_queue(id);
+        self.values.lock().set_to_queue(id);
     }
 
     pub(crate) fn set_to_single(&self, id: u64) {
-        self.values.lock().values.set_to_single(id);
+        self.values.lock().set_to_single(id);
     }
 }

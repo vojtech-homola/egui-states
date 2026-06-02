@@ -84,9 +84,13 @@ class StateServerBase[T: StatesBase]:
         _initialize(self._states, "root", self._server, self._signals_manager, self._states._get_obj_types())
         self._server.finalize()
         self.logging = LoggingSignal(self._signals_manager, self._server)
-        self._on_connect = Callable[[str], Any] | None
-        self._on_disconnect = Callable[[], Any] | None
-        self._on_client_message = Callable[[str], Any] | None
+        self._on_connect: Callable[[str], Any] | None = None
+        self._on_disconnect: Callable[[], Any] | None = None
+        self._on_client_message: Callable[[str], Any] | None = None
+
+        self._server.signal_set_to_queue(_ON_CONNECT_ID)
+        self._server.signal_set_to_queue(_ON_DISCONNECT_ID)
+        self._server.signal_set_to_queue(_CLIENT_MESSAGE_ID)
 
     @property
     def states(self) -> T:
@@ -141,8 +145,9 @@ class StateServerBase[T: StatesBase]:
                 argument.
         """
         self._on_connect = func
-        register = func is not None
-        self._server.signal_register(_ON_CONNECT_ID, register)
+        self._signals_manager.clear_callbacks(_ON_CONNECT_ID)
+        if func is not None:
+            self._signals_manager.add_callback(_ON_CONNECT_ID, func)
 
     def on_disconnect(self, func: Callable[[], Any] | None) -> None:
         """Set the function to be called when a client disconnects.
@@ -151,8 +156,9 @@ class StateServerBase[T: StatesBase]:
             func (Callable[[], Any]): The function to be called when a client disconnects.
         """
         self._on_disconnect = func
-        register = func is not None
-        self._server.signal_register(_ON_DISCONNECT_ID, register)
+        self._signals_manager.clear_callbacks(_ON_DISCONNECT_ID)
+        if func is not None:
+            self._signals_manager.add_callback(_ON_DISCONNECT_ID, func)
 
     def on_client_message(self, func: Callable[[str], Any] | None) -> None:
         """Set the function to be called when a client sends a message.
@@ -162,5 +168,6 @@ class StateServerBase[T: StatesBase]:
                 string as an argument.
         """
         self._on_client_message = func
-        register = func is not None
-        self._server.signal_register(_CLIENT_MESSAGE_ID, register)
+        self._signals_manager.clear_callbacks(_CLIENT_MESSAGE_ID)
+        if func is not None:
+            self._signals_manager.add_callback(_CLIENT_MESSAGE_ID, func)

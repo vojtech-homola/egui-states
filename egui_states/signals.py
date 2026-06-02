@@ -55,9 +55,6 @@ class SignalsManager:
                             self._error_handler(e)
                         except Exception:  # safety
                             pass
-            else:
-                error = IndexError(f"Signal with index {last_id} not found.")
-                self._error_handler(error)
 
     @staticmethod
     def _default_error_handler(_e: Exception) -> None:
