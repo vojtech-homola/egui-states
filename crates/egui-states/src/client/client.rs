@@ -204,23 +204,29 @@ impl Client {
     }
 }
 
-pub struct ClientBuilder {
+pub struct ClientBuilder<T> {
     creator: StatesCreatorClient,
+    states: T,
     sender: MessageSender,
     rx: UnboundedReceiver<Option<ChannelMessage>>,
     addr: Ipv4Addr,
     context: Option<Context>,
 }
 
-impl ClientBuilder {
+impl<T> ClientBuilder<T>
+where
+    T: State,
+{
     pub fn new() -> Self {
         let (sender, rx) = MessageSender::new();
 
-        let creator = StatesCreatorClient::new(sender.clone(), "root".to_string());
+        let mut creator = StatesCreatorClient::new(sender.clone(), "root".to_string());
+        let states = T::new(&mut creator);
         let addr = Ipv4Addr::new(127, 0, 0, 1);
 
         Self {
             creator,
+            states,
             sender,
             rx,
             addr,
@@ -239,14 +245,14 @@ impl ClientBuilder {
         }
     }
 
-    pub fn build<T: State>(
-        self,
-        port: u16,
-        version: Option<u64>,
-        hash: Option<String>,
-    ) -> (T, Client) {
+    pub fn get_version_hash(&self) -> u64 {
+        self.creator.get_version_hash()
+    }
+
+    pub fn build(self, port: u16, version: Option<u64>, hash: Option<String>) -> (T, Client) {
         let Self {
-            mut creator,
+            creator,
+            states,
             sender,
             rx,
             addr,
@@ -254,7 +260,6 @@ impl ClientBuilder {
         } = self;
 
         let addr = SocketAddrV4::new(addr, port);
-        let states = T::new(&mut creator);
         let values = creator.get_values();
         let client = Client::new(context, sender.clone());
         let client_out = client.clone();

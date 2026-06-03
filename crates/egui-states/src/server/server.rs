@@ -146,11 +146,11 @@ pub(crate) struct Server {
 }
 
 impl Server {
-    pub(crate) fn new(addr: SocketAddrV4, version: Option<u64>, hash: Option<String>) -> Self {
+    pub(crate) fn new(addr: SocketAddrV4, version: Option<u64>, token: Option<String>) -> Self {
         let connected = Arc::new(AtomicBool::new(false));
         let (sender, rx) = MessageSender::new();
         let signals = SignalsManager::new();
-        let handshake = server_core::Handshake { version, hash };
+        let handshake = server_core::Handshake { version, token };
 
         let obj = Self {
             connected,

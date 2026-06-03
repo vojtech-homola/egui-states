@@ -66,7 +66,7 @@ class StateServerBase[T: StatesBase]:
         error_handler: Callable[[Exception], None] | None = None,
         ip_addr: tuple[int, int, int, int] | None = None,
         version: int | None = None,
-        hash: str | None = None,
+        token: str | None = None,
     ) -> None:
         """Initialize the SteteServer.
 
@@ -77,9 +77,9 @@ class StateServerBase[T: StatesBase]:
             error_handler (Callable[[Exception], None] | None): The error handler function.
             ip_addr (tuple[int, int, int, int] | None): The IP address to bind the server to.
             version (int | None): The optional version number for client connection.
-            hash (str | None): The optional hash string for client connection.
+            token (str | None): The optional token string for client connection.
         """
-        self._server = StateServerCore(port, ip_addr, version, hash)
+        self._server = StateServerCore(port, ip_addr, version, token)
         self._signals_manager = SignalsManager(self._server, signals_workers, error_handler)
         self._states: T = state_class(self)
 

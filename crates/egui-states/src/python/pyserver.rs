@@ -133,12 +133,12 @@ impl StateServerCore {
 #[pymethods]
 impl StateServerCore {
     #[new]
-    #[pyo3(signature = (port, ip_addr=None, version=None, hash=None))]
+    #[pyo3(signature = (port, ip_addr=None, version=None, token=None))]
     fn new(
         port: u16,
         ip_addr: Option<[u8; 4]>,
         version: Option<u64>,
-        hash: Option<String>,
+        token: Option<String>,
     ) -> PyResult<Self> {
         let addr = match ip_addr {
             Some(addr) => {
@@ -147,7 +147,7 @@ impl StateServerCore {
             None => SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), port),
         };
 
-        let server = Server::new(addr, version, hash);
+        let server = Server::new(addr, version, token);
         let signals = server.get_signals_manager();
 
         let mut types = NoHashMap::default();

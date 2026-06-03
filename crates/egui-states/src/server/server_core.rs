@@ -27,7 +27,7 @@ enum ChannelHolder {
 #[derive(Clone)]
 pub(crate) struct Handshake {
     pub version: Option<u64>,
-    pub hash: Option<String>,
+    pub token: Option<String>,
 }
 
 pub(crate) async fn run(
@@ -199,7 +199,7 @@ fn check_handshake(
     server_handshake: &Handshake,
     client_protocol: u16,
     version: Option<u64>,
-    hash: Option<String>,
+    token: Option<String>,
 ) -> Result<(), String> {
     if client_protocol != PROTOCOL_VERSION {
         let message = format!(
@@ -220,22 +220,22 @@ fn check_handshake(
                     return Err(message);
                 }
             }
-            _ => return Err("protocol version mismatch".to_string()),
+            _ => return Err("client version missing".to_string()),
         }
     }
 
-    if let Some(server_hash) = &server_handshake.hash {
-        match hash {
-            Some(client_hash) => {
-                if client_hash != *server_hash {
+    if let Some(server_token) = &server_handshake.token {
+        match token {
+            Some(client_token) => {
+                if client_token != *server_token {
                     let message = format!(
-                        "attempted to connect with wrong hash: expected {}, got {}",
-                        server_hash, client_hash
+                        "attempted to connect with wrong token: expected {}, got {}",
+                        server_token, client_token
                     );
                     return Err(message);
                 }
             }
-            _ => return Err("hash mismatch".to_string()),
+            _ => return Err("client token missing".to_string()),
         }
     }
 

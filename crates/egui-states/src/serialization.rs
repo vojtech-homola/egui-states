@@ -37,12 +37,6 @@ impl<const N: usize> FastVec<N> {
         Self::Heap(Vec::new())
     }
 
-    // #[cfg(feature = "server")]
-    // #[inline]
-    // pub fn from_vec(vec: Vec<u8>) -> Self {
-    //     Self::Heap(vec)
-    // }
-
     #[cfg(not(target_arch = "wasm32"))]
     #[inline]
     pub fn to_bytes(self) -> bytes::Bytes {
@@ -209,10 +203,6 @@ pub(crate) enum ServerHeader {
 
 #[cfg(feature = "server")]
 impl ServerHeader {
-    // pub fn serialize_to_slice<'a, 'b>(&'b self, buffer: &'a mut [u8]) -> Result<&'a mut [u8], ()> {
-    //     postcard::to_slice::<ServerHeader>(self, buffer).map_err(|_| ())
-    // }
-
     pub fn serialize_value<const N: usize>(
         id: u64,
         type_id: u32,
@@ -283,9 +273,9 @@ impl ClientHeader {
     pub fn serialize_handshake(
         protocol: u16,
         version: Option<u64>,
-        hash: Option<String>,
+        token: Option<String>,
     ) -> FastVec<64> {
-        let header = ClientHeader::Handshake(protocol, version, hash);
+        let header = ClientHeader::Handshake(protocol, version, token);
         let data = postcard::to_stdvec(&header).expect("Failed to serialize handshake");
         FastVec::Heap(data)
     }
