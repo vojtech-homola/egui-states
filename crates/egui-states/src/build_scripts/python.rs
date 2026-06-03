@@ -563,7 +563,8 @@ class StatesServer(StateServerBase):
         signals_workers: int = 3,
         error_handler: Callable[[Exception], None] | None = None,
         ip_addr: tuple[int, int, int, int] | None = None,
-        handshake: list[int] | None = None,
+        version: int | None = None,
+        hash: str | None = None,
     ) -> None:
         """Initialize the StateServer.
 
@@ -572,14 +573,15 @@ class StatesServer(StateServerBase):
             signals_workers (int, optional): Number of workers for signal processing. Defaults to 3.
             error_handler (Callable[[Exception], None] | None, optional): Error handler function. Defaults to None.
             ip_addr (tuple[int, int, int, int] | None, optional): IP address to bind to. Defaults to None.
-            handshake (list[int] | None, optional): Handshake bytes. Defaults to None.
+            version (int, optional): The optional version number for client connection.
+            hash (str, optional): The optional hash string for client connection.
         """
         "#;
         file.write_all(text.as_bytes()).unwrap();
 
         file.write_all(
             format!(
-                "super().__init__({}, port, signals_workers, error_handler, ip_addr, handshake)\n",
+                "super().__init__({}, port, signals_workers, error_handler, ip_addr, version, hash)\n",
                 root_name
             )
             .as_bytes(),

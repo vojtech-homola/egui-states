@@ -140,16 +140,17 @@ pub(crate) struct Server {
     states: StatesList,
     states_server: Option<ServerStatesList>,
     signals: SignalsManager,
-    handshake: Option<Vec<u64>>,
+    handshake: server_core::Handshake,
 
     runner_state: RunnerState,
 }
 
 impl Server {
-    pub(crate) fn new(addr: SocketAddrV4, handshake: Option<Vec<u64>>) -> Self {
+    pub(crate) fn new(addr: SocketAddrV4, version: Option<u64>, hash: Option<String>) -> Self {
         let connected = Arc::new(AtomicBool::new(false));
         let (sender, rx) = MessageSender::new();
         let signals = SignalsManager::new();
+        let handshake = server_core::Handshake { version, hash };
 
         let obj = Self {
             connected,

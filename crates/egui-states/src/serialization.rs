@@ -18,6 +18,8 @@ impl<const N: usize> AsRef<[u8]> for StackVec<N> {
     }
 }
 
+// FastVec ---------------------------------------------------------------
+// -----------------------------------------------------------------------
 pub(crate) enum FastVec<const N: usize> {
     Heap(Vec<u8>),
     Stack(StackVec<N>),
@@ -188,9 +190,8 @@ impl<const N: usize> Flavor for FastVec<N> {
     }
 }
 
-#[cfg(feature = "client")]
-pub type MessageData = FastVec<32>;
-
+// ServerHeader ---------------------------------------------------------------
+// ----------------------------------------------------------------------------
 #[derive(Serialize, Deserialize)]
 pub(crate) enum ServerHeader {
     Value(u64, u32, bool, u32),
@@ -263,19 +264,28 @@ impl ServerHeader {
     }
 }
 
+// ClientHeader ---------------------------------------------------------------
+// ----------------------------------------------------------------------------
+#[cfg(feature = "client")]
+pub type MessageData = FastVec<32>;
+
 #[derive(Serialize, Deserialize)]
 pub(crate) enum ClientHeader {
     Value(u64, u32, bool, u32),
     Signal(u64, u32, u32),
     Ack(u64),
     Message(u32),
-    Handshake(u16, u64),
+    Handshake(u16, Option<u64>, Option<String>),
 }
 
 impl ClientHeader {
     #[cfg(feature = "client")]
-    pub fn serialize_handshake(protocol: u16, version: u64) -> FastVec<64> {
-        let header = ClientHeader::Handshake(protocol, version);
+    pub fn serialize_handshake(
+        protocol: u16,
+        version: Option<u64>,
+        hash: Option<String>,
+    ) -> FastVec<64> {
+        let header = ClientHeader::Handshake(protocol, version, hash);
         let data = postcard::to_stdvec(&header).expect("Failed to serialize handshake");
         FastVec::Heap(data)
     }
@@ -288,6 +298,8 @@ impl ClientHeader {
     }
 }
 
+// Message serialization ---------------------------------------------------------------
+// -------------------------------------------------------------------------------------
 #[cfg(feature = "client")]
 #[inline]
 pub(crate) fn to_message<T: Serialize>(value: T) -> MessageData {

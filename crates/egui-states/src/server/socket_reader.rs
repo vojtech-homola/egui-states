@@ -13,7 +13,7 @@ pub(crate) enum ClientMessage {
     Signal(u64, u32, Bytes),
     Ack(u64),
     Message(Bytes),
-    Handshake(u16, u64),
+    Handshake(u16, Option<u64>, Option<String>),
 }
 
 pub(crate) struct SocketReader {
@@ -111,11 +111,15 @@ impl SocketReader {
                 }
                 Ok(ClientMessage::Message(message_data))
             }
-            ClientHeader::Handshake(protocol_version, client_id) => {
+            ClientHeader::Handshake(protocol_version, client_version, hash) => {
                 if pointer + size < data.len() {
                     self.previous = Some((data, pointer + size, copy));
                 }
-                Ok(ClientMessage::Handshake(protocol_version, client_id))
+                Ok(ClientMessage::Handshake(
+                    protocol_version,
+                    client_version,
+                    hash,
+                ))
             }
         }
     }

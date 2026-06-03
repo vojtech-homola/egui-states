@@ -36,7 +36,8 @@ class StateServerCore:
         self,
         port: int,
         ip_addr: tuple[int, int, int, int] | None = None,
-        handshake: list[int] | None = None,
+        version: int | None = None,
+        hash: str | None = None,
     ) -> None: ...
     def start(self) -> None: ...
     def stop(self) -> None: ...

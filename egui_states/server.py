@@ -65,7 +65,8 @@ class StateServerBase[T: StatesBase]:
         signals_workers: int = 3,
         error_handler: Callable[[Exception], None] | None = None,
         ip_addr: tuple[int, int, int, int] | None = None,
-        handshake: list[int] | None = None,
+        version: int | None = None,
+        hash: str | None = None,
     ) -> None:
         """Initialize the SteteServer.
 
@@ -75,9 +76,10 @@ class StateServerBase[T: StatesBase]:
             signals_workers (int): The number of worker threads for signal handling.
             error_handler (Callable[[Exception], None] | None): The error handler function.
             ip_addr (tuple[int, int, int, int] | None): The IP address to bind the server to.
-            handshake (list[int] | None): The handshake bytes for client connection.
+            version (int | None): The optional version number for client connection.
+            hash (str | None): The optional hash string for client connection.
         """
-        self._server = StateServerCore(port, ip_addr, handshake)
+        self._server = StateServerCore(port, ip_addr, version, hash)
         self._signals_manager = SignalsManager(self._server, signals_workers, error_handler)
         self._states: T = state_class(self)
 

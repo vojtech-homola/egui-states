@@ -25,7 +25,8 @@ async fn start_gui_client(
     mut rx: UnboundedReceiver<Option<ChannelMessage>>,
     sender: MessageSender,
     client: Client,
-    handshake: u64,
+    version: Option<u64>,
+    hash: Option<String>,
 ) {
     loop {
         // wait for the connection signal
@@ -45,7 +46,7 @@ async fn start_gui_client(
         }
 
         // communicate handshake and initialization -------------------------
-        let message = ClientHeader::serialize_handshake(PROTOCOL_VERSION, handshake);
+        let message = ClientHeader::serialize_handshake(PROTOCOL_VERSION, version, hash.clone());
         if let Err(_) = socket_send.send(message).await {
             #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
             println!("Sending handshake failed.");
@@ -238,7 +239,12 @@ impl ClientBuilder {
         }
     }
 
-    pub fn build<T: State>(self, port: u16, handshake: u64) -> (T, Client) {
+    pub fn build<T: State>(
+        self,
+        port: u16,
+        version: Option<u64>,
+        hash: Option<String>,
+    ) -> (T, Client) {
         let Self {
             mut creator,
             sender,
@@ -269,7 +275,7 @@ impl ClientBuilder {
 
             let _ = thread.spawn(move || {
                 runtime.block_on(start_gui_client(
-                    addr, values, rx, sender, client, handshake,
+                    addr, values, rx, sender, client, version, hash,
                 ))
             });
         }
