@@ -86,6 +86,10 @@ pub(crate) async fn run(
                 }
             };
 
+        let peer_addr = websocket
+            .get_ref()
+            .peer_addr()
+            .map_or("".to_string(), |addr| addr.to_string());
         let (socket_tx, socket_rx) = websocket.split();
         let mut socket_reader = SocketReader::new(socket_rx);
 
@@ -155,6 +159,8 @@ pub(crate) async fn run(
                         break;
                     }
                 }
+
+                signals.on_connect(peer_addr);
 
                 let reader_handler = tokio::spawn(reader(
                     socket_reader,
@@ -249,11 +255,16 @@ async fn reader(
                 }
                 None => signals.error(&format!("value with id {} not found", id)),
             },
+            Ok(ClientMessage::Message(data)) => {
+                signals.client_message(data);
+            }
             Ok(ClientMessage::Handshake(_, _)) => {
                 signals.error("unexpected handshake message after connection established");
             }
         }
     }
+
+    signals.on_disconnect();
 
     // reset all pendings values
     for v in values.ack.values() {

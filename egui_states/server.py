@@ -1,11 +1,16 @@
 # ruff: noqa: D107
 from abc import ABC, abstractmethod
 from collections.abc import Callable
+from typing import Any
 
 from egui_states._core import PyObjectType, StateServerCore
 from egui_states.logging import LoggingSignal
 from egui_states.signals import SignalsManager
 from egui_states.structures import ISubStates, _SignalBase, _StaticBase
+
+_ON_CONNECT_ID = 1
+_ON_DISCONNECT_ID = 2
+_CLIENT_MESSAGE_ID = 3
 
 
 def _initialize(
@@ -79,6 +84,13 @@ class StateServerBase[T: StatesBase]:
         _initialize(self._states, "root", self._server, self._signals_manager, self._states._get_obj_types())
         self._server.finalize()
         self.logging = LoggingSignal(self._signals_manager, self._server)
+        self._on_connect: Callable[[str], Any] | None = None
+        self._on_disconnect: Callable[[], Any] | None = None
+        self._on_client_message: Callable[[str], Any] | None = None
+
+        self._server.signal_set_to_queue(_ON_CONNECT_ID)
+        self._server.signal_set_to_queue(_ON_DISCONNECT_ID)
+        self._server.signal_set_to_queue(_CLIENT_MESSAGE_ID)
 
     @property
     def states(self) -> T:
@@ -124,3 +136,38 @@ class StateServerBase[T: StatesBase]:
             error_handler(Callable[[Exception], None] | None): The error handler function.
         """
         self._signals_manager.set_error_handler(error_handler)
+
+    def on_connect(self, func: Callable[[str], Any] | None) -> None:
+        """Set the function to be called when a client connects.
+
+        Args:
+            func (Callable[[str], Any]): The function to be called when a client connects. It takes the client IP as an
+                argument.
+        """
+        self._on_connect = func
+        self._signals_manager.clear_callbacks(_ON_CONNECT_ID)
+        if func is not None:
+            self._signals_manager.add_callback(_ON_CONNECT_ID, func)
+
+    def on_disconnect(self, func: Callable[[], Any] | None) -> None:
+        """Set the function to be called when a client disconnects.
+
+        Args:
+            func (Callable[[], Any]): The function to be called when a client disconnects.
+        """
+        self._on_disconnect = func
+        self._signals_manager.clear_callbacks(_ON_DISCONNECT_ID)
+        if func is not None:
+            self._signals_manager.add_callback(_ON_DISCONNECT_ID, func)
+
+    def on_client_message(self, func: Callable[[str], Any] | None) -> None:
+        """Set the function to be called when a client sends a message.
+
+        Args:
+            func (Callable[[str], Any]): The function to be called when a client sends a message. It takes the message
+                string as an argument.
+        """
+        self._on_client_message = func
+        self._signals_manager.clear_callbacks(_CLIENT_MESSAGE_ID)
+        if func is not None:
+            self._signals_manager.add_callback(_CLIENT_MESSAGE_ID, func)

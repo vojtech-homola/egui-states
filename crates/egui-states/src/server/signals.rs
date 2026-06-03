@@ -4,46 +4,50 @@ use std::sync::Arc;
 use bytes::Bytes;
 use parking_lot::Mutex;
 
-use crate::hashing::{NoHashMap, NoHashSet, generate_value_id};
-use crate::serialization::{FastVec, serialize_to_data};
+use crate::hashing::{NoHashMap, NoHashSet};
+use crate::serialization::{FastVec, serialize, serialize_to_data};
 use crate::server::event::Event;
+
+pub(crate) const LOGGING_ID: u64 = 0;
+pub(crate) const ON_CONNECT_ID: u64 = 1;
+pub(crate) const ON_DISCONNECT_ID: u64 = 2;
+pub(crate) const CLIENT_MESSAGE_ID: u64 = 3;
 
 enum Signal {
     Single(Bytes),
     Queue(VecDeque<Bytes>),
 }
 
-struct OrderedMap {
-    values: NoHashMap<u64, Signal>,
-    indexes: VecDeque<u64>,
+struct ChangedInner {
+    values: NoHashMap<u64, Signal>, // stored signals
+    indexes: Vec<u64>,              // scheduling order; may contain stale duplicate IDs
+    blocked_list: NoHashSet<u64>,   // ids blocked by some thread
+    registered: NoHashSet<u64>,     // ids which are registered to be signaled
 }
 
-impl OrderedMap {
+impl ChangedInner {
     fn new() -> Self {
         Self {
             values: NoHashMap::default(),
-            indexes: VecDeque::new(),
+            indexes: Vec::new(),
+            blocked_list: NoHashSet::default(),
+            registered: NoHashSet::default(),
         }
     }
 
-    fn clear(&mut self, logging_id: u64) {
-        let log_value = self.values.remove(&logging_id);
-        let log_index = self.indexes.contains(&logging_id);
-
-        self.values.clear();
-        self.indexes.clear();
-
-        if let Some(log_value) = log_value {
-            self.values.insert(logging_id, log_value);
-        }
-        if log_index {
-            self.indexes.push_back(logging_id);
-        }
+    fn clear(&mut self) {
+        self.values.retain(|id, _| *id <= 9);
+        self.indexes.retain(|id| *id <= 9);
+        self.blocked_list.retain(|id| *id <= 9);
     }
 
-    fn insert(&mut self, id: u64, value: Bytes) {
-        let entry = self.values.entry(id);
-        match entry {
+    fn set(&mut self, id: u64, value: Bytes, event: &Event) {
+        if !self.registered.contains(&id) {
+            return;
+        }
+
+        self.indexes.push(id);
+        match self.values.entry(id) {
             Entry::Vacant(e) => {
                 e.insert(Signal::Single(value));
             }
@@ -52,30 +56,54 @@ impl OrderedMap {
                 Signal::Queue(v) => v.push_back(value),
             },
         }
-        self.indexes.push_back(id);
-    }
 
-    fn pop(&mut self, id: u64) -> Option<Bytes> {
-        match self.values.get_mut(&id) {
-            None => None,
-            Some(Signal::Single(_)) => match self.values.remove(&id).unwrap() {
-                Signal::Single(v) => Some(v),
-                _ => unreachable!(),
-            },
-            Some(Signal::Queue(queue)) => queue.pop_front(),
+        if !self.blocked_list.contains(&id) {
+            event.set_one();
         }
     }
 
-    fn pop_first(&mut self) -> Option<(u64, Bytes)> {
-        while let Some(id) = self.indexes.pop_front() {
-            if let Some(value) = self.pop(id) {
-                return Some((id, value));
-            } else {
-                while self.indexes.front().map_or(false, |next| *next == id) {
-                    self.indexes.pop_front();
-                }
+    fn get_id(&mut self, id: u64) -> Option<Bytes> {
+        match self.values.remove(&id) {
+            None => None,
+            Some(Signal::Single(v)) => {
+                self.indexes.retain(|&single_id| single_id != id);
+                Some(v)
+            }
+            Some(Signal::Queue(mut queue)) => {
+                let val = queue.pop_front();
+                self.values.insert(id, Signal::Queue(queue));
+                val
             }
         }
+    }
+
+    fn get(&mut self, last_id: Option<u64>) -> Option<(u64, Bytes)> {
+        if let Some(last_id) = last_id {
+            self.blocked_list.remove(&last_id);
+        }
+
+        let mut pos = 0;
+        while pos < self.indexes.len() {
+            let id = self.indexes[pos];
+
+            if self.blocked_list.contains(&id) {
+                pos += 1;
+                continue;
+            }
+
+            self.indexes.remove(pos);
+
+            if !self.registered.contains(&id) {
+                self.values.remove(&id);
+                continue;
+            }
+
+            if let Some(value) = self.get_id(id) {
+                self.blocked_list.insert(id);
+                return Some((id, value));
+            }
+        }
+
         None
     }
 
@@ -109,101 +137,17 @@ impl OrderedMap {
     }
 }
 
-struct ChangedInner {
-    values: OrderedMap,           // values not blocked
-    blocked_list: NoHashSet<u64>, // ids blocked by some thread
-    registered: NoHashSet<u64>,   // ids which are registered to be signaled
-}
-
-/*
-    Getting signals value in that way that if there is new signal with the same id which is
-    currently processed, it will wait for the same thread. So id is processed in order.
-*/
-impl ChangedInner {
-    fn new() -> Self {
-        Self {
-            values: OrderedMap::new(),
-            blocked_list: NoHashSet::default(),
-            registered: NoHashSet::default(),
-        }
-    }
-
-    fn clear(&mut self, logging_id: u64) {
-        let log_blocked = self.blocked_list.contains(&logging_id);
-        self.values.clear(logging_id);
-        self.blocked_list.clear();
-        if log_blocked {
-            self.blocked_list.insert(logging_id);
-        }
-    }
-
-    fn set(&mut self, id: u64, value: Bytes, event: &Event) {
-        self.values.insert(id, value);
-        if !self.blocked_list.contains(&id) {
-            event.set_one();
-        }
-    }
-
-    fn get(&mut self, last_id: Option<u64>) -> Option<(u64, Bytes)> {
-        match last_id {
-            // previous call was made
-            Some(last_id) => {
-                if self.blocked_list.contains(&last_id) {
-                    let val = self.values.pop(last_id);
-                    match val {
-                        Some(v) => Some((last_id, v)),
-                        None => {
-                            self.blocked_list.remove(&last_id);
-                            let val = self.values.pop_first();
-                            if let Some((id, _)) = &val {
-                                if self.registered.contains(id) {
-                                    self.blocked_list.insert(*id);
-                                    return val;
-                                }
-                            }
-                            return None;
-                        }
-                    }
-                } else {
-                    let val = self.values.pop_first();
-                    if let Some((id, _)) = &val {
-                        if self.registered.contains(id) {
-                            self.blocked_list.insert(*id);
-                            return val;
-                        }
-                    }
-                    return None;
-                }
-            }
-            // this is first time
-            None => {
-                let val = self.values.pop_first();
-                if let Some((id, _)) = &val {
-                    if self.registered.contains(id) {
-                        self.blocked_list.insert(*id);
-                        return val;
-                    }
-                }
-                return None;
-            }
-        }
-    }
-}
-
 #[derive(Clone)]
 pub(crate) struct SignalsManager {
     event: Event,
     values: Arc<Mutex<ChangedInner>>,
-    logging_id: u64,
 }
 
 impl SignalsManager {
     pub(crate) fn new() -> Self {
-        let logging_id = generate_value_id("__egui_states_logging");
         Self {
             event: Event::new(),
             values: Arc::new(Mutex::new(ChangedInner::new())),
-            logging_id,
         }
     }
 
@@ -212,7 +156,7 @@ impl SignalsManager {
     }
 
     pub(crate) fn reset(&self) {
-        self.values.lock().clear(self.logging_id);
+        self.values.lock().clear();
     }
 
     fn serialize_message(level: u8, text: impl ToString) -> Result<Bytes, ()> {
@@ -224,28 +168,49 @@ impl SignalsManager {
     }
 
     #[allow(dead_code)]
+    #[inline]
     pub(crate) fn debug(&self, message: impl ToString) {
         if let Ok(data) = Self::serialize_message(0u8, message) {
-            self.set(self.logging_id, data);
+            self.set(LOGGING_ID, data);
         }
     }
 
+    #[inline]
     pub(crate) fn info(&self, message: impl ToString) {
         if let Ok(data) = Self::serialize_message(1u8, message) {
-            self.set(self.logging_id, data);
+            self.set(LOGGING_ID, data);
         }
     }
 
+    #[inline]
     pub(crate) fn warning(&self, message: impl ToString) {
         if let Ok(data) = Self::serialize_message(2u8, message) {
-            self.set(self.logging_id, data);
+            self.set(LOGGING_ID, data);
         }
     }
 
+    #[inline]
     pub(crate) fn error(&self, message: impl ToString) {
         if let Ok(data) = Self::serialize_message(3u8, message) {
-            self.set(self.logging_id, data);
+            self.set(LOGGING_ID, data);
         }
+    }
+
+    #[inline]
+    pub(crate) fn on_connect(&self, peer_addr: String) {
+        if let Ok(result) = serialize::<String, 32>(&peer_addr) {
+            self.set(ON_CONNECT_ID, result.to_bytes());
+        }
+    }
+
+    #[inline]
+    pub(crate) fn on_disconnect(&self) {
+        self.set(ON_DISCONNECT_ID, Bytes::new());
+    }
+
+    #[inline]
+    pub(crate) fn client_message(&self, message: Bytes) {
+        self.set(CLIENT_MESSAGE_ID, message);
     }
 
     pub(crate) fn wait_changed_value(&self, last_id: Option<u64>) -> (u64, Bytes) {
@@ -263,19 +228,19 @@ impl SignalsManager {
         } else {
             let mut w = self.values.lock();
             w.registered.remove(&id);
-            w.blocked_list.remove(&id);
+            if let Some(Signal::Queue(mut q)) = w.values.remove(&id) {
+                q.clear();
+                w.values.insert(id, Signal::Queue(q));
+            }
+            w.indexes.retain(|queued_id| *queued_id != id);
         }
     }
 
     pub(crate) fn set_to_queue(&self, id: u64) {
-        self.values.lock().values.set_to_queue(id);
+        self.values.lock().set_to_queue(id);
     }
 
     pub(crate) fn set_to_single(&self, id: u64) {
-        self.values.lock().values.set_to_single(id);
-    }
-
-    pub(crate) fn get_logging_id(&self) -> u64 {
-        self.logging_id
+        self.values.lock().set_to_single(id);
     }
 }

@@ -136,13 +136,7 @@ impl Image {
                         ));
                     }
 
-                    self.update_c_image(
-                        &mut c_image,
-                        actual_pixel,
-                        pixels,
-                        data,
-                        image_type,
-                    )?;
+                    self.update_c_image(&mut c_image, actual_pixel, pixels, data, image_type)?;
 
                     if let Some((ref mut texture_handle, ref mut save_size)) = *self.inner.0.write()
                     {

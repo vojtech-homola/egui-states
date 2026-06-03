@@ -671,7 +671,11 @@ impl<T> Clone for DataMulti<T> {
 
 // functions -------------------------------------------------------------------
 #[inline]
-pub(crate) fn check_data_type(expected: DataType, actual: DataType, name: &str) -> Result<(), String> {
+pub(crate) fn check_data_type(
+    expected: DataType,
+    actual: DataType,
+    name: &str,
+) -> Result<(), String> {
     if expected != actual {
         return Err(format!(
             "Data type {:?} does not match expected type {:?} for Data: {}",

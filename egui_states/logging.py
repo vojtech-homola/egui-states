@@ -4,6 +4,8 @@ from enum import Enum
 from egui_states._core import StateServerCore
 from egui_states.signals import SignalsManager
 
+_LOGGING_ID = 0
+
 
 class LogLevel(Enum):
     """Logging levels."""
@@ -20,9 +22,8 @@ class LoggingSignal:
     def __init__(self, signals_manager: SignalsManager, server: StateServerCore) -> None:
         """Initialize the LoggingSignal."""
         self._loggers: dict[int, list[Callable[[str], None]]] = {0: [], 1: [], 2: [], 3: []}
-        logging_id = server.signal_get_logging_id()
-        signals_manager.add_callback(logging_id, self._callback)
-        server.signal_set_to_queue(logging_id)
+        signals_manager.add_callback(_LOGGING_ID, self._callback)
+        server.signal_set_to_queue(_LOGGING_ID)
 
     def _callback(self, message: tuple[int, str]) -> None:
         level = message[0]

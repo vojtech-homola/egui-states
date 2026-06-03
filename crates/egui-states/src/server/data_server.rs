@@ -3,9 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use parking_lot::{Mutex, RwLock, RwLockWriteGuard};
 
-use crate::data_transport::{
-    DataHeader, DataType, MultiDataHeader, TransportType,
-};
+use crate::data_transport::{DataHeader, DataType, MultiDataHeader, TransportType};
 use crate::hashing::NoHashMap;
 use crate::serialization::{FastVec, MSG_SIZE_THRESHOLD};
 use crate::server::event::Event;
@@ -610,7 +608,11 @@ impl SyncTrait for DataMulti {
 }
 
 // functions ------------------------------------------------
-pub(crate) fn check_data_type(data: &DataHolder, data_type: DataType, item_size: usize) -> Result<(), String> {
+pub(crate) fn check_data_type(
+    data: &DataHolder,
+    data_type: DataType,
+    item_size: usize,
+) -> Result<(), String> {
     if data.data_type != data_type {
         return Err(format!(
             "Data type mismatch: expected {:?}, got {:?}",
