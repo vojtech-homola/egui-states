@@ -249,7 +249,7 @@ where
         self.creator.get_version_hash()
     }
 
-    pub fn build(self, port: u16, version: Option<u64>, hash: Option<String>) -> (T, Client) {
+    pub fn build(self, port: u16, version: Option<u64>, token: Option<String>) -> (T, Client) {
         let Self {
             creator,
             states,
@@ -280,7 +280,7 @@ where
 
             let _ = thread.spawn(move || {
                 runtime.block_on(start_gui_client(
-                    addr, values, rx, sender, client, version, hash,
+                    addr, values, rx, sender, client, version, token,
                 ))
             });
         }
@@ -288,7 +288,7 @@ where
         #[cfg(target_arch = "wasm32")]
         {
             wasm_bindgen_futures::spawn_local(async move {
-                start_gui_client(addr, values, rx, sender, client, handshake).await;
+                start_gui_client(addr, values, rx, sender, client, version, token).await;
             });
         }
 

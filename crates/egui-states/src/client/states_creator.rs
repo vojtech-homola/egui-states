@@ -183,6 +183,7 @@ impl StatesCreator for StatesCreatorClient {
         let parent = format!("{}.{}", self.parent, name);
         let mut creator = StatesCreatorClient::new(self.sender.clone(), parent);
         let substate = S::new(&mut creator);
+        creator.version_hasher.finish().hash(&mut self.version_hasher);
 
         self.val.values.extend(creator.val.values);
         self.val.values_take.extend(creator.val.values_take);

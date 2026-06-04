@@ -228,11 +228,7 @@ fn check_handshake(
         match token {
             Some(client_token) => {
                 if client_token != *server_token {
-                    let message = format!(
-                        "attempted to connect with wrong token: expected {}, got {}",
-                        server_token, client_token
-                    );
-                    return Err(message);
+                    return Err("attempted to connect with wrong token".to_string());
                 }
             }
             _ => return Err("client token missing".to_string()),

@@ -69,6 +69,8 @@ impl StatesCreator for StatesCreatorBuild {
 
         let mut builder = Self::new(&parent);
         let substate = S::new(&mut builder);
+        builder.version_hasher.finish().hash(&mut self.version_hasher);
+
         let states = builder.get_states();
         self.states
             .push(StateType::SubState(parent, S::NAME, states));
