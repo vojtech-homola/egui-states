@@ -4,6 +4,7 @@ __pycache__
 /venv
 /.vscode/settings.json
 /.zed
+/.vscode
 
 *.pyd
 *.so
