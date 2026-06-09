@@ -5,7 +5,7 @@ use std::{fs, io::Write};
 
 use crate::State;
 use crate::build_scripts::scripts;
-use crate::build_scripts::state_creator::StateType;
+use crate::build_scripts::states_creator_build::StateType;
 use crate::data_transport::DataType;
 use crate::transport::{InitValue, ObjectType};
 

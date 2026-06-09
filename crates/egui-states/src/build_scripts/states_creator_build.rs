@@ -9,7 +9,7 @@ use crate::client::data_take::{DataMultiTake, DataTake};
 use crate::client::image::Image;
 
 use crate::client::messages::MessageSender;
-use crate::client::states_creator::{StatesCreator, hash_id, hash_id_type};
+use crate::client::states_creator::{self, StatesCreator, hash_id, hash_id_type};
 use crate::client::value_map::MapState;
 use crate::client::value_vec::VecState;
 use crate::client::values::{
@@ -69,7 +69,10 @@ impl StatesCreator for StatesCreatorBuild {
 
         let mut builder = Self::new(&parent);
         let substate = S::new(&mut builder);
-        builder.version_hasher.finish().hash(&mut self.version_hasher);
+        builder
+            .version_hasher
+            .finish()
+            .hash(&mut self.version_hasher);
 
         let states = builder.get_states();
         self.states
@@ -86,7 +89,7 @@ impl StatesCreator for StatesCreatorBuild {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
         let type_id = T::get_type().get_hash();
-        hash_id_type(&mut self.version_hasher, id, type_id);
+        hash_id_type(&mut self.version_hasher, id, type_id, states_creator::VALUE_HASH_ID);
 
         let init = value.init_value();
         let value = Value::new(name.clone(), id, type_id, value, self.sender.clone());
@@ -104,7 +107,7 @@ impl StatesCreator for StatesCreatorBuild {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
         let type_id = T::get_type().get_hash();
-        hash_id_type(&mut self.version_hasher, id, type_id);
+        hash_id_type(&mut self.version_hasher, id, type_id, states_creator::VALUE_TAKE_HASH_ID);
 
         let value = ValueTake::new(name.clone(), id, type_id, self.sender.clone());
 
@@ -122,7 +125,7 @@ impl StatesCreator for StatesCreatorBuild {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
         let type_id = T::get_type().get_hash();
-        hash_id_type(&mut self.version_hasher, id, type_id);
+        hash_id_type(&mut self.version_hasher, id, type_id, states_creator::ATOMIC_HASH_ID);
 
         let init = value.init_value();
         let value = ValueAtomic::new(name.clone(), id, type_id, value, self.sender.clone());
@@ -140,7 +143,7 @@ impl StatesCreator for StatesCreatorBuild {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
         let type_id = T::get_type().get_hash();
-        hash_id_type(&mut self.version_hasher, id, type_id);
+        hash_id_type(&mut self.version_hasher, id, type_id, states_creator::STATIC_HASH_ID);
 
         let init = value.init_value();
         let value = Static::new(name.clone(), id, type_id, value);
@@ -164,7 +167,7 @@ impl StatesCreator for StatesCreatorBuild {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
         let type_id = T::get_type().get_hash();
-        hash_id_type(&mut self.version_hasher, id, type_id);
+        hash_id_type(&mut self.version_hasher, id, type_id, states_creator::STATIC_ATOMIC_HASH_ID);
 
         let init = value.init_value();
         let value = StaticAtomic::new(name.clone(), id, type_id, value);
@@ -194,7 +197,7 @@ impl StatesCreator for StatesCreatorBuild {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
         let type_id = T::get_type().get_hash();
-        hash_id_type(&mut self.version_hasher, id, type_id);
+        hash_id_type(&mut self.version_hasher, id, type_id, states_creator::SIGNAL_HASH_ID);
 
         let signal = Signal::new(id, type_id, self.sender.clone());
 
@@ -212,7 +215,7 @@ impl StatesCreator for StatesCreatorBuild {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
         let type_id = K::get_type().get_hash() ^ V::get_type().get_hash();
-        hash_id_type(&mut self.version_hasher, id, type_id);
+        hash_id_type(&mut self.version_hasher, id, type_id, states_creator::MAP_HASH_ID);
 
         let value = MapState::new(name.clone(), type_id);
 
@@ -228,7 +231,7 @@ impl StatesCreator for StatesCreatorBuild {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
         let type_id = T::get_type().get_hash();
-        hash_id_type(&mut self.version_hasher, id, type_id);
+        hash_id_type(&mut self.version_hasher, id, type_id, states_creator::VEC_HASH_ID);
 
         let value = VecState::new(name.clone(), type_id);
 
@@ -243,7 +246,7 @@ impl StatesCreator for StatesCreatorBuild {
     {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
-        hash_id_type(&mut self.version_hasher, id, T::get_type_id());
+        hash_id_type(&mut self.version_hasher, id, T::get_type_id(), states_creator::DATA_HASH_ID);
 
         let value = Data::new(name.clone(), id, self.sender.clone());
 
@@ -257,7 +260,7 @@ impl StatesCreator for StatesCreatorBuild {
     {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
-        hash_id_type(&mut self.version_hasher, id, T::get_type_id());
+        hash_id_type(&mut self.version_hasher, id, T::get_type_id(), states_creator::DATA_MULTI_HASH_ID);
 
         let value = DataMulti::new(name.clone(), id, self.sender.clone());
 
@@ -271,7 +274,7 @@ impl StatesCreator for StatesCreatorBuild {
     {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
-        hash_id_type(&mut self.version_hasher, id, T::get_type_id());
+        hash_id_type(&mut self.version_hasher, id, T::get_type_id(), states_creator::DATA_TAKE_HASH_ID);
 
         let value = DataTake::new(name.clone(), id, self.sender.clone());
 
@@ -285,7 +288,7 @@ impl StatesCreator for StatesCreatorBuild {
     {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
-        hash_id_type(&mut self.version_hasher, id, T::get_type_id());
+        hash_id_type(&mut self.version_hasher, id, T::get_type_id(), states_creator::DATA_MULTI_TAKE_HASH_ID);
 
         let value = DataMultiTake::new(name.clone(), id, self.sender.clone());
 
