@@ -119,6 +119,13 @@ impl ObjectType {
         self.hash(&mut hasher);
         hasher.finish_u32()
     }
+
+    pub fn get_hash_from(&self, hash: u32) -> u32 {
+        let mut hasher = StableHasher::new();
+        hash.hash(&mut hasher);
+        self.hash(&mut hasher);
+        hasher.finish_u32()
+    }
 }
 
 pub unsafe trait Transportable {

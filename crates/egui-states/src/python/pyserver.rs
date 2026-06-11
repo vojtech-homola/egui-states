@@ -1174,7 +1174,7 @@ impl StateServerCore {
         let key_object_type = key_type.borrow().object_type.clone_py(py);
         let value_object_type = value_type.borrow().object_type.clone_py(py);
 
-        let type_id = key_object_type.get_hash(py)? ^ value_object_type.get_hash(py)?;
+        let type_id = value_object_type.get_hash_from(py, key_object_type.get_hash(py)?)?;
         let object_type = PyObjectType::Map(Box::new(key_object_type), Box::new(value_object_type));
 
         let value_id = self

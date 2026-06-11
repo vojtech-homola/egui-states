@@ -205,7 +205,7 @@ class State(StatesBase):
 class StatesServer(StateServerBase):
     """The main class for the StateServer for UI."""
 
-    VERSION_HASH: int = 18180194803043882666
+    VERSION_HASH: int = 5850504962483486421
     states: State
 
     def __init__(

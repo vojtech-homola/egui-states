@@ -339,7 +339,7 @@ impl StatesCreator for StatesCreatorClient {
     {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
-        let type_id = K::get_type().get_hash() ^ V::get_type().get_hash();
+        let type_id = V::get_type().get_hash_from(K::get_type().get_hash());
         hash_id_type(&mut self.version_hasher, id, type_id, MAP_HASH_ID);
 
         let value = MapState::new(name, type_id);
