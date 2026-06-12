@@ -8,6 +8,6 @@ crate-type = ["cdylib"]
 path = "lib.rs"
 
 [dependencies]
-pyo3 = { version = "0.28", features = ["extension-module"] }
+pyo3 = { version = "0.29", features = ["extension-module"] }
 
 egui_states = { path = "../egui-states", default-features = false, features = ["python"] }
