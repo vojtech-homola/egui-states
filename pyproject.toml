@@ -1,5 +1,5 @@
 [build-system]
-requires = ["maturin>=1.13"]
+requires = ["maturin>=1.14"]
 build-backend = "maturin"
 
 [project]
@@ -14,7 +14,7 @@ readme = "README.md"
 dependencies = ["numpy"]
 
 [dependency-groups]
-dev = ["pytest", "ipython", "matplotlib", "maturin", "git-cliff"]
+dev = ["pytest", "ipython", "matplotlib", "maturin>=1.14", "git-cliff"]
 
 [tool.maturin]
 bindings = "pyo3"
