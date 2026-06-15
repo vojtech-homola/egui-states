@@ -137,6 +137,12 @@ impl PyObjectType {
         let res = self.get_core_type(py)?.get_hash();
         Ok(res)
     }
+
+    #[inline]
+    pub(crate) fn get_hash_from(&self, py: Python, hash: u32) -> PyResult<u32> {
+        let res = self.get_core_type(py)?.get_hash_from(hash);
+        Ok(res)
+    }
 }
 
 #[pyclass(name = "PyObjectType")]

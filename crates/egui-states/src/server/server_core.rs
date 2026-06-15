@@ -24,6 +24,12 @@ enum ChannelHolder {
     Rx(MessageReceiver),
 }
 
+#[derive(Clone)]
+pub(crate) struct Handshake {
+    pub version: Option<u64>,
+    pub token: Option<String>,
+}
+
 pub(crate) async fn run(
     sender: MessageSender,
     rx: MessageReceiver,
@@ -32,7 +38,7 @@ pub(crate) async fn run(
     values: ServerStatesList,
     signals: SignalsManager,
     addr: SocketAddrV4,
-    handshake: Option<Vec<u64>>,
+    handshake: Handshake,
 ) -> MessageReceiver {
     // listen to incoming connections
     let listener = match TcpListener::bind(addr).await {
@@ -101,21 +107,10 @@ pub(crate) async fn run(
                 connected.store(false, Ordering::Release);
                 continue;
             }
-            Ok(ClientMessage::Handshake(p, h)) => {
-                if p != PROTOCOL_VERSION {
-                    let message = format!(
-                        "attempted to connect with wrong protocol version: expected {}, got {}",
-                        PROTOCOL_VERSION, p
-                    );
-                    signals.warning(&message);
+            Ok(ClientMessage::Handshake(p, v, h)) => {
+                if let Err(e) = check_handshake(&handshake, p, v, h) {
+                    signals.warning(&e);
                     continue;
-                }
-
-                if let Some(ref hash) = handshake {
-                    if !hash.contains(&h) {
-                        signals.warning("attempted to connect with wrong hash");
-                        continue;
-                    }
                 }
 
                 let mut rx = match holder {
@@ -200,6 +195,49 @@ pub(crate) async fn run(
     }
 }
 
+fn check_handshake(
+    server_handshake: &Handshake,
+    client_protocol: u16,
+    version: Option<u64>,
+    token: Option<String>,
+) -> Result<(), String> {
+    if client_protocol != PROTOCOL_VERSION {
+        let message = format!(
+            "attempted to connect with wrong protocol version: expected {}, got {}",
+            PROTOCOL_VERSION, client_protocol
+        );
+        return Err(message);
+    }
+
+    if let Some(server_version) = server_handshake.version {
+        match version {
+            Some(client_version) => {
+                if client_version != server_version {
+                    let message = format!(
+                        "attempted to connect with wrong version: expected {}, got {}",
+                        server_version, client_version
+                    );
+                    return Err(message);
+                }
+            }
+            _ => return Err("client version missing".to_string()),
+        }
+    }
+
+    if let Some(server_token) = &server_handshake.token {
+        match token {
+            Some(client_token) => {
+                if client_token != *server_token {
+                    return Err("attempted to connect with wrong token".to_string());
+                }
+            }
+            _ => return Err("client token missing".to_string()),
+        }
+    }
+
+    Ok(())
+}
+
 async fn reader(
     mut socket_rx: SocketReader,
     connected: Arc<AtomicBool>,
@@ -258,7 +296,7 @@ async fn reader(
             Ok(ClientMessage::Message(data)) => {
                 signals.client_message(data);
             }
-            Ok(ClientMessage::Handshake(_, _)) => {
+            Ok(ClientMessage::Handshake(_, _, _)) => {
                 signals.error("unexpected handshake message after connection established");
             }
         }

@@ -205,6 +205,7 @@ class State(StatesBase):
 class StatesServer(StateServerBase):
     """The main class for the StateServer for UI."""
 
+    VERSION_HASH: int = 5850504962483486421
     states: State
 
     def __init__(
@@ -213,7 +214,8 @@ class StatesServer(StateServerBase):
         signals_workers: int = 3,
         error_handler: Callable[[Exception], None] | None = None,
         ip_addr: tuple[int, int, int, int] | None = None,
-        handshake: list[int] | None = None,
+        version: int | None = None,
+        token: str | None = None,
     ) -> None:
         """Initialize the StateServer.
 
@@ -222,6 +224,7 @@ class StatesServer(StateServerBase):
             signals_workers (int, optional): Number of workers for signal processing. Defaults to 3.
             error_handler (Callable[[Exception], None] | None, optional): Error handler function. Defaults to None.
             ip_addr (tuple[int, int, int, int] | None, optional): IP address to bind to. Defaults to None.
-            handshake (list[int] | None, optional): Handshake bytes. Defaults to None.
+            version (int, optional): The optional version number for client connection.
+            token (str, optional): The optional token string for client connection.
         """
-        super().__init__(State, port, signals_workers, error_handler, ip_addr, handshake)
+        super().__init__(State, port, signals_workers, error_handler, ip_addr, version, token)

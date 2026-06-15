@@ -5,7 +5,7 @@ use std::{fs, io::Write};
 
 use crate::State;
 use crate::build_scripts::scripts;
-use crate::build_scripts::state_creator::StateType;
+use crate::build_scripts::states_creator_build::StateType;
 use crate::data_transport::DataType;
 use crate::transport::{InitValue, ObjectType};
 
@@ -430,7 +430,7 @@ fn order_structs(items: &Vec<(String, ObjectType)>, order: &mut VecDeque<String>
 }
 
 pub fn generate_python<S: State>(path: impl ToString) -> Result<(), String> {
-    let states = scripts::parse_states::<S>();
+    let (states, version_hash) = scripts::parse_states::<S>();
 
     let mut values_list = Vec::new();
     scripts::states_into_values_list(&states, &mut values_list);
@@ -553,7 +553,9 @@ class StatesServer(StateServerBase):
     """The main class for the StateServer for UI.""""#;
         file.write_all(text.as_bytes()).unwrap();
 
-        file.write_all(format!("\n\n    states: {}\n", root_name).as_bytes())
+        file.write_all(format!("\n\n    VERSION_HASH: int = {}\n", version_hash).as_bytes())
+            .unwrap();
+        file.write_all(format!("    states: {}\n", root_name).as_bytes())
             .unwrap();
 
         let text = r#"
@@ -563,7 +565,8 @@ class StatesServer(StateServerBase):
         signals_workers: int = 3,
         error_handler: Callable[[Exception], None] | None = None,
         ip_addr: tuple[int, int, int, int] | None = None,
-        handshake: list[int] | None = None,
+        version: int | None = None,
+        token: str | None = None,
     ) -> None:
         """Initialize the StateServer.
 
@@ -572,14 +575,15 @@ class StatesServer(StateServerBase):
             signals_workers (int, optional): Number of workers for signal processing. Defaults to 3.
             error_handler (Callable[[Exception], None] | None, optional): Error handler function. Defaults to None.
             ip_addr (tuple[int, int, int, int] | None, optional): IP address to bind to. Defaults to None.
-            handshake (list[int] | None, optional): Handshake bytes. Defaults to None.
+            version (int, optional): The optional version number for client connection.
+            token (str, optional): The optional token string for client connection.
         """
         "#;
         file.write_all(text.as_bytes()).unwrap();
 
         file.write_all(
             format!(
-                "super().__init__({}, port, signals_workers, error_handler, ip_addr, handshake)\n",
+                "super().__init__({}, port, signals_workers, error_handler, ip_addr, version, token)\n",
                 root_name
             )
             .as_bytes(),

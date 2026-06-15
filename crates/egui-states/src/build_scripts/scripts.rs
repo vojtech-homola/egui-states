@@ -1,14 +1,18 @@
 use std::collections::BTreeMap;
 
 use crate::State;
-use crate::build_scripts::state_creator::{StateType, StatesCreatorBuild};
+use crate::build_scripts::states_creator_build::{StateType, StatesCreatorBuild};
 use crate::transport::ObjectType;
 
-pub(crate) fn parse_states<S: State>() -> StateType {
+pub(crate) fn parse_states<S: State>() -> (StateType, u64) {
     let mut creator = StatesCreatorBuild::new("root");
     let _ = S::new(&mut creator);
+    let version_hash = creator.get_version_hash();
     let states = creator.get_states();
-    StateType::SubState("root".to_string(), S::NAME, states)
+    (
+        StateType::SubState("root".to_string(), S::NAME, states),
+        version_hash,
+    )
 }
 
 fn collect_enums(type_info: &ObjectType, enums: &mut BTreeMap<String, Vec<(String, i32)>>) {

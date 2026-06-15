@@ -1,4 +1,4 @@
-use std::hash::Hash;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -15,8 +15,20 @@ use crate::client::values::{
     GetQueueType, Signal, Static, StaticAtomic, UpdateValue, UpdateValueTake, Value, ValueAtomic,
     ValueTake,
 };
-use crate::hashing::{NoHashMap, generate_value_id};
+use crate::hashing::{NoHashMap, StableHasher, generate_value_id};
 use crate::transport::Transportable;
+
+#[inline]
+pub(crate) fn hash_id_type(hasher: &mut StableHasher, id: u64, type_id: u32, hash_id: u8) {
+    id.hash(hasher);
+    type_id.hash(hasher);
+    hash_id.hash(hasher);
+}
+
+#[inline]
+pub(crate) fn hash_id(hasher: &mut StableHasher, id: u64) {
+    id.hash(hasher);
+}
 
 pub trait StatesCreator {
     fn substate<S: State>(&mut self, name: &str) -> S;
@@ -138,10 +150,24 @@ impl ValuesList {
     }
 }
 
+pub(crate) const VALUE_HASH_ID: u8 = 0;
+pub(crate) const VALUE_TAKE_HASH_ID: u8 = 1;
+pub(crate) const ATOMIC_HASH_ID: u8 = 2;
+pub(crate) const STATIC_HASH_ID: u8 = 3;
+pub(crate) const STATIC_ATOMIC_HASH_ID: u8 = 4;
+pub(crate) const SIGNAL_HASH_ID: u8 = 5;
+pub(crate) const MAP_HASH_ID: u8 = 6;
+pub(crate) const VEC_HASH_ID: u8 = 7;
+pub(crate) const DATA_HASH_ID: u8 = 8;
+pub(crate) const DATA_MULTI_HASH_ID: u8 = 9;
+pub(crate) const DATA_TAKE_HASH_ID: u8 = 10;
+pub(crate) const DATA_MULTI_TAKE_HASH_ID: u8 = 11;
+
 pub struct StatesCreatorClient {
     val: ValuesList,
     sender: MessageSender,
     parent: String,
+    version_hasher: StableHasher,
 }
 
 impl StatesCreatorClient {
@@ -150,7 +176,12 @@ impl StatesCreatorClient {
             val: ValuesList::new(),
             sender,
             parent,
+            version_hasher: StableHasher::new(),
         }
+    }
+
+    pub fn get_version_hash(&self) -> u64 {
+        self.version_hasher.finish()
     }
 
     pub(crate) fn get_values(self) -> ValuesList {
@@ -165,6 +196,10 @@ impl StatesCreator for StatesCreatorClient {
         let parent = format!("{}.{}", self.parent, name);
         let mut creator = StatesCreatorClient::new(self.sender.clone(), parent);
         let substate = S::new(&mut creator);
+        creator
+            .version_hasher
+            .finish()
+            .hash(&mut self.version_hasher);
 
         self.val.values.extend(creator.val.values);
         self.val.values_take.extend(creator.val.values_take);
@@ -188,6 +223,8 @@ impl StatesCreator for StatesCreatorClient {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
         let type_id = T::get_type().get_hash();
+        hash_id_type(&mut self.version_hasher, id, type_id, VALUE_HASH_ID);
+
         let value = Value::new(name, id, type_id, value, self.sender.clone());
 
         self.val.values.insert(id, Arc::new(value.clone()));
@@ -201,6 +238,8 @@ impl StatesCreator for StatesCreatorClient {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
         let type_id = T::get_type().get_hash();
+        hash_id_type(&mut self.version_hasher, id, type_id, VALUE_TAKE_HASH_ID);
+
         let value = ValueTake::new(name, id, type_id, self.sender.clone());
 
         self.val.values_take.insert(id, Arc::new(value.clone()));
@@ -222,6 +261,8 @@ impl StatesCreator for StatesCreatorClient {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
         let type_id = T::get_type().get_hash();
+        hash_id_type(&mut self.version_hasher, id, type_id, ATOMIC_HASH_ID);
+
         let value = ValueAtomic::new(name, id, type_id, value, self.sender.clone());
 
         self.val.values.insert(id, Arc::new(value.clone()));
@@ -235,6 +276,8 @@ impl StatesCreator for StatesCreatorClient {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
         let type_id = T::get_type().get_hash();
+        hash_id_type(&mut self.version_hasher, id, type_id, STATIC_HASH_ID);
+
         let value = Static::new(name, id, type_id, value);
 
         self.val.static_values.insert(id, Arc::new(value.clone()));
@@ -255,6 +298,8 @@ impl StatesCreator for StatesCreatorClient {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
         let type_id = T::get_type().get_hash();
+        hash_id_type(&mut self.version_hasher, id, type_id, STATIC_ATOMIC_HASH_ID);
+
         let value = StaticAtomic::new(name, id, type_id, value);
 
         self.val.static_values.insert(id, Arc::new(value.clone()));
@@ -264,6 +309,8 @@ impl StatesCreator for StatesCreatorClient {
     fn image(&mut self, name: &str) -> Image {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
+        hash_id(&mut self.version_hasher, id);
+
         let value = Image::new(name, id, self.sender.clone());
 
         self.val.images.insert(id, value.clone());
@@ -278,6 +325,8 @@ impl StatesCreator for StatesCreatorClient {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
         let type_id = T::get_type().get_hash();
+        hash_id_type(&mut self.version_hasher, id, type_id, SIGNAL_HASH_ID);
+
         let signal = Signal::new(id, type_id, self.sender.clone());
 
         signal
@@ -290,9 +339,10 @@ impl StatesCreator for StatesCreatorClient {
     {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
-        let type_id = K::get_type().get_hash() ^ V::get_type().get_hash();
-        let value = MapState::new(name, type_id);
+        let type_id = V::get_type().get_hash_from(K::get_type().get_hash());
+        hash_id_type(&mut self.version_hasher, id, type_id, MAP_HASH_ID);
 
+        let value = MapState::new(name, type_id);
         self.val.maps.insert(id, Arc::new(value.clone()));
         value
     }
@@ -304,6 +354,8 @@ impl StatesCreator for StatesCreatorClient {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
         let type_id = T::get_type().get_hash();
+        hash_id_type(&mut self.version_hasher, id, type_id, VEC_HASH_ID);
+
         let value = VecState::new(name, type_id);
 
         self.val.vecs.insert(id, Arc::new(value.clone()));
@@ -316,6 +368,8 @@ impl StatesCreator for StatesCreatorClient {
     {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
+        hash_id_type(&mut self.version_hasher, id, T::get_type_id(), DATA_HASH_ID);
+
         let data = Data::new(name, id, self.sender.clone());
 
         self.val.data.insert(id, Arc::new(data.clone()));
@@ -328,6 +382,13 @@ impl StatesCreator for StatesCreatorClient {
     {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
+        hash_id_type(
+            &mut self.version_hasher,
+            id,
+            T::get_type_id(),
+            DATA_MULTI_HASH_ID,
+        );
+
         let multi_data = DataMulti::new(name, id, self.sender.clone());
 
         self.val.multi_data.insert(id, Arc::new(multi_data.clone()));
@@ -340,6 +401,13 @@ impl StatesCreator for StatesCreatorClient {
     {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
+        hash_id_type(
+            &mut self.version_hasher,
+            id,
+            T::get_type_id(),
+            DATA_TAKE_HASH_ID,
+        );
+
         let data_take = DataTake::new(name, id, self.sender.clone());
 
         self.val.data_take.insert(id, Arc::new(data_take.clone()));
@@ -352,6 +420,13 @@ impl StatesCreator for StatesCreatorClient {
     {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
+        hash_id_type(
+            &mut self.version_hasher,
+            id,
+            T::get_type_id(),
+            DATA_MULTI_TAKE_HASH_ID,
+        );
+
         let data_multi_take = DataMultiTake::new(name, id, self.sender.clone());
 
         self.val
