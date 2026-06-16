@@ -12,7 +12,7 @@ use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::{Message, protocol::WebSocketConfig};
 
 use crate::PROTOCOL_VERSION;
-use crate::event_async::Event;
+use crate::event::Event;
 use crate::serialization::{MAX_MSG_COUNT, MSG_SIZE_THRESHOLD, ServerHeader, serialize};
 use crate::server::sender::{MessageReceiver, MessageSender, SenderData};
 use crate::server::server::ServerStatesList;
@@ -56,7 +56,7 @@ pub(crate) async fn run(
         // check for stop event or incoming connection
         let stream = tokio::select! {
             biased;
-            _ = stop_event.wait_clear() => {
+            _ = stop_event.wait_clear_async() => {
                 break;
             }
             s = listener.accept() => {

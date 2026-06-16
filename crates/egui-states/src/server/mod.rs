@@ -1,4 +1,3 @@
-mod event;
 mod sender;
 mod server_core;
 mod socket_reader;

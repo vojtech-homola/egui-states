@@ -1,5 +1,3 @@
-mod event;
-
 pub(crate) mod atomics;
 pub(crate) mod client;
 pub(crate) mod data;

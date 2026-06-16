@@ -4,10 +4,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use parking_lot::{Mutex, RwLock};
 
+use crate::event::Event;
 use crate::image_transport::{ImageHeader, ImageSetHeader, ImageType};
 use crate::serialization::ServerHeader;
 use crate::serialization::{FastVec, MSG_SIZE_THRESHOLD};
-use crate::server::event::Event;
 use crate::server::sender::MessageSender;
 use crate::server::server::{Acknowledge, SyncTrait};
 

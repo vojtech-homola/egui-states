@@ -4,7 +4,6 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use crate::client::atomics::{Atomic, AtomicLock, AtomicLockStatic, AtomicStatic};
-use crate::client::event::EventUniversal;
 use crate::client::messages::{ChannelMessage, MessageSender};
 use crate::serialization::{deserialize, to_message};
 
@@ -428,7 +427,6 @@ pub struct ValueTake<T> {
     type_id: u32,
     value: Arc<RwLock<Option<(T, bool)>>>,
     sender: MessageSender,
-    event: EventUniversal,
 }
 
 impl<T> ValueTake<T> {
@@ -439,7 +437,6 @@ impl<T> ValueTake<T> {
             type_id,
             value: Arc::new(RwLock::new(None)),
             sender,
-            event: EventUniversal::new(),
         }
     }
 
@@ -456,44 +453,6 @@ impl<T> ValueTake<T> {
 
     pub fn is_some(&self) -> bool {
         self.value.read().is_some()
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn wait(&self) {
-        while self.value.read().is_none() {
-            self.event.wait_clear_blocking();
-        }
-    }
-
-    pub async fn wait_async(&self) {
-        while self.value.read().is_none() {
-            self.event.wait_clear().await;
-        }
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn wait_take(&self) -> T {
-        loop {
-            if let Some((value, blocking)) = self.value.write().take() {
-                if blocking {
-                    self.sender.send(ChannelMessage::Ack(self.id));
-                }
-                return value;
-            }
-            self.event.wait_clear_blocking();
-        }
-    }
-
-    pub async fn wait_take_async(&self) -> T {
-        loop {
-            if let Some((value, blocking)) = self.value.write().take() {
-                if blocking {
-                    self.sender.send(ChannelMessage::Ack(self.id));
-                }
-                return value;
-            }
-            self.event.wait_clear().await;
-        }
     }
 }
 
@@ -516,7 +475,6 @@ where
             format!("Parse error: {} for value: {}", e, self.name)
         })?;
         *self.value.write() = Some((value, blocking));
-        self.event.set();
 
         Ok(())
     }
@@ -530,7 +488,6 @@ impl<T> Clone for ValueTake<T> {
             type_id: self.type_id,
             value: self.value.clone(),
             sender: self.sender.clone(),
-            event: self.event.clone(),
         }
     }
 }
