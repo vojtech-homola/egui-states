@@ -1,0 +1,31 @@
+// Project-local debug tasks
+//
+// For more documentation on how to configure debug tasks,
+// see: https://zed.dev/docs/debugger
+[
+  {
+    "label": "gui",
+    "adapter": "CodeLLDB",
+    "build": {
+      "command": "cargo",
+      "args": ["build", "-p", "gui", "--bin", "GuiTest"]
+    },
+    "program": "$ZED_WORKTREE_ROOT/target/debug/GuiTest",
+    "request": "launch",
+    "env": {
+      "WAYLAND_DISPLAY": ""
+    },
+    "sourceLanguages": ["rust"]
+  },
+  {
+    "label": "server",
+    "adapter": "Debugpy",
+    "request": "launch",
+    "module": "IPython",
+    "args": [
+      "-i",
+      "example/python/example.py",
+      "--matplotlib"
+    ]
+  }
+]

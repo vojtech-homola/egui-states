@@ -3,7 +3,8 @@ __pycache__
 /.venv
 /venv
 /.vscode/settings.json
-/.zed
+.zed/*
+!.zed/debug.json
 /.vscode
 
 *.pyd
