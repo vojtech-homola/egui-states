@@ -10,7 +10,7 @@ use crate::PROTOCOL_VERSION;
 use crate::State;
 use crate::client::messages::{ChannelMessage, MessageSender, MessagesSerializer, handle_message};
 use crate::client::states_creator::{StatesCreatorClient, ValuesList};
-use crate::event_async::Event;
+use crate::event::Event;
 use crate::serialization::ClientHeader;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -181,7 +181,7 @@ impl Client {
 
     pub(crate) async fn wait_connection(&self) {
         self.0.connect_signal.clear();
-        self.0.connect_signal.wait_clear().await;
+        self.0.connect_signal.wait_clear_async().await;
     }
 
     pub fn connect(&self) {

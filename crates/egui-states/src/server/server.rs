@@ -10,7 +10,7 @@ use bytes::Bytes;
 use tokio::runtime::Builder;
 
 use crate::data_transport::DataType;
-use crate::event_async::Event;
+use crate::event::Event;
 use crate::hashing::{NoHashMap, generate_value_id};
 use crate::serialization::{ServerHeader, serialize};
 use crate::server::data_server::{Data, DataMulti};

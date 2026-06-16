@@ -4,7 +4,6 @@ use bytes::Bytes;
 use parking_lot::{Mutex, RwLock};
 
 use crate::client::data::private;
-use crate::client::event::EventUniversal;
 use crate::client::messages::{ChannelMessage, MessageSender};
 use crate::data_transport::DataType;
 use crate::hashing::NoHashMap;
@@ -35,7 +34,6 @@ pub struct DataTake<T> {
     inner: Arc<RwLock<Option<(Vec<T>, bool)>>>,
     buffer: Arc<Mutex<Option<Vec<T>>>>,
     sender: MessageSender,
-    event: EventUniversal,
 }
 
 #[allow(private_bounds)]
@@ -52,7 +50,6 @@ where
             inner: Arc::new(RwLock::new(None)),
             buffer: Arc::new(Mutex::new(None)),
             sender,
-            event: EventUniversal::new(),
         }
     }
 
@@ -70,31 +67,6 @@ where
     pub fn is_some(&self) -> bool {
         self.inner.read().is_some()
     }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn wait_take(&self) -> Vec<T> {
-        loop {
-            if let Some((value, blocking)) = self.inner.write().take() {
-                if blocking {
-                    self.sender.send(ChannelMessage::Ack(self.id));
-                }
-                return value;
-            }
-            self.event.wait_clear_blocking();
-        }
-    }
-
-    pub async fn wait_take_async(&self) -> Vec<T> {
-        loop {
-            if let Some((value, blocking)) = self.inner.write().take() {
-                if blocking {
-                    self.sender.send(ChannelMessage::Ack(self.id));
-                }
-                return value;
-            }
-            self.event.wait_clear().await;
-        }
-    }
 }
 
 impl<T> Clone for DataTake<T> {
@@ -107,7 +79,6 @@ impl<T> Clone for DataTake<T> {
             inner: self.inner.clone(),
             buffer: self.buffer.clone(),
             sender: self.sender.clone(),
-            event: self.event.clone(),
         }
     }
 }
@@ -144,7 +115,6 @@ where
                     buffer.set_len(count as usize);
                 }
                 *self.inner.write() = Some((buffer, blocking));
-                self.event.set();
                 Ok(())
             }
             DataTakeMessage::BatchStart(count, data) => {
@@ -247,7 +217,6 @@ where
                         }
 
                         *self.inner.write() = Some((buffer, blocking));
-                        self.event.set();
                         Ok(())
                     }
                     None => Err(format!(
@@ -275,7 +244,6 @@ pub struct DataMultiTake<T> {
     inner: Arc<RwLock<NoHashMap<u32, (Vec<T>, bool)>>>,
     buffers: Arc<Mutex<NoHashMap<u32, Vec<T>>>>,
     sender: MessageSender,
-    event: EventUniversal,
 }
 
 #[allow(private_bounds)]
@@ -292,7 +260,6 @@ where
             inner: Arc::new(RwLock::new(NoHashMap::default())),
             buffers: Arc::new(Mutex::new(NoHashMap::default())),
             sender,
-            event: EventUniversal::new(),
         }
     }
 
@@ -310,31 +277,6 @@ where
     pub fn is_some(&self, key: u32) -> bool {
         self.inner.read().contains_key(&key)
     }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn wait_take(&self, key: u32) -> Vec<T> {
-        loop {
-            if let Some((value, blocking)) = self.inner.write().remove(&key) {
-                if blocking {
-                    self.sender.send(ChannelMessage::Ack(self.id));
-                }
-                return value;
-            }
-            self.event.wait_clear_blocking();
-        }
-    }
-
-    pub async fn wait_take_async(&self, key: u32) -> Vec<T> {
-        loop {
-            if let Some((value, blocking)) = self.inner.write().remove(&key) {
-                if blocking {
-                    self.sender.send(ChannelMessage::Ack(self.id));
-                }
-                return value;
-            }
-            self.event.wait_clear().await;
-        }
-    }
 }
 
 impl<T> Clone for DataMultiTake<T> {
@@ -347,7 +289,6 @@ impl<T> Clone for DataMultiTake<T> {
             inner: self.inner.clone(),
             buffers: self.buffers.clone(),
             sender: self.sender.clone(),
-            event: self.event.clone(),
         }
     }
 }
@@ -384,7 +325,6 @@ where
                     buffer.set_len(count as usize);
                 }
                 self.inner.write().insert(key, (buffer, blocking));
-                self.event.set();
                 Ok(())
             }
             DataTakeMessage::BatchStart(count, data) => {
@@ -487,7 +427,6 @@ where
                         }
 
                         self.inner.write().insert(key, (buffer, blocking));
-                        self.event.set();
                         Ok(())
                     }
                     None => Err(format!(

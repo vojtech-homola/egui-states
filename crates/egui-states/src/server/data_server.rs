@@ -4,9 +4,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use parking_lot::{Mutex, RwLock, RwLockWriteGuard};
 
 use crate::data_transport::{DataHeader, DataType, MultiDataHeader, TransportType};
+use crate::event::Event;
 use crate::hashing::NoHashMap;
 use crate::serialization::{FastVec, MSG_SIZE_THRESHOLD};
-use crate::server::event::Event;
 use crate::server::sender::MessageSender;
 use crate::server::server::{Acknowledge, SyncTrait};
 

@@ -6,7 +6,7 @@ use parking_lot::Mutex;
 
 use crate::hashing::{NoHashMap, NoHashSet};
 use crate::serialization::{FastVec, serialize, serialize_to_data};
-use crate::server::event::Event;
+use crate::event::Event;
 
 pub(crate) const LOGGING_ID: u64 = 0;
 pub(crate) const ON_CONNECT_ID: u64 = 1;

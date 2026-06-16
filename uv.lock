@@ -128,7 +128,7 @@ dev = [
     { name = "git-cliff" },
     { name = "ipython" },
     { name = "matplotlib" },
-    { name = "maturin" },
+    { name = "maturin", specifier = ">=1.14" },
     { name = "pytest" },
 ]
 
