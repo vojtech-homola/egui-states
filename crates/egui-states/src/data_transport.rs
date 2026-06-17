@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-#[cfg(feature = "server")]
+#[cfg(any(feature = "server", feature = "python"))]
 use crate::serialization::{FastVec, ServerHeader, serialize, serialize_heap};
 
 #[derive(Serialize, Deserialize, PartialEq, Clone, Copy, Debug)]
@@ -27,7 +27,7 @@ impl DataType {
         }
     }
 
-    #[cfg(feature = "server")]
+    #[cfg(any(feature = "server", feature = "python"))]
     pub(crate) fn from_id(id: u8) -> Result<Self, ()> {
         match id {
             0 => Ok(DataType::U8),
@@ -62,7 +62,7 @@ pub(crate) enum DataHeader {
     Clear(bool),           // update flag
 }
 
-#[cfg(feature = "server")]
+#[cfg(any(feature = "server", feature = "python"))]
 impl DataHeader {
     pub(crate) fn serialize(self, id: u64, heap: bool) -> Result<FastVec<32>, ()> {
         let header = ServerHeader::Data(id, self);
@@ -81,7 +81,7 @@ pub(crate) enum DataTakeHeader {
     End(DataType, u64, bool, u32), // data type, element count, update flag, size of last batch
 }
 
-#[cfg(feature = "server")]
+#[cfg(any(feature = "server", feature = "python"))]
 impl DataTakeHeader {
     pub(crate) fn serialize(self, id: u64, blocking: bool, heap: bool) -> Result<FastVec<32>, ()> {
         let header = ServerHeader::DataTake(id, self, blocking);
@@ -99,7 +99,7 @@ pub(crate) enum MultiDataHeader {
     Reset(bool),             // reset data collection to empty
 }
 
-#[cfg(feature = "server")]
+#[cfg(any(feature = "server", feature = "python"))]
 impl MultiDataHeader {
     pub(crate) fn serialize_modify(
         id: u64,
@@ -123,7 +123,7 @@ pub(crate) enum DataMultiTakeHeader {
     Reset(bool),                       // reset data collection to empty
 }
 
-#[cfg(feature = "server")]
+#[cfg(any(feature = "server", feature = "python"))]
 impl DataMultiTakeHeader {
     pub(crate) fn serialize_modify(
         id: u64,

@@ -31,7 +31,7 @@ impl<const N: usize> FastVec<N> {
         Self::Stack(StackVec([0; N], 0))
     }
 
-    #[cfg(feature = "server")]
+    #[cfg(any(feature = "server", feature = "python"))]
     #[inline]
     pub(crate) fn new_heap() -> Self {
         Self::Heap(Vec::new())
@@ -63,7 +63,7 @@ impl<const N: usize> FastVec<N> {
         }
     }
 
-    #[cfg(feature = "server")]
+    #[cfg(any(feature = "server", feature = "python"))]
     pub(crate) fn reserve_exact(&mut self, additional: usize) {
         match self {
             Self::Heap(vec) => vec.reserve_exact(additional),
@@ -77,7 +77,7 @@ impl<const N: usize> FastVec<N> {
         }
     }
 
-    #[cfg(feature = "server")]
+    #[cfg(any(feature = "server", feature = "python"))]
     pub fn extend_from_slice(&mut self, data: &[u8]) {
         match self {
             Self::Heap(vec) => {
@@ -201,7 +201,7 @@ pub(crate) enum ServerHeader {
     Update(f32),
 }
 
-#[cfg(feature = "server")]
+#[cfg(any(feature = "server", feature = "python"))]
 impl ServerHeader {
     pub fn serialize_value<const N: usize>(
         id: u64,
@@ -280,7 +280,7 @@ impl ClientHeader {
         FastVec::Heap(data)
     }
 
-    #[cfg(feature = "server")]
+    #[cfg(any(feature = "server", feature = "python"))]
     #[inline]
     pub fn deserialize(msg: &[u8]) -> Result<(Self, usize), ()> {
         let (header, rest) = postcard::take_from_bytes::<Self>(msg).map_err(|_| ())?;
@@ -306,7 +306,7 @@ where
     postcard::from_bytes(data).map_err(|e| e.to_string())
 }
 
-#[cfg(feature = "server")]
+#[cfg(any(feature = "server", feature = "python"))]
 #[inline]
 pub(crate) fn deserialize_value<T>(data: &[u8]) -> Result<(T, usize), ()>
 where
@@ -344,7 +344,7 @@ where
         .map_err(|_| ())
 }
 
-#[cfg(feature = "server")]
+#[cfg(any(feature = "server", feature = "python"))]
 #[inline]
 pub(crate) fn serialize_heap<T, const N: usize>(value: &T) -> Result<FastVec<N>, ()>
 where

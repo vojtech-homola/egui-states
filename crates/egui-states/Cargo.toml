@@ -6,8 +6,8 @@ edition.workspace = true
 [features]
 default = ["client"]
 client = ["dep:egui"]
-server = ["tokio/macros"]
-python = ["server", "dep:pyo3"]
+server = []
+python = ["tokio/macros", "dep:pyo3"]
 build_scripts = ["client"]
 
 [dependencies]

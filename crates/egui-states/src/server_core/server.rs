@@ -13,15 +13,15 @@ use crate::data_transport::DataType;
 use crate::event::Event;
 use crate::hashing::{NoHashMap, generate_value_id};
 use crate::serialization::{ServerHeader, serialize};
-use crate::server::data_server::{Data, DataMulti};
-use crate::server::data_take_server::{DataMultiTake, DataTake};
-use crate::server::image_server::Image;
-use crate::server::map_server::ValueMap;
-use crate::server::sender::{MessageReceiver, MessageSender};
-use crate::server::server_core;
-use crate::server::signals::SignalsManager;
-use crate::server::values_server::{Signal, Value, ValueStatic, ValueTake};
-use crate::server::vec_server::ValueList;
+use crate::server_core::data_core::{Data, DataMulti};
+use crate::server_core::data_take_core::{DataMultiTake, DataTake};
+use crate::server_core::image_core::Image;
+use crate::server_core::map_core::ValueMap;
+use crate::server_core::sender::{MessageReceiver, MessageSender};
+use crate::server_core::server_core;
+use crate::server_core::signals::SignalsManager;
+use crate::server_core::values_core::{Signal, Value, ValueStatic, ValueTake};
+use crate::server_core::vec_core::ValueList;
 
 pub(crate) trait SyncTrait: Sync + Send {
     fn sync(&self) -> Result<(), ()>;

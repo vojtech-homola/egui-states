@@ -6,9 +6,9 @@ use bytes::Bytes;
 
 use crate::event::Event;
 use crate::serialization::ServerHeader;
-use crate::server::sender::MessageSender;
-use crate::server::server::{Acknowledge, SyncTrait};
-use crate::server::signals::SignalsManager;
+use crate::server_core::sender::MessageSender;
+use crate::server_core::server::{Acknowledge, SyncTrait};
+use crate::server_core::signals::SignalsManager;
 
 // Value --------------------------------------------------
 pub(crate) struct Value {

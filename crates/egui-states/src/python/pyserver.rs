@@ -15,13 +15,13 @@ use crate::python::{
     pyimage, pyparsing,
     pytypes::{PyObjectClass, PyObjectType},
 };
-use crate::server::data_server::{Data, DataHolder, DataMulti};
-use crate::server::data_take_server::{DataMultiTake, DataTake};
-use crate::server::server::Server;
-use crate::server::signals::{self, SignalsManager};
-use crate::server::value_parsing::{ValueCreator, ValueParser};
-use crate::server::values_server::{Signal, Value, ValueStatic, ValueTake};
-use crate::server::{image_server::Image, map_server::ValueMap, vec_server::ValueList};
+use crate::server_core::data_core::{Data, DataHolder, DataMulti};
+use crate::server_core::data_take_core::{DataMultiTake, DataTake};
+use crate::server_core::server::Server;
+use crate::server_core::signals::{self, SignalsManager};
+use crate::server_core::value_parsing::{ValueCreator, ValueParser};
+use crate::server_core::values_core::{Signal, Value, ValueStatic, ValueTake};
+use crate::server_core::{image_core::Image, map_core::ValueMap, vec_core::ValueList};
 
 struct ValuesInner {
     values: NoHashMap<u64, (Arc<Value>, PyObjectType)>,

@@ -7,9 +7,9 @@ use crate::data_transport::{DataMultiTakeHeader, DataTakeHeader, DataType};
 use crate::event::Event;
 use crate::hashing::NoHashMap;
 use crate::serialization::{FastVec, MSG_SIZE_THRESHOLD};
-use crate::server::data_server::{DataHolder, check_data_type};
-use crate::server::sender::MessageSender;
-use crate::server::server::{Acknowledge, SyncTrait};
+use crate::server_core::data_core::{DataHolder, check_data_type};
+use crate::server_core::sender::MessageSender;
+use crate::server_core::server::{Acknowledge, SyncTrait};
 
 // DataTake --------------------------------------------------
 pub(crate) struct DataTake {

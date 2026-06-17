@@ -14,6 +14,8 @@ pub mod build_scripts;
 mod client;
 #[cfg(feature = "python")]
 pub mod python;
+#[cfg(any(feature = "server", feature = "python"))]
+mod server_core;
 #[cfg(feature = "server")]
 mod server;
 
