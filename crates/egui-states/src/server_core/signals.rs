@@ -1,12 +1,14 @@
 use std::collections::{VecDeque, hash_map::Entry};
 use std::sync::Arc;
+#[cfg(feature = "server")]
+use std::sync::atomic::AtomicBool;
 
 use bytes::Bytes;
 use parking_lot::Mutex;
 
+use crate::event::Event;
 use crate::hashing::{NoHashMap, NoHashSet};
 use crate::serialization::{FastVec, serialize, serialize_to_data};
-use crate::event::Event;
 
 pub(crate) const LOGGING_ID: u64 = 0;
 pub(crate) const ON_CONNECT_ID: u64 = 1;
@@ -213,6 +215,7 @@ impl SignalsManager {
         self.set(CLIENT_MESSAGE_ID, message);
     }
 
+    #[cfg(feature = "python")]
     pub(crate) fn wait_changed_value(&self, last_id: Option<u64>) -> (u64, Bytes) {
         loop {
             if let Some(val) = self.values.lock().get(last_id) {
@@ -220,6 +223,26 @@ impl SignalsManager {
             }
             self.event.wait_clear();
         }
+    }
+
+    #[cfg(feature = "server")]
+    pub(crate) fn try_changed_value(&self, last_id: Option<u64>) -> Option<(u64, Bytes)> {
+        self.values.lock().get(last_id)
+    }
+
+    // #[cfg(feature = "python")]
+    // pub(crate) fn wait_for_change(&self) {
+    //     self.event.wait_clear();
+    // }
+
+    #[cfg(feature = "server")]
+    pub(crate) fn wait_for_change_until(&self, stop: &AtomicBool) -> bool {
+        self.event.wait_clear_until(stop)
+    }
+
+    #[cfg(feature = "server")]
+    pub(crate) fn wake_waiters(&self) {
+        self.event.set();
     }
 
     pub(crate) fn set_register(&self, id: u64, register: bool) {

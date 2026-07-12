@@ -92,6 +92,41 @@ impl Event {
         }
     }
 
+    #[cfg(feature = "server")]
+    pub(crate) fn wait_clear_until(&self, stop: &AtomicBool) -> bool {
+        loop {
+            if stop.load(Ordering::Acquire) {
+                return false;
+            }
+
+            if self
+                .0
+                .flag
+                .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                return true;
+            }
+
+            let listener = self.0.notify.listen();
+
+            if stop.load(Ordering::Acquire) {
+                return false;
+            }
+
+            if self
+                .0
+                .flag
+                .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                return true;
+            }
+
+            listener.wait();
+        }
+    }
+
     pub(crate) async fn wait_clear_async(&self) {
         loop {
             if self

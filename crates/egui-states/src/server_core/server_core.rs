@@ -1,4 +1,3 @@
-use std::net::SocketAddrV4;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -31,25 +30,15 @@ pub(crate) struct Handshake {
 }
 
 pub(crate) async fn run(
+    listener: TcpListener,
     sender: MessageSender,
     rx: MessageReceiver,
     connected: Arc<AtomicBool>,
     stop_event: Event,
     values: ServerStatesList,
     signals: SignalsManager,
-    addr: SocketAddrV4,
     handshake: Handshake,
 ) -> MessageReceiver {
-    // listen to incoming connections
-    let listener = match TcpListener::bind(addr).await {
-        Ok(l) => l,
-        Err(e) => {
-            stop_event.clear();
-            signals.error(&format!("binding failed: {:?}", e));
-            return rx;
-        }
-    };
-
     let mut holder = ChannelHolder::Rx(rx);
 
     loop {

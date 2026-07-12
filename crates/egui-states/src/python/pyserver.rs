@@ -20,14 +20,14 @@ use crate::server_core::data_take_core::{DataMultiTake, DataTake};
 use crate::server_core::server::Server;
 use crate::server_core::signals::{self, SignalsManager};
 use crate::server_core::value_parsing::{ValueCreator, ValueParser};
-use crate::server_core::values_core::{Signal, Value, ValueStatic, ValueTake};
+use crate::server_core::values_core::{SignalCore, ValueCore, ValueStaticCore, ValueTakeCore};
 use crate::server_core::{image_core::Image, map_core::ValueMap, vec_core::ValueList};
 
 struct ValuesInner {
-    values: NoHashMap<u64, (Arc<Value>, PyObjectType)>,
-    values_take: NoHashMap<u64, (Arc<ValueTake>, PyObjectType)>,
-    static_values: NoHashMap<u64, (Arc<ValueStatic>, PyObjectType)>,
-    signals: NoHashMap<u64, (Arc<Signal>, PyObjectType)>,
+    values: NoHashMap<u64, (Arc<ValueCore>, PyObjectType)>,
+    values_take: NoHashMap<u64, (Arc<ValueTakeCore>, PyObjectType)>,
+    static_values: NoHashMap<u64, (Arc<ValueStaticCore>, PyObjectType)>,
+    signals: NoHashMap<u64, (Arc<SignalCore>, PyObjectType)>,
     signals_types: NoHashMap<u64, PyObjectType>,
     maps: NoHashMap<u64, (Arc<ValueMap>, PyObjectType)>,
     lists: NoHashMap<u64, (Arc<ValueList>, PyObjectType)>,
@@ -56,7 +56,7 @@ impl StateServerCore {
     }
 
     #[inline]
-    fn inner_values(&self, value_id: u64) -> PyResult<(&Arc<Value>, &PyObjectType)> {
+    fn inner_values(&self, value_id: u64) -> PyResult<(&Arc<ValueCore>, &PyObjectType)> {
         match self.get_values()?.values.get(&value_id) {
             Some((value, object_type)) => Ok((value, object_type)),
             _ => Err(PyValueError::new_err("Value with ID not found.")),
@@ -64,7 +64,7 @@ impl StateServerCore {
     }
 
     #[inline]
-    fn inner_static(&self, value_id: u64) -> PyResult<(&Arc<ValueStatic>, &PyObjectType)> {
+    fn inner_static(&self, value_id: u64) -> PyResult<(&Arc<ValueStaticCore>, &PyObjectType)> {
         match self.get_values()?.static_values.get(&value_id) {
             Some((value, object_type)) => Ok((value, object_type)),
             _ => Err(PyValueError::new_err("Static value with ID not found.")),

@@ -6,7 +6,7 @@ edition.workspace = true
 [features]
 default = ["client"]
 client = ["dep:egui"]
-server = []
+server = ["tokio/macros"]
 python = ["tokio/macros", "dep:pyo3"]
 build_scripts = ["client"]
 
@@ -26,7 +26,7 @@ egui_states_macros = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { version = "1.52", features = ["sync", "rt-multi-thread", "net"] }
-tokio-tungstenite = { version = "0.29" }
+tokio-tungstenite = { version = "0.30" }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 tokio = { version = "1.52", features = ["sync", "macros"] }

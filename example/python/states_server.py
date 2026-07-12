@@ -202,11 +202,10 @@ class State(StatesBase):
         self.image: ImageStates = ImageStates(parent + ".image")
 
 
-class StatesServer(StateServerBase):
+class StatesServer(StateServerBase[State]):
     """The main class for the StateServer for UI."""
 
     VERSION_HASH: int = 5850504962483486421
-    states: State
 
     def __init__(
         self,

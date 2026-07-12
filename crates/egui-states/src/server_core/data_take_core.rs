@@ -13,6 +13,7 @@ use crate::server_core::server::{Acknowledge, SyncTrait};
 
 // DataTake --------------------------------------------------
 pub(crate) struct DataTake {
+    // #[cfg_attr(not(feature = "python"), allow(dead_code))]
     pub(crate) name: String,
     id: u64,
     pub(crate) data_type: DataType,
@@ -124,6 +125,7 @@ impl SyncTrait for DataTake {
 
 // DataMultiTake --------------------------------------------------
 pub(crate) struct DataMultiTake {
+    // #[cfg_attr(not(feature = "python"), allow(dead_code))]
     pub(crate) name: String,
     id: u64,
     pub(crate) data_type: DataType,

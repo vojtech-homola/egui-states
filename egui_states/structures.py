@@ -508,12 +508,19 @@ _DTYPE_TO_ID = {
 }
 
 
+def _get_dtype_id(dtype: type[np.generic]) -> int:
+    t = _DTYPE_TO_ID.get(np.dtype(dtype).type)
+    if t is None:
+        raise ValueError(f"Unsupported dtype: {dtype}")
+    return t
+
+
 class Data[T: np.generic](_StaticBase):
     def __init__(self, dtype: type[T]) -> None:
         self._dtype = dtype
 
     def _initialize(self, name: str, types: list[PyObjectType]) -> None:
-        self._value_id = self._server.add_data(name, _DTYPE_TO_ID[np.dtype(self._dtype).type])
+        self._value_id = self._server.add_data(name, _get_dtype_id(self._dtype))
 
     def get(self) -> npt.NDArray[T]:
         """Get the data from the UI data.
@@ -576,7 +583,7 @@ class DataTake[T: np.generic](_StaticBase):
         self._dtype = dtype
 
     def _initialize(self, name: str, types: list[PyObjectType]) -> None:
-        self._value_id = self._server.add_data_take(name, _DTYPE_TO_ID[np.dtype(self._dtype).type])
+        self._value_id = self._server.add_data_take(name, _get_dtype_id(self._dtype))
 
     def set(
         self,
@@ -669,7 +676,7 @@ class DataMulti[T: np.generic](_StaticBase):
         self._dtype = dtype
 
     def _initialize(self, name: str, types: list[PyObjectType]) -> None:
-        self._value_id = self._server.add_data_multi(name, _DTYPE_TO_ID[np.dtype(self._dtype).type])
+        self._value_id = self._server.add_data_multi(name, _get_dtype_id(self._dtype))
 
     def get(self, index: int) -> SingleData[T]:
         """Get the SingleData object for the given index.
@@ -739,7 +746,7 @@ class DataMultiTake[T: np.generic](_StaticBase):
     def _initialize(self, name: str, types: list[PyObjectType]) -> None:
         self._value_id = self._server.add_data_multi_take(
             name,
-            _DTYPE_TO_ID[np.dtype(self._dtype).type],
+            _get_dtype_id(self._dtype),
         )
 
     def get(self, index: int) -> SingleDataTake[T]:

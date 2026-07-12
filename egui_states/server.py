@@ -96,7 +96,7 @@ class StateServerBase[T: StatesBase]:
 
     @property
     def states(self) -> T:
-        """Get the state."""
+        """The root state object."""
         return self._states
 
     def update(self, duration: float | None = None) -> None:

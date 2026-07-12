@@ -548,14 +548,15 @@ pub fn generate_python<S: State>(path: impl ToString) -> Result<(), String> {
 
         file.write_all(b"\n").unwrap();
 
-        let text = r#"
-class StatesServer(StateServerBase):
-    """The main class for the StateServer for UI.""""#;
-        file.write_all(text.as_bytes()).unwrap();
+        file.write_all(
+            format!(
+                "\nclass StatesServer(StateServerBase[{root_name}]):\n    \"\"\"The main class for the StateServer for UI.\"\"\""
+            )
+            .as_bytes(),
+        )
+        .unwrap();
 
         file.write_all(format!("\n\n    VERSION_HASH: int = {}\n", version_hash).as_bytes())
-            .unwrap();
-        file.write_all(format!("    states: {}\n", root_name).as_bytes())
             .unwrap();
 
         let text = r#"

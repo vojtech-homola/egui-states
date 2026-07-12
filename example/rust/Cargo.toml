@@ -1,0 +1,17 @@
+[package]
+name = "rust_server_example"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[[bin]]
+name = "RustServerExample"
+path = "main.rs"
+
+[dependencies]
+egui_states = { path = "../../crates/egui-states", default-features = false, features = ["server"] }
+serde = "*"
+
+[build-dependencies]
+egui_states = { workspace = true, features = ["build_scripts"] }
+gui_core = { workspace = true }

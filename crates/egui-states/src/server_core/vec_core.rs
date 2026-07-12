@@ -10,6 +10,7 @@ use crate::server_core::sender::{MessageSender, SenderData};
 use crate::server_core::server::SyncTrait;
 
 pub(crate) struct ValueList {
+    // #[cfg_attr(not(feature = "python"), allow(dead_code))]
     pub(crate) name: String,
     id: u64,
     type_id: u32,

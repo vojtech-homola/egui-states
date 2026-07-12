@@ -8,6 +8,7 @@ pub(crate) mod image_core;
 pub(crate) mod map_core;
 pub(crate) mod server;
 pub(crate) mod signals;
+#[cfg(feature = "python")]
 pub(crate) mod value_parsing;
 pub(crate) mod values_core;
 pub(crate) mod vec_core;

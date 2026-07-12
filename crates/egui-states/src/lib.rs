@@ -14,10 +14,10 @@ pub mod build_scripts;
 mod client;
 #[cfg(feature = "python")]
 pub mod python;
+#[cfg(feature = "server")]
+pub mod server;
 #[cfg(any(feature = "server", feature = "python"))]
 mod server_core;
-#[cfg(feature = "server")]
-mod server;
 
 #[cfg(feature = "client")]
 pub use client::{
