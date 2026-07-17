@@ -136,6 +136,10 @@ pub(crate) fn get_all_enums_struct(
                 collect_enums(info, &mut enums);
                 collect_structs(info, &mut structs);
             }
+            StateType::ValueTake(_, info) => {
+                collect_enums(info, &mut enums);
+                collect_structs(info, &mut structs);
+            }
             _ => { /* ignore other types */ }
         }
     }

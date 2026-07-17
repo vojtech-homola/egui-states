@@ -353,7 +353,7 @@ pub fn generate_rust<S: State>(path: impl AsRef<Path>) -> Result<(), String> {
     for (enum_name, variants) in &enums {
         writeln!(
             output,
-            "#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]\npub enum {enum_name} {{"
+            "#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]\npub enum {enum_name} {{"
         )
         .unwrap();
         for (variant, value) in variants {
