@@ -1,7 +1,6 @@
-use std::collections::HashMap;
-use std::collections::VecDeque;
-use std::string::ToString;
-use std::{fs, io::Write};
+use std::collections::{HashMap, VecDeque};
+use std::fmt::Write;
+use std::path::Path;
 
 use crate::State;
 use crate::build_scripts::scripts;
@@ -24,31 +23,31 @@ fn type_to_pytype(type_info: &ObjectType) -> String {
         ObjectType::Bool => "s.bo".to_string(),
         ObjectType::String => "s.st".to_string(),
         ObjectType::Empty => "s.emp".to_string(),
-        ObjectType::Enum(name, _) => format!("s.enu({})", name),
-        ObjectType::Struct(name, elments) => {
-            let fields: Vec<String> = elments.iter().map(|(_, obj)| type_to_pytype(obj)).collect();
-            format!("s.cl([{}], {})", fields.join(", "), name)
+        ObjectType::Enum(name, _) => format!("s.enu(enums.{name})"),
+        ObjectType::Struct(name, elements) => {
+            let fields = elements
+                .iter()
+                .map(|(_, object)| type_to_pytype(object))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("s.cl([{fields}], structs.{name})")
         }
-        ObjectType::Tuple(vec) => {
-            let elems: Vec<String> = vec.iter().map(|t| type_to_pytype(t)).collect();
-            format!("s.tu([{}])", elems.join(", "))
+        ObjectType::Tuple(elements) => {
+            let elements = elements
+                .iter()
+                .map(type_to_pytype)
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("s.tu([{elements}])")
         }
         ObjectType::List(size, element) => {
-            format!("s.li({}, {})", type_to_pytype(element), size)
+            format!("s.li({}, {size})", type_to_pytype(element))
         }
-        ObjectType::Vec(element) => {
-            format!("s.vec({})", type_to_pytype(element))
+        ObjectType::Vec(element) => format!("s.vec({})", type_to_pytype(element)),
+        ObjectType::Map(key, value) => {
+            format!("s.map({}, {})", type_to_pytype(key), type_to_pytype(value))
         }
-        ObjectType::Map(key_type, value_type) => {
-            format!(
-                "s.map({}, {})",
-                type_to_pytype(key_type),
-                type_to_pytype(value_type)
-            )
-        }
-        ObjectType::Option(element) => {
-            format!("s.opt({})", type_to_pytype(element))
-        }
+        ObjectType::Option(element) => format!("s.opt({})", type_to_pytype(element)),
     }
 }
 
@@ -60,55 +59,46 @@ enum TypeIndex {
 impl TypeIndex {
     fn get_single(&self) -> usize {
         match self {
-            TypeIndex::Single(i) => *i,
-            _ => panic!("Expected single type index"),
+            TypeIndex::Single(index) => *index,
+            TypeIndex::Map(_, _) => panic!("Expected single type index"),
         }
     }
+
     fn get_map(&self) -> (usize, usize) {
         match self {
-            TypeIndex::Map(k, v) => (*k, *v),
-            _ => panic!("Expected map type index"),
+            TypeIndex::Map(key, value) => (*key, *value),
+            TypeIndex::Single(_) => panic!("Expected map type index"),
         }
     }
 }
 
-fn process_type_info(values: &Vec<StateType>) -> (HashMap<String, TypeIndex>, Vec<ObjectType>) {
-    let mut type_map: HashMap<String, TypeIndex> = HashMap::new();
-    let mut type_list: Vec<ObjectType> = Vec::new();
+fn process_type_info(values: &[StateType]) -> (HashMap<String, TypeIndex>, Vec<ObjectType>) {
+    let mut type_map = HashMap::new();
+    let mut type_list = Vec::new();
+
+    let mut type_index = |object_type: &ObjectType| {
+        if let Some(index) = type_list.iter().position(|typ| typ == object_type) {
+            index
+        } else {
+            type_list.push(object_type.clone());
+            type_list.len() - 1
+        }
+    };
 
     for state in values {
         match state {
-            StateType::Value(name, obj_type, _, _)
-            | StateType::ValueTake(name, obj_type)
-            | StateType::Static(name, obj_type, _)
-            | StateType::Signal(name, obj_type, _)
-            | StateType::ValueVec(name, obj_type) => {
-                if type_list.contains(obj_type) {
-                    type_map.insert(
-                        name.clone(),
-                        TypeIndex::Single(type_list.iter().position(|t| t == obj_type).unwrap()),
-                    );
-                } else {
-                    type_list.push(obj_type.clone());
-                    type_map.insert(name.clone(), TypeIndex::Single(type_list.len() - 1));
-                }
+            StateType::Value(name, object_type, _, _)
+            | StateType::ValueTake(name, object_type)
+            | StateType::Static(name, object_type, _)
+            | StateType::Signal(name, object_type, _)
+            | StateType::ValueVec(name, object_type) => {
+                let index = type_index(object_type);
+                type_map.insert(name.clone(), TypeIndex::Single(index));
             }
             StateType::ValueMap(name, key, value) => {
-                // let dict_type = ObjectType::Map(Box::new(key.clone()), Box::new(value.clone()));
-                let key_pos = if type_list.contains(key) {
-                    type_list.iter().position(|t| t == key).unwrap()
-                } else {
-                    type_list.push(key.clone());
-                    type_list.len() - 1
-                };
-
-                let value_pos = if type_list.contains(value) {
-                    type_list.iter().position(|t| t == value).unwrap()
-                } else {
-                    type_list.push(value.clone());
-                    type_list.len() - 1
-                };
-                type_map.insert(name.clone(), TypeIndex::Map(key_pos, value_pos));
+                let key = type_index(key);
+                let value = type_index(value);
+                type_map.insert(name.clone(), TypeIndex::Map(key, value));
             }
             StateType::SubState(_, _, _)
             | StateType::Image(_)
@@ -122,7 +112,17 @@ fn process_type_info(values: &Vec<StateType>) -> (HashMap<String, TypeIndex>, Ve
     (type_map, type_list)
 }
 
-fn type_info_to_python_type(info: &ObjectType, list_comment: bool) -> String {
+#[derive(Clone, Copy)]
+enum PythonTypeContext {
+    States,
+    Structs,
+}
+
+fn type_info_to_python_type(
+    info: &ObjectType,
+    list_comment: bool,
+    context: PythonTypeContext,
+) -> String {
     match info {
         ObjectType::U8
         | ObjectType::U16
@@ -135,102 +135,116 @@ fn type_info_to_python_type(info: &ObjectType, list_comment: bool) -> String {
         ObjectType::F32 | ObjectType::F64 => "float".to_string(),
         ObjectType::Bool => "bool".to_string(),
         ObjectType::String => "str".to_string(),
-        ObjectType::Empty => "".to_string(),
-        ObjectType::Enum(name, _) => name.clone(),
-        ObjectType::Struct(name, _) => name.clone(),
+        ObjectType::Empty => String::new(),
+        ObjectType::Enum(name, _) => format!("enums.{name}"),
+        ObjectType::Struct(name, _) => match context {
+            PythonTypeContext::States => format!("structs.{name}"),
+            PythonTypeContext::Structs => name.clone(),
+        },
         ObjectType::Tuple(elements) => {
-            let elems: Vec<String> = elements
+            let elements = elements
                 .iter()
-                .map(|e| type_info_to_python_type(e, list_comment))
-                .collect();
-            format!("tuple[{}]", elems.join(", "))
+                .map(|element| type_info_to_python_type(element, list_comment, context))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("tuple[{elements}]")
         }
         ObjectType::List(size, element) => {
-            let elem_str = type_info_to_python_type(element, list_comment);
+            let element = type_info_to_python_type(element, list_comment, context);
             if list_comment {
-                format!("list[{}]  # fixed size {}", elem_str, *size)
+                format!("list[{element}]  # fixed size {size}")
             } else {
-                format!("list[{}]", elem_str)
+                format!("list[{element}]")
             }
         }
-        ObjectType::Vec(t) => {
-            let elem_str = type_info_to_python_type(t, list_comment);
-            format!("list[{}]", elem_str)
+        ObjectType::Vec(element) => {
+            let element = type_info_to_python_type(element, list_comment, context);
+            format!("list[{element}]")
         }
         ObjectType::Map(key, value) => {
-            let key_str = type_info_to_python_type(key, list_comment);
-            let value_str = type_info_to_python_type(value, list_comment);
-            format!("dict[{}, {}]", key_str, value_str)
+            let key = type_info_to_python_type(key, list_comment, context);
+            let value = type_info_to_python_type(value, list_comment, context);
+            format!("dict[{key}, {value}]")
         }
         ObjectType::Option(element) => {
-            let elem_str = type_info_to_python_type(element, list_comment);
-            format!("{} | None", elem_str)
+            let element = type_info_to_python_type(element, list_comment, context);
+            format!("{element} | None")
         }
     }
 }
 
 fn init_to_python_value(init: &InitValue, object_type: &ObjectType) -> String {
     match (init, object_type) {
-        (InitValue::U8(v), ObjectType::U8) => format!("{}", v),
-        (InitValue::U16(v), ObjectType::U16) => format!("{}", v),
-        (InitValue::U32(v), ObjectType::U32) => format!("{}", v),
-        (InitValue::U64(v), ObjectType::U64) => format!("{}", v),
-        (InitValue::I8(v), ObjectType::I8) => format!("{}", v),
-        (InitValue::I16(v), ObjectType::I16) => format!("{}", v),
-        (InitValue::I32(v), ObjectType::I32) => format!("{}", v),
-        (InitValue::I64(v), ObjectType::I64) => format!("{}", v),
-        (InitValue::F64(v), ObjectType::F64) => format!("{}", v),
-        (InitValue::F32(v), ObjectType::F32) => format!("{}", v),
-        (InitValue::String(v), ObjectType::String) => format!("\"{}\"", v),
-        (InitValue::Bool(v), ObjectType::Bool) => match v {
+        (InitValue::U8(value), ObjectType::U8) => value.to_string(),
+        (InitValue::U16(value), ObjectType::U16) => value.to_string(),
+        (InitValue::U32(value), ObjectType::U32) => value.to_string(),
+        (InitValue::U64(value), ObjectType::U64) => value.to_string(),
+        (InitValue::I8(value), ObjectType::I8) => value.to_string(),
+        (InitValue::I16(value), ObjectType::I16) => value.to_string(),
+        (InitValue::I32(value), ObjectType::I32) => value.to_string(),
+        (InitValue::I64(value), ObjectType::I64) => value.to_string(),
+        (InitValue::F64(value), ObjectType::F64) => value.to_string(),
+        (InitValue::F32(value), ObjectType::F32) => value.to_string(),
+        (InitValue::String(value), ObjectType::String) => format!("{value:?}"),
+        (InitValue::Bool(value), ObjectType::Bool) => match value {
             true => "True".to_string(),
             false => "False".to_string(),
         },
-        (InitValue::Enum(v), ObjectType::Enum(name, _)) => {
-            format!("{}.{}", name, v)
+        (InitValue::Enum(variant), ObjectType::Enum(name, _)) => {
+            format!("enums.{name}.{variant}")
         }
-        (InitValue::Option(opt), ObjectType::Option(inner)) => match opt {
-            Some(boxed) => init_to_python_value(boxed, inner),
+        (InitValue::Option(value), ObjectType::Option(inner)) => match value {
+            Some(value) => init_to_python_value(value, inner),
             None => "None".to_string(),
         },
-        (InitValue::Tuple(elems), ObjectType::Tuple(types)) => {
-            let elem_strs: Vec<String> = elems
+        (InitValue::Tuple(values), ObjectType::Tuple(types)) => {
+            let values = values
                 .iter()
                 .zip(types.iter())
-                .map(|(e, t)| init_to_python_value(e, t))
-                .collect();
-            format!("({})", elem_strs.join(", "))
+                .map(|(value, typ)| init_to_python_value(value, typ))
+                .collect::<Vec<_>>()
+                .join(", ");
+            if values.is_empty() {
+                "()".to_string()
+            } else if types.len() == 1 {
+                format!("({values},)")
+            } else {
+                format!("({values})")
+            }
         }
-        (InitValue::List(elems), ObjectType::List(_, element))
-        | (InitValue::Vec(elems), ObjectType::Vec(element)) => {
-            let elem_strs: Vec<String> = elems
+        (InitValue::List(values), ObjectType::List(_, element))
+        | (InitValue::Vec(values), ObjectType::Vec(element)) => {
+            let values = values
                 .iter()
-                .map(|e| init_to_python_value(e, element))
-                .collect();
-            format!("[{}]", elem_strs.join(", "))
+                .map(|value| init_to_python_value(value, element))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("[{values}]")
         }
-        (InitValue::Map(pairs), ObjectType::Map(key, value)) => {
-            let pair_strs: Vec<String> = pairs
+        (InitValue::Map(values), ObjectType::Map(key, value)) => {
+            let values = values
                 .iter()
-                .map(|(k, v)| {
+                .map(|(key_value, value_value)| {
                     format!(
                         "{}: {}",
-                        init_to_python_value(k, key),
-                        init_to_python_value(v, value)
+                        init_to_python_value(key_value, key),
+                        init_to_python_value(value_value, value)
                     )
                 })
-                .collect();
-            format!("{{{}}}", pair_strs.join(", "))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{{{values}}}")
         }
-        (InitValue::Struct(name, items), ObjectType::Struct(_, field_types)) => {
-            let field_strs: Vec<String> = items
+        (InitValue::Struct(name, values), ObjectType::Struct(_, field_types)) => {
+            let values = values
                 .iter()
                 .zip(field_types.iter())
-                .map(|((_, value), (_, field_type))| init_to_python_value(value, field_type))
-                .collect();
-            format!("{}({})", name, field_strs.join(", "))
+                .map(|((_, value), (_, typ))| init_to_python_value(value, typ))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("structs.{name}({values})")
         }
-        _ => panic!("Mismatched InitValue and ObjectType."),
+        _ => panic!("Mismatched InitValue and ObjectType"),
     }
 }
 
@@ -249,317 +263,270 @@ fn data_type_to_dtype(data_type: &DataType) -> &'static str {
     }
 }
 
+fn last_name(name: &str) -> &str {
+    name.rsplit('.').next().unwrap_or(name)
+}
+
 fn state_to_line(state: &StateType, types_map: &HashMap<String, TypeIndex>) -> String {
     match state {
         StateType::Value(name, state_type, init, queue) => {
-            let last_name = name.split('.').last().unwrap();
-            let py_type = type_info_to_python_type(state_type, false);
+            let name = last_name(name);
+            let py_type = type_info_to_python_type(state_type, false, PythonTypeContext::States);
             let init_value = init_to_python_value(init, state_type);
-            let index = types_map.get(name).unwrap().get_single();
-            let queue_str = match queue {
-                true => ", True",
-                false => "",
-            };
+            let index = types_map.get(state_name(state)).unwrap().get_single();
+            let queue = if *queue { ", True" } else { "" };
             format!(
-                "        self.{}: s.Value[{}] = s.Value[{}]({}, {}{})\n",
-                last_name, py_type, py_type, index, init_value, queue_str
+                "        self.{name}: s.Value[{py_type}] = s.Value[{py_type}]({index}, {init_value}{queue})\n"
             )
         }
         StateType::ValueTake(name, state_type) => {
-            let last_name = name.split('.').last().unwrap();
-            let py_type = type_info_to_python_type(state_type, false);
-            let index = types_map.get(name).unwrap().get_single();
-            match state_type {
-                ObjectType::Empty => {
-                    format!(
-                        "        self.{}: s.ValueTakeEmpty = s.ValueTakeEmpty()\n",
-                        last_name
-                    )
-                }
-                _ => format!(
-                    "        self.{}: s.ValueTake[{}] = s.ValueTake[{}]({})\n",
-                    last_name, py_type, py_type, index
-                ),
+            let full_name = name;
+            let name = last_name(name);
+            let py_type = type_info_to_python_type(state_type, false, PythonTypeContext::States);
+            let index = types_map.get(full_name).unwrap().get_single();
+            if matches!(state_type, ObjectType::Empty) {
+                format!("        self.{name}: s.ValueTakeEmpty = s.ValueTakeEmpty()\n")
+            } else {
+                format!(
+                    "        self.{name}: s.ValueTake[{py_type}] = s.ValueTake[{py_type}]({index})\n"
+                )
             }
         }
         StateType::Static(name, state_type, init) => {
-            let last_name = name.split('.').last().unwrap();
-            let py_type = type_info_to_python_type(state_type, false);
+            let full_name = name;
+            let name = last_name(name);
+            let py_type = type_info_to_python_type(state_type, false, PythonTypeContext::States);
             let init_value = init_to_python_value(init, state_type);
-            let index = types_map.get(name).unwrap().get_single();
+            let index = types_map.get(full_name).unwrap().get_single();
             format!(
-                "        self.{}: s.Static[{}] = s.Static[{}]({}, {})\n",
-                last_name, py_type, py_type, index, init_value
+                "        self.{name}: s.Static[{py_type}] = s.Static[{py_type}]({index}, {init_value})\n"
             )
         }
         StateType::Signal(name, state_type, queue) => {
-            let last_name = name.split('.').last().unwrap();
-            let py_type = type_info_to_python_type(state_type, false);
-            let index = types_map.get(name).unwrap().get_single();
-            match state_type {
-                ObjectType::Empty => {
-                    let queue_str = match queue {
-                        true => "True",
-                        false => "",
-                    };
-                    format!(
-                        "        self.{}: s.SignalEmpty = s.SignalEmpty({})\n",
-                        last_name, queue_str
-                    )
-                }
-                _ => {
-                    let queue_str = match queue {
-                        true => ", True",
-                        false => "",
-                    };
-                    format!(
-                        "        self.{}: s.Signal[{}] = s.Signal[{}]({}{})\n",
-                        last_name, py_type, py_type, index, queue_str
-                    )
-                }
+            let full_name = name;
+            let name = last_name(name);
+            let py_type = type_info_to_python_type(state_type, false, PythonTypeContext::States);
+            let index = types_map.get(full_name).unwrap().get_single();
+            if matches!(state_type, ObjectType::Empty) {
+                let queue = if *queue { "True" } else { "" };
+                format!("        self.{name}: s.SignalEmpty = s.SignalEmpty({queue})\n")
+            } else {
+                let queue = if *queue { ", True" } else { "" };
+                format!(
+                    "        self.{name}: s.Signal[{py_type}] = s.Signal[{py_type}]({index}{queue})\n"
+                )
             }
         }
         StateType::ValueVec(name, state_type) => {
-            let last_name = name.split('.').last().unwrap();
-            let py_type = type_info_to_python_type(state_type, false);
-            let index = types_map.get(name).unwrap().get_single();
-            format!(
-                "        self.{}: s.Vec[{}] = s.Vec[{}]({})\n",
-                last_name, py_type, py_type, index
-            )
+            let full_name = name;
+            let name = last_name(name);
+            let py_type = type_info_to_python_type(state_type, false, PythonTypeContext::States);
+            let index = types_map.get(full_name).unwrap().get_single();
+            format!("        self.{name}: s.Vec[{py_type}] = s.Vec[{py_type}]({index})\n")
         }
         StateType::ValueMap(name, key_type, value_type) => {
-            let last_name = name.split('.').last().unwrap();
-            let py_key_type = type_info_to_python_type(key_type, false);
-            let py_value_type = type_info_to_python_type(value_type, false);
-            let (key, value) = types_map.get(name).unwrap().get_map();
+            let full_name = name;
+            let name = last_name(name);
+            let key_type = type_info_to_python_type(key_type, false, PythonTypeContext::States);
+            let value_type = type_info_to_python_type(value_type, false, PythonTypeContext::States);
+            let (key, value) = types_map.get(full_name).unwrap().get_map();
             format!(
-                "        self.{}: s.Map[{}, {}] = s.Map[{}, {}]({}, {})\n",
-                last_name, py_key_type, py_value_type, py_key_type, py_value_type, key, value
+                "        self.{name}: s.Map[{key_type}, {value_type}] = s.Map[{key_type}, {value_type}]({key}, {value})\n"
             )
         }
         StateType::Data(name, data_type) => {
-            let last_name = name.split('.').last().unwrap();
-            let dtype = data_type_to_dtype(data_type);
-            let dtype = format!("{}", dtype);
-            format!(
-                "        self.{}: s.Data[{}] = s.Data({})\n",
-                last_name, dtype, dtype
-            )
+            let name = last_name(name);
+            let data_type = data_type_to_dtype(data_type);
+            format!("        self.{name}: s.Data[{data_type}] = s.Data({data_type})\n")
         }
         StateType::DataMulti(name, data_type) => {
-            let last_name = name.split('.').last().unwrap();
-            let dtype = data_type_to_dtype(data_type);
-            let dtype = format!("{}", dtype);
-            format!(
-                "        self.{}: s.DataMulti[{}] = s.DataMulti({})\n",
-                last_name, dtype, dtype
-            )
+            let name = last_name(name);
+            let data_type = data_type_to_dtype(data_type);
+            format!("        self.{name}: s.DataMulti[{data_type}] = s.DataMulti({data_type})\n")
         }
         StateType::DataTake(name, data_type) => {
-            let last_name = name.split('.').last().unwrap();
-            let dtype = data_type_to_dtype(data_type);
-            let dtype = format!("{}", dtype);
-            format!(
-                "        self.{}: s.DataTake[{}] = s.DataTake({})\n",
-                last_name, dtype, dtype
-            )
+            let name = last_name(name);
+            let data_type = data_type_to_dtype(data_type);
+            format!("        self.{name}: s.DataTake[{data_type}] = s.DataTake({data_type})\n")
         }
         StateType::DataMultiTake(name, data_type) => {
-            let last_name = name.split('.').last().unwrap();
-            let dtype = data_type_to_dtype(data_type);
-            let dtype = format!("{}", dtype);
+            let name = last_name(name);
+            let data_type = data_type_to_dtype(data_type);
             format!(
-                "        self.{}: s.DataMultiTake[{}] = s.DataMultiTake({})\n",
-                last_name, dtype, dtype
+                "        self.{name}: s.DataMultiTake[{data_type}] = s.DataMultiTake({data_type})\n"
             )
         }
         StateType::Image(name) => {
-            let last_name = name.split('.').last().unwrap();
-            format!("        self.{}: s.Image = s.Image()\n", last_name)
+            let name = last_name(name);
+            format!("        self.{name}: s.Image = s.Image()\n")
         }
         StateType::SubState(name, state_class, _) => {
-            let last_name = name.split('.').last().unwrap();
-            format!(
-                "        self.{}: {} = {}(parent + \".{}\")\n",
-                last_name, state_class, state_class, last_name
-            )
+            let name = last_name(name);
+            format!("        self.{name}: {state_class} = {state_class}(parent + \".{name}\")\n")
         }
+    }
+}
+
+fn state_name(state: &StateType) -> &str {
+    match state {
+        StateType::Value(name, _, _, _)
+        | StateType::ValueTake(name, _)
+        | StateType::Static(name, _, _)
+        | StateType::Image(name)
+        | StateType::ValueMap(name, _, _)
+        | StateType::ValueVec(name, _)
+        | StateType::Signal(name, _, _)
+        | StateType::Data(name, _)
+        | StateType::DataTake(name, _)
+        | StateType::DataMulti(name, _)
+        | StateType::DataMultiTake(name, _)
+        | StateType::SubState(name, _, _) => name,
     }
 }
 
 fn write_states(
-    file: &mut fs::File,
+    output: &mut String,
     state_class: &str,
-    states: &Vec<StateType>,
+    states: &[StateType],
     types_map: &HashMap<String, TypeIndex>,
-    used_states: &mut Vec<&str>,
+    used_states: &mut Vec<String>,
 ) {
-    let mut lines = Vec::new();
-
     for state in states {
-        lines.push(state_to_line(state, types_map));
         if let StateType::SubState(_, state_class, sub_states) = state {
-            if used_states.contains(state_class) {
+            if used_states.iter().any(|used| used == state_class) {
                 continue;
             }
-            used_states.push(state_class);
-            write_states(file, state_class, sub_states, types_map, used_states);
+            used_states.push(state_class.to_string());
+            write_states(output, state_class, sub_states, types_map, used_states);
         }
     }
 
-    file.write_all(format!("\n\nclass {}(ISubStates):\n", state_class).as_bytes())
-        .unwrap();
-    file.write_all(b"    def __init__(self, parent: str):\n")
-        .unwrap();
-
-    for line in lines {
-        file.write_all(line.as_bytes()).unwrap();
+    writeln!(
+        output,
+        "\n\nclass {state_class}(ISubStates):\n    def __init__(self, parent: str):"
+    )
+    .unwrap();
+    if states.is_empty() {
+        output.push_str("        pass\n");
+    } else {
+        for state in states {
+            output.push_str(&state_to_line(state, types_map));
+        }
     }
 }
 
-fn order_structs(items: &Vec<(String, ObjectType)>, order: &mut VecDeque<String>) {
+fn order_structs(items: &[(String, ObjectType)], order: &mut VecDeque<String>) {
     for (_, item_type) in items {
-        if let ObjectType::Struct(name, fields) = item_type {
-            if !order.contains(name) {
-                order.push_front(name.clone());
-                order_structs(fields, order);
-            }
+        if let ObjectType::Struct(name, fields) = item_type
+            && !order.contains(name)
+        {
+            order.push_front(name.clone());
+            order_structs(fields, order);
         }
     }
 }
 
-pub fn generate_python<S: State>(path: impl ToString) -> Result<(), String> {
+fn render_python<S: State>() -> (String, String, String) {
     let (states, version_hash) = scripts::parse_states::<S>();
+    scripts::validate_states(&states);
 
     let mut values_list = Vec::new();
     scripts::states_into_values_list(&states, &mut values_list);
     let (enums, structs) = scripts::get_all_enums_struct(&values_list);
-    let mut order_list = VecDeque::new();
-    for (struct_name, items) in &structs {
-        if !order_list.contains(struct_name) {
-            order_list.push_front(struct_name.clone());
-            order_structs(items, &mut order_list);
-        }
-    }
     let (types_map, types_list) = process_type_info(&values_list);
 
-    let mut file =
-        fs::File::create(path.to_string()).map_err(|e| format!("Failed to create file: {}", e))?;
-
-    file.write_all(b"# Generated by build.rs, do not edit\n")
-        .unwrap();
-    file.write_all(b"# ruff: noqa: D101 D107\n").unwrap();
-    file.write_all(b"from collections.abc import Callable\n")
-        .unwrap();
-    if structs.len() > 0 {
-        file.write_all(b"from dataclasses import dataclass\n")
-            .unwrap();
-    }
-    if enums.len() > 0 {
-        file.write_all(b"from enum import IntEnum\n").unwrap();
-    }
-
-    file.write_all(b"\nimport numpy as np\n\n").unwrap();
-
-    file.write_all(b"import egui_states.structures as s\n")
-        .unwrap();
-    file.write_all(b"from egui_states.server import StatesBase, StateServerBase\n")
-        .unwrap();
-    file.write_all(b"from egui_states.structures import ISubStates\n")
-        .unwrap();
-
-    // Write enums
-    for (enum_name, variants) in &enums {
-        file.write_all(format!("\n\nclass {}(IntEnum):\n", enum_name).as_bytes())
-            .unwrap();
-        for (name, value) in variants {
-            let text = format!("    {} = {}\n", name, value);
-            file.write_all(text.as_bytes()).unwrap();
+    let mut struct_order = VecDeque::new();
+    for (struct_name, items) in &structs {
+        if !struct_order.contains(struct_name) {
+            struct_order.push_front(struct_name.clone());
+            order_structs(items, &mut struct_order);
         }
     }
 
-    // Write custom structs
-    for struct_name in &order_list {
+    let mut enums_output = String::from(
+        "# Generated by build.rs, do not edit\n# ruff: noqa: D101\nfrom enum import IntEnum\n",
+    );
+    for (enum_name, variants) in &enums {
+        writeln!(enums_output, "\n\nclass {enum_name}(IntEnum):").unwrap();
+        for (variant, value) in variants {
+            writeln!(enums_output, "    {variant} = {value}").unwrap();
+        }
+    }
+
+    let mut structs_output = String::from(
+        "# Generated by build.rs, do not edit\n# ruff: noqa: D101 E501 F401\nfrom __future__ import annotations\n\nfrom dataclasses import dataclass\n\nimport egui_states.structures as s\n\nfrom . import enums\n",
+    );
+    for struct_name in &struct_order {
         let fields = &structs[struct_name];
-        file.write_all(
-            format!("\n\n@dataclass\nclass {}(s._CustomStruct):\n", struct_name).as_bytes(),
+        writeln!(
+            structs_output,
+            "\n\n@dataclass\nclass {struct_name}(s._CustomStruct):"
         )
         .unwrap();
-
-        if fields.len() == 0 {
-            file.write_all(b"    pass\n").unwrap();
-            continue;
-        }
-
-        for (name, typ) in fields {
-            let py_type = type_info_to_python_type(typ, true);
-            let text = format!("    {}: {}\n", name, py_type);
-            file.write_all(text.as_bytes()).unwrap();
-        }
-    }
-
-    // write states
-    if let StateType::SubState(_, root_name, substates) = &states {
-        // write substates
-        let mut used_states = Vec::new();
-        for state in substates {
-            if let StateType::SubState(_, state_class, sub_states) = state {
-                if used_states.contains(state_class) {
-                    continue;
-                }
-                used_states.push(state_class);
-                write_states(
-                    &mut file,
-                    state_class,
-                    sub_states,
-                    &types_map,
-                    &mut used_states,
-                );
+        if fields.is_empty() {
+            structs_output.push_str("    pass\n");
+        } else {
+            for (field, typ) in fields {
+                let typ = type_info_to_python_type(typ, true, PythonTypeContext::Structs);
+                writeln!(structs_output, "    {field}: {typ}").unwrap();
             }
         }
+    }
 
-        // write root state
-        // Write the _get_obj_types function
-        file.write_all(format!("\n\nclass {}(StatesBase):\n", root_name).as_bytes())
-            .unwrap();
-        file.write_all(b"    @staticmethod\n").unwrap();
-        file.write_all(b"    def _get_obj_types() -> list[s.PyObjectType]:\n")
-            .unwrap();
-        file.write_all(b"        return [\n").unwrap();
-        for obj_type in &types_list {
-            let py_type_str = type_to_pytype(obj_type);
-            file.write_all(format!("            {},\n", py_type_str).as_bytes())
-                .unwrap();
+    let mut states_output = String::from(
+        "# Generated by build.rs, do not edit\n# ruff: noqa: D101 D107 E501\nfrom __future__ import annotations\n\nfrom collections.abc import Callable\n\nimport numpy as np\n\nimport egui_states.structures as s\nfrom egui_states.server import StatesBase, StateServerBase\nfrom egui_states.structures import ISubStates\n\nfrom . import enums, structs\n",
+    );
+
+    let StateType::SubState(_, root_name, substates) = &states else {
+        panic!("Root state must be a SubState");
+    };
+
+    let mut used_states = Vec::new();
+    for state in substates {
+        if let StateType::SubState(_, state_class, sub_states) = state {
+            if used_states.iter().any(|used| used == state_class) {
+                continue;
+            }
+            used_states.push(state_class.to_string());
+            write_states(
+                &mut states_output,
+                state_class,
+                sub_states,
+                &types_map,
+                &mut used_states,
+            );
         }
-        file.write_all(b"        ]\n\n").unwrap();
+    }
 
-        // Write the state values
-        file.write_all(b"    def __init__(self, server: StateServerBase):\n")
-            .unwrap();
-        file.write_all(b"        super().__init__(server)\n")
-            .unwrap();
-        file.write_all(b"        parent = \"root\"\n").unwrap();
-
-        for state in substates {
-            let line = state_to_line(state, &types_map);
-            file.write_all(line.as_bytes()).unwrap();
-        }
-
-        file.write_all(b"\n").unwrap();
-
-        file.write_all(
-            format!(
-                "\nclass StatesServer(StateServerBase[{root_name}]):\n    \"\"\"The main class for the StateServer for UI.\"\"\""
-            )
-            .as_bytes(),
+    writeln!(
+        states_output,
+        "\n\nclass {root_name}(StatesBase):\n    @staticmethod\n    def _get_obj_types() -> list[s.PyObjectType]:\n        return ["
+    )
+    .unwrap();
+    for object_type in &types_list {
+        writeln!(
+            states_output,
+            "            {},",
+            type_to_pytype(object_type)
         )
         .unwrap();
+    }
+    states_output.push_str(
+        "        ]\n\n    def __init__(self, server: StateServerBase):\n        super().__init__(server)\n        parent = \"root\"\n",
+    );
+    for state in substates {
+        states_output.push_str(&state_to_line(state, &types_map));
+    }
 
-        file.write_all(format!("\n\n    VERSION_HASH: int = {}\n", version_hash).as_bytes())
-            .unwrap();
+    write!(
+        states_output,
+        r#"
 
-        let text = r#"
+class StatesServer(StateServerBase[{root_name}]):
+    """The main class for the StateServer for UI."""
+
+    VERSION_HASH: int = {version_hash}
+
     def __init__(
         self,
         port: int,
@@ -579,20 +546,99 @@ pub fn generate_python<S: State>(path: impl ToString) -> Result<(), String> {
             version (int, optional): The optional version number for client connection.
             token (str, optional): The optional token string for client connection.
         """
-        "#;
-        file.write_all(text.as_bytes()).unwrap();
+        super().__init__({root_name}, port, signals_workers, error_handler, ip_addr, version, token)
+"#
+    )
+    .unwrap();
 
-        file.write_all(
-            format!(
-                "super().__init__({}, port, signals_workers, error_handler, ip_addr, version, token)\n",
-                root_name
-            )
-            .as_bytes(),
-        )
-        .unwrap();
-    } else {
-        panic!("Root state must be a SubState");
+    (states_output, enums_output, structs_output)
+}
+
+/// Generates typed Python server bindings as a three-file package.
+pub fn generate_python<S: State>(directory: impl AsRef<Path>) -> Result<(), String> {
+    let (states, enums, structs) = render_python::<S>();
+    scripts::write_generated_files(
+        directory.as_ref(),
+        [
+            ("__init__.py", states.as_str()),
+            ("enums.py", enums.as_str()),
+            ("structs.py", structs.as_str()),
+        ],
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::client::values::Value;
+
+    #[derive(Clone, Copy, Default, serde::Serialize, serde::Deserialize, crate::Transportable)]
+    enum RenderMode {
+        #[default]
+        Ready,
     }
 
-    Ok(())
+    #[derive(Clone, Default, serde::Serialize, serde::Deserialize, crate::Transportable)]
+    struct RenderInner {
+        mode: RenderMode,
+    }
+
+    #[derive(Clone, Default, serde::Serialize, serde::Deserialize, crate::Transportable)]
+    struct RenderOuter {
+        inner: RenderInner,
+    }
+
+    #[allow(dead_code)]
+    #[derive(crate::State)]
+    struct RenderRoot {
+        value: Value<RenderOuter>,
+    }
+
+    #[test]
+    fn qualifies_generated_types() {
+        let typ = ObjectType::Option(Box::new(ObjectType::Tuple(vec![
+            ObjectType::Enum("Mode".to_string(), vec![]),
+            ObjectType::Struct("Point".to_string(), vec![]),
+        ])));
+
+        assert_eq!(
+            type_info_to_python_type(&typ, false, PythonTypeContext::States),
+            "tuple[enums.Mode, structs.Point] | None"
+        );
+        assert_eq!(
+            type_to_pytype(&typ),
+            "s.opt(s.tu([s.enu(enums.Mode), s.cl([], structs.Point)]))"
+        );
+    }
+
+    #[test]
+    fn qualifies_initial_values() {
+        assert_eq!(
+            init_to_python_value(
+                &InitValue::Enum("Ready".to_string()),
+                &ObjectType::Enum("Mode".to_string(), vec![]),
+            ),
+            "enums.Mode.Ready"
+        );
+
+        assert_eq!(
+            init_to_python_value(
+                &InitValue::Struct("Point", vec![]),
+                &ObjectType::Struct("Point".to_string(), vec![]),
+            ),
+            "structs.Point()"
+        );
+    }
+
+    #[test]
+    fn renders_three_cross_referenced_modules() {
+        let (states, enums, structs) = render_python::<RenderRoot>();
+
+        assert!(states.contains("from . import enums, structs"));
+        assert!(states.contains("s.Value[structs.RenderOuter]"));
+        assert!(states.contains("s.enu(enums.RenderMode)"));
+        assert!(enums.contains("class RenderMode(IntEnum):"));
+        assert!(structs.contains("mode: enums.RenderMode"));
+        assert!(structs.contains("inner: RenderInner"));
+    }
 }

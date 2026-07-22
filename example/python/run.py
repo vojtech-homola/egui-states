@@ -1,6 +1,8 @@
 # ruff: noqa: D103
 import numpy as np
-from states_server import StatesServer, TestEnum, TestEnum2, TestStruct, TestStruct2
+from states_server import StatesServer
+from states_server.enums import TestEnum, TestEnum2
+from states_server.structs import TestStruct, TestStruct2
 
 from egui_states import LogLevel
 

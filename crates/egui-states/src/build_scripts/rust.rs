@@ -1,6 +1,5 @@
 use std::collections::VecDeque;
 use std::fmt::Write;
-use std::fs;
 use std::path::Path;
 
 use crate::State;
@@ -24,7 +23,13 @@ fn data_type_to_rust_type(data_type: &DataType) -> &'static str {
     }
 }
 
-fn type_to_rust_type(object_type: &ObjectType) -> String {
+#[derive(Clone, Copy)]
+enum RustTypeContext {
+    States,
+    Structs,
+}
+
+fn type_to_rust_type(object_type: &ObjectType, context: RustTypeContext) -> String {
     match object_type {
         ObjectType::U8 => "u8".to_string(),
         ObjectType::U16 => "u16".to_string(),
@@ -39,29 +44,38 @@ fn type_to_rust_type(object_type: &ObjectType) -> String {
         ObjectType::Bool => "bool".to_string(),
         ObjectType::String => "String".to_string(),
         ObjectType::Empty => "()".to_string(),
-        ObjectType::Enum(name, _) | ObjectType::Struct(name, _) => name.clone(),
+        ObjectType::Enum(name, _) => match context {
+            RustTypeContext::States => format!("enums::{name}"),
+            RustTypeContext::Structs => format!("super::enums::{name}"),
+        },
+        ObjectType::Struct(name, _) => match context {
+            RustTypeContext::States => format!("structs::{name}"),
+            RustTypeContext::Structs => name.clone(),
+        },
         ObjectType::Tuple(elements) => match elements.len() {
             0 => "()".to_string(),
-            1 => format!("({},)", type_to_rust_type(&elements[0])),
+            1 => format!("({},)", type_to_rust_type(&elements[0], context)),
             _ => {
                 let elements = elements
                     .iter()
-                    .map(type_to_rust_type)
+                    .map(|element| type_to_rust_type(element, context))
                     .collect::<Vec<_>>()
                     .join(", ");
                 format!("({elements})")
             }
         },
         ObjectType::List(size, element) => {
-            format!("[{}; {}]", type_to_rust_type(element), size)
+            format!("[{}; {size}]", type_to_rust_type(element, context))
         }
-        ObjectType::Vec(element) => format!("Vec<{}>", type_to_rust_type(element)),
+        ObjectType::Vec(element) => format!("Vec<{}>", type_to_rust_type(element, context)),
         ObjectType::Map(key, value) => format!(
             "std::collections::HashMap<{}, {}>",
-            type_to_rust_type(key),
-            type_to_rust_type(value)
+            type_to_rust_type(key, context),
+            type_to_rust_type(value, context)
         ),
-        ObjectType::Option(element) => format!("Option<{}>", type_to_rust_type(element)),
+        ObjectType::Option(element) => {
+            format!("Option<{}>", type_to_rust_type(element, context))
+        }
     }
 }
 
@@ -91,10 +105,13 @@ fn init_to_rust_value(init: &InitValue, object_type: &ObjectType) -> String {
         (InitValue::F64(value), ObjectType::F64) => float_value(*value, "f64"),
         (InitValue::Bool(value), ObjectType::Bool) => value.to_string(),
         (InitValue::String(value), ObjectType::String) => format!("String::from({value:?})"),
-        (InitValue::Enum(variant), ObjectType::Enum(name, _)) => format!("{name}::{variant}"),
-        (InitValue::Option(None), ObjectType::Option(element)) => {
-            format!("None::<{}>", type_to_rust_type(element))
+        (InitValue::Enum(variant), ObjectType::Enum(name, _)) => {
+            format!("enums::{name}::{variant}")
         }
+        (InitValue::Option(None), ObjectType::Option(element)) => format!(
+            "None::<{}>",
+            type_to_rust_type(element, RustTypeContext::States)
+        ),
         (InitValue::Option(Some(value)), ObjectType::Option(element)) => {
             format!("Some({})", init_to_rust_value(value, element))
         }
@@ -121,7 +138,10 @@ fn init_to_rust_value(init: &InitValue, object_type: &ObjectType) -> String {
         }
         (InitValue::Vec(values), ObjectType::Vec(element)) => {
             if values.is_empty() {
-                format!("Vec::<{}>::new()", type_to_rust_type(element))
+                format!(
+                    "Vec::<{}>::new()",
+                    type_to_rust_type(element, RustTypeContext::States)
+                )
             } else {
                 let values = values
                     .iter()
@@ -146,8 +166,8 @@ fn init_to_rust_value(init: &InitValue, object_type: &ObjectType) -> String {
             let values = values.join(", ");
             format!(
                 "std::collections::HashMap::<{}, {}>::from([{values}])",
-                type_to_rust_type(key_type),
-                type_to_rust_type(value_type)
+                type_to_rust_type(key_type, RustTypeContext::States),
+                type_to_rust_type(value_type, RustTypeContext::States)
             )
         }
         (InitValue::Struct(name, values), ObjectType::Struct(_, fields)) => {
@@ -159,7 +179,7 @@ fn init_to_rust_value(init: &InitValue, object_type: &ObjectType) -> String {
                 })
                 .collect::<Vec<_>>()
                 .join(", ");
-            format!("{name} {{ {values} }}")
+            format!("structs::{name} {{ {values} }}")
         }
         _ => panic!("Mismatched InitValue and ObjectType"),
     }
@@ -167,19 +187,36 @@ fn init_to_rust_value(init: &InitValue, object_type: &ObjectType) -> String {
 
 fn state_field_type(state: &StateType) -> String {
     match state {
-        StateType::Value(_, typ, _, _) => format!("s::Value<{}>", type_to_rust_type(typ)),
-        StateType::ValueTake(_, typ) => format!("s::ValueTake<{}>", type_to_rust_type(typ)),
-        StateType::Static(_, typ, _) => format!("s::Static<{}>", type_to_rust_type(typ)),
-        StateType::Signal(_, typ, _) => format!("s::Signal<{}>", type_to_rust_type(typ)),
-        StateType::ValueVec(_, typ) => format!("s::VecState<{}>", type_to_rust_type(typ)),
+        StateType::Value(_, typ, _, _) => format!(
+            "s::Value<{}>",
+            type_to_rust_type(typ, RustTypeContext::States)
+        ),
+        StateType::ValueTake(_, typ) => format!(
+            "s::ValueTake<{}>",
+            type_to_rust_type(typ, RustTypeContext::States)
+        ),
+        StateType::Static(_, typ, _) => format!(
+            "s::Static<{}>",
+            type_to_rust_type(typ, RustTypeContext::States)
+        ),
+        StateType::Signal(_, typ, _) => format!(
+            "s::Signal<{}>",
+            type_to_rust_type(typ, RustTypeContext::States)
+        ),
+        StateType::ValueVec(_, typ) => format!(
+            "s::VecState<{}>",
+            type_to_rust_type(typ, RustTypeContext::States)
+        ),
         StateType::ValueMap(_, key, value) => format!(
             "s::MapState<{}, {}>",
-            type_to_rust_type(key),
-            type_to_rust_type(value)
+            type_to_rust_type(key, RustTypeContext::States),
+            type_to_rust_type(value, RustTypeContext::States)
         ),
         StateType::Data(_, typ) => format!("s::Data<{}>", data_type_to_rust_type(typ)),
         StateType::DataTake(_, typ) => format!("s::DataTake<{}>", data_type_to_rust_type(typ)),
-        StateType::DataMulti(_, typ) => format!("s::DataMulti<{}>", data_type_to_rust_type(typ)),
+        StateType::DataMulti(_, typ) => {
+            format!("s::DataMulti<{}>", data_type_to_rust_type(typ))
+        }
         StateType::DataMultiTake(_, typ) => {
             format!("s::DataMultiTake<{}>", data_type_to_rust_type(typ))
         }
@@ -219,7 +256,7 @@ fn state_initializer(state: &StateType) -> String {
         ),
         StateType::ValueTake(name, typ) => format!(
             "s::ValueTake::<{}>::new(server, format!(\"{{parent}}.{}\"))?",
-            type_to_rust_type(typ),
+            type_to_rust_type(typ, RustTypeContext::States),
             last_name(name)
         ),
         StateType::Static(name, typ, init) => format!(
@@ -229,19 +266,19 @@ fn state_initializer(state: &StateType) -> String {
         ),
         StateType::Signal(name, typ, queue) => format!(
             "s::Signal::<{}>::new(server, format!(\"{{parent}}.{}\"), {})?",
-            type_to_rust_type(typ),
+            type_to_rust_type(typ, RustTypeContext::States),
             last_name(name),
             queue
         ),
         StateType::ValueVec(name, typ) => format!(
             "s::VecState::<{}>::new(server, format!(\"{{parent}}.{}\"))?",
-            type_to_rust_type(typ),
+            type_to_rust_type(typ, RustTypeContext::States),
             last_name(name)
         ),
         StateType::ValueMap(name, key, value) => format!(
             "s::MapState::<{}, {}>::new(server, format!(\"{{parent}}.{}\"))?",
-            type_to_rust_type(key),
-            type_to_rust_type(value),
+            type_to_rust_type(key, RustTypeContext::States),
+            type_to_rust_type(value, RustTypeContext::States),
             last_name(name)
         ),
         StateType::Data(name, typ) => format!(
@@ -264,12 +301,10 @@ fn state_initializer(state: &StateType) -> String {
             data_type_to_rust_type(typ),
             last_name(name)
         ),
-        StateType::Image(name) => {
-            format!(
-                "s::Image::new(server, format!(\"{{parent}}.{}\"))?",
-                last_name(name)
-            )
-        }
+        StateType::Image(name) => format!(
+            "s::Image::new(server, format!(\"{{parent}}.{}\"))?",
+            last_name(name)
+        ),
         StateType::SubState(name, state_class, _) => format!(
             "{state_class}::new(server, &format!(\"{{parent}}.{}\"))?",
             last_name(name)
@@ -328,12 +363,9 @@ fn order_structs(items: &[(String, ObjectType)], order: &mut VecDeque<String>) {
     }
 }
 
-/// Generates typed Rust server bindings for a client [`State`] definition.
-///
-/// Call this from `build.rs`, preferably with a path inside Cargo's `OUT_DIR`,
-/// and include the generated module with `include!`.
-pub fn generate_rust<S: State>(path: impl AsRef<Path>) -> Result<(), String> {
+fn render_rust<S: State>() -> Result<(String, String, String), String> {
     let (states, version_hash) = scripts::parse_states::<S>();
+    scripts::validate_states(&states);
 
     let mut values_list = Vec::new();
     scripts::states_into_values_list(&states, &mut values_list);
@@ -347,120 +379,173 @@ pub fn generate_rust<S: State>(path: impl AsRef<Path>) -> Result<(), String> {
         }
     }
 
-    let mut output =
-        String::from("// Generated by build.rs, do not edit\nuse egui_states::server as s;\n\n");
-
+    let mut enums_output = String::from("// Generated by build.rs, do not edit\n");
     for (enum_name, variants) in &enums {
         writeln!(
-            output,
-            "#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]\npub enum {enum_name} {{"
+            enums_output,
+            "\n#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]\npub enum {enum_name} {{"
         )
         .unwrap();
         for (variant, value) in variants {
-            writeln!(output, "    {variant} = {value},").unwrap();
+            writeln!(enums_output, "    {variant} = {value},").unwrap();
         }
-        output.push_str("}\n\n");
+        enums_output.push_str("}\n\n");
 
         writeln!(
-            output,
+            enums_output,
             "unsafe impl egui_states::Transportable for {enum_name} {{\n    fn init_value(&self) -> egui_states::InitValue {{\n        egui_states::InitValue::Enum(match self {{"
         )
         .unwrap();
         for (variant, _) in variants {
             writeln!(
-                output,
+                enums_output,
                 "            Self::{variant} => String::from(\"{variant}\"),"
             )
             .unwrap();
         }
         writeln!(
-            output,
+            enums_output,
             "        }})\n    }}\n\n    fn get_type() -> egui_states::ObjectType {{\n        egui_states::ObjectType::Enum(\n            String::from(\"{enum_name}\"),\n            vec!["
         )
         .unwrap();
         for (variant, value) in variants {
             writeln!(
-                output,
+                enums_output,
                 "                (String::from(\"{variant}\"), {value}),"
             )
             .unwrap();
         }
-        output.push_str("            ],\n        )\n    }\n}\n\n");
+        enums_output.push_str("            ],\n        )\n    }\n}\n");
     }
 
+    let mut structs_output = String::from("// Generated by build.rs, do not edit\n");
     for struct_name in &struct_order {
         let fields = &structs[struct_name];
         writeln!(
-            output,
-            "#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, egui_states::Transportable)]\npub struct {struct_name} {{"
+            structs_output,
+            "\n#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, egui_states::Transportable)]\npub struct {struct_name} {{"
         )
         .unwrap();
         for (field, typ) in fields {
-            writeln!(output, "    pub {field}: {},", type_to_rust_type(typ)).unwrap();
-        }
-        output.push_str("}\n\n");
-    }
-
-    if let StateType::SubState(_, root_name, substates) = &states {
-        let mut used_states = Vec::new();
-        for state in substates {
-            if let StateType::SubState(_, state_class, sub_states) = state {
-                if used_states.iter().any(|used| used == state_class) {
-                    continue;
-                }
-                used_states.push(state_class.to_string());
-                write_state(&mut output, state_class, sub_states, &mut used_states);
-            }
-        }
-
-        writeln!(output, "\n#[derive(Clone)]\npub struct {root_name} {{").unwrap();
-        for state in substates {
             writeln!(
-                output,
-                "    pub {}: {},",
-                last_name(state_name(state)),
-                state_field_type(state)
+                structs_output,
+                "    pub {field}: {},",
+                type_to_rust_type(typ, RustTypeContext::Structs)
             )
             .unwrap();
         }
-        output.push_str("}\n");
+        structs_output.push_str("}\n");
+    }
 
-        writeln!(
-            output,
-            "\nimpl {root_name} {{\n    pub fn new(server: &s::StateServer) -> s::Result<Self> {{\n        let parent = \"root\";\n        Ok(Self {{"
-        )
-        .unwrap();
-        for state in substates {
-            let field = last_name(state_name(state));
-            writeln!(output, "            {field}: {},", state_initializer(state)).unwrap();
-        }
-        output.push_str("        })\n    }\n}\n\n");
+    let mut states_output = String::from(
+        "// Generated by build.rs, do not edit\npub mod enums;\npub mod structs;\n\nuse egui_states::server as s;\n",
+    );
 
-        writeln!(
-            output,
-            "pub struct StatesServer {{\n    server: s::StateServer,\n    pub states: {root_name},\n    pub logging: s::LoggingSignal,\n}}\n"
-        )
-        .unwrap();
-        writeln!(
-            output,
-            "impl StatesServer {{\n    pub const VERSION_HASH: u64 = {version_hash};\n\n    pub fn new(port: u16) -> s::Result<Self> {{\n        Self::with_options(s::ServerOptions::new(port))\n    }}\n\n    pub fn with_options(options: s::ServerOptions) -> s::Result<Self> {{\n        let server = s::StateServer::with_options(options)?;\n        let states = {root_name}::new(&server)?;\n        server.finalize()?;\n        let logging = s::LoggingSignal::new(&server);\n        Ok(Self {{ server, states, logging }})\n    }}\n\n    pub fn state_server(&self) -> &s::StateServer {{\n        &self.server\n    }}\n\n    pub fn start(&self) -> s::Result<()> {{\n        self.server.start()\n    }}\n\n    pub fn stop(&self) {{\n        self.server.stop();\n    }}\n\n    pub fn update(&self, duration: Option<f32>) -> s::Result<()> {{\n        self.server.update(duration)\n    }}\n\n    pub fn disconnect_client(&self) {{\n        self.server.disconnect_client();\n    }}\n\n    pub fn is_running(&self) -> bool {{\n        self.server.is_running()\n    }}\n\n    pub fn is_connected(&self) -> bool {{\n        self.server.is_connected()\n    }}\n\n    pub fn on_connect(&self, callback: impl Fn(String) + Send + Sync + 'static) -> s::CallbackHandle {{\n        self.server.on_connect(callback)\n    }}\n\n    pub fn on_disconnect(&self, callback: impl Fn() + Send + Sync + 'static) -> s::CallbackHandle {{\n        self.server.on_disconnect(callback)\n    }}\n\n    pub fn on_client_message(&self, callback: impl Fn(String) + Send + Sync + 'static) -> s::CallbackHandle {{\n        self.server.on_client_message(callback)\n    }}\n}}"
-        )
-        .unwrap();
-    } else {
+    let StateType::SubState(_, root_name, substates) = &states else {
         return Err("Root state must be a SubState".to_string());
+    };
+
+    let mut used_states = Vec::new();
+    for state in substates {
+        if let StateType::SubState(_, state_class, sub_states) = state {
+            if used_states.iter().any(|used| used == state_class) {
+                continue;
+            }
+            used_states.push(state_class.to_string());
+            write_state(
+                &mut states_output,
+                state_class,
+                sub_states,
+                &mut used_states,
+            );
+        }
     }
 
-    let path = path.as_ref();
-    if fs::read_to_string(path).is_ok_and(|current| current == output) {
-        return Ok(());
+    writeln!(
+        states_output,
+        "\n#[derive(Clone)]\npub struct {root_name} {{"
+    )
+    .unwrap();
+    for state in substates {
+        writeln!(
+            states_output,
+            "    pub {}: {},",
+            last_name(state_name(state)),
+            state_field_type(state)
+        )
+        .unwrap();
     }
+    states_output.push_str("}\n");
 
-    fs::write(path, output).map_err(|error| format!("Failed to write {}: {error}", path.display()))
+    writeln!(
+        states_output,
+        "\nimpl {root_name} {{\n    pub fn new(server: &s::StateServer) -> s::Result<Self> {{\n        let parent = \"root\";\n        Ok(Self {{"
+    )
+    .unwrap();
+    for state in substates {
+        let field = last_name(state_name(state));
+        writeln!(
+            states_output,
+            "            {field}: {},",
+            state_initializer(state)
+        )
+        .unwrap();
+    }
+    states_output.push_str("        })\n    }\n}\n\n");
+
+    writeln!(
+        states_output,
+        "pub struct StatesServer {{\n    server: s::StateServer,\n    pub states: {root_name},\n    pub logging: s::LoggingSignal,\n}}\n"
+    )
+    .unwrap();
+    writeln!(
+        states_output,
+        "impl StatesServer {{\n    pub const VERSION_HASH: u64 = {version_hash};\n\n    pub fn new(port: u16) -> s::Result<Self> {{\n        Self::with_options(s::ServerOptions::new(port))\n    }}\n\n    pub fn with_options(options: s::ServerOptions) -> s::Result<Self> {{\n        let server = s::StateServer::with_options(options)?;\n        let states = {root_name}::new(&server)?;\n        server.finalize()?;\n        let logging = s::LoggingSignal::new(&server);\n        Ok(Self {{ server, states, logging }})\n    }}\n\n    pub fn state_server(&self) -> &s::StateServer {{\n        &self.server\n    }}\n\n    pub fn start(&self) -> s::Result<()> {{\n        self.server.start()\n    }}\n\n    pub fn stop(&self) {{\n        self.server.stop();\n    }}\n\n    pub fn update(&self, duration: Option<f32>) -> s::Result<()> {{\n        self.server.update(duration)\n    }}\n\n    pub fn disconnect_client(&self) {{\n        self.server.disconnect_client();\n    }}\n\n    pub fn is_running(&self) -> bool {{\n        self.server.is_running()\n    }}\n\n    pub fn is_connected(&self) -> bool {{\n        self.server.is_connected()\n    }}\n\n    pub fn on_connect(&self, callback: impl Fn(String) + Send + Sync + 'static) -> s::CallbackHandle {{\n        self.server.on_connect(callback)\n    }}\n\n    pub fn on_disconnect(&self, callback: impl Fn() + Send + Sync + 'static) -> s::CallbackHandle {{\n        self.server.on_disconnect(callback)\n    }}\n\n    pub fn on_client_message(&self, callback: impl Fn(String) + Send + Sync + 'static) -> s::CallbackHandle {{\n        self.server.on_client_message(callback)\n    }}\n}}"
+    )
+    .unwrap();
+
+    Ok((states_output, enums_output, structs_output))
+}
+
+/// Generates typed Rust server bindings as a three-file module.
+pub fn generate_rust<S: State>(directory: impl AsRef<Path>) -> Result<(), String> {
+    let (states, enums, structs) = render_rust::<S>()?;
+    scripts::write_generated_files(
+        directory.as_ref(),
+        [
+            ("mod.rs", states.as_str()),
+            ("enums.rs", enums.as_str()),
+            ("structs.rs", structs.as_str()),
+        ],
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::client::values::Value;
+
+    #[derive(Clone, Copy, Default, serde::Serialize, serde::Deserialize, crate::Transportable)]
+    enum RenderMode {
+        #[default]
+        Ready,
+    }
+
+    #[derive(Clone, Default, serde::Serialize, serde::Deserialize, crate::Transportable)]
+    struct RenderInner {
+        mode: RenderMode,
+    }
+
+    #[derive(Clone, Default, serde::Serialize, serde::Deserialize, crate::Transportable)]
+    struct RenderOuter {
+        inner: RenderInner,
+    }
+
+    #[allow(dead_code)]
+    #[derive(crate::State)]
+    struct RenderRoot {
+        value: Value<RenderOuter>,
+    }
 
     #[test]
     fn renders_nested_types() {
@@ -470,8 +555,25 @@ mod tests {
         )));
 
         assert_eq!(
-            type_to_rust_type(&typ),
+            type_to_rust_type(&typ, RustTypeContext::States),
             "Option<std::collections::HashMap<u16, Vec<String>>>"
+        );
+    }
+
+    #[test]
+    fn qualifies_generated_types_by_module() {
+        let typ = ObjectType::Tuple(vec![
+            ObjectType::Enum("Mode".to_string(), vec![]),
+            ObjectType::Struct("Point".to_string(), vec![]),
+        ]);
+
+        assert_eq!(
+            type_to_rust_type(&typ, RustTypeContext::States),
+            "(enums::Mode, structs::Point)"
+        );
+        assert_eq!(
+            type_to_rust_type(&typ, RustTypeContext::Structs),
+            "(super::enums::Mode, Point)"
         );
     }
 
@@ -494,7 +596,7 @@ mod tests {
 
         assert_eq!(
             init_to_rust_value(&init, &typ),
-            "Point { x: 1.5f32, label: String::from(\"left\") }"
+            "structs::Point { x: 1.5f32, label: String::from(\"left\") }"
         );
     }
 
@@ -522,5 +624,16 @@ mod tests {
             init_to_rust_value(&InitValue::F64(f64::NEG_INFINITY), &ObjectType::F64),
             "f64::NEG_INFINITY"
         );
+    }
+
+    #[test]
+    fn renders_three_cross_referenced_modules() {
+        let (states, enums, structs) = render_rust::<RenderRoot>().unwrap();
+
+        assert!(states.contains("pub mod enums;\npub mod structs;"));
+        assert!(states.contains("s::Value<structs::RenderOuter>"));
+        assert!(enums.contains("pub enum RenderMode"));
+        assert!(structs.contains("pub mode: super::enums::RenderMode"));
+        assert!(structs.contains("pub inner: RenderInner"));
     }
 }

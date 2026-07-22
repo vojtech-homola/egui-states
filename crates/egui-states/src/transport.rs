@@ -3,7 +3,7 @@ use std::hash::{Hash, Hasher};
 
 use crate::hashing::StableHasher;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum InitValue {
     U8(u8),
     U16(u16),
@@ -26,7 +26,7 @@ pub enum InitValue {
     Map(Vec<(InitValue, InitValue)>),
 }
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum ObjectType {
     U8,
     U16,

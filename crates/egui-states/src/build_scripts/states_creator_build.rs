@@ -19,7 +19,7 @@ use crate::data_transport::DataType;
 use crate::hashing::{StableHasher, generate_value_id};
 use crate::transport::{InitValue, ObjectType, Transportable};
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(crate) enum StateType {
     Value(String, ObjectType, InitValue, bool),
     ValueTake(String, ObjectType),

@@ -3,9 +3,9 @@ use std::thread;
 use std::time::Duration;
 
 use egui_states::server as s;
-use rust_server_example::states_server::{
-    StatesServer, TestEnum, TestEnum2, TestStruct, TestStruct2,
-};
+use rust_server_example::states_server::StatesServer;
+use rust_server_example::states_server::enums::{TestEnum, TestEnum2};
+use rust_server_example::states_server::structs::{TestStruct, TestStruct2};
 
 const PORT: u16 = 8091;
 const DEFAULT_VEC: [i32; 3] = [10, -3, 27];

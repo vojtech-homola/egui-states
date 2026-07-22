@@ -4,5 +4,5 @@ use gui_core::State;
 fn main() {
     println!("cargo:rerun-if-changed=../gui-core/src/");
 
-    generate_rust::<State>("./src/states_server.rs").unwrap();
+    generate_rust::<State>("./src/states_server").unwrap();
 }
