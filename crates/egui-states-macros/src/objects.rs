@@ -67,50 +67,11 @@ fn impl_struct(input: TokenStream) -> TokenStream {
 }
 
 fn impl_enum(input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as syn::ItemEnum);
-
-    let syn::ItemEnum {
+    let EnumInfo {
         ident,
-        generics,
-        variants,
-        ..
-    } = input;
-
-    if generics.lt_token.is_some() {
-        panic!("Enums with generics are not supported");
-    }
-
-    let variants = variants.clone().into_iter().map(|v| v);
-    let mut names = Vec::new();
-    let mut values = Vec::new();
-    let mut actual = 0i32;
-    for variant in variants.clone() {
-        if variant.fields != syn::Fields::Unit {
-            panic!("Enum variants must be unit variants");
-        }
-
-        if let Some((_, expr)) = &variant.discriminant {
-            if let syn::Expr::Lit(syn::ExprLit { lit, .. }) = expr {
-                if let Lit::Int(lit) = lit {
-                    let v = lit
-                        .base10_parse::<i32>()
-                        .expect("Enum discriminants must fit in i32");
-                    actual = v;
-                } else {
-                    panic!("Enum discriminants must be integers");
-                }
-            } else {
-                panic!("Enum discriminants must be literals");
-            }
-        }
-
-        names.push(variant.ident.clone());
-        values.push(actual);
-        actual += 1;
-    }
-    let values2 = values.clone();
-    let private_ident = format_ident!("__Private{}", ident);
-    let private_mod = format_ident!("__private_{}", ident);
+        names,
+        values,
+    } = parse_enum(input);
 
     let out = quote!(
         unsafe impl egui_states::Transportable for #ident {
@@ -131,7 +92,56 @@ fn impl_enum(input: TokenStream) -> TokenStream {
                 )
             }
         }
+    );
 
+    out.into()
+}
+
+pub(crate) fn impl_atomic(input: TokenStream) -> TokenStream {
+    impl_enum_atomic(input, AtomicKind::Atomic)
+}
+
+pub(crate) fn impl_atomic_static(input: TokenStream) -> TokenStream {
+    impl_enum_atomic(input, AtomicKind::AtomicStatic)
+}
+
+enum AtomicKind {
+    Atomic,
+    AtomicStatic,
+}
+
+fn impl_enum_atomic(input: TokenStream, kind: AtomicKind) -> TokenStream {
+    let EnumInfo {
+        ident,
+        names,
+        values,
+    } = parse_enum(input);
+
+    let (private_ident, private_mod) = match kind {
+        AtomicKind::Atomic => (
+            format_ident!("__PrivateAtomic{}", ident),
+            format_ident!("__private_atomic_{}", ident),
+        ),
+        AtomicKind::AtomicStatic => (
+            format_ident!("__PrivateAtomicStatic{}", ident),
+            format_ident!("__private_atomic_static_{}", ident),
+        ),
+    };
+
+    let atomic_impl = match kind {
+        AtomicKind::Atomic => quote!(
+            unsafe impl egui_states::Atomic for #ident {
+                type Lock = egui_states::UpdateLock<#private_mod::#private_ident>;
+            }
+        ),
+        AtomicKind::AtomicStatic => quote!(
+            unsafe impl egui_states::AtomicStatic for #ident {
+                type Lock = #private_mod::#private_ident;
+            }
+        ),
+    };
+
+    let out = quote!(
         #[allow(non_snake_case)]
         mod #private_mod {
             use std::sync::atomic::AtomicI32;
@@ -148,7 +158,7 @@ fn impl_enum(input: TokenStream) -> TokenStream {
             #[inline]
             fn load(&self) -> #ident {
                 match self.0.load(std::sync::atomic::Ordering::Acquire) {
-                    #(#values2 => #ident::#names),*,
+                    #(#values => #ident::#names),*,
                     raw => panic!(
                         "Invalid enum value for {}: {}",
                         stringify!(#ident),
@@ -163,14 +173,82 @@ fn impl_enum(input: TokenStream) -> TokenStream {
             }
         }
 
-        unsafe impl egui_states::AtomicStatic for #ident {
-            type Lock = #private_mod::#private_ident;
-        }
-
-        unsafe impl egui_states::Atomic for #ident {
-            type Lock = egui_states::UpdateLock<#private_mod::#private_ident>;
-        }
+        #atomic_impl
     );
 
     out.into()
+}
+
+struct EnumInfo {
+    ident: syn::Ident,
+    names: Vec<syn::Ident>,
+    values: Vec<i32>,
+}
+
+fn parse_enum(input: TokenStream) -> EnumInfo {
+    let input = syn::parse::<syn::ItemEnum>(input)
+        .unwrap_or_else(|error| panic!("Enum derive input is invalid: {error}"));
+
+    let syn::ItemEnum {
+        ident,
+        generics,
+        variants,
+        ..
+    } = input;
+
+    if generics.lt_token.is_some() {
+        panic!("Enums with generics are not supported");
+    }
+
+    let variants = variants.clone().into_iter().map(|v| v);
+    let mut names = Vec::new();
+    let mut values = Vec::new();
+    let mut next_value = Some(0i32);
+    for variant in variants.clone() {
+        if variant.fields != syn::Fields::Unit {
+            panic!("Enum variants must be unit variants");
+        }
+
+        let actual = if let Some((_, expr)) = &variant.discriminant {
+            parse_discriminant(expr)
+        } else {
+            next_value.expect("Enum discriminants must fit in i32")
+        };
+
+        names.push(variant.ident.clone());
+        values.push(actual);
+        next_value = actual.checked_add(1);
+    }
+
+    EnumInfo {
+        ident,
+        names,
+        values,
+    }
+}
+
+fn parse_discriminant(expr: &syn::Expr) -> i32 {
+    let (negative, lit) = match expr {
+        syn::Expr::Lit(syn::ExprLit {
+            lit: Lit::Int(lit), ..
+        }) => (false, lit),
+        syn::Expr::Unary(syn::ExprUnary {
+            op: syn::UnOp::Neg(_),
+            expr,
+            ..
+        }) => match expr.as_ref() {
+            syn::Expr::Lit(syn::ExprLit {
+                lit: Lit::Int(lit), ..
+            }) => (true, lit),
+            _ => panic!("Enum discriminants must be integer literals"),
+        },
+        syn::Expr::Lit(_) => panic!("Enum discriminants must be integers"),
+        _ => panic!("Enum discriminants must be integer literals"),
+    };
+
+    let magnitude = lit
+        .base10_parse::<i64>()
+        .expect("Enum discriminants must fit in i32");
+    let value = if negative { -magnitude } else { magnitude };
+    i32::try_from(value).expect("Enum discriminants must fit in i32")
 }

@@ -43,9 +43,9 @@ pub trait State {
     fn new(c: &mut impl StatesCreator) -> Self;
 }
 
-#[cfg(feature = "client")]
-pub use egui_states_macros::State;
 pub use egui_states_macros::Transportable;
+#[cfg(feature = "client")]
+pub use egui_states_macros::{Atomic, AtomicStatic, State};
 pub use serde;
 pub use transport::{InitValue, ObjectType, Transportable};
 
