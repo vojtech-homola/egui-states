@@ -42,21 +42,18 @@ impl Hash for ObjectType {
             ObjectType::F32 => 9u8.hash(state),
             ObjectType::String => 10u8.hash(state),
             ObjectType::Bool => 11u8.hash(state),
-            ObjectType::Enum(name, variants) => {
+            ObjectType::Enum(_, variants) => {
                 12u8.hash(state);
-                name.hash(state);
                 (variants.len() as u64).hash(state);
                 for (variant_name, value) in variants {
                     variant_name.hash(state);
                     value.hash(state);
                 }
             }
-            ObjectType::Struct(name, fields) => {
+            ObjectType::Struct(_, fields) => {
                 13u8.hash(state);
-                name.hash(state);
                 (fields.len() as u64).hash(state);
-                for (field_name, field_type) in fields {
-                    field_name.hash(state);
+                for (_, field_type) in fields {
                     field_type.hash(state);
                 }
             }
