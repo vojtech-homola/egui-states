@@ -7,7 +7,7 @@ use serde::Deserialize;
 
 use crate::collections::MapHeader;
 use crate::serialization::{Deserializer, deserialize};
-use crate::transport::Transportable;
+use crate::typed::Typed;
 
 pub(crate) trait UpdateMap: Sync + Send {
     fn update_map(&self, type_id: u32, header: MapHeader, data: &[u8]) -> Result<(), String>;
@@ -21,8 +21,8 @@ pub struct MapState<K, V> {
 
 impl<K, V> MapState<K, V>
 where
-    K: Transportable + Clone + Hash + Eq,
-    V: Transportable + Clone,
+    K: Typed + Clone + Hash + Eq,
+    V: Typed + Clone,
 {
     pub(crate) fn new(name: String, type_id: u32) -> Self {
         Self {

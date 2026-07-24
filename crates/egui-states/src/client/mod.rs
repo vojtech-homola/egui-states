@@ -3,6 +3,7 @@ pub(crate) mod client;
 pub(crate) mod data;
 pub(crate) mod data_take;
 pub(crate) mod image;
+pub(crate) mod initial_value;
 pub(crate) mod messages;
 pub(crate) mod states_creator;
 pub(crate) mod value_map;

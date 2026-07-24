@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use crate::Transportable;
+use crate::Typed;
 use crate::server_core::values_core::{SignalCore, ValueCore, ValueStaticCore, ValueTakeCore};
 
 use super::callbacks::CallbackHandle;
@@ -20,7 +20,7 @@ pub struct Value<T> {
 
 impl<T> Value<T>
 where
-    T: Serialize + Transportable,
+    T: Serialize + Typed,
 {
     pub fn new(
         server: &StateServer,
@@ -89,7 +89,7 @@ pub struct Static<T> {
 
 impl<T> Static<T>
 where
-    T: Serialize + Transportable,
+    T: Serialize + Typed,
 {
     pub fn new(server: &StateServer, name: impl Into<String>, initial_value: T) -> Result<Self> {
         let (_, inner) = server.add_static(name.into(), initial_value)?;
@@ -129,7 +129,7 @@ pub struct ValueTake<T> {
 
 impl<T> ValueTake<T>
 where
-    T: Transportable,
+    T: Typed,
 {
     pub fn new(server: &StateServer, name: impl Into<String>) -> Result<Self> {
         let (_, inner) = server.add_value_take::<T>(name.into())?;
@@ -162,7 +162,7 @@ pub struct Signal<T> {
 
 impl<T> Signal<T>
 where
-    T: Transportable,
+    T: Typed,
 {
     pub fn new(server: &StateServer, name: impl Into<String>, queue: bool) -> Result<Self> {
         let (id, inner) = server.add_signal::<T>(name.into(), queue)?;

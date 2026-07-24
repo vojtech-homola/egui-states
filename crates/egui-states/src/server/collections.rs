@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use crate::Transportable;
+use crate::Typed;
 use crate::server_core::map_core::ValueMap as CoreMap;
 use crate::server_core::vec_core::ValueList as CoreVec;
 
@@ -20,7 +20,7 @@ pub struct VecState<T> {
 
 impl<T> VecState<T>
 where
-    T: Transportable,
+    T: Typed,
 {
     pub fn new(server: &StateServer, name: impl Into<String>) -> Result<Self> {
         let (_, inner) = server.add_vec::<T>(name.into())?;
@@ -104,8 +104,8 @@ pub struct MapState<K, V> {
 
 impl<K, V> MapState<K, V>
 where
-    K: Transportable,
-    V: Transportable,
+    K: Typed,
+    V: Typed,
 {
     pub fn new(server: &StateServer, name: impl Into<String>) -> Result<Self> {
         let (_, inner) = server.add_map::<K, V>(name.into())?;

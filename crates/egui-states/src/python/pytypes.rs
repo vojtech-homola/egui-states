@@ -1,7 +1,7 @@
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict};
 
-use crate::transport::ObjectType;
+use crate::typed::ObjectType;
 
 pub(crate) enum PyObjectType {
     U8,

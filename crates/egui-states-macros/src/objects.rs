@@ -2,61 +2,43 @@ use proc_macro::TokenStream;
 use quote::{format_ident, quote};
 use syn::{self, Lit, parse_macro_input};
 
-pub(crate) fn impl_transportable(input: TokenStream) -> TokenStream {
+pub(crate) fn impl_typed(input: TokenStream) -> TokenStream {
     let input_clone = input.clone();
     let input = parse_macro_input!(input as syn::DeriveInput);
 
     match input.data {
-        syn::Data::Struct(_) => impl_struct(input_clone),
-        syn::Data::Enum(_) => impl_enum(input_clone),
+        syn::Data::Struct(_) => impl_struct_typed(input_clone),
+        syn::Data::Enum(_) => impl_enum_typed(input_clone),
         syn::Data::Union(_) => panic!("Unions are not supported"),
     }
 }
 
-fn impl_struct(input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as syn::ItemStruct);
+pub(crate) fn impl_initial_value(input: TokenStream) -> TokenStream {
+    let input_clone = input.clone();
+    let input = parse_macro_input!(input as syn::DeriveInput);
 
-    let syn::ItemStruct {
+    match input.data {
+        syn::Data::Struct(_) => impl_struct_initial_value(input_clone),
+        syn::Data::Enum(_) => impl_enum_initial_value(input_clone),
+        syn::Data::Union(_) => panic!("Unions are not supported"),
+    }
+}
+
+fn impl_struct_typed(input: TokenStream) -> TokenStream {
+    let StructInfo {
         ident,
-        generics,
-        fields,
-        ..
-    } = input;
-
-    if generics.lt_token.is_some() {
-        panic!("Structs with generics are not supported");
-    }
-
-    let fields_iter = fields.clone().into_iter().map(|f| f);
-    let mut names = Vec::new();
-    let mut types = Vec::new();
-    for field in fields_iter {
-        if let Some(ident) = &field.ident {
-            names.push(ident.clone());
-            types.push(field.ty.clone());
-        } else {
-            panic!("Struct fields must be named");
-        }
-    }
+        names,
+        types,
+    } = parse_struct(input);
 
     let out = quote!(
-        unsafe impl egui_states::Transportable for #ident {
-            #[inline]
-            fn init_value(&self) -> egui_states::InitValue {
-                egui_states::InitValue::Struct(
-                    stringify!(#ident),
-                    vec![
-                        #((stringify!(#names), self.#names.init_value())),*
-                    ]
-                )
-            }
-
+        unsafe impl egui_states::Typed for #ident {
             #[inline]
             fn get_type() -> egui_states::ObjectType {
                 egui_states::ObjectType::Struct(
                     stringify!(#ident).to_string(),
                     vec![
-                        #((stringify!(#names).to_string(), <#types as egui_states::Transportable>::get_type())),*
+                        #((stringify!(#names).to_string(), <#types as egui_states::Typed>::get_type())),*
                     ]
                 )
             }
@@ -66,7 +48,27 @@ fn impl_struct(input: TokenStream) -> TokenStream {
     out.into()
 }
 
-fn impl_enum(input: TokenStream) -> TokenStream {
+fn impl_struct_initial_value(input: TokenStream) -> TokenStream {
+    let StructInfo { ident, names, .. } = parse_struct(input);
+
+    let out = quote!(
+        unsafe impl egui_states::InitialValue for #ident {
+            #[inline]
+            fn init_value(&self) -> egui_states::InitValue {
+                egui_states::InitValue::Struct(
+                    stringify!(#ident),
+                    vec![
+                        #((stringify!(#names), self.#names.init_value())),*
+                    ]
+                )
+            }
+        }
+    );
+
+    out.into()
+}
+
+fn impl_enum_typed(input: TokenStream) -> TokenStream {
     let EnumInfo {
         ident,
         names,
@@ -74,14 +76,7 @@ fn impl_enum(input: TokenStream) -> TokenStream {
     } = parse_enum(input);
 
     let out = quote!(
-        unsafe impl egui_states::Transportable for #ident {
-            #[inline]
-            fn init_value(&self) -> egui_states::InitValue {
-                egui_states::InitValue::Enum(match self {
-                    #(Self::#names => stringify!(#names).to_string()),*
-                })
-            }
-
+        unsafe impl egui_states::Typed for #ident {
             #[inline]
             fn get_type() -> egui_states::ObjectType {
                 egui_states::ObjectType::Enum(
@@ -90,6 +85,23 @@ fn impl_enum(input: TokenStream) -> TokenStream {
                         #((stringify!(#names).to_string(), #values)),*
                     ]
                 )
+            }
+        }
+    );
+
+    out.into()
+}
+
+fn impl_enum_initial_value(input: TokenStream) -> TokenStream {
+    let EnumInfo { ident, names, .. } = parse_enum(input);
+
+    let out = quote!(
+        unsafe impl egui_states::InitialValue for #ident {
+            #[inline]
+            fn init_value(&self) -> egui_states::InitValue {
+                egui_states::InitValue::Enum(match self {
+                    #(Self::#names => stringify!(#names).to_string()),*
+                })
             }
         }
     );
@@ -177,6 +189,45 @@ fn impl_enum_atomic(input: TokenStream, kind: AtomicKind) -> TokenStream {
     );
 
     out.into()
+}
+
+struct StructInfo {
+    ident: syn::Ident,
+    names: Vec<syn::Ident>,
+    types: Vec<syn::Type>,
+}
+
+fn parse_struct(input: TokenStream) -> StructInfo {
+    let input = syn::parse::<syn::ItemStruct>(input)
+        .unwrap_or_else(|error| panic!("Struct derive input is invalid: {error}"));
+
+    let syn::ItemStruct {
+        ident,
+        generics,
+        fields,
+        ..
+    } = input;
+
+    if generics.lt_token.is_some() {
+        panic!("Structs with generics are not supported");
+    }
+
+    let mut names = Vec::new();
+    let mut types = Vec::new();
+    for field in fields {
+        if let Some(ident) = field.ident {
+            names.push(ident);
+            types.push(field.ty);
+        } else {
+            panic!("Struct fields must be named");
+        }
+    }
+
+    StructInfo {
+        ident,
+        names,
+        types,
+    }
 }
 
 struct EnumInfo {

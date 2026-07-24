@@ -10,7 +10,7 @@ use bytes::Bytes;
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 
-use crate::Transportable;
+use crate::Typed;
 use crate::serialization::{deserialize_value, serialize};
 use crate::server_core::data_core::{Data as CoreData, DataMulti as CoreDataMulti};
 use crate::server_core::data_take_core::{
@@ -228,7 +228,7 @@ impl StateServer {
         queue: bool,
     ) -> Result<(u64, Arc<CoreValue>)>
     where
-        T: Serialize + Transportable,
+        T: Serialize + Typed,
     {
         let data = serialize_bytes(&initial_value)?;
         let type_id = T::get_type().get_hash();
@@ -246,7 +246,7 @@ impl StateServer {
 
     pub(super) fn add_value_take<T>(&self, name: String) -> Result<(u64, Arc<CoreValueTake>)>
     where
-        T: Transportable,
+        T: Typed,
     {
         let type_id = T::get_type().get_hash();
         let id = self
@@ -267,7 +267,7 @@ impl StateServer {
         initial_value: T,
     ) -> Result<(u64, Arc<CoreStatic>)>
     where
-        T: Serialize + Transportable,
+        T: Serialize + Typed,
     {
         let data = serialize_bytes(&initial_value)?;
         let type_id = T::get_type().get_hash();
@@ -285,7 +285,7 @@ impl StateServer {
 
     pub(super) fn add_signal<T>(&self, name: String, queue: bool) -> Result<(u64, Arc<CoreSignal>)>
     where
-        T: Transportable,
+        T: Typed,
     {
         let type_id = T::get_type().get_hash();
         let id = self
@@ -302,7 +302,7 @@ impl StateServer {
 
     pub(super) fn add_vec<T>(&self, name: String) -> Result<(u64, Arc<CoreVec>)>
     where
-        T: Transportable,
+        T: Typed,
     {
         let type_id = T::get_type().get_hash();
         let id = self
@@ -320,8 +320,8 @@ impl StateServer {
 
     pub(super) fn add_map<K, V>(&self, name: String) -> Result<(u64, Arc<CoreMap>)>
     where
-        K: Transportable,
-        V: Transportable,
+        K: Typed,
+        V: Typed,
     {
         let type_id = V::get_type().get_hash_from(K::get_type().get_hash());
         let id = self

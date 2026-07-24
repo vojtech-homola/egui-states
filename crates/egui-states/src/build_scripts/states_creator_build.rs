@@ -7,6 +7,7 @@ use crate::client::atomics::{Atomic, AtomicStatic};
 use crate::client::data::{Data, DataMulti, private::GetDataType};
 use crate::client::data_take::{DataMultiTake, DataTake};
 use crate::client::image::Image;
+use crate::client::initial_value::{InitValue, InitialValue};
 
 use crate::client::messages::MessageSender;
 use crate::client::states_creator::{self, StatesCreator, hash_id, hash_id_type};
@@ -17,7 +18,7 @@ use crate::client::values::{
 };
 use crate::data_transport::DataType;
 use crate::hashing::{StableHasher, generate_value_id};
-use crate::transport::{InitValue, ObjectType, Transportable};
+use crate::typed::{ObjectType, Typed};
 
 #[derive(Clone, Debug)]
 pub(crate) enum StateType {
@@ -83,7 +84,7 @@ impl StatesCreator for StatesCreatorBuild {
 
     fn value<T, Q>(&mut self, name: &'static str, value: T) -> Value<T, Q>
     where
-        T: for<'a> Deserialize<'a> + Serialize + Clone + Transportable,
+        T: for<'a> Deserialize<'a> + Serialize + Clone + Typed + InitialValue,
         Q: GetQueueType,
     {
         let name = format!("{}.{}", self.parent, name);
@@ -107,7 +108,7 @@ impl StatesCreator for StatesCreatorBuild {
 
     fn value_take<T>(&mut self, name: &'static str) -> ValueTake<T>
     where
-        T: for<'a> Deserialize<'a> + Serialize + Transportable + Send + Sync + 'static,
+        T: for<'a> Deserialize<'a> + Serialize + Typed + Send + Sync + 'static,
     {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
@@ -129,7 +130,7 @@ impl StatesCreator for StatesCreatorBuild {
 
     fn atomic<T, Q>(&mut self, name: &'static str, value: T) -> ValueAtomic<T, Q>
     where
-        T: for<'a> Deserialize<'a> + Serialize + Clone + Transportable + Atomic,
+        T: for<'a> Deserialize<'a> + Serialize + Clone + Typed + InitialValue + Atomic,
         Q: GetQueueType,
     {
         let name = format!("{}.{}", self.parent, name);
@@ -153,7 +154,7 @@ impl StatesCreator for StatesCreatorBuild {
 
     fn add_static<T>(&mut self, name: &'static str, value: T) -> Static<T>
     where
-        T: for<'a> Deserialize<'a> + Serialize + Clone + Transportable,
+        T: for<'a> Deserialize<'a> + Serialize + Clone + Typed + InitialValue,
     {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
@@ -177,7 +178,8 @@ impl StatesCreator for StatesCreatorBuild {
     where
         T: for<'a> Deserialize<'a>
             + Serialize
-            + Transportable
+            + Typed
+            + InitialValue
             + Clone
             + Send
             + Sync
@@ -216,7 +218,7 @@ impl StatesCreator for StatesCreatorBuild {
 
     fn signal<T, Q>(&mut self, name: &'static str) -> Signal<T, Q>
     where
-        T: Serialize + Clone + Transportable,
+        T: Serialize + Clone + Typed,
         Q: GetQueueType,
     {
         let name = format!("{}.{}", self.parent, name);
@@ -239,8 +241,8 @@ impl StatesCreator for StatesCreatorBuild {
 
     fn map<K, V>(&mut self, name: &'static str) -> MapState<K, V>
     where
-        K: Hash + Eq + Clone + for<'a> Deserialize<'a> + Transportable,
-        V: Clone + for<'a> Deserialize<'a> + Transportable,
+        K: Hash + Eq + Clone + for<'a> Deserialize<'a> + Typed,
+        V: Clone + for<'a> Deserialize<'a> + Typed,
     {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
@@ -261,7 +263,7 @@ impl StatesCreator for StatesCreatorBuild {
 
     fn vec<T>(&mut self, name: &'static str) -> VecState<T>
     where
-        T: Clone + for<'a> Deserialize<'a> + Transportable,
+        T: Clone + for<'a> Deserialize<'a> + Typed,
     {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);

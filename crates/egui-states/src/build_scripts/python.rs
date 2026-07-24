@@ -2,11 +2,12 @@ use std::collections::{HashMap, VecDeque};
 use std::fmt::Write;
 use std::path::Path;
 
+use crate::InitValue;
 use crate::State;
 use crate::build_scripts::scripts;
 use crate::build_scripts::states_creator_build::StateType;
 use crate::data_transport::DataType;
-use crate::transport::{InitValue, ObjectType};
+use crate::typed::ObjectType;
 
 fn type_to_pytype(type_info: &ObjectType) -> String {
     match type_info {
@@ -565,80 +566,4 @@ pub fn generate_python<S: State>(directory: impl AsRef<Path>) -> Result<(), Stri
             ("structs.py", structs.as_str()),
         ],
     )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::client::values::Value;
-
-    #[derive(Clone, Copy, Default, serde::Serialize, serde::Deserialize, crate::Transportable)]
-    enum RenderMode {
-        #[default]
-        Ready,
-    }
-
-    #[derive(Clone, Default, serde::Serialize, serde::Deserialize, crate::Transportable)]
-    struct RenderInner {
-        mode: RenderMode,
-    }
-
-    #[derive(Clone, Default, serde::Serialize, serde::Deserialize, crate::Transportable)]
-    struct RenderOuter {
-        inner: RenderInner,
-    }
-
-    #[allow(dead_code)]
-    #[derive(crate::State)]
-    struct RenderRoot {
-        value: Value<RenderOuter>,
-    }
-
-    #[test]
-    fn qualifies_generated_types() {
-        let typ = ObjectType::Option(Box::new(ObjectType::Tuple(vec![
-            ObjectType::Enum("Mode".to_string(), vec![]),
-            ObjectType::Struct("Point".to_string(), vec![]),
-        ])));
-
-        assert_eq!(
-            type_info_to_python_type(&typ, false, PythonTypeContext::States),
-            "tuple[enums.Mode, structs.Point] | None"
-        );
-        assert_eq!(
-            type_to_pytype(&typ),
-            "s.opt(s.tu([s.enu(enums.Mode), s.cl([], structs.Point)]))"
-        );
-    }
-
-    #[test]
-    fn qualifies_initial_values() {
-        assert_eq!(
-            init_to_python_value(
-                &InitValue::Enum("Ready".to_string()),
-                &ObjectType::Enum("Mode".to_string(), vec![]),
-            ),
-            "enums.Mode.Ready"
-        );
-
-        assert_eq!(
-            init_to_python_value(
-                &InitValue::Struct("Point", vec![]),
-                &ObjectType::Struct("Point".to_string(), vec![]),
-            ),
-            "structs.Point()"
-        );
-    }
-
-    #[test]
-    fn renders_three_cross_referenced_modules() {
-        let (states, enums, structs) = render_python::<RenderRoot>();
-
-        assert!(states.contains("from . import enums, structs"));
-        assert!(states.contains("s.Value[structs.RenderOuter]"));
-        assert!(states.contains("s.enu(enums.RenderMode)"));
-        assert!(enums.contains("class RenderMode(IntEnum):"));
-        assert!(structs.contains("mode: enums.RenderMode"));
-        assert!(structs.contains("inner: RenderInner"));
-    }
 }

@@ -15,7 +15,8 @@ use super::{
     Eq,
     serde::Serialize,
     serde::Deserialize,
-    egui_states::Transportable,
+    egui_states::Typed,
+    egui_states::InitialValue,
 )]
 pub(super) enum TestEnum {
     #[default]
@@ -32,7 +33,8 @@ pub(super) enum TestEnum {
     Eq,
     serde::Serialize,
     serde::Deserialize,
-    egui_states::Transportable,
+    egui_states::Typed,
+    egui_states::InitialValue,
 )]
 pub(super) enum TestEnum2 {
     X,
@@ -42,7 +44,13 @@ pub(super) enum TestEnum2 {
 }
 
 #[derive(
-    Clone, Default, PartialEq, serde::Serialize, serde::Deserialize, egui_states::Transportable,
+    Clone,
+    Default,
+    PartialEq,
+    serde::Serialize,
+    serde::Deserialize,
+    egui_states::Typed,
+    egui_states::InitialValue,
 )]
 pub(super) struct TestStruct {
     pub x: f32,
@@ -51,7 +59,14 @@ pub(super) struct TestStruct {
 }
 
 #[derive(
-    Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, egui_states::Transportable,
+    Clone,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    egui_states::Typed,
+    egui_states::InitialValue,
 )]
 pub(super) struct TestStruct2 {
     pub enabled: bool,

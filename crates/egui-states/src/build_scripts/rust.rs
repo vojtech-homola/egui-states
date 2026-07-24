@@ -2,11 +2,12 @@ use std::collections::VecDeque;
 use std::fmt::Write;
 use std::path::Path;
 
+use crate::InitValue;
 use crate::State;
 use crate::build_scripts::scripts;
 use crate::build_scripts::states_creator_build::StateType;
 use crate::data_transport::DataType;
-use crate::transport::{InitValue, ObjectType};
+use crate::typed::ObjectType;
 
 fn data_type_to_rust_type(data_type: &DataType) -> &'static str {
     match data_type {
@@ -383,7 +384,7 @@ fn render_rust<S: State>() -> Result<(String, String, String), String> {
     for (enum_name, variants) in &enums {
         writeln!(
             enums_output,
-            "\n#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, egui_states::Transportable)]\npub enum {enum_name} {{"
+            "\n#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, egui_states::Typed)]\npub enum {enum_name} {{"
         )
         .unwrap();
         for (variant, value) in variants {
@@ -397,7 +398,7 @@ fn render_rust<S: State>() -> Result<(String, String, String), String> {
         let fields = &structs[struct_name];
         writeln!(
             structs_output,
-            "\n#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, egui_states::Transportable)]\npub struct {struct_name} {{"
+            "\n#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, egui_states::Typed)]\npub struct {struct_name} {{"
         )
         .unwrap();
         for (field, typ) in fields {

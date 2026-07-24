@@ -4,7 +4,7 @@ use std::path::Path;
 
 use crate::State;
 use crate::build_scripts::states_creator_build::{StateType, StatesCreatorBuild};
-use crate::transport::ObjectType;
+use crate::typed::ObjectType;
 
 pub(crate) fn parse_states<S: State>() -> (StateType, u64) {
     let mut creator = StatesCreatorBuild::new("root");
@@ -277,7 +277,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::*;
-    use crate::transport::InitValue;
+    use crate::InitValue;
 
     fn value(path: &str, typ: ObjectType) -> StateType {
         StateType::Value(path.to_string(), typ, InitValue::I32(0), false)

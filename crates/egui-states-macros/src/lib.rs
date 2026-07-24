@@ -3,9 +3,14 @@ use proc_macro::TokenStream;
 mod objects;
 mod states;
 
-#[proc_macro_derive(Transportable)]
-pub fn transportable(input: TokenStream) -> TokenStream {
-    objects::impl_transportable(input)
+#[proc_macro_derive(Typed)]
+pub fn typed(input: TokenStream) -> TokenStream {
+    objects::impl_typed(input)
+}
+
+#[proc_macro_derive(InitialValue)]
+pub fn initial_value(input: TokenStream) -> TokenStream {
+    objects::impl_initial_value(input)
 }
 
 #[proc_macro_derive(Atomic)]
