@@ -19,6 +19,5 @@ web-sys = "0.3"
 
 [build-dependencies]
 egui_states = { workspace = true, features = ["build_scripts"] }
-serde = "*"
 
 gui_core = { workspace = true }

@@ -10,7 +10,6 @@ path = "main.rs"
 
 [dependencies]
 egui_states = { path = "../../crates/egui-states", default-features = false, features = ["server"] }
-serde = "*"
 
 [build-dependencies]
 egui_states = { workspace = true, features = ["build_scripts"] }

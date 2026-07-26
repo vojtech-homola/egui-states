@@ -384,7 +384,7 @@ fn render_rust<S: State>() -> Result<(String, String, String), String> {
     for (enum_name, variants) in &enums {
         writeln!(
             enums_output,
-            "\n#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, egui_states::Typed)]\npub enum {enum_name} {{"
+            "\n#[egui_states::typed]\n#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]\npub enum {enum_name} {{"
         )
         .unwrap();
         for (variant, value) in variants {
@@ -398,7 +398,7 @@ fn render_rust<S: State>() -> Result<(String, String, String), String> {
         let fields = &structs[struct_name];
         writeln!(
             structs_output,
-            "\n#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, egui_states::Typed)]\npub struct {struct_name} {{"
+            "\n#[egui_states::typed]\n#[derive(Clone, Debug, PartialEq)]\npub struct {struct_name} {{"
         )
         .unwrap();
         for (field, typ) in fields {

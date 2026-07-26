@@ -4,7 +4,6 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-serde = "*"
 eframe = "0.35"
 egui = { version = "0.35", features = ["rayon"] }
 egui_states = { workspace = true }

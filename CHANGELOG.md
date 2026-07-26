@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### 🚀 Features
+
+- Replace the `Typed` derive with `#[egui_states::typed]`, which also derives
+  Serde serialization without requiring consumers to depend on `serde`
+  directly.
+
+### ⚠️ Breaking Changes
+
+- Remove `#[derive(egui_states::Typed)]`; custom structs and enums must use the
+  new `#[egui_states::typed]` attribute.
+
 ## [0.14.0] - 2026-05-13
 
 ### 🚀 Features

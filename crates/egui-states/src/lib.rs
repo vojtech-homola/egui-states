@@ -44,7 +44,7 @@ pub trait State {
     fn new(c: &mut impl StatesCreator) -> Self;
 }
 
-pub use egui_states_macros::Typed;
+pub use egui_states_macros::typed;
 #[cfg(feature = "client")]
 pub use egui_states_macros::{Atomic, AtomicStatic, InitialValue, State};
 pub use serde;

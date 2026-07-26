@@ -20,7 +20,7 @@ use crate::data_transport::DataType;
 use crate::hashing::{StableHasher, generate_value_id};
 use crate::typed::{ObjectType, Typed};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum StateType {
     Value(String, ObjectType, InitValue, bool),
     ValueTake(String, ObjectType),
@@ -35,6 +35,47 @@ pub(crate) enum StateType {
     DataMultiTake(String, DataType),
     SubState(String, &'static str, Vec<StateType>),
 }
+
+// impl PartialEq for StateType {
+//     fn eq(&self, other: &Self) -> bool {
+//         match (self, other) {
+//             (
+//                 StateType::Value(_, type1, initial1, queue1),
+//                 StateType::Value(_, type2, initial2, queue2),
+//             ) => type1 == type2 && initial1 == initial2 && queue1 == queue2,
+//             (StateType::ValueTake(_, type1), StateType::ValueTake(_, type2)) => type1 == type2,
+//             (StateType::Static(_, type1, initial1), StateType::Static(_, type2, initial2)) => {
+//                 type1 == type2 && initial1 == initial2
+//             }
+//             (StateType::Image(_), StateType::Image(_)) => true,
+//             (
+//                 StateType::ValueMap(_, key_type1, value_type1),
+//                 StateType::ValueMap(_, key_type2, value_type2),
+//             ) => key_type1 == key_type2 && value_type1 == value_type2,
+//             (StateType::ValueVec(_, type1), StateType::ValueVec(_, type2)) => type1 == type2,
+//             (StateType::Signal(_, type1, queue1), StateType::Signal(_, type2, queue2)) => {
+//                 type1 == type2 && queue1 == queue2
+//             }
+//             (StateType::Data(_, data_type1), StateType::Data(_, data_type2)) => {
+//                 data_type1 == data_type2
+//             }
+//             (StateType::DataTake(_, data_type1), StateType::DataTake(_, data_type2)) => {
+//                 data_type1 == data_type2
+//             }
+//             (StateType::DataMulti(_, data_type1), StateType::DataMulti(_, data_type2)) => {
+//                 data_type1 == data_type2
+//             }
+//             (StateType::DataMultiTake(_, data_type1), StateType::DataMultiTake(_, data_type2)) => {
+//                 data_type1 == data_type2
+//             }
+//             (
+//                 StateType::SubState(_, substate_name1, states1),
+//                 StateType::SubState(_, substate_name2, states2),
+//             ) => substate_name1 == substate_name2 && states1 == states2,
+//             _ => false,
+//         }
+//     }
+// }
 
 pub(crate) struct StatesCreatorBuild {
     states: Vec<StateType>,
