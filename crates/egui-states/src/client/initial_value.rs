@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub enum InitValue {
     U8(u8),
     U16(u16),
@@ -21,6 +21,39 @@ pub enum InitValue {
     List(Vec<InitValue>),
     Vec(Vec<InitValue>),
     Map(Vec<(InitValue, InitValue)>),
+}
+
+impl PartialEq for InitValue {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::U8(left), Self::U8(right)) => left == right,
+            (Self::U16(left), Self::U16(right)) => left == right,
+            (Self::U32(left), Self::U32(right)) => left == right,
+            (Self::U64(left), Self::U64(right)) => left == right,
+            (Self::I8(left), Self::I8(right)) => left == right,
+            (Self::I16(left), Self::I16(right)) => left == right,
+            (Self::I32(left), Self::I32(right)) => left == right,
+            (Self::I64(left), Self::I64(right)) => left == right,
+            (Self::F64(left), Self::F64(right)) => {
+                left.is_nan() && right.is_nan() || left.to_bits() == right.to_bits()
+            }
+            (Self::F32(left), Self::F32(right)) => {
+                left.is_nan() && right.is_nan() || left.to_bits() == right.to_bits()
+            }
+            (Self::String(left), Self::String(right)) => left == right,
+            (Self::Bool(left), Self::Bool(right)) => left == right,
+            (Self::Enum(left), Self::Enum(right)) => left == right,
+            (Self::Option(left), Self::Option(right)) => left == right,
+            (Self::Struct(left_name, left), Self::Struct(right_name, right)) => {
+                left_name == right_name && left == right
+            }
+            (Self::Tuple(left), Self::Tuple(right)) => left == right,
+            (Self::List(left), Self::List(right)) => left == right,
+            (Self::Vec(left), Self::Vec(right)) => left == right,
+            (Self::Map(left), Self::Map(right)) => left == right,
+            _ => false,
+        }
+    }
 }
 
 pub unsafe trait InitialValue {
@@ -142,5 +175,31 @@ where
                 .map(|(key, value)| (key.init_value(), value.init_value()))
                 .collect(),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::InitValue;
+
+    #[test]
+    fn equality_preserves_generated_float_definitions() {
+        let left_nan = InitValue::F32(f32::from_bits(0x7fc0_0001));
+        let right_nan = InitValue::F32(f32::from_bits(0xffc0_1234));
+
+        assert_eq!(left_nan, right_nan);
+        assert_ne!(InitValue::F64(0.0), InitValue::F64(-0.0));
+    }
+
+    #[test]
+    fn equality_applies_float_rules_recursively() {
+        let left = InitValue::Option(Some(Box::new(InitValue::Vec(vec![InitValue::F64(
+            f64::from_bits(0x7ff8_0000_0000_0001),
+        )]))));
+        let right = InitValue::Option(Some(Box::new(InitValue::Vec(vec![InitValue::F64(
+            f64::from_bits(0xfff8_0000_0000_1234),
+        )]))));
+
+        assert_eq!(left, right);
     }
 }

@@ -17,76 +17,24 @@ pub(crate) fn parse_states<S: State>() -> (StateType, u64) {
     )
 }
 
-fn state_name(name: &str) -> &str {
-    name.rsplit('.').next().unwrap_or(name)
-}
-
-fn state_definition(states: &[StateType], root: bool) -> String {
-    let mut definition = if root {
-        String::from("root|")
-    } else {
-        String::from("substate|")
-    };
-
-    for state in states {
-        let item = match state {
-            StateType::Value(name, typ, init, queue) => {
-                format!("Value({:?},{typ:?},{init:?},{queue})", state_name(name))
-            }
-            StateType::ValueTake(name, typ) => {
-                format!("ValueTake({:?},{typ:?})", state_name(name))
-            }
-            StateType::Static(name, typ, init) => {
-                format!("Static({:?},{typ:?},{init:?})", state_name(name))
-            }
-            StateType::Image(name) => format!("Image({:?})", state_name(name)),
-            StateType::ValueMap(name, key, value) => {
-                format!("ValueMap({:?},{key:?},{value:?})", state_name(name))
-            }
-            StateType::ValueVec(name, typ) => {
-                format!("ValueVec({:?},{typ:?})", state_name(name))
-            }
-            StateType::Signal(name, typ, queue) => {
-                format!("Signal({:?},{typ:?},{queue})", state_name(name))
-            }
-            StateType::Data(name, typ) => format!("Data({:?},{typ:?})", state_name(name)),
-            StateType::DataTake(name, typ) => {
-                format!("DataTake({:?},{typ:?})", state_name(name))
-            }
-            StateType::DataMulti(name, typ) => {
-                format!("DataMulti({:?},{typ:?})", state_name(name))
-            }
-            StateType::DataMultiTake(name, typ) => {
-                format!("DataMultiTake({:?},{typ:?})", state_name(name))
-            }
-            StateType::SubState(name, class, _) => {
-                format!("SubState({:?},{class:?})", state_name(name))
-            }
-        };
-        definition.push_str(&item);
-        definition.push('|');
-    }
-
-    definition
-}
-
-fn collect_state_definitions(
-    state_class: &str,
-    states: &[StateType],
+fn collect_state_definitions<'a>(
+    state_class: &'static str,
+    states: &'a [StateType],
     root: bool,
-    definitions: &mut BTreeMap<String, String>,
+    definitions: &mut BTreeMap<&'static str, (bool, &'a [StateType])>,
 ) {
     if matches!(state_class, "StatesServer" | "enums" | "structs" | "s") {
         panic!("State {state_class} conflicts with a generated symbol");
     }
 
-    let definition = state_definition(states, root);
-    if let Some(previous) = definitions.get(state_class)
-        && previous != &definition
-    {
-        panic!("State {state_class} defined multiple times with different fields");
+    let definition = (root, states);
+    if let Some(previous) = definitions.get(state_class) {
+        if previous != &definition {
+            panic!("State {state_class} defined multiple times with different fields");
+        }
+    } else {
+        definitions.insert(state_class, definition);
     }
-    definitions.insert(state_class.to_string(), definition);
 
     for state in states {
         if let StateType::SubState(_, class, children) = state {
@@ -269,5 +217,112 @@ pub(crate) fn states_into_values_list(state: &StateType, list: &mut Vec<StateTyp
         _ => {
             list.push(state.clone());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::InitValue;
+
+    fn value(name: &str, typ: ObjectType, init: InitValue, queue: bool) -> StateType {
+        StateType::Value(name.to_string(), typ, init, queue)
+    }
+
+    fn repeated_shared_state(left: Vec<StateType>, right: Vec<StateType>) -> StateType {
+        StateType::SubState(
+            "root".to_string(),
+            "Root",
+            vec![
+                StateType::SubState("left".to_string(), "Shared", left),
+                StateType::SubState("right".to_string(), "Shared", right),
+            ],
+        )
+    }
+
+    fn assert_incompatible(left: Vec<StateType>, right: Vec<StateType>) {
+        let states = repeated_shared_state(left, right);
+        let result = std::panic::catch_unwind(|| validate_states(&states));
+        assert!(result.is_err(), "Expected incompatible definitions");
+    }
+
+    #[test]
+    fn repeated_identical_substate_definition_is_valid() {
+        let definition = vec![value(
+            "count",
+            ObjectType::F32,
+            InitValue::F32(f32::NAN),
+            false,
+        )];
+        let states = repeated_shared_state(definition.clone(), definition);
+
+        validate_states(&states);
+    }
+
+    #[test]
+    fn incompatible_substate_definitions_are_rejected() {
+        let base = value("count", ObjectType::I32, InitValue::I32(0), false);
+
+        let incompatible = [
+            (
+                vec![base.clone()],
+                vec![value("other", ObjectType::I32, InitValue::I32(0), false)],
+            ),
+            (
+                vec![base.clone()],
+                vec![value(
+                    "count",
+                    ObjectType::String,
+                    InitValue::String(String::new()),
+                    false,
+                )],
+            ),
+            (
+                vec![base.clone()],
+                vec![value("count", ObjectType::I32, InitValue::I32(1), false)],
+            ),
+            (
+                vec![base.clone()],
+                vec![value("count", ObjectType::I32, InitValue::I32(0), true)],
+            ),
+            (
+                vec![base.clone()],
+                vec![StateType::Static(
+                    "count".to_string(),
+                    ObjectType::I32,
+                    InitValue::I32(0),
+                )],
+            ),
+            (
+                vec![
+                    base.clone(),
+                    value("other", ObjectType::I32, InitValue::I32(0), false),
+                ],
+                vec![
+                    value("other", ObjectType::I32, InitValue::I32(0), false),
+                    base,
+                ],
+            ),
+        ];
+
+        for (left, right) in incompatible {
+            assert_incompatible(left, right);
+        }
+    }
+
+    #[test]
+    fn nested_reserved_state_class_is_rejected() {
+        let states = StateType::SubState(
+            "root".to_string(),
+            "Root",
+            vec![StateType::SubState(
+                "reserved".to_string(),
+                "StatesServer",
+                Vec::new(),
+            )],
+        );
+
+        let result = std::panic::catch_unwind(|| validate_states(&states));
+        assert!(result.is_err(), "Expected reserved class to be rejected");
     }
 }

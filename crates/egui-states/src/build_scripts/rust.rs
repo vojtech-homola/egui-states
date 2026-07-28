@@ -226,89 +226,67 @@ fn state_field_type(state: &StateType) -> String {
     }
 }
 
-fn last_name(name: &str) -> &str {
-    name.rsplit('.').next().unwrap_or(name)
-}
-
-fn state_name(state: &StateType) -> &str {
-    match state {
-        StateType::Value(name, _, _, _)
-        | StateType::ValueTake(name, _)
-        | StateType::Static(name, _, _)
-        | StateType::Signal(name, _, _)
-        | StateType::ValueVec(name, _)
-        | StateType::ValueMap(name, _, _)
-        | StateType::Data(name, _)
-        | StateType::DataTake(name, _)
-        | StateType::DataMulti(name, _)
-        | StateType::DataMultiTake(name, _)
-        | StateType::Image(name)
-        | StateType::SubState(name, _, _) => name,
-    }
-}
-
 fn state_initializer(state: &StateType) -> String {
     match state {
         StateType::Value(name, typ, init, queue) => format!(
             "s::Value::new(server, format!(\"{{parent}}.{}\"), {}, {})?",
-            last_name(name),
+            name,
             init_to_rust_value(init, typ),
             queue
         ),
         StateType::ValueTake(name, typ) => format!(
             "s::ValueTake::<{}>::new(server, format!(\"{{parent}}.{}\"))?",
             type_to_rust_type(typ, RustTypeContext::States),
-            last_name(name)
+            name
         ),
         StateType::Static(name, typ, init) => format!(
             "s::Static::new(server, format!(\"{{parent}}.{}\"), {})?",
-            last_name(name),
+            name,
             init_to_rust_value(init, typ)
         ),
         StateType::Signal(name, typ, queue) => format!(
             "s::Signal::<{}>::new(server, format!(\"{{parent}}.{}\"), {})?",
             type_to_rust_type(typ, RustTypeContext::States),
-            last_name(name),
+            name,
             queue
         ),
         StateType::ValueVec(name, typ) => format!(
             "s::VecState::<{}>::new(server, format!(\"{{parent}}.{}\"))?",
             type_to_rust_type(typ, RustTypeContext::States),
-            last_name(name)
+            name
         ),
         StateType::ValueMap(name, key, value) => format!(
             "s::MapState::<{}, {}>::new(server, format!(\"{{parent}}.{}\"))?",
             type_to_rust_type(key, RustTypeContext::States),
             type_to_rust_type(value, RustTypeContext::States),
-            last_name(name)
+            name
         ),
         StateType::Data(name, typ) => format!(
             "s::Data::<{}>::new(server, format!(\"{{parent}}.{}\"))?",
             data_type_to_rust_type(typ),
-            last_name(name)
+            name
         ),
         StateType::DataTake(name, typ) => format!(
             "s::DataTake::<{}>::new(server, format!(\"{{parent}}.{}\"))?",
             data_type_to_rust_type(typ),
-            last_name(name)
+            name
         ),
         StateType::DataMulti(name, typ) => format!(
             "s::DataMulti::<{}>::new(server, format!(\"{{parent}}.{}\"))?",
             data_type_to_rust_type(typ),
-            last_name(name)
+            name
         ),
         StateType::DataMultiTake(name, typ) => format!(
             "s::DataMultiTake::<{}>::new(server, format!(\"{{parent}}.{}\"))?",
             data_type_to_rust_type(typ),
-            last_name(name)
+            name
         ),
-        StateType::Image(name) => format!(
-            "s::Image::new(server, format!(\"{{parent}}.{}\"))?",
-            last_name(name)
-        ),
+        StateType::Image(name) => {
+            format!("s::Image::new(server, format!(\"{{parent}}.{}\"))?", name)
+        }
         StateType::SubState(name, state_class, _) => format!(
             "{state_class}::new(server, &format!(\"{{parent}}.{}\"))?",
-            last_name(name)
+            name
         ),
     }
 }
@@ -334,7 +312,7 @@ fn write_state(
         writeln!(
             output,
             "    pub {}: {},",
-            last_name(state_name(state)),
+            state.name(),
             state_field_type(state)
         )
         .unwrap();
@@ -347,7 +325,7 @@ fn write_state(
     )
     .unwrap();
     for state in states {
-        let field = last_name(state_name(state));
+        let field = state.name();
         writeln!(output, "            {field}: {},", state_initializer(state)).unwrap();
     }
     output.push_str("        })\n    }\n}\n");
@@ -445,7 +423,7 @@ fn render_rust<S: State>() -> Result<(String, String, String), String> {
         writeln!(
             states_output,
             "    pub {}: {},",
-            last_name(state_name(state)),
+            state.name(),
             state_field_type(state)
         )
         .unwrap();
@@ -458,7 +436,7 @@ fn render_rust<S: State>() -> Result<(String, String, String), String> {
     )
     .unwrap();
     for state in substates {
-        let field = last_name(state_name(state));
+        let field = state.name();
         writeln!(
             states_output,
             "            {field}: {},",

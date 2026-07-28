@@ -36,46 +36,24 @@ pub(crate) enum StateType {
     SubState(String, &'static str, Vec<StateType>),
 }
 
-// impl PartialEq for StateType {
-//     fn eq(&self, other: &Self) -> bool {
-//         match (self, other) {
-//             (
-//                 StateType::Value(_, type1, initial1, queue1),
-//                 StateType::Value(_, type2, initial2, queue2),
-//             ) => type1 == type2 && initial1 == initial2 && queue1 == queue2,
-//             (StateType::ValueTake(_, type1), StateType::ValueTake(_, type2)) => type1 == type2,
-//             (StateType::Static(_, type1, initial1), StateType::Static(_, type2, initial2)) => {
-//                 type1 == type2 && initial1 == initial2
-//             }
-//             (StateType::Image(_), StateType::Image(_)) => true,
-//             (
-//                 StateType::ValueMap(_, key_type1, value_type1),
-//                 StateType::ValueMap(_, key_type2, value_type2),
-//             ) => key_type1 == key_type2 && value_type1 == value_type2,
-//             (StateType::ValueVec(_, type1), StateType::ValueVec(_, type2)) => type1 == type2,
-//             (StateType::Signal(_, type1, queue1), StateType::Signal(_, type2, queue2)) => {
-//                 type1 == type2 && queue1 == queue2
-//             }
-//             (StateType::Data(_, data_type1), StateType::Data(_, data_type2)) => {
-//                 data_type1 == data_type2
-//             }
-//             (StateType::DataTake(_, data_type1), StateType::DataTake(_, data_type2)) => {
-//                 data_type1 == data_type2
-//             }
-//             (StateType::DataMulti(_, data_type1), StateType::DataMulti(_, data_type2)) => {
-//                 data_type1 == data_type2
-//             }
-//             (StateType::DataMultiTake(_, data_type1), StateType::DataMultiTake(_, data_type2)) => {
-//                 data_type1 == data_type2
-//             }
-//             (
-//                 StateType::SubState(_, substate_name1, states1),
-//                 StateType::SubState(_, substate_name2, states2),
-//             ) => substate_name1 == substate_name2 && states1 == states2,
-//             _ => false,
-//         }
-//     }
-// }
+impl StateType {
+    pub(crate) fn name(&self) -> &str {
+        match self {
+            Self::Value(name, ..)
+            | Self::ValueTake(name, ..)
+            | Self::Static(name, ..)
+            | Self::Image(name)
+            | Self::ValueMap(name, ..)
+            | Self::ValueVec(name, ..)
+            | Self::Signal(name, ..)
+            | Self::Data(name, ..)
+            | Self::DataTake(name, ..)
+            | Self::DataMulti(name, ..)
+            | Self::DataMultiTake(name, ..)
+            | Self::SubState(name, ..) => name,
+        }
+    }
+}
 
 pub(crate) struct StatesCreatorBuild {
     states: Vec<StateType>,
@@ -118,18 +96,18 @@ impl StatesCreator for StatesCreatorBuild {
 
         let states = builder.get_states();
         self.states
-            .push(StateType::SubState(parent, S::NAME, states));
+            .push(StateType::SubState(name.to_owned(), S::NAME, states));
 
         substate
     }
 
-    fn value<T, Q>(&mut self, name: &'static str, value: T) -> Value<T, Q>
+    fn value<T, Q>(&mut self, name: &str, value: T) -> Value<T, Q>
     where
         T: for<'a> Deserialize<'a> + Serialize + Clone + Typed + InitialValue,
         Q: GetQueueType,
     {
-        let name = format!("{}.{}", self.parent, name);
-        let id = generate_value_id(&name);
+        let full_name = format!("{}.{}", self.parent, name);
+        let id = generate_value_id(&full_name);
         let type_id = T::get_type().get_hash();
         hash_id_type(
             &mut self.version_hasher,
@@ -139,20 +117,24 @@ impl StatesCreator for StatesCreatorBuild {
         );
 
         let init = value.init_value();
-        let value = Value::new(name.clone(), id, type_id, value, self.sender.clone());
+        let value = Value::new(full_name, id, type_id, value, self.sender.clone());
 
-        self.states
-            .push(StateType::Value(name, T::get_type(), init, Q::is_queue()));
+        self.states.push(StateType::Value(
+            name.to_owned(),
+            T::get_type(),
+            init,
+            Q::is_queue(),
+        ));
 
         value
     }
 
-    fn value_take<T>(&mut self, name: &'static str) -> ValueTake<T>
+    fn value_take<T>(&mut self, name: &str) -> ValueTake<T>
     where
         T: for<'a> Deserialize<'a> + Serialize + Typed + Send + Sync + 'static,
     {
-        let name = format!("{}.{}", self.parent, name);
-        let id = generate_value_id(&name);
+        let full_name = format!("{}.{}", self.parent, name);
+        let id = generate_value_id(&full_name);
         let type_id = T::get_type().get_hash();
         hash_id_type(
             &mut self.version_hasher,
@@ -161,21 +143,21 @@ impl StatesCreator for StatesCreatorBuild {
             states_creator::VALUE_TAKE_HASH_ID,
         );
 
-        let value = ValueTake::new(name.clone(), id, type_id, self.sender.clone());
+        let value = ValueTake::new(full_name, id, type_id, self.sender.clone());
 
         self.states
-            .push(StateType::ValueTake(name.clone(), T::get_type()));
+            .push(StateType::ValueTake(name.to_owned(), T::get_type()));
 
         value
     }
 
-    fn atomic<T, Q>(&mut self, name: &'static str, value: T) -> ValueAtomic<T, Q>
+    fn atomic<T, Q>(&mut self, name: &str, value: T) -> ValueAtomic<T, Q>
     where
         T: for<'a> Deserialize<'a> + Serialize + Clone + Typed + InitialValue + Atomic,
         Q: GetQueueType,
     {
-        let name = format!("{}.{}", self.parent, name);
-        let id = generate_value_id(&name);
+        let full_name = format!("{}.{}", self.parent, name);
+        let id = generate_value_id(&full_name);
         let type_id = T::get_type().get_hash();
         hash_id_type(
             &mut self.version_hasher,
@@ -185,20 +167,24 @@ impl StatesCreator for StatesCreatorBuild {
         );
 
         let init = value.init_value();
-        let value = ValueAtomic::new(name.clone(), id, type_id, value, self.sender.clone());
+        let value = ValueAtomic::new(full_name, id, type_id, value, self.sender.clone());
 
-        self.states
-            .push(StateType::Value(name, T::get_type(), init, Q::is_queue()));
+        self.states.push(StateType::Value(
+            name.to_owned(),
+            T::get_type(),
+            init,
+            Q::is_queue(),
+        ));
 
         value
     }
 
-    fn add_static<T>(&mut self, name: &'static str, value: T) -> Static<T>
+    fn add_static<T>(&mut self, name: &str, value: T) -> Static<T>
     where
         T: for<'a> Deserialize<'a> + Serialize + Clone + Typed + InitialValue,
     {
-        let name = format!("{}.{}", self.parent, name);
-        let id = generate_value_id(&name);
+        let full_name = format!("{}.{}", self.parent, name);
+        let id = generate_value_id(&full_name);
         let type_id = T::get_type().get_hash();
         hash_id_type(
             &mut self.version_hasher,
@@ -208,14 +194,14 @@ impl StatesCreator for StatesCreatorBuild {
         );
 
         let init = value.init_value();
-        let value = Static::new(name.clone(), id, type_id, value);
+        let value = Static::new(full_name, id, type_id, value);
 
         self.states
-            .push(StateType::Static(name, T::get_type(), init));
+            .push(StateType::Static(name.to_owned(), T::get_type(), init));
         value
     }
 
-    fn static_atomic<T>(&mut self, name: &'static str, value: T) -> StaticAtomic<T>
+    fn static_atomic<T>(&mut self, name: &str, value: T) -> StaticAtomic<T>
     where
         T: for<'a> Deserialize<'a>
             + Serialize
@@ -227,8 +213,8 @@ impl StatesCreator for StatesCreatorBuild {
             + AtomicStatic
             + 'static,
     {
-        let name = format!("{}.{}", self.parent, name);
-        let id = generate_value_id(&name);
+        let full_name = format!("{}.{}", self.parent, name);
+        let id = generate_value_id(&full_name);
         let type_id = T::get_type().get_hash();
         hash_id_type(
             &mut self.version_hasher,
@@ -238,32 +224,32 @@ impl StatesCreator for StatesCreatorBuild {
         );
 
         let init = value.init_value();
-        let value = StaticAtomic::new(name.clone(), id, type_id, value);
+        let value = StaticAtomic::new(full_name, id, type_id, value);
 
         self.states
-            .push(StateType::Static(name, T::get_type(), init));
+            .push(StateType::Static(name.to_owned(), T::get_type(), init));
         value
     }
 
-    fn image(&mut self, name: &'static str) -> Image {
-        let name = format!("{}.{}", self.parent, name);
-        let id = generate_value_id(&name);
+    fn image(&mut self, name: &str) -> Image {
+        let full_name = format!("{}.{}", self.parent, name);
+        let id = generate_value_id(&full_name);
         hash_id(&mut self.version_hasher, id);
 
-        let value = Image::new(name.clone(), id, self.sender.clone());
+        let value = Image::new(full_name, id, self.sender.clone());
 
-        self.states.push(StateType::Image(name));
+        self.states.push(StateType::Image(name.to_owned()));
 
         value
     }
 
-    fn signal<T, Q>(&mut self, name: &'static str) -> Signal<T, Q>
+    fn signal<T, Q>(&mut self, name: &str) -> Signal<T, Q>
     where
         T: Serialize + Clone + Typed,
         Q: GetQueueType,
     {
-        let name = format!("{}.{}", self.parent, name);
-        let id = generate_value_id(&name);
+        let full_name = format!("{}.{}", self.parent, name);
+        let id = generate_value_id(&full_name);
         let type_id = T::get_type().get_hash();
         hash_id_type(
             &mut self.version_hasher,
@@ -274,19 +260,22 @@ impl StatesCreator for StatesCreatorBuild {
 
         let signal = Signal::new(id, type_id, self.sender.clone());
 
-        self.states
-            .push(StateType::Signal(name, T::get_type(), Q::is_queue()));
+        self.states.push(StateType::Signal(
+            name.to_owned(),
+            T::get_type(),
+            Q::is_queue(),
+        ));
 
         signal
     }
 
-    fn map<K, V>(&mut self, name: &'static str) -> MapState<K, V>
+    fn map<K, V>(&mut self, name: &str) -> MapState<K, V>
     where
         K: Hash + Eq + Clone + for<'a> Deserialize<'a> + Typed,
         V: Clone + for<'a> Deserialize<'a> + Typed,
     {
-        let name = format!("{}.{}", self.parent, name);
-        let id = generate_value_id(&name);
+        let full_name = format!("{}.{}", self.parent, name);
+        let id = generate_value_id(&full_name);
         let type_id = V::get_type().get_hash_from(K::get_type().get_hash());
         hash_id_type(
             &mut self.version_hasher,
@@ -295,19 +284,22 @@ impl StatesCreator for StatesCreatorBuild {
             states_creator::MAP_HASH_ID,
         );
 
-        let value = MapState::new(name.clone(), type_id);
+        let value = MapState::new(full_name, type_id);
 
-        self.states
-            .push(StateType::ValueMap(name, K::get_type(), V::get_type()));
+        self.states.push(StateType::ValueMap(
+            name.to_owned(),
+            K::get_type(),
+            V::get_type(),
+        ));
         value
     }
 
-    fn vec<T>(&mut self, name: &'static str) -> VecState<T>
+    fn vec<T>(&mut self, name: &str) -> VecState<T>
     where
         T: Clone + for<'a> Deserialize<'a> + Typed,
     {
-        let name = format!("{}.{}", self.parent, name);
-        let id = generate_value_id(&name);
+        let full_name = format!("{}.{}", self.parent, name);
+        let id = generate_value_id(&full_name);
         let type_id = T::get_type().get_hash();
         hash_id_type(
             &mut self.version_hasher,
@@ -316,19 +308,20 @@ impl StatesCreator for StatesCreatorBuild {
             states_creator::VEC_HASH_ID,
         );
 
-        let value = VecState::new(name.clone(), type_id);
+        let value = VecState::new(full_name, type_id);
 
-        self.states.push(StateType::ValueVec(name, T::get_type()));
+        self.states
+            .push(StateType::ValueVec(name.to_owned(), T::get_type()));
 
         value
     }
 
-    fn data<T>(&mut self, name: &'static str) -> Data<T>
+    fn data<T>(&mut self, name: &str) -> Data<T>
     where
         T: GetDataType + Send + Sync + 'static,
     {
-        let name = format!("{}.{}", self.parent, name);
-        let id = generate_value_id(&name);
+        let full_name = format!("{}.{}", self.parent, name);
+        let id = generate_value_id(&full_name);
         hash_id_type(
             &mut self.version_hasher,
             id,
@@ -336,18 +329,19 @@ impl StatesCreator for StatesCreatorBuild {
             states_creator::DATA_HASH_ID,
         );
 
-        let value = Data::new(name.clone(), id, self.sender.clone());
+        let value = Data::new(full_name, id, self.sender.clone());
 
-        self.states.push(StateType::Data(name, T::get_type()));
+        self.states
+            .push(StateType::Data(name.to_owned(), T::get_type()));
         value
     }
 
-    fn data_multi<T>(&mut self, name: &'static str) -> DataMulti<T>
+    fn data_multi<T>(&mut self, name: &str) -> DataMulti<T>
     where
         T: GetDataType + Send + Sync + 'static,
     {
-        let name = format!("{}.{}", self.parent, name);
-        let id = generate_value_id(&name);
+        let full_name = format!("{}.{}", self.parent, name);
+        let id = generate_value_id(&full_name);
         hash_id_type(
             &mut self.version_hasher,
             id,
@@ -355,18 +349,19 @@ impl StatesCreator for StatesCreatorBuild {
             states_creator::DATA_MULTI_HASH_ID,
         );
 
-        let value = DataMulti::new(name.clone(), id, self.sender.clone());
+        let value = DataMulti::new(full_name, id, self.sender.clone());
 
-        self.states.push(StateType::DataMulti(name, T::get_type()));
+        self.states
+            .push(StateType::DataMulti(name.to_owned(), T::get_type()));
         value
     }
 
-    fn data_take<T>(&mut self, name: &'static str) -> DataTake<T>
+    fn data_take<T>(&mut self, name: &str) -> DataTake<T>
     where
         T: GetDataType + Send + Sync + 'static,
     {
-        let name = format!("{}.{}", self.parent, name);
-        let id = generate_value_id(&name);
+        let full_name = format!("{}.{}", self.parent, name);
+        let id = generate_value_id(&full_name);
         hash_id_type(
             &mut self.version_hasher,
             id,
@@ -374,18 +369,19 @@ impl StatesCreator for StatesCreatorBuild {
             states_creator::DATA_TAKE_HASH_ID,
         );
 
-        let value = DataTake::new(name.clone(), id, self.sender.clone());
+        let value = DataTake::new(full_name, id, self.sender.clone());
 
-        self.states.push(StateType::DataTake(name, T::get_type()));
+        self.states
+            .push(StateType::DataTake(name.to_owned(), T::get_type()));
         value
     }
 
-    fn data_multi_take<T>(&mut self, name: &'static str) -> DataMultiTake<T>
+    fn data_multi_take<T>(&mut self, name: &str) -> DataMultiTake<T>
     where
         T: GetDataType + Send + Sync + 'static,
     {
-        let name = format!("{}.{}", self.parent, name);
-        let id = generate_value_id(&name);
+        let full_name = format!("{}.{}", self.parent, name);
+        let id = generate_value_id(&full_name);
         hash_id_type(
             &mut self.version_hasher,
             id,
@@ -393,10 +389,48 @@ impl StatesCreator for StatesCreatorBuild {
             states_creator::DATA_MULTI_TAKE_HASH_ID,
         );
 
-        let value = DataMultiTake::new(name.clone(), id, self.sender.clone());
+        let value = DataMultiTake::new(full_name, id, self.sender.clone());
 
         self.states
-            .push(StateType::DataMultiTake(name, T::get_type()));
+            .push(StateType::DataMultiTake(name.to_owned(), T::get_type()));
         value
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct ChildState;
+
+    impl State for ChildState {
+        const NAME: &'static str = "ChildState";
+
+        fn new(c: &mut impl StatesCreator) -> Self {
+            let _: Value<i32> = c.value("count", 0);
+            Self
+        }
+    }
+
+    fn build(parent: &str) -> (Vec<StateType>, u64) {
+        let mut builder = StatesCreatorBuild::new(parent);
+        let _: ChildState = builder.substate("group.child");
+        let version_hash = builder.get_version_hash();
+        (builder.get_states(), version_hash)
+    }
+
+    #[test]
+    fn definitions_store_local_names_while_hashes_use_full_paths() {
+        let (left_states, left_hash) = build("root.left");
+        let (right_states, right_hash) = build("root.right");
+
+        assert_eq!(left_states, right_states);
+        assert_ne!(left_hash, right_hash);
+
+        let StateType::SubState(name, _, children) = &left_states[0] else {
+            panic!("Expected substate");
+        };
+        assert_eq!(name, "child");
+        assert_eq!(children[0].name(), "count");
     }
 }

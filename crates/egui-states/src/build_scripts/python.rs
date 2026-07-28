@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::fmt::Write;
 use std::path::Path;
 
@@ -52,54 +52,27 @@ fn type_to_pytype(type_info: &ObjectType) -> String {
     }
 }
 
-enum TypeIndex {
-    Single(usize),
-    Map(usize, usize),
-}
-
-impl TypeIndex {
-    fn get_single(&self) -> usize {
-        match self {
-            TypeIndex::Single(index) => *index,
-            TypeIndex::Map(_, _) => panic!("Expected single type index"),
-        }
-    }
-
-    fn get_map(&self) -> (usize, usize) {
-        match self {
-            TypeIndex::Map(key, value) => (*key, *value),
-            TypeIndex::Single(_) => panic!("Expected map type index"),
-        }
-    }
-}
-
-fn process_type_info(values: &[StateType]) -> (HashMap<String, TypeIndex>, Vec<ObjectType>) {
-    let mut type_map = HashMap::new();
+fn collect_object_types(values: &[StateType]) -> Vec<ObjectType> {
     let mut type_list = Vec::new();
 
-    let mut type_index = |object_type: &ObjectType| {
-        if let Some(index) = type_list.iter().position(|typ| typ == object_type) {
-            index
-        } else {
+    let mut push_type = |object_type: &ObjectType| {
+        if !type_list.contains(object_type) {
             type_list.push(object_type.clone());
-            type_list.len() - 1
         }
     };
 
     for state in values {
         match state {
-            StateType::Value(name, object_type, _, _)
-            | StateType::ValueTake(name, object_type)
-            | StateType::Static(name, object_type, _)
-            | StateType::Signal(name, object_type, _)
-            | StateType::ValueVec(name, object_type) => {
-                let index = type_index(object_type);
-                type_map.insert(name.clone(), TypeIndex::Single(index));
+            StateType::Value(_, object_type, _, _)
+            | StateType::ValueTake(_, object_type)
+            | StateType::Static(_, object_type, _)
+            | StateType::Signal(_, object_type, _)
+            | StateType::ValueVec(_, object_type) => {
+                push_type(object_type);
             }
-            StateType::ValueMap(name, key, value) => {
-                let key = type_index(key);
-                let value = type_index(value);
-                type_map.insert(name.clone(), TypeIndex::Map(key, value));
+            StateType::ValueMap(_, key, value) => {
+                push_type(key);
+                push_type(value);
             }
             StateType::SubState(_, _, _)
             | StateType::Image(_)
@@ -110,7 +83,14 @@ fn process_type_info(values: &[StateType]) -> (HashMap<String, TypeIndex>, Vec<O
         }
     }
 
-    (type_map, type_list)
+    type_list
+}
+
+fn object_type_index(types: &[ObjectType], object_type: &ObjectType) -> usize {
+    types
+        .iter()
+        .position(|typ| typ == object_type)
+        .expect("State object type missing from generated type list")
 }
 
 #[derive(Clone, Copy)]
@@ -264,54 +244,43 @@ fn data_type_to_dtype(data_type: &DataType) -> &'static str {
     }
 }
 
-fn last_name(name: &str) -> &str {
-    name.rsplit('.').next().unwrap_or(name)
-}
-
-fn state_to_line(state: &StateType, types_map: &HashMap<String, TypeIndex>) -> String {
+fn state_to_line(state: &StateType, object_types: &[ObjectType]) -> String {
     match state {
         StateType::Value(name, state_type, init, queue) => {
-            let name = last_name(name);
             let py_type = type_info_to_python_type(state_type, false, PythonTypeContext::States);
             let init_value = init_to_python_value(init, state_type);
-            let index = types_map.get(state_name(state)).unwrap().get_single();
+            let index = object_type_index(object_types, state_type);
             let queue = if *queue { ", True" } else { "" };
             format!(
                 "        self.{name}: s.Value[{py_type}] = s.Value[{py_type}]({index}, {init_value}{queue})\n"
             )
         }
         StateType::ValueTake(name, state_type) => {
-            let full_name = name;
-            let name = last_name(name);
             let py_type = type_info_to_python_type(state_type, false, PythonTypeContext::States);
-            let index = types_map.get(full_name).unwrap().get_single();
             if matches!(state_type, ObjectType::Empty) {
                 format!("        self.{name}: s.ValueTakeEmpty = s.ValueTakeEmpty()\n")
             } else {
+                let index = object_type_index(object_types, state_type);
                 format!(
                     "        self.{name}: s.ValueTake[{py_type}] = s.ValueTake[{py_type}]({index})\n"
                 )
             }
         }
         StateType::Static(name, state_type, init) => {
-            let full_name = name;
-            let name = last_name(name);
             let py_type = type_info_to_python_type(state_type, false, PythonTypeContext::States);
             let init_value = init_to_python_value(init, state_type);
-            let index = types_map.get(full_name).unwrap().get_single();
+            let index = object_type_index(object_types, state_type);
             format!(
                 "        self.{name}: s.Static[{py_type}] = s.Static[{py_type}]({index}, {init_value})\n"
             )
         }
         StateType::Signal(name, state_type, queue) => {
-            let full_name = name;
-            let name = last_name(name);
             let py_type = type_info_to_python_type(state_type, false, PythonTypeContext::States);
-            let index = types_map.get(full_name).unwrap().get_single();
             if matches!(state_type, ObjectType::Empty) {
                 let queue = if *queue { "True" } else { "" };
                 format!("        self.{name}: s.SignalEmpty = s.SignalEmpty({queue})\n")
             } else {
+                let index = object_type_index(object_types, state_type);
                 let queue = if *queue { ", True" } else { "" };
                 format!(
                     "        self.{name}: s.Signal[{py_type}] = s.Signal[{py_type}]({index}{queue})\n"
@@ -319,69 +288,41 @@ fn state_to_line(state: &StateType, types_map: &HashMap<String, TypeIndex>) -> S
             }
         }
         StateType::ValueVec(name, state_type) => {
-            let full_name = name;
-            let name = last_name(name);
             let py_type = type_info_to_python_type(state_type, false, PythonTypeContext::States);
-            let index = types_map.get(full_name).unwrap().get_single();
+            let index = object_type_index(object_types, state_type);
             format!("        self.{name}: s.Vec[{py_type}] = s.Vec[{py_type}]({index})\n")
         }
         StateType::ValueMap(name, key_type, value_type) => {
-            let full_name = name;
-            let name = last_name(name);
+            let key = object_type_index(object_types, key_type);
+            let value = object_type_index(object_types, value_type);
             let key_type = type_info_to_python_type(key_type, false, PythonTypeContext::States);
             let value_type = type_info_to_python_type(value_type, false, PythonTypeContext::States);
-            let (key, value) = types_map.get(full_name).unwrap().get_map();
             format!(
                 "        self.{name}: s.Map[{key_type}, {value_type}] = s.Map[{key_type}, {value_type}]({key}, {value})\n"
             )
         }
         StateType::Data(name, data_type) => {
-            let name = last_name(name);
             let data_type = data_type_to_dtype(data_type);
             format!("        self.{name}: s.Data[{data_type}] = s.Data({data_type})\n")
         }
         StateType::DataMulti(name, data_type) => {
-            let name = last_name(name);
             let data_type = data_type_to_dtype(data_type);
             format!("        self.{name}: s.DataMulti[{data_type}] = s.DataMulti({data_type})\n")
         }
         StateType::DataTake(name, data_type) => {
-            let name = last_name(name);
             let data_type = data_type_to_dtype(data_type);
             format!("        self.{name}: s.DataTake[{data_type}] = s.DataTake({data_type})\n")
         }
         StateType::DataMultiTake(name, data_type) => {
-            let name = last_name(name);
             let data_type = data_type_to_dtype(data_type);
             format!(
                 "        self.{name}: s.DataMultiTake[{data_type}] = s.DataMultiTake({data_type})\n"
             )
         }
-        StateType::Image(name) => {
-            let name = last_name(name);
-            format!("        self.{name}: s.Image = s.Image()\n")
-        }
+        StateType::Image(name) => format!("        self.{name}: s.Image = s.Image()\n"),
         StateType::SubState(name, state_class, _) => {
-            let name = last_name(name);
             format!("        self.{name}: {state_class} = {state_class}(parent + \".{name}\")\n")
         }
-    }
-}
-
-fn state_name(state: &StateType) -> &str {
-    match state {
-        StateType::Value(name, _, _, _)
-        | StateType::ValueTake(name, _)
-        | StateType::Static(name, _, _)
-        | StateType::Image(name)
-        | StateType::ValueMap(name, _, _)
-        | StateType::ValueVec(name, _)
-        | StateType::Signal(name, _, _)
-        | StateType::Data(name, _)
-        | StateType::DataTake(name, _)
-        | StateType::DataMulti(name, _)
-        | StateType::DataMultiTake(name, _)
-        | StateType::SubState(name, _, _) => name,
     }
 }
 
@@ -389,7 +330,7 @@ fn write_states(
     output: &mut String,
     state_class: &str,
     states: &[StateType],
-    types_map: &HashMap<String, TypeIndex>,
+    object_types: &[ObjectType],
     used_states: &mut Vec<String>,
 ) {
     for state in states {
@@ -398,7 +339,7 @@ fn write_states(
                 continue;
             }
             used_states.push(state_class.to_string());
-            write_states(output, state_class, sub_states, types_map, used_states);
+            write_states(output, state_class, sub_states, object_types, used_states);
         }
     }
 
@@ -411,7 +352,7 @@ fn write_states(
         output.push_str("        pass\n");
     } else {
         for state in states {
-            output.push_str(&state_to_line(state, types_map));
+            output.push_str(&state_to_line(state, object_types));
         }
     }
 }
@@ -434,7 +375,7 @@ fn render_python<S: State>() -> (String, String, String) {
     let mut values_list = Vec::new();
     scripts::states_into_values_list(&states, &mut values_list);
     let (enums, structs) = scripts::get_all_enums_struct(&values_list);
-    let (types_map, types_list) = process_type_info(&values_list);
+    let types_list = collect_object_types(&values_list);
 
     let mut struct_order = VecDeque::new();
     for (struct_name, items) in &structs {
@@ -493,7 +434,7 @@ fn render_python<S: State>() -> (String, String, String) {
                 &mut states_output,
                 state_class,
                 sub_states,
-                &types_map,
+                &types_list,
                 &mut used_states,
             );
         }
@@ -516,7 +457,7 @@ fn render_python<S: State>() -> (String, String, String) {
         "        ]\n\n    def __init__(self, server: StateServerBase):\n        super().__init__(server)\n        parent = \"root\"\n",
     );
     for state in substates {
-        states_output.push_str(&state_to_line(state, &types_map));
+        states_output.push_str(&state_to_line(state, &types_list));
     }
 
     write!(
@@ -566,4 +507,47 @@ pub fn generate_python<S: State>(directory: impl AsRef<Path>) -> Result<(), Stri
             ("structs.py", structs.as_str()),
         ],
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn type_indexes_are_resolved_from_types_instead_of_local_names() {
+        let values = vec![
+            StateType::Value(
+                "item".to_string(),
+                ObjectType::I32,
+                InitValue::I32(0),
+                false,
+            ),
+            StateType::Value(
+                "item".to_string(),
+                ObjectType::String,
+                InitValue::String("value".to_string()),
+                false,
+            ),
+            StateType::Value(
+                "duplicate".to_string(),
+                ObjectType::I32,
+                InitValue::I32(1),
+                false,
+            ),
+            StateType::ValueMap("item".to_string(), ObjectType::Bool, ObjectType::I32),
+        ];
+
+        let types = collect_object_types(&values);
+
+        assert_eq!(
+            types,
+            vec![ObjectType::I32, ObjectType::String, ObjectType::Bool]
+        );
+        assert_eq!(object_type_index(&types, &ObjectType::I32), 0);
+        assert_eq!(object_type_index(&types, &ObjectType::String), 1);
+        assert_eq!(object_type_index(&types, &ObjectType::Bool), 2);
+        assert!(state_to_line(&values[0], &types).contains("](0,"));
+        assert!(state_to_line(&values[1], &types).contains("](1,"));
+        assert!(state_to_line(&values[3], &types).contains("](2, 0)"));
+    }
 }
