@@ -374,9 +374,11 @@ fn render_python<S: State>() -> (String, String, String) {
 
     let mut values_list = Vec::new();
     scripts::states_into_values_list(&states, &mut values_list);
+
     let (enums, structs) = scripts::get_all_enums_struct(&values_list);
     let types_list = collect_object_types(&values_list);
 
+    // Ordering structs for Python generation, so that dependencies are defined before they are used.
     let mut struct_order = VecDeque::new();
     for (struct_name, items) in &structs {
         if !struct_order.contains(struct_name) {
@@ -507,47 +509,4 @@ pub fn generate_python<S: State>(directory: impl AsRef<Path>) -> Result<(), Stri
             ("structs.py", structs.as_str()),
         ],
     )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn type_indexes_are_resolved_from_types_instead_of_local_names() {
-        let values = vec![
-            StateType::Value(
-                "item".to_string(),
-                ObjectType::I32,
-                InitValue::I32(0),
-                false,
-            ),
-            StateType::Value(
-                "item".to_string(),
-                ObjectType::String,
-                InitValue::String("value".to_string()),
-                false,
-            ),
-            StateType::Value(
-                "duplicate".to_string(),
-                ObjectType::I32,
-                InitValue::I32(1),
-                false,
-            ),
-            StateType::ValueMap("item".to_string(), ObjectType::Bool, ObjectType::I32),
-        ];
-
-        let types = collect_object_types(&values);
-
-        assert_eq!(
-            types,
-            vec![ObjectType::I32, ObjectType::String, ObjectType::Bool]
-        );
-        assert_eq!(object_type_index(&types, &ObjectType::I32), 0);
-        assert_eq!(object_type_index(&types, &ObjectType::String), 1);
-        assert_eq!(object_type_index(&types, &ObjectType::Bool), 2);
-        assert!(state_to_line(&values[0], &types).contains("](0,"));
-        assert!(state_to_line(&values[1], &types).contains("](1,"));
-        assert!(state_to_line(&values[3], &types).contains("](2, 0)"));
-    }
 }

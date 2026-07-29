@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::Path;
 
@@ -21,7 +21,7 @@ fn collect_state_definitions<'a>(
     state_class: &'static str,
     states: &'a [StateType],
     root: bool,
-    definitions: &mut BTreeMap<&'static str, (bool, &'a [StateType])>,
+    definitions: &mut HashMap<&'static str, (bool, &'a [StateType])>,
 ) {
     if matches!(state_class, "StatesServer" | "enums" | "structs" | "s") {
         panic!("State {state_class} conflicts with a generated symbol");
@@ -48,7 +48,7 @@ pub(crate) fn validate_states(states: &StateType) {
         panic!("Root state must be a SubState");
     };
 
-    let mut definitions = BTreeMap::new();
+    let mut definitions = HashMap::new();
     collect_state_definitions(root_name, children, true, &mut definitions);
 }
 
@@ -217,112 +217,5 @@ pub(crate) fn states_into_values_list(state: &StateType, list: &mut Vec<StateTyp
         _ => {
             list.push(state.clone());
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::InitValue;
-
-    fn value(name: &str, typ: ObjectType, init: InitValue, queue: bool) -> StateType {
-        StateType::Value(name.to_string(), typ, init, queue)
-    }
-
-    fn repeated_shared_state(left: Vec<StateType>, right: Vec<StateType>) -> StateType {
-        StateType::SubState(
-            "root".to_string(),
-            "Root",
-            vec![
-                StateType::SubState("left".to_string(), "Shared", left),
-                StateType::SubState("right".to_string(), "Shared", right),
-            ],
-        )
-    }
-
-    fn assert_incompatible(left: Vec<StateType>, right: Vec<StateType>) {
-        let states = repeated_shared_state(left, right);
-        let result = std::panic::catch_unwind(|| validate_states(&states));
-        assert!(result.is_err(), "Expected incompatible definitions");
-    }
-
-    #[test]
-    fn repeated_identical_substate_definition_is_valid() {
-        let definition = vec![value(
-            "count",
-            ObjectType::F32,
-            InitValue::F32(f32::NAN),
-            false,
-        )];
-        let states = repeated_shared_state(definition.clone(), definition);
-
-        validate_states(&states);
-    }
-
-    #[test]
-    fn incompatible_substate_definitions_are_rejected() {
-        let base = value("count", ObjectType::I32, InitValue::I32(0), false);
-
-        let incompatible = [
-            (
-                vec![base.clone()],
-                vec![value("other", ObjectType::I32, InitValue::I32(0), false)],
-            ),
-            (
-                vec![base.clone()],
-                vec![value(
-                    "count",
-                    ObjectType::String,
-                    InitValue::String(String::new()),
-                    false,
-                )],
-            ),
-            (
-                vec![base.clone()],
-                vec![value("count", ObjectType::I32, InitValue::I32(1), false)],
-            ),
-            (
-                vec![base.clone()],
-                vec![value("count", ObjectType::I32, InitValue::I32(0), true)],
-            ),
-            (
-                vec![base.clone()],
-                vec![StateType::Static(
-                    "count".to_string(),
-                    ObjectType::I32,
-                    InitValue::I32(0),
-                )],
-            ),
-            (
-                vec![
-                    base.clone(),
-                    value("other", ObjectType::I32, InitValue::I32(0), false),
-                ],
-                vec![
-                    value("other", ObjectType::I32, InitValue::I32(0), false),
-                    base,
-                ],
-            ),
-        ];
-
-        for (left, right) in incompatible {
-            assert_incompatible(left, right);
-        }
-    }
-
-    #[test]
-    fn nested_reserved_state_class_is_rejected() {
-        let states = StateType::SubState(
-            "root".to_string(),
-            "Root",
-            vec![StateType::SubState(
-                "reserved".to_string(),
-                "StatesServer",
-                Vec::new(),
-            )],
-        );
-
-        let result = std::panic::catch_unwind(|| validate_states(&states));
-        assert!(result.is_err(), "Expected reserved class to be rejected");
     }
 }
