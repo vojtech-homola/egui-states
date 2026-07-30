@@ -14,6 +14,6 @@ pub use data::{Data, DataElement, DataMulti, DataMultiTake, DataTake};
 pub use error::{Result, ServerError};
 pub use image::{Image, ImageFormat};
 pub use logging::{LogLevel, LoggingSignal};
-pub use options::ServerOptions;
+pub use options::{ErrorHandler, ServerOptions};
 pub use state_server::StateServer;
 pub use values::{Signal, Static, Value, ValueTake};

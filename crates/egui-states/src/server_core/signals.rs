@@ -216,9 +216,9 @@ impl SignalsManager {
     }
 
     #[cfg(feature = "python")]
-    pub(crate) fn wait_changed_value(&self, last_id: Option<u64>) -> (u64, Bytes) {
+    pub(crate) fn wait_changed_value(&self, mut last_id: Option<u64>) -> (u64, Bytes) {
         loop {
-            if let Some(val) = self.values.lock().get(last_id) {
+            if let Some(val) = self.values.lock().get(last_id.take()) {
                 return val;
             }
             self.event.wait_clear();

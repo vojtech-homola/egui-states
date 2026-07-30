@@ -3,8 +3,10 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{
     Arc, Weak,
     atomic::{AtomicBool, Ordering},
+    mpsc,
 };
 use std::thread;
+use std::time::Duration;
 
 use bytes::Bytes;
 use parking_lot::{Mutex, RwLock};
@@ -44,8 +46,12 @@ pub(super) struct ServerInner {
     pub(super) signals: CoreSignalsManager,
     pub(super) callbacks: CallbackRegistry,
     workers: Mutex<Vec<thread::JoinHandle<()>>>,
+    /// Disconnects once every signal worker has dropped its sender, i.e. once
+    /// all of them have returned. Used to bound teardown without `join`ing.
+    worker_exit: Mutex<Option<mpsc::Receiver<()>>>,
     worker_count: usize,
     worker_shutdown: Arc<AtomicBool>,
+    shutdown_timeout: Duration,
     error_handler: RwLock<ErrorHandler>,
 }
 
@@ -62,8 +68,32 @@ impl Drop for ServerInner {
         self.signals.wake_waiters();
         self.server.get_mut().stop();
 
+        // A worker only observes `worker_shutdown` between callbacks, so one
+        // that is inside a blocking callback cannot be waited on unboundedly --
+        // `Drop` must not hang. Wait for all of them to return, then detach
+        // whatever is left. Detaching is safe: a worker holds only a `Weak` to
+        // this struct plus `Arc` clones (signals, shutdown flag, the callback
+        // itself), so it stays sound after this struct is gone.
+        let all_workers_returned = match self.worker_exit.get_mut().take() {
+            // Nobody ever sends, so `Disconnected` means every worker has
+            // dropped its sender and returned.
+            Some(exit) => matches!(
+                exit.recv_timeout(self.shutdown_timeout),
+                Err(mpsc::RecvTimeoutError::Disconnected)
+            ),
+            None => true,
+        };
+
+        let workers = self.workers.get_mut().drain(..).collect::<Vec<_>>();
+        if !all_workers_returned {
+            return;
+        }
+
+        // Every worker has returned, so these joins are non-blocking. Skip the
+        // current thread: `drop` can run on a worker when it releases the last
+        // strong reference, and joining yourself is not allowed.
         let current_thread = thread::current().id();
-        for worker in self.workers.get_mut().drain(..) {
+        for worker in workers {
             if worker.thread().id() != current_thread {
                 let _ = worker.join();
             }
@@ -100,7 +130,9 @@ impl StateServer {
                 signals,
                 callbacks: CallbackRegistry::new(),
                 workers: Mutex::new(Vec::new()),
+                worker_exit: Mutex::new(None),
                 worker_count: options.signal_workers.max(1),
+                shutdown_timeout: options.shutdown_timeout,
                 worker_shutdown: Arc::new(AtomicBool::new(false)),
                 error_handler: RwLock::new(error_handler),
             }),
@@ -205,19 +237,33 @@ impl StateServer {
             return;
         }
 
+        let (exit_sender, exit_receiver) = mpsc::channel();
         for index in 0..self.inner.worker_count {
             let inner = Arc::downgrade(&self.inner);
             let signals = self.inner.signals.clone();
             let shutdown = self.inner.worker_shutdown.clone();
+            let exit = exit_sender.clone();
             let worker = thread::Builder::new()
                 .name(format!("egui_states_signal_worker_{index}"))
-                .spawn(move || run_signal_worker(inner, signals, shutdown));
+                .spawn(move || {
+                    // Dropped when the worker returns, which is how `Drop`
+                    // learns that every worker has finished.
+                    let _exit = exit;
+                    run_signal_worker(inner, signals, shutdown)
+                });
             match worker {
                 Ok(worker) => workers.push(worker),
                 Err(error) => self.inner.handle_error(ServerError::new(format!(
                     "failed to start signal worker: {error}"
                 ))),
             }
+        }
+        // Only the workers may hold a sender, otherwise the channel never
+        // disconnects and teardown always waits for the full timeout.
+        drop(exit_sender);
+
+        if !workers.is_empty() {
+            *self.inner.worker_exit.lock() = Some(exit_receiver);
         }
     }
 
@@ -444,7 +490,11 @@ fn run_signal_worker(
             return;
         }
 
-        let Some((value_id, data)) = signals.try_changed_value(last_id) else {
+        // `take` matters: the id is released exactly once, on the poll that
+        // follows its dispatch. Retrying with it still set would release a
+        // claim another worker may have taken in the meantime, letting two
+        // workers run callbacks for the same value concurrently.
+        let Some((value_id, data)) = signals.try_changed_value(last_id.take()) else {
             if !signals.wait_for_change_until(&shutdown) {
                 return;
             }
@@ -654,6 +704,72 @@ mod tests {
 
         drop(handle);
         drop(server);
+    }
+
+    #[test]
+    fn drop_does_not_block_on_a_worker_stuck_in_a_callback() {
+        let (release_sender, release_receiver) = mpsc::channel::<()>();
+        let (entered_sender, entered_receiver) = mpsc::channel::<()>();
+
+        let mut options = ServerOptions::new(0);
+        options.signal_workers = 1;
+        options.shutdown_timeout = Duration::from_millis(200);
+        let server = StateServer::with_options(options).unwrap();
+        let (id, signal) = server
+            .add_signal::<u32>("root.signal".to_string(), false)
+            .unwrap();
+
+        let release_receiver = Mutex::new(release_receiver);
+        let handle = server.add_raw_callback(id, move |_| {
+            entered_sender.send(()).unwrap();
+            // Stands in for any callback that blocks: a socket, a mutex, or a
+            // `ValueTake::set(.., blocking = true, ..)` awaiting a client ack.
+            let _ = release_receiver.lock().recv();
+            Ok(())
+        });
+
+        server.start_signal_workers();
+        signal.set(serialize_bytes(&1_u32).unwrap());
+        entered_receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("callback should have been entered");
+
+        // The worker cannot observe the shutdown flag until its callback
+        // returns, so `drop` has to fall back to detaching it. Dropped on
+        // another thread so a regression fails the test instead of hanging it.
+        let (dropped_sender, dropped_receiver) = mpsc::channel::<()>();
+        thread::spawn(move || {
+            drop(handle);
+            drop(signal);
+            drop(server);
+            let _ = dropped_sender.send(());
+        });
+
+        let dropped = dropped_receiver
+            .recv_timeout(Duration::from_secs(5))
+            .is_ok();
+        // Let the callback return either way, so the detached worker exits.
+        let _ = release_sender.send(());
+        assert!(dropped, "drop blocked on a worker stuck in a callback");
+    }
+
+    #[test]
+    fn drop_is_prompt_when_workers_are_idle() {
+        let mut options = ServerOptions::new(0);
+        options.signal_workers = 3;
+        options.shutdown_timeout = Duration::from_secs(5);
+        let server = StateServer::with_options(options).unwrap();
+        server.start_signal_workers();
+
+        // Idle workers observe the shutdown flag immediately, so teardown must
+        // not wait out the timeout.
+        let start = std::time::Instant::now();
+        drop(server);
+
+        assert!(
+            start.elapsed() < Duration::from_secs(1),
+            "idle workers should exit without waiting out the shutdown timeout"
+        );
     }
 
     #[test]

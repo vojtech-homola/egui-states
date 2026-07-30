@@ -1,9 +1,10 @@
 use std::net::Ipv4Addr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use super::ServerError;
 
-pub(super) type ErrorHandler = Arc<dyn Fn(ServerError) + Send + Sync + 'static>;
+pub type ErrorHandler = Arc<dyn Fn(ServerError) + Send + Sync + 'static>;
 
 pub struct ServerOptions {
     pub port: u16,
@@ -11,7 +12,12 @@ pub struct ServerOptions {
     pub version: Option<u64>,
     pub token: Option<String>,
     pub signal_workers: usize,
-    pub error_handler: Option<Arc<dyn Fn(ServerError) + Send + Sync + 'static>>,
+    /// How long dropping the server waits for the signal workers to finish the
+    /// callback they are running. A worker only observes the shutdown flag
+    /// between callbacks, so one that is inside a blocking callback cannot be
+    /// waited on unboundedly -- once this elapses it is detached instead.
+    pub shutdown_timeout: Duration,
+    pub error_handler: Option<ErrorHandler>,
 }
 
 impl ServerOptions {
@@ -22,6 +28,7 @@ impl ServerOptions {
             version: None,
             token: None,
             signal_workers: 3,
+            shutdown_timeout: Duration::from_secs(2),
             error_handler: None,
         }
     }
