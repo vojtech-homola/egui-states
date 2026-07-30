@@ -153,7 +153,8 @@ fn init_to_rust_value(init: &InitValue, object_type: &ObjectType) -> String {
             }
         }
         (InitValue::Map(values), ObjectType::Map(key_type, value_type)) => {
-            let mut values = values
+            // Entry order is already canonical, see `InitialValue for HashMap`.
+            let values = values
                 .iter()
                 .map(|(key, value)| {
                     format!(
@@ -162,9 +163,8 @@ fn init_to_rust_value(init: &InitValue, object_type: &ObjectType) -> String {
                         init_to_rust_value(value, value_type)
                     )
                 })
-                .collect::<Vec<_>>();
-            values.sort_unstable();
-            let values = values.join(", ");
+                .collect::<Vec<_>>()
+                .join(", ");
             format!(
                 "std::collections::HashMap::<{}, {}>::from([{values}])",
                 type_to_rust_type(key_type, RustTypeContext::States),

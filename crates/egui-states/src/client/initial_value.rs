@@ -163,6 +163,31 @@ where
     }
 }
 
+/// Sort key used to canonicalize `InitValue::Map` entries.
+///
+/// Every integer variant shares a rank so keys order numerically rather than
+/// lexicographically; all keys of one map have the same variant, so collapsing
+/// them is safe. Shapes that cannot be a `HashMap` key in practice fall back to
+/// their `Debug` rendering, which is deterministic for any given value.
+///
+/// This is deliberately not an `Ord` impl: `Ord` requires `Eq`, and `PartialEq`
+/// above treats every NaN payload as equal while a float ordering cannot.
+fn map_sort_key(value: &InitValue) -> (u8, i128, String) {
+    match value {
+        InitValue::Bool(value) => (0, i128::from(*value), String::new()),
+        InitValue::U8(value) => (1, i128::from(*value), String::new()),
+        InitValue::U16(value) => (1, i128::from(*value), String::new()),
+        InitValue::U32(value) => (1, i128::from(*value), String::new()),
+        InitValue::U64(value) => (1, i128::from(*value), String::new()),
+        InitValue::I8(value) => (1, i128::from(*value), String::new()),
+        InitValue::I16(value) => (1, i128::from(*value), String::new()),
+        InitValue::I32(value) => (1, i128::from(*value), String::new()),
+        InitValue::I64(value) => (1, i128::from(*value), String::new()),
+        InitValue::String(value) | InitValue::Enum(value) => (2, 0, value.clone()),
+        other => (3, 0, format!("{other:?}")),
+    }
+}
+
 unsafe impl<K, V> InitialValue for HashMap<K, V>
 where
     K: InitialValue,
@@ -170,17 +195,59 @@ where
 {
     #[inline]
     fn init_value(&self) -> InitValue {
-        InitValue::Map(
-            self.iter()
-                .map(|(key, value)| (key.init_value(), value.init_value()))
-                .collect(),
-        )
+        let mut entries = self
+            .iter()
+            .map(|(key, value)| (key.init_value(), value.init_value()))
+            .collect::<Vec<_>>();
+        // `HashMap` iteration order differs between instances, so canonicalize
+        // it here. Generated bindings stay byte-stable across builds, and two
+        // structurally identical maps compare equal -- which `StateType`
+        // equality relies on to validate a state class used more than once.
+        entries.sort_by_cached_key(|(key, _)| map_sort_key(key));
+        InitValue::Map(entries)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::InitValue;
+    use std::collections::HashMap;
+
+    use super::{InitValue, InitialValue};
+
+    fn map_keys(value: &InitValue) -> Vec<String> {
+        let InitValue::Map(entries) = value else {
+            panic!("expected a map, got {value:?}");
+        };
+        entries
+            .iter()
+            .map(|(key, _)| match key {
+                InitValue::U16(key) => key.to_string(),
+                InitValue::String(key) => key.clone(),
+                other => panic!("unexpected key {other:?}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn structurally_equal_maps_compare_equal() {
+        // Two `HashMap`s with the same contents iterate in different orders, so
+        // without canonicalization the two `InitValue`s compare unequal and
+        // `StateType` equality rejects a state class used more than once.
+        let make = || HashMap::from([(1u16, 1u32), (2, 2), (3, 3), (4, 4), (5, 5), (6, 6)]);
+
+        for _ in 0..64 {
+            assert_eq!(make().init_value(), make().init_value());
+        }
+    }
+
+    #[test]
+    fn map_entries_are_ordered_by_key() {
+        let numeric = HashMap::from([(10u16, 0u32), (1, 0), (20, 0), (2, 0), (3, 0)]);
+        assert_eq!(map_keys(&numeric.init_value()), ["1", "2", "3", "10", "20"]);
+
+        let text = HashMap::from([("b".to_string(), 0u32), ("c".into(), 0), ("a".into(), 0)]);
+        assert_eq!(map_keys(&text.init_value()), ["a", "b", "c"]);
+    }
 
     #[test]
     fn equality_preserves_generated_float_definitions() {
