@@ -1,5 +1,5 @@
 mod sender;
-mod server_core;
+mod core;
 mod socket_reader;
 
 pub(crate) mod data_core;

@@ -14,12 +14,12 @@ use crate::data_transport::DataType;
 use crate::event::Event;
 use crate::hashing::{NoHashMap, generate_value_id};
 use crate::serialization::{ServerHeader, serialize};
+use crate::server_core::core;
 use crate::server_core::data_core::{Data, DataMulti};
 use crate::server_core::data_take_core::{DataMultiTake, DataTake};
 use crate::server_core::image_core::Image;
 use crate::server_core::map_core::ValueMap;
 use crate::server_core::sender::{MessageReceiver, MessageSender};
-use crate::server_core::server_core;
 use crate::server_core::signals::{CLIENT_MESSAGE_ID, SignalsManager};
 use crate::server_core::values_core::{SignalCore, ValueCore, ValueStaticCore, ValueTakeCore};
 use crate::server_core::vec_core::ValueList;
@@ -156,7 +156,7 @@ pub(crate) struct Server {
     states: StatesList,
     states_server: Option<ServerStatesList>,
     signals: SignalsManager,
-    handshake: server_core::Handshake,
+    handshake: core::Handshake,
 
     runner_state: RunnerState,
 }
@@ -166,7 +166,7 @@ impl Server {
         let connected = Arc::new(AtomicBool::new(false));
         let (sender, rx) = MessageSender::new();
         let signals = SignalsManager::new();
-        let handshake = server_core::Handshake { version, token };
+        let handshake = core::Handshake { version, token };
 
         let obj = Self {
             connected,
@@ -266,7 +266,7 @@ impl Server {
                 stop_event.clear();
                 let thread_handle_res = server_thread.spawn(move || {
                     runtime.block_on(async move {
-                        server_core::run(
+                        core::run(
                             listener, sender, rx, connected, stop_event, values, signals, handshake,
                         )
                         .await
