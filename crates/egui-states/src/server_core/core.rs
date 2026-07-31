@@ -158,6 +158,7 @@ pub(crate) async fn run(
                     connected.clone(),
                     socket_tx,
                     signals.clone(),
+                    values.clone(),
                     reader_handler,
                 ));
 
@@ -291,13 +292,6 @@ async fn reader(
         }
     }
 
-    signals.on_disconnect();
-
-    // reset all pendings values
-    for v in values.ack.values() {
-        v.reset();
-    }
-
     // send close signal to writing thread if reading fails
     #[cfg(debug_assertions)]
     signals.debug("terminating write thread");
@@ -309,6 +303,7 @@ async fn writer(
     connected: Arc<AtomicBool>,
     mut websocket: SplitSink<WebSocketStream<TcpStream>, Message>,
     signals: SignalsManager,
+    values: ServerStatesList,
     reader_handle: tokio::task::JoinHandle<()>,
 ) -> MessageReceiver {
     let mut data_receiver = DataReceiver::new(rx);
@@ -343,6 +338,15 @@ async fn writer(
             }
         }
     }
+
+    connected.store(false, Ordering::Release);
+    signals.on_disconnect();
+
+    // reset all pendings values
+    for v in values.ack.values() {
+        v.reset();
+    }
+
     data_receiver.finalize()
 }
 
