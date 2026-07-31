@@ -7,10 +7,11 @@ use tokio_tungstenite::tungstenite::Bytes;
 
 use crate::collections::MapHeader;
 use crate::serialization::{ServerHeader, serialize};
-use crate::server::sender::{MessageSender, SenderData};
-use crate::server::server::SyncTrait;
+use crate::server_core::sender::{MessageSender, SenderData};
+use crate::server_core::server::SyncTrait;
 
 pub(crate) struct ValueMap {
+    // #[cfg_attr(not(feature = "python"), allow(dead_code))]
     pub(crate) name: String,
     id: u64,
     type_id: u32,

@@ -36,7 +36,7 @@ impl<K: NoHashKey> Hasher for NoHashHasher<K> {
 
 pub(crate) type NoHashMap<K, V> =
     std::collections::HashMap<K, V, BuildHasherDefault<NoHashHasher<K>>>;
-#[cfg(feature = "server")]
+#[cfg(any(feature = "server", feature = "python"))]
 pub(crate) type NoHashSet<K> = std::collections::HashSet<K, BuildHasherDefault<NoHashHasher<K>>>;
 
 macro_rules! impl_basic_item {

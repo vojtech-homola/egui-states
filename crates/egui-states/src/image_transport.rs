@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-#[cfg(feature = "server")]
+#[cfg(any(feature = "server", feature = "python"))]
 use crate::serialization::{FastVec, ServerHeader, serialize_heap};
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
@@ -31,7 +31,7 @@ pub(crate) enum ImageSetHeader {
     End(u32, bool),       // pixels, update
 }
 
-#[cfg(feature = "server")]
+#[cfg(any(feature = "server", feature = "python"))]
 impl ImageSetHeader {
     pub(crate) fn serialize(
         self,

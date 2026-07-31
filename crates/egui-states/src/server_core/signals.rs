@@ -1,12 +1,14 @@
 use std::collections::{VecDeque, hash_map::Entry};
 use std::sync::Arc;
+#[cfg(feature = "server")]
+use std::sync::atomic::AtomicBool;
 
 use bytes::Bytes;
 use parking_lot::Mutex;
 
+use crate::event::Event;
 use crate::hashing::{NoHashMap, NoHashSet};
 use crate::serialization::{FastVec, serialize, serialize_to_data};
-use crate::event::Event;
 
 pub(crate) const LOGGING_ID: u64 = 0;
 pub(crate) const ON_CONNECT_ID: u64 = 1;
@@ -213,13 +215,45 @@ impl SignalsManager {
         self.set(CLIENT_MESSAGE_ID, message);
     }
 
-    pub(crate) fn wait_changed_value(&self, last_id: Option<u64>) -> (u64, Bytes) {
+    #[cfg(feature = "python")]
+    pub(crate) fn wait_changed_value(&self, mut last_id: Option<u64>) -> (u64, Bytes) {
         loop {
-            if let Some(val) = self.values.lock().get(last_id) {
+            if let Some(val) = self.values.lock().get(last_id.take()) {
                 return val;
             }
             self.event.wait_clear();
         }
+    }
+
+    #[cfg(feature = "server")]
+    pub(crate) fn try_changed_value(&self, last_id: Option<u64>) -> Option<(u64, Bytes)> {
+        self.values.lock().get(last_id)
+    }
+
+    // #[cfg(feature = "python")]
+    // pub(crate) fn wait_for_change(&self) {
+    //     self.event.wait_clear();
+    // }
+
+    #[cfg(feature = "server")]
+    pub(crate) fn wait_for_change_until(&self, stop: &AtomicBool) -> bool {
+        self.event.wait_clear_until(stop)
+    }
+
+    #[cfg(feature = "server")]
+    pub(crate) fn wake_waiters(&self) {
+        self.event.set();
+    }
+
+    /// Releases an id that was handed out but will never be passed back as
+    /// `last_id`, because the caller failed before it could use the value.
+    #[cfg(feature = "python")]
+    pub(crate) fn release(&self, id: u64) {
+        self.values.lock().blocked_list.remove(&id);
+        // Anything that arrived while the id was blocked did not set the event
+        // (`ChangedInner::set` skips blocked ids), so wake a waiter to drain it.
+        // A spurious wake-up is harmless: the waiter just finds nothing.
+        self.event.set_one();
     }
 
     pub(crate) fn set_register(&self, id: u64, register: bool) {
@@ -242,5 +276,52 @@ impl SignalsManager {
 
     pub(crate) fn set_to_single(&self, id: u64) {
         self.values.lock().set_to_single(id);
+    }
+}
+
+#[cfg(all(test, feature = "python"))]
+mod tests {
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
+
+    use super::*;
+
+    /// A caller that fails before passing an id back as `last_id` must not
+    /// strand it: `release` is what keeps signals queued behind it reachable.
+    #[test]
+    fn release_frees_an_id_that_was_never_passed_back() {
+        let manager = SignalsManager::new();
+        manager.set_register(5, true);
+        manager.set_register(9, true);
+
+        manager.set(5, Bytes::from_static(b"first"));
+        assert_eq!(manager.wait_changed_value(None).0, 5);
+
+        // A second signal for 5 queues silently -- it is blocked, so no wake-up
+        // is sent and only 9 is reachable.
+        manager.set(5, Bytes::from_static(b"stranded"));
+        manager.set(9, Bytes::from_static(b"other"));
+        assert_eq!(
+            manager.wait_changed_value(None).0,
+            9,
+            "5 must stay blocked while its holder has not released it"
+        );
+
+        // Nothing else will ever release 5, since the caller that took it
+        // failed before it could pass it back.
+        manager.release(5);
+
+        // Bounded, so a regression fails instead of blocking forever.
+        let (sender, receiver) = mpsc::channel();
+        let waiter = manager.clone();
+        thread::spawn(move || {
+            let _ = sender.send(waiter.wait_changed_value(None).0);
+        });
+        assert_eq!(
+            receiver.recv_timeout(Duration::from_secs(2)).ok(),
+            Some(5),
+            "the signal queued behind 5 should be reachable again"
+        );
     }
 }

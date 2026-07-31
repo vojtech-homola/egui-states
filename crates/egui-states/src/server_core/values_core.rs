@@ -6,12 +6,12 @@ use bytes::Bytes;
 
 use crate::event::Event;
 use crate::serialization::ServerHeader;
-use crate::server::sender::MessageSender;
-use crate::server::server::{Acknowledge, SyncTrait};
-use crate::server::signals::SignalsManager;
+use crate::server_core::sender::MessageSender;
+use crate::server_core::server::{Acknowledge, SyncTrait};
+use crate::server_core::signals::SignalsManager;
 
 // Value --------------------------------------------------
-pub(crate) struct Value {
+pub(crate) struct ValueCore {
     pub(crate) name: String,
     id: u64,
     type_id: u32,
@@ -21,7 +21,7 @@ pub(crate) struct Value {
     signals: SignalsManager,
 }
 
-impl Value {
+impl ValueCore {
     pub(crate) fn new(
         name: String,
         id: u64,
@@ -92,7 +92,7 @@ impl Value {
     }
 }
 
-impl Acknowledge for Value {
+impl Acknowledge for ValueCore {
     fn acknowledge(&self) {
         let mut w = self.value.write();
         if w.1 > 0 {
@@ -101,7 +101,7 @@ impl Acknowledge for Value {
     }
 }
 
-impl SyncTrait for Value {
+impl SyncTrait for ValueCore {
     fn sync(&self) -> Result<(), ()> {
         let mut w = self.value.write();
         w.1 = 1;
@@ -114,7 +114,8 @@ impl SyncTrait for Value {
 }
 
 // ValueTake --------------------------------------------------
-pub(crate) struct ValueTake {
+pub(crate) struct ValueTakeCore {
+    // #[cfg_attr(not(feature = "python"), allow(dead_code))]
     pub(crate) name: String,
     id: u64,
     type_id: u32,
@@ -124,7 +125,7 @@ pub(crate) struct ValueTake {
     connected: Arc<AtomicBool>,
 }
 
-impl ValueTake {
+impl ValueTakeCore {
     pub(crate) fn new(
         name: String,
         id: u64,
@@ -165,13 +166,13 @@ impl ValueTake {
     }
 }
 
-impl Acknowledge for ValueTake {
+impl Acknowledge for ValueTakeCore {
     fn acknowledge(&self) {
         self.event.set();
     }
 }
 
-impl SyncTrait for ValueTake {
+impl SyncTrait for ValueTakeCore {
     fn sync(&self) -> Result<(), ()> {
         self.event.set();
         Ok(())
@@ -179,7 +180,8 @@ impl SyncTrait for ValueTake {
 }
 
 // ValueStatic --------------------------------------------
-pub(crate) struct ValueStatic {
+pub(crate) struct ValueStaticCore {
+    // #[cfg_attr(not(feature = "python"), allow(dead_code))]
     pub(crate) name: String,
     id: u64,
     type_id: u32,
@@ -188,7 +190,7 @@ pub(crate) struct ValueStatic {
     connected: Arc<AtomicBool>,
 }
 
-impl ValueStatic {
+impl ValueStaticCore {
     pub(crate) fn new(
         name: String,
         id: u64,
@@ -227,7 +229,7 @@ impl ValueStatic {
     }
 }
 
-impl SyncTrait for ValueStatic {
+impl SyncTrait for ValueStaticCore {
     fn sync(&self) -> Result<(), ()> {
         let w = self.value.read();
         let data = ServerHeader::serialize_static(self.id, self.type_id, false, &w)?;
@@ -239,14 +241,14 @@ impl SyncTrait for ValueStatic {
 }
 
 // Signals --------------------------------------------
-pub(crate) struct Signal {
+pub(crate) struct SignalCore {
     pub(crate) name: String,
     id: u64,
     type_id: u32,
     signals: SignalsManager,
 }
 
-impl Signal {
+impl SignalCore {
     pub(crate) fn new(name: String, id: u64, type_id: u32, signals: SignalsManager) -> Arc<Self> {
         Arc::new(Self {
             name,

@@ -10,7 +10,7 @@ path = "main.rs"
 
 [dependencies]
 gui_core = { workspace = true }
-eframe = "0.34"
+eframe = "0.35"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen-futures = "0.4"
@@ -19,6 +19,5 @@ web-sys = "0.3"
 
 [build-dependencies]
 egui_states = { workspace = true, features = ["build_scripts"] }
-serde = "*"
 
 gui_core = { workspace = true }

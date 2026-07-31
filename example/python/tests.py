@@ -16,16 +16,16 @@ from states_server import (
     State,
     StatesServer,
 )
-from states_server import (
+from states_server.enums import (
     TestEnum as ExampleTestEnum,
 )
-from states_server import (
+from states_server.enums import (
     TestEnum2 as ExampleTestEnum2,
 )
-from states_server import (
+from states_server.structs import (
     TestStruct as ExampleTestStruct,
 )
-from states_server import (
+from states_server.structs import (
     TestStruct2 as ExampleTestStruct2,
 )
 

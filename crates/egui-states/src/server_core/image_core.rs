@@ -8,8 +8,8 @@ use crate::event::Event;
 use crate::image_transport::{ImageHeader, ImageSetHeader, ImageType};
 use crate::serialization::ServerHeader;
 use crate::serialization::{FastVec, MSG_SIZE_THRESHOLD};
-use crate::server::sender::MessageSender;
-use crate::server::server::{Acknowledge, SyncTrait};
+use crate::server_core::sender::MessageSender;
+use crate::server_core::server::{Acknowledge, SyncTrait};
 
 enum Buffer {
     Set(Vec<(FastVec<32>, bool)>),
@@ -31,6 +31,7 @@ pub(crate) struct ImageData {
 }
 
 pub(crate) struct Image {
+    // #[cfg_attr(not(feature = "python"), allow(dead_code))]
     pub(crate) name: String,
     id: u64,
     image: RwLock<ImageDataInner>,
@@ -184,7 +185,10 @@ impl Image {
         let _lock = self.lock.lock();
         let mut w = self.image.write();
 
-        if origin[0] + image.size[0] > w.size[0] || origin[1] + image.size[1] > w.size[1] {
+        let end_row = origin[0].checked_add(image.size[0]);
+        let end_column = origin[1].checked_add(image.size[1]);
+        if end_row.is_none_or(|end| end > w.size[0]) || end_column.is_none_or(|end| end > w.size[1])
+        {
             return Err("Image size exceeds bounds".to_string());
         }
 

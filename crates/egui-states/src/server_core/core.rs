@@ -1,4 +1,3 @@
-use std::net::SocketAddrV4;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -14,10 +13,10 @@ use tokio_tungstenite::tungstenite::{Message, protocol::WebSocketConfig};
 use crate::PROTOCOL_VERSION;
 use crate::event::Event;
 use crate::serialization::{MAX_MSG_COUNT, MSG_SIZE_THRESHOLD, ServerHeader, serialize};
-use crate::server::sender::{MessageReceiver, MessageSender, SenderData};
-use crate::server::server::ServerStatesList;
-use crate::server::signals::SignalsManager;
-use crate::server::socket_reader::{ClientMessage, SocketReader};
+use crate::server_core::sender::{MessageReceiver, MessageSender, SenderData};
+use crate::server_core::server::ServerStatesList;
+use crate::server_core::signals::SignalsManager;
+use crate::server_core::socket_reader::{ClientMessage, SocketReader};
 
 enum ChannelHolder {
     Transfer(JoinHandle<MessageReceiver>),
@@ -31,25 +30,15 @@ pub(crate) struct Handshake {
 }
 
 pub(crate) async fn run(
+    listener: TcpListener,
     sender: MessageSender,
     rx: MessageReceiver,
     connected: Arc<AtomicBool>,
     stop_event: Event,
     values: ServerStatesList,
     signals: SignalsManager,
-    addr: SocketAddrV4,
     handshake: Handshake,
 ) -> MessageReceiver {
-    // listen to incoming connections
-    let listener = match TcpListener::bind(addr).await {
-        Ok(l) => l,
-        Err(e) => {
-            stop_event.clear();
-            signals.error(&format!("binding failed: {:?}", e));
-            return rx;
-        }
-    };
-
     let mut holder = ChannelHolder::Rx(rx);
 
     loop {
@@ -169,6 +158,7 @@ pub(crate) async fn run(
                     connected.clone(),
                     socket_tx,
                     signals.clone(),
+                    values.clone(),
                     reader_handler,
                 ));
 
@@ -302,13 +292,6 @@ async fn reader(
         }
     }
 
-    signals.on_disconnect();
-
-    // reset all pendings values
-    for v in values.ack.values() {
-        v.reset();
-    }
-
     // send close signal to writing thread if reading fails
     #[cfg(debug_assertions)]
     signals.debug("terminating write thread");
@@ -320,6 +303,7 @@ async fn writer(
     connected: Arc<AtomicBool>,
     mut websocket: SplitSink<WebSocketStream<TcpStream>, Message>,
     signals: SignalsManager,
+    values: ServerStatesList,
     reader_handle: tokio::task::JoinHandle<()>,
 ) -> MessageReceiver {
     let mut data_receiver = DataReceiver::new(rx);
@@ -354,6 +338,15 @@ async fn writer(
             }
         }
     }
+
+    connected.store(false, Ordering::Release);
+    signals.on_disconnect();
+
+    // reset all pendings values
+    for v in values.ack.values() {
+        v.reset();
+    }
+
     data_receiver.finalize()
 }
 

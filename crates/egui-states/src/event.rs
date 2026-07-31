@@ -4,7 +4,7 @@ use std::sync::{
 };
 
 use event_listener::Event as ListenerEvent;
-#[cfg(feature = "server")]
+#[cfg(any(feature = "server", feature = "python"))]
 use event_listener::Listener;
 
 struct Inner {
@@ -28,12 +28,12 @@ impl Event {
         }))
     }
 
-    #[cfg(feature = "server")]
+    #[cfg(any(feature = "server", feature = "python"))]
     pub(crate) fn is_set(&self) -> bool {
         self.0.flag.load(Ordering::Acquire)
     }
 
-    #[cfg(feature = "server")]
+    #[cfg(any(feature = "server", feature = "python"))]
     pub(crate) fn set_one(&self) {
         self.0.flag.store(true, Ordering::Release);
         self.0.notify.notify(1);
@@ -48,7 +48,7 @@ impl Event {
         self.0.flag.store(false, Ordering::Release);
     }
 
-    #[cfg(feature = "server")]
+    #[cfg(any(feature = "server", feature = "python"))]
     pub(crate) fn wait(&self) {
         loop {
             if self.0.flag.load(Ordering::Acquire) {
@@ -65,7 +65,7 @@ impl Event {
         }
     }
 
-    #[cfg(feature = "server")]
+    #[cfg(any(feature = "server", feature = "python"))]
     pub(crate) fn wait_clear(&self) {
         loop {
             if self
@@ -86,6 +86,41 @@ impl Event {
                 .is_ok()
             {
                 return;
+            }
+
+            listener.wait();
+        }
+    }
+
+    #[cfg(feature = "server")]
+    pub(crate) fn wait_clear_until(&self, stop: &AtomicBool) -> bool {
+        loop {
+            if stop.load(Ordering::Acquire) {
+                return false;
+            }
+
+            if self
+                .0
+                .flag
+                .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                return true;
+            }
+
+            let listener = self.0.notify.listen();
+
+            if stop.load(Ordering::Acquire) {
+                return false;
+            }
+
+            if self
+                .0
+                .flag
+                .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                return true;
             }
 
             listener.wait();

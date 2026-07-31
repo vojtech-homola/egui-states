@@ -96,7 +96,7 @@ class StateServerBase[T: StatesBase]:
 
     @property
     def states(self) -> T:
-        """Get the state."""
+        """The root state object."""
         return self._states
 
     def update(self, duration: float | None = None) -> None:
@@ -109,8 +109,8 @@ class StateServerBase[T: StatesBase]:
 
     def start(self) -> None:
         """Start the state server."""
-        self._signals_manager.start_manager()
         self._server.start()
+        self._signals_manager.start_manager()
 
     def stop(self) -> None:
         """Stop the state server."""

@@ -7,16 +7,8 @@ use super::{
     },
 };
 
-#[derive(
-    Clone,
-    Copy,
-    Default,
-    PartialEq,
-    Eq,
-    serde::Serialize,
-    serde::Deserialize,
-    egui_states::Transportable,
-)]
+#[egui_states::typed]
+#[derive(Clone, Copy, Default, PartialEq, Eq, egui_states::InitialValue)]
 pub(super) enum TestEnum {
     #[default]
     A,
@@ -24,16 +16,8 @@ pub(super) enum TestEnum {
     C,
 }
 
-#[derive(
-    Clone,
-    Copy,
-    Default,
-    PartialEq,
-    Eq,
-    serde::Serialize,
-    serde::Deserialize,
-    egui_states::Transportable,
-)]
+#[egui_states::typed]
+#[derive(Clone, Copy, Default, PartialEq, Eq, egui_states::InitialValue)]
 pub(super) enum TestEnum2 {
     X,
     #[default]
@@ -41,18 +25,16 @@ pub(super) enum TestEnum2 {
     Z,
 }
 
-#[derive(
-    Clone, Default, PartialEq, serde::Serialize, serde::Deserialize, egui_states::Transportable,
-)]
+#[egui_states::typed]
+#[derive(Clone, Default, PartialEq, egui_states::InitialValue)]
 pub(super) struct TestStruct {
     pub x: f32,
     pub y: f32,
     pub label: String,
 }
 
-#[derive(
-    Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, egui_states::Transportable,
-)]
+#[egui_states::typed]
+#[derive(Clone, Default, PartialEq, Eq, egui_states::InitialValue)]
 pub(super) struct TestStruct2 {
     pub enabled: bool,
     pub level: u16,

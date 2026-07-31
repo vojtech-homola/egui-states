@@ -7,21 +7,22 @@ use std::thread;
 use std::time::Duration;
 
 use bytes::Bytes;
+use tokio::net::TcpListener;
 use tokio::runtime::Builder;
 
 use crate::data_transport::DataType;
 use crate::event::Event;
 use crate::hashing::{NoHashMap, generate_value_id};
 use crate::serialization::{ServerHeader, serialize};
-use crate::server::data_server::{Data, DataMulti};
-use crate::server::data_take_server::{DataMultiTake, DataTake};
-use crate::server::image_server::Image;
-use crate::server::map_server::ValueMap;
-use crate::server::sender::{MessageReceiver, MessageSender};
-use crate::server::server_core;
-use crate::server::signals::SignalsManager;
-use crate::server::values_server::{Signal, Value, ValueStatic, ValueTake};
-use crate::server::vec_server::ValueList;
+use crate::server_core::core;
+use crate::server_core::data_core::{Data, DataMulti};
+use crate::server_core::data_take_core::{DataMultiTake, DataTake};
+use crate::server_core::image_core::Image;
+use crate::server_core::map_core::ValueMap;
+use crate::server_core::sender::{MessageReceiver, MessageSender};
+use crate::server_core::signals::{CLIENT_MESSAGE_ID, SignalsManager};
+use crate::server_core::values_core::{SignalCore, ValueCore, ValueStaticCore, ValueTakeCore};
+use crate::server_core::vec_core::ValueList;
 
 pub(crate) trait SyncTrait: Sync + Send {
     fn sync(&self) -> Result<(), ()>;
@@ -37,10 +38,10 @@ pub(crate) trait Acknowledge: Sync + Send {
 
 #[derive(Clone, Default)]
 pub(crate) struct StatesList {
-    pub(crate) values: NoHashMap<u64, Arc<Value>>,
-    pub(crate) values_take: NoHashMap<u64, Arc<ValueTake>>,
-    pub(crate) static_values: NoHashMap<u64, Arc<ValueStatic>>,
-    pub(crate) signals: NoHashMap<u64, Arc<Signal>>,
+    pub(crate) values: NoHashMap<u64, Arc<ValueCore>>,
+    pub(crate) values_take: NoHashMap<u64, Arc<ValueTakeCore>>,
+    pub(crate) static_values: NoHashMap<u64, Arc<ValueStaticCore>>,
+    pub(crate) signals: NoHashMap<u64, Arc<SignalCore>>,
     pub(crate) images: NoHashMap<u64, Arc<Image>>,
     pub(crate) maps: NoHashMap<u64, Arc<ValueMap>>,
     pub(crate) lists: NoHashMap<u64, Arc<ValueList>>,
@@ -51,6 +52,21 @@ pub(crate) struct StatesList {
 }
 
 impl StatesList {
+    fn contains_id(&self, id: u64) -> bool {
+        id <= CLIENT_MESSAGE_ID
+            || self.values.contains_key(&id)
+            || self.values_take.contains_key(&id)
+            || self.static_values.contains_key(&id)
+            || self.signals.contains_key(&id)
+            || self.images.contains_key(&id)
+            || self.maps.contains_key(&id)
+            || self.lists.contains_key(&id)
+            || self.data.contains_key(&id)
+            || self.data_take.contains_key(&id)
+            || self.data_multi.contains_key(&id)
+            || self.data_multi_take.contains_key(&id)
+    }
+
     fn get_server_list(&self) -> ServerStatesList {
         let mut server_list = ServerStatesList::default();
 
@@ -110,8 +126,8 @@ impl StatesList {
 
 #[derive(Clone, Default)]
 pub(crate) struct ServerStatesList {
-    pub(crate) values: NoHashMap<u64, Arc<Value>>,
-    pub(crate) signals: NoHashMap<u64, Arc<Signal>>,
+    pub(crate) values: NoHashMap<u64, Arc<ValueCore>>,
+    pub(crate) signals: NoHashMap<u64, Arc<SignalCore>>,
     pub(crate) ack: NoHashMap<u64, Arc<dyn Acknowledge>>,
     pub(crate) sync: Vec<Arc<dyn SyncTrait>>,
 }
@@ -140,7 +156,7 @@ pub(crate) struct Server {
     states: StatesList,
     states_server: Option<ServerStatesList>,
     signals: SignalsManager,
-    handshake: server_core::Handshake,
+    handshake: core::Handshake,
 
     runner_state: RunnerState,
 }
@@ -150,7 +166,7 @@ impl Server {
         let connected = Arc::new(AtomicBool::new(false));
         let (sender, rx) = MessageSender::new();
         let signals = SignalsManager::new();
-        let handshake = server_core::Handshake { version, token };
+        let handshake = core::Handshake { version, token };
 
         let obj = Self {
             connected,
@@ -182,20 +198,61 @@ impl Server {
         self.signals.clone()
     }
 
-    pub(crate) fn start(&mut self) -> Result<(), &'static str> {
-        match (self.runner_state.take(), &self.states_server) {
+    /// Starts the server on its dedicated thread.
+    ///
+    /// This method must not be called from inside a Tokio runtime. The server
+    /// creates and owns a Tokio runtime, which must be allowed to shut down on
+    /// a non-async thread.
+    pub(crate) fn start(&mut self) -> Result<(), String> {
+        let runner_state = match self.runner_state.take() {
+            RunnerState::Running(handle) if handle.is_finished() => match handle.join() {
+                Ok(rx) => RunnerState::Stopped(rx),
+                Err(_) => RunnerState::Undefined,
+            },
+            state => state,
+        };
+
+        match (runner_state, &self.states_server) {
             (RunnerState::Running(rx), _) => {
                 self.runner_state = RunnerState::Running(rx);
                 Ok(())
             }
             (RunnerState::Stopped(rx), Some(states_server)) => {
-                let runtime = Builder::new_multi_thread()
+                let listener = match std::net::TcpListener::bind(self.addr) {
+                    Ok(listener) => listener,
+                    Err(error) => {
+                        self.runner_state = RunnerState::Stopped(rx);
+                        return Err(format!("binding failed: {error:?}"));
+                    }
+                };
+                if let Err(error) = listener.set_nonblocking(true) {
+                    self.runner_state = RunnerState::Stopped(rx);
+                    return Err(format!("failed to configure listener: {error:?}"));
+                }
+
+                let runtime = match Builder::new_multi_thread()
                     .thread_name("ServerRuntime")
                     .enable_io()
                     .worker_threads(2)
                     .thread_keep_alive(Duration::from_hours(1))
                     .build()
-                    .unwrap();
+                {
+                    Ok(runtime) => runtime,
+                    Err(_) => {
+                        self.runner_state = RunnerState::Stopped(rx);
+                        return Err("Failed to create server runtime".to_string());
+                    }
+                };
+                let listener = match {
+                    let _guard = runtime.enter();
+                    TcpListener::from_std(listener)
+                } {
+                    Ok(listener) => listener,
+                    Err(error) => {
+                        self.runner_state = RunnerState::Stopped(rx);
+                        return Err(format!("failed to initialize listener: {error:?}"));
+                    }
+                };
 
                 let sender = self.sender.clone();
                 let connected = self.connected.clone();
@@ -204,14 +261,13 @@ impl Server {
                 let signals = self.signals.clone();
 
                 let handshake = self.handshake.clone();
-                let addr = self.addr;
 
                 let server_thread = thread::Builder::new().name("StatesServer".to_string());
                 stop_event.clear();
                 let thread_handle_res = server_thread.spawn(move || {
                     runtime.block_on(async move {
-                        server_core::run(
-                            sender, rx, connected, stop_event, values, signals, addr, handshake,
+                        core::run(
+                            listener, sender, rx, connected, stop_event, values, signals, handshake,
                         )
                         .await
                     })
@@ -220,7 +276,10 @@ impl Server {
                 match thread_handle_res {
                     Err(_) => {
                         self.runner_state = RunnerState::Undefined;
-                        Err("Failed to start server thread, server is in undefined state")
+                        Err(
+                            "Failed to start server thread, server is in undefined state"
+                                .to_string(),
+                        )
                     }
                     Ok(thread_handle) => {
                         self.runner_state = RunnerState::Running(thread_handle);
@@ -228,10 +287,10 @@ impl Server {
                     }
                 }
             }
-            (RunnerState::Undefined, _) => Err("Server is in undefined state"),
+            (RunnerState::Undefined, _) => Err("Server is in undefined state".to_string()),
             (state, None) => {
                 self.runner_state = state;
-                Err("Server has not been finalized")
+                Err("Server has not been finalized".to_string())
             }
         }
     }
@@ -267,10 +326,10 @@ impl Server {
     }
 
     pub(crate) fn is_running(&self) -> bool {
-        if let RunnerState::Running(_) = self.runner_state {
-            return !self.stop_event.is_set();
-        }
-        false
+        matches!(
+            &self.runner_state,
+            RunnerState::Running(handle) if !handle.is_finished() && !self.stop_event.is_set()
+        )
     }
 
     pub(crate) fn is_connected(&self) -> bool {
@@ -299,11 +358,11 @@ impl Server {
         }
 
         let id = generate_value_id(&name);
-        if self.states.values.contains_key(&id) {
+        if self.states.contains_id(id) {
             return Err(format!("Value with id {} already exists", id));
         }
 
-        let val = Value::new(
+        let val = ValueCore::new(
             name.to_string(),
             id,
             type_id,
@@ -328,11 +387,11 @@ impl Server {
         }
 
         let id = generate_value_id(&name);
-        if self.states.values_take.contains_key(&id) {
+        if self.states.contains_id(id) {
             return Err(format!("ValueTake with id {} already exists", id));
         }
 
-        let val = ValueTake::new(
+        let val = ValueTakeCore::new(
             name.to_string(),
             id,
             type_id,
@@ -356,11 +415,11 @@ impl Server {
         }
 
         let id = generate_value_id(&name);
-        if self.states.static_values.contains_key(&id) {
+        if self.states.contains_id(id) {
             return Err(format!("Static value with id {} already exists", id));
         }
 
-        let val = ValueStatic::new(
+        let val = ValueStaticCore::new(
             name.to_string(),
             id,
             type_id,
@@ -384,11 +443,11 @@ impl Server {
         }
 
         let id = generate_value_id(&name);
-        if self.states.signals.contains_key(&id) {
+        if self.states.contains_id(id) {
             return Err(format!("Signal with id {} already exists", id));
         }
 
-        let val = Signal::new(name.to_string(), id, type_id, self.signals.clone());
+        let val = SignalCore::new(name.to_string(), id, type_id, self.signals.clone());
 
         self.states.signals.insert(id, val);
 
@@ -405,7 +464,7 @@ impl Server {
         }
 
         let id = generate_value_id(&name);
-        if self.states.lists.contains_key(&id) {
+        if self.states.contains_id(id) {
             return Err(format!("Vec with id {} already exists", id));
         }
 
@@ -427,7 +486,7 @@ impl Server {
         }
 
         let id = generate_value_id(&name);
-        if self.states.maps.contains_key(&id) {
+        if self.states.contains_id(id) {
             return Err(format!("Map with id {} already exists", id));
         }
 
@@ -450,7 +509,7 @@ impl Server {
         }
 
         let id = generate_value_id(&name);
-        if self.states.images.contains_key(&id) {
+        if self.states.contains_id(id) {
             return Err(format!("Image with id {} already exists", id));
         }
 
@@ -471,7 +530,7 @@ impl Server {
         }
 
         let id = generate_value_id(&name);
-        if self.states.data.contains_key(&id) {
+        if self.states.contains_id(id) {
             return Err(format!("Data with id {} already exists", id));
         }
 
@@ -495,7 +554,7 @@ impl Server {
         }
 
         let id = generate_value_id(&name);
-        if self.states.data_multi.contains_key(&id) {
+        if self.states.contains_id(id) {
             return Err(format!("DataMulti with id {} already exists", id));
         }
 
@@ -519,7 +578,7 @@ impl Server {
         }
 
         let id = generate_value_id(&name);
-        if self.states.data_take.contains_key(&id) {
+        if self.states.contains_id(id) {
             return Err(format!("DataTake with id {} already exists", id));
         }
 
@@ -543,7 +602,7 @@ impl Server {
         }
 
         let id = generate_value_id(&name);
-        if self.states.data_multi_take.contains_key(&id) {
+        if self.states.contains_id(id) {
             return Err(format!("DataMultiTake with id {} already exists", id));
         }
 
@@ -559,5 +618,66 @@ impl Server {
 
         self.states.data_multi_take.insert(id, val);
         Ok(id)
+    }
+
+    #[cfg(feature = "server")]
+    pub(crate) fn get_value(&self, id: u64) -> Option<Arc<ValueCore>> {
+        self.states.values.get(&id).cloned()
+    }
+
+    #[cfg(feature = "server")]
+    pub(crate) fn get_value_take(&self, id: u64) -> Option<Arc<ValueTakeCore>> {
+        self.states.values_take.get(&id).cloned()
+    }
+
+    #[cfg(feature = "server")]
+    pub(crate) fn get_static(&self, id: u64) -> Option<Arc<ValueStaticCore>> {
+        self.states.static_values.get(&id).cloned()
+    }
+
+    #[cfg(feature = "server")]
+    pub(crate) fn get_signal(&self, id: u64) -> Option<Arc<SignalCore>> {
+        self.states.signals.get(&id).cloned()
+    }
+
+    #[cfg(feature = "server")]
+    pub(crate) fn get_vec(&self, id: u64) -> Option<Arc<ValueList>> {
+        self.states.lists.get(&id).cloned()
+    }
+
+    #[cfg(feature = "server")]
+    pub(crate) fn get_map(&self, id: u64) -> Option<Arc<ValueMap>> {
+        self.states.maps.get(&id).cloned()
+    }
+
+    #[cfg(feature = "server")]
+    pub(crate) fn get_image(&self, id: u64) -> Option<Arc<Image>> {
+        self.states.images.get(&id).cloned()
+    }
+
+    #[cfg(feature = "server")]
+    pub(crate) fn get_data(&self, id: u64) -> Option<Arc<Data>> {
+        self.states.data.get(&id).cloned()
+    }
+
+    #[cfg(feature = "server")]
+    pub(crate) fn get_data_take(&self, id: u64) -> Option<Arc<DataTake>> {
+        self.states.data_take.get(&id).cloned()
+    }
+
+    #[cfg(feature = "server")]
+    pub(crate) fn get_data_multi(&self, id: u64) -> Option<Arc<DataMulti>> {
+        self.states.data_multi.get(&id).cloned()
+    }
+
+    #[cfg(feature = "server")]
+    pub(crate) fn get_data_multi_take(&self, id: u64) -> Option<Arc<DataMultiTake>> {
+        self.states.data_multi_take.get(&id).cloned()
+    }
+}
+
+impl Drop for Server {
+    fn drop(&mut self) {
+        self.stop();
     }
 }

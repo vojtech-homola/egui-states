@@ -1,8 +1,10 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
+use std::fs;
+use std::path::Path;
 
 use crate::State;
 use crate::build_scripts::states_creator_build::{StateType, StatesCreatorBuild};
-use crate::transport::ObjectType;
+use crate::typed::ObjectType;
 
 pub(crate) fn parse_states<S: State>() -> (StateType, u64) {
     let mut creator = StatesCreatorBuild::new("root");
@@ -13,6 +15,64 @@ pub(crate) fn parse_states<S: State>() -> (StateType, u64) {
         StateType::SubState("root".to_string(), S::NAME, states),
         version_hash,
     )
+}
+
+fn collect_state_definitions<'a>(
+    state_class: &'static str,
+    states: &'a [StateType],
+    root: bool,
+    definitions: &mut HashMap<&'static str, (bool, &'a [StateType])>,
+) {
+    if matches!(state_class, "StatesServer" | "enums" | "structs" | "s") {
+        panic!("State {state_class} conflicts with a generated symbol");
+    }
+
+    let definition = (root, states);
+    if let Some(previous) = definitions.get(state_class) {
+        if previous != &definition {
+            panic!("State {state_class} defined multiple times with different fields");
+        }
+    } else {
+        definitions.insert(state_class, definition);
+    }
+
+    for state in states {
+        if let StateType::SubState(_, class, children) = state {
+            collect_state_definitions(class, children, false, definitions);
+        }
+    }
+}
+
+pub(crate) fn validate_states(states: &StateType) {
+    let StateType::SubState(_, root_name, children) = states else {
+        panic!("Root state must be a SubState");
+    };
+
+    let mut definitions = HashMap::new();
+    collect_state_definitions(root_name, children, true, &mut definitions);
+}
+
+pub(crate) fn write_generated_files<const N: usize>(
+    directory: &Path,
+    files: [(&str, &str); N],
+) -> Result<(), String> {
+    fs::create_dir_all(directory).map_err(|error| {
+        format!(
+            "Failed to create generated output directory {}: {error}",
+            directory.display()
+        )
+    })?;
+
+    for (name, output) in files {
+        let path = directory.join(name);
+        if fs::read_to_string(&path).is_ok_and(|current| current == output) {
+            continue;
+        }
+        fs::write(&path, output)
+            .map_err(|error| format!("Failed to write {}: {error}", path.display()))?;
+    }
+
+    Ok(())
 }
 
 fn collect_enums(type_info: &ObjectType, enums: &mut BTreeMap<String, Vec<(String, i32)>>) {
@@ -133,6 +193,10 @@ pub(crate) fn get_all_enums_struct(
                 collect_structs(elem_info, &mut structs);
             }
             StateType::Signal(_, info, _) => {
+                collect_enums(info, &mut enums);
+                collect_structs(info, &mut structs);
+            }
+            StateType::ValueTake(_, info) => {
                 collect_enums(info, &mut enums);
                 collect_structs(info, &mut structs);
             }

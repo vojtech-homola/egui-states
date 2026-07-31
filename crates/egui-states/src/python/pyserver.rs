@@ -15,19 +15,19 @@ use crate::python::{
     pyimage, pyparsing,
     pytypes::{PyObjectClass, PyObjectType},
 };
-use crate::server::data_server::{Data, DataHolder, DataMulti};
-use crate::server::data_take_server::{DataMultiTake, DataTake};
-use crate::server::server::Server;
-use crate::server::signals::{self, SignalsManager};
-use crate::server::value_parsing::{ValueCreator, ValueParser};
-use crate::server::values_server::{Signal, Value, ValueStatic, ValueTake};
-use crate::server::{image_server::Image, map_server::ValueMap, vec_server::ValueList};
+use crate::server_core::data_core::{Data, DataHolder, DataMulti};
+use crate::server_core::data_take_core::{DataMultiTake, DataTake};
+use crate::server_core::server::Server;
+use crate::server_core::signals::{self, SignalsManager};
+use crate::server_core::value_parsing::{ValueCreator, ValueParser};
+use crate::server_core::values_core::{SignalCore, ValueCore, ValueStaticCore, ValueTakeCore};
+use crate::server_core::{image_core::Image, map_core::ValueMap, vec_core::ValueList};
 
 struct ValuesInner {
-    values: NoHashMap<u64, (Arc<Value>, PyObjectType)>,
-    values_take: NoHashMap<u64, (Arc<ValueTake>, PyObjectType)>,
-    static_values: NoHashMap<u64, (Arc<ValueStatic>, PyObjectType)>,
-    signals: NoHashMap<u64, (Arc<Signal>, PyObjectType)>,
+    values: NoHashMap<u64, (Arc<ValueCore>, PyObjectType)>,
+    values_take: NoHashMap<u64, (Arc<ValueTakeCore>, PyObjectType)>,
+    static_values: NoHashMap<u64, (Arc<ValueStaticCore>, PyObjectType)>,
+    signals: NoHashMap<u64, (Arc<SignalCore>, PyObjectType)>,
     signals_types: NoHashMap<u64, PyObjectType>,
     maps: NoHashMap<u64, (Arc<ValueMap>, PyObjectType)>,
     lists: NoHashMap<u64, (Arc<ValueList>, PyObjectType)>,
@@ -56,7 +56,7 @@ impl StateServerCore {
     }
 
     #[inline]
-    fn inner_values(&self, value_id: u64) -> PyResult<(&Arc<Value>, &PyObjectType)> {
+    fn inner_values(&self, value_id: u64) -> PyResult<(&Arc<ValueCore>, &PyObjectType)> {
         match self.get_values()?.values.get(&value_id) {
             Some((value, object_type)) => Ok((value, object_type)),
             _ => Err(PyValueError::new_err("Value with ID not found.")),
@@ -64,7 +64,7 @@ impl StateServerCore {
     }
 
     #[inline]
-    fn inner_static(&self, value_id: u64) -> PyResult<(&Arc<ValueStatic>, &PyObjectType)> {
+    fn inner_static(&self, value_id: u64) -> PyResult<(&Arc<ValueStaticCore>, &PyObjectType)> {
         match self.get_values()?.static_values.get(&value_id) {
             Some((value, object_type)) => Ok((value, object_type)),
             _ => Err(PyValueError::new_err("Static value with ID not found.")),
@@ -370,6 +370,7 @@ impl StateServerCore {
     // values take ------------------------------------------------------
     fn value_take_set(
         &self,
+        py: Python,
         value_id: u64,
         value: &Bound<PyAny>,
         blocking: bool,
@@ -382,8 +383,10 @@ impl StateServerCore {
         let mut creator = ValueCreator::new();
         pyparsing::serialize_py(value, object_type, &mut creator)?;
         let data = creator.finalize();
-        val.set(data, blocking, update)
-            .map_err(|_| PyRuntimeError::new_err("ValueTake set failed."))
+        py.detach(|| {
+            val.set(data, blocking, update)
+                .map_err(|_| PyRuntimeError::new_err("ValueTake set failed."))
+        })
     }
 
     // static values ----------------------------------------------------
@@ -430,16 +433,30 @@ impl StateServerCore {
         last_id: Option<u64>,
     ) -> PyResult<(u64, Bound<'py, PyAny>)> {
         let (id, data) = py.detach(|| self.signals.wait_changed_value(last_id));
-        match self.get_values()?.signals_types.get(&id) {
-            Some(object_type) => {
-                let mut parser = ValueParser::new(data);
-                let py_value = pyparsing::deserialize_py(py, &mut parser, object_type)?;
-                Ok((id, py_value))
+
+        let parsed = match self.get_values() {
+            Ok(values) => match values.signals_types.get(&id) {
+                Some(object_type) => {
+                    let mut parser = ValueParser::new(data);
+                    pyparsing::deserialize_py(py, &mut parser, object_type)
+                }
+                None => Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "Signal with ID {} not found",
+                    id
+                ))),
+            },
+            Err(error) => Err(error),
+        };
+
+        match parsed {
+            Ok(py_value) => Ok((id, py_value)),
+            Err(error) => {
+                // `id` is blocked until it comes back as the next `last_id`.
+                // Failing here means the caller never learns it exists, so
+                // release it or that value's signals are stuck for good.
+                self.signals.release(id);
+                Err(error)
             }
-            None => Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "Signal with ID {} not found",
-                id
-            ))),
         }
     }
 

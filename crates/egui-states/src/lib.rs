@@ -6,7 +6,7 @@ mod event;
 mod hashing;
 mod image_transport;
 mod serialization;
-mod transport;
+mod typed;
 
 #[cfg(feature = "build_scripts")]
 pub mod build_scripts;
@@ -15,7 +15,9 @@ mod client;
 #[cfg(feature = "python")]
 pub mod python;
 #[cfg(feature = "server")]
-mod server;
+pub mod server;
+#[cfg(any(feature = "server", feature = "python"))]
+mod server_core;
 
 #[cfg(feature = "client")]
 pub use client::{
@@ -25,6 +27,7 @@ pub use client::{
     data::{Data, DataMulti},
     data_take::{DataMultiTake, DataTake},
     image::Image,
+    initial_value::{InitValue, InitialValue},
     states_creator::StatesCreator,
     value_map::MapState,
     value_vec::VecState,
@@ -41,10 +44,10 @@ pub trait State {
     fn new(c: &mut impl StatesCreator) -> Self;
 }
 
+pub use egui_states_macros::typed;
 #[cfg(feature = "client")]
-pub use egui_states_macros::State;
-pub use egui_states_macros::Transportable;
+pub use egui_states_macros::{Atomic, AtomicStatic, InitialValue, State};
 pub use serde;
-pub use transport::{InitValue, ObjectType, Transportable};
+pub use typed::{ObjectType, Typed};
 
 pub(crate) const PROTOCOL_VERSION: u16 = 5;

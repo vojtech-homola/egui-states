@@ -7,8 +7,8 @@ use crate::data_transport::{DataHeader, DataType, MultiDataHeader, TransportType
 use crate::event::Event;
 use crate::hashing::NoHashMap;
 use crate::serialization::{FastVec, MSG_SIZE_THRESHOLD};
-use crate::server::sender::MessageSender;
-use crate::server::server::{Acknowledge, SyncTrait};
+use crate::server_core::sender::MessageSender;
+use crate::server_core::server::{Acknowledge, SyncTrait};
 
 pub(crate) struct DataHolder {
     pub data: *const u8,
@@ -22,6 +22,7 @@ unsafe impl Sync for DataHolder {}
 
 // Data --------------------------------------------------
 pub(crate) struct Data {
+    // #[cfg_attr(not(feature = "python"), allow(dead_code))]
     pub(crate) name: String,
     id: u64,
     pub(crate) data_type: DataType,
@@ -269,6 +270,7 @@ impl SyncTrait for Data {
 
 // DataMulti --------------------------------------------------
 pub(crate) struct DataMulti {
+    // #[cfg_attr(not(feature = "python"), allow(dead_code))]
     pub(crate) name: String,
     id: u64,
     pub(crate) data_type: DataType,
@@ -347,11 +349,8 @@ impl DataMulti {
                 *size = data.count;
             }
             None => {
-                let mut vec = Vec::with_capacity(data.data_size);
-                unsafe {
-                    vec.set_len(data.data_size);
-                    std::ptr::copy_nonoverlapping(data.data, vec.as_mut_ptr(), data.data_size);
-                }
+                let slice = unsafe { std::slice::from_raw_parts(data.data, data.data_size) };
+                let vec = slice.to_vec();
                 w.insert(index, (vec, data.count));
             }
         }

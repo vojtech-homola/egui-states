@@ -95,7 +95,7 @@ impl eframe::App for MainApp {
 
         egui::Panel::top("top-panel")
             .show_separator_line(false)
-            .show_inside(ui, |ui| {
+            .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     let button = match self.client.get_state() {
                         ConnectionState::NotConnected => egui::Button::new("Connect"),
@@ -112,7 +112,7 @@ impl eframe::App for MainApp {
                 });
             });
 
-        egui::CentralPanel::default().show_inside(ui, |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 show_content(ui, &mut self.state);
             });

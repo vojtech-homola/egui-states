@@ -3,7 +3,7 @@ use pyo3::types::{PyDict, PyList, PyNone, PySequence, PySequenceMethods, PyTuple
 use pyo3::{IntoPyObjectExt, prelude::*};
 
 use crate::python::pytypes::PyObjectType;
-use crate::server::value_parsing::{ValueCreator, ValueParser};
+use crate::server_core::value_parsing::{ValueCreator, ValueParser};
 
 pub(crate) fn serialize_py(
     obj: &Bound<PyAny>,
