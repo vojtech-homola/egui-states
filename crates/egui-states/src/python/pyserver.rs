@@ -430,16 +430,30 @@ impl StateServerCore {
         last_id: Option<u64>,
     ) -> PyResult<(u64, Bound<'py, PyAny>)> {
         let (id, data) = py.detach(|| self.signals.wait_changed_value(last_id));
-        match self.get_values()?.signals_types.get(&id) {
-            Some(object_type) => {
-                let mut parser = ValueParser::new(data);
-                let py_value = pyparsing::deserialize_py(py, &mut parser, object_type)?;
-                Ok((id, py_value))
+
+        let parsed = match self.get_values() {
+            Ok(values) => match values.signals_types.get(&id) {
+                Some(object_type) => {
+                    let mut parser = ValueParser::new(data);
+                    pyparsing::deserialize_py(py, &mut parser, object_type)
+                }
+                None => Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "Signal with ID {} not found",
+                    id
+                ))),
+            },
+            Err(error) => Err(error),
+        };
+
+        match parsed {
+            Ok(py_value) => Ok((id, py_value)),
+            Err(error) => {
+                // `id` is blocked until it comes back as the next `last_id`.
+                // Failing here means the caller never learns it exists, so
+                // release it or that value's signals are stuck for good.
+                self.signals.release(id);
+                Err(error)
             }
-            None => Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "Signal with ID {} not found",
-                id
-            ))),
         }
     }
 
