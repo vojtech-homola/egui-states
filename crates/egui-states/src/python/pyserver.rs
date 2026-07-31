@@ -370,6 +370,7 @@ impl StateServerCore {
     // values take ------------------------------------------------------
     fn value_take_set(
         &self,
+        py: Python,
         value_id: u64,
         value: &Bound<PyAny>,
         blocking: bool,
@@ -382,8 +383,10 @@ impl StateServerCore {
         let mut creator = ValueCreator::new();
         pyparsing::serialize_py(value, object_type, &mut creator)?;
         let data = creator.finalize();
-        val.set(data, blocking, update)
-            .map_err(|_| PyRuntimeError::new_err("ValueTake set failed."))
+        py.detach(|| {
+            val.set(data, blocking, update)
+                .map_err(|_| PyRuntimeError::new_err("ValueTake set failed."))
+        })
     }
 
     // static values ----------------------------------------------------
