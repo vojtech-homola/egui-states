@@ -275,8 +275,14 @@ where
     }
 
     fn set_inner(&self, value: T, signal: bool) {
-        // no size check needed, atomic types are always small
         let data = to_message(&value);
+
+        // the built in atomic types are always small, but `Atomic` is public and
+        // hand written implementations are not limited in size
+        if let Err(e) = check_value_size(&self.name, data.len()) {
+            report_error(&self.inner.1, format!("{}, the value was not set", e));
+            return;
+        }
 
         let message = ChannelMessage::Value(self.id, self.type_id, signal, data);
         self.inner.0.update(value, || self.inner.1.send(message));
