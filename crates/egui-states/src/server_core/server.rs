@@ -13,7 +13,7 @@ use tokio::runtime::Builder;
 use crate::data_transport::DataType;
 use crate::event::Event;
 use crate::hashing::{NoHashMap, generate_value_id};
-use crate::serialization::{ServerHeader, serialize};
+use crate::serialization::{ServerHeader, check_value_size, serialize};
 use crate::server_core::core;
 use crate::server_core::data_core::{Data, DataMulti};
 use crate::server_core::data_take_core::{DataMultiTake, DataTake};
@@ -361,6 +361,7 @@ impl Server {
         if self.states.contains_id(id) {
             return Err(format!("Value with id {} already exists", id));
         }
+        check_value_size(name, value.len())?;
 
         let val = ValueCore::new(
             name.to_string(),
@@ -418,6 +419,7 @@ impl Server {
         if self.states.contains_id(id) {
             return Err(format!("Static value with id {} already exists", id));
         }
+        check_value_size(name, value.len())?;
 
         let val = ValueStaticCore::new(
             name.to_string(),

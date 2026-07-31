@@ -122,7 +122,7 @@ async fn start_gui_client(
     }
 }
 
-fn print_error(error: &str) {
+pub(crate) fn print_error(error: &str) {
     #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
     println!("{}", error);
     #[cfg(all(debug_assertions, target_arch = "wasm32"))]

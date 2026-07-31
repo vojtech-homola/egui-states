@@ -4,8 +4,16 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use crate::client::atomics::{Atomic, AtomicLock, AtomicLockStatic, AtomicStatic};
+use crate::client::client::print_error;
 use crate::client::messages::{ChannelMessage, MessageSender};
-use crate::serialization::{VALUE_MAX_SIZE, deserialize, to_message};
+use crate::serialization::{check_value_size, deserialize, to_message};
+
+/// Report a value that cannot be sent, locally and to the server.
+#[cold]
+fn report_error(sender: &MessageSender, error: String) {
+    print_error(&error);
+    sender.send_message(&error);
+}
 
 pub struct Diff<'a, T> {
     pub v: T,
@@ -140,13 +148,11 @@ where
     fn write_inner(&self, value: &T, signal: bool) {
         let data = to_message(&value);
 
-        if data.len() > VALUE_MAX_SIZE {
-            self.inner.1.send_message(&format!(
-                "Value {} too large: {} bytes, max: {} bytes. This will cause out of sync with the server",
-                self.name,
-                data.len(),
-                VALUE_MAX_SIZE
-            ));
+        if let Err(e) = check_value_size(&self.name, data.len()) {
+            report_error(
+                &self.inner.1,
+                format!("{}, the value stays out of sync with the server", e),
+            );
             return;
         }
 
@@ -155,6 +161,12 @@ where
             .send(ChannelMessage::Value(self.id, self.type_id, signal, data));
     }
 
+    /// Modify the value in place and send it to the server.
+    ///
+    /// If the modified value serializes to more than the maximum allowed size, it is
+    /// kept locally but not sent, which leaves it out of sync with the server until
+    /// a later write succeeds or the server sends an update. The error is reported
+    /// locally and to the server.
     pub fn write<R>(&self, f: impl Fn(&mut T) -> R) -> R {
         let mut w = self.inner.0.write();
         let result = f(&mut w);
@@ -162,6 +174,9 @@ where
         result
     }
 
+    /// Same as [`Value::write`], but the server side emits a signal for the new value.
+    ///
+    /// The same out of sync caveat for oversized values applies.
     pub fn write_signal<R>(&self, f: impl Fn(&mut T) -> R) -> R {
         let mut w = self.inner.0.write();
         let result = f(&mut w);
@@ -173,13 +188,8 @@ where
     fn set_inner(&self, value: T, signal: bool) {
         let data = to_message(&value);
 
-        if data.len() > VALUE_MAX_SIZE {
-            self.inner.1.send_message(&format!(
-                "Value {} too large: {} bytes, max: {} bytes.",
-                self.name,
-                data.len(),
-                VALUE_MAX_SIZE
-            ));
+        if let Err(e) = check_value_size(&self.name, data.len()) {
+            report_error(&self.inner.1, format!("{}, the value was not set", e));
             return;
         }
 
@@ -265,17 +275,8 @@ where
     }
 
     fn set_inner(&self, value: T, signal: bool) {
+        // no size check needed, atomic types are always small
         let data = to_message(&value);
-
-        if data.len() > VALUE_MAX_SIZE {
-            self.inner.1.send_message(&format!(
-                "ValueAtomic {} too large: {} bytes, max: {} bytes.",
-                self.name,
-                data.len(),
-                VALUE_MAX_SIZE
-            ));
-            return;
-        }
 
         let message = ChannelMessage::Value(self.id, self.type_id, signal, data);
         self.inner.0.update(value, || self.inner.1.send(message));
@@ -442,13 +443,8 @@ impl<T: Serialize + Clone, Q: GetQueueType> Signal<T, Q> {
     pub fn set(&self, value: impl Into<T>) {
         let message = to_message(&value.into());
 
-        if message.len() > VALUE_MAX_SIZE {
-            self.sender.send_message(&format!(
-                "Signal value {} too large: {} bytes, max: {} bytes",
-                self.name,
-                message.len(),
-                VALUE_MAX_SIZE
-            ));
+        if let Err(e) = check_value_size(&self.name, message.len()) {
+            report_error(&self.sender, format!("{}, the signal was not sent", e));
             return;
         }
 

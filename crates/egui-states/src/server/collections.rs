@@ -40,9 +40,7 @@ where
             .iter()
             .map(serialize_bytes)
             .collect::<Result<Vec<_>>>()?;
-        self.inner
-            .set(data, update)
-            .map_err(|_| ServerError::new("failed to set vec"))
+        self.inner.set(data, update).map_err(ServerError::new)
     }
 
     pub fn set_item(&self, index: usize, value: T, update: bool) -> Result<()> {
@@ -56,7 +54,7 @@ where
         let data = serialize_bytes(&value)?;
         self.inner
             .append_item(data, update)
-            .map_err(|_| ServerError::new("failed to append vec item"))
+            .map_err(ServerError::new)
     }
 }
 
@@ -126,15 +124,13 @@ where
         for (key, value) in value {
             map.insert(serialize_bytes(&key)?, serialize_bytes(&value)?);
         }
-        self.inner
-            .set(map, update)
-            .map_err(|_| ServerError::new("failed to set map"))
+        self.inner.set(map, update).map_err(ServerError::new)
     }
 
     pub fn set_item(&self, key: K, value: V, update: bool) -> Result<()> {
         self.inner
             .set_item(serialize_bytes(&key)?, serialize_bytes(&value)?, update)
-            .map_err(|_| ServerError::new("failed to set map item"))
+            .map_err(ServerError::new)
     }
 }
 
