@@ -109,8 +109,8 @@ class StateServerBase[T: StatesBase]:
 
     def start(self) -> None:
         """Start the state server."""
-        self._signals_manager.start_manager()
         self._server.start()
+        self._signals_manager.start_manager()
 
     def stop(self) -> None:
         """Stop the state server."""
