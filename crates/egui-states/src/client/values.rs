@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use crate::client::atomics::{Atomic, AtomicLock, AtomicLockStatic, AtomicStatic};
 use crate::client::messages::{ChannelMessage, MessageSender};
-use crate::serialization::{deserialize, to_message};
+use crate::serialization::{VALUE_MAX_SIZE, deserialize, to_message};
 
 pub struct Diff<'a, T> {
     pub v: T,
@@ -137,9 +137,19 @@ where
         f(&r)
     }
 
-    #[inline]
     fn write_inner(&self, value: &T, signal: bool) {
         let data = to_message(&value);
+
+        if data.len() > VALUE_MAX_SIZE {
+            self.inner.1.send_message(&format!(
+                "Value {} too large: {} bytes, max: {} bytes. This will cause out of sync with the server",
+                self.name,
+                data.len(),
+                VALUE_MAX_SIZE
+            ));
+            return;
+        }
+
         self.inner
             .1
             .send(ChannelMessage::Value(self.id, self.type_id, signal, data));
@@ -162,6 +172,16 @@ where
     #[inline]
     fn set_inner(&self, value: T, signal: bool) {
         let data = to_message(&value);
+
+        if data.len() > VALUE_MAX_SIZE {
+            self.inner.1.send_message(&format!(
+                "Value {} too large: {} bytes, max: {} bytes.",
+                self.name,
+                data.len(),
+                VALUE_MAX_SIZE
+            ));
+            return;
+        }
 
         let mut w = self.inner.0.write();
         self.inner
@@ -244,14 +264,29 @@ where
         self.inner.0.load()
     }
 
-    pub fn set(&self, value: T) {
-        let message = ChannelMessage::Value(self.id, self.type_id, false, to_message(&value));
+    fn set_inner(&self, value: T, signal: bool) {
+        let data = to_message(&value);
+
+        if data.len() > VALUE_MAX_SIZE {
+            self.inner.1.send_message(&format!(
+                "ValueAtomic {} too large: {} bytes, max: {} bytes.",
+                self.name,
+                data.len(),
+                VALUE_MAX_SIZE
+            ));
+            return;
+        }
+
+        let message = ChannelMessage::Value(self.id, self.type_id, signal, data);
         self.inner.0.update(value, || self.inner.1.send(message));
     }
 
+    pub fn set(&self, value: T) {
+        self.set_inner(value, false);
+    }
+
     pub fn set_signal(&self, value: T) {
-        let message = ChannelMessage::Value(self.id, self.type_id, true, to_message(&value));
-        self.inner.0.update(value, || self.inner.1.send(message));
+        self.set_inner(value, true);
     }
 }
 
@@ -386,6 +421,7 @@ impl<T: AtomicStatic> Clone for StaticAtomic<T> {
 
 // Signal --------------------------------------------
 pub struct Signal<T, Q: GetQueueType = NoQueue> {
+    name: String,
     id: u64,
     type_id: u32,
     sender: Arc<MessageSender>,
@@ -393,8 +429,9 @@ pub struct Signal<T, Q: GetQueueType = NoQueue> {
 }
 
 impl<T: Serialize + Clone, Q: GetQueueType> Signal<T, Q> {
-    pub(crate) fn new(id: u64, type_id: u32, sender: MessageSender) -> Self {
+    pub(crate) fn new(name: String, id: u64, type_id: u32, sender: MessageSender) -> Self {
         Self {
+            name,
             id,
             type_id,
             sender: Arc::new(sender),
@@ -404,6 +441,17 @@ impl<T: Serialize + Clone, Q: GetQueueType> Signal<T, Q> {
 
     pub fn set(&self, value: impl Into<T>) {
         let message = to_message(&value.into());
+
+        if message.len() > VALUE_MAX_SIZE {
+            self.sender.send_message(&format!(
+                "Signal value {} too large: {} bytes, max: {} bytes",
+                self.name,
+                message.len(),
+                VALUE_MAX_SIZE
+            ));
+            return;
+        }
+
         self.sender
             .send(ChannelMessage::Signal(self.id, self.type_id, message));
     }
@@ -412,6 +460,7 @@ impl<T: Serialize + Clone, Q: GetQueueType> Signal<T, Q> {
 impl<T, Q: GetQueueType> Clone for Signal<T, Q> {
     fn clone(&self) -> Self {
         Self {
+            name: self.name.clone(),
             id: self.id,
             type_id: self.type_id,
             sender: self.sender.clone(),
