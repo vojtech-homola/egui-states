@@ -258,7 +258,7 @@ impl StatesCreator for StatesCreatorBuild {
             states_creator::SIGNAL_HASH_ID,
         );
 
-        let signal = Signal::new(id, type_id, self.sender.clone());
+        let signal = Signal::new(name.to_owned(), id, type_id, self.sender.clone());
 
         self.states.push(StateType::Signal(
             name.to_owned(),

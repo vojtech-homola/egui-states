@@ -364,7 +364,7 @@ impl StateServerCore {
         pyparsing::serialize_py(value, object_type, &mut creator)?;
         let data = creator.finalize();
         val.set(data, set_signal, update)
-            .map_err(|_| PyRuntimeError::new_err("Value set failed."))
+            .map_err(PyValueError::new_err)
     }
 
     // values take ------------------------------------------------------
@@ -385,7 +385,7 @@ impl StateServerCore {
         let data = creator.finalize();
         py.detach(|| {
             val.set(data, blocking, update)
-                .map_err(|_| PyRuntimeError::new_err("ValueTake set failed."))
+                .map_err(PyValueError::new_err)
         })
     }
 
@@ -401,8 +401,7 @@ impl StateServerCore {
         let mut creator = ValueCreator::new();
         pyparsing::serialize_py(value, object_type, &mut creator)?;
         let data = creator.finalize();
-        val.set(data, update)
-            .map_err(|_| PyRuntimeError::new_err("Static value set failed."))
+        val.set(data, update).map_err(PyValueError::new_err)
     }
 
     // signals ----------------------------------------------------------
@@ -478,8 +477,7 @@ impl StateServerCore {
             let data = creator.finalize();
             vec.push(data);
         }
-        list.set(vec, update)
-            .map_err(|_| PyRuntimeError::new_err("Failed to set list."))
+        list.set(vec, update).map_err(PyValueError::new_err)
     }
 
     fn list_get<'py>(&self, py: Python<'py>, value_id: u64) -> PyResult<Bound<'py, PyList>> {
@@ -506,7 +504,7 @@ impl StateServerCore {
         pyparsing::serialize_py(item, value_type, &mut creator)?;
         let data = creator.finalize();
         list.set_item_py(index, data, update)
-            .map_err(|e| PyValueError::new_err(e))?;
+            .map_err(PyValueError::new_err)?;
         Ok(())
     }
 
@@ -547,7 +545,7 @@ impl StateServerCore {
         pyparsing::serialize_py(item, value_type, &mut creator)?;
         let data = creator.finalize();
         list.append_item(data, update)
-            .map_err(|_| PyRuntimeError::new_err("Failed to append item to list."))
+            .map_err(PyValueError::new_err)
     }
 
     fn list_len(&self, value_id: u64) -> PyResult<usize> {
@@ -574,8 +572,7 @@ impl StateServerCore {
 
             new_map.insert(key_data, value_data);
         }
-        map.set(new_map, update)
-            .map_err(|_| PyRuntimeError::new_err("Failed to set map."))
+        map.set(new_map, update).map_err(PyValueError::new_err)
     }
 
     fn map_get<'py>(&self, py: Python<'py>, value_id: u64) -> PyResult<Bound<'py, PyDict>> {
@@ -611,7 +608,7 @@ impl StateServerCore {
         let value_data = value_creator.finalize();
 
         map.set_item(key_data, value_data, update)
-            .map_err(|_| PyRuntimeError::new_err("Failed to set item in map."))
+            .map_err(PyValueError::new_err)
     }
 
     fn map_get_item<'py>(

@@ -4,8 +4,16 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use crate::client::atomics::{Atomic, AtomicLock, AtomicLockStatic, AtomicStatic};
+use crate::client::client::print_error;
 use crate::client::messages::{ChannelMessage, MessageSender};
-use crate::serialization::{deserialize, to_message};
+use crate::serialization::{check_value_size, deserialize, to_message};
+
+/// Report a value that cannot be sent, locally and to the server.
+#[cold]
+fn report_error(sender: &MessageSender, error: String) {
+    print_error(&error);
+    sender.send_message(&error);
+}
 
 pub struct Diff<'a, T> {
     pub v: T,
@@ -137,14 +145,28 @@ where
         f(&r)
     }
 
-    #[inline]
     fn write_inner(&self, value: &T, signal: bool) {
         let data = to_message(&value);
+
+        if let Err(e) = check_value_size(&self.name, data.len()) {
+            report_error(
+                &self.inner.1,
+                format!("{}, the value stays out of sync with the server", e),
+            );
+            return;
+        }
+
         self.inner
             .1
             .send(ChannelMessage::Value(self.id, self.type_id, signal, data));
     }
 
+    /// Modify the value in place and send it to the server.
+    ///
+    /// If the modified value serializes to more than the maximum allowed size, it is
+    /// kept locally but not sent, which leaves it out of sync with the server until
+    /// a later write succeeds or the server sends an update. The error is reported
+    /// locally and to the server.
     pub fn write<R>(&self, f: impl Fn(&mut T) -> R) -> R {
         let mut w = self.inner.0.write();
         let result = f(&mut w);
@@ -152,6 +174,9 @@ where
         result
     }
 
+    /// Same as [`Value::write`], but the server side emits a signal for the new value.
+    ///
+    /// The same out of sync caveat for oversized values applies.
     pub fn write_signal<R>(&self, f: impl Fn(&mut T) -> R) -> R {
         let mut w = self.inner.0.write();
         let result = f(&mut w);
@@ -162,6 +187,11 @@ where
     #[inline]
     fn set_inner(&self, value: T, signal: bool) {
         let data = to_message(&value);
+
+        if let Err(e) = check_value_size(&self.name, data.len()) {
+            report_error(&self.inner.1, format!("{}, the value was not set", e));
+            return;
+        }
 
         let mut w = self.inner.0.write();
         self.inner
@@ -244,14 +274,26 @@ where
         self.inner.0.load()
     }
 
-    pub fn set(&self, value: T) {
-        let message = ChannelMessage::Value(self.id, self.type_id, false, to_message(&value));
+    fn set_inner(&self, value: T, signal: bool) {
+        let data = to_message(&value);
+
+        // the built in atomic types are always small, but `Atomic` is public and
+        // hand written implementations are not limited in size
+        if let Err(e) = check_value_size(&self.name, data.len()) {
+            report_error(&self.inner.1, format!("{}, the value was not set", e));
+            return;
+        }
+
+        let message = ChannelMessage::Value(self.id, self.type_id, signal, data);
         self.inner.0.update(value, || self.inner.1.send(message));
     }
 
+    pub fn set(&self, value: T) {
+        self.set_inner(value, false);
+    }
+
     pub fn set_signal(&self, value: T) {
-        let message = ChannelMessage::Value(self.id, self.type_id, true, to_message(&value));
-        self.inner.0.update(value, || self.inner.1.send(message));
+        self.set_inner(value, true);
     }
 }
 
@@ -386,6 +428,7 @@ impl<T: AtomicStatic> Clone for StaticAtomic<T> {
 
 // Signal --------------------------------------------
 pub struct Signal<T, Q: GetQueueType = NoQueue> {
+    name: String,
     id: u64,
     type_id: u32,
     sender: Arc<MessageSender>,
@@ -393,8 +436,9 @@ pub struct Signal<T, Q: GetQueueType = NoQueue> {
 }
 
 impl<T: Serialize + Clone, Q: GetQueueType> Signal<T, Q> {
-    pub(crate) fn new(id: u64, type_id: u32, sender: MessageSender) -> Self {
+    pub(crate) fn new(name: String, id: u64, type_id: u32, sender: MessageSender) -> Self {
         Self {
+            name,
             id,
             type_id,
             sender: Arc::new(sender),
@@ -404,6 +448,12 @@ impl<T: Serialize + Clone, Q: GetQueueType> Signal<T, Q> {
 
     pub fn set(&self, value: impl Into<T>) {
         let message = to_message(&value.into());
+
+        if let Err(e) = check_value_size(&self.name, message.len()) {
+            report_error(&self.sender, format!("{}, the signal was not sent", e));
+            return;
+        }
+
         self.sender
             .send(ChannelMessage::Signal(self.id, self.type_id, message));
     }
@@ -412,6 +462,7 @@ impl<T: Serialize + Clone, Q: GetQueueType> Signal<T, Q> {
 impl<T, Q: GetQueueType> Clone for Signal<T, Q> {
     fn clone(&self) -> Self {
         Self {
+            name: self.name.clone(),
             id: self.id,
             type_id: self.type_id,
             sender: self.sender.clone(),

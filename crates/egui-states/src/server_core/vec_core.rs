@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tokio_tungstenite::tungstenite::Bytes;
 
 use crate::collections::VecHeader;
-use crate::serialization::{ServerHeader, serialize};
+use crate::serialization::{ServerHeader, check_value_size, serialize};
 use crate::server_core::sender::{MessageSender, SenderData};
 use crate::server_core::server::SyncTrait;
 
@@ -37,7 +37,7 @@ impl ValueList {
         })
     }
 
-    fn serialize_all(&self, vec: &Vec<Bytes>, update: bool) -> Result<SenderData, ()> {
+    fn serialize_all(&self, vec: &Vec<Bytes>, update: bool) -> Result<SenderData, &'static str> {
         let len = vec.len() as u64;
         let mut size = 0;
         vec.iter().for_each(|b| {
@@ -51,7 +51,7 @@ impl ValueList {
             size as u32,
         );
 
-        let mut data = serialize(&header)?;
+        let mut data = serialize(&header).map_err(|_| "Failed to serialize header")?;
         vec.iter().for_each(|b| {
             data.extend_from_slice(&b);
         });
@@ -59,7 +59,12 @@ impl ValueList {
         Ok(data)
     }
 
-    pub(crate) fn set(&self, list: Vec<Bytes>, update: bool) -> Result<(), ()> {
+    pub(crate) fn set(&self, list: Vec<Bytes>, update: bool) -> Result<(), String> {
+        // the limit applies to single items, not to the whole list
+        for value in list.iter() {
+            check_value_size(&self.name, value.len())?;
+        }
+
         let mut w = self.list.write();
 
         if self.connected.load(Ordering::Relaxed) {
@@ -75,15 +80,12 @@ impl ValueList {
         self.list.read().clone()
     }
 
-    pub(crate) fn set_item_py(
-        &self,
-        idx: usize,
-        value: Bytes,
-        update: bool,
-    ) -> Result<(), &'static str> {
+    pub(crate) fn set_item_py(&self, idx: usize, value: Bytes, update: bool) -> Result<(), String> {
+        check_value_size(&self.name, value.len())?;
+
         let mut w = self.list.write();
         if idx >= w.len() {
-            return Err("Index out of bounds");
+            return Err("Index out of bounds".to_string());
         }
 
         if self.connected.load(Ordering::Relaxed) {
@@ -137,7 +139,9 @@ impl ValueList {
         Ok(value)
     }
 
-    pub(crate) fn append_item(&self, value: Bytes, update: bool) -> Result<(), ()> {
+    pub(crate) fn append_item(&self, value: Bytes, update: bool) -> Result<(), String> {
+        check_value_size(&self.name, value.len())?;
+
         let mut w = self.list.write();
         if self.connected.load(Ordering::Relaxed) {
             let header = ServerHeader::ValueVec(
@@ -147,7 +151,7 @@ impl ValueList {
                 VecHeader::Add,
                 value.len() as u32,
             );
-            let mut message = serialize(&header)?;
+            let mut message = serialize(&header).map_err(|_| "Failed to serialize header")?;
             message.extend_from_slice(&value);
             self.sender.send(message);
         }
@@ -159,7 +163,7 @@ impl ValueList {
 impl SyncTrait for ValueList {
     fn sync(&self) -> Result<(), ()> {
         let r = self.list.read();
-        let data = self.serialize_all(&r, false)?;
+        let data = self.serialize_all(&r, false).map_err(|_| ())?;
         self.sender.send(data);
         Ok(())
     }
