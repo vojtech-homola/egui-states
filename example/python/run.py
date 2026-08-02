@@ -45,6 +45,10 @@ def on_title(value: str) -> None:
     print(f"title changed: {value}")
 
 
+def on_count(value: int, previous: int) -> None:
+    print(f"count changed: {previous} -> {value}")
+
+
 def on_enum(value: TestEnum) -> None:
     print(f"enum changed: {value.name}")
 
@@ -100,6 +104,7 @@ def _remove_lowest_value_map() -> None:
 
 states.values.ratio.connect(on_ratio)
 states.values.title.connect(on_title)
+states.values.count.connect_previous(on_count)
 states.values.test_enum.connect(on_enum)
 states.signals.empty_signal.connect(on_empty_signal)
 states.signals.number_signal.connect(on_number_signal)

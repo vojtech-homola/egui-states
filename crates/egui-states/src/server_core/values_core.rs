@@ -42,6 +42,16 @@ impl ValueCore {
         })
     }
 
+    #[inline]
+    fn store(&self, slot: &mut Bytes, value: Bytes, set_signals: bool) {
+        if set_signals {
+            let previous = std::mem::replace(slot, value.clone());
+            self.signals.set_with_previous(self.id, value, previous);
+        } else {
+            *slot = value;
+        }
+    }
+
     pub(crate) fn update_value(
         &self,
         type_id: u32,
@@ -54,11 +64,7 @@ impl ValueCore {
 
         let mut w = self.value.write();
         if w.1 == 0 {
-            if signal {
-                self.signals.set(self.id, value.clone());
-            }
-
-            w.0 = value;
+            self.store(&mut w.0, value, signal);
         }
 
         Ok(())
@@ -74,19 +80,14 @@ impl ValueCore {
             let mut w = self.value.write();
             let message = ServerHeader::serialize_value(self.id, self.type_id, update, &value)?;
 
-            w.0 = value.clone();
             w.1 += 1;
             self.sender.send(message);
-
-            if set_signals {
-                self.signals.set(self.id, value);
-            }
+            // Stored last, but still before the lock is released, so the ordering the
+            // client and the signal consumers observe is unchanged: message first.
+            self.store(&mut w.0, value, set_signals);
         } else {
             let mut w = self.value.write();
-            w.0 = value.clone();
-            if set_signals {
-                self.signals.set(self.id, value);
-            }
+            self.store(&mut w.0, value, set_signals);
         }
         Ok(())
     }

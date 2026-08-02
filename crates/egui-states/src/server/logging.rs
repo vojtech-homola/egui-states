@@ -41,7 +41,7 @@ impl LoggingSignal {
         level: LogLevel,
         logger: impl Fn(String) + Send + Sync + 'static,
     ) -> CallbackHandle {
-        self.server.add_raw_callback(LOGGING_ID, move |data| {
+        self.server.add_raw_callback(LOGGING_ID, move |data, _| {
             let (raw_level, message) = deserialize_bytes::<(u8, String)>(&data)?;
             if LogLevel::from_id(raw_level) == Some(level) {
                 logger(message);

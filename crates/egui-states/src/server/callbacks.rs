@@ -12,12 +12,16 @@ use crate::server_core::signals::SignalsManager as CoreSignalsManager;
 use super::Result;
 use super::state_server::ServerInner;
 
-pub(super) type Callback = Arc<dyn Fn(Bytes) -> Result<()> + Send + Sync + 'static>;
+pub(super) type Callback = Arc<dyn Fn(Bytes, Option<Bytes>) -> Result<()> + Send + Sync + 'static>;
 
 #[derive(Clone)]
 pub(super) struct CallbackEntry {
     pub(super) id: u64,
     pub(super) callback: Callback,
+    /// Whether this callback needs the replaced value. Registration passes the
+    /// aggregate over all entries for a value, so the previous value is only kept
+    /// while at least one callback asks for it.
+    pub(super) wants_previous: bool,
 }
 
 pub(super) struct CallbackRegistry {
@@ -38,14 +42,17 @@ impl CallbackRegistry {
         signals: &CoreSignalsManager,
         value_id: u64,
         callback: Callback,
+        wants_previous: bool,
     ) -> u64 {
         let callback_id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let mut callbacks = self.callbacks.lock();
-        callbacks.entry(value_id).or_default().push(CallbackEntry {
+        let entries = callbacks.entry(value_id).or_default();
+        entries.push(CallbackEntry {
             id: callback_id,
             callback,
+            wants_previous,
         });
-        signals.set_register(value_id, true);
+        signals.set_register(value_id, true, any_wants_previous(entries));
         callback_id
     }
 
@@ -55,7 +62,11 @@ impl CallbackRegistry {
             entries.retain(|entry| entry.id != callback_id);
             if entries.is_empty() {
                 callbacks.remove(&value_id);
-                signals.set_register(value_id, false);
+                signals.set_register(value_id, false, false);
+            } else {
+                // Dropping the last previous-value callback stops the previous value
+                // from being carried, so the flag has to be recomputed here too.
+                signals.set_register(value_id, true, any_wants_previous(entries));
             }
         }
     }
@@ -67,6 +78,10 @@ impl CallbackRegistry {
             .cloned()
             .unwrap_or_default()
     }
+}
+
+fn any_wants_previous(entries: &[CallbackEntry]) -> bool {
+    entries.iter().any(|entry| entry.wants_previous)
 }
 
 #[must_use = "the callback is disconnected when its handle is dropped"]

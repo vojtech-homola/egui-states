@@ -79,6 +79,18 @@ where
     pub fn connect(&self, callback: impl Fn(T) + Send + Sync + 'static) -> CallbackHandle {
         self.server.add_typed_callback(self.id, callback)
     }
+
+    /// Connects a callback that also receives the value being replaced.
+    ///
+    /// The previous value is the one the callback was last notified about, not
+    /// necessarily the immediate predecessor: in single mode successive changes
+    /// coalesce, so `a -> b -> c` delivering only `c` reports `(c, a)`.
+    pub fn connect_previous(
+        &self,
+        callback: impl Fn(T, T) + Send + Sync + 'static,
+    ) -> CallbackHandle {
+        self.server.add_typed_callback_previous(self.id, callback)
+    }
 }
 
 #[derive(Clone)]
@@ -207,7 +219,7 @@ where
 
 impl Signal<()> {
     pub fn connect_empty(&self, callback: impl Fn() + Send + Sync + 'static) -> CallbackHandle {
-        self.server.add_raw_callback(self.id, move |_| {
+        self.server.add_raw_callback(self.id, move |_, _| {
             callback();
             Ok(())
         })

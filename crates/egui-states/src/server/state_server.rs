@@ -187,7 +187,7 @@ impl StateServer {
     }
 
     pub fn on_disconnect(&self, callback: impl Fn() + Send + Sync + 'static) -> CallbackHandle {
-        self.add_raw_callback(ON_DISCONNECT_ID, move |_| {
+        self.add_raw_callback(ON_DISCONNECT_ID, move |_, _| {
             callback();
             Ok(())
         })
@@ -208,9 +208,31 @@ impl StateServer {
     where
         T: for<'a> Deserialize<'a> + Send + 'static,
     {
-        self.add_raw_callback(value_id, move |data| {
+        self.add_raw_callback(value_id, move |data, _previous| {
             let value = deserialize_bytes::<T>(&data)?;
             callback(value);
+            Ok(())
+        })
+    }
+
+    /// Like [`Self::add_typed_callback`], but the callback also receives the value that
+    /// was replaced. Both are decoded as `T`: a state carries one `type_id`, so the new
+    /// and previous values always share a type.
+    pub(super) fn add_typed_callback_previous<T>(
+        &self,
+        value_id: u64,
+        callback: impl Fn(T, T) + Send + Sync + 'static,
+    ) -> CallbackHandle
+    where
+        T: for<'a> Deserialize<'a> + Send + 'static,
+    {
+        self.add_raw_callback_previous(value_id, move |data, previous| {
+            let previous = previous.ok_or_else(|| {
+                ServerError::new(format!("no previous value available for {value_id}"))
+            })?;
+            let value = deserialize_bytes::<T>(&data)?;
+            let previous = deserialize_bytes::<T>(&previous)?;
+            callback(value, previous);
             Ok(())
         })
     }
@@ -218,12 +240,31 @@ impl StateServer {
     pub(super) fn add_raw_callback(
         &self,
         value_id: u64,
-        callback: impl Fn(Bytes) -> Result<()> + Send + Sync + 'static,
+        callback: impl Fn(Bytes, Option<Bytes>) -> Result<()> + Send + Sync + 'static,
     ) -> CallbackHandle {
-        let callback_id =
-            self.inner
-                .callbacks
-                .add(&self.inner.signals, value_id, Arc::new(callback));
+        self.add_callback_inner(value_id, callback, false)
+    }
+
+    fn add_raw_callback_previous(
+        &self,
+        value_id: u64,
+        callback: impl Fn(Bytes, Option<Bytes>) -> Result<()> + Send + Sync + 'static,
+    ) -> CallbackHandle {
+        self.add_callback_inner(value_id, callback, true)
+    }
+
+    fn add_callback_inner(
+        &self,
+        value_id: u64,
+        callback: impl Fn(Bytes, Option<Bytes>) -> Result<()> + Send + Sync + 'static,
+        wants_previous: bool,
+    ) -> CallbackHandle {
+        let callback_id = self.inner.callbacks.add(
+            &self.inner.signals,
+            value_id,
+            Arc::new(callback),
+            wants_previous,
+        );
         CallbackHandle {
             server: Arc::downgrade(&self.inner),
             value_id,
@@ -494,7 +535,7 @@ fn run_signal_worker(
         // follows its dispatch. Retrying with it still set would release a
         // claim another worker may have taken in the meantime, letting two
         // workers run callbacks for the same value concurrently.
-        let Some((value_id, data)) = signals.try_changed_value(last_id.take()) else {
+        let Some((value_id, data, previous)) = signals.try_changed_value(last_id.take()) else {
             if !signals.wait_for_change_until(&shutdown) {
                 return;
             }
@@ -511,7 +552,8 @@ fn run_signal_worker(
 
         for entry in callbacks {
             let data = data.clone();
-            let result = catch_unwind(AssertUnwindSafe(|| (entry.callback)(data)));
+            let previous = previous.clone();
+            let result = catch_unwind(AssertUnwindSafe(|| (entry.callback)(data, previous)));
             match result {
                 Ok(Ok(())) => {}
                 Ok(Err(error)) => handle_error(&error_handler, error),
@@ -587,7 +629,7 @@ mod tests {
             .add_signal::<u32>("root.signal".to_string(), false)
             .unwrap();
 
-        let handle = server.add_raw_callback(id, |_| Ok(()));
+        let handle = server.add_raw_callback(id, |_, _| Ok(()));
         assert_eq!(server.inner.callbacks.get(id).len(), 1);
 
         drop(handle);
@@ -707,6 +749,92 @@ mod tests {
     }
 
     #[test]
+    fn connect_previous_receives_the_replaced_value() {
+        let mut options = ServerOptions::new(0);
+        options.signal_workers = 1;
+        let server = StateServer::with_options(options).unwrap();
+        let value = crate::server::Value::new(&server, "root.value", 1_i32, true).unwrap();
+        let (sender, receiver) = mpsc::sync_channel(4);
+        let handle = value.connect_previous(move |new: i32, previous: i32| {
+            sender.send((new, previous)).unwrap();
+        });
+
+        server.start_signal_workers();
+        // The initial value seeds the chain, so the first change already has a previous.
+        value.set_signal(2, false).unwrap();
+        value.set_signal(3, false).unwrap();
+
+        let mut seen = Vec::new();
+        while seen.len() < 2 {
+            match receiver.recv_timeout(Duration::from_secs(1)) {
+                Ok(pair) => seen.push(pair),
+                Err(_) => break,
+            }
+        }
+
+        // Queue mode, so both changes are delivered and the chain is contiguous.
+        assert_eq!(seen, vec![(2, 1), (3, 2)]);
+
+        drop(handle);
+        drop(server);
+    }
+
+    /// A plain `connect` must not start carrying the previous value, and a
+    /// `connect_previous` alongside it must still get one.
+    #[test]
+    fn plain_and_previous_callbacks_coexist_on_one_value() {
+        let mut options = ServerOptions::new(0);
+        options.signal_workers = 1;
+        let server = StateServer::with_options(options).unwrap();
+        let value = crate::server::Value::new(&server, "root.value", 1_i32, false).unwrap();
+
+        let (plain_sender, plain_receiver) = mpsc::sync_channel(1);
+        let plain = value.connect(move |new: i32| plain_sender.send(new).unwrap());
+        let (pair_sender, pair_receiver) = mpsc::sync_channel(1);
+        let with_previous = value.connect_previous(move |new: i32, previous: i32| {
+            pair_sender.send((new, previous)).unwrap();
+        });
+
+        server.start_signal_workers();
+        value.set_signal(2, false).unwrap();
+
+        assert_eq!(plain_receiver.recv_timeout(Duration::from_secs(1)), Ok(2));
+        assert_eq!(
+            pair_receiver.recv_timeout(Duration::from_secs(1)),
+            Ok((2, 1))
+        );
+
+        drop(plain);
+        drop(with_previous);
+        drop(server);
+    }
+
+    /// Dropping the only previous-value callback has to clear the registration flag,
+    /// otherwise the previous value keeps being carried for nobody.
+    #[test]
+    fn dropping_the_last_previous_callback_stops_carrying_the_previous_value() {
+        let server = StateServer::new(0).unwrap();
+        let value = crate::server::Value::new(&server, "root.value", 1_i32, false).unwrap();
+
+        let plain = value.connect(|_: i32| {});
+        let with_previous = value.connect_previous(|_: i32, _: i32| {});
+        value.set_signal(2, false).unwrap();
+        let (id, _, previous) = server.inner.signals.try_changed_value(None).unwrap();
+        assert_eq!(previous, Some(serialize_bytes(&1_i32).unwrap()));
+
+        drop(with_previous);
+        value.set_signal(3, false).unwrap();
+        // `id` has to come back as `last_id`, otherwise it stays blocked and is skipped.
+        let (_, _, previous) = server.inner.signals.try_changed_value(Some(id)).unwrap();
+        assert_eq!(
+            previous, None,
+            "the previous value must not be delivered once nobody asks for it"
+        );
+
+        drop(plain);
+    }
+
+    #[test]
     fn drop_does_not_block_on_a_worker_stuck_in_a_callback() {
         let (release_sender, release_receiver) = mpsc::channel::<()>();
         let (entered_sender, entered_receiver) = mpsc::channel::<()>();
@@ -720,7 +848,7 @@ mod tests {
             .unwrap();
 
         let release_receiver = Mutex::new(release_receiver);
-        let handle = server.add_raw_callback(id, move |_| {
+        let handle = server.add_raw_callback(id, move |_, _| {
             entered_sender.send(()).unwrap();
             // Stands in for any callback that blocks: a socket, a mutex, or a
             // `ValueTake::set(.., blocking = true, ..)` awaiting a client ack.
