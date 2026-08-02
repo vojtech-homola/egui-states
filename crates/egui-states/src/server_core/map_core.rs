@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tokio_tungstenite::tungstenite::Bytes;
 
 use crate::collections::MapHeader;
-use crate::serialization::{ServerHeader, serialize};
+use crate::serialization::{ServerHeader, check_value_size, serialize};
 use crate::server_core::sender::{MessageSender, SenderData};
 use crate::server_core::server::SyncTrait;
 
@@ -38,7 +38,11 @@ impl ValueMap {
         })
     }
 
-    fn serialize_all(&self, map: &HashMap<Bytes, Bytes>, update: bool) -> Result<SenderData, ()> {
+    fn serialize_all(
+        &self,
+        map: &HashMap<Bytes, Bytes>,
+        update: bool,
+    ) -> Result<SenderData, &'static str> {
         let len = map.len() as u64;
         let mut size = 0;
         map.iter().for_each(|(k, v)| {
@@ -53,7 +57,7 @@ impl ValueMap {
             size as u32,
         );
 
-        let mut data = serialize(&header)?;
+        let mut data = serialize(&header).map_err(|_| "Failed to serialize header")?;
         map.iter().for_each(|(k, v)| {
             data.extend_from_slice(&k);
             data.extend_from_slice(&v);
@@ -62,7 +66,12 @@ impl ValueMap {
         Ok(data)
     }
 
-    pub(crate) fn set(&self, map: HashMap<Bytes, Bytes>, update: bool) -> Result<(), ()> {
+    pub(crate) fn set(&self, map: HashMap<Bytes, Bytes>, update: bool) -> Result<(), String> {
+        // the limit applies to single items, not to the whole map
+        for (key, value) in map.iter() {
+            check_value_size(&self.name, key.len() + value.len())?;
+        }
+
         let mut w = self.map.write();
 
         if self.connected.load(Ordering::Relaxed) {
@@ -78,7 +87,9 @@ impl ValueMap {
         self.map.read().clone()
     }
 
-    pub(crate) fn set_item(&self, key: Bytes, value: Bytes, update: bool) -> Result<(), ()> {
+    pub(crate) fn set_item(&self, key: Bytes, value: Bytes, update: bool) -> Result<(), String> {
+        check_value_size(&self.name, key.len() + value.len())?;
+
         let mut w = self.map.write();
 
         if self.connected.load(Ordering::Relaxed) {
@@ -89,7 +100,7 @@ impl ValueMap {
                 MapHeader::Set,
                 (key.len() + value.len()) as u32,
             );
-            let mut data = serialize(&header)?;
+            let mut data = serialize(&header).map_err(|_| "Failed to serialize header")?;
             data.extend_from_slice(&key);
             data.extend_from_slice(&value);
             self.sender.send(data);
@@ -143,7 +154,7 @@ impl ValueMap {
 impl SyncTrait for ValueMap {
     fn sync(&self) -> Result<(), ()> {
         let r = self.map.read();
-        let data = self.serialize_all(&r, false)?;
+        let data = self.serialize_all(&r, false).map_err(|_| ())?;
         self.sender.send(data);
         Ok(())
     }

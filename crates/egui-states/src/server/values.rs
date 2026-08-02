@@ -54,7 +54,7 @@ where
         let data = serialize_bytes(&value)?;
         self.inner
             .set(data, set_signal, update)
-            .map_err(|_| ServerError::new("failed to set value"))
+            .map_err(ServerError::new)
     }
 }
 
@@ -118,9 +118,7 @@ where
 {
     pub fn set(&self, value: T, update: bool) -> Result<()> {
         let data = serialize_bytes(&value)?;
-        self.inner
-            .set(data, update)
-            .map_err(|_| ServerError::new("failed to set static value"))
+        self.inner.set(data, update).map_err(ServerError::new)
     }
 }
 
@@ -160,7 +158,7 @@ where
         let data = serialize_bytes(&value)?;
         self.inner
             .set(data, blocking, update)
-            .map_err(|_| ServerError::new("failed to set value_take"))
+            .map_err(ServerError::new)
     }
 }
 
@@ -229,6 +227,7 @@ impl Signal<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::serialization::VALUE_MAX_SIZE;
 
     #[test]
     fn values_round_trip_without_a_client() {
@@ -243,6 +242,33 @@ mod tests {
         assert_eq!(static_value.get().unwrap(), 10);
         static_value.set(20, false).unwrap();
         assert_eq!(static_value.get().unwrap(), 20);
+    }
+
+    #[test]
+    fn oversized_values_are_rejected_without_a_client() {
+        let server = StateServer::new(0).unwrap();
+        let value = Value::new(&server, "root.value", String::from("initial"), false).unwrap();
+        let static_value = Static::new(&server, "root.static", String::from("initial")).unwrap();
+
+        // no client is connected, but the value would be sent by sync() after a handshake
+        let too_large = "a".repeat(VALUE_MAX_SIZE + 1);
+
+        let error = value.set(too_large.clone(), false).unwrap_err();
+        assert!(error.message().contains("root.value"), "{error}");
+        assert_eq!(value.get().unwrap(), "initial");
+
+        let error = static_value.set(too_large, false).unwrap_err();
+        assert!(error.message().contains("root.static"), "{error}");
+        assert_eq!(static_value.get().unwrap(), "initial");
+    }
+
+    #[test]
+    fn oversized_initial_value_is_rejected() {
+        let server = StateServer::new(0).unwrap();
+        let too_large = "a".repeat(VALUE_MAX_SIZE + 1);
+
+        assert!(Value::new(&server, "root.value", too_large.clone(), false).is_err());
+        assert!(Static::new(&server, "root.static", too_large).is_err());
     }
 
     #[test]

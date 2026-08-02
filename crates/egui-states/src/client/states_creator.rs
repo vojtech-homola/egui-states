@@ -360,7 +360,7 @@ impl StatesCreator for StatesCreatorClient {
         let type_id = T::get_type().get_hash();
         hash_id_type(&mut self.version_hasher, id, type_id, SIGNAL_HASH_ID);
 
-        let signal = Signal::new(id, type_id, self.sender.clone());
+        let signal = Signal::new(name, id, type_id, self.sender.clone());
 
         signal
     }

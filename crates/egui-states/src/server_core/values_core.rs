@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use bytes::Bytes;
 
 use crate::event::Event;
-use crate::serialization::ServerHeader;
+use crate::serialization::{ServerHeader, check_value_size};
 use crate::server_core::sender::MessageSender;
 use crate::server_core::server::{Acknowledge, SyncTrait};
 use crate::server_core::signals::SignalsManager;
@@ -75,10 +75,13 @@ impl ValueCore {
         self.value.read().0.clone()
     }
 
-    pub(crate) fn set(&self, value: Bytes, set_signals: bool, update: bool) -> Result<(), ()> {
+    pub(crate) fn set(&self, value: Bytes, set_signals: bool, update: bool) -> Result<(), String> {
+        // checked even when disconnected, otherwise the value would be sent by sync()
+        check_value_size(&self.name, value.len())?;
+
         if self.connected.load(Ordering::Relaxed) {
-            let mut w = self.value.write();
             let message = ServerHeader::serialize_value(self.id, self.type_id, update, &value)?;
+            let mut w = self.value.write();
 
             w.1 += 1;
             self.sender.send(message);
@@ -106,7 +109,8 @@ impl SyncTrait for ValueCore {
     fn sync(&self) -> Result<(), ()> {
         let mut w = self.value.write();
         w.1 = 1;
-        let data = ServerHeader::serialize_value(self.id, self.type_id, false, &w.0)?;
+        let data =
+            ServerHeader::serialize_value(self.id, self.type_id, false, &w.0).map_err(|_| ())?;
         drop(w);
 
         self.sender.send(data);
@@ -145,11 +149,17 @@ impl ValueTakeCore {
         })
     }
 
-    pub(crate) fn set(&self, value: Bytes, blocking: bool, update: bool) -> Result<(), ()> {
+    pub(crate) fn set(&self, value: Bytes, blocking: bool, update: bool) -> Result<(), String> {
+        check_value_size(&self.name, value.len())?;
+
         if self.connected.load(Ordering::Relaxed) {
-            let message =
-                ServerHeader::serialize_value_take(self.id, self.type_id, blocking, update, &value)
-                    .map_err(|_| ())?;
+            let message = ServerHeader::serialize_value_take(
+                self.id,
+                self.type_id,
+                blocking,
+                update,
+                &value,
+            )?;
 
             let _guard = self.lock.write();
 
@@ -210,10 +220,13 @@ impl ValueStaticCore {
         })
     }
 
-    pub(crate) fn set(&self, value: Bytes, update: bool) -> Result<(), ()> {
+    pub(crate) fn set(&self, value: Bytes, update: bool) -> Result<(), String> {
+        // checked even when disconnected, otherwise the value would be sent by sync()
+        check_value_size(&self.name, value.len())?;
+
         if self.connected.load(Ordering::Relaxed) {
-            let mut w = self.value.write();
             let message = ServerHeader::serialize_static(self.id, self.type_id, update, &value)?;
+            let mut w = self.value.write();
 
             *w = value;
             self.sender.send(message);
@@ -233,7 +246,8 @@ impl ValueStaticCore {
 impl SyncTrait for ValueStaticCore {
     fn sync(&self) -> Result<(), ()> {
         let w = self.value.read();
-        let data = ServerHeader::serialize_static(self.id, self.type_id, false, &w)?;
+        let data =
+            ServerHeader::serialize_static(self.id, self.type_id, false, &w).map_err(|_| ())?;
         drop(w);
 
         self.sender.send(data);
