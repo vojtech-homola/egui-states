@@ -427,14 +427,19 @@ impl StateServerCore {
         self.signals.set_register(value_id, register, with_previous);
     }
 
-    /// Waits for the next change and decodes it. The third element is the replaced
-    /// value, present only for a `Value` whose registration asked for it -- otherwise
-    /// it is `None` and never decoded.
+    /// Waits for the next change and decodes it, as `(id, value, has_previous,
+    /// previous)`.
+    ///
+    /// The replaced value is present only for a `Value` whose registration asked for
+    /// it, and is never decoded otherwise. Presence is reported by its own flag rather
+    /// than by `previous is None`: an optional state deserializes a perfectly ordinary
+    /// previous value of `None`, which would otherwise be indistinguishable from
+    /// carrying no previous value at all.
     fn signal_get<'py>(
         &self,
         py: Python<'py>,
         last_id: Option<u64>,
-    ) -> PyResult<(u64, Bound<'py, PyAny>, Option<Bound<'py, PyAny>>)> {
+    ) -> PyResult<(u64, Bound<'py, PyAny>, bool, Option<Bound<'py, PyAny>>)> {
         let (id, data, previous) = py.detach(|| self.signals.wait_changed_value(last_id));
 
         let parsed = match self.get_values() {
@@ -462,7 +467,10 @@ impl StateServerCore {
         };
 
         match parsed {
-            Ok((py_value, py_previous)) => Ok((id, py_value, py_previous)),
+            Ok((py_value, py_previous)) => {
+                let has_previous = py_previous.is_some();
+                Ok((id, py_value, has_previous, py_previous))
+            }
             Err(error) => {
                 // `id` is blocked until it comes back as the next `last_id`.
                 // Failing here means the caller never learns it exists, so

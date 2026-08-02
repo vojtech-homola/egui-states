@@ -227,9 +227,9 @@ impl StateServer {
         T: for<'a> Deserialize<'a> + Send + 'static,
     {
         self.add_raw_callback_previous(value_id, move |data, previous| {
-            let previous = previous.ok_or_else(|| {
-                ServerError::new(format!("no previous value available for {value_id}"))
-            })?;
+            let Some(previous) = previous else {
+                return Ok(());
+            };
             let value = deserialize_bytes::<T>(&data)?;
             let previous = deserialize_bytes::<T>(&previous)?;
             callback(value, previous);
@@ -807,6 +807,43 @@ mod tests {
         drop(plain);
         drop(with_previous);
         drop(server);
+    }
+
+    /// `run_signal_worker` snapshots callbacks only after the claim has decided whether
+    /// to carry a previous value, so a callback registered in between is handed a change
+    /// without one. It must skip that change quietly instead of reporting an error: it
+    /// was not connected when the change was claimed.
+    #[test]
+    fn a_previous_callback_skips_a_change_that_carries_no_previous() {
+        let server = StateServer::new(0).unwrap();
+        let (id, _value) = server
+            .add_value("root.value".to_string(), 1_i32, false)
+            .unwrap();
+        let fired = Arc::new(AtomicBool::new(false));
+        let flag = fired.clone();
+        let handle = server.add_typed_callback_previous(id, move |_: i32, _: i32| {
+            flag.store(true, Ordering::Relaxed);
+        });
+        let entry = server.inner.callbacks.get(id).remove(0);
+
+        // Exactly what the worker passes for a change claimed before registration.
+        assert!(
+            (entry.callback)(serialize_bytes(&2_i32).unwrap(), None).is_ok(),
+            "a missing previous value is not an error"
+        );
+        assert!(!fired.load(Ordering::Relaxed));
+
+        // The same callback still fires for a change that does carry one.
+        assert!(
+            (entry.callback)(
+                serialize_bytes(&2_i32).unwrap(),
+                Some(serialize_bytes(&1_i32).unwrap()),
+            )
+            .is_ok()
+        );
+        assert!(fired.load(Ordering::Relaxed));
+
+        drop(handle);
     }
 
     /// Dropping the only previous-value callback has to clear the registration flag,

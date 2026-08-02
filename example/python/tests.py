@@ -448,6 +448,28 @@ def test_value_disconnect_takes_either_variant(
     assert errors == []
 
 
+def test_value_connect_previous_treats_none_as_a_real_previous_value(
+    server_bundle: tuple[StatesServer, State, list[Exception]],
+) -> None:
+    _server, states, errors = server_bundle
+
+    pairs: list[tuple[int | None, int | None]] = []
+    states.values.optional_value.connect_previous(lambda new, previous: pairs.append((new, previous)))
+    states.values.optional_value.signal_set_to_queue()
+
+    # An optional value deserializes a previous value of None, which must not be read
+    # as "this change carries no previous". Its initial value is None, so the very
+    # first change is the one that would be dropped.
+    assert states.values.optional_value.get() is None
+    states.values.optional_value.set(5, set_signal=True)
+    states.values.optional_value.set(None, set_signal=True)
+    states.values.optional_value.set(None, set_signal=True)
+
+    _wait_until(lambda: len(pairs) >= 3)
+    assert pairs[:3] == [(5, None), (None, 5), (None, None)]
+    assert errors == []
+
+
 def test_value_plain_and_previous_callbacks_coexist(
     server_bundle: tuple[StatesServer, State, list[Exception]],
 ) -> None:

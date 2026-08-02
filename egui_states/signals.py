@@ -47,7 +47,7 @@ class SignalsManager:
         last_id: int | None = None
         while True:
             try:
-                last_id, arg, previous = self._server.signal_get(last_id)
+                last_id, arg, has_previous, previous = self._server.signal_get(last_id)
             except Exception as e:
                 error = RuntimeError(f"Error while getting signal from server: {e}")
                 self._error_handler(error)
@@ -57,9 +57,7 @@ class SignalsManager:
             for callback in self._callbacks.get(last_id) or ():
                 self._invoke(callback, *args)
 
-            # `previous` is None unless this id registered for it, so a Signal and a
-            # Value with only plain callbacks never pay to decode it.
-            if previous is not None:
+            if has_previous:
                 for callback in self._callbacks_previous.get(last_id) or ():
                     self._invoke(callback, arg, previous)
 
