@@ -422,22 +422,40 @@ impl StateServerCore {
     }
 
     // signal callbacks -------------------------------------------------
-    fn signal_register(&self, value_id: u64, register: bool) {
-        self.signals.set_register(value_id, register);
+    fn signal_register(&self, value_id: u64, register: bool, with_previous: bool) {
+        self.signals.set_register(value_id, register, with_previous);
     }
 
+    /// Waits for the next change and decodes it, as `(id, value, has_previous,
+    /// previous)`.
+    ///
+    /// The replaced value is present only for a `Value` whose registration asked for
+    /// it, and is never decoded otherwise. Presence is reported by its own flag rather
+    /// than by `previous is None`: an optional state deserializes a perfectly ordinary
+    /// previous value of `None`, which would otherwise be indistinguishable from
+    /// carrying no previous value at all.
     fn signal_get<'py>(
         &self,
         py: Python<'py>,
         last_id: Option<u64>,
-    ) -> PyResult<(u64, Bound<'py, PyAny>)> {
-        let (id, data) = py.detach(|| self.signals.wait_changed_value(last_id));
+    ) -> PyResult<(u64, Bound<'py, PyAny>, bool, Option<Bound<'py, PyAny>>)> {
+        let (id, data, previous) = py.detach(|| self.signals.wait_changed_value(last_id));
 
         let parsed = match self.get_values() {
             Ok(values) => match values.signals_types.get(&id) {
                 Some(object_type) => {
                     let mut parser = ValueParser::new(data);
-                    pyparsing::deserialize_py(py, &mut parser, object_type)
+                    pyparsing::deserialize_py(py, &mut parser, object_type).and_then(|value| {
+                        // The new and previous values share the state's single type.
+                        match previous {
+                            None => Ok((value, None)),
+                            Some(previous) => {
+                                let mut parser = ValueParser::new(previous);
+                                pyparsing::deserialize_py(py, &mut parser, object_type)
+                                    .map(|previous| (value, Some(previous)))
+                            }
+                        }
+                    })
                 }
                 None => Err(pyo3::exceptions::PyValueError::new_err(format!(
                     "Signal with ID {} not found",
@@ -448,7 +466,10 @@ impl StateServerCore {
         };
 
         match parsed {
-            Ok(py_value) => Ok((id, py_value)),
+            Ok((py_value, py_previous)) => {
+                let has_previous = py_previous.is_some();
+                Ok((id, py_value, has_previous, py_previous))
+            }
             Err(error) => {
                 // `id` is blocked until it comes back as the next `last_id`.
                 // Failing here means the caller never learns it exists, so

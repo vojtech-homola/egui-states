@@ -121,16 +121,34 @@ class Value[T](_SignalBase):
         """
         self._signals_manager.add_callback(self._value_id, callback)
 
-    def disconnect(self, callback: Callable[[T], Any]) -> None:
-        """Disconnect a callback from the value.
+    def connect_previous(self, callback: Callable[[T, T], Any]) -> None:
+        """Connect a callback which also receives the previous value.
+
+        The previous value is the one the callback was last notified about, not
+        necessarily the immediate predecessor: in single mode successive changes
+        coalesce, so a -> b -> c delivering only c calls the callback with (c, a).
 
         Args:
-            callback(Callable[[T], Any]): The callback to disconnect.
+            callback(Callable[[T, T], Any]): The callback to connect. It is called
+                with the new value followed by the previous one.
+        """
+        self._signals_manager.add_callback_previous(self._value_id, callback)
+
+    def disconnect(self, callback: Callable[[T], Any] | Callable[[T, T], Any]) -> None:
+        """Disconnect a callback from the value.
+
+        Takes callbacks connected either way, so there is nothing to match up against
+        how the callback was connected.
+
+        Args:
+            callback(Callable[[T], Any] | Callable[[T, T], Any]): The callback to
+                disconnect.
         """
         self._signals_manager.remove_callback(self._value_id, callback)
+        self._signals_manager.remove_callback_previous(self._value_id, callback)
 
     def disconnect_all(self) -> None:
-        """Disconnect all callbacks from the value."""
+        """Disconnect all callbacks from the value, of both variants."""
         self._signals_manager.clear_callbacks(self._value_id)
 
 

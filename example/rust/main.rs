@@ -38,6 +38,9 @@ fn main() -> s::Result<()> {
     callbacks.push(states.values.title.connect(|value| {
         println!("title changed: {value}");
     }));
+    callbacks.push(states.values.count.connect_previous(|value, previous| {
+        println!("count changed: {previous} -> {value}");
+    }));
     callbacks.push(states.values.test_enum.connect(|value| {
         println!("enum changed: {value:?}");
     }));
