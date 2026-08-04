@@ -67,7 +67,7 @@ impl ValueList {
 
         let mut w = self.list.write();
 
-        if self.connected.load(Ordering::Relaxed) {
+        if self.connected.load(Ordering::Acquire) {
             let data = self.serialize_all(&list, update)?;
             self.sender.send(data);
         }
@@ -88,7 +88,7 @@ impl ValueList {
             return Err("Index out of bounds".to_string());
         }
 
-        if self.connected.load(Ordering::Relaxed) {
+        if self.connected.load(Ordering::Acquire) {
             let header = ServerHeader::ValueVec(
                 self.id,
                 self.type_id,
@@ -124,7 +124,7 @@ impl ValueList {
         }
         let value = w.remove(idx);
 
-        if self.connected.load(Ordering::Relaxed) {
+        if self.connected.load(Ordering::Acquire) {
             let header = ServerHeader::ValueVec(
                 self.id,
                 self.type_id,
@@ -143,7 +143,7 @@ impl ValueList {
         check_value_size(&self.name, value.len())?;
 
         let mut w = self.list.write();
-        if self.connected.load(Ordering::Relaxed) {
+        if self.connected.load(Ordering::Acquire) {
             let header = ServerHeader::ValueVec(
                 self.id,
                 self.type_id,

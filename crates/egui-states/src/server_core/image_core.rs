@@ -76,8 +76,8 @@ impl Image {
     }
 
     pub(crate) fn set_image(&self, image: ImageData, update: bool) -> Result<(), String> {
-        // Prepare data to send if connected
-        let to_send = if self.connected.load(Ordering::Relaxed) {
+        // Prepare data to send if connected before locking
+        let to_send = if self.connected.load(Ordering::Acquire) {
             Some(pack_set_data(self.id, &image, update)?)
         } else {
             None
@@ -120,8 +120,13 @@ impl Image {
             };
         }
 
-        let Some(to_send) = to_send else {
-            return Ok(());
+        // Unwrap to_send and check connection again
+        let to_send = match to_send {
+            Some(data) => data,
+            None => match self.connected.load(Ordering::Acquire) {
+                true => pack_set_data(self.id, &image, update)?,
+                false => return Ok(()),
+            },
         };
 
         if let Buffer::Set(ref mut dat) = w.buffer {
@@ -155,7 +160,7 @@ impl Image {
         drop(w);
 
         self.event.wait_clear();
-        if !self.connected.load(Ordering::Relaxed) {
+        if !self.connected.load(Ordering::Acquire) {
             return Ok(());
         }
 
@@ -175,7 +180,8 @@ impl Image {
         update: bool,
         force: bool,
     ) -> Result<(), String> {
-        let to_send = if self.connected.load(Ordering::Relaxed) {
+        // Prepare data to send if connected before locking
+        let to_send = if self.connected.load(Ordering::Acquire) {
             Some(pack_update_data(self.id, origin, &image, update)?)
         } else {
             None
@@ -206,8 +212,13 @@ impl Image {
             );
         }
 
-        let Some(mut to_send) = to_send else {
-            return Ok(());
+        // Unwrap to_send and check connection again
+        let mut to_send = match to_send {
+            Some(data) => data,
+            None => match self.connected.load(Ordering::Acquire) {
+                true => pack_update_data(self.id, origin, &image, update)?,
+                false => return Ok(()),
+            },
         };
 
         let new_rect = [origin[0], origin[1], image.size[0], image.size[1]];
@@ -260,7 +271,7 @@ impl Image {
         drop(w);
 
         self.event.wait_clear();
-        if !self.connected.load(Ordering::Relaxed) {
+        if !self.connected.load(Ordering::Acquire) {
             return Ok(());
         }
 

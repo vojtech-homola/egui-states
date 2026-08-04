@@ -307,7 +307,7 @@ impl DataMulti {
         let mut w = self.values.write();
         if let Some(_) = w.remove(&index) {
             let _r = RwLockWriteGuard::downgrade(w);
-            if self.connected.load(std::sync::atomic::Ordering::Relaxed) {
+            if self.connected.load(std::sync::atomic::Ordering::Acquire) {
                 let header = MultiDataHeader::Remove(index, update);
                 let message = header
                     .serialize(self.id)
@@ -325,7 +325,7 @@ impl DataMulti {
             w.clear();
 
             let _r = RwLockWriteGuard::downgrade(w);
-            if self.connected.load(std::sync::atomic::Ordering::Relaxed) {
+            if self.connected.load(std::sync::atomic::Ordering::Acquire) {
                 let header = MultiDataHeader::Reset(update);
                 let message = header
                     .serialize(self.id)

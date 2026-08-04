@@ -74,7 +74,7 @@ impl ValueMap {
 
         let mut w = self.map.write();
 
-        if self.connected.load(Ordering::Relaxed) {
+        if self.connected.load(Ordering::Acquire) {
             let data = self.serialize_all(&map, update)?;
             self.sender.send(data);
         }
@@ -92,7 +92,7 @@ impl ValueMap {
 
         let mut w = self.map.write();
 
-        if self.connected.load(Ordering::Relaxed) {
+        if self.connected.load(Ordering::Acquire) {
             let header = ServerHeader::ValueMap(
                 self.id,
                 self.type_id,
@@ -129,7 +129,7 @@ impl ValueMap {
             None => return Ok(None),
         };
 
-        if self.connected.load(Ordering::Relaxed) {
+        if self.connected.load(Ordering::Acquire) {
             let header = ServerHeader::ValueMap(
                 self.id,
                 self.type_id,

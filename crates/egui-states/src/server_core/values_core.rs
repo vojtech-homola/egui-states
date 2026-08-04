@@ -79,7 +79,7 @@ impl ValueCore {
         // checked even when disconnected, otherwise the value would be sent by sync()
         check_value_size(&self.name, value.len())?;
 
-        if self.connected.load(Ordering::Relaxed) {
+        if self.connected.load(Ordering::Acquire) {
             let message = ServerHeader::serialize_value(self.id, self.type_id, update, &value)?;
             let mut w = self.value.write();
 
@@ -152,7 +152,7 @@ impl ValueTakeCore {
     pub(crate) fn set(&self, value: Bytes, blocking: bool, update: bool) -> Result<(), String> {
         check_value_size(&self.name, value.len())?;
 
-        if self.connected.load(Ordering::Relaxed) {
+        if self.connected.load(Ordering::Acquire) {
             let message = ServerHeader::serialize_value_take(
                 self.id,
                 self.type_id,
@@ -167,7 +167,7 @@ impl ValueTakeCore {
                 true => self.event.wait_clear(),
                 false => self.event.wait(),
             }
-            if !self.connected.load(Ordering::Relaxed) {
+            if !self.connected.load(Ordering::Acquire) {
                 return Ok(());
             }
 
@@ -224,7 +224,7 @@ impl ValueStaticCore {
         // checked even when disconnected, otherwise the value would be sent by sync()
         check_value_size(&self.name, value.len())?;
 
-        if self.connected.load(Ordering::Relaxed) {
+        if self.connected.load(Ordering::Acquire) {
             let message = ServerHeader::serialize_static(self.id, self.type_id, update, &value)?;
             let mut w = self.value.write();
 
