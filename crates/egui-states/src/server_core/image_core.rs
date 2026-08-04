@@ -20,6 +20,8 @@ struct ImageDataInner {
     data: Vec<u8>,
     size: [usize; 2],
     buffer: Buffer,
+    sync_required: bool,
+    sync_generation: u64,
 }
 
 pub(crate) struct ImageData {
@@ -58,6 +60,8 @@ impl Image {
                 data: Vec::with_capacity(0),
                 size: [0, 0],
                 buffer: Buffer::Set(Vec::new()),
+                sync_required: true,
+                sync_generation: 0,
             }),
             lock: Mutex::new(()),
             sender,
@@ -120,13 +124,17 @@ impl Image {
             };
         }
 
-        // Unwrap to_send and check connection again
+        // A connection sync sends the latest complete image. Do not enqueue a
+        // separate mutation until that initial sync has completed.
+        if w.sync_required || !self.connected.load(Ordering::Acquire) {
+            return Ok(());
+        }
+
+        // Reuse data prepared before locking, or prepare it now if the client
+        // connected while the local image was being updated.
         let to_send = match to_send {
             Some(data) => data,
-            None => match self.connected.load(Ordering::Acquire) {
-                true => pack_set_data(self.id, &image, update)?,
-                false => return Ok(()),
-            },
+            None => pack_set_data(self.id, &image, update)?,
         };
 
         if let Buffer::Set(ref mut dat) = w.buffer {
@@ -156,7 +164,10 @@ impl Image {
             }
         }
 
-        // drop lock to allow acknowledge to process the buffer and send data while we prepare the next one
+        // Buffer::Set already contains a pending set. Drop the image guard, but
+        // keep the producer mutex, so acknowledge() can drain it before this
+        // call sends its data.
+        let sync_generation = w.sync_generation;
         drop(w);
 
         self.event.wait_clear();
@@ -164,10 +175,19 @@ impl Image {
             return Ok(());
         }
 
+        // A reset may have released this waiter for a later connection. Keep
+        // the read guard through enqueueing so reset/sync cannot race this
+        // generation check.
+        let w = self.image.read();
+        if w.sync_generation != sync_generation {
+            return Ok(());
+        }
+
         for (message, send_now) in to_send {
             self.sender.send_set(message, send_now);
         }
 
+        drop(w);
         drop(lock);
 
         Ok(())
@@ -212,13 +232,17 @@ impl Image {
             );
         }
 
-        // Unwrap to_send and check connection again
+        // A connection sync sends the latest complete image. Do not enqueue a
+        // separate mutation until that initial sync has completed.
+        if w.sync_required || !self.connected.load(Ordering::Acquire) {
+            return Ok(());
+        }
+
+        // Reuse data prepared before locking, or prepare it now if the client
+        // connected while the local image was being updated.
         let mut to_send = match to_send {
             Some(data) => data,
-            None => match self.connected.load(Ordering::Acquire) {
-                true => pack_update_data(self.id, origin, &image, update)?,
-                false => return Ok(()),
-            },
+            None => pack_update_data(self.id, origin, &image, update)?,
         };
 
         let new_rect = [origin[0], origin[1], image.size[0], image.size[1]];
@@ -268,6 +292,7 @@ impl Image {
             }
         }
 
+        let sync_generation = w.sync_generation;
         drop(w);
 
         self.event.wait_clear();
@@ -276,6 +301,10 @@ impl Image {
         }
 
         let mut w = self.image.write();
+        if w.sync_generation != sync_generation {
+            return Ok(());
+        }
+
         if let Some((message, send_now)) = to_send.pop_front() {
             self.sender.send_set(message, send_now);
         }
@@ -316,13 +345,21 @@ impl Acknowledge for Image {
         self.event.set();
         let mut w = self.image.write();
         w.buffer = Buffer::Set(Vec::new());
+        w.sync_required = true;
+        w.sync_generation = w.sync_generation.wrapping_add(1);
     }
 }
 
 impl SyncTrait for Image {
     fn sync(&self) -> Result<(), ()> {
         let mut w = self.image.write();
+        if !w.sync_required {
+            return Ok(());
+        }
+
         if w.size[0] == 0 || w.size[1] == 0 {
+            w.buffer = Buffer::Set(Vec::new());
+            w.sync_required = false;
             self.event.set();
             return Ok(());
         }
@@ -338,6 +375,7 @@ impl SyncTrait for Image {
         let data = pack_set_data(self.id, &image_data, false).map_err(|_| ())?;
 
         w.buffer = Buffer::Set(Vec::new());
+        w.sync_required = false;
         self.event.clear();
         for (message, send_now) in data {
             self.sender.send_set(message, send_now);
@@ -682,5 +720,241 @@ unsafe fn write_rectangle(
                 }
             }
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::Ordering;
+
+    use tokio::sync::mpsc::error::TryRecvError;
+
+    use super::*;
+    use crate::server_core::sender::MessageReceiver;
+
+    fn new_image(is_connected: bool) -> (Arc<Image>, Arc<AtomicBool>, MessageReceiver) {
+        let connected = Arc::new(AtomicBool::new(is_connected));
+        let (sender, receiver) = MessageSender::new();
+        let image = Image::new("image".to_string(), 1, sender, connected.clone());
+        (image, connected, receiver)
+    }
+
+    fn image_data(data: &[u8], size: [usize; 2], image_type: ImageType) -> ImageData {
+        ImageData {
+            size,
+            stride: size[1] * image_type.bytes_per_pixel(),
+            contiguous: true,
+            image_type,
+            data: data.as_ptr(),
+        }
+    }
+
+    fn assert_message(receiver: &mut MessageReceiver) {
+        assert!(matches!(receiver.try_recv(), Ok(Some(_))));
+    }
+
+    fn assert_no_message(receiver: &mut MessageReceiver) {
+        assert!(matches!(receiver.try_recv(), Err(TryRecvError::Empty)));
+    }
+
+    fn wait_for_image(image: &Image, expected: &[u8]) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while image.get_image(|(data, _)| data.clone()) != expected {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for image mutation"
+            );
+            std::thread::yield_now();
+        }
+    }
+
+    #[test]
+    fn mutation_before_sync_is_sent_once_by_sync() {
+        let (image, _, mut receiver) = new_image(true);
+        let pixels = [10, 20, 30, 255];
+
+        image
+            .set_image(image_data(&pixels, [1, 1], ImageType::ColorAlpha), false)
+            .unwrap();
+
+        assert_no_message(&mut receiver);
+        assert!(image.image.read().sync_required);
+
+        image.sync().unwrap();
+
+        assert_message(&mut receiver);
+        assert_no_message(&mut receiver);
+        assert!(!image.image.read().sync_required);
+
+        image.sync().unwrap();
+        assert_no_message(&mut receiver);
+    }
+
+    #[test]
+    fn mutation_after_sync_waits_for_sync_acknowledgement() {
+        let (image, connected, mut receiver) = new_image(false);
+        let initial = [10, 20, 30, 255];
+        let replacement = [40, 50, 60, 255];
+
+        image
+            .set_image(image_data(&initial, [1, 1], ImageType::ColorAlpha), false)
+            .unwrap();
+        connected.store(true, Ordering::Release);
+        image.sync().unwrap();
+        assert_message(&mut receiver);
+
+        image
+            .set_image(
+                image_data(&replacement, [1, 1], ImageType::ColorAlpha),
+                false,
+            )
+            .unwrap();
+        assert_no_message(&mut receiver);
+
+        image.acknowledge();
+        assert_message(&mut receiver);
+        assert_no_message(&mut receiver);
+
+        image.acknowledge();
+        assert!(image.event.is_set());
+    }
+
+    #[test]
+    fn update_before_sync_is_folded_into_full_image() {
+        let (image, connected, mut receiver) = new_image(false);
+        let initial = [10, 20, 30, 255, 40, 50, 60, 255];
+        let update = [7, 8];
+
+        image
+            .set_image(image_data(&initial, [1, 2], ImageType::ColorAlpha), false)
+            .unwrap();
+        connected.store(true, Ordering::Release);
+        image
+            .update_image(
+                &[0, 0],
+                image_data(&update, [1, 1], ImageType::GrayAlpha),
+                false,
+                false,
+            )
+            .unwrap();
+
+        assert_no_message(&mut receiver);
+        assert_eq!(
+            image.get_image(|(data, _)| data.clone()),
+            vec![7, 7, 7, 8, 40, 50, 60, 255]
+        );
+
+        image.sync().unwrap();
+        assert_message(&mut receiver);
+        assert_no_message(&mut receiver);
+    }
+
+    #[test]
+    fn reset_requires_one_new_connection_sync() {
+        let (image, connected, mut receiver) = new_image(false);
+        let initial = [10, 20, 30, 255];
+        let replacement = [40, 50, 60, 255];
+
+        image
+            .set_image(image_data(&initial, [1, 1], ImageType::ColorAlpha), false)
+            .unwrap();
+        connected.store(true, Ordering::Release);
+        image.sync().unwrap();
+        assert_message(&mut receiver);
+        image.acknowledge();
+
+        connected.store(false, Ordering::Release);
+        image.reset();
+        assert!(image.image.read().sync_required);
+
+        image
+            .set_image(
+                image_data(&replacement, [1, 1], ImageType::ColorAlpha),
+                false,
+            )
+            .unwrap();
+        connected.store(true, Ordering::Release);
+        image.sync().unwrap();
+
+        assert_message(&mut receiver);
+        assert_no_message(&mut receiver);
+        assert!(!image.image.read().sync_required);
+    }
+
+    #[test]
+    fn reset_discards_a_waiter_from_the_previous_connection() {
+        let (image, connected, mut receiver) = new_image(false);
+        let initial = [10, 20, 30, 255];
+        let buffered = [40, 50, 60, 255];
+
+        image
+            .set_image(image_data(&initial, [1, 1], ImageType::ColorAlpha), false)
+            .unwrap();
+        connected.store(true, Ordering::Release);
+        image.sync().unwrap();
+        assert_message(&mut receiver);
+
+        image
+            .set_image(image_data(&buffered, [1, 1], ImageType::ColorAlpha), false)
+            .unwrap();
+        assert_no_message(&mut receiver);
+
+        let waiting_image = image.clone();
+        let waiter = std::thread::spawn(move || {
+            let latest = [70, 80, 90, 255];
+            waiting_image.set_image(image_data(&latest, [1, 1], ImageType::ColorAlpha), false)
+        });
+
+        wait_for_image(&image, &[70, 80, 90, 255]);
+
+        connected.store(false, Ordering::Release);
+        image.reset();
+        connected.store(true, Ordering::Release);
+        image.sync().unwrap();
+        waiter.join().unwrap().unwrap();
+
+        assert_message(&mut receiver);
+        assert_no_message(&mut receiver);
+    }
+
+    #[test]
+    fn reset_discards_an_update_waiter_from_the_previous_connection() {
+        let (image, connected, mut receiver) = new_image(false);
+        let initial = [10, 20, 30, 255, 40, 50, 60, 255];
+        let buffered = [15, 25, 35, 255, 45, 55, 65, 255];
+
+        image
+            .set_image(image_data(&initial, [1, 2], ImageType::ColorAlpha), false)
+            .unwrap();
+        connected.store(true, Ordering::Release);
+        image.sync().unwrap();
+        assert_message(&mut receiver);
+
+        image
+            .set_image(image_data(&buffered, [1, 2], ImageType::ColorAlpha), false)
+            .unwrap();
+        assert_no_message(&mut receiver);
+
+        let waiting_image = image.clone();
+        let waiter = std::thread::spawn(move || {
+            let update = [70, 80];
+            waiting_image.update_image(
+                &[0, 0],
+                image_data(&update, [1, 1], ImageType::GrayAlpha),
+                false,
+                false,
+            )
+        });
+
+        wait_for_image(&image, &[70, 70, 70, 80, 45, 55, 65, 255]);
+
+        connected.store(false, Ordering::Release);
+        image.reset();
+        connected.store(true, Ordering::Release);
+        image.sync().unwrap();
+        waiter.join().unwrap().unwrap();
+
+        assert_message(&mut receiver);
+        assert_no_message(&mut receiver);
     }
 }
