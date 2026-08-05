@@ -11,6 +11,7 @@ pub(crate) trait UpdateList: Sync + Send {
     fn update_list(&self, type_id: u32, header: VecHeader, data: &[u8]) -> Result<(), String>;
 }
 
+/// A server-controlled vector mirrored on the client.
 pub struct VecState<T> {
     name: String,
     type_id: u32,
@@ -26,19 +27,23 @@ impl<T: Typed + Clone> VecState<T> {
         }
     }
 
+    /// Returns a copy of the complete vector.
     pub fn get(&self) -> Vec<T> {
         self.list.read().clone()
     }
 
+    /// Returns a copy of the item at `idx`, if it exists.
     pub fn get_item(&self, idx: usize) -> Option<T> {
         self.list.read().get(idx).cloned()
     }
 
+    /// Borrows the complete vector for the duration of `f`.
     pub fn read<R>(&self, mut f: impl FnMut(&Vec<T>) -> R) -> R {
         let l = self.list.read();
         f(&*l)
     }
 
+    /// Borrows the item at `idx` for the duration of `f`.
     pub fn read_item<R>(&self, idx: usize, mut f: impl FnMut(Option<&T>) -> R) -> R {
         let l = self.list.read();
         f(l.get(idx))

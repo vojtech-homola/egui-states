@@ -1,3 +1,5 @@
+"""Internal callback dispatch used by generated Python state servers."""
+
 import threading
 import traceback
 from collections.abc import Callable

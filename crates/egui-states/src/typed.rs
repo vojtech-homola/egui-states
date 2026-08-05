@@ -4,26 +4,47 @@ use std::hash::{Hash, Hasher};
 use crate::hashing::StableHasher;
 
 #[derive(Clone, Debug, PartialEq)]
+/// Runtime description of a value supported by the synchronization protocol.
 pub enum ObjectType {
+    /// An unsigned 8-bit integer.
     U8,
+    /// An unsigned 16-bit integer.
     U16,
+    /// An unsigned 32-bit integer.
     U32,
+    /// An unsigned 64-bit integer.
     U64,
+    /// A signed 8-bit integer.
     I8,
+    /// A signed 16-bit integer.
     I16,
+    /// A signed 32-bit integer.
     I32,
+    /// A signed 64-bit integer.
     I64,
+    /// A 64-bit floating-point number.
     F64,
+    /// A 32-bit floating-point number.
     F32,
+    /// A UTF-8 string.
     String,
+    /// A Boolean value.
     Bool,
+    /// A named fieldless enum and its `(variant, discriminant)` pairs.
     Enum(String, Vec<(String, i32)>),
+    /// A named struct and its ordered `(field, type)` pairs.
     Struct(String, Vec<(String, ObjectType)>),
+    /// A heterogeneous tuple.
     Tuple(Vec<ObjectType>),
+    /// A fixed-size array, represented by its length and element type.
     List(u32, Box<ObjectType>),
+    /// A variable-length vector.
     Vec(Box<ObjectType>),
+    /// A map, represented by its key and value types.
     Map(Box<ObjectType>, Box<ObjectType>),
+    /// An optional value.
     Option(Box<ObjectType>),
+    /// The unit type, used for empty signals and take values.
     Empty,
 }
 
@@ -88,12 +109,14 @@ impl Hash for ObjectType {
 }
 
 impl ObjectType {
+    /// Returns the stable protocol hash for this type description.
     pub fn get_hash(&self) -> u32 {
         let mut hasher = StableHasher::new();
         self.hash(&mut hasher);
         hasher.finish_u32()
     }
 
+    /// Extends an existing stable hash with this type description.
     pub fn get_hash_from(&self, hash: u32) -> u32 {
         let mut hasher = StableHasher::new();
         hash.hash(&mut hasher);
@@ -102,7 +125,19 @@ impl ObjectType {
     }
 }
 
+/// Describes how a Rust type is represented by the synchronization protocol.
+///
+/// Use [`egui_states::typed`](crate::typed) for user-defined structs and enums
+/// instead of implementing this trait manually.
+///
+/// # Safety
+///
+/// [`Self::get_type`] must describe the exact Serde wire representation of
+/// `Self`. Both peers use its hash to decide whether values are compatible;
+/// an incorrect implementation can make otherwise incompatible serialized
+/// values appear compatible.
 pub unsafe trait Typed {
+    /// Returns the protocol type description for `Self`.
     fn get_type() -> ObjectType;
 }
 

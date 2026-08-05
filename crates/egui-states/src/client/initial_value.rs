@@ -1,25 +1,45 @@
 use std::collections::HashMap;
 
 #[derive(Clone, Debug)]
+/// A type-erased initial value used while generating server bindings.
 pub enum InitValue {
+    /// An unsigned 8-bit integer.
     U8(u8),
+    /// An unsigned 16-bit integer.
     U16(u16),
+    /// An unsigned 32-bit integer.
     U32(u32),
+    /// An unsigned 64-bit integer.
     U64(u64),
+    /// A signed 8-bit integer.
     I8(i8),
+    /// A signed 16-bit integer.
     I16(i16),
+    /// A signed 32-bit integer.
     I32(i32),
+    /// A signed 64-bit integer.
     I64(i64),
+    /// A 64-bit floating-point number.
     F64(f64),
+    /// A 32-bit floating-point number.
     F32(f32),
+    /// A UTF-8 string.
     String(String),
+    /// A Boolean value.
     Bool(bool),
+    /// A fieldless enum variant name.
     Enum(String),
+    /// An optional initial value.
     Option(Option<Box<InitValue>>),
+    /// A named struct and its ordered field values.
     Struct(&'static str, Vec<(&'static str, InitValue)>),
+    /// A heterogeneous tuple.
     Tuple(Vec<InitValue>),
+    /// A fixed-size array.
     List(Vec<InitValue>),
+    /// A variable-length vector.
     Vec(Vec<InitValue>),
+    /// A map stored in canonical key order.
     Map(Vec<(InitValue, InitValue)>),
 }
 
@@ -56,7 +76,17 @@ impl PartialEq for InitValue {
     }
 }
 
+/// Converts a typed client value into the representation used by code generators.
+///
+/// Derive this trait for user-defined structs and fieldless enums with
+/// [`InitialValue`](derive@crate::InitialValue).
+///
+/// # Safety
+///
+/// The returned value must have the same protocol shape and meaning as `Self`.
+/// Code generators rely on this correspondence when producing source literals.
 pub unsafe trait InitialValue {
+    /// Returns a type-erased copy of this value.
     fn init_value(&self) -> InitValue;
 }
 

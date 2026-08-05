@@ -1,4 +1,6 @@
 # ruff: noqa: D107 D105 D102 PLC2801
+"""Typed state handles used by generated Python server bindings."""
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
@@ -101,9 +103,9 @@ class Value[T](_SignalBase):
         """Set the value of the UI element.
 
         Args:
-            value(T): The value to set.
-            set_signal(bool, optional): Whether to set the signal. Defaults to True.
-            update(bool, optional): Whether to update the UI. Defaults to False.
+            value: Value to store locally and send to the client.
+            set_signal: Whether to emit callbacks for the new value. Defaults to False.
+            update: Whether to request a client repaint. Defaults to False.
         """
         self._server.value_set(self._value_id, value, set_signal, update)
 
@@ -366,7 +368,7 @@ class Image(_StaticBase):
         """Get the image in the UI image.
 
         Returns:
-            npt.NDArray[np.uint8]: The image in the UI image. Stape is (height, width, 4). 4 is for RGBA.
+            npt.NDArray[np.uint8]: RGBA image with shape ``(height, width, 4)``.
         """
         data, shape = self._server.image_get(self._value_id)
         shape = (shape[0], shape[1], 4)
@@ -551,6 +553,12 @@ def _get_dtype_id(dtype: type[np.generic]) -> int:
 
 
 class Data[T: np.generic](_StaticBase):
+    """Contiguous NumPy-compatible numeric buffer mirrored to the client.
+
+    Args:
+        dtype: NumPy scalar type used to interpret and validate the buffer.
+    """
+
     def __init__(self, dtype: type[T]) -> None:
         self._dtype = dtype
 
@@ -614,6 +622,12 @@ class Data[T: np.generic](_StaticBase):
 
 
 class DataTake[T: np.generic](_StaticBase):
+    """One-shot numeric buffer sent to and consumed by the client.
+
+    Args:
+        dtype: NumPy scalar type used to validate the outgoing buffer.
+    """
+
     def __init__(self, dtype: type[T]) -> None:
         self._dtype = dtype
 
@@ -644,6 +658,12 @@ class DataTake[T: np.generic](_StaticBase):
 
 
 class SingleData[T: np.generic]:
+    """Handle for one indexed buffer within a :class:`DataMulti` state.
+
+    Instances are returned by :meth:`DataMulti.get` or indexed access; users
+    do not normally construct them directly.
+    """
+
     def __init__(self, dtype: type[T], server: StateServerCore, value_id: int, index: int) -> None:
         self._dtype = dtype
         self._server = server
@@ -707,6 +727,12 @@ class SingleData[T: np.generic]:
 
 
 class DataMulti[T: np.generic](_StaticBase):
+    """Collection of numeric buffers indexed by non-negative integers.
+
+    Args:
+        dtype: NumPy scalar type used to interpret and validate every buffer.
+    """
+
     def __init__(self, dtype: type[T]) -> None:
         self._dtype = dtype
 
@@ -748,6 +774,12 @@ class DataMulti[T: np.generic](_StaticBase):
 
 
 class SingleDataTake[T: np.generic]:
+    """Handle for one indexed transfer within a :class:`DataMultiTake` state.
+
+    Instances are returned by :meth:`DataMultiTake.get` or indexed access;
+    users do not normally construct them directly.
+    """
+
     def __init__(self, dtype: type[T], server: StateServerCore, value_id: int, index: int) -> None:
         self._dtype = dtype
         self._server = server
@@ -775,6 +807,12 @@ class SingleDataTake[T: np.generic]:
 
 
 class DataMultiTake[T: np.generic](_StaticBase):
+    """Keyed one-shot numeric buffers sent to and consumed by the client.
+
+    Args:
+        dtype: NumPy scalar type used to validate every outgoing buffer.
+    """
+
     def __init__(self, dtype: type[T]) -> None:
         self._dtype = dtype
 

@@ -13,6 +13,7 @@ pub(crate) trait UpdateMap: Sync + Send {
     fn update_map(&self, type_id: u32, header: MapHeader, data: &[u8]) -> Result<(), String>;
 }
 
+/// A server-controlled hash map mirrored on the client.
 pub struct MapState<K, V> {
     name: String,
     type_id: u32,
@@ -33,20 +34,24 @@ where
     }
 
     #[inline]
+    /// Returns a copy of the complete map.
     pub fn get(&self) -> HashMap<K, V> {
         self.dict.read().clone()
     }
 
     #[inline]
+    /// Returns a copy of the value at `key`, if it exists.
     pub fn get_item(&self, key: &K) -> Option<V> {
         self.dict.read().get(key).cloned()
     }
 
+    /// Borrows the complete map for the duration of `f`.
     pub fn read<R>(&self, mut f: impl FnMut(&HashMap<K, V>) -> R) -> R {
         let d = self.dict.read();
         f(&*d)
     }
 
+    /// Borrows the value at `key` for the duration of `f`.
     pub fn read_item<R>(&self, key: &K, mut f: impl FnMut(Option<&V>) -> R) -> R {
         let d = self.dict.read();
         let v = d.get(key);

@@ -62,6 +62,10 @@ pub(crate) trait UpdateData: Sync + Send {
     fn update_data(&self, message: DataMessage) -> Result<(), String>;
 }
 
+/// A client-side, contiguous numeric buffer synchronized from the server.
+///
+/// Supported element types are the primitive integer and floating-point types.
+/// Clone the handle freely; all clones refer to the same buffer.
 pub struct Data<T> {
     name: Arc<String>,
     id: u64,
@@ -89,11 +93,13 @@ where
         }
     }
 
+    /// Returns a copy of the complete buffer.
     pub fn get(&self) -> Vec<T> {
         let inner = self.inner.read();
         inner.clone()
     }
 
+    /// Borrows the complete buffer for the duration of `f` without copying it.
     pub fn read<R>(&self, f: impl Fn(&[T]) -> R) -> R {
         let inner = self.inner.read();
         f(&inner)
@@ -342,6 +348,7 @@ pub(crate) trait UpdateMultiData: Sync + Send {
     fn reset(&self);
 }
 
+/// A client-side collection of numeric buffers indexed by `u32` keys.
 pub struct DataMulti<T> {
     name: Arc<String>,
     id: u64,
@@ -370,11 +377,13 @@ where
     }
 
     #[inline]
+    /// Returns a copy of the buffer at `key`, or `None` when it is absent.
     pub fn get(&self, key: u32) -> Option<Vec<T>> {
         self.inner.read().get(&key).cloned()
     }
 
     #[inline]
+    /// Borrows the buffer at `key` for the duration of `f`.
     pub fn read<R>(&self, key: u32, f: impl Fn(Option<&[T]>) -> R) -> R {
         self.inner
             .read()
@@ -384,11 +393,13 @@ where
     }
 
     #[inline]
+    /// Borrows the complete keyed collection for the duration of `f`.
     pub fn read_all<R>(&self, f: impl Fn(&NoHashMap<u32, Vec<T>>) -> R) -> R {
         f(&self.inner.read())
     }
 
     #[inline]
+    /// Calls `f` for every currently stored key and buffer.
     pub fn for_each<F>(&self, f: impl Fn(u32, &[T])) {
         self.inner.read().iter().for_each(|(k, v)| f(*k, &v));
     }

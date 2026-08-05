@@ -6,6 +6,10 @@ mod pytypes;
 
 use pyo3::prelude::*;
 
+/// Registers the native classes, constants, and constructors on a Python module.
+///
+/// This is intended for the `egui_states_python` extension crate rather than
+/// direct application use.
 pub fn init_module(m: &Bound<PyModule>) -> PyResult<()> {
     m.add_class::<pyserver::StateServerCore>()?;
     m.add_class::<pytypes::PyObjectClass>()?;

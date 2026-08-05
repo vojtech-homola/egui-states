@@ -1,3 +1,5 @@
+"""Dispatch log messages emitted by the connected egui client."""
+
 from collections.abc import Callable
 from enum import Enum
 
@@ -44,8 +46,8 @@ class LoggingSignal:
         """Add logger for a specific level.
 
         Args:
-            level(Level): The logging level.
-            logger(Callable[[str], None]): The logger to add.
+            level: Logging level to receive.
+            logger: Callback that receives each message.
         """
         self._loggers[level.value].append(logger)
 
@@ -53,8 +55,8 @@ class LoggingSignal:
         """Remove logger for a specific level.
 
         Args:
-            level(Level): The logging level.
-            logger(Callable[[str], None]): The logger to remove.
+            level: Logging level from which to remove the callback.
+            logger: Previously registered callback.
         """
         if logger in self._loggers[level.value]:
             self._loggers[level.value].remove(logger)
@@ -63,6 +65,6 @@ class LoggingSignal:
         """Remove all loggers for a specific level.
 
         Args:
-            level(Level): The logging level.
+            level: Logging level whose callbacks should be removed.
         """
         self._loggers[level.value].clear()

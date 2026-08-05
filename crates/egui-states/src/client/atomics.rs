@@ -5,24 +5,55 @@ use std::sync::atomic::{
     Ordering::{Acquire, Release},
 };
 
+/// A copyable value that can be read through a low-overhead shared lock.
+///
+/// # Safety
+///
+/// `Lock` must faithfully store and load every value of `Self` and satisfy the
+/// synchronization guarantees documented by [`AtomicLockStatic`].
 pub unsafe trait AtomicStatic: Copy {
+    /// Storage used by [`crate::StaticAtomic`].
     type Lock: AtomicLockStatic<Self>;
 }
 
+/// Thread-safe storage backing an [`AtomicStatic`] value.
+///
+/// # Safety
+///
+/// Concurrent calls must be data-race free. A completed [`Self::store`] must
+/// eventually be observable by [`Self::load`], and values must never be torn.
 pub unsafe trait AtomicLockStatic<T: Copy>: Sync + Send {
+    /// Creates storage containing `value`.
     fn new(value: T) -> Self;
+    /// Loads the current value.
     fn load(&self) -> T;
+    /// Replaces the current value.
     fn store(&self, value: T);
 }
 
+/// An [`AtomicStatic`] value whose outgoing update can be ordered with storage.
+///
+/// # Safety
+///
+/// `Lock` must implement [`AtomicLock::update`] atomically with respect to
+/// concurrent updates, in addition to the guarantees of [`AtomicStatic`].
 pub unsafe trait Atomic: Copy {
+    /// Storage used by [`crate::ValueAtomic`].
     type Lock: AtomicLock<Self>;
 }
 
+/// Storage that orders an outgoing notification before committing a value.
+///
+/// # Safety
+///
+/// Implementations must serialize the callback and store as one update so
+/// concurrent writers cannot send one value and commit another out of order.
 pub unsafe trait AtomicLock<T: Copy>: AtomicLockStatic<T> {
+    /// Runs `before_store` and then commits `value` as one serialized update.
     fn update<F: FnOnce()>(&self, value: T, before_store: F);
 }
 
+/// Adds serialized update ordering around an [`AtomicLockStatic`].
 pub struct UpdateLock<L>(Mutex<()>, L);
 
 unsafe impl<T: Copy, L: AtomicLockStatic<T>> AtomicLockStatic<T> for UpdateLock<L> {
@@ -51,6 +82,7 @@ unsafe impl<T: Copy, L: AtomicLockStatic<T>> AtomicLock<T> for UpdateLock<L> {
     }
 }
 
+/// `RwLock`-based storage for targets without a suitable native atomic.
 pub struct FallbackLock<T: Copy>(RwLock<T>);
 
 unsafe impl<T: Copy + Send + Sync> AtomicLockStatic<T> for FallbackLock<T> {

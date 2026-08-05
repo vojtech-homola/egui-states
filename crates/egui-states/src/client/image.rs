@@ -27,6 +27,10 @@ pub(crate) enum ImageMessage {
     Fill([u32; 2], [u8; 4]),
 }
 
+/// A server-controlled RGBA texture used by the egui client.
+///
+/// Call [`Self::initialize`] once with an egui context before expecting server
+/// image updates to become visible.
 pub struct Image {
     name: Arc<String>,
     id: u64,
@@ -44,6 +48,7 @@ impl Image {
         }
     }
 
+    /// Returns the texture identifier and `[width, height]`, if initialized.
     pub fn get(&self) -> Option<(egui::TextureId, [usize; 2])> {
         self.inner
             .0
@@ -52,6 +57,7 @@ impl Image {
             .map(|(texture_handle, size)| (texture_handle.id(), *size))
     }
 
+    /// Returns the texture identifier, if initialized.
     pub fn get_id(&self) -> Option<egui::TextureId> {
         self.inner
             .0
@@ -60,10 +66,14 @@ impl Image {
             .map(|(texture_handle, _)| texture_handle.id())
     }
 
+    /// Returns the texture size as `[width, height]`, if initialized.
     pub fn get_size(&self) -> Option<[usize; 2]> {
         self.inner.0.read().as_ref().map(|(_, size)| *size)
     }
 
+    /// Creates the egui texture with an initial image.
+    ///
+    /// Subsequent calls are ignored after the handle has been initialized.
     pub fn initialize(&self, ctx: &egui::Context, image: ColorImage) {
         let image_data = ImageData::Color(Arc::new(image));
         let name = format!("image_{}", self.id);

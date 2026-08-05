@@ -15,13 +15,19 @@ fn report_error(sender: &MessageSender, error: String) {
     sender.send_message(&error);
 }
 
+/// Editable snapshot that sends a [`Value`] only when it changed.
+///
+/// Modify [`Self::v`], then consume the snapshot with [`Self::set`] or
+/// [`Self::set_signal`].
 pub struct Diff<'a, T> {
+    /// Editable copy of the synchronized value.
     pub v: T,
     original: T,
     value: &'a Value<T>,
 }
 
 impl<'a, T: Serialize + Clone + PartialEq> Diff<'a, T> {
+    /// Captures the current value and remembers its source handle.
     pub fn new(value: &'a Value<T>) -> Self {
         let v = value.get();
         Self {
@@ -32,6 +38,7 @@ impl<'a, T: Serialize + Clone + PartialEq> Diff<'a, T> {
     }
 
     #[inline]
+    /// Sends the edited value if it differs from the captured value.
     pub fn set(self) {
         if self.v != self.original {
             self.value.set(self.v);
@@ -39,6 +46,7 @@ impl<'a, T: Serialize + Clone + PartialEq> Diff<'a, T> {
     }
 
     #[inline]
+    /// Sends and signals the edited value if it differs from the captured value.
     pub fn set_signal(self) {
         if self.v != self.original {
             self.value.set_signal(self.v);
@@ -46,13 +54,16 @@ impl<'a, T: Serialize + Clone + PartialEq> Diff<'a, T> {
     }
 }
 
+/// Editable snapshot that sends a [`ValueAtomic`] only when it changed.
 pub struct DiffAtomic<'a, T: Atomic> {
+    /// Editable copy of the synchronized value.
     pub v: T,
     original: T,
     value: &'a ValueAtomic<T>,
 }
 
 impl<'a, T: Serialize + Clone + PartialEq + Atomic> DiffAtomic<'a, T> {
+    /// Captures the current value and remembers its source handle.
     pub fn new(value: &'a ValueAtomic<T>) -> Self {
         let v = value.get();
         Self {
@@ -63,6 +74,7 @@ impl<'a, T: Serialize + Clone + PartialEq + Atomic> DiffAtomic<'a, T> {
     }
 
     #[inline]
+    /// Sends the edited value if it differs from the captured value.
     pub fn set(self) {
         if self.v != self.original {
             self.value.set(self.v);
@@ -70,6 +82,7 @@ impl<'a, T: Serialize + Clone + PartialEq + Atomic> DiffAtomic<'a, T> {
     }
 
     #[inline]
+    /// Sends and signals the edited value if it differs from the captured value.
     pub fn set_signal(self) {
         if self.v != self.original {
             self.value.set_signal(self.v);
@@ -85,10 +98,13 @@ pub(crate) trait UpdateValueTake: Sync + Send {
     fn update_take(&self, type_id: u32, data: &[u8], blocking: bool) -> Result<(), String>;
 }
 
+/// Type-level selection of how incoming server callbacks are buffered.
 pub trait GetQueueType: Sync + Send + 'static {
+    /// Returns whether every pending change should be queued.
     fn is_queue() -> bool;
 }
 
+/// Marker selecting single mode, where pending changes may coalesce.
 pub struct NoQueue;
 
 impl GetQueueType for NoQueue {
@@ -98,6 +114,7 @@ impl GetQueueType for NoQueue {
     }
 }
 
+/// Marker selecting queue mode, where every pending change is processed.
 pub struct Queue;
 
 impl GetQueueType for Queue {
@@ -108,6 +125,11 @@ impl GetQueueType for Queue {
 }
 
 // Value --------------------------------------------
+/// A bidirectional synchronized value.
+///
+/// Client writes update the local copy immediately and are sent to the server.
+/// `Q` controls how server-side callbacks process changes produced by
+/// [`Self::set_signal`] or [`Self::write_signal`].
 pub struct Value<T, Q: GetQueueType = NoQueue> {
     name: String,
     id: u64,
@@ -136,10 +158,12 @@ where
         }
     }
 
+    /// Returns a copy of the current client value.
     pub fn get(&self) -> T {
         self.inner.0.read().clone()
     }
 
+    /// Borrows the current value for the duration of `f` without copying it.
     pub fn read<R>(&self, f: impl Fn(&T) -> R) -> R {
         let r = self.inner.0.read();
         f(&r)
@@ -200,10 +224,12 @@ where
         *w = value;
     }
 
+    /// Replaces the client value and sends it to the server without signaling.
     pub fn set(&self, value: T) {
         self.set_inner(value, false);
     }
 
+    /// Replaces the client value and asks the server to emit its callbacks.
     pub fn set_signal(&self, value: T) {
         self.set_inner(value, true);
     }
@@ -242,6 +268,7 @@ impl<T, Q: GetQueueType> Clone for Value<T, Q> {
     }
 }
 
+/// Atomic variant of [`Value`] for small copyable values.
 pub struct ValueAtomic<T: Atomic, Q: GetQueueType = NoQueue> {
     name: String,
     id: u64,
@@ -270,6 +297,7 @@ where
         }
     }
 
+    /// Atomically loads the current client value.
     pub fn get(&self) -> T {
         self.inner.0.load()
     }
@@ -288,10 +316,12 @@ where
         self.inner.0.update(value, || self.inner.1.send(message));
     }
 
+    /// Atomically replaces the value and sends it without signaling.
     pub fn set(&self, value: T) {
         self.set_inner(value, false);
     }
 
+    /// Atomically replaces the value and asks the server to emit callbacks.
     pub fn set_signal(&self, value: T) {
         self.set_inner(value, true);
     }
@@ -331,6 +361,7 @@ impl<T: Atomic, Q: GetQueueType> Clone for ValueAtomic<T, Q> {
 }
 
 // Static --------------------------------------------
+/// A server-controlled value that is read-only on the client.
 pub struct Static<T> {
     name: String,
     id: u64,
@@ -348,10 +379,12 @@ impl<T: Clone> Static<T> {
         }
     }
 
+    /// Returns a copy of the current value.
     pub fn get(&self) -> T {
         self.value.read().clone()
     }
 
+    /// Borrows the current value for the duration of `f` without copying it.
     pub fn read<R>(&self, f: impl Fn(&T) -> R) -> R {
         let r = self.value.read();
         f(&r)
@@ -381,6 +414,7 @@ impl<T> Clone for Static<T> {
     }
 }
 
+/// Atomic server-controlled value that is read-only on the client.
 pub struct StaticAtomic<T: AtomicStatic> {
     name: String,
     id: u64,
@@ -398,6 +432,7 @@ impl<T: AtomicStatic> StaticAtomic<T> {
         }
     }
 
+    /// Atomically loads the current value.
     pub fn get(&self) -> T {
         self.value.load()
     }
@@ -427,6 +462,10 @@ impl<T: AtomicStatic> Clone for StaticAtomic<T> {
 }
 
 // Signal --------------------------------------------
+/// A client-to-server event carrying a value without storing it.
+///
+/// `Q` controls whether server callbacks queue every event or coalesce pending
+/// events to the latest one.
 pub struct Signal<T, Q: GetQueueType = NoQueue> {
     name: String,
     id: u64,
@@ -446,6 +485,7 @@ impl<T: Serialize + Clone, Q: GetQueueType> Signal<T, Q> {
         }
     }
 
+    /// Emits `value` to the server.
     pub fn set(&self, value: impl Into<T>) {
         let message = to_message(&value.into());
 
@@ -472,6 +512,10 @@ impl<T, Q: GetQueueType> Clone for Signal<T, Q> {
 }
 
 // ValueTake --------------------------------------------
+/// A one-shot value sent by the server and consumed by the client.
+///
+/// A newly received value replaces an untaken value. Taking a blocking value
+/// sends the acknowledgement that releases the server's next send.
 pub struct ValueTake<T> {
     name: String,
     id: u64,
@@ -491,6 +535,7 @@ impl<T> ValueTake<T> {
         }
     }
 
+    /// Removes and returns the pending value, if one has arrived.
     pub fn take(&self) -> Option<T> {
         let value = self.value.write().take();
         if let Some((val, blocking)) = value {
@@ -502,6 +547,7 @@ impl<T> ValueTake<T> {
         None
     }
 
+    /// Returns whether a value is waiting to be taken.
     pub fn is_some(&self) -> bool {
         self.value.read().is_some()
     }

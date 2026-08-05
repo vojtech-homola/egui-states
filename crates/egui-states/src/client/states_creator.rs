@@ -31,9 +31,16 @@ pub(crate) fn hash_id(hasher: &mut StableHasher, id: u64) {
     id.hash(hasher);
 }
 
+/// Factory used by [`State::new`](crate::State::new) to register client states.
+///
+/// Applications normally receive an implementation through a derived
+/// [`State`](derive@crate::State) implementation instead of implementing this
+/// trait themselves.
 pub trait StatesCreator {
+    /// Creates a nested state group under `name`.
     fn substate<S: State>(&mut self, name: &str) -> S;
 
+    /// Creates a synchronized read/write value with an initial client value.
     fn value<T, Q>(&mut self, name: &'static str, value: T) -> Value<T, Q>
     where
         T: for<'a> Deserialize<'a>
@@ -46,10 +53,12 @@ pub trait StatesCreator {
             + 'static,
         Q: GetQueueType;
 
+    /// Creates a one-shot value received by and consumed on the client.
     fn value_take<T>(&mut self, name: &'static str) -> ValueTake<T>
     where
         T: for<'a> Deserialize<'a> + Serialize + Typed + Send + Sync + 'static;
 
+    /// Creates an atomic synchronized read/write value.
     fn atomic<T, Q>(&mut self, name: &'static str, value: T) -> ValueAtomic<T, Q>
     where
         T: for<'a> Deserialize<'a>
@@ -63,6 +72,7 @@ pub trait StatesCreator {
             + 'static,
         Q: GetQueueType;
 
+    /// Creates a server-controlled value that is read-only on the client.
     fn add_static<T>(&mut self, name: &'static str, value: T) -> Static<T>
     where
         T: for<'a> Deserialize<'a>
@@ -74,6 +84,7 @@ pub trait StatesCreator {
             + Sync
             + 'static;
 
+    /// Creates an atomic server-controlled value that is read-only on the client.
     fn static_atomic<T>(&mut self, name: &'static str, value: T) -> StaticAtomic<T>
     where
         T: for<'a> Deserialize<'a>
@@ -86,38 +97,46 @@ pub trait StatesCreator {
             + AtomicStatic
             + 'static;
 
+    /// Creates a client-to-server event carrying values of type `T`.
     fn signal<T, Q>(&mut self, name: &'static str) -> Signal<T, Q>
     where
         T: Serialize + Typed + Clone + Send + Sync + 'static,
         Q: GetQueueType;
 
+    /// Creates a server-controlled egui image texture.
     fn image(&mut self, name: &'static str) -> Image;
 
+    /// Creates a server-controlled key/value collection.
     fn map<K, V>(&mut self, name: &'static str) -> MapState<K, V>
     where
         K: Hash + Eq + Clone + for<'a> Deserialize<'a> + Send + Sync + Typed + 'static,
         V: Clone + for<'a> Deserialize<'a> + Send + Sync + Typed + 'static;
 
+    /// Creates a server-controlled vector collection.
     fn vec<T>(&mut self, name: &'static str) -> VecState<T>
     where
         T: Clone + for<'a> Deserialize<'a> + Send + Sync + Typed + 'static;
 
     #[allow(private_bounds)]
+    /// Creates a contiguous server-controlled numeric buffer.
     fn data<T>(&mut self, name: &'static str) -> Data<T>
     where
         T: GetDataType + Send + Sync + 'static;
 
     #[allow(private_bounds)]
+    /// Creates keyed server-controlled numeric buffers.
     fn data_multi<T>(&mut self, name: &'static str) -> DataMulti<T>
     where
         T: GetDataType + Send + Sync + 'static;
 
     #[allow(private_bounds)]
+    /// Creates a one-shot numeric buffer consumed by the client.
     fn data_take<T>(&mut self, name: &'static str) -> DataTake<T>
     where
         T: GetDataType + Send + Sync + 'static;
 
     #[allow(private_bounds)]
+    /// Creates keyed one-shot numeric buffers consumed by the client.
     fn data_multi_take<T>(&mut self, name: &'static str) -> DataMultiTake<T>
     where
         T: GetDataType + Send + Sync + 'static;

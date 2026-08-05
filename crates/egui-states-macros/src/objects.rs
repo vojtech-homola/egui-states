@@ -251,11 +251,10 @@ fn parse_enum(input: TokenStream) -> EnumInfo {
         panic!("Enums with generics are not supported");
     }
 
-    let variants = variants.clone().into_iter().map(|v| v);
     let mut names = Vec::new();
     let mut values = Vec::new();
     let mut next_value = Some(0i32);
-    for variant in variants.clone() {
+    for variant in variants {
         if variant.fields != syn::Fields::Unit {
             panic!("Enum variants must be unit variants");
         }

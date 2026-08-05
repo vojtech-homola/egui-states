@@ -37,6 +37,10 @@ use super::options::ErrorHandler;
 use super::{Result, ServerError, ServerOptions};
 
 #[derive(Clone)]
+/// Native WebSocket server that owns synchronized states and callback workers.
+///
+/// Register every state, call [`Self::finalize`], and then call [`Self::start`].
+/// Generated server bindings perform registration and finalization for you.
 pub struct StateServer {
     inner: Arc<ServerInner>,
 }
@@ -102,10 +106,12 @@ impl Drop for ServerInner {
 }
 
 impl StateServer {
+    /// Creates a server with default options for `port`.
     pub fn new(port: u16) -> Result<Self> {
         Self::with_options(ServerOptions::new(port))
     }
 
+    /// Creates a server with explicit network, authentication, and worker options.
     pub fn with_options(options: ServerOptions) -> Result<Self> {
         let addr = match options.ip_addr {
             Some(addr) => SocketAddrV4::new(addr, options.port),
@@ -139,11 +145,15 @@ impl StateServer {
         })
     }
 
+    /// Freezes state registration and prepares the handshake description.
+    ///
+    /// Call this after constructing every state and before [`Self::start`].
     pub fn finalize(&self) -> Result<()> {
         self.inner.server.write().finalize();
         Ok(())
     }
 
+    /// Starts listening and launches callback workers.
     pub fn start(&self) -> Result<()> {
         self.inner
             .server
@@ -154,22 +164,30 @@ impl StateServer {
         Ok(())
     }
 
+    /// Stops listening and disconnects the current client.
     pub fn stop(&self) {
         self.inner.server.write().stop();
     }
 
+    /// Disconnects the current client while leaving the server running.
     pub fn disconnect_client(&self) {
         self.inner.server.write().disconnect_client();
     }
 
+    /// Returns whether the server is listening.
     pub fn is_running(&self) -> bool {
         self.inner.server.read().is_running()
     }
 
+    /// Returns whether a client is connected.
     pub fn is_connected(&self) -> bool {
         self.inner.server.read().is_connected()
     }
 
+    /// Requests a client repaint.
+    ///
+    /// `None` requests an immediate repaint; `Some(seconds)` schedules it after
+    /// the supplied delay.
     pub fn update(&self, duration: Option<f32>) -> Result<()> {
         self.inner
             .server
@@ -178,14 +196,17 @@ impl StateServer {
             .map_err(|_| ServerError::new("failed to send update"))
     }
 
+    /// Replaces the handler for callback decoding failures and callback panics.
     pub fn set_error_handler(&self, handler: impl Fn(ServerError) + Send + Sync + 'static) {
         *self.inner.error_handler.write() = Arc::new(handler);
     }
 
+    /// Registers a callback receiving the remote address after a client connects.
     pub fn on_connect(&self, callback: impl Fn(String) + Send + Sync + 'static) -> CallbackHandle {
         self.add_typed_callback(ON_CONNECT_ID, callback)
     }
 
+    /// Registers a callback invoked when the client disconnects.
     pub fn on_disconnect(&self, callback: impl Fn() + Send + Sync + 'static) -> CallbackHandle {
         self.add_raw_callback(ON_DISCONNECT_ID, move |_, _| {
             callback();
@@ -193,6 +214,7 @@ impl StateServer {
         })
     }
 
+    /// Registers a callback for diagnostic text messages sent by the client.
     pub fn on_client_message(
         &self,
         callback: impl Fn(String) + Send + Sync + 'static,

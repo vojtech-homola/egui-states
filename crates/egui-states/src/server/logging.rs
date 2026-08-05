@@ -4,10 +4,15 @@ use super::callbacks::CallbackHandle;
 use super::state_server::{StateServer, deserialize_bytes};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Severity attached to a log message sent by the client.
 pub enum LogLevel {
+    /// Diagnostic information useful while debugging.
     Debug,
+    /// Routine informational output.
     Info,
+    /// A potentially problematic condition.
     Warning,
+    /// An error reported by the client.
     Error,
 }
 
@@ -24,11 +29,13 @@ impl LogLevel {
 }
 
 #[derive(Clone)]
+/// Dispatcher for log messages emitted by the connected client.
 pub struct LoggingSignal {
     server: StateServer,
 }
 
 impl LoggingSignal {
+    /// Creates a logging dispatcher registered with `server`.
     pub fn new(server: &StateServer) -> Self {
         server.set_signal_to_queue(LOGGING_ID);
         Self {
@@ -36,6 +43,9 @@ impl LoggingSignal {
         }
     }
 
+    /// Registers a callback for one severity level.
+    ///
+    /// The returned handle must be retained to keep the callback connected.
     pub fn add_logger(
         &self,
         level: LogLevel,

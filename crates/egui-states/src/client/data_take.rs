@@ -26,6 +26,9 @@ pub(crate) trait UpdateDataTake: Sync + Send {
     fn update(&self, message: DataTakeMessage, blocking: bool) -> Result<(), String>;
 }
 
+/// A one-shot numeric buffer sent from the server to the client.
+///
+/// Taking a blocking transfer also sends its acknowledgement to the server.
 pub struct DataTake<T> {
     name: Arc<String>,
     id: u64,
@@ -53,6 +56,7 @@ where
         }
     }
 
+    /// Removes and returns the pending buffer, if one has arrived.
     pub fn take(&self) -> Option<Vec<T>> {
         let inner = self.inner.write().take();
         if let Some((val, blocking)) = inner {
@@ -64,6 +68,7 @@ where
         None
     }
 
+    /// Returns whether a buffer is waiting to be taken.
     pub fn is_some(&self) -> bool {
         self.inner.read().is_some()
     }
@@ -236,6 +241,7 @@ pub(crate) trait UpdateDataMultiTake: Sync + Send {
     fn reset(&self);
 }
 
+/// Keyed one-shot numeric buffers sent from the server to the client.
 pub struct DataMultiTake<T> {
     name: Arc<String>,
     id: u64,
@@ -263,6 +269,7 @@ where
         }
     }
 
+    /// Removes and returns the pending buffer at `key`, if present.
     pub fn take(&self, key: u32) -> Option<Vec<T>> {
         let inner = self.inner.write().remove(&key);
         if let Some((val, blocking)) = inner {
@@ -274,6 +281,7 @@ where
         None
     }
 
+    /// Returns whether a buffer at `key` is waiting to be taken.
     pub fn is_some(&self, key: u32) -> bool {
         self.inner.read().contains_key(&key)
     }

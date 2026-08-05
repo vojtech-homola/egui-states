@@ -131,9 +131,13 @@ pub(crate) fn print_error(error: &str) {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
+/// Current client connection status.
 pub enum ConnectionState {
+    /// No connection has been established or a connection attempt is pending.
     NotConnected,
+    /// The WebSocket handshake completed and state synchronization is active.
     Connected,
+    /// A previously active connection ended.
     Disconnected,
 }
 
@@ -151,6 +155,7 @@ impl ClientInner {
 }
 
 #[derive(Clone)]
+/// Handle for controlling the background state-synchronization client.
 pub struct Client(Arc<ClientInner>);
 
 impl Client {
@@ -165,10 +170,15 @@ impl Client {
         Self(Arc::new(inner))
     }
 
+    /// Sets the egui context used to request repaints after incoming updates.
+    ///
+    /// This must be called before cloning the client; use
+    /// [`ClientBuilder::context`] when possible.
     pub fn set_context(&mut self, context: Context) {
         Arc::get_mut(&mut self.0).unwrap().set_context(context);
     }
 
+    /// Requests an egui repaint immediately, or after `time` seconds if positive.
     pub fn update(&self, time: f32) {
         if let Some(ctx) = &self.0.context {
             if time > 0.0 {
@@ -184,10 +194,12 @@ impl Client {
         self.0.connect_signal.wait_clear_async().await;
     }
 
+    /// Starts or retries a connection to the configured server.
     pub fn connect(&self) {
         self.0.connect_signal.set();
     }
 
+    /// Closes the active connection.
     pub fn disconnect(&self) {
         self.0.sender.close();
     }
@@ -199,11 +211,13 @@ impl Client {
         }
     }
 
+    /// Returns the current connection status.
     pub fn get_state(&self) -> ConnectionState {
         *self.0.state.read()
     }
 }
 
+/// Configures and builds a typed client and its root state tree.
 pub struct ClientBuilder<T> {
     creator: StatesCreatorClient,
     states: T,
@@ -219,6 +233,7 @@ impl<T> ClientBuilder<T>
 where
     T: State,
 {
+    /// Creates a builder targeting `127.0.0.1` with no authentication settings.
     pub fn new() -> Self {
         let (sender, rx) = MessageSender::new();
 
@@ -238,10 +253,12 @@ where
         }
     }
 
+    /// Sets the server IPv4 address.
     pub fn addr(self, addr: Ipv4Addr) -> Self {
         Self { addr, ..self }
     }
 
+    /// Requires the server to accept this application version.
     pub fn version(self, version: u64) -> Self {
         Self {
             version: Some(version),
@@ -249,6 +266,7 @@ where
         }
     }
 
+    /// Sets the authentication token sent during the handshake.
     pub fn token(self, token: String) -> Self {
         Self {
             token: Some(token),
@@ -256,6 +274,7 @@ where
         }
     }
 
+    /// Sets the egui context used for repaint requests.
     pub fn context(self, context: Context) -> Self {
         Self {
             context: Some(context),
@@ -263,10 +282,19 @@ where
         }
     }
 
+    /// Returns the stable hash of the configured state tree.
+    ///
+    /// Generated server bindings expose the same hash so mismatched state
+    /// layouts can be rejected during the handshake.
     pub fn get_version_hash(&self) -> u64 {
         self.creator.get_version_hash()
     }
 
+    /// Builds the root state and starts the background client task for `port`.
+    ///
+    /// The task waits until [`Client::connect`] is called before opening a
+    /// connection. On native targets it owns a dedicated Tokio runtime; on WASM
+    /// it is spawned on the current browser executor.
     pub fn build(self, port: u16) -> (T, Client) {
         let Self {
             creator,

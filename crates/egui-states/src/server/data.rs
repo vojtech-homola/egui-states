@@ -18,6 +18,7 @@ use super::{Result, ServerError};
 /// `Self`. Every bit pattern received for that protocol type must also be a
 /// valid value of `Self`, and `Self` must not contain padding bytes.
 pub unsafe trait DataElement: Copy + Send + Sync + 'static {
+    /// Numeric protocol type identifier for `Self`.
     const TYPE_ID: u8;
 }
 
@@ -73,6 +74,7 @@ fn data_from_bytes<T: DataElement>(data: &[u8]) -> Result<Vec<T>> {
 }
 
 #[derive(Clone)]
+/// Server-side contiguous numeric buffer mirrored on the client.
 pub struct Data<T> {
     inner: Arc<CoreData>,
     _type: PhantomData<T>,
@@ -82,6 +84,7 @@ impl<T> Data<T>
 where
     T: DataElement,
 {
+    /// Registers an empty numeric buffer under `name`.
     pub fn new(server: &StateServer, name: impl Into<String>) -> Result<Self> {
         let (_, inner) = server.add_data::<T>(name.into())?;
         Ok(Self {
@@ -90,49 +93,58 @@ where
         })
     }
 
+    /// Returns a copy of the complete buffer.
     pub fn get(&self) -> Result<Vec<T>> {
         self.inner.get(data_from_bytes)
     }
 
+    /// Passes the typed buffer to `f`.
     pub fn read<R>(&self, f: impl FnOnce(&[T]) -> R) -> Result<R> {
         let data = self.get()?;
         Ok(f(&data))
     }
 
+    /// Borrows the buffer's native-endian byte representation for `f`.
     pub fn read_bytes<R>(&self, f: impl Fn(&[u8]) -> R) -> R {
         self.inner.get(f)
     }
 
+    /// Replaces the complete buffer and optionally requests a client repaint.
     pub fn set(&self, data: &[T], update: bool) -> Result<()> {
         self.inner
             .set(data_holder(data), update)
             .map_err(ServerError::new)
     }
 
+    /// Appends elements and optionally requests a client repaint.
     pub fn add(&self, data: &[T], update: bool) -> Result<()> {
         self.inner
             .add(data_holder(data), update)
             .map_err(ServerError::new)
     }
 
+    /// Replaces elements starting at `index`.
     pub fn replace(&self, data: &[T], index: usize, update: bool) -> Result<()> {
         self.inner
             .replace(data_holder(data), index, update)
             .map_err(ServerError::new)
     }
 
+    /// Removes `count` elements starting at `index`.
     pub fn remove(&self, index: usize, count: usize, update: bool) -> Result<()> {
         self.inner
             .remove(index, count, update)
             .map_err(ServerError::new)
     }
 
+    /// Removes all elements and optionally requests a client repaint.
     pub fn clear(&self, update: bool) -> Result<()> {
         self.inner.clear(update).map_err(ServerError::new)
     }
 }
 
 #[derive(Clone)]
+/// One-shot numeric buffer sent by the server and consumed by the client.
 pub struct DataTake<T> {
     inner: Arc<CoreDataTake>,
     _type: PhantomData<T>,
@@ -142,6 +154,7 @@ impl<T> DataTake<T>
 where
     T: DataElement,
 {
+    /// Registers a one-shot numeric buffer under `name`.
     pub fn new(server: &StateServer, name: impl Into<String>) -> Result<Self> {
         let (_, inner) = server.add_data_take::<T>(name.into())?;
         Ok(Self {
@@ -150,6 +163,11 @@ where
         })
     }
 
+    /// Sends `data` to the client.
+    ///
+    /// `blocking` waits for the client to consume the previous transfer before
+    /// the next send. `cache` retains the last transfer for a newly connecting
+    /// client, and `update` requests a repaint.
     pub fn set(&self, data: &[T], blocking: bool, update: bool, cache: bool) -> Result<()> {
         self.inner
             .set(data_holder(data), blocking, update, cache)
@@ -158,6 +176,7 @@ where
 }
 
 #[derive(Clone)]
+/// Server-side numeric buffers indexed by `u32` keys.
 pub struct DataMulti<T> {
     inner: Arc<CoreDataMulti>,
     _type: PhantomData<T>,
@@ -167,6 +186,7 @@ impl<T> DataMulti<T>
 where
     T: DataElement,
 {
+    /// Registers an empty keyed buffer collection under `name`.
     pub fn new(server: &StateServer, name: impl Into<String>) -> Result<Self> {
         let (_, inner) = server.add_data_multi::<T>(name.into())?;
         Ok(Self {
@@ -175,6 +195,7 @@ where
         })
     }
 
+    /// Returns the buffer at `index`, or `None` if it is absent.
     pub fn get(&self, index: u32) -> Result<Option<Vec<T>>> {
         self.inner.get(index, |data| match data {
             Some(data) => data_from_bytes(data).map(Some),
@@ -182,46 +203,54 @@ where
         })
     }
 
+    /// Replaces the buffer at `index`.
     pub fn set(&self, index: u32, data: &[T], update: bool) -> Result<()> {
         self.inner
             .set(index, data_holder(data), update)
             .map_err(ServerError::new)
     }
 
+    /// Appends elements to the buffer at `index`.
     pub fn add(&self, index: u32, data: &[T], update: bool) -> Result<()> {
         self.inner
             .add(index, data_holder(data), update)
             .map_err(ServerError::new)
     }
 
+    /// Replaces elements starting at `data_index` in the buffer at `index`.
     pub fn replace(&self, index: u32, data_index: usize, data: &[T], update: bool) -> Result<()> {
         self.inner
             .replace(index, data_index, data_holder(data), update)
             .map_err(ServerError::new)
     }
 
+    /// Removes `count` elements from `data_index` in the selected buffer.
     pub fn remove(&self, index: u32, data_index: usize, count: usize, update: bool) -> Result<()> {
         self.inner
             .remove(index, data_index, count, update)
             .map_err(ServerError::new)
     }
 
+    /// Clears the buffer at `index` without removing its key.
     pub fn clear(&self, index: u32, update: bool) -> Result<()> {
         self.inner.clear(index, update).map_err(ServerError::new)
     }
 
+    /// Removes the buffer and key at `index`.
     pub fn remove_index(&self, index: u32, update: bool) -> Result<()> {
         self.inner
             .remove_index(index, update)
             .map_err(ServerError::new)
     }
 
+    /// Removes every keyed buffer.
     pub fn reset(&self, update: bool) -> Result<()> {
         self.inner.reset(update).map_err(ServerError::new)
     }
 }
 
 #[derive(Clone)]
+/// Keyed one-shot numeric buffers sent from the server to the client.
 pub struct DataMultiTake<T> {
     inner: Arc<CoreDataMultiTake>,
     _type: PhantomData<T>,
@@ -231,6 +260,7 @@ impl<T> DataMultiTake<T>
 where
     T: DataElement,
 {
+    /// Registers an empty keyed one-shot collection under `name`.
     pub fn new(server: &StateServer, name: impl Into<String>) -> Result<Self> {
         let (_, inner) = server.add_data_multi_take::<T>(name.into())?;
         Ok(Self {
@@ -239,6 +269,7 @@ where
         })
     }
 
+    /// Sends a buffer at `index` with blocking, repaint, and caching controls.
     pub fn set(
         &self,
         index: u32,
@@ -252,12 +283,14 @@ where
             .map_err(ServerError::new)
     }
 
+    /// Removes the cached or pending transfer at `index`.
     pub fn remove_index(&self, index: u32, update: bool) -> Result<()> {
         self.inner
             .remove_index(index, update)
             .map_err(ServerError::new)
     }
 
+    /// Removes every cached or pending keyed transfer.
     pub fn reset(&self, update: bool) -> Result<()> {
         self.inner.reset(update).map_err(ServerError::new)
     }

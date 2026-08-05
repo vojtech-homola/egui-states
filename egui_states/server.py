@@ -1,4 +1,6 @@
 # ruff: noqa: D107
+"""Base classes used by generated Python state servers."""
+
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from typing import Any
@@ -37,7 +39,7 @@ class StatesBase(ABC):
         """Request the UI to update.
 
         Args:
-            dt(float | None, optional): Delay time to next update, None means immediate. Defaults to None.
+            dt: Repaint delay in seconds, or ``None`` for an immediate repaint.
         """
         self._server.update(dt)
 
@@ -56,7 +58,7 @@ class StatesBase(ABC):
 
 
 class StateServerBase[T: StatesBase]:
-    """The main class for the SteteServer for UI."""
+    """Server that owns a generated state tree and its callback workers."""
 
     def __init__(
         self,
@@ -68,16 +70,16 @@ class StateServerBase[T: StatesBase]:
         version: int | None = None,
         token: str | None = None,
     ) -> None:
-        """Initialize the SteteServer.
+        """Initialize the state server.
 
         Args:
-            state_class (RoorState): The class representing the UI states.
-            port (int): The port to run the server on.
-            signals_workers (int): The number of worker threads for signal handling.
-            error_handler (Callable[[Exception], None] | None): The error handler function.
-            ip_addr (tuple[int, int, int, int] | None): The IP address to bind the server to.
-            version (int | None): The optional version number for client connection.
-            token (str | None): The optional token string for client connection.
+            state_class: Generated root-state class.
+            port: TCP port on which the WebSocket server listens.
+            signals_workers: Number of worker threads that invoke callbacks.
+            error_handler: Handler for exceptions raised while processing callbacks.
+            ip_addr: IPv4 address to bind, or ``None`` to bind all interfaces.
+            version: Optional application version required from the client.
+            token: Optional authentication token required from the client.
         """
         self._server = StateServerCore(port, ip_addr, version, token)
         self._signals_manager = SignalsManager(self._server, signals_workers, error_handler)
@@ -103,7 +105,7 @@ class StateServerBase[T: StatesBase]:
         """Update the UI.
 
         Args:
-            duration: The duration of the update.
+            duration: Repaint delay in seconds, or ``None`` for an immediate repaint.
         """
         self._server.update(duration)
 
@@ -117,15 +119,15 @@ class StateServerBase[T: StatesBase]:
         self._server.stop()
 
     def disconnect_client(self) -> None:
-        """Disconnect actual client."""
+        """Disconnect the current client while leaving the server running."""
         self._server.disconnect_client()
 
     def is_running(self) -> bool:
-        """If state server is running."""
+        """Return whether the server is listening."""
         return self._server.is_running()
 
     def is_connected(self) -> bool:
-        """If client is connected to the state server."""
+        """Return whether a client is connected."""
         return self._server.is_connected()
 
     def set_error_handler(self, error_handler: Callable[[Exception], None] | None) -> None:
@@ -135,7 +137,7 @@ class StateServerBase[T: StatesBase]:
         Be careful, if error is not handled, the thread will be stopped.
 
         Args:
-            error_handler(Callable[[Exception], None] | None): The error handler function.
+            error_handler: Handler to install, or ``None`` to restore the default.
         """
         self._signals_manager.set_error_handler(error_handler)
 
@@ -143,8 +145,7 @@ class StateServerBase[T: StatesBase]:
         """Set the function to be called when a client connects.
 
         Args:
-            func (Callable[[str], Any]): The function to be called when a client connects. It takes the client IP as an
-                argument.
+            func: Callback receiving the client address, or ``None`` to disconnect it.
         """
         self._on_connect = func
         self._signals_manager.clear_callbacks(_ON_CONNECT_ID)
@@ -155,7 +156,7 @@ class StateServerBase[T: StatesBase]:
         """Set the function to be called when a client disconnects.
 
         Args:
-            func (Callable[[], Any]): The function to be called when a client disconnects.
+            func: Callback to invoke, or ``None`` to disconnect it.
         """
         self._on_disconnect = func
         self._signals_manager.clear_callbacks(_ON_DISCONNECT_ID)
@@ -166,8 +167,7 @@ class StateServerBase[T: StatesBase]:
         """Set the function to be called when a client sends a message.
 
         Args:
-            func (Callable[[str], Any]): The function to be called when a client sends a message. It takes the message
-                string as an argument.
+            func: Callback receiving the diagnostic message, or ``None`` to disconnect it.
         """
         self._on_client_message = func
         self._signals_manager.clear_callbacks(_CLIENT_MESSAGE_ID)

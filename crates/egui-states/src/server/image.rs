@@ -9,9 +9,13 @@ use super::{Result, ServerError};
 /// A uniform image color for [`Image::set_all`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ImageColor {
+    /// Opaque grayscale intensity.
     Gray(u8),
+    /// Grayscale intensity and alpha.
     GrayAlpha(u8, u8),
+    /// Opaque red, green, and blue channels.
     Color(u8, u8, u8),
+    /// Red, green, blue, and alpha channels.
     ColorAlpha(u8, u8, u8, u8),
 }
 
@@ -28,10 +32,15 @@ impl ImageColor {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Channel layout of image bytes passed to [`Image::set`] or [`Image::update`].
 pub enum ImageFormat {
+    /// Three bytes per pixel: RGB.
     Color,
+    /// Four bytes per pixel: RGBA.
     ColorAlpha,
+    /// One byte per pixel: grayscale intensity.
     Gray,
+    /// Two bytes per pixel: grayscale intensity and alpha.
     GrayAlpha,
 }
 
@@ -51,24 +60,32 @@ impl ImageFormat {
 }
 
 #[derive(Clone)]
+/// Server-controlled image retained as RGBA pixels and mirrored to the client.
 pub struct Image {
     inner: Arc<CoreImage>,
 }
 
 impl Image {
+    /// Registers an empty image under `name`.
     pub fn new(server: &StateServer, name: impl Into<String>) -> Result<Self> {
         let (_, inner) = server.add_image(name.into())?;
         Ok(Self { inner })
     }
 
+    /// Returns the image shape as `[height, width]`.
     pub fn shape(&self) -> [usize; 2] {
         self.inner.get_size()
     }
 
+    /// Returns a copy of the RGBA pixels and `[height, width]` shape.
     pub fn get(&self) -> (Vec<u8>, [usize; 2]) {
         self.inner.get_image(|(data, size)| (data.clone(), *size))
     }
 
+    /// Replaces the complete image.
+    ///
+    /// `size` is `[height, width]`; `data` must contain exactly the number of
+    /// bytes implied by `size` and `format`. `update` requests a client repaint.
     pub fn set(
         &self,
         data: &[u8],
@@ -100,6 +117,10 @@ impl Image {
             .map_err(ServerError::new)
     }
 
+    /// Replaces a rectangular image region.
+    ///
+    /// `origin` and `size` are `[y, x]` and `[height, width]`. With `force`, a
+    /// pending update for the same region may be replaced by this one.
     pub fn update(
         &self,
         data: &[u8],

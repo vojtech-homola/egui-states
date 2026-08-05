@@ -85,6 +85,10 @@ fn any_wants_previous(entries: &[CallbackEntry]) -> bool {
 }
 
 #[must_use = "the callback is disconnected when its handle is dropped"]
+/// Owning handle for a registered server callback.
+///
+/// Dropping or explicitly disconnecting the handle unregisters the callback.
+/// Keep it alive for as long as the callback should remain connected.
 pub struct CallbackHandle {
     pub(super) server: Weak<ServerInner>,
     pub(super) value_id: u64,

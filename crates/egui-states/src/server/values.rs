@@ -11,6 +11,7 @@ use super::state_server::{StateServer, deserialize_bytes, serialize_bytes};
 use super::{Result, ServerError};
 
 #[derive(Clone)]
+/// Server-side handle for a bidirectional synchronized value.
 pub struct Value<T> {
     server: StateServer,
     id: u64,
@@ -22,6 +23,10 @@ impl<T> Value<T>
 where
     T: Serialize + Typed,
 {
+    /// Registers `name` with `initial_value` and callback queueing mode.
+    ///
+    /// Set `queue` to `true` to preserve every signaled client change; in
+    /// single mode pending changes may coalesce to the latest value.
     pub fn new(
         server: &StateServer,
         name: impl Into<String>,
@@ -42,14 +47,19 @@ impl<T> Value<T>
 where
     T: Serialize,
 {
+    /// Replaces the value without emitting callbacks.
+    ///
+    /// If `update` is true, the client is also asked to repaint.
     pub fn set(&self, value: T, update: bool) -> Result<()> {
         self.set_with_signal(value, false, update)
     }
 
+    /// Replaces the value, emits callbacks, and optionally requests a repaint.
     pub fn set_signal(&self, value: T, update: bool) -> Result<()> {
         self.set_with_signal(value, true, update)
     }
 
+    /// Replaces the value with explicit callback and repaint controls.
     pub fn set_with_signal(&self, value: T, set_signal: bool, update: bool) -> Result<()> {
         let data = serialize_bytes(&value)?;
         self.inner
@@ -59,10 +69,12 @@ where
 }
 
 impl<T> Value<T> {
+    /// Switches callback delivery to queue mode.
     pub fn signal_set_to_queue(&self) {
         self.server.set_signal_to_queue(self.id);
     }
 
+    /// Switches callback delivery to coalescing single mode.
     pub fn signal_set_to_single(&self) {
         self.server.set_signal_to_single(self.id);
     }
@@ -72,10 +84,14 @@ impl<T> Value<T>
 where
     T: for<'a> Deserialize<'a> + Send + 'static,
 {
+    /// Returns the server's current value.
     pub fn get(&self) -> Result<T> {
         deserialize_bytes(&self.inner.get())
     }
 
+    /// Registers a callback for signaled changes from either peer.
+    ///
+    /// Retain the returned handle to keep the callback connected.
     pub fn connect(&self, callback: impl Fn(T) + Send + Sync + 'static) -> CallbackHandle {
         self.server.add_typed_callback(self.id, callback)
     }
@@ -94,6 +110,7 @@ where
 }
 
 #[derive(Clone)]
+/// Server-controlled value that is read-only on the client.
 pub struct Static<T> {
     inner: Arc<ValueStaticCore>,
     _type: PhantomData<T>,
@@ -103,6 +120,7 @@ impl<T> Static<T>
 where
     T: Serialize + Typed,
 {
+    /// Registers `name` with `initial_value`.
     pub fn new(server: &StateServer, name: impl Into<String>, initial_value: T) -> Result<Self> {
         let (_, inner) = server.add_static(name.into(), initial_value)?;
         Ok(Self {
@@ -116,6 +134,7 @@ impl<T> Static<T>
 where
     T: Serialize,
 {
+    /// Replaces the value and optionally asks the client to repaint.
     pub fn set(&self, value: T, update: bool) -> Result<()> {
         let data = serialize_bytes(&value)?;
         self.inner.set(data, update).map_err(ServerError::new)
@@ -126,12 +145,14 @@ impl<T> Static<T>
 where
     T: for<'a> Deserialize<'a>,
 {
+    /// Returns the server's current value.
     pub fn get(&self) -> Result<T> {
         deserialize_bytes(&self.inner.get())
     }
 }
 
 #[derive(Clone)]
+/// One-shot value sent by the server and consumed by the client.
 pub struct ValueTake<T> {
     inner: Arc<ValueTakeCore>,
     _type: PhantomData<T>,
@@ -141,6 +162,7 @@ impl<T> ValueTake<T>
 where
     T: Typed,
 {
+    /// Registers a one-shot value under `name`.
     pub fn new(server: &StateServer, name: impl Into<String>) -> Result<Self> {
         let (_, inner) = server.add_value_take::<T>(name.into())?;
         Ok(Self {
@@ -154,6 +176,10 @@ impl<T> ValueTake<T>
 where
     T: Serialize,
 {
+    /// Sends a value to the client.
+    ///
+    /// With `blocking`, a subsequent send waits until the client takes and
+    /// acknowledges this value. `update` requests an egui repaint.
     pub fn set(&self, value: T, blocking: bool, update: bool) -> Result<()> {
         let data = serialize_bytes(&value)?;
         self.inner
@@ -163,6 +189,7 @@ where
 }
 
 #[derive(Clone)]
+/// Client-to-server event that does not retain a value.
 pub struct Signal<T> {
     server: StateServer,
     id: u64,
@@ -174,6 +201,7 @@ impl<T> Signal<T>
 where
     T: Typed,
 {
+    /// Registers an event and chooses queue or coalescing single mode.
     pub fn new(server: &StateServer, name: impl Into<String>, queue: bool) -> Result<Self> {
         let (id, inner) = server.add_signal::<T>(name.into(), queue)?;
         Ok(Self {
@@ -189,6 +217,7 @@ impl<T> Signal<T>
 where
     T: Serialize,
 {
+    /// Emits an event from the server to local callbacks.
     pub fn set(&self, value: T) -> Result<()> {
         let data = serialize_bytes(&value)?;
         self.inner.set(data);
@@ -197,10 +226,12 @@ where
 }
 
 impl<T> Signal<T> {
+    /// Switches callback delivery to queue mode.
     pub fn signal_set_to_queue(&self) {
         self.server.set_signal_to_queue(self.id);
     }
 
+    /// Switches callback delivery to coalescing single mode.
     pub fn signal_set_to_single(&self) {
         self.server.set_signal_to_single(self.id);
     }
@@ -210,12 +241,14 @@ impl<T> Signal<T>
 where
     T: for<'a> Deserialize<'a> + Send + 'static,
 {
+    /// Registers a value-taking callback and returns its owning handle.
     pub fn connect(&self, callback: impl Fn(T) + Send + Sync + 'static) -> CallbackHandle {
         self.server.add_typed_callback(self.id, callback)
     }
 }
 
 impl Signal<()> {
+    /// Registers a no-argument callback for a unit-valued signal.
     pub fn connect_empty(&self, callback: impl Fn() + Send + Sync + 'static) -> CallbackHandle {
         self.server.add_raw_callback(self.id, move |_, _| {
             callback();

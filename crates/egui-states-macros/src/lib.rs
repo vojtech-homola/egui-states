@@ -1,3 +1,5 @@
+//! Procedural macros for the `egui_states` crate.
+
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
@@ -38,21 +40,28 @@ pub fn typed(args: TokenStream, input: TokenStream) -> TokenStream {
 }
 
 #[proc_macro_derive(InitialValue)]
+/// Derives `egui_states::InitialValue` for a struct or fieldless enum.
 pub fn initial_value(input: TokenStream) -> TokenStream {
     objects::impl_initial_value(input)
 }
 
 #[proc_macro_derive(Atomic)]
+/// Derives the client-side `egui_states::Atomic` synchronization traits.
 pub fn atomic(input: TokenStream) -> TokenStream {
     objects::impl_atomic(input)
 }
 
 #[proc_macro_derive(AtomicStatic)]
+/// Derives `egui_states::AtomicStatic` for a copyable value.
 pub fn atomic_static(input: TokenStream) -> TokenStream {
     objects::impl_atomic_static(input)
 }
 
 #[proc_macro_derive(State)]
+/// Derives `egui_states::State` for a struct whose fields are state handles.
+///
+/// Each field is registered under its Rust field name. Nested structs that
+/// also derive `State` become nested state groups.
 pub fn state(input: TokenStream) -> TokenStream {
     states::impl_state(input)
 }
