@@ -841,4 +841,5 @@ __all__ = [
     "map",
     "ImageColor",
     "_CustomStruct",
+    "PyObjectType"
 ]
