@@ -823,4 +823,5 @@ __all__ = [
     "tu",
     "map",
     "_CustomStruct",
+    "PyObjectType"
 ]

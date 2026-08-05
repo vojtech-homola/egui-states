@@ -211,6 +211,8 @@ pub struct ClientBuilder<T> {
     rx: UnboundedReceiver<Option<ChannelMessage>>,
     addr: Ipv4Addr,
     context: Option<Context>,
+    version: Option<u64>,
+    token: Option<String>,
 }
 
 impl<T> ClientBuilder<T>
@@ -231,11 +233,27 @@ where
             rx,
             addr,
             context: None,
+            version: None,
+            token: None,
         }
     }
 
     pub fn addr(self, addr: Ipv4Addr) -> Self {
         Self { addr, ..self }
+    }
+
+    pub fn version(self, version: u64) -> Self {
+        Self {
+            version: Some(version),
+            ..self
+        }
+    }
+
+    pub fn token(self, token: String) -> Self {
+        Self {
+            token: Some(token),
+            ..self
+        }
     }
 
     pub fn context(self, context: Context) -> Self {
@@ -249,7 +267,7 @@ where
         self.creator.get_version_hash()
     }
 
-    pub fn build(self, port: u16, version: Option<u64>, token: Option<String>) -> (T, Client) {
+    pub fn build(self, port: u16) -> (T, Client) {
         let Self {
             creator,
             states,
@@ -257,6 +275,8 @@ where
             rx,
             addr,
             context,
+            version,
+            token,
         } = self;
 
         let addr = SocketAddrV4::new(addr, port);

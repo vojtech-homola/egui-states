@@ -80,7 +80,7 @@ impl MainApp {
         port: u16,
     ) -> Result<Box<dyn App>, Box<dyn Error + Send + Sync>> {
         let builder = ClientBuilder::<State>::new().context(cc.egui_ctx.clone());
-        let (state, client) = builder.build(port, None, None);
+        let (state, client) = builder.build(port);
 
         let image = ColorImage::filled([256, 256], Color32::BLACK);
         state.image.image.initialize(&cc.egui_ctx, image);

@@ -690,8 +690,7 @@ mod tests {
         server.finalize().unwrap();
         server.start().unwrap();
 
-        let (client_state, client) =
-            crate::ClientBuilder::<ClientTestState>::new().build(port, None, None);
+        let (client_state, client) = crate::ClientBuilder::<ClientTestState>::new().build(port);
         let mut connected = false;
         for _ in 0..200 {
             client.connect();
