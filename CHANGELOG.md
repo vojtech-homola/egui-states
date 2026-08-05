@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.15] - 2026-08-03
+## [0.15.0] - 2026-08-05
 
 ### 🚀 Features
 
@@ -14,6 +14,11 @@
 - Add rust server - experimental [#51](https://github.com/vojtech-homola/egui-states/pull/51)
 - Add maximal message size [#52](https://github.com/vojtech-homola/egui-states/pull/52)
 - Add previous values for Value callbacks [#53](https://github.com/vojtech-homola/egui-states/pull/53)
+- Add set all method to the Image [#55](https://github.com/vojtech-homola/egui-states/pull/55)
+
+### 🐛 Bug Fixes
+
+- Minor fixes in client initialization [#54](https://github.com/vojtech-homola/egui-states/pull/54)
 
 ### 🧪 Testing
 
