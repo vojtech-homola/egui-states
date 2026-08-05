@@ -89,6 +89,13 @@ class StateServerCore:
         image: Buffer,
         update: bool,
     ) -> None: ...
+    def image_set_all(
+        self,
+        value_id: int,
+        shape: list[int] | tuple[int, int],
+        color: int | tuple[int, int] | tuple[int, int, int] | tuple[int, int, int, int],
+        update: bool,
+    ) -> None: ...
     def image_update(
         self,
         value_id: int,

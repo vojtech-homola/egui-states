@@ -74,3 +74,22 @@ pub(crate) fn image_data(image: &PyBuffer<u8>) -> PyResult<ImageData> {
         data,
     })
 }
+
+pub(crate) fn image_color(color: &Bound<'_, PyAny>) -> PyResult<[u8; 4]> {
+    if let Ok(gray) = color.extract::<u8>() {
+        return Ok([gray, gray, gray, 255]);
+    }
+    if let Ok((gray, alpha)) = color.extract::<(u8, u8)>() {
+        return Ok([gray, gray, gray, alpha]);
+    }
+    if let Ok((red, green, blue)) = color.extract::<(u8, u8, u8)>() {
+        return Ok([red, green, blue, 255]);
+    }
+    if let Ok((red, green, blue, alpha)) = color.extract::<(u8, u8, u8, u8)>() {
+        return Ok([red, green, blue, alpha]);
+    }
+
+    Err(PyValueError::new_err(
+        "color must be an integer or a tuple of 2, 3, or 4 integers in the range 0..=255",
+    ))
+}

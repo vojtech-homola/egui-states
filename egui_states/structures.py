@@ -35,6 +35,8 @@ from egui_states._core import (
 )
 from egui_states.signals import SignalsManager
 
+type ImageColor = int | tuple[int, int] | tuple[int, int, int] | tuple[int, int, int, int]
+
 
 class _CustomStruct:
     __getitem__ = object.__getattribute__
@@ -344,6 +346,21 @@ class Image(_StaticBase):
             force(bool, optional): Whether to replace a pending update for the same rectangle. Defaults to False.
         """
         self._server.image_update(self._value_id, image, origin, update, force)
+
+    def set_all(
+        self,
+        shape: list[int] | tuple[int, int],
+        color: ImageColor,
+        update: bool = False,
+    ) -> None:
+        """Fill the complete image with one color using a compact message.
+
+        Args:
+            shape(list[int] | tuple[int, int]): Image shape as (height, width).
+            color(ImageColor): Gray, gray-alpha, RGB, or RGBA color. Every component must be 0..255.
+            update(bool, optional): Whether to update the UI. Defaults to False.
+        """
+        self._server.image_set_all(self._value_id, shape, color, update)
 
     def get(self) -> npt.NDArray[np.uint8]:
         """Get the image in the UI image.
@@ -822,5 +839,6 @@ __all__ = [
     "li",
     "tu",
     "map",
+    "ImageColor",
     "_CustomStruct",
 ]

@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use parking_lot::{Mutex, RwLock};
+use parking_lot::{Mutex, MutexGuard, RwLock, RwLockWriteGuard};
 
 use crate::event::Event;
 use crate::image_transport::{ImageHeader, ImageSetHeader, ImageType};
@@ -137,6 +137,64 @@ impl Image {
             None => pack_set_data(self.id, &image, update)?,
         };
 
+        self.send_or_buffer_set(lock, w, to_send)
+    }
+
+    pub(crate) fn set_all_image(
+        &self,
+        size: [usize; 2],
+        rgba: [u8; 4],
+        update: bool,
+    ) -> Result<(), String> {
+        let (wire_size, rgba_size) = checked_fill_size(size)?;
+
+        // Prepare the compact message before locking when possible, just like
+        // set_image prepares its normal set messages.
+        let to_send = if self.connected.load(Ordering::Acquire) {
+            Some(pack_fill_data(self.id, wire_size, rgba, update)?)
+        } else {
+            None
+        };
+
+        // Use the same producer lock and set scheduling as set_image. This
+        // keeps fill ordered with ordinary sets and updates.
+        let lock = self.lock.lock();
+        let mut w = self.image.write();
+
+        w.size = size;
+
+        w.data.clear();
+        w.data.reserve(rgba_size);
+
+        let ptr = w.data.as_mut_ptr().cast::<[u8; 4]>();
+        unsafe {
+            for i in 0..(size[0] * size[1]) {
+                ptr.add(i).write(rgba);
+            }
+
+            w.data.set_len(rgba_size);
+        }
+
+        // The first sync for a connection always sends the complete cached
+        // RGBA image. A compact fill is only useful after sync has completed.
+        if w.sync_required || !self.connected.load(Ordering::Acquire) {
+            return Ok(());
+        }
+
+        let to_send = match to_send {
+            Some(data) => data,
+            None => pack_fill_data(self.id, wire_size, rgba, update)?,
+        };
+
+        self.send_or_buffer_set(lock, w, to_send)
+    }
+
+    fn send_or_buffer_set(
+        &self,
+        _lock: MutexGuard<'_, ()>,
+        mut w: RwLockWriteGuard<'_, ImageDataInner>,
+        to_send: Vec<(FastVec<32>, bool)>,
+    ) -> Result<(), String> {
         if let Buffer::Set(ref mut dat) = w.buffer {
             if dat.is_empty() {
                 if self.event.is_set() {
@@ -186,9 +244,6 @@ impl Image {
         for (message, send_now) in to_send {
             self.sender.send_set(message, send_now);
         }
-
-        drop(w);
-        drop(lock);
 
         Ok(())
     }
@@ -382,6 +437,37 @@ impl SyncTrait for Image {
         }
         Ok(())
     }
+}
+
+fn checked_fill_size(size: [usize; 2]) -> Result<([u32; 2], usize), String> {
+    if size[0] == 0 || size[1] == 0 {
+        return Err("Image dimensions cannot be zero".to_string());
+    }
+
+    let height = u32::try_from(size[0])
+        .map_err(|_| "Image dimensions exceed protocol limits".to_string())?;
+    let width = u32::try_from(size[1])
+        .map_err(|_| "Image dimensions exceed protocol limits".to_string())?;
+    let pixels = size[0]
+        .checked_mul(size[1])
+        .ok_or_else(|| "Image dimensions overflow".to_string())?;
+    let rgba_size = pixels
+        .checked_mul(4)
+        .ok_or_else(|| "Image dimensions overflow".to_string())?;
+
+    Ok(([width, height], rgba_size))
+}
+
+fn pack_fill_data(
+    id: u64,
+    size: [u32; 2],
+    rgba: [u8; 4],
+    update: bool,
+) -> Result<Vec<(FastVec<32>, bool)>, String> {
+    let header = ServerHeader::Image(id, ImageHeader::Fill(size, rgba, update), 0);
+    let message = crate::serialization::serialize_heap(&header)
+        .map_err(|_| format!("Failed to serialize fill header for image {}", id))?;
+    Ok(vec![(message, false)])
 }
 
 fn pack_set_data(
@@ -846,6 +932,63 @@ mod tests {
 
         image.sync().unwrap();
         assert_message(&mut receiver);
+        assert_no_message(&mut receiver);
+    }
+
+    #[test]
+    #[cfg(feature = "client")]
+    fn fill_is_materialized_and_sent_without_pixel_data_after_sync() {
+        let (image, connected, mut receiver) = new_image(false);
+
+        image
+            .set_all_image([2, 3], [10, 20, 30, 255], false)
+            .unwrap();
+        assert_eq!(image.get_size(), [2, 3]);
+        assert_eq!(
+            image.get_image(|(data, _)| data.clone()),
+            [10, 20, 30, 255].repeat(6)
+        );
+        assert_no_message(&mut receiver);
+
+        connected.store(true, Ordering::Release);
+        image.sync().unwrap();
+        let (sync_message, _) = receiver.try_recv().unwrap().unwrap();
+        let sync_bytes = sync_message.to_bytes();
+        let (sync_header, sync_header_size) = ServerHeader::deserialize(&sync_bytes).unwrap();
+        match sync_header {
+            ServerHeader::Image(
+                1,
+                ImageHeader::Set(ImageSetHeader::All([3, 2], false), ImageType::ColorAlpha),
+                24,
+            ) => {}
+            _ => panic!("unexpected connection-sync header"),
+        }
+        assert_eq!(sync_header_size + 24, sync_bytes.len());
+        image.acknowledge();
+
+        image.set_all_image([4, 5], [7, 7, 7, 8], true).unwrap();
+        let (message, _) = receiver.try_recv().unwrap().unwrap();
+        let bytes = message.to_bytes();
+        let (header, header_size) = ServerHeader::deserialize(&bytes).unwrap();
+        assert_eq!(header_size, bytes.len());
+        match header {
+            ServerHeader::Image(1, ImageHeader::Fill([5, 4], [7, 7, 7, 8], true), 0) => {}
+            _ => panic!("unexpected fill header"),
+        }
+        assert_eq!(
+            image.get_image(|(data, _)| data.clone()),
+            [7, 7, 7, 8].repeat(20)
+        );
+    }
+
+    #[test]
+    fn fill_rejects_invalid_dimensions_without_mutating_the_image() {
+        let (image, _, mut receiver) = new_image(false);
+
+        image.set_all_image([1, 1], [9, 9, 9, 255], false).unwrap();
+        assert!(image.set_all_image([0, 4], [0, 0, 0, 255], false).is_err());
+        assert_eq!(image.get_size(), [1, 1]);
+        assert_eq!(image.get_image(|(data, _)| data.clone()), [9, 9, 9, 255]);
         assert_no_message(&mut receiver);
     }
 

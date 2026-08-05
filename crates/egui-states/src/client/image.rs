@@ -24,6 +24,7 @@ pub(crate) enum ImageSetMessage {
 pub(crate) enum ImageMessage {
     Set(ImageSetMessage, ImageType),
     Update([u32; 4], ImageType),
+    Fill([u32; 2], [u8; 4]),
 }
 
 pub struct Image {
@@ -189,6 +190,43 @@ impl Image {
                 }
                 texture_handle.set_partial(origin, c_image, TEXTURE_OPTIONS);
             }
+        }
+
+        Ok(())
+    }
+
+    pub(crate) fn fill_image(
+        &self,
+        size: [u32; 2],
+        rgba: [u8; 4],
+        data: &[u8],
+    ) -> Result<(), String> {
+        if !data.is_empty() {
+            return Err(format!(
+                "Fill message for image {} contains unexpected pixel data",
+                self.name
+            ));
+        }
+        if size[0] == 0 || size[1] == 0 {
+            return Err(format!(
+                "Fill message for image {} contains zero dimensions",
+                self.name
+            ));
+        }
+
+        let image_size = [size[0] as usize, size[1] as usize];
+        image_size[0]
+            .checked_mul(image_size[1])
+            .ok_or_else(|| format!("Image dimensions overflow for image: {}", self.name))?;
+
+        self.inner.1.send(ChannelMessage::Ack(self.id));
+
+        let [red, green, blue, alpha] = rgba;
+        let pixel = egui::Color32::from_rgba_premultiplied(red, green, blue, alpha);
+        let c_image = ColorImage::filled(image_size, pixel);
+        if let Some((ref mut texture_handle, ref mut save_size)) = *self.inner.0.write() {
+            texture_handle.set(c_image, TEXTURE_OPTIONS);
+            *save_size = image_size;
         }
 
         Ok(())

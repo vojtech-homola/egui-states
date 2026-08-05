@@ -6,6 +6,27 @@ use crate::server_core::image_core::{Image as CoreImage, ImageData};
 use super::state_server::StateServer;
 use super::{Result, ServerError};
 
+/// A uniform image color for [`Image::set_all`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ImageColor {
+    Gray(u8),
+    GrayAlpha(u8, u8),
+    Color(u8, u8, u8),
+    ColorAlpha(u8, u8, u8, u8),
+}
+
+impl ImageColor {
+    #[inline]
+    fn rgba(self) -> [u8; 4] {
+        match self {
+            Self::Gray(gray) => [gray, gray, gray, 255],
+            Self::GrayAlpha(gray, alpha) => [gray, gray, gray, alpha],
+            Self::Color(red, green, blue) => [red, green, blue, 255],
+            Self::ColorAlpha(red, green, blue, alpha) => [red, green, blue, alpha],
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ImageFormat {
     Color,
@@ -68,6 +89,17 @@ impl Image {
             .map_err(ServerError::new)
     }
 
+    /// Fill an image with one color.
+    ///
+    /// `shape` is `[height, width]`. When a client is connected, this sends only
+    /// a compact header; the server still retains the complete RGBA image for
+    /// subsequent reads, updates, and connection synchronization.
+    pub fn set_all(&self, shape: [usize; 2], color: ImageColor, update: bool) -> Result<()> {
+        self.inner
+            .set_all_image(shape, color.rgba(), update)
+            .map_err(ServerError::new)
+    }
+
     pub fn update(
         &self,
         data: &[u8],
@@ -117,6 +149,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn image_color_normalizes_to_rgba() {
+        assert_eq!(ImageColor::Gray(1).rgba(), [1, 1, 1, 255]);
+        assert_eq!(ImageColor::GrayAlpha(1, 2).rgba(), [1, 1, 1, 2]);
+        assert_eq!(ImageColor::Color(1, 2, 3).rgba(), [1, 2, 3, 255]);
+        assert_eq!(ImageColor::ColorAlpha(1, 2, 3, 4).rgba(), [1, 2, 3, 4]);
+    }
+
+    #[test]
     fn image_converts_to_rgba_and_updates() {
         let server = StateServer::new(0).unwrap();
         let image = Image::new(&server, "root.image").unwrap();
@@ -155,5 +195,19 @@ mod tests {
                 .set(&[], [usize::MAX, 2], ImageFormat::ColorAlpha, false)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn image_set_all_materializes_rgba_data() {
+        let server = StateServer::new(0).unwrap();
+        let image = Image::new(&server, "root.image").unwrap();
+
+        image
+            .set_all([2, 3], ImageColor::GrayAlpha(7, 8), false)
+            .unwrap();
+
+        assert_eq!(image.shape(), [2, 3]);
+        assert_eq!(image.get().0, [7, 7, 7, 8].repeat(6));
+        assert!(image.set_all([0, 3], ImageColor::Gray(0), false).is_err());
     }
 }

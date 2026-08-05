@@ -48,4 +48,5 @@ impl ImageSetHeader {
 pub(crate) enum ImageHeader {
     Set(ImageSetHeader, ImageType),    // header
     Update([u32; 4], ImageType, bool), // [x, y, w, h], image_type, update
+    Fill([u32; 2], [u8; 4], bool),     // [width, height], RGBA, update
 }
