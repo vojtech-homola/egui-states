@@ -721,6 +721,23 @@ impl StateServerCore {
         })
     }
 
+    #[pyo3(signature = (value_id, shape, color, update))]
+    fn image_set_all(
+        &self,
+        py: Python,
+        value_id: u64,
+        shape: [usize; 2],
+        color: &Bound<'_, PyAny>,
+        update: bool,
+    ) -> PyResult<()> {
+        let rgba = pyimage::image_color(color)?;
+        py.detach(|| {
+            self.inner_image(value_id)?
+                .set_all_image(shape, rgba, update)
+                .map_err(PyValueError::new_err)
+        })
+    }
+
     #[pyo3(signature = (value_id, image, origin, update, force=false))]
     fn image_update(
         &self,

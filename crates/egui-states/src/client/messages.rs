@@ -262,6 +262,9 @@ impl MessagesParser {
                         ImageMessage::Update(size, image_type),
                         data,
                     ),
+                    ImageHeader::Fill(size, rgba, update) => {
+                        ServerMessage::Image(id, update, ImageMessage::Fill(size, rgba), data)
+                    }
                 }
             }
             ServerHeader::Data(id, data_header) => {
@@ -450,6 +453,7 @@ pub(crate) async fn handle_message(
                     ImageMessage::Update(size, image_type) => {
                         value.update_image(size, image_type, &data)?
                     }
+                    ImageMessage::Fill(size, rgba) => value.fill_image(size, rgba, &data)?,
                 },
                 None => return Err(format!("Image with id {} not found", id)),
             }

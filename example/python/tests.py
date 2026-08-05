@@ -180,6 +180,26 @@ def test_image_value_roundtrip(server_bundle: tuple[StatesServer, State, list[Ex
     assert image_result[5, 5, 0] == 10
     assert states.image.image.shape() == (8, 8)
 
+    colors = (
+        (7, [7, 7, 7, 255]),
+        ((7, 8), [7, 7, 7, 8]),
+        ((7, 8, 9), [7, 8, 9, 255]),
+        ((7, 8, 9, 10), [7, 8, 9, 10]),
+    )
+    for color, expected in colors:
+        states.image.image.set_all((2, 3), color, update=True)
+        expected_image = np.tile(np.array(expected, dtype=np.uint8), (2, 3, 1))
+        np.testing.assert_array_equal(states.image.image.get(), expected_image)
+
+    with pytest.raises(ValueError, match="color must be"):
+        states.image.image.set_all((2, 3), 256)
+    with pytest.raises(ValueError, match="color must be"):
+        states.image.image.set_all((2, 3), (1,))
+    with pytest.raises(ValueError, match="color must be"):
+        states.image.image.set_all((2, 3), [1, 2, 3])
+    with pytest.raises(ValueError, match="dimensions cannot be zero"):
+        states.image.image.set_all((0, 3), 1)
+
 
 def test_data_array_methods(server_bundle: tuple[StatesServer, State, list[Exception]]) -> None:
     _server, states, _errors = server_bundle
