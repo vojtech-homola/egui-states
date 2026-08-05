@@ -1,26 +1,23 @@
 # Changelog
 
-## Unreleased
+## [0.15] - 2026-08-03
 
 ### 🚀 Features
 
-- Replace the `Typed` derive with `#[egui_states::typed]`, which also derives
-  Serde serialization without requiring consumers to depend on `serde`
-  directly.
-- Limit the size of a single serialized value to 1 MB in both directions.
-  Values, statics, value takes and single collection items are checked when they
-  are set, so an oversized value is never sent. Server side setters report the
-  state name and the offending size; on the client the value is not sent and the
-  error is logged locally and forwarded to the server.
+- Add .zed folder into gitignore [#41](https://github.com/vojtech-homola/egui-states/pull/41)
+- Improve images transport [#42](https://github.com/vojtech-homola/egui-states/pull/42)
+- Add DataMultiTake state [#43](https://github.com/vojtech-homola/egui-states/pull/43)
+- Improve logging on server and add client messages [#46](https://github.com/vojtech-homola/egui-states/pull/46)
+- Bump PyO3 version to 0.29 [#49](https://github.com/vojtech-homola/egui-states/pull/49)
+- Improve authentication [#48](https://github.com/vojtech-homola/egui-states/pull/48)
+- Simplify takes values and refactor Event [#50](https://github.com/vojtech-homola/egui-states/pull/50)
+- Add rust server - experimental [#51](https://github.com/vojtech-homola/egui-states/pull/51)
+- Add maximal message size [#52](https://github.com/vojtech-homola/egui-states/pull/52)
+- Add previous values for Value callbacks [#53](https://github.com/vojtech-homola/egui-states/pull/53)
 
-### ⚠️ Breaking Changes
+### 🧪 Testing
 
-- Remove `#[derive(egui_states::Typed)]`; custom structs and enums must use the
-  new `#[egui_states::typed]` attribute.
-- Values larger than 1 MB are now rejected instead of being transferred. Setting
-  one raises on the server (`ServerError` / Python exception, also when no client
-  is connected and when it is passed as an initial value) and is dropped with an
-  error report on the client.
+- Improve example structure [#44](https://github.com/vojtech-homola/egui-states/pull/44)
 
 ## [0.14.0] - 2026-05-13
 
