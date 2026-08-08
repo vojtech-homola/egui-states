@@ -17,10 +17,25 @@ pub(crate) enum DataMessage {
     Clear,
 }
 
+impl DataMessage {
+    pub(crate) fn requires_ack(&self) -> bool {
+        matches!(self, Self::All(..) | Self::BatchEnd(..) | Self::Drain(..))
+    }
+}
+
 pub(crate) enum DataMultiMessage {
     Remove(u32),
     Modify(u32, DataMessage),
     Reset,
+}
+
+impl DataMultiMessage {
+    pub(crate) fn requires_ack(&self) -> bool {
+        match self {
+            Self::Modify(_, message) => message.requires_ack(),
+            Self::Remove(_) | Self::Reset => false,
+        }
+    }
 }
 
 pub(crate) mod private {
@@ -302,13 +317,19 @@ where
     fn update_data(&self, message: DataMessage) -> Result<(), String> {
         match message {
             DataMessage::All(data_type, transport_type, data) => {
-                check_data_type(self.data_type, data_type, &self.name)?;
+                if let Err(error) = check_data_type(self.data_type, data_type, &self.name) {
+                    self.sender.send_ack(self.id);
+                    return Err(error);
+                }
                 self.set_all(&data, transport_type)
             }
             DataMessage::BatchStart(count, data) => self.batch_start(&data, count),
             DataMessage::Batch(data) => self.batch(&data),
             DataMessage::BatchEnd(data_type, transport_type, data) => {
-                check_data_type(self.data_type, data_type, &self.name)?;
+                if let Err(error) = check_data_type(self.data_type, data_type, &self.name) {
+                    self.sender.send_ack(self.id);
+                    return Err(error);
+                }
                 self.batch_end(&data, transport_type)
             }
             DataMessage::Drain(index, count) => self.drain(index, count),
@@ -632,13 +653,19 @@ where
     fn update(&self, index: u32, message: DataMessage) -> Result<(), String> {
         match message {
             DataMessage::All(data_type, transport_type, data) => {
-                check_data_type(self.data_type, data_type, &self.name)?;
+                if let Err(error) = check_data_type(self.data_type, data_type, &self.name) {
+                    self.sender.send_ack(self.id);
+                    return Err(error);
+                }
                 self.set_all(index, &data, transport_type)
             }
             DataMessage::BatchStart(count, data) => self.batch_start(index, &data, count),
             DataMessage::Batch(data) => self.batch(index, &data),
             DataMessage::BatchEnd(data_type, transport_type, data) => {
-                check_data_type(self.data_type, data_type, &self.name)?;
+                if let Err(error) = check_data_type(self.data_type, data_type, &self.name) {
+                    self.sender.send_ack(self.id);
+                    return Err(error);
+                }
                 self.batch_end(index, &data, transport_type)
             }
             DataMessage::Drain(start, count) => self.drain(index, start, count),
@@ -688,4 +715,82 @@ pub(crate) fn check_data_type(
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::client::messages::{ChannelMessage, MessageSender};
+    use tokio::sync::mpsc::{UnboundedReceiver, error::TryRecvError};
+
+    fn assert_single_ack(
+        receiver: &mut UnboundedReceiver<Option<ChannelMessage>>,
+        expected_id: u64,
+    ) {
+        match receiver.try_recv() {
+            Ok(Some(ChannelMessage::Ack(id))) => assert_eq!(id, expected_id),
+            _ => panic!("expected an ACK for {expected_id}"),
+        }
+        assert!(matches!(receiver.try_recv(), Err(TryRecvError::Empty)));
+    }
+
+    #[test]
+    fn data_type_mismatch_acks_all_and_batch_end() {
+        let id = 41;
+        let (sender, mut receiver) = MessageSender::new();
+        let data = Data::<u8>::new("data".to_string(), id, sender);
+
+        assert!(
+            data.update_data(DataMessage::All(
+                DataType::U16,
+                TransportType::Set(1),
+                Bytes::from_static(&[0, 0]),
+            ))
+            .is_err()
+        );
+        assert_single_ack(&mut receiver, id);
+
+        assert!(
+            data.update_data(DataMessage::BatchEnd(
+                DataType::U16,
+                TransportType::Set(1),
+                Bytes::from_static(&[0, 0]),
+            ))
+            .is_err()
+        );
+        assert_single_ack(&mut receiver, id);
+    }
+
+    #[test]
+    fn data_multi_type_mismatch_acks_all_and_batch_end() {
+        let id = 42;
+        let (sender, mut receiver) = MessageSender::new();
+        let data = DataMulti::<u8>::new("data_multi".to_string(), id, sender);
+
+        assert!(
+            data.update(
+                7,
+                DataMessage::All(
+                    DataType::U16,
+                    TransportType::Set(1),
+                    Bytes::from_static(&[0, 0]),
+                ),
+            )
+            .is_err()
+        );
+        assert_single_ack(&mut receiver, id);
+
+        assert!(
+            data.update(
+                7,
+                DataMessage::BatchEnd(
+                    DataType::U16,
+                    TransportType::Set(1),
+                    Bytes::from_static(&[0, 0]),
+                ),
+            )
+            .is_err()
+        );
+        assert_single_ack(&mut receiver, id);
+    }
 }

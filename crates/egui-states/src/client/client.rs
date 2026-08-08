@@ -199,6 +199,11 @@ impl Client {
         }
     }
 
+    #[inline]
+    pub(crate) fn send_ack(&self, id: u64) {
+        self.0.sender.send_ack(id);
+    }
+
     pub fn get_state(&self) -> ConnectionState {
         *self.0.state.read()
     }

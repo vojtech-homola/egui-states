@@ -27,6 +27,17 @@ pub(crate) enum ImageMessage {
     Fill([u32; 2], [u8; 4]),
 }
 
+impl ImageMessage {
+    pub(crate) fn requires_ack(&self) -> bool {
+        matches!(
+            self,
+            Self::Set(ImageSetMessage::All(_) | ImageSetMessage::End(_), _)
+                | Self::Update(..)
+                | Self::Fill(..)
+        )
+    }
+}
+
 pub struct Image {
     name: Arc<String>,
     id: u64,
@@ -202,12 +213,14 @@ impl Image {
         data: &[u8],
     ) -> Result<(), String> {
         if !data.is_empty() {
+            self.inner.1.send_ack(self.id);
             return Err(format!(
                 "Fill message for image {} contains unexpected pixel data",
                 self.name
             ));
         }
         if size[0] == 0 || size[1] == 0 {
+            self.inner.1.send_ack(self.id);
             return Err(format!(
                 "Fill message for image {} contains zero dimensions",
                 self.name
@@ -215,9 +228,13 @@ impl Image {
         }
 
         let image_size = [size[0] as usize, size[1] as usize];
-        image_size[0]
-            .checked_mul(image_size[1])
-            .ok_or_else(|| format!("Image dimensions overflow for image: {}", self.name))?;
+        if image_size[0].checked_mul(image_size[1]).is_none() {
+            self.inner.1.send_ack(self.id);
+            return Err(format!(
+                "Image dimensions overflow for image: {}",
+                self.name
+            ));
+        }
 
         self.inner.1.send(ChannelMessage::Ack(self.id));
 
@@ -346,5 +363,46 @@ unsafe fn fill_c_image(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::client::messages::{ChannelMessage, MessageSender};
+    use tokio::sync::mpsc::{UnboundedReceiver, error::TryRecvError};
+
+    fn assert_single_ack(
+        receiver: &mut UnboundedReceiver<Option<ChannelMessage>>,
+        expected_id: u64,
+    ) {
+        match receiver.try_recv() {
+            Ok(Some(ChannelMessage::Ack(id))) => assert_eq!(id, expected_id),
+            _ => panic!("expected an ACK for {expected_id}"),
+        }
+        assert!(matches!(receiver.try_recv(), Err(TryRecvError::Empty)));
+    }
+
+    #[test]
+    fn invalid_fill_messages_still_ack() {
+        let id = 51;
+        let (sender, mut receiver) = MessageSender::new();
+        let image = Image::new("image".to_string(), id, sender);
+
+        assert!(image.fill_image([1, 1], [0, 0, 0, 0], &[1]).is_err());
+        assert_single_ack(&mut receiver, id);
+
+        assert!(image.fill_image([0, 1], [0, 0, 0, 0], &[]).is_err());
+        assert_single_ack(&mut receiver, id);
+    }
+
+    #[test]
+    fn valid_fill_keeps_its_existing_single_ack() {
+        let id = 52;
+        let (sender, mut receiver) = MessageSender::new();
+        let image = Image::new("image".to_string(), id, sender);
+
+        image.fill_image([1, 1], [0, 0, 0, 0], &[]).unwrap();
+        assert_single_ack(&mut receiver, id);
     }
 }

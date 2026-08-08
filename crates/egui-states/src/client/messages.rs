@@ -40,6 +40,10 @@ impl MessageSender {
         self.send(ChannelMessage::Message(data));
     }
 
+    pub(crate) fn send_ack(&self, id: u64) {
+        self.send(ChannelMessage::Ack(id));
+    }
+
     pub(crate) fn close(&self) {
         self.sender.send(None).unwrap();
     }
@@ -426,7 +430,10 @@ pub(crate) async fn handle_message(
         ServerMessage::Value(id, type_id, update, data) => {
             match vals.values.get(&id) {
                 Some(value) => value.update_value(type_id, &data)?,
-                None => return Err(format!("Value with id {} not found", id)),
+                None => {
+                    client.send_ack(id);
+                    return Err(format!("Value with id {} not found", id));
+                }
             }
             update
         }
@@ -440,7 +447,12 @@ pub(crate) async fn handle_message(
         ServerMessage::ValueTake(id, type_id, blocking, update, data) => {
             match vals.values_take.get(&id) {
                 Some(value) => value.update_take(type_id, &data, blocking)?,
-                None => return Err(format!("ValueTake with id {} not found", id)),
+                None => {
+                    if blocking {
+                        client.send_ack(id);
+                    }
+                    return Err(format!("ValueTake with id {} not found", id));
+                }
             }
             update
         }
@@ -455,7 +467,12 @@ pub(crate) async fn handle_message(
                     }
                     ImageMessage::Fill(size, rgba) => value.fill_image(size, rgba, &data)?,
                 },
-                None => return Err(format!("Image with id {} not found", id)),
+                None => {
+                    if image_message.requires_ack() {
+                        client.send_ack(id);
+                    }
+                    return Err(format!("Image with id {} not found", id));
+                }
             }
             update
         }
@@ -476,14 +493,24 @@ pub(crate) async fn handle_message(
         ServerMessage::Data(id, update, message) => {
             match vals.data.get(&id) {
                 Some(data) => data.update_data(message)?,
-                None => return Err(format!("Data with id {} not found", id)),
+                None => {
+                    if message.requires_ack() {
+                        client.send_ack(id);
+                    }
+                    return Err(format!("Data with id {} not found", id));
+                }
             }
             update
         }
         ServerMessage::DataTake(id, blocking, update, message) => {
             match vals.data_take.get(&id) {
                 Some(data_take) => data_take.update(message, blocking)?,
-                None => return Err(format!("DataTake with id {} not found", id)),
+                None => {
+                    if blocking && message.is_terminal() {
+                        client.send_ack(id);
+                    }
+                    return Err(format!("DataTake with id {} not found", id));
+                }
             }
             update
         }
@@ -496,7 +523,12 @@ pub(crate) async fn handle_message(
                         multi_data.update(key, data_message)?
                     }
                 },
-                None => return Err(format!("MultiData with id {} not found", id)),
+                None => {
+                    if message.requires_ack() {
+                        client.send_ack(id);
+                    }
+                    return Err(format!("MultiData with id {} not found", id));
+                }
             }
             update
         }
@@ -509,7 +541,12 @@ pub(crate) async fn handle_message(
                         data_multi_take.update(key, data_take_message, blocking)?
                     }
                 },
-                None => return Err(format!("DataMultiTake with id {} not found", id)),
+                None => {
+                    if message.requires_ack_on_failure() {
+                        client.send_ack(id);
+                    }
+                    return Err(format!("DataMultiTake with id {} not found", id));
+                }
             }
             update
         }
@@ -520,4 +557,163 @@ pub(crate) async fn handle_message(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::client::client::Client;
+    use crate::client::states_creator::StatesCreatorClient;
+    use crate::data_transport::{DataType, TransportType};
+    use crate::image_transport::ImageType;
+    use tokio::sync::mpsc::{UnboundedReceiver, error::TryRecvError};
+
+    fn dispatch_missing(message: ServerMessage) -> UnboundedReceiver<Option<ChannelMessage>> {
+        let (sender, receiver) = MessageSender::new();
+        let creator = StatesCreatorClient::new(sender.clone(), "root".to_string());
+        let values = creator.get_values();
+        let client = Client::new(None, sender);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+
+        assert!(
+            runtime
+                .block_on(handle_message(message, &values, &client))
+                .is_err()
+        );
+        receiver
+    }
+
+    fn assert_ack(mut receiver: UnboundedReceiver<Option<ChannelMessage>>, expected_id: u64) {
+        match receiver.try_recv() {
+            Ok(Some(ChannelMessage::Ack(id))) => assert_eq!(id, expected_id),
+            _ => panic!("expected an ACK for {expected_id}"),
+        }
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(TryRecvError::Empty | TryRecvError::Disconnected)
+        ));
+    }
+
+    fn assert_no_ack(mut receiver: UnboundedReceiver<Option<ChannelMessage>>) {
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(TryRecvError::Empty | TryRecvError::Disconnected)
+        ));
+    }
+
+    #[test]
+    fn missing_value_and_blocking_value_take_ack() {
+        assert_ack(
+            dispatch_missing(ServerMessage::Value(71, 0, false, Bytes::new())),
+            71,
+        );
+        assert_ack(
+            dispatch_missing(ServerMessage::ValueTake(72, 0, true, false, Bytes::new())),
+            72,
+        );
+        assert_no_ack(dispatch_missing(ServerMessage::ValueTake(
+            73,
+            0,
+            false,
+            false,
+            Bytes::new(),
+        )));
+    }
+
+    #[test]
+    fn missing_image_acks_only_ack_boundaries() {
+        assert_ack(
+            dispatch_missing(ServerMessage::Image(
+                74,
+                false,
+                ImageMessage::Fill([1, 1], [0; 4]),
+                Bytes::new(),
+            )),
+            74,
+        );
+        assert_no_ack(dispatch_missing(ServerMessage::Image(
+            75,
+            false,
+            ImageMessage::Set(ImageSetMessage::Start([1, 1], 1), ImageType::ColorAlpha),
+            Bytes::new(),
+        )));
+    }
+
+    #[test]
+    fn missing_data_acks_only_terminal_operations() {
+        assert_ack(
+            dispatch_missing(ServerMessage::Data(
+                76,
+                false,
+                DataMessage::All(
+                    DataType::U8,
+                    TransportType::Set(1),
+                    Bytes::from_static(&[1]),
+                ),
+            )),
+            76,
+        );
+        assert_no_ack(dispatch_missing(ServerMessage::Data(
+            77,
+            false,
+            DataMessage::BatchStart(1, Bytes::from_static(&[1])),
+        )));
+        assert_ack(
+            dispatch_missing(ServerMessage::DataMulti(
+                78,
+                false,
+                DataMultiMessage::Modify(
+                    3,
+                    DataMessage::All(
+                        DataType::U8,
+                        TransportType::Set(1),
+                        Bytes::from_static(&[1]),
+                    ),
+                ),
+            )),
+            78,
+        );
+    }
+
+    #[test]
+    fn missing_take_data_acks_only_blocking_terminal_operations() {
+        assert_ack(
+            dispatch_missing(ServerMessage::DataTake(
+                79,
+                true,
+                false,
+                DataTakeMessage::All(DataType::U8, 1, Bytes::from_static(&[1])),
+            )),
+            79,
+        );
+        assert_no_ack(dispatch_missing(ServerMessage::DataTake(
+            80,
+            true,
+            false,
+            DataTakeMessage::BatchStart(1, Bytes::from_static(&[1])),
+        )));
+        assert_ack(
+            dispatch_missing(ServerMessage::DataMultiTake(
+                81,
+                false,
+                DataMultiTakeMessage::Modify(
+                    3,
+                    DataTakeMessage::All(DataType::U8, 1, Bytes::from_static(&[1])),
+                    true,
+                ),
+            )),
+            81,
+        );
+        assert_no_ack(dispatch_missing(ServerMessage::DataMultiTake(
+            82,
+            false,
+            DataMultiTakeMessage::Modify(
+                3,
+                DataTakeMessage::All(DataType::U8, 1, Bytes::from_static(&[1])),
+                false,
+            ),
+        )));
+    }
 }
