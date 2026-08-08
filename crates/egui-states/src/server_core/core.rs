@@ -12,7 +12,9 @@ use tokio_tungstenite::tungstenite::{Message, protocol::WebSocketConfig};
 
 use crate::PROTOCOL_VERSION;
 use crate::event::Event;
-use crate::serialization::{MAX_MSG_COUNT, MSG_SIZE_THRESHOLD, ServerHeader, serialize};
+use crate::serialization::{
+    MAX_MSG_COUNT, MSG_SIZE_THRESHOLD, ServerHeader, WEBSOCKET_MAX_SIZE, serialize,
+};
 use crate::server_core::sender::{MessageReceiver, MessageSender, SenderData};
 use crate::server_core::server::ServerStatesList;
 use crate::server_core::signals::SignalsManager;
@@ -68,8 +70,8 @@ pub(crate) async fn run(
         }
 
         let mut websocket_config = WebSocketConfig::default();
-        websocket_config.max_message_size = Some(536870912); // 512 MB
-        websocket_config.max_frame_size = Some(536870912); // 512 MB
+        websocket_config.max_message_size = Some(WEBSOCKET_MAX_SIZE);
+        websocket_config.max_frame_size = Some(WEBSOCKET_MAX_SIZE);
         let websocket =
             match tokio_tungstenite::accept_async_with_config(stream, Some(websocket_config)).await
             {
@@ -353,7 +355,7 @@ async fn writer(
 // A helper struct to receive from MessageReceiver and create micro-batches
 struct DataReceiver {
     rx: MessageReceiver,
-    send_next: Option<SenderData>,
+    send_next: Option<(SenderData, bool)>,
     is_closed: bool,
 }
 
@@ -367,52 +369,141 @@ impl DataReceiver {
     }
 
     async fn next(&mut self) -> Option<SenderData> {
-        // empty send_next first
-        if let Some(data) = self.send_next.take() {
-            return Some(data);
-        }
-
-        if self.is_closed {
-            return None;
-        }
-
-        match self.rx.recv().await {
-            Some(Some((mut msg, send_now))) => match send_now {
-                true => Some(msg),
-                false => {
-                    let mut counter = 0;
-                    loop {
-                        if msg.len() > MSG_SIZE_THRESHOLD || counter >= MAX_MSG_COUNT {
-                            break Some(msg);
-                        }
-
-                        match self.rx.try_recv() {
-                            Ok(Some((next_msg, send_now))) => match send_now {
-                                true => {
-                                    self.send_next = Some(next_msg);
-                                    break Some(msg);
-                                }
-                                false => {
-                                    msg.extend_from_data(&next_msg);
-                                    counter += 1;
-                                }
-                            },
-                            Err(TryRecvError::Empty) => {
-                                break Some(msg);
-                            }
-                            Ok(None) | Err(TryRecvError::Disconnected) => {
-                                self.is_closed = true;
-                                break Some(msg);
-                            }
-                        }
-                    }
-                }
+        let (mut msg, send_now) = match self.send_next.take() {
+            Some(next) => next,
+            None if self.is_closed => return None,
+            None => match self.rx.recv().await {
+                Some(Some(next)) => next,
+                None | Some(None) => return None,
             },
-            None | Some(None) => None,
+        };
+
+        if send_now {
+            return Some(msg);
+        }
+
+        let mut counter = 0;
+        loop {
+            if msg.len() > MSG_SIZE_THRESHOLD || counter >= MAX_MSG_COUNT {
+                return Some(msg);
+            }
+
+            match self.rx.try_recv() {
+                Ok(Some((next_msg, true))) => {
+                    self.send_next = Some((next_msg, true));
+                    return Some(msg);
+                }
+                Ok(Some((next_msg, false))) => {
+                    if msg
+                        .len()
+                        .checked_add(next_msg.len())
+                        .is_none_or(|size| size > MSG_SIZE_THRESHOLD)
+                    {
+                        self.send_next = Some((next_msg, false));
+                        return Some(msg);
+                    }
+                    msg.extend_from_data(&next_msg);
+                    counter += 1;
+                }
+                Err(TryRecvError::Empty) => return Some(msg),
+                Ok(None) | Err(TryRecvError::Disconnected) => {
+                    self.is_closed = true;
+                    return Some(msg);
+                }
+            }
         }
     }
 
     fn finalize(self) -> MessageReceiver {
         self.rx
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::sync::mpsc::unbounded_channel;
+
+    use super::DataReceiver;
+    use crate::serialization::{FastVec, MAX_MSG_COUNT, MSG_SIZE_THRESHOLD};
+
+    fn data(size: usize) -> FastVec<32> {
+        FastVec::Heap(vec![0; size])
+    }
+
+    #[tokio::test]
+    async fn data_receiver_does_not_batch_past_size_threshold() {
+        let (tx, rx) = unbounded_channel();
+        tx.send(Some((data(MSG_SIZE_THRESHOLD - 10), false)))
+            .unwrap();
+        tx.send(Some((data(11), false))).unwrap();
+        drop(tx);
+
+        let mut receiver = DataReceiver::new(rx);
+        assert_eq!(
+            receiver.next().await.unwrap().len(),
+            MSG_SIZE_THRESHOLD - 10
+        );
+        assert_eq!(receiver.next().await.unwrap().len(), 11);
+        assert!(receiver.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn data_receiver_batches_up_to_size_threshold() {
+        let (tx, rx) = unbounded_channel();
+        tx.send(Some((data(MSG_SIZE_THRESHOLD - 10), false)))
+            .unwrap();
+        tx.send(Some((data(10), false))).unwrap();
+        drop(tx);
+
+        let mut receiver = DataReceiver::new(rx);
+        assert_eq!(receiver.next().await.unwrap().len(), MSG_SIZE_THRESHOLD);
+        assert!(receiver.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn data_receiver_batches_deferred_non_immediate_message() {
+        let (tx, rx) = unbounded_channel();
+        tx.send(Some((data(MSG_SIZE_THRESHOLD - 10), false)))
+            .unwrap();
+        tx.send(Some((data(11), false))).unwrap();
+        tx.send(Some((data(5), false))).unwrap();
+        drop(tx);
+
+        let mut receiver = DataReceiver::new(rx);
+        assert_eq!(
+            receiver.next().await.unwrap().len(),
+            MSG_SIZE_THRESHOLD - 10
+        );
+        assert_eq!(receiver.next().await.unwrap().len(), 16);
+        assert!(receiver.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn data_receiver_keeps_immediate_message_separate() {
+        let (tx, rx) = unbounded_channel();
+        tx.send(Some((data(10), false))).unwrap();
+        tx.send(Some((data(11), true))).unwrap();
+        tx.send(Some((data(5), false))).unwrap();
+        drop(tx);
+
+        let mut receiver = DataReceiver::new(rx);
+        assert_eq!(receiver.next().await.unwrap().len(), 10);
+        assert_eq!(receiver.next().await.unwrap().len(), 11);
+        assert_eq!(receiver.next().await.unwrap().len(), 5);
+        assert!(receiver.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn data_receiver_respects_message_count_limit() {
+        let (tx, rx) = unbounded_channel();
+        for _ in 0..MAX_MSG_COUNT + 2 {
+            tx.send(Some((data(1), false))).unwrap();
+        }
+        drop(tx);
+
+        let mut receiver = DataReceiver::new(rx);
+        assert_eq!(receiver.next().await.unwrap().len(), MAX_MSG_COUNT + 1);
+        assert_eq!(receiver.next().await.unwrap().len(), 1);
+        assert!(receiver.next().await.is_none());
     }
 }

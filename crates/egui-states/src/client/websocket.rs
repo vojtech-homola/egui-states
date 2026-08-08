@@ -6,13 +6,13 @@ use tokio_tungstenite::tungstenite::{Message, protocol::WebSocketConfig};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 use crate::client::messages::{MessagesParser, ServerMessage};
-use crate::serialization::FastVec;
+use crate::serialization::{FastVec, WEBSOCKET_MAX_SIZE};
 
 pub(crate) async fn build_ws(address: SocketAddrV4) -> Result<(WsClientRead, WsClientSend), ()> {
     let address = format!("ws://{}/ws", address);
     let mut websocket_config = WebSocketConfig::default();
-    websocket_config.max_message_size = Some(536870912); // 512 MB
-    websocket_config.max_frame_size = Some(536870912); // 512 MB
+    websocket_config.max_message_size = Some(WEBSOCKET_MAX_SIZE);
+    websocket_config.max_frame_size = Some(WEBSOCKET_MAX_SIZE);
     let res = connect_async_with_config(&address, Some(websocket_config), false).await;
 
     if res.is_err() {
