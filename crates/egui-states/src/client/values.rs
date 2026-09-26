@@ -619,3 +619,120 @@ impl<T> Clone for ValueTake<T> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::serialization::VALUE_MAX_SIZE;
+
+    #[test]
+    fn diff_and_atomic_diff_emit_only_changes_in_call_order() {
+        let (sender, mut rx) = MessageSender::new();
+        let value: Value<i32> = Value::new("value".into(), 31, 7, 3, sender.clone());
+        let atomic = ValueAtomic::new("atomic".into(), 32, 9, 1.5f64, sender);
+        Diff::new(&value).set();
+        Diff::new(&value).set_signal();
+        DiffAtomic::new(&atomic).set();
+        DiffAtomic::new(&atomic).set_signal();
+        assert!(rx.try_recv().is_err());
+        let mut diff = Diff::new(&value);
+        diff.v = -7;
+        diff.set_signal();
+        let mut diff = DiffAtomic::new(&atomic);
+        diff.v = 2.75;
+        diff.set();
+        match rx.try_recv().unwrap().unwrap() {
+            ChannelMessage::Value(31, 7, true, data) => {
+                assert_eq!(deserialize::<i32>(&data.to_bytes()).unwrap(), -7)
+            }
+            _ => panic!("expected signaled scalar first"),
+        }
+        match rx.try_recv().unwrap().unwrap() {
+            ChannelMessage::Value(32, 9, false, data) => {
+                assert_eq!(deserialize::<f64>(&data.to_bytes()).unwrap(), 2.75)
+            }
+            _ => panic!("expected atomic value second"),
+        }
+        assert!(rx.try_recv().is_err());
+        assert_eq!(value.get(), -7);
+        assert_eq!(atomic.get(), 2.75);
+    }
+
+    #[test]
+    fn oversized_set_rejects_but_in_place_write_retains_local_edit() {
+        let (sender, mut rx) = MessageSender::new();
+        let value: Value<String> = Value::new("text".into(), 1, 2, "seed".into(), sender);
+        let oversized = "x".repeat(VALUE_MAX_SIZE + 1);
+        value.set(oversized.clone());
+        assert_eq!(value.get(), "seed");
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Some(ChannelMessage::Message(_)))
+        ));
+        value.write(|v| *v = oversized.clone());
+        assert_eq!(value.get(), oversized);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Some(ChannelMessage::Message(_)))
+        ));
+        assert!(rx.try_recv().is_err());
+        value.set("recovered".into());
+        assert_eq!(value.get(), "recovered");
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Some(ChannelMessage::Value(1, 2, false, _)))
+        ));
+        assert!(rx.try_recv().is_err());
+    }
+}
+
+#[cfg(test)]
+mod concurrent_tests {
+    use super::*;
+
+    #[test]
+    fn concurrent_atomic_sends_match_final_storage_and_each_writers_order() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let (sender, mut receiver) = MessageSender::new();
+        let value: ValueAtomic<u32> = ValueAtomic::new("atomic".into(), 33, 4, 0, sender);
+        let barrier = Arc::new(std::sync::Barrier::new(4));
+        let workers: Vec<_> = (0..4)
+            .map(|writer| {
+                let value = value.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    for sequence in 1..=50 {
+                        value.set(writer * 1000 + sequence);
+                    }
+                })
+            })
+            .collect();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        let mut previous = [0; 4];
+        let mut last = 0;
+        for _ in 0..200 {
+            match receiver.try_recv().unwrap().unwrap() {
+                ChannelMessage::Value(33, 4, false, data) => {
+                    let sent: u32 = deserialize(&data.to_bytes()).unwrap();
+                    let writer = (sent / 1000) as usize;
+                    assert_eq!(sent % 1000, previous[writer] + 1);
+                    previous[writer] += 1;
+                    last = sent;
+                }
+                _ => panic!("unexpected outgoing atomic update"),
+            }
+        }
+        assert_eq!(previous, [50; 4]);
+        assert_eq!(
+            value.get(),
+            last,
+            "last notification and committed value diverged"
+        );
+        assert!(receiver.try_recv().is_err());
+    }
+}

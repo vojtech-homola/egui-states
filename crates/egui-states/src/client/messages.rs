@@ -873,3 +873,78 @@ mod tests {
         )));
     }
 }
+
+#[cfg(test)]
+mod malformed_tests {
+    use super::*;
+    use crate::client::states_creator::StatesCreatorClient;
+    use crate::{StatesCreator, Typed};
+
+    #[test]
+    fn truncated_headers_payloads_and_later_messages_do_not_hide_valid_updates() {
+        let header = ServerHeader::Value(17, 2, false, 2);
+        let mut full = postcard::to_stdvec(&header).unwrap();
+        full.extend([1, 2]);
+        for length in 0..full.len() {
+            assert!(
+                MessagesParser::from_bytes(Bytes::copy_from_slice(&full[..length])).is_err(),
+                "accepted truncated frame length {length}"
+            );
+        }
+        let mut mixed = full.clone();
+        mixed.push(255);
+        let (mut parser, first) = MessagesParser::from_bytes(mixed.into()).unwrap();
+        assert!(
+            matches!(first, ServerMessage::Value(17, 2, false, ref data) if data.as_ref() == [1, 2])
+        );
+        assert!(parser.next().is_err());
+        assert!(
+            MessagesParser::from_bytes(full.into()).is_ok(),
+            "next frame remains parseable"
+        );
+    }
+
+    #[test]
+    fn invalid_value_type_and_payload_ack_preserve_state_and_allow_recovery() {
+        let (sender, mut receiver) = MessageSender::new();
+        let mut creator = StatesCreatorClient::new(sender.clone(), "root".into());
+        let value: crate::Value<i32> = creator.value("number", 37);
+        let values = creator.get_values();
+        let id = *values.values.keys().next().unwrap();
+        let type_id = <i32 as Typed>::get_type().get_hash();
+        let client = Client::new(None, sender);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        for (kind, payload) in [
+            (type_id.wrapping_add(1), Bytes::from_static(&[0])),
+            (type_id, Bytes::from_static(&[255])),
+        ] {
+            assert!(
+                runtime
+                    .block_on(handle_message(
+                        ServerMessage::Value(id, kind, false, payload),
+                        &values,
+                        &client
+                    ))
+                    .is_err()
+            );
+            assert_eq!(value.get(), 37);
+            crate::test_support::ack(&mut receiver, id);
+        }
+        runtime
+            .block_on(handle_message(
+                ServerMessage::Value(
+                    id,
+                    type_id,
+                    false,
+                    postcard::to_stdvec(&-91i32).unwrap().into(),
+                ),
+                &values,
+                &client,
+            ))
+            .unwrap();
+        assert_eq!(value.get(), -91);
+        crate::test_support::ack(&mut receiver, id);
+    }
+}

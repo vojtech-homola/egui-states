@@ -21,6 +21,33 @@ enum MacroEnum {
 }
 
 #[egui_states::typed]
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "client",
+    derive(egui_states::Atomic, egui_states::AtomicStatic)
+)]
+#[repr(i32)]
+enum BoundaryEnum {
+    Min = -2147483648,
+    AfterMin,
+    Negative = -2,
+    AfterNegative,
+    Zero,
+    Positive = 4,
+    Max = 2147483647,
+}
+
+const BOUNDARY_VALUES: [BoundaryEnum; 7] = [
+    BoundaryEnum::Min,
+    BoundaryEnum::AfterMin,
+    BoundaryEnum::Negative,
+    BoundaryEnum::AfterNegative,
+    BoundaryEnum::Zero,
+    BoundaryEnum::Positive,
+    BoundaryEnum::Max,
+];
+
+#[egui_states::typed]
 #[derive(Debug, PartialEq, egui_states::serde::Serialize)]
 struct SerializeOnly {
     value: bool,
@@ -112,6 +139,69 @@ fn typed_attribute_preserves_enum_discriminants() {
     assert_round_trip(MacroEnum::Negative);
     assert_round_trip(MacroEnum::Next);
     assert_round_trip(MacroEnum::Positive);
+}
+
+#[test]
+fn typed_attribute_preserves_i32_boundaries_and_wire_values() {
+    assert_traits::<BoundaryEnum>();
+    assert_eq!(
+        BoundaryEnum::get_type(),
+        ObjectType::Enum(
+            "BoundaryEnum".to_string(),
+            vec![
+                ("Min".to_string(), i32::MIN),
+                ("AfterMin".to_string(), i32::MIN + 1),
+                ("Negative".to_string(), -2),
+                ("AfterNegative".to_string(), -1),
+                ("Zero".to_string(), 0),
+                ("Positive".to_string(), 4),
+                ("Max".to_string(), i32::MAX),
+            ],
+        )
+    );
+    for (index, value) in BOUNDARY_VALUES.into_iter().enumerate() {
+        // Serde/Postcard encodes the variant's ordinal, not its discriminant.
+        assert_eq!(postcard::to_stdvec(&value).unwrap(), [index as u8]);
+        assert_round_trip(value);
+    }
+}
+
+#[cfg(feature = "client")]
+fn assert_boundary_storage<L: egui_states::AtomicLockStatic<BoundaryEnum>>() {
+    let lock = L::new(BoundaryEnum::Max);
+    assert_eq!(lock.load(), BoundaryEnum::Max);
+    for value in BOUNDARY_VALUES {
+        assert_eq!(L::new(value).load(), value);
+        lock.store(value);
+        assert_eq!(lock.load(), value);
+    }
+}
+
+#[cfg(feature = "client")]
+#[test]
+fn atomic_static_derive_preserves_i32_boundaries() {
+    assert_boundary_storage::<<BoundaryEnum as egui_states::AtomicStatic>::Lock>();
+}
+
+#[cfg(feature = "client")]
+#[test]
+fn atomic_derive_preserves_i32_boundaries() {
+    use egui_states::{AtomicLock, AtomicLockStatic};
+
+    type Lock = <BoundaryEnum as egui_states::Atomic>::Lock;
+    assert_boundary_storage::<Lock>();
+    let lock = Lock::new(BoundaryEnum::Max);
+    let mut previous = BoundaryEnum::Max;
+    for value in BOUNDARY_VALUES {
+        let mut notified = false;
+        lock.update(value, || {
+            assert_eq!(lock.load(), previous);
+            notified = true;
+        });
+        assert!(notified);
+        assert_eq!(lock.load(), value);
+        previous = value;
+    }
 }
 
 #[test]

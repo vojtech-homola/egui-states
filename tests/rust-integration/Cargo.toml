@@ -1,0 +1,16 @@
+[package]
+name = "egui_states_test_support"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+egui_states = { workspace = true, features = ["server", "build_scripts"] }
+egui_states_test_schema = { path = "../shared-test-states" }
+
+[build-dependencies]
+egui_states = { workspace = true, features = ["build_scripts"] }
+egui_states_test_schema = { path = "../shared-test-states" }
+
+[dev-dependencies]
+egui_states_test_process = { path = "../rust-process-helpers" }

@@ -328,10 +328,13 @@ impl SignalsManager {
     }
 }
 
-#[cfg(all(test, feature = "python"))]
+#[cfg(test)]
 mod tests {
+    #[cfg(feature = "python")]
     use std::sync::mpsc;
+    #[cfg(feature = "python")]
     use std::thread;
+    #[cfg(feature = "python")]
     use std::time::Duration;
 
     use super::*;
@@ -339,7 +342,11 @@ mod tests {
     /// A caller that fails before passing an id back as `last_id` must not
     /// strand it: `release` is what keeps signals queued behind it reachable.
     #[test]
+    #[cfg(feature = "python")]
     fn release_frees_an_id_that_was_never_passed_back() {
+        if crate::test_support::isolated() {
+            return;
+        }
         let manager = SignalsManager::new();
         manager.set_register(5, true, false);
         manager.set_register(9, true, false);
@@ -386,7 +393,7 @@ mod tests {
         manager.set_with_previous(10, b("b"), b("a"));
         manager.set_with_previous(10, b("c"), b("b"));
 
-        let (id, value, previous) = manager.wait_changed_value(None);
+        let (id, value, previous) = claim(&manager, None);
         assert_eq!(id, 10);
         assert_eq!(value, b("c"));
         assert_eq!(
@@ -406,9 +413,9 @@ mod tests {
         manager.set_with_previous(11, b("c"), b("b"));
 
         // Every queued change is delivered, so the chain is already contiguous.
-        let (_, value, previous) = manager.wait_changed_value(None);
+        let (_, value, previous) = claim(&manager, None);
         assert_eq!((value, previous), (b("b"), Some(b("a"))));
-        let (_, value, previous) = manager.wait_changed_value(Some(11));
+        let (_, value, previous) = claim(&manager, Some(11));
         assert_eq!((value, previous), (b("c"), Some(b("b"))));
     }
 
@@ -424,7 +431,7 @@ mod tests {
         manager.set_with_previous(12, b("c"), b("b"));
         manager.set_to_single(12);
 
-        let (_, value, previous) = manager.wait_changed_value(None);
+        let (_, value, previous) = claim(&manager, None);
         assert_eq!((value, previous), (b("c"), Some(b("a"))));
     }
 
@@ -439,7 +446,7 @@ mod tests {
         manager.set_with_previous(15, b("b"), b("a"));
         manager.set_to_single(15);
 
-        let (_, value, previous) = manager.wait_changed_value(None);
+        let (_, value, previous) = claim(&manager, None);
         assert_eq!((value, previous), (b("b"), Some(b("a"))));
     }
 
@@ -456,7 +463,7 @@ mod tests {
         manager.set_with_previous(16, b("c"), b("b"));
 
         // Coalesced rather than queued, which is what single mode means.
-        let (_, value, previous) = manager.wait_changed_value(None);
+        let (_, value, previous) = claim(&manager, None);
         assert_eq!((value, previous), (b("c"), Some(b("a"))));
         assert!(manager.values.lock().get(Some(16)).is_none());
     }
@@ -470,7 +477,7 @@ mod tests {
         manager.set_register(13, true, false);
 
         manager.set_with_previous(13, b("new"), b("old"));
-        let (_, value, previous) = manager.wait_changed_value(None);
+        let (_, value, previous) = claim(&manager, None);
         assert_eq!(value, b("new"));
         assert_eq!(previous, None);
 
@@ -478,7 +485,7 @@ mod tests {
         // it was kept all along, only masked on the way out.
         manager.set_register(13, true, true);
         manager.set_with_previous(13, b("newer"), b("new"));
-        let (_, value, previous) = manager.wait_changed_value(Some(13));
+        let (_, value, previous) = claim(&manager, Some(13));
         assert_eq!((value, previous), (b("newer"), Some(b("new"))));
     }
 
@@ -489,9 +496,17 @@ mod tests {
         manager.set_register(14, true, true);
 
         manager.set(14, b("fired"));
-        let (_, value, previous) = manager.wait_changed_value(None);
+        let (_, value, previous) = claim(&manager, None);
         assert_eq!(value, b("fired"));
         assert_eq!(previous, None);
+    }
+
+    fn claim(manager: &SignalsManager, last: Option<u64>) -> (u64, Bytes, Option<Bytes>) {
+        manager
+            .values
+            .lock()
+            .get(last)
+            .expect("expected a pending change")
     }
 
     fn b(value: &str) -> Bytes {

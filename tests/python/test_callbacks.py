@@ -1,8 +1,8 @@
 # ruff: noqa: D103
 import threading
-import time
 
 import pytest
+from egui_states.logging import LogLevel
 
 from egui_states_test_bindings import (
     State,
@@ -13,7 +13,9 @@ from egui_states_test_bindings.enums import (
 )
 
 
-from .conftest import _free_port, _wait_until, _wait_event
+from tests.python_test_helpers.network import free_port
+from tests.python_test_helpers.waiting import wait_until, wait_event
+from .callback_helpers import drain_callbacks
 
 
 class _Handler:
@@ -45,13 +47,15 @@ def test_value_callbacks_disconnect_and_signal_mode(
     states.values.title.signal_set_to_queue()
     states.values.title.set("first", set_signal=True)
     states.values.title.set("second", set_signal=True)
-    _wait_event(title_event)
-    assert title_values[:2] == ["first", "second"]
+    wait_event(title_event)
+    drain_callbacks(states)
+    assert title_values == ["first", "second"]
 
     states.values.title.disconnect(on_title)
     title_event.clear()
     states.values.title.set("third", set_signal=True)
-    assert not title_event.wait(0.2)
+    drain_callbacks(states)
+    assert not title_event.is_set()
 
     ratio_values: list[float] = []
     ratio_event = threading.Event()
@@ -63,13 +67,14 @@ def test_value_callbacks_disconnect_and_signal_mode(
     states.values.ratio.connect(on_ratio)
     states.values.ratio.signal_set_to_single()
     states.values.ratio.set(0.9, set_signal=True)
-    _wait_event(ratio_event)
+    wait_event(ratio_event)
     assert ratio_values[-1] == pytest.approx(0.9)
 
     states.values.ratio.disconnect_all()
     ratio_event.clear()
     states.values.ratio.set(0.1, set_signal=True)
-    assert not ratio_event.wait(0.2)
+    drain_callbacks(states)
+    assert not ratio_event.is_set()
 
 
 def test_value_connect_previous_receives_replaced_value(
@@ -91,13 +96,15 @@ def test_value_connect_previous_receives_replaced_value(
     states.values.title.signal_set_to_queue()
     states.values.title.set("first", set_signal=True)
     states.values.title.set("second", set_signal=True)
-    _wait_until(lambda: len(pairs) >= 2)
-    assert pairs[:2] == [("first", ""), ("second", "first")]
+    wait_until(lambda: len(pairs) >= 2)
+    drain_callbacks(states)
+    assert pairs == [("first", ""), ("second", "first")]
 
     states.values.title.disconnect(on_title)
     event.clear()
     states.values.title.set("third", set_signal=True)
-    assert not event.wait(0.2)
+    drain_callbacks(states)
+    assert not event.is_set()
     assert errors == []
 
 
@@ -116,21 +123,23 @@ def test_value_connect_previous_coalesces_to_last_delivered(
         # instead of being delivered one at a time.
         if len(pairs) == 1:
             gate.set()
-            released.wait(1.0)
+            assert released.wait(5.0), "coalescing gate was not released"
 
     states.values.ratio.connect_previous(on_ratio)
     states.values.ratio.signal_set_to_single()
 
     states.values.ratio.set(1.0, set_signal=True)
-    _wait_event(gate)
+    # Always release the callback, including when waiting for entry fails.
+    try:
+        wait_event(gate, 5)
+        states.values.ratio.set(2.0, set_signal=True)
+        states.values.ratio.set(3.0, set_signal=True)
+    finally:
+        released.set()
 
-    # a -> b -> c while the worker is held up; only c survives, and it must
-    # report the value the callback was last told about, not the skipped 2.0.
-    states.values.ratio.set(2.0, set_signal=True)
-    states.values.ratio.set(3.0, set_signal=True)
-    released.set()
-
-    _wait_until(lambda: len(pairs) >= 2)
+    wait_until(lambda: len(pairs) >= 2)
+    drain_callbacks(states)
+    assert len(pairs) == 2
     assert pairs[0] == pytest.approx((1.0, 0.0))
     assert pairs[1] == pytest.approx((3.0, 1.0))
     assert errors == []
@@ -148,7 +157,7 @@ def test_value_disconnect_takes_either_variant(
     states.values.title.connect_previous(handler.on_value_previous)
 
     states.values.title.set("changed", set_signal=True)
-    _wait_until(lambda: bool(handler.plain) and bool(handler.pairs))
+    wait_until(lambda: bool(handler.plain) and bool(handler.pairs))
 
     assert handler.plain == ["changed"]
     assert handler.pairs == [("changed", "")]
@@ -156,14 +165,14 @@ def test_value_disconnect_takes_either_variant(
     # One disconnect for both, without having to say which kind it was.
     states.values.title.disconnect(handler.on_value_previous)
     states.values.title.set("again", set_signal=True)
-    _wait_until(lambda: len(handler.plain) >= 2)
-    time.sleep(0.2)
+    wait_until(lambda: len(handler.plain) >= 2)
+    drain_callbacks(states)
     assert handler.plain == ["changed", "again"]
     assert handler.pairs == [("changed", "")]
 
     states.values.title.disconnect(handler.on_value)
     states.values.title.set("third", set_signal=True)
-    time.sleep(0.2)
+    drain_callbacks(states)
     assert handler.plain == ["changed", "again"]
 
     # Disconnecting again, or disconnecting something never connected, is a no-op
@@ -190,8 +199,9 @@ def test_value_connect_previous_treats_none_as_a_real_previous_value(
     states.values.optional_value.set(None, set_signal=True)
     states.values.optional_value.set(None, set_signal=True)
 
-    _wait_until(lambda: len(pairs) >= 3)
-    assert pairs[:3] == [(5, None), (None, 5), (None, None)]
+    wait_until(lambda: len(pairs) >= 3)
+    drain_callbacks(states)
+    assert pairs == [(5, None), (None, 5), (None, None)]
     assert errors == []
 
 
@@ -207,7 +217,7 @@ def test_value_plain_and_previous_callbacks_coexist(
     states.values.title.connect_previous(lambda value, previous: pairs.append((value, previous)))
 
     states.values.title.set("changed", set_signal=True)
-    _wait_until(lambda: bool(plain) and bool(pairs))
+    wait_until(lambda: bool(plain) and bool(pairs))
 
     assert plain == ["changed"]
     assert pairs == [("changed", "")]
@@ -215,7 +225,7 @@ def test_value_plain_and_previous_callbacks_coexist(
     # disconnect_all has to clear both registries.
     states.values.title.disconnect_all()
     states.values.title.set("again", set_signal=True)
-    time.sleep(0.2)
+    drain_callbacks(states)
     assert plain == ["changed"]
     assert pairs == [("changed", "")]
     assert errors == []
@@ -252,40 +262,77 @@ def test_signal_callbacks_and_disconnect_all(
     states.signals.number_signal.set(1.25)
     states.signals.enum_signal.set(ExampleTestEnum.B)
 
-    _wait_event(empty_event)
-    _wait_event(number_event)
-    _wait_event(enum_event)
-    assert "empty" in signal_events
-    assert "number:1.25" in signal_events
-    assert "enum:B" in signal_events
+    wait_event(empty_event)
+    wait_event(number_event)
+    wait_event(enum_event)
+    drain_callbacks(states)
+    assert signal_events == ["empty", "number:1.25", "enum:B"]
 
     states.signals.enum_signal.disconnect_all()
     enum_event.clear()
     states.signals.enum_signal.set(ExampleTestEnum.C)
-    assert not enum_event.wait(0.2)
+    drain_callbacks(states)
+    assert not enum_event.is_set()
 
 
-def test_error_handler_receives_callback_failures() -> None:
-    captured_errors: list[Exception] = []
-    error_event = threading.Event()
+def test_callback_exception_does_not_stop_dispatch_or_later_events(server_bundle):
+    server, states, unexpected = server_bundle
+    first_errors, second_errors, received = [], [], []
 
-    def on_error(error: Exception) -> None:
-        captured_errors.append(error)
-        error_event.set()
+    def broken(value):
+        raise ValueError(f"bad {value}")
 
-    server = StatesServer(error_handler=on_error)
-    server.start(_free_port())
+    server.set_error_handler(first_errors.append)
+    states.values.title.signal_set_to_queue()
+    states.values.title.connect(broken)
+    states.values.title.connect(received.append)
     try:
-
-        def explode(_value: float) -> None:
-            raise ValueError("boom")
-
-        server.states.signals.number_signal.connect(explode)
-        server.states.signals.number_signal.set(3.5)
-        _wait_event(error_event)
-        _wait_until(lambda: bool(captured_errors))
-        assert isinstance(captured_errors[0], ValueError)
-        assert str(captured_errors[0]) == "boom"
+        states.values.title.set("one", set_signal=True)
+        drain_callbacks(states)
+        server.set_error_handler(second_errors.append)
+        states.values.title.set("two", set_signal=True)
+        drain_callbacks(states)
+        states.values.title.disconnect(broken)
+        states.values.title.set("three", set_signal=True)
+        drain_callbacks(states)
+        assert received == ["one", "two", "three"]
+        assert [str(e) for e in first_errors] == ["bad one"]
+        assert [str(e) for e in second_errors] == ["bad two"]
     finally:
-        if server.is_running():
-            server.stop()
+        server.set_error_handler(unexpected.append)
+
+
+def test_two_workers_process_independent_states_while_one_is_blocked():
+    errors, received = [], []
+    server = StatesServer(signals_workers=2, error_handler=errors.append)
+    server.logging.add_logger(LogLevel.Error, lambda message: errors.append(RuntimeError(message)))
+    entered, release, other_done, finished = (threading.Event() for _ in range(4))
+
+    def blocked(value):
+        entered.set()
+        try:
+            assert release.wait(5), "blocked callback was not released"
+            received.append(("title", value))
+        finally:
+            finished.set()
+
+    def independent(value):
+        received.append(("count", value))
+        other_done.set()
+
+    server.states.values.title.connect(blocked)
+    server.states.values.count.connect(independent)
+    try:
+        server.start(free_port(), (127, 0, 0, 1))
+        server.states.values.title.set("held", set_signal=True)
+        wait_event(entered, 5)
+        server.states.values.count.set(73, set_signal=True)
+        wait_event(other_done, 5)
+        assert not finished.is_set()
+    finally:
+        release.set()
+        if entered.is_set():
+            wait_event(finished, 5)
+        server.stop()
+    assert received == [("count", 73), ("title", "held")]
+    assert errors == []

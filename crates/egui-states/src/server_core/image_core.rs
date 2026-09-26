@@ -784,7 +784,7 @@ mod tests {
             ) => {}
             _ => panic!("unexpected connection-sync header"),
         }
-        assert_eq!(sync_header_size + 24, sync_bytes.len());
+        assert_eq!(&sync_bytes[sync_header_size..], [10, 20, 30, 255].repeat(6));
         image.acknowledge();
 
         image.set_all_image([4, 5], [7, 7, 7, 8], true).unwrap();
@@ -847,6 +847,9 @@ mod tests {
 
     #[test]
     fn reset_discards_a_waiter_from_the_previous_connection() {
+        if crate::test_support::isolated() {
+            return;
+        }
         let (image, connected, mut receiver) = new_image(false);
         let initial = [10, 20, 30, 255];
         let buffered = [40, 50, 60, 255];
@@ -900,6 +903,9 @@ mod tests {
 
     #[test]
     fn reset_discards_an_update_waiter_from_the_previous_connection() {
+        if crate::test_support::isolated() {
+            return;
+        }
         let (image, connected, mut receiver) = new_image(false);
         let initial = [10, 20, 30, 255, 40, 50, 60, 255];
         let buffered = [15, 25, 35, 255, 45, 55, 65, 255];
@@ -953,5 +959,132 @@ mod tests {
 
         assert_message(&mut receiver);
         assert_no_message(&mut receiver);
+    }
+}
+
+#[cfg(all(test, feature = "client"))]
+mod packing_tests {
+    use super::*;
+    use crate::client::image::{Image as ClientImage, ImageMessage};
+    use crate::client::messages::{MessageSender as ClientSender, MessagesParser, ServerMessage};
+
+    #[test]
+    fn real_image_set_and_update_chunks_preserve_pixels_and_publication_boundaries() {
+        let width = 1024;
+        let threshold_rows = MSG_SIZE_THRESHOLD / (width * 4);
+        for height in [
+            threshold_rows - 1,
+            threshold_rows,
+            threshold_rows + 1,
+            2 * threshold_rows + 3,
+        ] {
+            let context = egui::Context::default();
+            let (sender, mut receiver) = ClientSender::new();
+            let client = ClientImage::new("image".into(), 71, sender);
+            client.initialize(
+                &context,
+                egui::ColorImage::filled([1, 1], egui::Color32::BLACK),
+            );
+            let _ = crate::test_support::texture_updates(&context);
+            let mut expected: Vec<u8> = (0..height * width * 4)
+                .map(|i| (i * 31 % 251) as u8)
+                .collect();
+            let image = |data: &[u8]| ImageData {
+                size: [height, width],
+                stride: width * 4,
+                contiguous: true,
+                image_type: ImageType::ColorAlpha,
+                data: data.as_ptr(),
+            };
+            let packed = pack_set_data(71, &image(&expected), true).unwrap();
+            let total = packed.len();
+            assert_eq!(total, expected.len().div_ceil(MSG_SIZE_THRESHOLD));
+            for (n, (message, _)) in packed.into_iter().enumerate() {
+                let (mut parser, message) = MessagesParser::from_bytes(message.to_bytes()).unwrap();
+                match message {
+                    ServerMessage::Image(
+                        71,
+                        repaint,
+                        ImageMessage::Set(message, kind),
+                        payload,
+                    ) => {
+                        assert_eq!(repaint, n + 1 == total);
+                        client.set_image(message, kind, &payload).unwrap();
+                    }
+                    _ => panic!("unexpected packed image set"),
+                }
+                assert!(parser.next().unwrap().is_none());
+                if n + 1 < total {
+                    assert_eq!(client.get_size(), Some([1, 1]));
+                    assert!(receiver.try_recv().is_err());
+                    assert!(
+                        crate::test_support::texture_updates(&context).is_empty(),
+                        "partial set was published"
+                    );
+                }
+            }
+            crate::test_support::ack(&mut receiver, 71);
+            let delta = crate::test_support::texture_updates(&context);
+            let changes = &delta[&client.get_id().unwrap()];
+            assert_eq!(changes.len(), 1);
+            let egui::ImageData::Color(pixels) = &changes[0].image;
+            assert_eq!(pixels.size, [width, height]);
+            assert_eq!(
+                pixels
+                    .pixels
+                    .iter()
+                    .flat_map(|p| p.to_array())
+                    .collect::<Vec<_>>(),
+                expected
+            );
+            drop(delta);
+
+            // Update messages publish complete row strips individually. The last
+            // strip requests repaint; every strip is acknowledged.
+            expected.iter_mut().for_each(|v| *v = 255 - *v);
+            let packed = pack_update_data(71, &[0, 0], &image(&expected), true).unwrap();
+            let total = packed.len();
+            let mut reconstructed = vec![0; expected.len()];
+            let mut next_row = 0;
+            for (n, (message, _)) in packed.into_iter().enumerate() {
+                let (_, message) = MessagesParser::from_bytes(message.to_bytes()).unwrap();
+                match message {
+                    ServerMessage::Image(
+                        71,
+                        repaint,
+                        ImageMessage::Update(rect, kind),
+                        payload,
+                    ) => {
+                        assert_eq!(repaint, n + 1 == total);
+                        assert_eq!(rect[0], 0);
+                        assert_eq!(rect[1] as usize, next_row);
+                        assert_eq!(rect[2] as usize, width);
+                        client.update_image(rect, kind, &payload).unwrap();
+                        next_row += rect[3] as usize;
+                    }
+                    _ => panic!("unexpected packed image update"),
+                }
+                crate::test_support::ack(&mut receiver, 71);
+                let delta = crate::test_support::texture_updates(&context);
+                let changes = &delta[&client.get_id().unwrap()];
+                assert_eq!(changes.len(), 1);
+                let patch = &changes[0];
+                let egui::ImageData::Color(pixels) = &patch.image;
+                let pos = patch.pos.unwrap_or_else(|| {
+                    assert_eq!(
+                        pixels.size,
+                        [width, height],
+                        "a full delta must cover the texture"
+                    );
+                    [0, 0]
+                });
+                let bytes: Vec<u8> = pixels.pixels.iter().flat_map(|p| p.to_array()).collect();
+                let offset = pos[1] * width * 4;
+                reconstructed[offset..offset + bytes.len()].copy_from_slice(&bytes);
+            }
+            assert_eq!(next_row, height);
+            assert_eq!(reconstructed, expected);
+            assert_eq!(client.get_size(), Some([width, height]));
+        }
     }
 }

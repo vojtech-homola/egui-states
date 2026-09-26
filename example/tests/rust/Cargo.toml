@@ -1,0 +1,16 @@
+[package]
+name = "example_smoke_tests"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+counter_gui = { path = "../../counter/gui" }
+egui_states = { workspace = true }
+showcase_gui_core = { path = "../../showcase/gui-core" }
+showcase_server = { path = "../../showcase/rust" }
+counter_server = { path = "../../counter/rust" }
+egui = "0.36"
+
+[dev-dependencies]
+egui_states_test_process = { path = "../../../tests/rust-process-helpers" }

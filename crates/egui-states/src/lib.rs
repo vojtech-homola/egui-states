@@ -51,6 +51,9 @@
 
 extern crate self as egui_states;
 
+#[cfg(test)]
+mod test_support;
+
 mod collections;
 mod data_transport;
 mod event;

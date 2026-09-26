@@ -2,6 +2,7 @@
 name = "egui_states_python"
 version.workspace = true
 edition.workspace = true
+publish = false
 
 [lib]
 crate-type = ["cdylib"]

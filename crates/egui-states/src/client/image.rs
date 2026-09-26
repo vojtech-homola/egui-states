@@ -819,7 +819,9 @@ mod tests {
         let id = 54;
         let (sender, mut receiver) = MessageSender::new();
         let images = ImageMulti::new("images".to_string(), id, sender);
-        images.initialize(&egui::Context::default());
+        let context = egui::Context::default();
+        images.initialize(&context);
+        crate::test_support::texture_updates(&context);
 
         for index in [2, 7] {
             images
@@ -831,6 +833,9 @@ mod tests {
                 )
                 .unwrap();
         }
+        assert!(images.is_empty(), "unfinished images must not publish");
+        assert!(crate::test_support::texture_updates(&context).is_empty());
+        assert!(receiver.try_recv().is_err());
         images
             .set_image(
                 7,
@@ -840,6 +845,19 @@ mod tests {
             )
             .unwrap();
         assert_single_ack(&mut receiver, id);
+        assert_eq!(images.indices(), vec![7]);
+        let delta = crate::test_support::texture_updates(&context);
+        assert_eq!(delta.len(), 1);
+        let egui::ImageData::Color(pixels) = &delta.values().next().unwrap()[0].image;
+        assert_eq!(pixels.size, [2, 1]);
+        assert_eq!(
+            pixels
+                .pixels
+                .iter()
+                .map(|p| p.to_array())
+                .collect::<Vec<_>>(),
+            [[7, 0, 0, 255], [70, 0, 0, 255]]
+        );
         images
             .set_image(
                 2,
@@ -850,6 +868,18 @@ mod tests {
             .unwrap();
         assert_single_ack(&mut receiver, id);
         assert_eq!(images.indices(), vec![2, 7]);
+        let delta = crate::test_support::texture_updates(&context);
+        assert_eq!(delta.len(), 1);
+        let egui::ImageData::Color(pixels) = &delta.values().next().unwrap()[0].image;
+        assert_eq!(pixels.size, [2, 1]);
+        assert_eq!(
+            pixels
+                .pixels
+                .iter()
+                .map(|p| p.to_array())
+                .collect::<Vec<_>>(),
+            [[2, 0, 0, 255], [20, 0, 0, 255]]
+        );
 
         images
             .set_image(11, ImageSetMessage::Start([2, 1], 1), ImageType::Gray, &[1])

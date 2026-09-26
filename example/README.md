@@ -8,3 +8,6 @@ Both examples connect a Rust egui GUI to either a Python or Rust server.
   and images in a native or browser GUI.
 
 Each guide includes run commands and links to the source code.
+
+Tests for both examples live in [`tests/`](tests/README.md), with separate Python
+and Rust suites.

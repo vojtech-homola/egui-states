@@ -1,0 +1,78 @@
+[workspace]
+members = ["derive"]
+
+[package]
+name = "egui_states_codegen_probe"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+egui_states = { path = "../../crates/egui-states", features = ["server", "build_scripts"] }
+custom_macros = { path = "derive" }
+
+[build-dependencies]
+egui_states = { path = "../../crates/egui-states", features = ["build_scripts"] }
+
+[features]
+invalid = []
+conflicting = []
+
+[[bin]]
+name = "codegen-probe"
+path = "src/main.rs"
+
+[[bin]]
+name = "typed-generic"
+path = "src/bin/typed-generic.rs"
+required-features = ["invalid"]
+
+[[bin]]
+name = "typed-tuple"
+path = "src/bin/typed-tuple.rs"
+required-features = ["invalid"]
+
+[[bin]]
+name = "typed-payload-enum"
+path = "src/bin/typed-payload-enum.rs"
+required-features = ["invalid"]
+
+[[bin]]
+name = "typed-union"
+path = "src/bin/typed-union.rs"
+required-features = ["invalid"]
+
+[[bin]]
+name = "typed-option"
+path = "src/bin/typed-option.rs"
+required-features = ["invalid"]
+
+[[bin]]
+name = "typed-duplicate-option"
+path = "src/bin/typed-duplicate-option.rs"
+required-features = ["invalid"]
+
+[[bin]]
+name = "state-generic"
+path = "src/bin/state-generic.rs"
+required-features = ["invalid"]
+
+[[bin]]
+name = "state-empty"
+path = "src/bin/state-empty.rs"
+required-features = ["invalid"]
+
+[[bin]]
+name = "atomic-payload"
+path = "src/bin/atomic-payload.rs"
+required-features = ["invalid"]
+
+[[bin]]
+name = "initial-tuple"
+path = "src/bin/initial-tuple.rs"
+required-features = ["invalid"]
+
+[[bin]]
+name = "atomic-static-payload"
+path = "src/bin/atomic-static-payload.rs"
+required-features = ["invalid"]

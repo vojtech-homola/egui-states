@@ -369,3 +369,35 @@ where
         (states, client_out)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn update_requests_immediate_and_delayed_repaints() {
+        for delay in [0.0, 0.25] {
+            let context = egui::Context::default();
+            // Drain initial repaint requests so the delayed request is observable.
+            for _ in 0..3 {
+                let mut output = context.run_ui(
+                    egui::RawInput {
+                        predicted_dt: 0.0,
+                        ..Default::default()
+                    },
+                    |_| {},
+                );
+                output.textures_delta.clear();
+            }
+            let requests = Arc::new(parking_lot::Mutex::new(Vec::new()));
+            let received = requests.clone();
+            context.set_request_repaint_callback(move |info| received.lock().push(info.delay));
+            let (sender, _receiver) = MessageSender::new();
+            let client = Client::new(Some(context), sender);
+            client.update(delay);
+            let requests = requests.lock();
+            assert_eq!(requests.len(), 1, "no observable repaint for delay {delay}");
+            assert_eq!(requests[0], Duration::from_secs_f32(delay));
+        }
+    }
+}

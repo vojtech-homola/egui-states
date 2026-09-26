@@ -401,3 +401,96 @@ fn pack_data_multi_take(
 
     Ok(messages)
 }
+
+#[cfg(all(test, feature = "client"))]
+mod transfer_tests {
+    use super::*;
+    use crate::client::data_take::{
+        DataMultiTake as ClientMulti, DataMultiTakeMessage, DataTake as ClientTake,
+        UpdateDataMultiTake, UpdateDataTake,
+    };
+    use crate::client::messages::{MessageSender as ClientSender, MessagesParser, ServerMessage};
+
+    #[test]
+    fn real_take_chunks_publish_once_and_ack_only_after_consumption() {
+        for size in [
+            MSG_SIZE_THRESHOLD - 1,
+            MSG_SIZE_THRESHOLD,
+            MSG_SIZE_THRESHOLD + 1,
+            2 * MSG_SIZE_THRESHOLD + 17,
+        ] {
+            let expected: Vec<u8> = (0..size).map(|i| (i % 251) as u8).collect();
+            for key in [None, Some(113)] {
+                for blocking in [false, true] {
+                    let (sender, mut receiver) = ClientSender::new();
+                    let single = ClientTake::<u8>::new("take".into(), 61, sender.clone());
+                    let multi = ClientMulti::<u8>::new("takes".into(), 61, sender);
+                    for _ in 0..2 {
+                        let messages = match key {
+                            None => pack_data_take(
+                                61,
+                                &expected,
+                                size as u64,
+                                DataType::U8,
+                                blocking,
+                                true,
+                            ),
+                            Some(key) => pack_data_multi_take(
+                                61,
+                                key,
+                                &expected,
+                                size as u64,
+                                DataType::U8,
+                                blocking,
+                                true,
+                            ),
+                        }
+                        .unwrap();
+                        let total = messages.len();
+                        assert_eq!(total, size.div_ceil(MSG_SIZE_THRESHOLD));
+                        for (n, (message, _)) in messages.into_iter().enumerate() {
+                            let (mut parser, message) =
+                                MessagesParser::from_bytes(message.to_bytes()).unwrap();
+                            match message {
+                                ServerMessage::DataTake(61, actual_blocking, repaint, message) => {
+                                    assert_eq!(actual_blocking, blocking);
+                                    assert_eq!(repaint, n + 1 == total);
+                                    single.update(message, actual_blocking).unwrap();
+                                }
+                                ServerMessage::DataMultiTake(
+                                    61,
+                                    repaint,
+                                    DataMultiTakeMessage::Modify(113, message, actual_blocking),
+                                ) => {
+                                    assert_eq!(actual_blocking, blocking);
+                                    assert_eq!(repaint, n + 1 == total);
+                                    multi.update(113, message, actual_blocking).unwrap();
+                                }
+                                _ => panic!("wrong packed take message"),
+                            }
+                            assert!(parser.next().unwrap().is_none());
+                            assert!(receiver.try_recv().is_err(), "ACK before consumption");
+                            if n + 1 < total {
+                                assert!(single.take().is_none());
+                                assert!(multi.take(113).is_none());
+                            }
+                        }
+                        let actual = if key.is_none() {
+                            single.take()
+                        } else {
+                            multi.take(113)
+                        };
+                        assert_eq!(actual.as_deref(), Some(expected.as_slice()));
+                        if blocking {
+                            crate::test_support::ack(&mut receiver, 61);
+                        }
+                        assert!(single.take().is_none());
+                        assert!(multi.take(113).is_none());
+                        assert!(multi.take(0).is_none());
+                        assert!(receiver.try_recv().is_err());
+                    }
+                }
+            }
+        }
+    }
+}

@@ -9,9 +9,17 @@ members = [
     "example/showcase/rust",
     "example/counter/gui",
     "example/counter/rust",
-    "tests/schema",
-    "tests/support",
-    "tests/example-support"
+    "tests/shared-test-states",
+    "tests/rust-integration",
+    "tests/rust-process-helpers",
+    "example/tests/rust"
+]
+# Library development defaults; Python and example packages remain opt-in.
+default-members = [
+    "crates/egui-states",
+    "crates/egui-states-macros",
+    "tests/rust-integration",
+    "tests/rust-process-helpers"
 ]
 resolver = "3"
 

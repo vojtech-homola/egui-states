@@ -826,3 +826,53 @@ mod tests {
         assert_single_ack(&mut receiver, id);
     }
 }
+
+#[cfg(test)]
+mod malformed_tests {
+    use super::*;
+
+    #[test]
+    fn invalid_count_and_unfinished_batches_preserve_previous_data_and_recover() {
+        let (sender, mut receiver) = MessageSender::new();
+        let data = Data::<u8>::new("buffer".into(), 91, sender);
+        data.update_data(DataMessage::All(
+            DataType::U8,
+            TransportType::Set(2),
+            Bytes::from_static(&[7, 8]),
+        ))
+        .unwrap();
+        crate::test_support::ack(&mut receiver, 91);
+        assert!(
+            data.update_data(DataMessage::All(
+                DataType::U8,
+                TransportType::Set(3),
+                Bytes::from_static(&[1])
+            ))
+            .is_err()
+        );
+        crate::test_support::ack(&mut receiver, 91);
+        data.read(|v| assert_eq!(v, [7, 8]));
+        data.update_data(DataMessage::BatchStart(3, Bytes::from_static(&[1])))
+            .unwrap();
+        data.read(|v| assert_eq!(v, [7, 8]));
+        assert!(receiver.try_recv().is_err());
+        assert!(
+            data.update_data(DataMessage::BatchEnd(
+                DataType::U8,
+                TransportType::Set(3),
+                Bytes::from_static(&[2])
+            ))
+            .is_err()
+        );
+        crate::test_support::ack(&mut receiver, 91);
+        data.read(|v| assert_eq!(v, [7, 8]));
+        data.update_data(DataMessage::All(
+            DataType::U8,
+            TransportType::Set(1),
+            Bytes::from_static(&[9]),
+        ))
+        .unwrap();
+        crate::test_support::ack(&mut receiver, 91);
+        data.read(|v| assert_eq!(v, [9]));
+    }
+}

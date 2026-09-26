@@ -427,7 +427,7 @@ mod tests {
     use crate::serialization::{FastVec, MAX_MSG_COUNT, MSG_SIZE_THRESHOLD};
 
     fn data(size: usize) -> FastVec<32> {
-        FastVec::Heap(vec![0; size])
+        FastVec::Heap((0..size).map(|i| (i % 251) as u8).collect())
     }
 
     #[tokio::test]
@@ -440,10 +440,13 @@ mod tests {
 
         let mut receiver = DataReceiver::new(rx);
         assert_eq!(
-            receiver.next().await.unwrap().len(),
-            MSG_SIZE_THRESHOLD - 10
+            receiver.next().await.unwrap().to_bytes(),
+            data(MSG_SIZE_THRESHOLD - 10).to_bytes()
         );
-        assert_eq!(receiver.next().await.unwrap().len(), 11);
+        assert_eq!(
+            receiver.next().await.unwrap().to_bytes(),
+            data(11).to_bytes()
+        );
         assert!(receiver.next().await.is_none());
     }
 
@@ -456,7 +459,9 @@ mod tests {
         drop(tx);
 
         let mut receiver = DataReceiver::new(rx);
-        assert_eq!(receiver.next().await.unwrap().len(), MSG_SIZE_THRESHOLD);
+        let mut expected = data(MSG_SIZE_THRESHOLD - 10).to_bytes().to_vec();
+        expected.extend_from_slice(&data(10).to_bytes());
+        assert_eq!(receiver.next().await.unwrap().to_bytes().as_ref(), expected);
         assert!(receiver.next().await.is_none());
     }
 
@@ -471,10 +476,12 @@ mod tests {
 
         let mut receiver = DataReceiver::new(rx);
         assert_eq!(
-            receiver.next().await.unwrap().len(),
-            MSG_SIZE_THRESHOLD - 10
+            receiver.next().await.unwrap().to_bytes(),
+            data(MSG_SIZE_THRESHOLD - 10).to_bytes()
         );
-        assert_eq!(receiver.next().await.unwrap().len(), 16);
+        let mut expected = data(11).to_bytes().to_vec();
+        expected.extend_from_slice(&data(5).to_bytes());
+        assert_eq!(receiver.next().await.unwrap().to_bytes().as_ref(), expected);
         assert!(receiver.next().await.is_none());
     }
 
@@ -487,23 +494,73 @@ mod tests {
         drop(tx);
 
         let mut receiver = DataReceiver::new(rx);
-        assert_eq!(receiver.next().await.unwrap().len(), 10);
-        assert_eq!(receiver.next().await.unwrap().len(), 11);
-        assert_eq!(receiver.next().await.unwrap().len(), 5);
+        assert_eq!(
+            receiver.next().await.unwrap().to_bytes(),
+            data(10).to_bytes()
+        );
+        assert_eq!(
+            receiver.next().await.unwrap().to_bytes(),
+            data(11).to_bytes()
+        );
+        assert_eq!(
+            receiver.next().await.unwrap().to_bytes(),
+            data(5).to_bytes()
+        );
         assert!(receiver.next().await.is_none());
     }
 
     #[tokio::test]
     async fn data_receiver_respects_message_count_limit() {
         let (tx, rx) = unbounded_channel();
-        for _ in 0..MAX_MSG_COUNT + 2 {
-            tx.send(Some((data(1), false))).unwrap();
+        for marker in 0..MAX_MSG_COUNT + 2 {
+            tx.send(Some((FastVec::Heap(vec![marker as u8]), false)))
+                .unwrap();
         }
         drop(tx);
 
         let mut receiver = DataReceiver::new(rx);
-        assert_eq!(receiver.next().await.unwrap().len(), MAX_MSG_COUNT + 1);
-        assert_eq!(receiver.next().await.unwrap().len(), 1);
+        assert_eq!(
+            receiver.next().await.unwrap().to_bytes().as_ref(),
+            (0..MAX_MSG_COUNT as u8).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            receiver.next().await.unwrap().to_bytes().as_ref(),
+            [MAX_MSG_COUNT as u8, MAX_MSG_COUNT as u8 + 1]
+        );
         assert!(receiver.next().await.is_none());
+    }
+}
+
+#[cfg(test)]
+mod handshake_tests {
+    use super::*;
+
+    #[test]
+    fn required_handshake_fields_reject_missing_or_wrong_credentials() {
+        let settings = Handshake {
+            version: Some(17),
+            token: Some("secret".into()),
+        };
+        for (protocol, version, token, diagnostic) in [
+            (0, Some(17), Some("secret"), "protocol version"),
+            (
+                PROTOCOL_VERSION + 1,
+                Some(17),
+                Some("secret"),
+                "protocol version",
+            ),
+            (PROTOCOL_VERSION, None, Some("secret"), "version missing"),
+            (PROTOCOL_VERSION, Some(18), Some("secret"), "wrong version"),
+            (PROTOCOL_VERSION, Some(17), None, "token missing"),
+            (PROTOCOL_VERSION, Some(17), Some("wrong"), "wrong token"),
+        ] {
+            let error = check_handshake(&settings, protocol, version, token.map(str::to_owned))
+                .unwrap_err();
+            assert!(error.contains(diagnostic), "{error}");
+            assert!(
+                check_handshake(&settings, PROTOCOL_VERSION, Some(17), Some("secret".into()))
+                    .is_ok()
+            );
+        }
     }
 }

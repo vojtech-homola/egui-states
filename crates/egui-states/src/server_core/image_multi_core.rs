@@ -819,6 +819,7 @@ mod tests {
         images
             .set_image(4, image_data(&first, [1, 2], ImageType::ColorAlpha), false)
             .unwrap();
+        // Pointer stability is a limited allocation regression, not an allocation counter.
         let allocation = images.inner.read().images[&4].data.as_ptr();
 
         let second = [8, 7, 6, 5, 4, 3, 2, 1];
@@ -826,11 +827,16 @@ mod tests {
             .set_image(4, image_data(&second, [1, 2], ImageType::ColorAlpha), false)
             .unwrap();
         assert_eq!(images.inner.read().images[&4].data.as_ptr(), allocation);
+        assert_eq!(images.get_image(4, |v| v.unwrap().0.clone()), second);
 
         images
             .set_all_image(4, [1, 2], [9, 8, 7, 6], false)
             .unwrap();
         assert_eq!(images.inner.read().images[&4].data.as_ptr(), allocation);
+        assert_eq!(
+            images.get_image(4, |v| v.unwrap().0.clone()),
+            [9, 8, 7, 6].repeat(2)
+        );
     }
 
     #[test]
@@ -921,7 +927,15 @@ mod tests {
                 ) => assert_eq!(index, expected_index),
                 _ => panic!("unexpected ImageMulti sync header"),
             }
-            assert_eq!(header_size + 4, bytes.len());
+            assert_eq!(
+                &bytes[header_size..],
+                &[
+                    expected_index as u8,
+                    expected_index as u8,
+                    expected_index as u8,
+                    255
+                ]
+            );
         }
         assert_no_message(&mut receiver);
         assert!(!images.transfer.is_idle());
@@ -1017,6 +1031,9 @@ mod tests {
 
     #[test]
     fn cross_key_set_waits_for_every_buffered_update_chunk() {
+        if crate::test_support::isolated() {
+            return;
+        }
         let (images, _, mut receiver) = new_image_multi(true);
         let mut update = VecDeque::from([(marker_message(1), true), (marker_message(2), false)]);
         let lock = images.transfer.lock.lock();
@@ -1040,7 +1057,9 @@ mod tests {
             done_sender.send(result).unwrap();
         });
 
-        started_receiver.recv().unwrap();
+        started_receiver
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
         assert!(matches!(
             done_receiver.recv_timeout(std::time::Duration::from_millis(100)),
             Err(std::sync::mpsc::RecvTimeoutError::Timeout)
@@ -1067,6 +1086,9 @@ mod tests {
 
     #[test]
     fn control_waits_for_every_buffered_update_chunk_without_consuming_idle() {
+        if crate::test_support::isolated() {
+            return;
+        }
         let (images, _, mut receiver) = new_image_multi(true);
         let mut update = VecDeque::from([(marker_message(1), true), (marker_message(2), false)]);
         let lock = images.transfer.lock.lock();
@@ -1088,7 +1110,9 @@ mod tests {
             done_sender.send(()).unwrap();
         });
 
-        started_receiver.recv().unwrap();
+        started_receiver
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
         assert!(matches!(
             done_receiver.recv_timeout(std::time::Duration::from_millis(100)),
             Err(std::sync::mpsc::RecvTimeoutError::Timeout)
@@ -1121,6 +1145,9 @@ mod tests {
 
     #[test]
     fn remove_and_reset_controls_leave_transfer_ready_for_later_sets() {
+        if crate::test_support::isolated() {
+            return;
+        }
         let (images, connected, mut receiver) = new_image_multi(false);
         images
             .set_all_image(1, [1, 1], [1, 1, 1, 255], false)
@@ -1167,6 +1194,9 @@ mod tests {
 
     #[test]
     fn reset_discards_a_set_waiter_from_the_previous_connection() {
+        if crate::test_support::isolated() {
+            return;
+        }
         let (images, connected, mut receiver) = new_image_multi(false);
         images
             .set_all_image(1, [1, 1], [1, 1, 1, 255], false)
@@ -1201,6 +1231,9 @@ mod tests {
     #[test]
     #[cfg(feature = "client")]
     fn force_is_key_scoped_and_cross_key_updates_stay_ordered() {
+        if crate::test_support::isolated() {
+            return;
+        }
         let (images, connected, mut receiver) = new_image_multi(false);
         for index in [1, 2] {
             images

@@ -734,11 +734,18 @@ mod tests {
 
     #[test]
     fn running_server_stops_when_dropped() {
+        if crate::test_support::isolated() {
+            return;
+        }
         let server = StateServer::new().unwrap();
         server.finalize().unwrap();
-        server.start(0, None, None).unwrap();
-
+        let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        server.start(port, Some(Ipv4Addr::LOCALHOST), None).unwrap();
         drop(server);
+        let _released = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, port))
+            .expect("dropping the last server handle must release its listener");
     }
 
     #[test]
@@ -765,6 +772,9 @@ mod tests {
     #[cfg(feature = "client")]
     #[test]
     fn rust_client_and_server_exchange_values() {
+        if crate::test_support::isolated() {
+            return;
+        }
         let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
         drop(listener);
@@ -809,6 +819,9 @@ mod tests {
     #[cfg(feature = "client")]
     #[test]
     fn stopped_server_restarts_with_new_port_and_token() {
+        if crate::test_support::isolated() {
+            return;
+        }
         let first_listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let second_listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let first_port = first_listener.local_addr().unwrap().port();
@@ -1028,6 +1041,9 @@ mod tests {
 
     #[test]
     fn drop_does_not_block_on_a_worker_stuck_in_a_callback() {
+        if crate::test_support::isolated() {
+            return;
+        }
         let (release_sender, release_receiver) = mpsc::channel::<()>();
         let (entered_sender, entered_receiver) = mpsc::channel::<()>();
 
@@ -1075,6 +1091,9 @@ mod tests {
 
     #[test]
     fn drop_is_prompt_when_workers_are_idle() {
+        if crate::test_support::isolated() {
+            return;
+        }
         let mut options = ServerOptions::new();
         options.signal_workers = 3;
         options.shutdown_timeout = Duration::from_secs(5);
@@ -1101,5 +1120,192 @@ mod tests {
             deserialize_bytes::<u16>(&data).unwrap_err().message(),
             "deserialized value did not consume all bytes"
         );
+    }
+}
+
+#[cfg(all(test, feature = "client"))]
+mod wire_tests {
+    use super::*;
+    use crate::serialization::{ClientHeader, ServerHeader};
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+
+    async fn peer(port: u16, header: ClientHeader, valid: bool) {
+        let stream = tokio::net::TcpStream::connect((Ipv4Addr::LOCALHOST, port))
+            .await
+            .unwrap();
+        let (mut ws, _) = tokio_tungstenite::client_async(format!("ws://127.0.0.1:{port}"), stream)
+            .await
+            .unwrap();
+        ws.send(Message::Binary(
+            postcard::to_stdvec(&header).unwrap().into(),
+        ))
+        .await
+        .unwrap();
+        let response = ws.next().await;
+        if valid {
+            let Some(Ok(Message::Binary(bytes))) = response else {
+                panic!("valid handshake did not synchronize");
+            };
+            let (header, offset) = ServerHeader::deserialize(&bytes).unwrap();
+            match header {
+                ServerHeader::Value(_, _, false, length) => {
+                    assert_eq!(
+                        postcard::from_bytes::<i32>(&bytes[offset..offset + length as usize])
+                            .unwrap(),
+                        731
+                    );
+                }
+                _ => panic!("non-default state missing from sync"),
+            }
+            ws.close(None).await.unwrap();
+        } else {
+            assert!(
+                !matches!(response, Some(Ok(Message::Binary(_)))),
+                "rejected client received synchronization"
+            );
+        }
+    }
+
+    #[test]
+    fn rejected_handshakes_recover_and_start_restart_preserve_credentials() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let server = StateServer::with_options(ServerOptions {
+            version: Some(17),
+            ..Default::default()
+        })
+        .unwrap();
+        let _value = crate::server::Value::new(&server, "root.value", 731i32, false).unwrap();
+        server.finalize().unwrap();
+        server
+            .start(port, Some(Ipv4Addr::LOCALHOST), Some("first".into()))
+            .unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .build()
+            .unwrap();
+        let good =
+            || ClientHeader::Handshake(crate::PROTOCOL_VERSION, Some(17), Some("first".into()));
+        runtime.block_on(async {
+            for bad in [
+                ClientHeader::Ack(1),
+                ClientHeader::Handshake(0, Some(17), Some("first".into())),
+                ClientHeader::Handshake(
+                    crate::PROTOCOL_VERSION + 1,
+                    Some(17),
+                    Some("first".into()),
+                ),
+                ClientHeader::Handshake(crate::PROTOCOL_VERSION, None, Some("first".into())),
+                ClientHeader::Handshake(crate::PROTOCOL_VERSION, Some(18), Some("first".into())),
+                ClientHeader::Handshake(crate::PROTOCOL_VERSION, Some(17), None),
+                ClientHeader::Handshake(crate::PROTOCOL_VERSION, Some(17), Some("wrong".into())),
+            ] {
+                peer(port, bad, false).await;
+                peer(port, good(), true).await;
+            }
+            // A repeated start cannot change the original address or token.
+            let occupied = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+            server
+                .start(
+                    occupied.local_addr().unwrap().port(),
+                    Some(Ipv4Addr::LOCALHOST),
+                    Some("ignored".into()),
+                )
+                .unwrap();
+            peer(
+                port,
+                ClientHeader::Handshake(crate::PROTOCOL_VERSION, Some(17), Some("ignored".into())),
+                false,
+            )
+            .await;
+            peer(port, good(), true).await;
+        });
+        server.stop();
+        server
+            .start(port, Some(Ipv4Addr::LOCALHOST), Some("second".into()))
+            .unwrap();
+        runtime.block_on(async {
+            peer(port, good(), false).await;
+            peer(
+                port,
+                ClientHeader::Handshake(crate::PROTOCOL_VERSION, Some(17), Some("second".into())),
+                true,
+            )
+            .await;
+        });
+        server.stop();
+    }
+
+    #[test]
+    fn connection_message_and_disconnection_callbacks_follow_socket_events() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let server = StateServer::new().unwrap();
+        server.finalize().unwrap();
+        let (tx, rx) = mpsc::channel();
+        let connect = tx.clone();
+        let _on_connect = server.on_connect(move |address| {
+            assert!(address.starts_with("127.0.0.1:"));
+            connect.send("connect".to_string()).unwrap();
+        });
+        let message = tx.clone();
+        let _on_message = server.on_client_message(move |value| {
+            message.send(value).unwrap();
+        });
+        let _on_disconnect = server.on_disconnect(move || {
+            tx.send("disconnect".into()).unwrap();
+        });
+        server.start(port, Some(Ipv4Addr::LOCALHOST), None).unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let stream = tokio::net::TcpStream::connect((Ipv4Addr::LOCALHOST, port))
+                .await
+                .unwrap();
+            let (mut ws, _) =
+                tokio_tungstenite::client_async(format!("ws://127.0.0.1:{port}"), stream)
+                    .await
+                    .unwrap();
+            ws.send(Message::Binary(
+                postcard::to_stdvec(&ClientHeader::Handshake(
+                    crate::PROTOCOL_VERSION,
+                    None,
+                    None,
+                ))
+                .unwrap()
+                .into(),
+            ))
+            .await
+            .unwrap();
+            assert!(matches!(ws.next().await, Some(Ok(Message::Binary(_)))));
+            assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), "connect");
+            let payload = postcard::to_stdvec("client diagnostic 🦀").unwrap();
+            let mut bytes =
+                postcard::to_stdvec(&ClientHeader::Message(payload.len() as u32)).unwrap();
+            bytes.extend(payload);
+            ws.send(Message::Binary(bytes.into())).await.unwrap();
+            assert_eq!(
+                rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+                "client diagnostic 🦀"
+            );
+            ws.close(None).await.unwrap();
+        });
+        assert_eq!(
+            rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+            "disconnect"
+        );
+        assert!(rx.try_recv().is_err());
+        server.stop();
     }
 }

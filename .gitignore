@@ -24,6 +24,6 @@ __pycache__
 
 
 # Generated fixtures and example Python bindings
-/tests/generated/
+/tests/build-artifacts/
 /example/showcase/python/showcase_bindings/
 /example/counter/python/counter_bindings/

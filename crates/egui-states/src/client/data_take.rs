@@ -811,3 +811,51 @@ mod tests {
         assert!(!take.is_some(7));
     }
 }
+
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::*;
+
+    fn discard_pending(reset: bool) {
+        let (sender, mut receiver) = MessageSender::new();
+        let data = DataMultiTake::<u8>::new("takes".into(), 93, sender);
+        data.update(
+            7,
+            DataTakeMessage::All(DataType::U8, 1, Bytes::from_static(&[7])),
+            true,
+        )
+        .unwrap();
+        assert!(receiver.try_recv().is_err());
+        if reset {
+            data.reset();
+        } else {
+            data.remove(7);
+        }
+        assert!(data.take(7).is_none());
+        crate::test_support::ack(&mut receiver, 93);
+        data.reset();
+        data.remove(7);
+        assert!(
+            receiver.try_recv().is_err(),
+            "discarding twice must not ACK twice"
+        );
+        data.update(
+            513,
+            DataTakeMessage::All(DataType::U8, 1, Bytes::from_static(&[9])),
+            true,
+        )
+        .unwrap();
+        assert_eq!(data.take(513), Some(vec![9]));
+        crate::test_support::ack(&mut receiver, 93);
+        assert!(data.take(513).is_none());
+    }
+
+    #[test]
+    fn removing_pending_blocking_key_acknowledges_once() {
+        discard_pending(false);
+    }
+    #[test]
+    fn resetting_pending_blocking_key_acknowledges_once() {
+        discard_pending(true);
+    }
+}
