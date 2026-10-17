@@ -55,6 +55,9 @@ enum TakeBatch<T> {
 // DataTake --------------------------------------------------------------------
 pub(crate) trait UpdateDataTake: Sync + Send {
     fn update(&self, message: DataTakeMessage, blocking: bool) -> Result<(), String>;
+    /// The server releases blocking sends when a connection ends, so pending
+    /// values from it must not be acknowledged on the next connection.
+    fn disconnected(&self);
 }
 
 /// A one-shot numeric buffer sent from the server to the client.
@@ -361,6 +364,14 @@ where
             }
         }
     }
+
+    fn disconnected(&self) {
+        if let Some((_, blocking)) = self.inner.write().as_mut() {
+            *blocking = false;
+        }
+        // A batch from the closed connection can never complete.
+        *self.batch.lock() = TakeBatch::Empty;
+    }
 }
 
 // DataMultiTake ----------------------------------------------------------------
@@ -368,6 +379,9 @@ pub(crate) trait UpdateDataMultiTake: Sync + Send {
     fn update(&self, key: u32, message: DataTakeMessage, blocking: bool) -> Result<(), String>;
     fn remove(&self, key: u32);
     fn reset(&self);
+    /// The server releases blocking sends when a connection ends, so pending
+    /// values from it must not be acknowledged on the next connection.
+    fn disconnected(&self);
 }
 
 /// Keyed one-shot numeric buffers sent from the server to the client.
@@ -668,13 +682,34 @@ where
         }
     }
 
+    // A discarded blocking buffer will never be taken, so acknowledge it here or
+    // the server keeps waiting before it sends the next transfer.
     fn remove(&self, key: u32) {
-        self.inner.write().remove(&key);
+        let removed = self.inner.write().remove(&key);
         self.batches.lock().remove(&key);
+        if let Some((_, true)) = removed {
+            self.sender.send_ack(self.id);
+        }
     }
 
     fn reset(&self) {
-        self.inner.write().clear();
+        let blocking = self
+            .inner
+            .write()
+            .drain()
+            .filter(|(_, (_, blocking))| *blocking)
+            .count();
+        self.batches.lock().clear();
+        for _ in 0..blocking {
+            self.sender.send_ack(self.id);
+        }
+    }
+
+    fn disconnected(&self) {
+        for (_, blocking) in self.inner.write().values_mut() {
+            *blocking = false;
+        }
+        // Batches from the closed connection can never complete.
         self.batches.lock().clear();
     }
 }
@@ -857,5 +892,27 @@ mod lifecycle_tests {
     #[test]
     fn resetting_pending_blocking_key_acknowledges_once() {
         discard_pending(true);
+    }
+
+    /// The server releases blocking sends on disconnect; acknowledging a buffer
+    /// from the closed connection would release a later send on the next one.
+    #[test]
+    fn buffers_from_a_closed_connection_are_not_acknowledged() {
+        let (sender, mut receiver) = MessageSender::new();
+        let single = DataTake::<u8>::new("take".into(), 94, sender.clone());
+        let multi = DataMultiTake::<u8>::new("takes".into(), 95, sender);
+        let message = || DataTakeMessage::All(DataType::U8, 1, Bytes::from_static(&[7]));
+        single.update(message(), true).unwrap();
+        multi.update(7, message(), true).unwrap();
+        multi.update(8, message(), true).unwrap();
+
+        single.disconnected();
+        multi.disconnected();
+        multi.reset();
+        assert_eq!(single.take(), Some(vec![7]));
+        assert!(
+            receiver.try_recv().is_err(),
+            "a stale buffer was acknowledged"
+        );
     }
 }

@@ -106,6 +106,9 @@ pub(crate) trait UpdateValue: Sync + Send {
 
 pub(crate) trait UpdateValueTake: Sync + Send {
     fn update_take(&self, type_id: u32, data: &[u8], blocking: bool) -> Result<(), String>;
+    /// The server releases blocking sends when a connection ends, so pending
+    /// values from it must not be acknowledged on the next connection.
+    fn disconnected(&self);
 }
 
 /// Selects how server callbacks buffer signaled client changes.
@@ -606,6 +609,12 @@ where
 
         Ok(())
     }
+
+    fn disconnected(&self) {
+        if let Some((_, blocking)) = self.value.write().as_mut() {
+            *blocking = false;
+        }
+    }
 }
 
 impl<T> Clone for ValueTake<T> {
@@ -682,6 +691,18 @@ mod tests {
             rx.try_recv(),
             Ok(Some(ChannelMessage::Value(1, 2, false, _)))
         ));
+        assert!(rx.try_recv().is_err());
+    }
+
+    /// The server releases blocking sends on disconnect, so taking a value from
+    /// the closed connection must not acknowledge it on the next one.
+    #[test]
+    fn value_from_a_closed_connection_is_not_acknowledged() {
+        let (sender, mut rx) = MessageSender::new();
+        let value = ValueTake::<u8>::new("take".into(), 33, 4, sender);
+        value.update_take(4, &[5], true).unwrap();
+        value.disconnected();
+        assert_eq!(value.take(), Some(5));
         assert!(rx.try_recv().is_err());
     }
 }

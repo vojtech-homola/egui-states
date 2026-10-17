@@ -382,7 +382,7 @@ impl DataReceiver {
             return Some(msg);
         }
 
-        let mut counter = 0;
+        let mut counter = 1;
         loop {
             if msg.len() > MSG_SIZE_THRESHOLD || counter >= MAX_MSG_COUNT {
                 return Some(msg);

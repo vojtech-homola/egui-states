@@ -155,6 +155,39 @@ fn type_info_to_python_type(
     }
 }
 
+/// Python has no literals for non-finite floats; `text` is used for finite values.
+fn python_float(text: String, value: f64) -> String {
+    if value.is_nan() {
+        "float(\"nan\")".to_string()
+    } else if value == f64::INFINITY {
+        "float(\"inf\")".to_string()
+    } else if value == f64::NEG_INFINITY {
+        "-float(\"inf\")".to_string()
+    } else {
+        text
+    }
+}
+
+/// Rust's `Debug` escapes (`\u{1}`) are not valid Python, so escape for Python.
+fn python_string(value: &str) -> String {
+    let mut literal = String::with_capacity(value.len() + 2);
+    literal.push('"');
+    for c in value.chars() {
+        match c {
+            '"' => literal.push_str("\\\""),
+            '\\' => literal.push_str("\\\\"),
+            '\n' => literal.push_str("\\n"),
+            '\r' => literal.push_str("\\r"),
+            '\t' => literal.push_str("\\t"),
+            // Control characters are all below U+00A0.
+            c if c.is_control() => literal.push_str(&format!("\\x{:02x}", c as u32)),
+            c => literal.push(c),
+        }
+    }
+    literal.push('"');
+    literal
+}
+
 fn init_to_python_value(init: &InitValue, object_type: &ObjectType) -> String {
     match (init, object_type) {
         (InitValue::U8(value), ObjectType::U8) => value.to_string(),
@@ -165,9 +198,9 @@ fn init_to_python_value(init: &InitValue, object_type: &ObjectType) -> String {
         (InitValue::I16(value), ObjectType::I16) => value.to_string(),
         (InitValue::I32(value), ObjectType::I32) => value.to_string(),
         (InitValue::I64(value), ObjectType::I64) => value.to_string(),
-        (InitValue::F64(value), ObjectType::F64) => value.to_string(),
-        (InitValue::F32(value), ObjectType::F32) => value.to_string(),
-        (InitValue::String(value), ObjectType::String) => format!("{value:?}"),
+        (InitValue::F64(value), ObjectType::F64) => python_float(value.to_string(), *value),
+        (InitValue::F32(value), ObjectType::F32) => python_float(value.to_string(), *value as f64),
+        (InitValue::String(value), ObjectType::String) => python_string(value),
         (InitValue::Bool(value), ObjectType::Bool) => match value {
             true => "True".to_string(),
             false => "False".to_string(),

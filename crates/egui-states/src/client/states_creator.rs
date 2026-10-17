@@ -187,6 +187,19 @@ impl ValuesList {
         }
     }
 
+    /// Drops acknowledgement duties left over from a closed connection.
+    pub(crate) fn disconnected(&self) {
+        for value in self.values_take.values() {
+            value.disconnected();
+        }
+        for data in self.data_take.values() {
+            data.disconnected();
+        }
+        for data in self.data_multi_take.values() {
+            data.disconnected();
+        }
+    }
+
     fn shrink(&mut self) {
         self.values.shrink_to_fit();
         self.values_take.shrink_to_fit();

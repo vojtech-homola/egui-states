@@ -69,16 +69,17 @@ impl<T: for<'a> Deserialize<'a> + Send + Sync> UpdateList for VecState<T> {
             VecHeader::All(size) => {
                 let mut deserializer = Deserializer::new(data);
 
-                let mut list = self.list.write();
-                list.clear();
-                list.reserve(size as usize);
-
+                // Decode outside the lock and swap only on success, so a malformed
+                // payload keeps the previous list. `size` comes from the network,
+                // so the capacity is capped by the payload length.
+                let mut list = Vec::with_capacity((size as usize).min(data.len()));
                 for _ in 0..size {
                     let item: T = deserializer.get().map_err(|e| {
                         format!("Error deserializing list item for {}: {}", self.name, e)
                     })?;
                     list.push(item);
                 }
+                let _previous = std::mem::replace(&mut *self.list.write(), list);
             }
             VecHeader::Set(idx) => {
                 let value: T = deserialize(data).map_err(|e| {

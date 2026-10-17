@@ -27,6 +27,12 @@ fn expand_state(input: syn::ItemStruct) -> syn::Result<proc_macro2::TokenStream>
     }
 
     let fields = match fields {
+        syn::Fields::Named(fields) if fields.named.is_empty() => {
+            return Err(syn::Error::new_spanned(
+                ident,
+                "State derive requires at least one named field",
+            ));
+        }
         syn::Fields::Named(fields) => fields.named,
         syn::Fields::Unnamed(fields) => {
             return Err(syn::Error::new_spanned(

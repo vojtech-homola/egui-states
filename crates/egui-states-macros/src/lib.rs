@@ -126,7 +126,60 @@ pub fn state(input: TokenStream) -> TokenStream {
     states::impl_state(input)
 }
 
+/// Serde attributes that leave the postcard encoding unchanged. Every other
+/// attribute (`skip`, `flatten`, `untagged`, `with`, ...) would make `Typed`
+/// describe a different wire format than the one Serde produces.
+const WIRE_NEUTRAL_SERDE_ATTRIBUTES: &[&str] = &[
+    "rename",
+    "rename_all",
+    "alias",
+    "default",
+    "deny_unknown_fields",
+    "crate",
+    "bound",
+    "expecting",
+];
+
+fn check_serde_attributes(attrs: &[Attribute]) -> syn::Result<()> {
+    let parser = Punctuated::<Meta, Token![,]>::parse_terminated;
+
+    for attr in attrs.iter().filter(|attr| attr.path().is_ident("serde")) {
+        for meta in parser.parse2(attr.meta.require_list()?.tokens.clone())? {
+            let path = meta.path();
+            if !WIRE_NEUTRAL_SERDE_ATTRIBUTES
+                .iter()
+                .any(|allowed| path.is_ident(allowed))
+            {
+                let name = quote!(#path).to_string();
+                return Err(syn::Error::new_spanned(
+                    path,
+                    format!(
+                        "serde attribute `{name}` changes the wire encoding described by `Typed` and is not supported by `#[typed]`"
+                    ),
+                ));
+            }
+        }
+    }
+
+    Ok(())
+}
+
 fn add_serde_attributes(item: &mut DeriveInput) -> syn::Result<()> {
+    check_serde_attributes(&item.attrs)?;
+    match &item.data {
+        syn::Data::Struct(data) => {
+            for field in &data.fields {
+                check_serde_attributes(&field.attrs)?;
+            }
+        }
+        syn::Data::Enum(data) => {
+            for variant in &data.variants {
+                check_serde_attributes(&variant.attrs)?;
+            }
+        }
+        syn::Data::Union(_) => {}
+    }
+
     let (has_serialize, has_deserialize) = serde_derives(&item.attrs)?;
     let mut missing_derives = Vec::new();
 

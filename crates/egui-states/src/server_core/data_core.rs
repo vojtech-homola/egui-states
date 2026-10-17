@@ -135,7 +135,7 @@ impl Data {
 
         let slice = unsafe { std::slice::from_raw_parts(data.data, data.data_size) };
         let mut w = self.value.write();
-        if index + data.count > w.1 {
+        if index.checked_add(data.count).is_none_or(|end| end > w.1) {
             return Err(format!(
                 "Replace range out of bounds: index {} + data count {} exceeds current size {}",
                 index, data.count, w.1
@@ -177,11 +177,10 @@ impl Data {
         }
 
         let mut w = self.value.write();
-        if index + size > w.1 {
+        if index.checked_add(size).is_none_or(|end| end > w.1) {
             return Err(format!(
-                "Remove range out of bounds: end {} exceeds current size {}",
-                index + size,
-                w.1
+                "Remove range out of bounds: index {} + size {} exceeds current size {}",
+                index, size, w.1
             ));
         }
         let byte_index = index * self.item_size;
@@ -441,7 +440,10 @@ impl DataMulti {
         let value = w
             .get_mut(&index)
             .ok_or_else(|| format!("DataMulti index {} does not exist", index))?;
-        if data_index + data.count > value.1 {
+        if data_index
+            .checked_add(data.count)
+            .is_none_or(|end| end > value.1)
+        {
             return Err(format!(
                 "Replace range out of bounds for DataMulti index {}: data_index {} + data count {} exceeds current size {}",
                 index, data_index, data.count, value.1
@@ -495,7 +497,7 @@ impl DataMulti {
         let value = w
             .get_mut(&index)
             .ok_or_else(|| format!("DataMulti index {} does not exist", index))?;
-        if data_index + size > value.1 {
+        if data_index.checked_add(size).is_none_or(|end| end > value.1) {
             return Err(format!(
                 "Remove range out of bounds for DataMulti index {}: data_index {} + size {} exceeds current size {}",
                 index, data_index, size, value.1

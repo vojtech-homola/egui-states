@@ -92,13 +92,13 @@ impl MessagesSerializer {
             Some(Some(msg)) => {
                 let mut message = FastVec::<64>::new();
                 parse_to_send(msg, &mut message);
-                let mut counter = 0;
+                let mut counter = 1;
                 loop {
                     match self.rx.try_recv() {
                         Ok(Some(msg)) => {
                             counter += 1;
                             parse_to_send(msg, &mut message);
-                            if counter > MAX_MSG_COUNT || message.len() > MSG_SIZE_THRESHOLD {
+                            if counter >= MAX_MSG_COUNT || message.len() > MSG_SIZE_THRESHOLD {
                                 return Some(message);
                             }
                         }

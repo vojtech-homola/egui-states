@@ -48,7 +48,8 @@ impl ChangedInner {
     fn clear(&mut self) {
         self.values.retain(|id, _| *id <= 9);
         self.indexes.retain(|id| *id <= 9);
-        self.blocked_list.retain(|id| *id <= 9);
+        // Keep claimed ids blocked: their callbacks may still be running and are
+        // released when the worker passes the id back.
     }
 
     fn set(&mut self, id: u64, value: Bytes, previous: Option<Bytes>, event: &Event) {

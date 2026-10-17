@@ -82,10 +82,10 @@ where
             MapHeader::All(size) => {
                 let mut deserializer = Deserializer::new(data);
 
-                let mut map = self.dict.write();
-                map.clear();
-                map.reserve(size as usize);
-
+                // Decode outside the lock and swap only on success, so a malformed
+                // payload keeps the previous map. `size` comes from the network,
+                // so the capacity is capped by the payload length.
+                let mut map = HashMap::with_capacity((size as usize).min(data.len()));
                 for _ in 0..size {
                     let key: K = deserializer.get().map_err(|e| {
                         format!("Error deserializing dict key for {}: {}", self.name, e)
@@ -95,6 +95,7 @@ where
                     })?;
                     map.insert(key, value);
                 }
+                let _previous = std::mem::replace(&mut *self.dict.write(), map);
             }
             MapHeader::Set => {
                 let (key, value): (K, V) = deserialize(data).map_err(|e| {

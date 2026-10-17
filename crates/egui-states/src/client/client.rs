@@ -63,10 +63,17 @@ async fn start_gui_client(
         let th_sender = sender.clone();
 
         let recv_future = async move {
+            // The server answers an accepted handshake with its synchronization
+            // messages and sends nothing to a rejected client.
+            let mut accepted = false;
             loop {
                 // read the message
                 match socket_read.read().await {
                     Ok(msg) => {
+                        if !accepted {
+                            accepted = true;
+                            th_client.set_state(ConnectionState::Connected);
+                        }
                         if let Err(e) = handle_message(msg, &th_vals, &th_client).await {
                             let error = format!("handling message from server failed: {:?}", e);
                             th_sender.send_message(&error);
@@ -103,8 +110,6 @@ async fn start_gui_client(
         #[cfg(not(target_arch = "wasm32"))]
         let send_future = tokio::spawn(send_future);
 
-        client.set_state(ConnectionState::Connected);
-
         #[cfg(not(target_arch = "wasm32"))]
         {
             // wait for the read thread to finish
@@ -120,6 +125,9 @@ async fn start_gui_client(
             rx = rx_;
         }
 
+        vals.disconnected();
+        // Requests made while connected do not start a reconnect.
+        client.0.connect_signal.clear();
         client.set_state(ConnectionState::Disconnected);
     }
 }
@@ -135,14 +143,15 @@ pub(crate) fn print_error(error: &str) {
 /// Current client connection status.
 ///
 /// A connection attempt starts in [`Self::NotConnected`], becomes
-/// [`Self::Connected`] after the handshake, and becomes [`Self::Disconnected`]
-/// when an established connection ends. Calling [`Client::connect`] starts a
-/// new attempt and returns the state to `NotConnected`.
+/// [`Self::Connected`] once the server accepts the handshake, and becomes
+/// [`Self::Disconnected`] when an established connection ends. Calling
+/// [`Client::connect`] starts a new attempt and returns the state to
+/// `NotConnected`.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ConnectionState {
     /// No connection has been established or a connection attempt is pending.
     NotConnected,
-    /// The WebSocket handshake completed and state synchronization is active.
+    /// The server accepted the handshake and state synchronization is active.
     Connected,
     /// A previously active connection ended.
     Disconnected,
@@ -201,7 +210,6 @@ impl Client {
     }
 
     pub(crate) async fn wait_connection(&self) {
-        self.0.connect_signal.clear();
         self.0.connect_signal.wait_clear_async().await;
     }
 

@@ -1,4 +1,4 @@
-use pyo3::exceptions::{PyRuntimeError, PyValueError};
+use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::types::{PyDict, PyList, PyNone, PySequence, PySequenceMethods, PyTuple};
 use pyo3::{IntoPyObjectExt, prelude::*};
 
@@ -59,8 +59,14 @@ pub(crate) fn serialize_py(
             let value: String = obj.extract()?;
             creator.add(&value)
         }
-        PyObjectType::Enum(_) => {
-            let member_names = obj.getattr("_member_names_")?;
+        PyObjectType::Enum(py_enum) => {
+            let py_enum = py_enum.bind(obj.py());
+            if !obj.is_instance(py_enum)? {
+                return Err(PyTypeError::new_err(format!(
+                    "Expected a member of {py_enum}"
+                )));
+            }
+            let member_names = py_enum.getattr("_member_names_")?;
             let name = obj.getattr("name")?;
             let value = member_names.cast::<PyList>()?.index(name)? as u32;
 
@@ -80,6 +86,8 @@ pub(crate) fn serialize_py(
             }
             Ok(())
         }
+        // A dataclass without fields has no state (`__getstate__()` is `None`).
+        PyObjectType::Class(vec, _) if vec.is_empty() => Ok(()),
         PyObjectType::Class(vec, _) => {
             let list = obj.call_method0("__getstate__")?.cast::<PyDict>()?.values();
             for (i, item_type) in vec.iter().enumerate() {

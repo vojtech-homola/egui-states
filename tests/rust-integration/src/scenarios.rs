@@ -275,7 +275,10 @@ pub fn run(port: u16, scenario: &str) {
             } else {
                 25u32
             });
-            phase(s, 24);
+            // The discard acknowledges key 7, so the server may already be past 24.
+            wait("server phase", || {
+                matches!(s.phase.get(), 24 | 25).then_some(())
+            });
             assert!(s.multi.take(7).is_none());
             wait(
                 "next key progresses after discarding pending blocking payload",

@@ -239,20 +239,8 @@ Every other failure is a regression. Current known failures:
 
 | Test(s) | Defect |
 | --- | --- |
-| `server_core::core::tests::data_receiver_respects_message_count_limit` | Server batches hold eleven messages; the contract is at most ten. |
-| `client::messages::serializer_tests::batches_hold_at_most_max_msg_count_messages_in_order` | Client batches hold up to twelve messages. |
-| `client::data_take::lifecycle_tests::{removing,resetting}_pending_blocking_key_acknowledges_once`; scenarios `blocking-remove`, `blocking-reset` (Cargo and pytest) | Discarding a pending blocking `DataMultiTake` key does not acknowledge it, so the next key never progresses. |
-| `server_core::signals::tests::reset_keeps_a_claimed_id_blocked`; `connection_tests::callbacks_for_one_state_do_not_overlap_across_a_reconnect` | A disconnect unblocks ids whose callbacks are still running, so one state's callbacks can run concurrently. |
-| `server::data::tests::overflowing_data_ranges_are_rejected_without_changes`; `test_data.py::test_huge_data_indexes_raise_value_error` | `index + count` overflows in `Data`/`DataMulti` range checks and panics instead of returning an error. |
 | `connection_tests::a_collection_larger_than_one_frame_reaches_the_client` | A whole-collection update is one message; above the 12 MiB frame limit the client drops the connection. |
-| `connection_tests::client_reports_connected_only_after_the_server_accepts` | The client reports `Connected` as soon as it sends the handshake. |
-| `connection_tests::connect_requested_right_after_build_is_not_lost` | `Client::connect` before the background task starts waiting is cleared and lost. |
-| `client::value_vec::tests::malformed_replacement_keeps_the_previous_list`; `client::value_map::tests::malformed_replacement_keeps_the_previous_map` | A malformed full update leaves a partial collection. |
-| codegen `state_empty` | `#[derive(State)]` accepts a struct without fields. |
-| codegen `typed_serde_skip`, `typed_serde_flatten`, `typed_serde_untagged` | `#[typed]` accepts Serde attributes that change the encoding `Typed` describes. |
-| `test_codegen.py::test_python_keywords_as_generated_names`, `test_special_literals_as_generated_initial_values`, `test_unit_struct_values` | The Python generator emits keywords as names, Rust `\u{..}` escapes, and `NaN`/`inf` literals; unit structs cannot be serialized (`__getstate__()` is `None`). |
-| `test_values.py::test_invalid_value_inputs_preserve_previous_value[values.test_enum-2]` | A non-enum value for an enum state raises `AttributeError`. |
-| `test_numpy.py::test_rejected_numeric_buffers_preserve_state[byteorder-*]` | Non-native byte-order buffers are accepted and stored byte-swapped. |
+| `test_codegen.py::test_python_keywords_as_generated_names` | The Python generator emits keywords as names; state attribute names also form the state path, so they cannot simply be renamed. |
 | `test_lifecycle.py::test_disposal_releases_workers` | Python signal workers have no exit path, so a released server keeps them. |
 
 Some tests pin current behavior that has no written contract, and say so in their
