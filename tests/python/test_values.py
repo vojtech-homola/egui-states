@@ -5,8 +5,8 @@ import threading
 
 import numpy as np
 import pytest
-from egui_states_test_bindings.enums import TestEnum as Choice, TestEnum2 as Secondary
-from egui_states_test_bindings.structs import TestStruct as Point, TestStruct2 as Summary
+from egui_states_test_bindings.enums import TestEnum as Choice, TestEnum2 as Secondary  # ty: ignore[unresolved-import]
+from egui_states_test_bindings.structs import TestStruct as Point, TestStruct2 as Summary  # ty: ignore[unresolved-import]
 
 
 @pytest.mark.parametrize(
@@ -49,6 +49,7 @@ from egui_states_test_bindings.structs import TestStruct as Point, TestStruct2 a
     ids=lambda value: value if isinstance(value, str) else None,
 )
 def test_local_value_conversion(local_bundle, field, value):
+    """Round-trip supported values without starting a listener or worker."""
     server, states, _ = local_bundle
     assert not server.is_running()
     assert not server.is_connected()
@@ -78,6 +79,7 @@ def test_local_value_conversion(local_bundle, field, value):
     ids=lambda value: value if isinstance(value, str) else None,
 )
 def test_invalid_value_inputs_preserve_previous_value(local_bundle, field, invalid):
+    """Reject incompatible values without replacing the previous value."""
     _, states, _ = local_bundle
     value = attrgetter(field)(states)
     before = value.get()

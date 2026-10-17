@@ -3,10 +3,13 @@
 import dataclasses
 import importlib
 import importlib.util
+from importlib.abc import Loader
+from importlib.machinery import ModuleSpec
 import json
 import math
 from pathlib import Path
 import sys
+from typing import cast
 
 import pytest
 from tests.preparation import ROOT, run
@@ -16,6 +19,7 @@ MANIFEST = ROOT / "tests/generated-code-consumer/Cargo.toml"
 
 @pytest.fixture(scope="module")
 def codegen_probe():
+    """Build the code-generation probe and locate its executable."""
     metadata = json.loads(run(["cargo", "metadata", "--no-deps", "--format-version=1", "--locked"]))
     # Share the user's configured target directory; this Cargo invocation runs
     # from pytest, after preparation has released Cargo's build lock.
@@ -48,16 +52,20 @@ def codegen_probe():
 
 def import_bindings(name, package):
     """Import the generated Python package in `package` under a unique module name."""
-    spec = importlib.util.spec_from_file_location(
-        name, package / "__init__.py", submodule_search_locations=[str(package)]
+    spec = cast(
+        ModuleSpec,
+        importlib.util.spec_from_file_location(
+            name, package / "__init__.py", submodule_search_locations=[str(package)]
+        ),
     )
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
+    cast(Loader, spec.loader).exec_module(module)
     return module
 
 
 def test_generated_python_is_usable(codegen_probe, tmp_path):
+    """Exercise values and collections from generated Python bindings."""
     probe, _ = codegen_probe
     run([probe, tmp_path], timeout=15)
     module = import_bindings("compiled_test_bindings", tmp_path / "python")
@@ -85,6 +93,7 @@ def awkward_bindings(codegen_probe, tmp_path_factory):
 
 
 def awkward_server(directory, kind):
+    """Create a generated server and resolve its escaped state names."""
     module = import_bindings(f"awkward_{kind}_bindings", directory / kind)
     server = module.StatesServer(signals_workers=1)
     states = vars(server.states)
@@ -99,6 +108,7 @@ def awkward_server(directory, kind):
 
 
 def test_python_keywords_as_generated_names(awkward_bindings):
+    """Round-trip enum, struct, and state names that contain Python keywords."""
     module, server, state = awkward_server(awkward_bindings, "keywords")
     keyword = importlib.import_module(f"{module.__name__}.enums").Keyword
     assert [member.value for member in keyword] == [0, 1, 2]
@@ -114,6 +124,7 @@ def test_python_keywords_as_generated_names(awkward_bindings):
 
 
 def test_special_literals_as_generated_initial_values(awkward_bindings):
+    """Preserve escaped strings and non-finite initial numeric values."""
     _, server, state = awkward_server(awkward_bindings, "literals")
     assert state("escaped").get() == ESCAPED
     assert math.isnan(state("not_a_number").get())
@@ -126,6 +137,7 @@ def test_special_literals_as_generated_initial_values(awkward_bindings):
 
 
 def test_unit_struct_values(awkward_bindings):
+    """Round-trip generated unit struct values."""
     _, server, state = awkward_server(awkward_bindings, "unit")
     marker = state("marker").get()
     assert dataclasses.astuple(marker) == ()

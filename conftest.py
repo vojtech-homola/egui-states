@@ -17,4 +17,5 @@ def pytest_configure(config):
 
 
 def pytest_report_header(config):
+    """Report the freshly built extension used by this test process."""
     return f"Fresh extension: {config._test_extension}"

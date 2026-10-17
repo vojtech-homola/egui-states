@@ -1,15 +1,17 @@
 # ruff: noqa: D103
+"""Callback registration, delivery, and removal through generated state handles."""
+
 import threading
 import time
 
 import pytest
 from egui_states.logging import LogLevel
 
-from egui_states_test_bindings import (
+from egui_states_test_bindings import (  # ty: ignore[unresolved-import]
     State,
     StatesServer,
 )
-from egui_states_test_bindings.enums import (
+from egui_states_test_bindings.enums import (  # ty: ignore[unresolved-import]
     TestEnum as ExampleTestEnum,
 )
 
