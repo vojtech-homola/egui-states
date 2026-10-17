@@ -31,8 +31,8 @@ edition = "2024"
 egui_states_macros = { path = "crates/egui-states-macros" }
 egui_states = { path = "crates/egui-states" }
 pyo3 = "0.30"
-egui = "0.36"
-eframe = "0.36"
+egui = "0.37"
+eframe = "0.37"
 tokio = "1.52"
 wasm-bindgen-futures = "0.4"
 log = "0.4"
