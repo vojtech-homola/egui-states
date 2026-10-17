@@ -20,3 +20,7 @@
    `Returns:` descriptions with the return type. Keep docstring types consistent
    with the signature; summary lines must end with punctuation and stay within
    80 characters.
+5. Base `PROTOCOL_VERSION` on the latest release tag. Keep the released value
+   if all unreleased changes are wire compatible; otherwise use the released
+   value plus one, regardless of how many incompatible changes are made before
+   the next release.
