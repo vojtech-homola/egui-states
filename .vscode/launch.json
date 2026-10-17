@@ -1,0 +1,24 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Showcase GUI",
+            "type": "lldb",
+            "request": "launch",
+            "preLaunchTask": "Build Showcase GUI",
+            "program": "${workspaceFolder}/target/debug/showcase-gui",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "WAYLAND_DISPLAY": ""
+            },
+            "sourceLanguages": ["rust"]
+        },
+        {
+            "name": "Showcase Python server",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/example/showcase/python/run.py",
+            "cwd": "${workspaceFolder}"
+        }
+    ]
+}
