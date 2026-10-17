@@ -304,3 +304,98 @@ where
         derives
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn samples() -> Vec<ObjectType> {
+        use ObjectType::*;
+        vec![
+            U8,
+            U16,
+            U32,
+            U64,
+            I8,
+            I16,
+            I32,
+            I64,
+            F64,
+            F32,
+            String,
+            Bool,
+            Empty,
+            Enum("Choice".into(), vec![("A".into(), 0), ("B".into(), -1)]),
+            Struct(
+                "Point".into(),
+                vec![("x".into(), I32), ("label".into(), String)],
+            ),
+            Tuple(vec![U8, Bool]),
+            List(3, Box::new(U16)),
+            Vec(Box::new(F64)),
+            Map(Box::new(String), Box::new(U32)),
+            Option(Box::new(I64)),
+        ]
+    }
+
+    /// Type hashes are compared during every value update, between peers that may
+    /// have been built from different releases.
+    #[test]
+    fn type_hashes_are_stable() {
+        let actual: Vec<_> = samples().iter().map(ObjectType::get_hash).collect();
+        assert_eq!(actual, GOLDEN_HASHES, "type hashes changed: {actual:?}");
+        // Map states combine the key hash with the value hash.
+        assert_eq!(
+            ObjectType::U32.get_hash_from(ObjectType::U16.get_hash()),
+            GOLDEN_MAP_HASH
+        );
+    }
+
+    const GOLDEN_HASHES: [u32; 20] = [
+        2617980014, 789771595, 3384066523, 149769992, 1352412645, 2593815527, 2557368423,
+        1485256138, 2044193470, 791956523, 424131073, 2688995303, 3179252139, 3480834224,
+        1621035420, 4132667259, 331490409, 679028502, 3527569321, 410823959,
+    ];
+    const GOLDEN_MAP_HASH: u32 = 2249675624;
+
+    #[test]
+    fn distinct_wire_shapes_have_distinct_hashes() {
+        let hashes: std::collections::HashSet<_> =
+            samples().iter().map(ObjectType::get_hash).collect();
+        assert_eq!(hashes.len(), samples().len());
+    }
+
+    #[test]
+    fn type_names_do_not_change_hashes_but_layout_does() {
+        let point = |name: &str, field: &str| {
+            ObjectType::Struct(name.into(), vec![(field.into(), ObjectType::I32)])
+        };
+        assert_eq!(point("A", "x").get_hash(), point("B", "y").get_hash());
+
+        let choice = |name: &str, variant: &str, value: i32| {
+            ObjectType::Enum(name.into(), vec![(variant.into(), value)])
+        };
+        assert_eq!(
+            choice("A", "X", 1).get_hash(),
+            choice("B", "X", 1).get_hash()
+        );
+        assert_ne!(
+            choice("A", "X", 1).get_hash(),
+            choice("A", "Y", 1).get_hash()
+        );
+        assert_ne!(
+            choice("A", "X", 1).get_hash(),
+            choice("A", "X", 2).get_hash()
+        );
+
+        let pair = |a, b| ObjectType::Tuple(vec![a, b]);
+        assert_ne!(
+            pair(ObjectType::U8, ObjectType::U16).get_hash(),
+            pair(ObjectType::U16, ObjectType::U8).get_hash()
+        );
+        assert_ne!(
+            ObjectType::List(2, Box::new(ObjectType::U8)).get_hash(),
+            ObjectType::List(3, Box::new(ObjectType::U8)).get_hash()
+        );
+    }
+}

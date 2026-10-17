@@ -384,6 +384,55 @@ mod tests {
         );
     }
 
+    /// The bounds check guards an unchecked pixel copy, so every rejected
+    /// rectangle must leave the stored image untouched.
+    #[test]
+    fn image_update_outside_the_image_is_rejected_without_changes() {
+        let server = StateServer::new().unwrap();
+        let image = Image::new(&server, "root.image").unwrap();
+
+        // Nothing has been set yet, so every rectangle is outside the image.
+        assert!(
+            image
+                .update(&[1], [0, 0], [1, 1], ImageFormat::Gray, false, false)
+                .is_err()
+        );
+        assert_eq!(image.shape(), [0, 0]);
+
+        image
+            .set(&[1, 2, 3, 4, 5, 6], [2, 3], ImageFormat::Gray, false)
+            .unwrap();
+        let before = image.get();
+        for (origin, size) in [
+            ([0, 0], [3, 1]),
+            ([0, 0], [1, 4]),
+            ([2, 0], [1, 1]),
+            ([0, 3], [1, 1]),
+            ([1, 2], [1, 2]),
+            ([usize::MAX, 0], [1, 1]),
+            ([0, usize::MAX], [1, 1]),
+        ] {
+            let data = vec![9; size[0] * size[1]];
+            assert!(
+                image
+                    .update(&data, origin, size, ImageFormat::Gray, false, false)
+                    .is_err(),
+                "accepted {size:?} at {origin:?}"
+            );
+            assert_eq!(
+                image.get(),
+                before,
+                "rejected update at {origin:?} changed pixels"
+            );
+        }
+
+        // The last row and column are still inside.
+        image
+            .update(&[9], [1, 2], [1, 1], ImageFormat::Gray, false, false)
+            .unwrap();
+        assert_eq!(&image.get().0[20..24], &[9, 9, 9, 255]);
+    }
+
     #[test]
     fn image_set_all_materializes_rgba_data() {
         let server = StateServer::new().unwrap();

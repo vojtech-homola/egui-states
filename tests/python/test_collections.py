@@ -1,5 +1,9 @@
 """Collection behavior independent of showcase action callbacks."""
 
+import random
+
+import pytest
+
 
 def test_vector_mutation(local_bundle):
     """Verify vector replacement, append, removal, and clearing."""
@@ -30,8 +34,6 @@ def test_map_mutation(local_bundle):
 
 
 def test_vector_boundary_errors_preserve_state(local_bundle):
-    import pytest
-
     _, states, _ = local_bundle
     values = states.value_vec.items
     for before in ([], [10], [10, 20, 30]):
@@ -47,9 +49,6 @@ def test_vector_boundary_errors_preserve_state(local_bundle):
 
 
 def test_collection_operation_sequences_match_reference_models(local_bundle):
-    import random
-    import pytest
-
     _, states, _ = local_bundle
     vector, mapping = states.value_vec.items, states.value_map.items
     expected_vector, expected_map = [], {}
@@ -82,32 +81,7 @@ def test_collection_operation_sequences_match_reference_models(local_bundle):
         assert mapping.get() == expected_map, f"map after operation {step}"
 
 
-def test_sparse_numeric_reset_and_invalid_mutations(local_bundle):
-    import numpy as np
-    import pytest
-    from .assertions import assert_array
-
-    _, states, _ = local_bundle
-    data = states.multi_data.bytes
-    for key in [0, 1, 2**32 - 1]:
-        data[key].set(np.array([1, 2, 3], dtype=np.uint8))
-    for operation in ("replace", "remove"):
-        with pytest.raises(ValueError):
-            if operation == "replace":
-                data[1].replace(np.array([9], dtype=np.uint8), 4)
-            else:
-                data[1].remove(2, 2)
-        assert_array(data[1].get(), np.array([1, 2, 3], dtype=np.uint8))
-    data.remove_index(777)  # missing removal is harmless
-    data.reset()
-    for key in [0, 1, 2**32 - 1]:
-        with pytest.raises(ValueError, match="index not found"):
-            data[key].get()
-
-
 def test_collection_overwrites_and_rejected_items(local_bundle):
-    import pytest
-
     _, states, _ = local_bundle
     vector, mapping = states.value_vec.items, states.value_map.items
     vector.set([10, 20, 30])

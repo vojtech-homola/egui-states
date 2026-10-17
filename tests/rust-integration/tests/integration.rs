@@ -13,6 +13,9 @@ fn scenario(scenario: &str) {
     );
     fixture.server.stop();
     fixture.assert_no_errors();
+    if scenario == "rejected-client" {
+        fixture.assert_warning("wrong version");
+    }
 }
 
 macro_rules! scenarios {

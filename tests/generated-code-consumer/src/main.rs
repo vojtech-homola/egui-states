@@ -1,3 +1,5 @@
+#[path = "../awkward.rs"]
+mod awkward;
 #[path = "../schema.rs"]
 mod schema;
 include!(concat!(env!("OUT_DIR"), "/module.rs"));
@@ -7,19 +9,17 @@ pub trait GeneratedProof {
 }
 fn main() {
     let directory = std::path::PathBuf::from(std::env::args_os().nth(1).expect("output directory"));
-    let reverse = std::env::args().nth(2).as_deref() == Some("reverse");
-    if reverse {
-        egui_states::build_scripts::generate_rust::<schema::Root<true>>(directory.join("rust"))
-            .unwrap();
-        egui_states::build_scripts::generate_python::<schema::Root<true>>(directory.join("python"))
-            .unwrap();
+    let mode = std::env::args().nth(2);
+    if mode.as_deref() == Some("awkward") {
+        // One Python package per kind, so each failure is reported separately.
+        use egui_states::build_scripts::generate_python;
+        generate_python::<awkward::KeywordNames>(directory.join("keywords")).unwrap();
+        generate_python::<awkward::SpecialLiterals>(directory.join("literals")).unwrap();
+        generate_python::<awkward::UnitStruct>(directory.join("unit")).unwrap();
     } else {
-        egui_states::build_scripts::generate_rust::<schema::Root<false>>(directory.join("rust"))
+        egui_states::build_scripts::generate_rust::<schema::Root>(directory.join("rust")).unwrap();
+        egui_states::build_scripts::generate_python::<schema::Root>(directory.join("python"))
             .unwrap();
-        egui_states::build_scripts::generate_python::<schema::Root<false>>(
-            directory.join("python"),
-        )
-        .unwrap();
     }
 }
 
@@ -51,5 +51,25 @@ mod tests {
             std::collections::HashMap::from([(1, 10), (3, 30), (20, 200)])
         );
         assert!(!server.is_running());
+    }
+
+    #[cfg(feature = "awkward")]
+    #[test]
+    fn awkward_names_and_literals_survive_rust_generation() {
+        let server = awkward_bindings::StatesServer::new().unwrap();
+        let (keywords, literals) = (&server.states.keywords, &server.states.literals);
+        assert_eq!(
+            keywords.keyword.get().unwrap(),
+            awkward_bindings::enums::Keyword::True
+        );
+        let reserved = keywords.reserved.get().unwrap();
+        assert_eq!((reserved.from, reserved.lambda), (3, true));
+        assert_eq!(keywords.global.get().unwrap(), 1);
+        assert_eq!(literals.escaped.get().unwrap(), awkward::ESCAPED);
+        assert!(literals.not_a_number.get().unwrap().is_nan());
+        assert_eq!(literals.positive_infinity.get().unwrap(), f64::INFINITY);
+        assert_eq!(literals.negative_infinity.get().unwrap(), f64::NEG_INFINITY);
+        assert!(literals.single_not_a_number.get().unwrap().is_nan());
+        server.states.unit.marker.get().unwrap();
     }
 }

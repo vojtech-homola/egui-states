@@ -4,7 +4,10 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use egui_states::build_scripts::{generate_python, generate_rust};
-use egui_states::{Image, ImageMulti, State, StatesCreator, Value};
+use egui_states::{
+    ClientBuilder, Data, DataMulti, DataMultiTake, DataTake, Image, ImageMulti, MapState, Queue,
+    Signal, State, StatesCreator, Static, StaticAtomic, Value, ValueAtomic, ValueTake, VecState,
+};
 
 #[egui_states::typed(rust_derive(Debug, PartialEq, Eq, Hash))]
 #[derive(Clone, Default, PartialEq, Eq, Hash, egui_states::InitialValue)]
@@ -305,4 +308,181 @@ fn unchanged_generation_preserves_old_timestamps_for_all_six_files() {
         );
     }
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// Uses every state kind, so the build-time and runtime layout hashes are
+/// compared for all of them.
+struct AllKinds;
+
+impl State for AllKinds {
+    const NAME: &'static str = "AllKinds";
+
+    fn new(c: &mut impl StatesCreator) -> Self {
+        let _: Value<i32> = c.value("value", 3);
+        let _: Value<String, Queue> = c.value("queued", "text".into());
+        let _: ValueAtomic<f64> = c.atomic("atomic", 0.5);
+        let _: Static<GeneratedEnum> = c.add_static("fixed", GeneratedEnum::Second);
+        let _: StaticAtomic<[f32; 2]> = c.static_atomic("pair", [1.0, 2.0]);
+        let _: ValueTake<String> = c.value_take("take");
+        let _: Signal<u8> = c.signal("signal");
+        let _: Signal<(), Queue> = c.signal("empty");
+        let _: Image = c.image("image");
+        let _: ImageMulti = c.image_multi("images");
+        let _: MapState<u16, GeneratedOuter> = c.map("map");
+        let _: VecState<i32> = c.vec("list");
+        let _: Data<u8> = c.data("data");
+        let _: DataMulti<f32> = c.data_multi("data_multi");
+        let _: DataTake<u16> = c.data_take("data_take");
+        let _: DataMultiTake<i64> = c.data_multi_take("data_multi_take");
+        let _: Leaf = c.substate("leaf");
+        Self
+    }
+}
+
+#[test]
+fn client_and_generated_layout_hashes_match_for_every_state_kind() {
+    let dir = output_dir("all_kinds", 0);
+    generate_rust::<AllKinds>(&dir).unwrap();
+    generate_python::<AllKinds>(dir.join("python")).unwrap();
+    let rust = std::fs::read_to_string(dir.join("mod.rs")).unwrap();
+    let python = std::fs::read_to_string(dir.join("python/__init__.py")).unwrap();
+
+    let client = ClientBuilder::<AllKinds>::new().get_version_hash();
+    assert_eq!(
+        generated_hash(&rust, "pub const VERSION_HASH: u64 = "),
+        client
+    );
+    assert_eq!(generated_hash(&python, "VERSION_HASH: int = "), client);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+struct Golden;
+
+impl State for Golden {
+    const NAME: &'static str = "Golden";
+
+    fn new(c: &mut impl StatesCreator) -> Self {
+        let _: Value<i32> = c.value("value", 0);
+        let _: Signal<bool> = c.signal("signal");
+        Self
+    }
+}
+
+/// Peers built from different releases compare this hash during the handshake.
+#[test]
+fn layout_hash_of_a_fixed_schema_is_stable() {
+    const GOLDEN: u64 = 15207089630600656803;
+    assert_eq!(ClientBuilder::<Golden>::new().get_version_hash(), GOLDEN);
+}
+
+struct NamedLikeServer;
+
+impl State for NamedLikeServer {
+    const NAME: &'static str = "StatesServer";
+
+    fn new(c: &mut impl StatesCreator) -> Self {
+        let _: Value<i32> = c.value("value", 0);
+        Self
+    }
+}
+
+struct NamedLikeModule;
+
+impl State for NamedLikeModule {
+    const NAME: &'static str = "enums";
+
+    fn new(c: &mut impl StatesCreator) -> Self {
+        let _: Value<i32> = c.value("value", 0);
+        Self
+    }
+}
+
+struct ContainsModuleName;
+
+impl State for ContainsModuleName {
+    const NAME: &'static str = "ContainsModuleName";
+
+    fn new(c: &mut impl StatesCreator) -> Self {
+        let _: NamedLikeModule = c.substate("nested");
+        Self
+    }
+}
+
+#[test]
+#[should_panic(expected = "State StatesServer conflicts with a generated symbol")]
+fn a_root_state_named_like_the_generated_server_is_rejected() {
+    let _ = generate_rust::<NamedLikeServer>(output_dir("named_like_server", 0));
+}
+
+#[test]
+#[should_panic(expected = "State enums conflicts with a generated symbol")]
+fn a_nested_state_named_like_a_generated_module_is_rejected() {
+    let _ = generate_python::<ContainsModuleName>(output_dir("named_like_module", 0));
+}
+
+mod first_shape {
+    #[egui_states::typed]
+    #[derive(Clone, Copy, Default, egui_states::InitialValue)]
+    pub(super) struct Shape {
+        pub(super) value: bool,
+    }
+
+    #[egui_states::typed]
+    #[derive(Clone, Copy, Default, egui_states::InitialValue)]
+    pub(super) enum Mode {
+        #[default]
+        Off,
+    }
+}
+
+mod second_shape {
+    #[egui_states::typed]
+    #[derive(Clone, Copy, Default, egui_states::InitialValue)]
+    pub(super) struct Shape {
+        pub(super) value: u8,
+    }
+
+    #[egui_states::typed]
+    #[derive(Clone, Copy, Default, egui_states::InitialValue)]
+    pub(super) enum Mode {
+        #[default]
+        Off,
+        On,
+    }
+}
+
+struct ConflictingStructs;
+
+impl State for ConflictingStructs {
+    const NAME: &'static str = "ConflictingStructs";
+
+    fn new(c: &mut impl StatesCreator) -> Self {
+        let _: Value<first_shape::Shape> = c.value("first", Default::default());
+        let _: Value<second_shape::Shape> = c.value("second", Default::default());
+        Self
+    }
+}
+
+struct ConflictingEnums;
+
+impl State for ConflictingEnums {
+    const NAME: &'static str = "ConflictingEnums";
+
+    fn new(c: &mut impl StatesCreator) -> Self {
+        let _: Value<first_shape::Mode> = c.value("first", Default::default());
+        let _: Value<second_shape::Mode> = c.value("second", Default::default());
+        Self
+    }
+}
+
+#[test]
+#[should_panic(expected = "Struct Shape defined multiple times with different fields")]
+fn one_struct_name_with_different_fields_is_rejected() {
+    let _ = generate_python::<ConflictingStructs>(output_dir("conflicting_structs", 0));
+}
+
+#[test]
+#[should_panic(expected = "Enum Mode defined multiple times with different variants")]
+fn one_enum_name_with_different_variants_is_rejected() {
+    let _ = generate_python::<ConflictingEnums>(output_dir("conflicting_enums", 0));
 }

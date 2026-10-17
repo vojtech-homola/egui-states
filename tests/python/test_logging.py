@@ -1,9 +1,13 @@
-"""Exact log levels and callback removal through the existing log dispatcher."""
+"""Exact log levels and callback removal in the Python log dispatcher.
+
+Native log messages reaching these loggers are checked by the rejected-client
+integration scenario.
+"""
 
 from egui_states.logging import LogLevel
 
 
-def test_loggers_filter_exact_level_and_can_be_removed(local_bundle):
+def test_logger_dispatch_filters_levels_and_removes_loggers(local_bundle):
     server, _, _ = local_bundle
     info, warning = [], []
     server.logging.add_logger(LogLevel.Info, info.append)

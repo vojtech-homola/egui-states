@@ -29,8 +29,8 @@ pub enum Choice {
     High = 71,
 }
 
-pub struct Root<const REVERSE: bool>;
-impl<const REVERSE: bool> State for Root<REVERSE> {
+pub struct Root;
+impl State for Root {
     const NAME: &'static str = "Root";
     fn new(c: &mut impl StatesCreator) -> Self {
         let _: Leaf = c.substate("first");
@@ -44,11 +44,8 @@ impl<const REVERSE: bool> State for Root<REVERSE> {
                 choice: Choice::High,
             },
         );
-        let mut entries = vec![(1u16, 10u32), (20, 200), (3, 30)];
-        if REVERSE {
-            entries.reverse();
-        }
-        let _: Value<HashMap<u16, u32>> = c.value("mapping", entries.into_iter().collect());
+        let _: Value<HashMap<u16, u32>> =
+            c.value("mapping", HashMap::from([(1, 10), (20, 200), (3, 30)]));
         Self
     }
 }

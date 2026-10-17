@@ -28,9 +28,18 @@ impl Drop for Connection {
 }
 
 fn connect(port: u16) -> (State, Connection) {
-    let builder = ClientBuilder::<State>::new();
+    connect_client(ClientBuilder::<State>::new(), port, |_| {})
+}
+
+/// Connects a client whose handles `prepare` may initialize before connecting.
+fn connect_client(
+    builder: ClientBuilder<State>,
+    port: u16,
+    prepare: impl FnOnce(&State),
+) -> (State, Connection) {
     let hash = builder.get_version_hash();
     let (state, client) = builder.version(hash).build(port);
+    prepare(&state);
     let connection = Connection(client);
     wait("client connection", || {
         connection.0.connect();
@@ -61,6 +70,12 @@ fn barrier(s: &IntegrationState) {
 }
 
 pub fn run(port: u16, scenario: &str) {
+    match scenario {
+        "images-wire" => return images_wire(port),
+        "takeover" => return takeover(port),
+        "rejected-client" => return rejected_client(port),
+        _ => {}
+    }
     let (state, connection) = connect(port);
     let s = &state.integration;
     match scenario {
@@ -277,6 +292,276 @@ pub fn run(port: u16, scenario: &str) {
             barrier(&next.integration);
             assert!(next.integration.data.take().is_none());
         }
+        "values-wire" => values_wire(&state),
+        "collections-wire" => collections_wire(&state),
+        "numeric-wire" => numeric_wire(&state),
         _ => panic!("unknown scenario: {scenario}"),
     }
+}
+
+/// Every value shape crosses the wire in both directions. The servers set the
+/// values on command 30 and compare the client's values on command 31.
+fn values_wire(state: &State) {
+    use egui_states_test_schema::sections::{TestEnum, TestEnum2, TestStruct, TestStruct2};
+    use std::collections::HashMap;
+
+    let s = &state.integration;
+    let (v, c, st, w) = (
+        &state.values,
+        &state.custom_values,
+        &state.statics,
+        &state.wire_types,
+    );
+    s.command.set(30u32);
+    phase(s, 30);
+    assert!(v.bool_value.get());
+    assert_eq!(v.count.get(), -123_456);
+    assert_eq!(v.ratio.get(), 0.375);
+    assert_eq!(v.queued_progress.get(), 0.625);
+    assert_eq!(v.title.get(), "ünïcødé 🦀");
+    assert_eq!(v.optional_value.get(), Some(-5));
+    assert_eq!(v.fixed_numbers.get(), [1, 65535, 0]);
+    assert_eq!(v.test_enum.get(), TestEnum::C);
+    assert_eq!(v.nested.secondary_choice.get(), TestEnum2::X);
+    assert_eq!(v.nested.selected_enum.get(), Some(TestEnum::B));
+    assert_eq!(
+        c.point.get(),
+        TestStruct {
+            x: -1.5,
+            y: 2.25,
+            label: "point".into()
+        }
+    );
+    assert_eq!(
+        c.optional_struct.get(),
+        Some(TestStruct2 {
+            enabled: true,
+            level: 7,
+            name: "seven".into()
+        })
+    );
+    assert_eq!(st.status_text.get(), "ready");
+    assert_eq!(
+        st.summary.get(),
+        TestStruct2 {
+            enabled: false,
+            level: 65535,
+            name: "max".into()
+        }
+    );
+    assert_eq!(st.pair.get(), [0.5, -0.25]);
+    assert_eq!(st.nested.label.get(), "label");
+    assert_eq!(st.nested.enum_hint.get(), TestEnum::C);
+    assert_eq!(w.small_unsigned.get(), 255);
+    assert_eq!(w.small_signed.get(), -128);
+    assert_eq!(w.short.get(), -32768);
+    assert_eq!(w.wide.get(), u64::MAX);
+    assert_eq!(w.single.get(), -0.125);
+    assert_eq!(w.tuple.get(), (-7, "tuple".to_string(), true));
+    assert_eq!(
+        w.list.get(),
+        [
+            TestStruct2 {
+                enabled: true,
+                level: 1,
+                name: "a".into()
+            },
+            TestStruct2 {
+                enabled: false,
+                level: 2,
+                name: "b".into()
+            }
+        ]
+    );
+    assert_eq!(
+        w.table.get(),
+        HashMap::from([("pi".to_string(), 3.5), ("neg".to_string(), -0.5)])
+    );
+    assert_eq!(
+        w.keyed_enum.get(),
+        HashMap::from([(TestEnum::A, 1), (TestEnum::C, 3)])
+    );
+    assert_eq!(w.optional_enum.get(), Some(TestEnum2::Z));
+    assert_eq!(w.bytes.get(), [0, 127, 255]);
+
+    v.bool_value.set(false);
+    v.count.set(654_321);
+    v.ratio.set(-0.75);
+    v.queued_progress.set(0.125);
+    v.title.set("client ✓".into());
+    v.optional_value.set(None);
+    v.fixed_numbers.set([9, 8, 7]);
+    v.test_enum.set(TestEnum::A);
+    v.nested.secondary_choice.set(TestEnum2::Y);
+    v.nested.selected_enum.set(None);
+    c.point.set(TestStruct {
+        x: 0.5,
+        y: -0.5,
+        label: "client".into(),
+    });
+    c.optional_struct.set(None);
+    w.small_unsigned.set(1);
+    w.small_signed.set(127);
+    w.short.set(32767);
+    w.wide.set(0);
+    w.single.set(0.5);
+    w.tuple.set((0, String::new(), false));
+    w.list.set(Vec::new());
+    w.table.set(HashMap::new());
+    w.keyed_enum.set(HashMap::from([(TestEnum::B, 2)]));
+    w.optional_enum.set(None);
+    state.signals.empty_signal.set(());
+    state.signals.number_signal.set(-2.5);
+    state.signals.enum_signal.set(TestEnum::C);
+    w.pair_signal.set((1.5, TestEnum::B));
+    // The servers record a mismatch as an error, which fails the test harness.
+    s.command.set(31u32);
+    phase(s, 31);
+}
+
+fn collections_wire(state: &State) {
+    let s = &state.integration;
+    s.command.set(32u32);
+    phase(s, 32);
+    assert_eq!(state.value_vec.items.get(), [60, 7, 8]);
+    assert_eq!(
+        state.value_map.items.get(),
+        std::collections::HashMap::from([(1, 11), (3, 30)])
+    );
+}
+
+fn numeric_wire(state: &State) {
+    let s = &state.integration;
+    s.command.set(33u32);
+    phase(s, 33);
+    let (d, n, m) = (&state.data, &state.numeric, &state.multi_data);
+    assert_eq!(d.bytes.get(), [20, 30, 4, 5, 6]);
+    assert_eq!(d.samples.get(), [-1.5, 0.25]);
+    assert!(d.nested.buffer.get().is_empty());
+    assert_eq!(n.u8_data.get(), [u8::MIN, 0, u8::MAX]);
+    assert_eq!(n.i8_data.get(), [i8::MIN, 0, i8::MAX]);
+    assert_eq!(n.u16_data.get(), [u16::MIN, 0, u16::MAX]);
+    assert_eq!(n.i16_data.get(), [i16::MIN, 0, i16::MAX]);
+    assert_eq!(n.u32_data.get(), [u32::MIN, 0, u32::MAX]);
+    assert_eq!(n.i32_data.get(), [i32::MIN, 0, i32::MAX]);
+    assert_eq!(n.u64_data.get(), [u64::MIN, 0, u64::MAX]);
+    assert_eq!(n.i64_data.get(), [i64::MIN, 0, i64::MAX]);
+    assert_eq!(n.f32_data.get(), [f32::MIN, 0.0, f32::MAX]);
+    assert_eq!(n.f64_data.get(), [f64::MIN, 0.0, f64::MAX]);
+    assert_eq!(m.bytes.get(1), Some(vec![1, 2, 3]));
+    assert_eq!(m.bytes.get(2), None);
+    assert_eq!(m.samples.get(7), Some(vec![0.5]));
+    assert_eq!(m.nested.buffer.get(3), Some(vec![4, 6]));
+}
+
+/// Applies every queued texture change to `textures`, like a painter would.
+fn apply_texture_deltas(
+    context: &egui::Context,
+    textures: &mut std::collections::HashMap<egui::TextureId, egui::ColorImage>,
+) {
+    let mut delta = context.tex_manager().write().take_delta();
+    for (id, changes) in delta.set.drain() {
+        for change in changes {
+            let egui::ImageData::Color(image) = &change.image;
+            match change.pos {
+                None => {
+                    textures.insert(id, (**image).clone());
+                }
+                Some([x, y]) => {
+                    let texture = textures.get_mut(&id).expect("patch for a missing texture");
+                    for row in 0..image.size[1] {
+                        for column in 0..image.size[0] {
+                            texture.pixels[(y + row) * texture.size[0] + x + column] =
+                                image.pixels[row * image.size[0] + column];
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // The deltas were applied above instead of by a painter.
+    delta.clear();
+}
+
+fn rgba(texture: &egui::ColorImage) -> Vec<[u8; 4]> {
+    texture
+        .pixels
+        .iter()
+        .map(|pixel| pixel.to_array())
+        .collect()
+}
+
+/// Server images reach the client textures, including partial updates and
+/// sparse key removal. The servers use opaque pixels only.
+fn images_wire(port: u16) {
+    let context = egui::Context::default();
+    let (state, _connection) = connect_client(
+        ClientBuilder::<State>::new().context(context.clone()),
+        port,
+        |state| {
+            state.image.image.initialize(
+                &context,
+                egui::ColorImage::filled([1, 1], egui::Color32::BLACK),
+            );
+            state.image.images.initialize(&context);
+        },
+    );
+    let s = &state.integration;
+    s.command.set(34u32);
+    phase(s, 34);
+
+    assert_eq!(state.image.image.get_size(), Some([3, 2]));
+    assert_eq!(state.image.images.indices(), [7]);
+    assert_eq!(state.image.images.get_size(7), Some([2, 2]));
+
+    let mut textures = std::collections::HashMap::new();
+    apply_texture_deltas(&context, &mut textures);
+    let pixel = |r: u8| [r, r + 1, r + 2, 255];
+    let image = &textures[&state.image.image.get_id().unwrap()];
+    assert_eq!(image.size, [3, 2]);
+    assert_eq!(
+        rgba(image),
+        [
+            pixel(0),
+            pixel(3),
+            pixel(6),
+            pixel(9),
+            pixel(200),
+            pixel(210)
+        ]
+    );
+    let sparse = &textures[&state.image.images.get_id(7).unwrap()];
+    assert_eq!(rgba(sparse), [[1, 2, 3, 255]; 4]);
+}
+
+/// A second client replaces the first one, which observes the disconnect.
+fn takeover(port: u16) {
+    let (_first_state, first) = connect(port);
+    let (second_state, _second) = connect(port);
+    wait("replaced client disconnect", || {
+        (first.0.get_state() == ConnectionState::Disconnected).then_some(())
+    });
+    barrier(&second_state.integration);
+}
+
+/// A client with a mismatched layout version is refused without affecting the
+/// connected client. The servers check that the refusal was logged.
+fn rejected_client(port: u16) {
+    let (state, connection) = connect(port);
+    let builder = ClientBuilder::<State>::new();
+    let wrong_version = builder.get_version_hash() ^ 1;
+    let (rejected, client) = builder.version(wrong_version).build(port);
+    let rejected_connection = Connection(client);
+    let until = Instant::now() + Duration::from_millis(500);
+    while Instant::now() < until {
+        rejected_connection.0.connect();
+        assert_eq!(
+            rejected.integration.value.get(),
+            0,
+            "a rejected client received synchronized state"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    barrier(&state.integration);
+    assert!(connection.0.get_state() == ConnectionState::Connected);
 }

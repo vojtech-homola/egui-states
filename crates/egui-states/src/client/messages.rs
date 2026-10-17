@@ -948,3 +948,118 @@ mod malformed_tests {
         crate::test_support::ack(&mut receiver, id);
     }
 }
+
+#[cfg(test)]
+mod serializer_tests {
+    use super::*;
+    use crate::serialization::{VALUE_MAX_SIZE, WEBSOCKET_MAX_SIZE};
+
+    /// Splits one outgoing frame into its client messages.
+    fn headers(frame: &FastVec<64>) -> Vec<ClientHeader> {
+        let bytes = match frame {
+            FastVec::Heap(data) => data.clone(),
+            FastVec::Stack(data) => data.as_ref().to_vec(),
+        };
+        let mut rest = &bytes[..];
+        let mut headers = Vec::new();
+        while !rest.is_empty() {
+            let (header, after) = postcard::take_from_bytes::<ClientHeader>(rest).unwrap();
+            let payload = match header {
+                ClientHeader::Value(_, _, _, size)
+                | ClientHeader::Signal(_, _, size)
+                | ClientHeader::Message(size) => size as usize,
+                ClientHeader::Ack(_) | ClientHeader::Handshake(..) => 0,
+            };
+            rest = &after[payload..];
+            headers.push(header);
+        }
+        headers
+    }
+
+    fn frames(sender: &MessageSender, serializer: &mut MessagesSerializer) -> Vec<FastVec<64>> {
+        sender.close();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let mut frames = Vec::new();
+        while let Some(frame) = runtime.block_on(serializer.next()) {
+            frames.push(frame);
+        }
+        frames
+    }
+
+    /// Same batching contract as the server: at most `MAX_MSG_COUNT` messages.
+    #[test]
+    fn batches_hold_at_most_max_msg_count_messages_in_order() {
+        let (sender, receiver) = MessageSender::new();
+        let mut serializer = MessagesSerializer::new(receiver);
+        let total = MAX_MSG_COUNT as u64 + 5;
+        for id in 0..total {
+            sender.send_ack(id);
+        }
+        let frames = frames(&sender, &mut serializer);
+        let mut acked = Vec::new();
+        for frame in &frames {
+            let headers = headers(frame);
+            assert!(
+                headers.len() <= MAX_MSG_COUNT,
+                "a frame held {} messages",
+                headers.len()
+            );
+            acked.extend(headers.into_iter().map(|header| match header {
+                ClientHeader::Ack(id) => id,
+                _ => panic!("unexpected message"),
+            }));
+        }
+        assert_eq!(acked, (0..total).collect::<Vec<_>>());
+    }
+
+    /// Values may each be as large as `VALUE_MAX_SIZE`; batching them must not
+    /// produce a frame the server rejects.
+    #[test]
+    fn batches_of_maximum_values_stay_within_the_frame_limit() {
+        let (sender, receiver) = MessageSender::new();
+        let mut serializer = MessagesSerializer::new(receiver);
+        let payload = vec![7u8; VALUE_MAX_SIZE];
+        for id in 0..15 {
+            sender.send(ChannelMessage::Value(
+                id,
+                1,
+                false,
+                FastVec::Heap(payload.clone()),
+            ));
+        }
+        let frames = frames(&sender, &mut serializer);
+        let mut ids = Vec::new();
+        for frame in &frames {
+            assert!(
+                frame.len() <= WEBSOCKET_MAX_SIZE,
+                "frame of {} bytes exceeds the {WEBSOCKET_MAX_SIZE} byte limit",
+                frame.len()
+            );
+            ids.extend(headers(frame).into_iter().map(|header| match header {
+                ClientHeader::Value(id, ..) => id,
+                _ => panic!("unexpected message"),
+            }));
+        }
+        assert_eq!(ids, (0..15).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn close_flushes_queued_messages_and_then_stops() {
+        let (sender, receiver) = MessageSender::new();
+        let mut serializer = MessagesSerializer::new(receiver);
+        sender.send_ack(1);
+        sender.send_message(&"diagnostic".to_string());
+        let frames = frames(&sender, &mut serializer);
+        assert_eq!(frames.len(), 1);
+        assert!(matches!(
+            headers(&frames[0])[..],
+            [ClientHeader::Ack(1), ClientHeader::Message(_)]
+        ));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        assert!(runtime.block_on(serializer.next()).is_none());
+    }
+}

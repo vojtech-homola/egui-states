@@ -115,3 +115,25 @@ def test_image_multi_sparse_collection(local_bundle: tuple[StatesServer, State, 
     images.reset(update=True)
     assert len(images) == 0
     assert images.indices() == []
+
+
+def test_image_update_outside_the_image_preserves_pixels(local_bundle):
+    _, states, _ = local_bundle
+    image = states.image.image
+    with pytest.raises(ValueError):
+        image.update(np.zeros((1, 1), dtype=np.uint8), (0, 0))
+    image.set(np.arange(6, dtype=np.uint8).reshape(2, 3))
+    before = image.get().copy()
+    for origin, shape in [
+        ((0, 0), (3, 1)),
+        ((0, 0), (1, 4)),
+        ((2, 0), (1, 1)),
+        ((0, 3), (1, 1)),
+        ((1, 2), (1, 2)),
+        ((2**64 - 1, 0), (1, 1)),
+    ]:
+        with pytest.raises((ValueError, OverflowError)):
+            image.update(np.zeros(shape, dtype=np.uint8), origin)
+        assert_array(image.get(), before)
+    image.update(np.full((1, 1), 9, dtype=np.uint8), (1, 2))
+    assert image.get()[1, 2].tolist() == [9, 9, 9, 255]

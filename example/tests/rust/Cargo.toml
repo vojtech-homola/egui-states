@@ -10,7 +10,7 @@ egui_states = { workspace = true }
 showcase_gui_core = { path = "../../showcase/gui-core" }
 showcase_server = { path = "../../showcase/rust" }
 counter_server = { path = "../../counter/rust" }
-egui = "0.36"
+egui = { workspace = true }
 
 [dev-dependencies]
 egui_states_test_process = { path = "../../../tests/rust-process-helpers" }

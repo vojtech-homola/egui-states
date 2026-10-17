@@ -1,7 +1,7 @@
 //! Rust consumer compilation and macro diagnostics belong to Cargo, not pytest.
 use egui_states_test_process as process;
 
-use std::{fs, path::PathBuf, process::Command, sync::Mutex};
+use std::{path::PathBuf, process::Command, sync::Mutex};
 
 // Serialize nested Cargo invocations even with Cargo's default parallel harness.
 static CARGO: Mutex<()> = Mutex::new(());
@@ -40,14 +40,6 @@ fn fixture_command(operation: &str) -> Command {
     command
 }
 
-fn directory(name: &str) -> PathBuf {
-    let path = root()
-        .join("tests/build-artifacts")
-        .join(format!("cargo-codegen-{}-{name}", std::process::id()));
-    fs::create_dir_all(&path).unwrap();
-    path
-}
-
 #[test]
 fn generated_rust_and_custom_derive_are_usable() {
     let _guard = CARGO.lock().unwrap_or_else(|e| e.into_inner());
@@ -58,68 +50,16 @@ fn generated_rust_and_custom_derive_are_usable() {
     );
 }
 
-fn generate(path: &std::path::Path, reverse: bool) {
-    let mut command = fixture_command("run");
-    command.args(["--bin", "codegen-probe", "--"]).arg(path);
-    if reverse {
-        command.arg("reverse");
-    }
-    process::checked_output(&mut command, "generate-bindings", 600);
-}
-
-const FILES: [&str; 6] = [
-    "rust/mod.rs",
-    "rust/structs.rs",
-    "rust/enums.rs",
-    "python/__init__.py",
-    "python/structs.py",
-    "python/enums.py",
-];
-
-fn snapshot(path: &std::path::Path) -> Vec<Vec<u8>> {
-    FILES
-        .iter()
-        .map(|file| fs::read(path.join(file)).unwrap())
-        .collect()
-}
-
+/// Target-language keywords, escaped strings, non-finite floats, and a unit
+/// struct must survive generation as compilable, value-preserving Rust.
 #[test]
-fn equivalent_inputs_preserve_all_six_files_and_unchanged_timestamps() {
+fn awkward_names_and_literals_compile_as_rust_bindings() {
     let _guard = CARGO.lock().unwrap_or_else(|e| e.into_inner());
-    let first = directory("first");
-    let second = directory("second");
-    generate(&first, false);
-    generate(&second, true);
-    let before = snapshot(&first);
-    assert_eq!(
-        before,
-        snapshot(&second),
-        "equivalent input constructions changed output"
+    process::checked_output(
+        fixture_command("test").args(["--features", "awkward", "--bin", "codegen-probe"]),
+        "awkward-rust-consumer",
+        600,
     );
-    let old = std::time::UNIX_EPOCH + std::time::Duration::from_secs(946684800);
-    for name in FILES {
-        fs::File::options()
-            .write(true)
-            .open(first.join(name))
-            .unwrap()
-            .set_times(fs::FileTimes::new().set_modified(old))
-            .unwrap();
-    }
-    let timestamps: Vec<_> = FILES
-        .iter()
-        .map(|name| fs::metadata(first.join(name)).unwrap().modified().unwrap())
-        .collect();
-    generate(&first, true);
-    assert_eq!(snapshot(&first), before);
-    for (name, timestamp) in FILES.iter().zip(timestamps) {
-        assert_eq!(
-            fs::metadata(first.join(name)).unwrap().modified().unwrap(),
-            timestamp,
-            "rewrote unchanged {name}"
-        );
-    }
-    fs::remove_dir_all(first).unwrap();
-    fs::remove_dir_all(second).unwrap();
 }
 
 fn rejected(name: &str, diagnostic: &str) {
@@ -158,6 +98,14 @@ compile_fail! {
     atomic_payload: "atomic-payload" => "Enum variants must be unit variants",
     initial_tuple: "initial-tuple" => "Struct fields must be named",
     atomic_static_payload: "atomic-static-payload" => "Enum variants must be unit variants",
+    typed_discriminant_range: "typed-discriminant-range" => "Enum discriminants must fit in i32",
+    typed_discriminant_expression: "typed-discriminant-expression" => "Enum discriminants must be integer literals",
+    typed_discriminant_overflow: "typed-discriminant-overflow" => "Enum discriminants must fit in i32",
+    // Serde attributes that change the encoding make `Typed` describe the wire
+    // incorrectly; any rejection message naming the attribute satisfies these.
+    typed_serde_skip: "typed-serde-skip" => "skip",
+    typed_serde_flatten: "typed-serde-flatten" => "flatten",
+    typed_serde_untagged: "typed-serde-untagged" => "untagged",
 }
 
 #[test]

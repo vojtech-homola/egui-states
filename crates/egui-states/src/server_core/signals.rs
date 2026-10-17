@@ -501,6 +501,67 @@ mod tests {
         assert_eq!(previous, None);
     }
 
+    /// A claimed id stays with its worker until passed back as `last_id`, which is
+    /// what keeps the callbacks of one state from running concurrently.
+    #[test]
+    fn a_claimed_id_is_not_handed_out_again_until_it_is_passed_back() {
+        let manager = SignalsManager::new();
+        manager.set_register(20, true, false);
+
+        manager.set(20, b("first"));
+        assert_eq!(claim(&manager, None).0, 20);
+        manager.set(20, b("second"));
+        assert!(
+            manager.values.lock().get(None).is_none(),
+            "another worker claimed an id that is still running"
+        );
+        let (id, value, _) = claim(&manager, Some(20));
+        assert_eq!((id, value), (20, b("second")));
+    }
+
+    /// A disconnect resets the pending changes, but a worker may still be running
+    /// the callback it claimed before. Unblocking that id lets a second worker run
+    /// the same state's callbacks concurrently.
+    #[test]
+    fn reset_keeps_a_claimed_id_blocked() {
+        let manager = SignalsManager::new();
+        manager.set_register(21, true, false);
+
+        manager.set(21, b("before disconnect"));
+        assert_eq!(claim(&manager, None).0, 21);
+        manager.reset();
+        manager.set(21, b("after reconnect"));
+        assert!(
+            manager.values.lock().get(None).is_none(),
+            "reset released an id whose callback is still running"
+        );
+        let (id, value, _) = claim(&manager, Some(21));
+        assert_eq!((id, value), (21, b("after reconnect")));
+    }
+
+    /// Pins current behavior: a disconnect discards the client's pending changes
+    /// that no callback has claimed yet, but keeps the server's own events.
+    #[test]
+    fn reset_discards_pending_client_changes_and_keeps_system_events() {
+        let manager = SignalsManager::new();
+        manager.set_register(22, true, false);
+        manager.set_register(LOGGING_ID, true, false);
+        manager.set_register(ON_DISCONNECT_ID, true, false);
+
+        manager.set(22, b("pending"));
+        manager.error("logged");
+        manager.on_disconnect();
+        manager.reset();
+
+        let mut claimed = Vec::new();
+        let mut last = None;
+        while let Some((id, _, _)) = manager.values.lock().get(last) {
+            claimed.push(id);
+            last = Some(id);
+        }
+        assert_eq!(claimed, [LOGGING_ID, ON_DISCONNECT_ID]);
+    }
+
     fn claim(manager: &SignalsManager, last: Option<u64>) -> (u64, Bytes, Option<Bytes>) {
         manager
             .values

@@ -447,4 +447,173 @@ mod tests {
         assert_eq!(first_byte(&update), 10);
         assert_eq!(first_byte(&image_multi), 11);
     }
+
+    /// Variant indexes are the wire tags of both headers; reordering or inserting
+    /// a variant breaks peers built from another version.
+    #[test]
+    fn header_variant_indexes_are_stable() {
+        use crate::collections::{MapHeader, VecHeader};
+        use crate::data_transport::{
+            DataHeader, DataMultiTakeHeader, DataTakeHeader, DataType, MultiDataHeader,
+        };
+
+        let server = [
+            ServerHeader::Value(1, 2, false, 0),
+            ServerHeader::ValueTake(1, 2, false, false, 0),
+            ServerHeader::Static(1, 2, false, 0),
+            ServerHeader::Image(1, ImageHeader::Fill([1, 1], [0; 4], false), 0),
+            ServerHeader::Data(1, DataHeader::Clear(false)),
+            ServerHeader::DataTake(1, DataTakeHeader::Batch(0), false),
+            ServerHeader::MultiData(1, MultiDataHeader::Reset(false)),
+            ServerHeader::DataMultiTake(1, DataMultiTakeHeader::Reset(false)),
+            ServerHeader::ValueVec(1, 2, false, VecHeader::Add, 0),
+            ServerHeader::ValueMap(1, 2, false, MapHeader::Set, 0),
+            ServerHeader::Update(0.0),
+            ServerHeader::ImageMulti(1, ImageMultiHeader::Reset(false)),
+        ];
+        for (index, header) in server.iter().enumerate() {
+            let data: FastVec<32> = serialize(header).unwrap();
+            assert_eq!(
+                first_byte(&data),
+                index as u8,
+                "ServerHeader variant {index}"
+            );
+        }
+
+        let client = [
+            ClientHeader::Value(1, 2, false, 0),
+            ClientHeader::Signal(1, 2, 0),
+            ClientHeader::Ack(1),
+            ClientHeader::Message(0),
+            ClientHeader::Handshake(1, None, None),
+        ];
+        for (index, header) in client.iter().enumerate() {
+            let data: FastVec<32> = serialize(header).unwrap();
+            assert_eq!(
+                first_byte(&data),
+                index as u8,
+                "ClientHeader variant {index}"
+            );
+        }
+
+        // Nested tags travel inside the headers above.
+        let data_types = [
+            DataType::U8,
+            DataType::U16,
+            DataType::U32,
+            DataType::U64,
+            DataType::I8,
+            DataType::I16,
+            DataType::I32,
+            DataType::I64,
+            DataType::F32,
+            DataType::F64,
+        ];
+        for (index, data_type) in data_types.iter().enumerate() {
+            let data: FastVec<32> = serialize(data_type).unwrap();
+            assert_eq!(first_byte(&data), index as u8, "DataType variant {index}");
+        }
+    }
+
+    fn contents<const N: usize>(data: &FastVec<N>) -> Vec<u8> {
+        match data {
+            FastVec::Heap(data) => data.clone(),
+            FastVec::Stack(data) => data.as_ref().to_vec(),
+        }
+    }
+
+    /// A deterministic xorshift generator, so the model test needs no dependency.
+    struct Random(u64);
+
+    impl Random {
+        fn next(&mut self, bound: usize) -> usize {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            (self.0 % bound as u64) as usize
+        }
+
+        fn bytes(&mut self, len: usize) -> Vec<u8> {
+            (0..len).map(|_| self.next(256) as u8).collect()
+        }
+    }
+
+    fn other<const M: usize>(bytes: &[u8], heap: bool) -> FastVec<M> {
+        if heap {
+            FastVec::Heap(bytes.to_vec())
+        } else {
+            let mut data = FastVec::<M>::new();
+            data.try_extend(bytes).unwrap();
+            data
+        }
+    }
+
+    /// Every way of appending must behave like `Vec::extend`, before, at, and
+    /// after the stack capacity is exhausted.
+    #[test]
+    fn fast_vec_appends_match_a_vec_model_across_the_stack_boundary() {
+        const N: usize = 8;
+        let mut random = Random(0x9e37_79b9_7f4a_7c15);
+        for _ in 0..500 {
+            let mut data = FastVec::<N>::new();
+            let mut model = Vec::new();
+            for _ in 0..6 {
+                match random.next(5) {
+                    0 => {
+                        let byte = random.next(256) as u8;
+                        data.try_push(byte).unwrap();
+                        model.push(byte);
+                    }
+                    1 => {
+                        let len = random.next(2 * N);
+                        let bytes = random.bytes(len);
+                        data.try_extend(&bytes).unwrap();
+                        model.extend(&bytes);
+                    }
+                    2 | 3 => {
+                        // Stack and heap sources of a different capacity.
+                        let len = random.next(N / 2 + 1);
+                        let bytes = random.bytes(len);
+                        let heap = random.next(2) == 0 || bytes.len() > N / 2;
+                        data.extend_from_data(&other::<{ N / 2 }>(&bytes, heap));
+                        model.extend(&bytes);
+                    }
+                    _ => {
+                        let len = random.next(2 * N);
+                        let bytes = random.bytes(len);
+                        #[cfg(any(feature = "server", feature = "python"))]
+                        data.extend_from_slice(&bytes);
+                        #[cfg(not(any(feature = "server", feature = "python")))]
+                        data.try_extend(&bytes).unwrap();
+                        model.extend(&bytes);
+                    }
+                }
+                assert_eq!(contents(&data), model);
+                assert_eq!(data.len(), model.len());
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            assert_eq!(data.to_bytes().as_ref(), model.as_slice());
+        }
+    }
+
+    #[test]
+    fn fast_vec_switches_to_the_heap_exactly_when_the_stack_is_full() {
+        let mut data = FastVec::<4>::new();
+        data.try_extend(&[1, 2, 3]).unwrap();
+        data.try_push(4).unwrap();
+        assert!(
+            matches!(data, FastVec::Stack(_)),
+            "four bytes fit the stack"
+        );
+        data.try_push(5).unwrap();
+        assert!(matches!(data, FastVec::Heap(_)));
+        assert_eq!(contents(&data), [1, 2, 3, 4, 5]);
+
+        let mut data = FastVec::<4>::new();
+        data.extend_from_data(&FastVec::<8>::Heap(vec![1, 2, 3, 4]));
+        assert!(matches!(data, FastVec::Stack(_)));
+        data.extend_from_data(&FastVec::<8>::Heap(vec![5]));
+        assert!(matches!(data, FastVec::Heap(_)));
+        assert_eq!(contents(&data), [1, 2, 3, 4, 5]);
+    }
 }

@@ -1,5 +1,6 @@
 # ruff: noqa: D103
 import threading
+import time
 
 import pytest
 from egui_states.logging import LogLevel
@@ -335,4 +336,89 @@ def test_two_workers_process_independent_states_while_one_is_blocked():
             wait_event(finished, 5)
         server.stop()
     assert received == [("count", 73), ("title", "held")]
+    assert errors == []
+
+
+def test_one_state_never_runs_callbacks_concurrently():
+    """Several workers may serve different states, but one state's callbacks stay serial and ordered."""
+    errors, received = [], []
+    server = StatesServer(signals_workers=3, error_handler=errors.append)
+    server.logging.add_logger(LogLevel.Error, lambda message: errors.append(RuntimeError(message)))
+    running = threading.Lock()
+    overlapped = threading.Event()
+
+    def record(value):
+        if not running.acquire(blocking=False):
+            overlapped.set()
+            return
+        try:
+            time.sleep(0.002)
+            received.append(value)
+        finally:
+            running.release()
+
+    count = server.states.values.count
+    count.connect(record)
+    count.signal_set_to_queue()
+    try:
+        server.start(free_port(), (127, 0, 0, 1))
+        for value in range(1, 31):
+            count.set(value, set_signal=True)
+        wait_until(lambda: len(received) == 30 or overlapped.is_set())
+    finally:
+        server.stop()
+    assert not overlapped.is_set(), "callbacks for one state overlapped"
+    assert received == list(range(1, 31))
+    assert errors == []
+
+
+def test_failing_error_handler_does_not_stop_dispatch(server_bundle):
+    server, states, unexpected = server_bundle
+    handled, received = [], []
+
+    def failing_handler(error):
+        handled.append(error)
+        raise RuntimeError("error handler failed")
+
+    def broken(value):
+        raise ValueError(f"bad {value}")
+
+    server.set_error_handler(failing_handler)
+    states.values.title.signal_set_to_queue()
+    states.values.title.connect(broken)
+    states.values.title.connect(received.append)
+    try:
+        states.values.title.set("one", set_signal=True)
+        states.values.title.set("two", set_signal=True)
+        drain_callbacks(states)
+        assert received == ["one", "two"]
+        assert [str(error) for error in handled] == ["bad one", "bad two"]
+    finally:
+        server.set_error_handler(unexpected.append)
+
+
+def test_single_mode_signal_coalesces_while_its_callback_runs(server_bundle):
+    _server, states, errors = server_bundle
+    received = []
+    entered, release = threading.Event(), threading.Event()
+
+    def on_number(value):
+        received.append(value)
+        if len(received) == 1:
+            entered.set()
+            assert release.wait(5), "coalescing gate was not released"
+
+    signal = states.signals.number_signal
+    signal.signal_set_to_single()
+    signal.connect(on_number)
+    signal.set(1.0)
+    try:
+        wait_event(entered)
+        signal.set(2.0)
+        signal.set(3.0)
+    finally:
+        release.set()
+    wait_until(lambda: len(received) >= 2)
+    drain_callbacks(states)
+    assert received == [1.0, 3.0]
     assert errors == []

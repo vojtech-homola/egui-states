@@ -17,6 +17,12 @@ macro_rules! for_each_scenario {
             disconnect_pending => "disconnect-pending",
             blocking_remove => "blocking-remove",
             blocking_reset => "blocking-reset",
+            values_wire => "values-wire",
+            collections_wire => "collections-wire",
+            numeric_wire => "numeric-wire",
+            images_wire => "images-wire",
+            takeover => "takeover",
+            rejected_client => "rejected-client",
         }
     };
 }

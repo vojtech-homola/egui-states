@@ -122,3 +122,95 @@ impl<K, V> Clone for MapState<K, V> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TYPE_ID: u32 = 6;
+
+    fn entries(values: &[(u16, String)]) -> Vec<u8> {
+        values
+            .iter()
+            .flat_map(|(key, value)| {
+                let mut bytes = postcard::to_stdvec(key).unwrap();
+                bytes.extend(postcard::to_stdvec(value).unwrap());
+                bytes
+            })
+            .collect()
+    }
+
+    fn entry(key: u16, value: &str) -> (u16, String) {
+        (key, value.to_string())
+    }
+
+    fn map(values: &[(u16, String)]) -> MapState<u16, String> {
+        let map = MapState::new("root.map".into(), TYPE_ID);
+        map.update_map(
+            TYPE_ID,
+            MapHeader::All(values.len() as u64),
+            &entries(values),
+        )
+        .unwrap();
+        map
+    }
+
+    #[test]
+    fn replace_insert_overwrite_and_remove_apply_in_order() {
+        let map = map(&[entry(1, "one"), entry(2, "two")]);
+        map.update_map(TYPE_ID, MapHeader::Set, &entries(&[entry(3, "three")]))
+            .unwrap();
+        map.update_map(TYPE_ID, MapHeader::Set, &entries(&[entry(1, "uno")]))
+            .unwrap();
+        map.update_map(
+            TYPE_ID,
+            MapHeader::Remove,
+            &postcard::to_stdvec(&2u16).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            map.get(),
+            HashMap::from([entry(1, "uno"), entry(3, "three")])
+        );
+        // Removing a missing key is harmless.
+        map.update_map(
+            TYPE_ID,
+            MapHeader::Remove,
+            &postcard::to_stdvec(&9u16).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(map.get_item(&3).as_deref(), Some("three"));
+        map.update_map(TYPE_ID, MapHeader::All(0), &[]).unwrap();
+        assert!(map.get().is_empty());
+    }
+
+    #[test]
+    fn mismatched_type_and_malformed_entries_are_rejected_without_changes() {
+        let map = map(&[entry(1, "one")]);
+        assert!(
+            map.update_map(TYPE_ID + 1, MapHeader::Set, &entries(&[entry(2, "two")]))
+                .is_err()
+        );
+        assert!(
+            map.update_map(
+                TYPE_ID,
+                MapHeader::Set,
+                &postcard::to_stdvec(&2u16).unwrap()
+            )
+            .is_err()
+        );
+        assert!(map.update_map(TYPE_ID, MapHeader::Remove, &[]).is_err());
+        assert_eq!(map.get(), HashMap::from([entry(1, "one")]));
+    }
+
+    /// A replacement whose payload ends early must not leave a partial map.
+    #[test]
+    fn malformed_replacement_keeps_the_previous_map() {
+        let map = map(&[entry(1, "one")]);
+        assert!(
+            map.update_map(TYPE_ID, MapHeader::All(2), &entries(&[entry(5, "five")]))
+                .is_err()
+        );
+        assert_eq!(map.get(), HashMap::from([entry(1, "one")]));
+    }
+}

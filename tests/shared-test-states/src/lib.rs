@@ -3,6 +3,7 @@ pub mod data;
 pub mod image;
 pub mod integration;
 pub mod sections;
+pub mod wire;
 
 use collections::{ValueMapStates, ValueVecStates};
 use data::{DataStates, DataTakeStates, MultiDataStates, MultiDataTakeStates, ValueTakeStates};
@@ -25,4 +26,5 @@ pub struct State {
     pub multi_data: MultiDataStates,
     pub data_multi_take: MultiDataTakeStates,
     pub image: ImageStates,
+    pub wire_types: wire::WireTypeStates,
 }

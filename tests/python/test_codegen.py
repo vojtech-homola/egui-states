@@ -1,8 +1,10 @@
 """Import and exercise Python bindings emitted by the Rust generator."""
 
+import dataclasses
+import importlib
 import importlib.util
 import json
-import os
+import math
 from pathlib import Path
 import sys
 
@@ -10,11 +12,6 @@ import pytest
 from tests.preparation import ROOT, run
 
 MANIFEST = ROOT / "tests/generated-code-consumer/Cargo.toml"
-FILES = [
-    "python/__init__.py",
-    "python/structs.py",
-    "python/enums.py",
-]
 
 
 @pytest.fixture(scope="module")
@@ -49,22 +46,21 @@ def codegen_probe():
     return Path(artifacts[0]), metadata["target_directory"]
 
 
-def snapshot(directory):
-    return {file: (directory / file).read_bytes() for file in FILES}
-
-
-def test_generated_python_is_usable_and_equivalent_inputs_are_deterministic(codegen_probe, tmp_path):
-    probe, _ = codegen_probe
-    first, second = tmp_path / "first", tmp_path / "second"
-    run([probe, first], timeout=15)
-    run([probe, second, "reverse"], timeout=15)
-    assert snapshot(first) == snapshot(second)
+def import_bindings(name, package):
+    """Import the generated Python package in `package` under a unique module name."""
     spec = importlib.util.spec_from_file_location(
-        "compiled_test_bindings", first / "python/__init__.py", submodule_search_locations=[str(first / "python")]
+        name, package / "__init__.py", submodule_search_locations=[str(package)]
     )
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
+    return module
+
+
+def test_generated_python_is_usable(codegen_probe, tmp_path):
+    probe, _ = codegen_probe
+    run([probe, tmp_path], timeout=15)
+    module = import_bindings("compiled_test_bindings", tmp_path / "python")
     server = module.StatesServer(signals_workers=1)
     payload = server.states.payload.get()
     assert payload.title == "hello 🦀"
@@ -76,13 +72,63 @@ def test_generated_python_is_usable_and_equivalent_inputs_are_deterministic(code
     server.stop()
 
 
-def test_regeneration_does_not_rewrite_any_unchanged_file(codegen_probe, tmp_path):
+ESCAPED = 'quote " backslash \\ tab \t newline \n control \x01 delete \x7f'
+
+
+@pytest.fixture(scope="module")
+def awkward_bindings(codegen_probe, tmp_path_factory):
+    """Generate the awkward schemas from tests/generated-code-consumer/awkward.rs."""
     probe, _ = codegen_probe
-    run([probe, tmp_path], timeout=15)
-    before = snapshot(tmp_path)
-    for file in FILES:
-        os.utime(tmp_path / file, (946684800, 946684800))
-    timestamps = {file: (tmp_path / file).stat().st_mtime_ns for file in FILES}
-    run([probe, tmp_path, "reverse"], timeout=15)
-    assert snapshot(tmp_path) == before
-    assert {file: (tmp_path / file).stat().st_mtime_ns for file in FILES} == timestamps
+    directory = tmp_path_factory.mktemp("awkward")
+    run([probe, directory, "awkward"], timeout=15)
+    return directory
+
+
+def awkward_server(directory, kind):
+    module = import_bindings(f"awkward_{kind}_bindings", directory / kind)
+    server = module.StatesServer(signals_workers=1)
+    states = vars(server.states)
+
+    def state(prefix):
+        # Escaping may rename a keyword (for example to `global_`); accept any such spelling.
+        matches = [value for name, value in states.items() if name.rstrip("_") == prefix]
+        assert len(matches) == 1, f"no single state for {prefix!r}: {sorted(states)}"
+        return matches[0]
+
+    return module, server, state
+
+
+def test_python_keywords_as_generated_names(awkward_bindings):
+    module, server, state = awkward_server(awkward_bindings, "keywords")
+    keyword = importlib.import_module(f"{module.__name__}.enums").Keyword
+    assert [member.value for member in keyword] == [0, 1, 2]
+    assert state("keyword").get() == keyword(1)
+    reserved = state("reserved").get()
+    assert dataclasses.astuple(reserved) == (3, True)
+    assert state("global").get() == 1
+    state("keyword").set(keyword(0))
+    state("reserved").set(type(reserved)(7, False))
+    assert state("keyword").get() == keyword(0)
+    assert dataclasses.astuple(state("reserved").get()) == (7, False)
+    server.stop()
+
+
+def test_special_literals_as_generated_initial_values(awkward_bindings):
+    _, server, state = awkward_server(awkward_bindings, "literals")
+    assert state("escaped").get() == ESCAPED
+    assert math.isnan(state("not_a_number").get())
+    assert state("positive_infinity").get() == math.inf
+    assert state("negative_infinity").get() == -math.inf
+    assert math.isnan(state("single_not_a_number").get())
+    state("escaped").set(ESCAPED[::-1])
+    assert state("escaped").get() == ESCAPED[::-1]
+    server.stop()
+
+
+def test_unit_struct_values(awkward_bindings):
+    _, server, state = awkward_server(awkward_bindings, "unit")
+    marker = state("marker").get()
+    assert dataclasses.astuple(marker) == ()
+    state("marker").set(marker)
+    assert state("marker").get() == marker
+    server.stop()

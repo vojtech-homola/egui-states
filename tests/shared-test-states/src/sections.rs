@@ -1,7 +1,7 @@
 use egui_states::{Queue, Signal, Static, StaticAtomic, Value, ValueAtomic};
 
-#[egui_states::typed(rust_derive(Debug, PartialEq, Eq))]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, egui_states::InitialValue)]
+#[egui_states::typed(rust_derive(Debug, PartialEq, Eq, Hash))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, egui_states::InitialValue)]
 pub enum TestEnum {
     #[default]
     A,

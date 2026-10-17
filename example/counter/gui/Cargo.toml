@@ -9,7 +9,7 @@ name = "counter-gui"
 path = "src/main.rs"
 
 [dependencies]
-eframe = "0.36"
+eframe = { workspace = true }
 egui_states = { workspace = true }
 
 [build-dependencies]

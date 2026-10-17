@@ -11,7 +11,7 @@ unchanged, so existing `cargo test -p ...` commands still work.
 | `python_test_helpers/` | Ordinary Python modules for shared port reservations and bounded waits. Used by library and example tests. |
 | `rust-integration/` | Cargo integration and compiler tests, shared client scenarios, and executable probes used by Python tests. Package: `egui_states_test_support`. |
 | `shared-test-states/` | Handwritten state and value definitions used to generate bindings for both Rust and Python integration tests. Package: `egui_states_test_schema`. |
-| `generated-code-consumer/` | A small handwritten Rust project that compiles generated bindings, implements a custom derive, and contains intentionally invalid macro inputs. Used by the Rust compiler tests and Python binding tests. |
+| `generated-code-consumer/` | A small handwritten Rust project that compiles generated bindings, implements a custom derive, holds awkward but valid inputs (`awkward.rs`), and contains intentionally invalid macro inputs. Used by the Rust compiler tests and Python binding tests. |
 | `rust-process-helpers/` | Dependency-free test crate for subprocess deadlines and captured output. Package: `egui_states_test_process`; a dev-dependency of the integration and example test packages. |
 | `build-artifacts/` | Automatically created bindings, staged Python packages/native extensions, and temporary generated-code output. Ignored by Git; do not edit. |
 
@@ -136,7 +136,7 @@ an installed extension. Subprocesses inherit that staged package via `PYTHONPATH
 the integration worker also reports and checks its extension path. Do not import
 `egui_states` before invoking pytest in the same Python process.
 
-All 13 shared scenarios remain individually reported in Cargo and pytest. Their
+All 19 shared scenarios remain individually reported in Cargo and pytest. Their
 single registration table is `tests/rust-integration/src/scenario_registry.rs`.
 It generates Rust test wrappers and the list printed by the native probe:
 
@@ -152,6 +152,14 @@ no separate Python scenario list to maintain. A Cargo test also checks the probe
 listing against the registry. Test bindings require their generated layout version hash.
 Python-independent signal semantics run with the normal server tests; the blocking
 Python release regression runs explicitly in the Python-feature Rust layer.
+
+The `*-wire` scenarios cross every value shape of the shared schema (including the
+`wire_types` group) in both directions, so the Python server's runtime type
+descriptions and encoder are checked against the Rust client, not only against
+themselves. Their expected values are written three times: in `src/scenarios.rs`
+(client), `src/fixture.rs`, and `integration_server.py` (servers); keep them equal.
+`takeover` and `rejected-client` cover one-client-at-a-time behavior; for the
+latter, both servers must also log a "wrong version" warning.
 
 ## Cleaning staged Python packages
 
@@ -189,7 +197,7 @@ shared integration servers and the worker-disposal regression run in disposable
 processes so blocked or retained workers cannot affect the parent pytest process.
 Subprocess errors and timeouts include their captured output. Cargo and pytest
 report results directly; there is no combined runner or automatic aggregate log
-directory. Existing review logs under `.tmp/test-runs/` are historical artifacts.
+directory.
 
 Real packer tests use the production 10 MiB threshold and cover below/at/above it,
 three chunks, partial tails, ACKs, publication boundaries, and subsequent transfers.
@@ -201,11 +209,17 @@ MiB. Headless image tests inspect egui texture deltas and exact pixels without a
 `tests/generated-code-consumer` is a test-only consumer crate shared as build input:
 
 - Cargo discovers `tests/rust-integration/tests/codegen.rs`. It compiles and executes the
-  generated Rust consumer and real custom derive, verifies all six output files
-  across equivalent inputs and unchanged regeneration, and checks public macro
-  and conflicting-definition compiler diagnostics. These tests run without Python.
+  generated Rust consumer and real custom derive, compiles the `awkward` schema,
+  and checks public macro and conflicting-definition compiler diagnostics. These
+  tests run without Python.
 - Pytest discovers `tests/python/test_codegen.py`. It imports and instantiates
-  generated Python and verifies the three Python files' determinism and timestamps.
+  generated Python, including one package per kind of awkward input.
+
+`awkward.rs` holds valid Rust inputs that are hard for generators: Python keywords
+as names, strings that need escaping, non-finite floats, and a unit struct. The
+generated files themselves (determinism, no rewrite of unchanged files, ordering,
+layout hashes, and schema validation panics) are checked once, in-process, by
+`crates/egui-states/tests/build_scripts_codegen.rs`.
 
 Nested Cargo builds from Rust tests use a dedicated `test-codegen` directory under
 Cargo's active profile directory, so they respect custom target locations without
@@ -220,10 +234,30 @@ ordinary semantic output checks use compiling and importing consumers instead.
 ## Known failures and scope
 
 Production defects discovered by these tests remain **normal failures**. There are
-no expected-failure markers hiding them. In particular, the batching contract is
-at most **ten total messages**, even though the implementation currently emits
-eleven. Current findings and reproduction commands are in `.tmp/test-bugs.md`,
-alongside `.tmp/test-review.md`.
+no expected-failure markers hiding them; each test asserts the intended contract.
+Every other failure is a regression. Current known failures:
+
+| Test(s) | Defect |
+| --- | --- |
+| `server_core::core::tests::data_receiver_respects_message_count_limit` | Server batches hold eleven messages; the contract is at most ten. |
+| `client::messages::serializer_tests::batches_hold_at_most_max_msg_count_messages_in_order` | Client batches hold up to twelve messages. |
+| `client::data_take::lifecycle_tests::{removing,resetting}_pending_blocking_key_acknowledges_once`; scenarios `blocking-remove`, `blocking-reset` (Cargo and pytest) | Discarding a pending blocking `DataMultiTake` key does not acknowledge it, so the next key never progresses. |
+| `server_core::signals::tests::reset_keeps_a_claimed_id_blocked`; `connection_tests::callbacks_for_one_state_do_not_overlap_across_a_reconnect` | A disconnect unblocks ids whose callbacks are still running, so one state's callbacks can run concurrently. |
+| `server::data::tests::overflowing_data_ranges_are_rejected_without_changes`; `test_data.py::test_huge_data_indexes_raise_value_error` | `index + count` overflows in `Data`/`DataMulti` range checks and panics instead of returning an error. |
+| `connection_tests::a_collection_larger_than_one_frame_reaches_the_client` | A whole-collection update is one message; above the 12 MiB frame limit the client drops the connection. |
+| `connection_tests::client_reports_connected_only_after_the_server_accepts` | The client reports `Connected` as soon as it sends the handshake. |
+| `connection_tests::connect_requested_right_after_build_is_not_lost` | `Client::connect` before the background task starts waiting is cleared and lost. |
+| `client::value_vec::tests::malformed_replacement_keeps_the_previous_list`; `client::value_map::tests::malformed_replacement_keeps_the_previous_map` | A malformed full update leaves a partial collection. |
+| codegen `state_empty` | `#[derive(State)]` accepts a struct without fields. |
+| codegen `typed_serde_skip`, `typed_serde_flatten`, `typed_serde_untagged` | `#[typed]` accepts Serde attributes that change the encoding `Typed` describes. |
+| `test_codegen.py::test_python_keywords_as_generated_names`, `test_special_literals_as_generated_initial_values`, `test_unit_struct_values` | The Python generator emits keywords as names, Rust `\u{..}` escapes, and `NaN`/`inf` literals; unit structs cannot be serialized (`__getstate__()` is `None`). |
+| `test_values.py::test_invalid_value_inputs_preserve_previous_value[values.test_enum-2]` | A non-enum value for an enum state raises `AttributeError`. |
+| `test_numpy.py::test_rejected_numeric_buffers_preserve_state[byteorder-*]` | Non-native byte-order buffers are accepted and stored byte-swapped. |
+| `test_lifecycle.py::test_disposal_releases_workers` | Python signal workers have no exit path, so a released server keeps them. |
+
+Some tests pin current behavior that has no written contract, and say so in their
+comments: discarded pending client signals after a disconnect, client writes made
+while disconnected, out-of-range client collection edits, and f32 rounding.
 
 The test overhaul changes test infrastructure, schemas, test cases, and
 `#[cfg(test)]` Rust code. A separately approved macro compatibility fix emits

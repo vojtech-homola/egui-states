@@ -791,4 +791,69 @@ mod transfer_tests {
             }
         }
     }
+    /// Chunked `Add` and `Replace` transfers must extend and patch the existing
+    /// data only after their final chunk, like a chunked `Set`.
+    #[test]
+    fn real_numeric_chunks_apply_add_and_replace() {
+        let count = MSG_SIZE_THRESHOLD / 2 + 1;
+        let large: Vec<u16> = (0..count).map(|i| (i % 65521) as u16).collect();
+        let patch: Vec<u16> = large.iter().map(|v| v.wrapping_mul(3)).collect();
+        for key in [None, Some(79)] {
+            let (sender, mut receiver) = ClientSender::new();
+            let single = ClientData::<u16>::new("single".into(), 52, sender.clone());
+            let multi = ClientMulti::<u16>::new("multi".into(), 52, sender);
+            let mut expected = Vec::new();
+            let read = |expected: &[u16]| {
+                if key.is_none() {
+                    single.read(|v| assert!(v == expected, "single data diverged"));
+                } else {
+                    multi.read(79, |v| assert!(v == Some(expected), "keyed data diverged"));
+                }
+            };
+            let operations = [
+                (TransportType::Set(3), vec![7, 8, 9]),
+                (TransportType::Add(count as u64), large.clone()),
+                (TransportType::Replace(2, count as u64), patch.clone()),
+            ];
+            for (transport, values) in operations {
+                let before = expected.clone();
+                match transport {
+                    TransportType::Set(_) => expected = values.clone(),
+                    TransportType::Add(_) => expected.extend(&values),
+                    TransportType::Replace(start, _) => {
+                        let start = start as usize;
+                        expected[start..start + values.len()].copy_from_slice(&values);
+                    }
+                }
+                let bytes: Vec<u8> = values.iter().flat_map(|v| v.to_ne_bytes()).collect();
+                let messages = pack_data(
+                    52,
+                    &bytes,
+                    transport,
+                    values.len() as u64,
+                    DataType::U16,
+                    key,
+                    false,
+                )
+                .unwrap();
+                let total = messages.len();
+                for (n, (message, _)) in messages.into_iter().enumerate() {
+                    let (_, message) = MessagesParser::from_bytes(message.to_bytes()).unwrap();
+                    match message {
+                        ServerMessage::Data(52, _, message) => single.update_data(message).unwrap(),
+                        ServerMessage::DataMulti(52, _, DataMultiMessage::Modify(79, message)) => {
+                            multi.update(79, message).unwrap()
+                        }
+                        _ => panic!("wrong packed message for key {key:?}"),
+                    }
+                    if n + 1 < total {
+                        assert!(receiver.try_recv().is_err(), "ACK before final chunk");
+                        read(&before);
+                    }
+                }
+                crate::test_support::ack(&mut receiver, 52);
+                read(&expected);
+            }
+        }
+    }
 }

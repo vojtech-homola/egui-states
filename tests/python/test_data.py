@@ -95,3 +95,55 @@ def test_sparse_numeric_reset(local_bundle):
         states.multi_data.bytes[0].get()
     with pytest.raises(ValueError, match="DataMulti index not found"):
         states.multi_data.bytes[5].get()
+
+
+def test_sparse_numeric_reset_and_invalid_mutations(local_bundle):
+    _, states, _ = local_bundle
+    data = states.multi_data.bytes
+    for key in [0, 1, 2**32 - 1]:
+        data[key].set(np.array([1, 2, 3], dtype=np.uint8))
+    for operation in ("replace", "remove"):
+        with pytest.raises(ValueError):
+            if operation == "replace":
+                data[1].replace(np.array([9], dtype=np.uint8), 4)
+            else:
+                data[1].remove(2, 2)
+        assert_array(data[1].get(), np.array([1, 2, 3], dtype=np.uint8))
+    data.remove_index(777)  # missing removal is harmless
+    data.reset()
+    for key in [0, 1, 2**32 - 1]:
+        with pytest.raises(ValueError, match="index not found"):
+            data[key].get()
+
+
+def test_single_buffer_invalid_ranges_preserve_data(local_bundle):
+    _, states, _ = local_bundle
+    data = states.data.bytes
+    data.set(np.array([1, 2, 3], dtype=np.uint8))
+    for name, operation in [
+        ("replace past the end", lambda: data.replace(np.array([9, 9], dtype=np.uint8), 2)),
+        ("remove past the end", lambda: data.remove(2, 2)),
+        ("remove nothing", lambda: data.remove(0, 0)),
+    ]:
+        with pytest.raises(ValueError):
+            operation()
+        assert data.get().tolist() == [1, 2, 3], name
+
+
+@pytest.mark.parametrize("operation", ["replace", "remove", "multi replace", "multi remove"])
+def test_huge_data_indexes_raise_value_error(local_bundle, operation):
+    """Range checks must not overflow into a native panic."""
+    _, states, _ = local_bundle
+    data, multi = states.data.bytes, states.multi_data.bytes
+    data.set(np.array([1, 2, 3], dtype=np.uint8))
+    multi[4].set(np.array([1, 2, 3], dtype=np.uint8))
+    huge = 2**64 - 1
+    with pytest.raises(ValueError):
+        {
+            "replace": lambda: data.replace(np.array([9], dtype=np.uint8), huge),
+            "remove": lambda: data.remove(huge, 1),
+            "multi replace": lambda: multi[4].replace(np.array([9], dtype=np.uint8), huge),
+            "multi remove": lambda: multi[4].remove(huge, 1),
+        }[operation]()
+    assert_array(data.get(), np.array([1, 2, 3], dtype=np.uint8))
+    assert_array(multi[4].get(), np.array([1, 2, 3], dtype=np.uint8))

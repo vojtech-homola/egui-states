@@ -286,3 +286,191 @@ impl SignalCore {
         Ok(())
     }
 }
+
+#[cfg(all(test, feature = "server"))]
+mod tests {
+    use super::*;
+    use crate::serialization::VALUE_MAX_SIZE;
+    use crate::server_core::sender::MessageReceiver;
+
+    const ID: u64 = 40;
+    const TYPE_ID: u32 = 7;
+
+    fn b(value: &str) -> Bytes {
+        Bytes::copy_from_slice(value.as_bytes())
+    }
+
+    fn value(connected: bool) -> (Arc<ValueCore>, SignalsManager, MessageReceiver) {
+        let (sender, receiver) = MessageSender::new();
+        let signals = SignalsManager::new();
+        signals.set_register(ID, true, true);
+        let value = ValueCore::new(
+            "root.value".into(),
+            ID,
+            TYPE_ID,
+            b("initial"),
+            sender,
+            Arc::new(AtomicBool::new(connected)),
+            signals.clone(),
+        );
+        (value, signals, receiver)
+    }
+
+    /// Returns the header and payload of the next queued server message.
+    fn next_message(receiver: &mut MessageReceiver) -> (ServerHeader, Vec<u8>) {
+        let (message, _) = receiver
+            .try_recv()
+            .expect("expected a queued message")
+            .expect("expected a message, not a close request");
+        let bytes = message.to_bytes();
+        let (header, payload) = postcard::take_from_bytes::<ServerHeader>(&bytes).unwrap();
+        (header, payload.to_vec())
+    }
+
+    #[test]
+    fn client_update_is_ignored_while_a_server_send_is_unacknowledged() {
+        let (value, signals, mut receiver) = value(true);
+        value.set(b("server"), false, false).unwrap();
+        assert!(matches!(
+            next_message(&mut receiver),
+            (ServerHeader::Value(ID, TYPE_ID, false, 6), payload) if payload == b"server"
+        ));
+
+        // The client has not yet seen "server", so its concurrent write must lose:
+        // the client applies "server" when it arrives, and both peers converge.
+        value.update_value(TYPE_ID, true, b("client")).unwrap();
+        assert_eq!(value.get(), b("server"));
+        assert!(
+            signals.try_changed_value(None).is_none(),
+            "an ignored client write must not signal callbacks"
+        );
+
+        value.acknowledge();
+        value.update_value(TYPE_ID, true, b("client")).unwrap();
+        assert_eq!(value.get(), b("client"));
+        assert_eq!(
+            signals.try_changed_value(None),
+            Some((ID, b("client"), Some(b("server"))))
+        );
+    }
+
+    #[test]
+    fn every_unacknowledged_send_needs_its_own_acknowledgement() {
+        let (value, _signals, mut receiver) = value(true);
+        value.set(b("first"), false, false).unwrap();
+        value.set(b("second"), false, false).unwrap();
+        next_message(&mut receiver);
+        next_message(&mut receiver);
+
+        value.acknowledge();
+        value.update_value(TYPE_ID, false, b("client")).unwrap();
+        assert_eq!(value.get(), b("second"), "one send is still in flight");
+
+        value.acknowledge();
+        value.update_value(TYPE_ID, false, b("client")).unwrap();
+        assert_eq!(value.get(), b("client"));
+
+        // Surplus acknowledgements must not make the counter wrap.
+        value.acknowledge();
+        value.update_value(TYPE_ID, false, b("again")).unwrap();
+        assert_eq!(value.get(), b("again"));
+    }
+
+    #[test]
+    fn connection_sync_is_pending_until_acknowledged() {
+        let (value, _signals, mut receiver) = value(true);
+        value.sync().unwrap();
+        assert!(matches!(
+            next_message(&mut receiver),
+            (ServerHeader::Value(ID, TYPE_ID, false, 7), payload) if payload == b"initial"
+        ));
+
+        value.update_value(TYPE_ID, false, b("client")).unwrap();
+        assert_eq!(value.get(), b("initial"));
+        value.acknowledge();
+        value.update_value(TYPE_ID, false, b("client")).unwrap();
+        assert_eq!(value.get(), b("client"));
+    }
+
+    #[test]
+    fn disconnected_server_writes_are_stored_without_sending_or_blocking_clients() {
+        let (value, _signals, mut receiver) = value(false);
+        value.set(b("offline"), false, false).unwrap();
+        assert!(receiver.try_recv().is_err());
+        value.update_value(TYPE_ID, false, b("client")).unwrap();
+        assert_eq!(value.get(), b("client"));
+    }
+
+    #[test]
+    fn mismatched_client_type_is_rejected_without_changing_the_value() {
+        let (value, signals, _receiver) = value(true);
+        let error = value
+            .update_value(TYPE_ID + 1, true, b("client"))
+            .unwrap_err();
+        assert!(error.contains("root.value"), "{error}");
+        assert_eq!(value.get(), b("initial"));
+        assert!(signals.try_changed_value(None).is_none());
+    }
+
+    fn value_take(connected: bool) -> (Arc<ValueTakeCore>, MessageReceiver) {
+        let (sender, receiver) = MessageSender::new();
+        let value = ValueTakeCore::new(
+            "root.take".into(),
+            41,
+            TYPE_ID,
+            sender,
+            Arc::new(AtomicBool::new(connected)),
+        );
+        (value, receiver)
+    }
+
+    #[test]
+    fn oversized_value_take_is_rejected() {
+        let (value, mut receiver) = value_take(true);
+        value.sync().unwrap();
+        let error = value
+            .set(Bytes::from(vec![0; VALUE_MAX_SIZE + 1]), false, false)
+            .unwrap_err();
+        assert!(error.contains("root.take"), "{error}");
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn disconnected_blocking_value_take_returns_without_sending() {
+        let (value, mut receiver) = value_take(false);
+        // A regression would block forever, so bound it from another thread.
+        let (done, finished) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let result = value.set(b("payload"), true, false);
+            let _ = done.send(result);
+        });
+        let result = finished
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("blocking ValueTake::set waited without a client");
+        assert!(result.is_ok());
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn disconnected_static_is_sent_by_the_next_sync() {
+        let (sender, mut receiver) = MessageSender::new();
+        let connected = Arc::new(AtomicBool::new(false));
+        let value = ValueStaticCore::new(
+            "root.static".into(),
+            42,
+            TYPE_ID,
+            b("initial"),
+            sender,
+            connected.clone(),
+        );
+        value.set(b("latest"), true).unwrap();
+        assert!(receiver.try_recv().is_err());
+
+        connected.store(true, Ordering::Release);
+        value.sync().unwrap();
+        assert!(matches!(
+            next_message(&mut receiver),
+            (ServerHeader::Static(42, TYPE_ID, false, 6), payload) if payload == b"latest"
+        ));
+    }
+}

@@ -36,6 +36,11 @@ pub(crate) fn isolated() -> bool {
         status.is_some_and(|s| s.success()),
         "{name}: child failed or exceeded 25s\n{output}"
     );
+    // A renamed or moved test matches nothing and would otherwise pass silently.
+    assert!(
+        output.contains("test result: ok. 1 passed"),
+        "{name}: child did not run exactly this test\n{output}"
+    );
     true
 }
 

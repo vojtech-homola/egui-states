@@ -30,3 +30,10 @@ edition = "2024"
 [workspace.dependencies]
 egui_states_macros = { path = "crates/egui-states-macros" }
 egui_states = { path = "crates/egui-states" }
+pyo3 = "0.30"
+egui = "0.36"
+eframe = "0.36"
+tokio = "1.52"
+wasm-bindgen-futures = "0.4"
+log = "0.4"
+web-sys = "0.3"

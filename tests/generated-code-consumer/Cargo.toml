@@ -17,6 +17,7 @@ egui_states = { path = "../../crates/egui-states", features = ["build_scripts"] 
 [features]
 invalid = []
 conflicting = []
+awkward = []
 
 [[bin]]
 name = "codegen-probe"
@@ -75,4 +76,34 @@ required-features = ["invalid"]
 [[bin]]
 name = "atomic-static-payload"
 path = "src/bin/atomic-static-payload.rs"
+required-features = ["invalid"]
+
+[[bin]]
+name = "typed-serde-skip"
+path = "src/bin/typed-serde-skip.rs"
+required-features = ["invalid"]
+
+[[bin]]
+name = "typed-serde-flatten"
+path = "src/bin/typed-serde-flatten.rs"
+required-features = ["invalid"]
+
+[[bin]]
+name = "typed-serde-untagged"
+path = "src/bin/typed-serde-untagged.rs"
+required-features = ["invalid"]
+
+[[bin]]
+name = "typed-discriminant-range"
+path = "src/bin/typed-discriminant-range.rs"
+required-features = ["invalid"]
+
+[[bin]]
+name = "typed-discriminant-expression"
+path = "src/bin/typed-discriminant-expression.rs"
+required-features = ["invalid"]
+
+[[bin]]
+name = "typed-discriminant-overflow"
+path = "src/bin/typed-discriminant-overflow.rs"
 required-features = ["invalid"]

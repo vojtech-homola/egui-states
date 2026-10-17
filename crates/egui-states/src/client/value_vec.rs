@@ -117,3 +117,76 @@ impl<T> Clone for VecState<T> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TYPE_ID: u32 = 5;
+
+    fn items(values: &[i32]) -> Vec<u8> {
+        values
+            .iter()
+            .flat_map(|value| postcard::to_stdvec(value).unwrap())
+            .collect()
+    }
+
+    fn list(values: &[i32]) -> VecState<i32> {
+        let list = VecState::new("root.list".into(), TYPE_ID);
+        list.update_list(TYPE_ID, VecHeader::All(values.len() as u64), &items(values))
+            .unwrap();
+        list
+    }
+
+    #[test]
+    fn replace_set_add_and_remove_apply_in_order() {
+        let list = list(&[1, 2, 3]);
+        assert_eq!(list.get(), [1, 2, 3]);
+        list.update_list(TYPE_ID, VecHeader::Set(1), &items(&[20]))
+            .unwrap();
+        list.update_list(TYPE_ID, VecHeader::Add, &items(&[4]))
+            .unwrap();
+        list.update_list(TYPE_ID, VecHeader::Remove(0), &[])
+            .unwrap();
+        assert_eq!(list.get(), [20, 3, 4]);
+        assert_eq!(list.get_item(2), Some(4));
+        assert_eq!(list.get_item(3), None);
+        list.update_list(TYPE_ID, VecHeader::All(0), &[]).unwrap();
+        assert!(list.get().is_empty());
+    }
+
+    /// Pins current behavior: the server validates indexes, so the client ignores
+    /// out-of-range item updates instead of reporting them.
+    #[test]
+    fn out_of_range_set_and_remove_are_ignored() {
+        let list = list(&[1, 2]);
+        list.update_list(TYPE_ID, VecHeader::Set(2), &items(&[9]))
+            .unwrap();
+        list.update_list(TYPE_ID, VecHeader::Remove(2), &[])
+            .unwrap();
+        assert_eq!(list.get(), [1, 2]);
+    }
+
+    #[test]
+    fn mismatched_type_and_malformed_items_are_rejected_without_changes() {
+        let list = list(&[1, 2]);
+        assert!(
+            list.update_list(TYPE_ID + 1, VecHeader::Add, &items(&[3]))
+                .is_err()
+        );
+        assert!(list.update_list(TYPE_ID, VecHeader::Add, &[]).is_err());
+        assert!(list.update_list(TYPE_ID, VecHeader::Set(0), &[]).is_err());
+        assert_eq!(list.get(), [1, 2]);
+    }
+
+    /// A replacement whose payload ends early must not leave a partial list.
+    #[test]
+    fn malformed_replacement_keeps_the_previous_list() {
+        let list = list(&[1, 2]);
+        assert!(
+            list.update_list(TYPE_ID, VecHeader::All(3), &items(&[7, 8]))
+                .is_err()
+        );
+        assert_eq!(list.get(), [1, 2]);
+    }
+}
