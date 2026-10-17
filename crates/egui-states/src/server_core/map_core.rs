@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use tokio_tungstenite::tungstenite::Bytes;
 
-use crate::collections::MapHeader;
+use crate::collections::{MapHeader, split_collection};
 use crate::serialization::{ServerHeader, check_value_size, serialize};
 use crate::server_core::sender::{MessageSender, SenderData};
 use crate::server_core::server::SyncTrait;
@@ -38,32 +38,39 @@ impl ValueMap {
         })
     }
 
+    /// Serializes a whole-map replacement, split into frame-sized messages.
+    /// Only the last message requests a UI update.
     fn serialize_all(
         &self,
         map: &HashMap<Bytes, Bytes>,
         update: bool,
-    ) -> Result<SenderData, &'static str> {
-        let len = map.len() as u64;
-        let mut size = 0;
-        map.iter().for_each(|(k, v)| {
-            size += k.len();
-            size += v.len();
-        });
-        let header = ServerHeader::ValueMap(
-            self.id,
-            self.type_id,
-            update,
-            MapHeader::All(len),
-            size as u32,
-        );
+    ) -> Result<Vec<SenderData>, &'static str> {
+        let chunks = split_collection(map.iter().map(|(k, v)| k.len() + v.len()));
+        let last = chunks.len() - 1;
+        let mut items = map.iter();
+        let mut messages = Vec::with_capacity(chunks.len());
+        for (i, (part, count, size)) in chunks.into_iter().enumerate() {
+            let header = ServerHeader::ValueMap(
+                self.id,
+                self.type_id,
+                update && i == last,
+                MapHeader::part(part, count),
+                size as u32,
+            );
+            let mut data = serialize(&header).map_err(|_| "Failed to serialize header")?;
+            items.by_ref().take(count as usize).for_each(|(k, v)| {
+                data.extend_from_slice(k);
+                data.extend_from_slice(v);
+            });
+            messages.push(data);
+        }
+        Ok(messages)
+    }
 
-        let mut data = serialize(&header).map_err(|_| "Failed to serialize header")?;
-        map.iter().for_each(|(k, v)| {
-            data.extend_from_slice(&k);
-            data.extend_from_slice(&v);
-        });
-
-        Ok(data)
+    fn send_all(&self, messages: Vec<SenderData>) {
+        for message in messages {
+            self.sender.send(message);
+        }
     }
 
     pub(crate) fn set(&self, map: HashMap<Bytes, Bytes>, update: bool) -> Result<(), String> {
@@ -75,8 +82,7 @@ impl ValueMap {
         let mut w = self.map.write();
 
         if self.connected.load(Ordering::Acquire) {
-            let data = self.serialize_all(&map, update)?;
-            self.sender.send(data);
+            self.send_all(self.serialize_all(&map, update)?);
         }
 
         *w = map;
@@ -154,8 +160,7 @@ impl ValueMap {
 impl SyncTrait for ValueMap {
     fn sync(&self) -> Result<(), ()> {
         let r = self.map.read();
-        let data = self.serialize_all(&r, false).map_err(|_| ())?;
-        self.sender.send(data);
+        self.send_all(self.serialize_all(&r, false).map_err(|_| ())?);
         Ok(())
     }
 }

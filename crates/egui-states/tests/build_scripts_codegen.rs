@@ -486,3 +486,50 @@ fn one_struct_name_with_different_fields_is_rejected() {
 fn one_enum_name_with_different_variants_is_rejected() {
     let _ = generate_python::<ConflictingEnums>(output_dir("conflicting_enums", 0));
 }
+
+struct KeywordSubstate;
+
+impl State for KeywordSubstate {
+    const NAME: &'static str = "KeywordSubstate";
+
+    fn new(c: &mut impl StatesCreator) -> Self {
+        let _: Leaf = c.substate("global");
+        Self
+    }
+}
+
+/// The attribute is escaped, but the state path must keep the client's name.
+#[test]
+fn a_keyword_substate_keeps_its_wire_path() {
+    let dir = output_dir("keyword_substate", 0);
+    generate_python::<KeywordSubstate>(&dir).unwrap();
+    let output = std::fs::read_to_string(dir.join("__init__.py")).unwrap();
+    assert!(
+        output.contains("    __egui_names__ = {\"global_\": \"global\"}\n"),
+        "{output}"
+    );
+    assert!(
+        output.contains("self.global_: Leaf = Leaf(parent + \".global\")"),
+        "{output}"
+    );
+}
+
+struct EscapedNameCollision;
+
+impl State for EscapedNameCollision {
+    const NAME: &'static str = "EscapedNameCollision";
+
+    fn new(c: &mut impl StatesCreator) -> Self {
+        let _: Value<u8> = c.value("from", 0);
+        let _: Value<u8> = c.value("from_", 0);
+        Self
+    }
+}
+
+#[test]
+#[should_panic(
+    expected = "EscapedNameCollision: the Python name `from_` of `from` conflicts with another name"
+)]
+fn an_escaped_name_that_collides_is_rejected() {
+    let _ = generate_python::<EscapedNameCollision>(output_dir("escaped_collision", 0));
+}

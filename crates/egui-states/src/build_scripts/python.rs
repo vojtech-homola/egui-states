@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::fmt::Write;
 use std::path::Path;
@@ -8,6 +9,51 @@ use crate::build_scripts::scripts;
 use crate::build_scripts::states_creator_build::StateType;
 use crate::data_transport::DataType;
 use crate::typed::ObjectType;
+
+/// Python's hard keywords. Soft keywords (`match`, `case`, `type`, `_`) are valid
+/// identifiers and need no escaping.
+const PYTHON_KEYWORDS: [&str; 35] = [
+    "False", "None", "True", "and", "as", "assert", "async", "await", "break", "class", "continue",
+    "def", "del", "elif", "else", "except", "finally", "for", "from", "global", "if", "import",
+    "in", "is", "lambda", "nonlocal", "not", "or", "pass", "raise", "return", "try", "while",
+    "with", "yield",
+];
+
+/// Spells a Rust name as a Python identifier, escaping keywords with a trailing
+/// underscore (PEP 8).
+fn python_name(name: &str) -> Cow<'_, str> {
+    if PYTHON_KEYWORDS.contains(&name) {
+        Cow::Owned(format!("{name}_"))
+    } else {
+        Cow::Borrowed(name)
+    }
+}
+
+/// Returns the `__egui_names__` class attribute that maps escaped Python names
+/// back to the names used on the wire (state paths and type hashes), or an empty
+/// string when no name of `owner` was escaped.
+///
+/// # Panics
+///
+/// Panics if an escaped name collides with another name of `owner`.
+fn wire_names_line<'a>(owner: &str, names: impl IntoIterator<Item = &'a str> + Clone) -> String {
+    let mut escaped = Vec::new();
+    for name in names.clone() {
+        if let Cow::Owned(python) = python_name(name) {
+            if names.clone().into_iter().any(|other| other == python) {
+                panic!(
+                    "{owner}: the Python name `{python}` of `{name}` conflicts with another name"
+                );
+            }
+            escaped.push(format!("\"{python}\": \"{name}\""));
+        }
+    }
+    if escaped.is_empty() {
+        String::new()
+    } else {
+        format!("    __egui_names__ = {{{}}}\n", escaped.join(", "))
+    }
+}
 
 fn type_to_pytype(type_info: &ObjectType) -> String {
     match type_info {
@@ -206,7 +252,7 @@ fn init_to_python_value(init: &InitValue, object_type: &ObjectType) -> String {
             false => "False".to_string(),
         },
         (InitValue::Enum(variant), ObjectType::Enum(name, _)) => {
-            format!("enums.{name}.{variant}")
+            format!("enums.{name}.{}", python_name(variant))
         }
         (InitValue::Option(value), ObjectType::Option(inner)) => match value {
             Some(value) => init_to_python_value(value, inner),
@@ -279,86 +325,87 @@ fn data_type_to_dtype(data_type: &DataType) -> &'static str {
 }
 
 fn state_to_line(state: &StateType, object_types: &[ObjectType]) -> String {
+    let attr = python_name(state.name());
     match state {
-        StateType::Value(name, state_type, init, queue) => {
+        StateType::Value(_, state_type, init, queue) => {
             let py_type = type_info_to_python_type(state_type, false, PythonTypeContext::States);
             let init_value = init_to_python_value(init, state_type);
             let index = object_type_index(object_types, state_type);
             let queue = if *queue { ", True" } else { "" };
             format!(
-                "        self.{name}: s.Value[{py_type}] = s.Value[{py_type}]({index}, {init_value}{queue})\n"
+                "        self.{attr}: s.Value[{py_type}] = s.Value[{py_type}]({index}, {init_value}{queue})\n"
             )
         }
-        StateType::ValueTake(name, state_type) => {
+        StateType::ValueTake(_, state_type) => {
             let py_type = type_info_to_python_type(state_type, false, PythonTypeContext::States);
             if matches!(state_type, ObjectType::Empty) {
-                format!("        self.{name}: s.ValueTakeEmpty = s.ValueTakeEmpty()\n")
+                format!("        self.{attr}: s.ValueTakeEmpty = s.ValueTakeEmpty()\n")
             } else {
                 let index = object_type_index(object_types, state_type);
                 format!(
-                    "        self.{name}: s.ValueTake[{py_type}] = s.ValueTake[{py_type}]({index})\n"
+                    "        self.{attr}: s.ValueTake[{py_type}] = s.ValueTake[{py_type}]({index})\n"
                 )
             }
         }
-        StateType::Static(name, state_type, init) => {
+        StateType::Static(_, state_type, init) => {
             let py_type = type_info_to_python_type(state_type, false, PythonTypeContext::States);
             let init_value = init_to_python_value(init, state_type);
             let index = object_type_index(object_types, state_type);
             format!(
-                "        self.{name}: s.Static[{py_type}] = s.Static[{py_type}]({index}, {init_value})\n"
+                "        self.{attr}: s.Static[{py_type}] = s.Static[{py_type}]({index}, {init_value})\n"
             )
         }
-        StateType::Signal(name, state_type, queue) => {
+        StateType::Signal(_, state_type, queue) => {
             let py_type = type_info_to_python_type(state_type, false, PythonTypeContext::States);
             if matches!(state_type, ObjectType::Empty) {
                 let queue = if *queue { "True" } else { "" };
-                format!("        self.{name}: s.SignalEmpty = s.SignalEmpty({queue})\n")
+                format!("        self.{attr}: s.SignalEmpty = s.SignalEmpty({queue})\n")
             } else {
                 let index = object_type_index(object_types, state_type);
                 let queue = if *queue { ", True" } else { "" };
                 format!(
-                    "        self.{name}: s.Signal[{py_type}] = s.Signal[{py_type}]({index}{queue})\n"
+                    "        self.{attr}: s.Signal[{py_type}] = s.Signal[{py_type}]({index}{queue})\n"
                 )
             }
         }
-        StateType::ValueVec(name, state_type) => {
+        StateType::ValueVec(_, state_type) => {
             let py_type = type_info_to_python_type(state_type, false, PythonTypeContext::States);
             let index = object_type_index(object_types, state_type);
-            format!("        self.{name}: s.Vec[{py_type}] = s.Vec[{py_type}]({index})\n")
+            format!("        self.{attr}: s.Vec[{py_type}] = s.Vec[{py_type}]({index})\n")
         }
-        StateType::ValueMap(name, key_type, value_type) => {
+        StateType::ValueMap(_, key_type, value_type) => {
             let key = object_type_index(object_types, key_type);
             let value = object_type_index(object_types, value_type);
             let key_type = type_info_to_python_type(key_type, false, PythonTypeContext::States);
             let value_type = type_info_to_python_type(value_type, false, PythonTypeContext::States);
             format!(
-                "        self.{name}: s.Map[{key_type}, {value_type}] = s.Map[{key_type}, {value_type}]({key}, {value})\n"
+                "        self.{attr}: s.Map[{key_type}, {value_type}] = s.Map[{key_type}, {value_type}]({key}, {value})\n"
             )
         }
-        StateType::Data(name, data_type) => {
+        StateType::Data(_, data_type) => {
             let data_type = data_type_to_dtype(data_type);
-            format!("        self.{name}: s.Data[{data_type}] = s.Data({data_type})\n")
+            format!("        self.{attr}: s.Data[{data_type}] = s.Data({data_type})\n")
         }
-        StateType::DataMulti(name, data_type) => {
+        StateType::DataMulti(_, data_type) => {
             let data_type = data_type_to_dtype(data_type);
-            format!("        self.{name}: s.DataMulti[{data_type}] = s.DataMulti({data_type})\n")
+            format!("        self.{attr}: s.DataMulti[{data_type}] = s.DataMulti({data_type})\n")
         }
-        StateType::DataTake(name, data_type) => {
+        StateType::DataTake(_, data_type) => {
             let data_type = data_type_to_dtype(data_type);
-            format!("        self.{name}: s.DataTake[{data_type}] = s.DataTake({data_type})\n")
+            format!("        self.{attr}: s.DataTake[{data_type}] = s.DataTake({data_type})\n")
         }
-        StateType::DataMultiTake(name, data_type) => {
+        StateType::DataMultiTake(_, data_type) => {
             let data_type = data_type_to_dtype(data_type);
             format!(
-                "        self.{name}: s.DataMultiTake[{data_type}] = s.DataMultiTake({data_type})\n"
+                "        self.{attr}: s.DataMultiTake[{data_type}] = s.DataMultiTake({data_type})\n"
             )
         }
-        StateType::Image(name) => format!("        self.{name}: s.Image = s.Image()\n"),
-        StateType::ImageMulti(name) => {
-            format!("        self.{name}: s.ImageMulti = s.ImageMulti()\n")
+        StateType::Image(_) => format!("        self.{attr}: s.Image = s.Image()\n"),
+        StateType::ImageMulti(_) => {
+            format!("        self.{attr}: s.ImageMulti = s.ImageMulti()\n")
         }
         StateType::SubState(name, state_class, _) => {
-            format!("        self.{name}: {state_class} = {state_class}(parent + \".{name}\")\n")
+            format!("        self.{attr}: {state_class} = {state_class}(parent + \".{name}\")\n")
         }
     }
 }
@@ -380,9 +427,13 @@ fn write_states(
         }
     }
 
+    let mut wire_names = wire_names_line(state_class, states.iter().map(StateType::name));
+    if !wire_names.is_empty() {
+        wire_names.push('\n');
+    }
     writeln!(
         output,
-        "\n\nclass {state_class}(ISubStates):\n    \"\"\"Generated handles for a nested state group.\"\"\"\n\n    def __init__(self, parent: str) -> None:\n        \"\"\"Initialize handles below a generated state path.\n\n        Args:\n            parent (str): Fully qualified parent state path.\n        \"\"\""
+        "\n\nclass {state_class}(ISubStates):\n    \"\"\"Generated handles for a nested state group.\"\"\"\n\n{wire_names}    def __init__(self, parent: str) -> None:\n        \"\"\"Initialize handles below a generated state path.\n\n        Args:\n            parent (str): Fully qualified parent state path.\n        \"\"\""
     )
     .unwrap();
     if states.is_empty() {
@@ -434,8 +485,12 @@ fn render_python<S: State>() -> (String, String, String) {
         )
         .unwrap();
         for (variant, value) in variants {
-            writeln!(enums_output, "    {variant} = {value}").unwrap();
+            writeln!(enums_output, "    {} = {value}", python_name(variant)).unwrap();
         }
+        enums_output.push_str(&wire_names_line(
+            enum_name,
+            variants.iter().map(|(variant, _)| variant.as_str()),
+        ));
     }
 
     let mut structs_output = String::from(
@@ -453,8 +508,12 @@ fn render_python<S: State>() -> (String, String, String) {
         } else {
             for (field, typ) in fields {
                 let typ = type_info_to_python_type(typ, true, PythonTypeContext::Structs);
-                writeln!(structs_output, "    {field}: {typ}").unwrap();
+                writeln!(structs_output, "    {}: {typ}", python_name(field)).unwrap();
             }
+            structs_output.push_str(&wire_names_line(
+                struct_name,
+                fields.iter().map(|(field, _)| field.as_str()),
+            ));
         }
     }
 
@@ -483,9 +542,13 @@ fn render_python<S: State>() -> (String, String, String) {
         }
     }
 
+    let mut wire_names = wire_names_line(root_name, substates.iter().map(StateType::name));
+    if !wire_names.is_empty() {
+        wire_names.push('\n');
+    }
     writeln!(
         states_output,
-        "\n\nclass {root_name}(StatesBase):\n    \"\"\"The generated root state tree.\"\"\"\n\n    @staticmethod\n    def _get_obj_types() -> list[s.PyObjectType]:\n        return ["
+        "\n\nclass {root_name}(StatesBase):\n    \"\"\"The generated root state tree.\"\"\"\n\n{wire_names}    @staticmethod\n    def _get_obj_types() -> list[s.PyObjectType]:\n        return ["
     )
     .unwrap();
     for object_type in &types_list {
@@ -548,6 +611,10 @@ class StatesServer(StateServerBase[{root_name}]):
 ///
 /// Generated files must not be edited by hand; rebuild them from the shared
 /// Rust [`State`] definition instead.
+///
+/// State, enum variant, and struct field names that are Python keywords get a
+/// trailing underscore (`from` becomes `from_`). The original names are kept on
+/// the wire, so the bindings stay compatible with the Rust client.
 ///
 /// # Errors
 ///

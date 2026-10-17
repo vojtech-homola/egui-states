@@ -1,7 +1,9 @@
 use std::collections::{VecDeque, hash_map::Entry};
 use std::sync::Arc;
-#[cfg(feature = "server")]
+#[cfg(any(feature = "server", feature = "python"))]
 use std::sync::atomic::AtomicBool;
+#[cfg(feature = "python")]
+use std::sync::atomic::Ordering;
 
 use bytes::Bytes;
 use parking_lot::Mutex;
@@ -174,6 +176,8 @@ impl ChangedInner {
 pub(crate) struct SignalsManager {
     event: Event,
     values: Arc<Mutex<ChangedInner>>,
+    #[cfg(feature = "python")]
+    closed: Arc<AtomicBool>,
 }
 
 impl SignalsManager {
@@ -181,6 +185,8 @@ impl SignalsManager {
         Self {
             event: Event::new(),
             values: Arc::new(Mutex::new(ChangedInner::new())),
+            #[cfg(feature = "python")]
+            closed: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -255,17 +261,32 @@ impl SignalsManager {
         self.set(CLIENT_MESSAGE_ID, message);
     }
 
+    /// Blocks until a registered change is available, or returns `None` once
+    /// [`Self::close`] has been called.
     #[cfg(feature = "python")]
     pub(crate) fn wait_changed_value(
         &self,
         mut last_id: Option<u64>,
-    ) -> (u64, Bytes, Option<Bytes>) {
+    ) -> Option<(u64, Bytes, Option<Bytes>)> {
         loop {
-            if let Some(val) = self.values.lock().get(last_id.take()) {
-                return val;
+            if self.closed.load(Ordering::Acquire) {
+                return None;
             }
-            self.event.wait_clear();
+            if let Some(val) = self.values.lock().get(last_id.take()) {
+                return Some(val);
+            }
+            if !self.event.wait_clear_until(&self.closed) {
+                return None;
+            }
         }
+    }
+
+    /// Permanently wakes every waiter in [`Self::wait_changed_value`] and makes
+    /// it return `None`, so the workers waiting on it can exit.
+    #[cfg(feature = "python")]
+    pub(crate) fn close(&self) {
+        self.closed.store(true, Ordering::Release);
+        self.event.set();
     }
 
     #[cfg(feature = "server")]
@@ -353,14 +374,14 @@ mod tests {
         manager.set_register(9, true, false);
 
         manager.set(5, Bytes::from_static(b"first"));
-        assert_eq!(manager.wait_changed_value(None).0, 5);
+        assert_eq!(manager.wait_changed_value(None).unwrap().0, 5);
 
         // A second signal for 5 queues silently -- it is blocked, so no wake-up
         // is sent and only 9 is reachable.
         manager.set(5, Bytes::from_static(b"stranded"));
         manager.set(9, Bytes::from_static(b"other"));
         assert_eq!(
-            manager.wait_changed_value(None).0,
+            manager.wait_changed_value(None).unwrap().0,
             9,
             "5 must stay blocked while its holder has not released it"
         );
@@ -373,13 +394,45 @@ mod tests {
         let (sender, receiver) = mpsc::channel();
         let waiter = manager.clone();
         thread::spawn(move || {
-            let _ = sender.send(waiter.wait_changed_value(None).0);
+            let _ = sender.send(waiter.wait_changed_value(None).unwrap().0);
         });
         assert_eq!(
             receiver.recv_timeout(Duration::from_secs(2)).ok(),
             Some(5),
             "the signal queued behind 5 should be reachable again"
         );
+    }
+
+    /// Python workers block here with no other exit; `close` must release every
+    /// one of them, and later calls must not block.
+    #[test]
+    #[cfg(feature = "python")]
+    fn close_releases_blocked_waiters() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let manager = SignalsManager::new();
+        manager.set_register(5, true, false);
+
+        let (sender, receiver) = mpsc::channel();
+        for _ in 0..2 {
+            let waiter = manager.clone();
+            let sender = sender.clone();
+            thread::spawn(move || {
+                let _ = sender.send(waiter.wait_changed_value(None).is_none());
+            });
+        }
+        assert!(receiver.recv_timeout(Duration::from_millis(100)).is_err());
+
+        manager.close();
+        for _ in 0..2 {
+            assert_eq!(
+                receiver.recv_timeout(Duration::from_secs(2)).ok(),
+                Some(true)
+            );
+        }
+        manager.set(5, b("pending"));
+        assert!(manager.wait_changed_value(None).is_none());
     }
 
     /// In single mode changes coalesce, and the consumer only ever learns about the

@@ -92,7 +92,7 @@ impl Event {
         }
     }
 
-    #[cfg(feature = "server")]
+    #[cfg(any(feature = "server", feature = "python"))]
     pub(crate) fn wait_clear_until(&self, stop: &AtomicBool) -> bool {
         loop {
             if stop.load(Ordering::Acquire) {

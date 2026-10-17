@@ -1472,6 +1472,7 @@ mod connection_tests {
 
     struct CollectionTestState {
         items: crate::VecState<String>,
+        entries: crate::MapState<u32, String>,
     }
 
     impl crate::State for CollectionTestState {
@@ -1480,6 +1481,7 @@ mod connection_tests {
         fn new(c: &mut impl crate::StatesCreator) -> Self {
             Self {
                 items: c.vec("items"),
+                entries: c.map("entries"),
             }
         }
     }
@@ -1956,6 +1958,46 @@ mod connection_tests {
             13,
             "client state: {:?}",
             client.get_state() == ConnectionState::Connected
+        );
+        client.disconnect();
+        server.stop();
+    }
+
+    /// Like [`a_collection_larger_than_one_frame_reaches_the_client`], for a map
+    /// that is already set when the client connects, so the initial sync is split.
+    #[test]
+    fn a_map_larger_than_one_frame_is_synced_to_the_client() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let port = free_port();
+        let server = StateServer::new().unwrap();
+        let entries = crate::server::MapState::<u32, String>::new(&server, "root.entries").unwrap();
+        server.finalize().unwrap();
+        entries
+            .set(
+                (0..13)
+                    .map(|key| (key, "x".repeat(VALUE_MAX_SIZE - 16)))
+                    .collect(),
+                false,
+            )
+            .unwrap();
+        server.start(port, Some(Ipv4Addr::LOCALHOST), None).unwrap();
+
+        let (state, client) = ClientBuilder::<CollectionTestState>::new().build(port);
+        wait("connection", || {
+            client.connect();
+            server.is_connected()
+        });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while state.entries.read(|map| map.len()) != 13 && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(state.entries.read(|map| map.len()), 13);
+        assert!(
+            state
+                .entries
+                .read(|map| map.values().all(|v| v.len() == VALUE_MAX_SIZE - 16))
         );
         client.disconnect();
         server.stop();

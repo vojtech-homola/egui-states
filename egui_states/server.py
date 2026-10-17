@@ -33,8 +33,10 @@ def _initialize(
         types (list[PyObjectType]): Protocol types referenced by generated
             states.
     """
+    # Generated code escapes Python keywords (`global_`); paths use the original names.
+    wire_names: dict[str, str] = getattr(type(obj), "__egui_names__", {})
     for name, o in obj.__dict__.items():
-        full_name = f"{parent}.{name}"
+        full_name = f"{parent}.{wire_names.get(name, name)}"
         if isinstance(o, _StaticBase):
             o._initialize_base(server)
             if isinstance(o, _SignalBase):

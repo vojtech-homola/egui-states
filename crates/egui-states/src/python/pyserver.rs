@@ -438,7 +438,7 @@ impl StateServerCore {
     }
 
     /// Waits for the next change and decodes it, as `(id, value, has_previous,
-    /// previous)`.
+    /// previous)`, or returns `None` once [`Self::signals_close`] was called.
     ///
     /// The replaced value is present only for a `Value` whose registration asked for
     /// it, and is never decoded otherwise. Presence is reported by its own flag rather
@@ -449,8 +449,11 @@ impl StateServerCore {
         &self,
         py: Python<'py>,
         last_id: Option<u64>,
-    ) -> PyResult<(u64, Bound<'py, PyAny>, bool, Option<Bound<'py, PyAny>>)> {
-        let (id, data, previous) = py.detach(|| self.signals.wait_changed_value(last_id));
+    ) -> PyResult<Option<(u64, Bound<'py, PyAny>, bool, Option<Bound<'py, PyAny>>)>> {
+        let Some((id, data, previous)) = py.detach(|| self.signals.wait_changed_value(last_id))
+        else {
+            return Ok(None);
+        };
 
         let parsed = match self.get_values() {
             Ok(values) => match values.signals_types.get(&id) {
@@ -479,7 +482,7 @@ impl StateServerCore {
         match parsed {
             Ok((py_value, py_previous)) => {
                 let has_previous = py_previous.is_some();
-                Ok((id, py_value, has_previous, py_previous))
+                Ok(Some((id, py_value, has_previous, py_previous)))
             }
             Err(error) => {
                 // `id` is blocked until it comes back as the next `last_id`.
@@ -489,6 +492,12 @@ impl StateServerCore {
                 Err(error)
             }
         }
+    }
+
+    /// Makes every current and future `signal_get` return `None`, so that
+    /// callback workers exit. Called when the owning Python server is released.
+    fn signals_close(&self) {
+        self.signals.close();
     }
 
     fn signal_set_to_queue(&self, value_id: u64) {

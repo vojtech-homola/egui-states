@@ -65,6 +65,10 @@ Large numeric buffers and images are split into batches for transport and are
 published to a client handle only after the complete batch is assembled.
 Acknowledgements provide backpressure and release pending server work.
 
+A whole-collection replacement of a `VecState` or `MapState` larger than one
+message is split at item boundaries and applied on the client only after its
+last part arrives. These parts need no acknowledgement.
+
 All keys in an `ImageMulti` share one ordered transfer stream. Sets and updates
 that require multiple messages finish before a later remove or reset is sent;
 controls do not cancel preceding chunks. A disconnect invalidates pending work

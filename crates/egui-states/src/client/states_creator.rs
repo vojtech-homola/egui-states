@@ -187,7 +187,8 @@ impl ValuesList {
         }
     }
 
-    /// Drops acknowledgement duties left over from a closed connection.
+    /// Drops acknowledgement duties and partial transfers left over from a
+    /// closed connection.
     pub(crate) fn disconnected(&self) {
         for value in self.values_take.values() {
             value.disconnected();
@@ -197,6 +198,12 @@ impl ValuesList {
         }
         for data in self.data_multi_take.values() {
             data.disconnected();
+        }
+        for map in self.maps.values() {
+            map.disconnected();
+        }
+        for vec in self.vecs.values() {
+            vec.disconnected();
         }
     }
 
