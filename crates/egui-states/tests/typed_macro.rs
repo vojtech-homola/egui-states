@@ -66,6 +66,13 @@ struct ExistingSerdeDerives {
     value: f32,
 }
 
+#[egui_states::typed]
+#[derive(Debug, PartialEq)]
+#[serde(transparent)]
+struct TransparentWrapper {
+    value: u32,
+}
+
 #[egui_states::typed(rust_derive(Debug, server_macros::CustomDerive))]
 #[derive(Clone, Debug, PartialEq)]
 struct DerivedInner {
@@ -213,6 +220,27 @@ fn typed_attribute_adds_only_missing_serde_derives() {
     assert_round_trip(SerializeOnly { value: true });
     assert_round_trip(DeserializeOnly { value: -7 });
     assert_round_trip(ExistingSerdeDerives { value: 1.25 });
+}
+
+#[test]
+fn typed_attribute_accepts_wire_neutral_transparent_wrapper() {
+    assert_traits::<TransparentWrapper>();
+    assert_eq!(
+        TransparentWrapper::get_type(),
+        ObjectType::Struct(
+            "TransparentWrapper".to_string(),
+            vec![("value".to_string(), ObjectType::U32)],
+        )
+    );
+    for value in [0, 127, 128, u32::MAX] {
+        let wrapper = TransparentWrapper { value };
+        // Peers encode the described single-field struct as the bare field.
+        assert_eq!(
+            postcard::to_stdvec(&wrapper).unwrap(),
+            postcard::to_stdvec(&value).unwrap()
+        );
+        assert_round_trip(wrapper);
+    }
 }
 
 #[test]

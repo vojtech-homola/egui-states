@@ -129,7 +129,10 @@ pub fn state(input: TokenStream) -> TokenStream {
 /// Serde attributes that leave the postcard encoding unchanged. Every other
 /// attribute (`skip`, `flatten`, `untagged`, `with`, ...) would make `Typed`
 /// describe a different wire format than the one Serde produces.
+/// `transparent` qualifies because Serde only accepts it on a struct with a
+/// single field, which postcard encodes exactly like that field.
 const WIRE_NEUTRAL_SERDE_ATTRIBUTES: &[&str] = &[
+    "transparent",
     "rename",
     "rename_all",
     "alias",
