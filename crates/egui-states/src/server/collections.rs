@@ -242,4 +242,29 @@ mod tests {
         assert_eq!(map.remove_item(&1, false).unwrap().as_deref(), Some("one"));
         assert_eq!(map.len(), 1);
     }
+
+    #[test]
+    fn invalid_collection_edits_are_rejected_without_changes() {
+        let server = StateServer::new().unwrap();
+        let values = VecState::<i32>::new(&server, "root.values").unwrap();
+        let map = MapState::<u16, String>::new(&server, "root.map").unwrap();
+
+        values.set(vec![1, 2], false).unwrap();
+        assert!(values.set_item(2, 9, false).is_err());
+        assert!(values.get_item(2).is_err());
+        assert!(values.remove_item(2, false).is_err());
+        assert_eq!(values.get().unwrap(), vec![1, 2]);
+
+        let too_large = "a".repeat(crate::serialization::VALUE_MAX_SIZE + 1);
+        map.set(HashMap::from([(1, String::from("one"))]), false)
+            .unwrap();
+        assert!(map.set_item(2, too_large.clone(), false).is_err());
+        assert!(map.set(HashMap::from([(3, too_large)]), false).is_err());
+        assert_eq!(map.get_item(&9).unwrap(), None);
+        assert_eq!(map.remove_item(&9, false).unwrap(), None);
+        assert_eq!(
+            map.get().unwrap(),
+            HashMap::from([(1, String::from("one"))])
+        );
+    }
 }

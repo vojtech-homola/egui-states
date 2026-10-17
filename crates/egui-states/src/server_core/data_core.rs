@@ -135,7 +135,7 @@ impl Data {
 
         let slice = unsafe { std::slice::from_raw_parts(data.data, data.data_size) };
         let mut w = self.value.write();
-        if index + data.count > w.1 {
+        if index.checked_add(data.count).is_none_or(|end| end > w.1) {
             return Err(format!(
                 "Replace range out of bounds: index {} + data count {} exceeds current size {}",
                 index, data.count, w.1
@@ -177,11 +177,10 @@ impl Data {
         }
 
         let mut w = self.value.write();
-        if index + size > w.1 {
+        if index.checked_add(size).is_none_or(|end| end > w.1) {
             return Err(format!(
-                "Remove range out of bounds: end {} exceeds current size {}",
-                index + size,
-                w.1
+                "Remove range out of bounds: index {} + size {} exceeds current size {}",
+                index, size, w.1
             ));
         }
         let byte_index = index * self.item_size;
@@ -441,7 +440,10 @@ impl DataMulti {
         let value = w
             .get_mut(&index)
             .ok_or_else(|| format!("DataMulti index {} does not exist", index))?;
-        if data_index + data.count > value.1 {
+        if data_index
+            .checked_add(data.count)
+            .is_none_or(|end| end > value.1)
+        {
             return Err(format!(
                 "Replace range out of bounds for DataMulti index {}: data_index {} + data count {} exceeds current size {}",
                 index, data_index, data.count, value.1
@@ -495,7 +497,7 @@ impl DataMulti {
         let value = w
             .get_mut(&index)
             .ok_or_else(|| format!("DataMulti index {} does not exist", index))?;
-        if data_index + size > value.1 {
+        if data_index.checked_add(size).is_none_or(|end| end > value.1) {
             return Err(format!(
                 "Remove range out of bounds for DataMulti index {}: data_index {} + size {} exceeds current size {}",
                 index, data_index, size, value.1
@@ -693,4 +695,167 @@ pub(crate) fn pack_data(
     }
 
     Ok(messages)
+}
+
+#[cfg(all(test, feature = "client"))]
+mod transfer_tests {
+    use super::*;
+    use crate::client::data::{
+        Data as ClientData, DataMulti as ClientMulti, DataMultiMessage, UpdateData, UpdateMultiData,
+    };
+    use crate::client::messages::{MessageSender as ClientSender, MessagesParser, ServerMessage};
+
+    #[test]
+    fn real_numeric_chunks_publish_complete_single_and_sparse_data() {
+        for count in [
+            MSG_SIZE_THRESHOLD / 2 - 1,
+            MSG_SIZE_THRESHOLD / 2,
+            MSG_SIZE_THRESHOLD / 2 + 1,
+            MSG_SIZE_THRESHOLD + 17,
+        ] {
+            let expected: Vec<u16> = (0..count)
+                .map(|i| (i.wrapping_mul(37) % 65521) as u16)
+                .collect();
+            for key in [None, Some(79)] {
+                let (sender, mut receiver) = ClientSender::new();
+                let single = ClientData::<u16>::new("single".into(), 51, sender.clone());
+                let multi = ClientMulti::<u16>::new("multi".into(), 51, sender);
+                // A second transfer demonstrates ACK and reconstruction state are reusable.
+                for pass in 0..2 {
+                    let payload: Vec<u16> =
+                        expected.iter().map(|v| v.wrapping_add(pass * 3)).collect();
+                    let bytes: Vec<u8> = payload.iter().flat_map(|v| v.to_ne_bytes()).collect();
+                    let messages = pack_data(
+                        51,
+                        &bytes,
+                        TransportType::Set(count as u64),
+                        count as u64,
+                        DataType::U16,
+                        key,
+                        true,
+                    )
+                    .unwrap();
+                    let total = messages.len();
+                    assert_eq!(total, bytes.len().div_ceil(MSG_SIZE_THRESHOLD));
+                    for (n, (message, _)) in messages.into_iter().enumerate() {
+                        let (mut parser, message) =
+                            MessagesParser::from_bytes(message.to_bytes()).unwrap();
+                        match message {
+                            ServerMessage::Data(51, repaint, message) => {
+                                assert_eq!(repaint, n + 1 == total);
+                                single.update_data(message).unwrap();
+                            }
+                            ServerMessage::DataMulti(
+                                51,
+                                repaint,
+                                DataMultiMessage::Modify(79, message),
+                            ) => {
+                                assert_eq!(repaint, n + 1 == total);
+                                multi.update(79, message).unwrap();
+                            }
+                            _ => panic!("wrong packed message for key {key:?}, chunk {n}"),
+                        }
+                        assert!(parser.next().unwrap().is_none());
+                        if n + 1 < total {
+                            assert!(receiver.try_recv().is_err(), "ACK before final chunk");
+                            if key.is_none() {
+                                single.read(|v| {
+                                    assert_eq!(
+                                        v,
+                                        if pass == 0 {
+                                            &[][..]
+                                        } else {
+                                            expected.as_slice()
+                                        }
+                                    )
+                                });
+                            } else {
+                                multi.read(79, |v| {
+                                    assert_eq!(
+                                        v,
+                                        if pass == 0 {
+                                            None
+                                        } else {
+                                            Some(expected.as_slice())
+                                        }
+                                    )
+                                });
+                            }
+                        }
+                    }
+                    crate::test_support::ack(&mut receiver, 51);
+                    if key.is_none() {
+                        single.read(|v| assert_eq!(v, payload));
+                    } else {
+                        multi.read(79, |v| assert_eq!(v, Some(payload.as_slice())));
+                    }
+                }
+            }
+        }
+    }
+    /// Chunked `Add` and `Replace` transfers must extend and patch the existing
+    /// data only after their final chunk, like a chunked `Set`.
+    #[test]
+    fn real_numeric_chunks_apply_add_and_replace() {
+        let count = MSG_SIZE_THRESHOLD / 2 + 1;
+        let large: Vec<u16> = (0..count).map(|i| (i % 65521) as u16).collect();
+        let patch: Vec<u16> = large.iter().map(|v| v.wrapping_mul(3)).collect();
+        for key in [None, Some(79)] {
+            let (sender, mut receiver) = ClientSender::new();
+            let single = ClientData::<u16>::new("single".into(), 52, sender.clone());
+            let multi = ClientMulti::<u16>::new("multi".into(), 52, sender);
+            let mut expected = Vec::new();
+            let read = |expected: &[u16]| {
+                if key.is_none() {
+                    single.read(|v| assert!(v == expected, "single data diverged"));
+                } else {
+                    multi.read(79, |v| assert!(v == Some(expected), "keyed data diverged"));
+                }
+            };
+            let operations = [
+                (TransportType::Set(3), vec![7, 8, 9]),
+                (TransportType::Add(count as u64), large.clone()),
+                (TransportType::Replace(2, count as u64), patch.clone()),
+            ];
+            for (transport, values) in operations {
+                let before = expected.clone();
+                match transport {
+                    TransportType::Set(_) => expected = values.clone(),
+                    TransportType::Add(_) => expected.extend(&values),
+                    TransportType::Replace(start, _) => {
+                        let start = start as usize;
+                        expected[start..start + values.len()].copy_from_slice(&values);
+                    }
+                }
+                let bytes: Vec<u8> = values.iter().flat_map(|v| v.to_ne_bytes()).collect();
+                let messages = pack_data(
+                    52,
+                    &bytes,
+                    transport,
+                    values.len() as u64,
+                    DataType::U16,
+                    key,
+                    false,
+                )
+                .unwrap();
+                let total = messages.len();
+                for (n, (message, _)) in messages.into_iter().enumerate() {
+                    let (_, message) = MessagesParser::from_bytes(message.to_bytes()).unwrap();
+                    match message {
+                        ServerMessage::Data(52, _, message) => single.update_data(message).unwrap(),
+                        ServerMessage::DataMulti(52, _, DataMultiMessage::Modify(79, message)) => {
+                            multi.update(79, message).unwrap()
+                        }
+                        _ => panic!("wrong packed message for key {key:?}"),
+                    }
+                    if n + 1 < total {
+                        assert!(receiver.try_recv().is_err(), "ACK before final chunk");
+                        read(&before);
+                    }
+                }
+                crate::test_support::ack(&mut receiver, 52);
+                read(&expected);
+            }
+        }
+    }
 }

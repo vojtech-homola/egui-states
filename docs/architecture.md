@@ -65,6 +65,10 @@ Large numeric buffers and images are split into batches for transport and are
 published to a client handle only after the complete batch is assembled.
 Acknowledgements provide backpressure and release pending server work.
 
+A whole-collection replacement of a `VecState` or `MapState` larger than one
+message is split at item boundaries and applied on the client only after its
+last part arrives. These parts need no acknowledgement.
+
 All keys in an `ImageMulti` share one ordered transfer stream. Sets and updates
 that require multiple messages finish before a later remove or reset is sent;
 controls do not cancel preceding chunks. A disconnect invalidates pending work
@@ -97,3 +101,15 @@ form as a portable file format.
 Server image shapes use `[height, width]`, origins use `[y, x]`, and public
 server inputs may be gray, gray-alpha, RGB, or RGBA. Client textures expose
 egui's `[width, height]` size convention after initialization.
+
+Every image dimension is limited to **65,536 pixels, inclusive**, for both `Image`
+and each entry in `ImageMulti`. Rust and Python inputs, server storage and
+transport packers, and client receive paths enforce the same limit before
+allocating image storage or applying changes. Partial updates must also end
+within that boundary and the existing image. The wire format retains `u32`
+dimensions because 65,536 does not fit in `u16`.
+
+Client `Image::initialize` returns `Result<(), String>` and rejects an oversized
+initial image before creating a texture. Renderer and available-memory limits
+can be smaller than the library limit; the per-side cap does not guarantee that
+a 65,536-square image can be allocated or displayed.

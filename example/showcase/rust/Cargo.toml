@@ -10,7 +10,7 @@ path = "main.rs"
 
 [dependencies]
 egui_states = { path = "../../../crates/egui-states", default-features = false, features = ["server"] }
-tokio = { version = "1.52", features = ["rt", "signal"] }
+tokio = { workspace = true, features = ["rt", "signal"] }
 
 [build-dependencies]
 egui_states = { workspace = true, features = ["build_scripts"] }

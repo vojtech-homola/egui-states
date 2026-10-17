@@ -125,9 +125,5 @@ commit_preprocessors = [
     { pattern = "\\s*\\(#(\\d+)\\)$", replace = " [#$1](https://github.com/vojtech-homola/egui-states/pull/$1)" },
 ]
 
-# [remote.github]
-# owner = "vojtech-homola"
-# repo = "egui-states"
-
 [tool.pytest]
 testpaths = ["tests/python"]

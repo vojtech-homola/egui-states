@@ -3,6 +3,18 @@ use pyo3::types::{PyAny, PyDict};
 
 use crate::typed::ObjectType;
 
+/// Generated bindings escape Python keywords (`from_`) and record the original
+/// names in `__egui_names__`; type hashes must use the original names.
+fn wire_name(owner: &Bound<PyAny>, name: String) -> PyResult<String> {
+    let Some(names) = owner.getattr_opt("__egui_names__")? else {
+        return Ok(name);
+    };
+    match names.cast::<PyDict>()?.get_item(&name)? {
+        Some(wire) => wire.extract(),
+        None => Ok(name),
+    }
+}
+
 pub(crate) enum PyObjectType {
     U8,
     U16,
@@ -86,7 +98,7 @@ impl PyObjectType {
                     .cast::<PyDict>()?
                     .iter()
                     .map(|(name, value)| {
-                        let name = name.extract::<String>()?;
+                        let name = wire_name(enum_type, name.extract::<String>()?)?;
                         let value = value.getattr("value")?.extract::<i32>()?;
                         Ok((name, value))
                     })
@@ -109,8 +121,8 @@ impl PyObjectType {
                     .getattr("__match_args__")?
                     .extract::<Vec<String>>()?;
                 let mut core_elements = Vec::with_capacity(elements.len());
-                for (n, t) in memebers.iter().zip(elements.iter()) {
-                    core_elements.push((n.clone(), t.get_core_type(py)?));
+                for (n, t) in memebers.into_iter().zip(elements.iter()) {
+                    core_elements.push((wire_name(struct_type, n)?, t.get_core_type(py)?));
                 }
 
                 ObjectType::Struct(name, core_elements)
@@ -315,4 +327,65 @@ pub(crate) fn enu(enum_type: Bound<PyAny>) -> PyResult<PyObjectClass> {
     Ok(PyObjectClass {
         object_type: PyObjectType::Enum(obj),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use pyo3::types::PyModule;
+
+    use super::*;
+
+    /// Generated bindings rename keywords (`True_`, `from_`). The type description
+    /// feeds the type hash the client checks, so it must keep the Rust names.
+    #[test]
+    fn escaped_python_names_describe_their_wire_names() {
+        Python::initialize();
+        Python::attach(|py| {
+            let module = PyModule::from_code(
+                py,
+                cr#"
+from dataclasses import dataclass
+from enum import IntEnum
+
+class Keyword(IntEnum):
+    None_ = 0
+    Plain = 1
+    __egui_names__ = {"None_": "None"}
+
+@dataclass
+class Reserved:
+    from_: int
+    plain: bool
+    __egui_names__ = {"from_": "from"}
+"#,
+                c"escaped.py",
+                c"escaped",
+            )
+            .unwrap();
+
+            let keyword = PyObjectType::Enum(module.getattr("Keyword").unwrap().unbind());
+            assert_eq!(
+                keyword.get_core_type(py).unwrap(),
+                ObjectType::Enum(
+                    "Keyword".to_string(),
+                    vec![("None".to_string(), 0), ("Plain".to_string(), 1)]
+                )
+            );
+
+            let reserved = PyObjectType::Class(
+                vec![PyObjectType::U32, PyObjectType::Bool],
+                module.getattr("Reserved").unwrap().unbind(),
+            );
+            assert_eq!(
+                reserved.get_core_type(py).unwrap(),
+                ObjectType::Struct(
+                    "Reserved".to_string(),
+                    vec![
+                        ("from".to_string(), ObjectType::U32),
+                        ("plain".to_string(), ObjectType::Bool)
+                    ]
+                )
+            );
+        });
+    }
 }

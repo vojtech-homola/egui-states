@@ -8,7 +8,7 @@ use egui::{ColorImage, ImageData, TextureHandle};
 
 use crate::client::messages::{ChannelMessage, MessageSender};
 use crate::hashing::NoHashMap;
-use crate::image_transport::ImageType;
+use crate::image_transport::{ImageType, checked_image_bounds, checked_image_bytes};
 
 const TEXTURE_OPTIONS: egui::TextureOptions = egui::TextureOptions {
     magnification: egui::TextureFilter::Nearest,
@@ -54,6 +54,9 @@ impl ImageMessage {
 }
 
 /// A server-controlled RGBA texture used by the egui client.
+///
+/// Each dimension is limited to 65,536 pixels, inclusive; renderer and memory
+/// limits may be smaller.
 ///
 /// Call [`Self::initialize`] once with an egui context before expecting server
 /// image updates to become visible. Updates received before initialization are
@@ -101,22 +104,27 @@ impl Image {
     /// Creates the egui texture with an initial image.
     ///
     /// Call this from the UI before connecting when the server may send an image
-    /// immediately. Subsequent calls are ignored after initialization, even if
-    /// they use a different context or image. The texture uses nearest-neighbor
+    /// immediately. Subsequent valid calls are ignored after initialization, even
+    /// if they use a different context or image. The texture uses nearest-neighbor
     /// filtering and clamps sampling at its edges.
-    pub fn initialize(&self, ctx: &egui::Context, image: ColorImage) {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if either image dimension exceeds 65,536 pixels or its
+    /// RGBA byte count overflows. The renderer may impose a smaller size limit.
+    pub fn initialize(&self, ctx: &egui::Context, image: ColorImage) -> Result<(), String> {
+        checked_image_bytes(image.size, 4)?;
+        let mut w = self.inner.0.write();
+        if w.is_some() {
+            return Ok(());
+        }
         let image_data = ImageData::Color(Arc::new(image));
         let name = format!("image_{}", self.id);
         let texture_handle = ctx.load_texture(name, image_data, TEXTURE_OPTIONS);
 
-        let mut w = self.inner.0.write();
         let size = texture_handle.size();
-        match *w {
-            None => {
-                *w = Some((texture_handle, size));
-            }
-            _ => {}
-        }
+        *w = Some((texture_handle, size));
+        Ok(())
     }
 
     pub(crate) fn set_image(
@@ -129,13 +137,6 @@ impl Image {
             ImageSetMessage::All(size) => {
                 self.inner.1.send(ChannelMessage::Ack(self.id));
                 let image_size = [size[0] as usize, size[1] as usize];
-                if image_type.bytes_per_pixel() * image_size[0] * image_size[1] != data.len() {
-                    return Err(format!(
-                        "Data length does not match expected size: {}",
-                        data.len()
-                    ));
-                }
-
                 let c_image = self.create_c_image(image_size, image_type, data)?;
                 if let Some((ref mut texture_handle, ref mut save_size)) = *self.inner.0.write() {
                     texture_handle.set(c_image, TEXTURE_OPTIONS);
@@ -145,6 +146,7 @@ impl Image {
             ImageSetMessage::Start(size, pixels) => {
                 let pixels = pixels as usize;
                 let size = [size[0] as usize, size[1] as usize];
+                checked_image_bytes(size, 4)?;
                 let mut c_image = ColorImage::filled(size, egui::Color32::WHITE);
                 self.update_c_image(&mut c_image, 0, pixels, data, image_type)?;
                 *self.buffer.lock() = Some((c_image, pixels))
@@ -206,28 +208,22 @@ impl Image {
         let image_size = [rect[2] as usize, rect[3] as usize];
         let origin = [rect[0] as usize, rect[1] as usize];
 
-        if image_type.bytes_per_pixel() * image_size[0] * image_size[1] != data.len() {
-            return Err(format!(
-                "Data length does not match expected size: {}",
-                self.name
-            ));
-        }
-
-        let c_image = self.create_c_image(image_size, image_type, data)?;
-
+        checked_image_bounds(origin, image_size)?;
         let mut w = self.inner.0.write();
+        if let Some((_, save_size)) = w.as_ref() {
+            if origin[0] + image_size[0] > save_size[0] || origin[1] + image_size[1] > save_size[1]
+            {
+                return Err(format!(
+                    "Image is larger than the texture for image: {}",
+                    self.name
+                ));
+            }
+        }
+        let c_image = self.create_c_image(image_size, image_type, data)?;
         if let Some((ref mut texture_handle, ref mut save_size)) = *w {
             if *save_size == image_size && origin == [0, 0] {
                 texture_handle.set(c_image, TEXTURE_OPTIONS);
             } else {
-                if origin[0] + image_size[0] > save_size[0]
-                    || origin[1] + image_size[1] > save_size[1]
-                {
-                    return Err(format!(
-                        "Image is larger than the texture for image: {}",
-                        self.name
-                    ));
-                }
                 texture_handle.set_partial(origin, c_image, TEXTURE_OPTIONS);
             }
         }
@@ -241,15 +237,14 @@ impl Image {
         rgba: [u8; 4],
         data: &[u8],
     ) -> Result<(), String> {
+        self.inner.1.send_ack(self.id);
         if !data.is_empty() {
-            self.inner.1.send_ack(self.id);
             return Err(format!(
                 "Fill message for image {} contains unexpected pixel data",
                 self.name
             ));
         }
         if size[0] == 0 || size[1] == 0 {
-            self.inner.1.send_ack(self.id);
             return Err(format!(
                 "Fill message for image {} contains zero dimensions",
                 self.name
@@ -257,15 +252,7 @@ impl Image {
         }
 
         let image_size = [size[0] as usize, size[1] as usize];
-        if image_size[0].checked_mul(image_size[1]).is_none() {
-            self.inner.1.send_ack(self.id);
-            return Err(format!(
-                "Image dimensions overflow for image: {}",
-                self.name
-            ));
-        }
-
-        self.inner.1.send(ChannelMessage::Ack(self.id));
+        checked_image_bytes(image_size, 4)?;
 
         let [red, green, blue, alpha] = rgba;
         let pixel = egui::Color32::from_rgba_premultiplied(red, green, blue, alpha);
@@ -313,22 +300,7 @@ impl Image {
         image_type: ImageType,
         data: &[u8],
     ) -> Result<ColorImage, String> {
-        if image_type.bytes_per_pixel() * image_size[0] * image_size[1] != data.len() {
-            return Err(format!(
-                "Data length does not match expected size in {}",
-                self.name
-            ));
-        }
-
-        let mut c_image = ColorImage::filled(image_size, egui::Color32::TRANSPARENT);
-        let pixel_count = image_size[0] * image_size[1];
-
-        let data_ptr = data.as_ptr();
-        let image_ptr = c_image.pixels.as_mut_ptr() as *mut u8;
-
-        unsafe { fill_c_image(image_type, data_ptr, image_ptr, pixel_count) }
-
-        Ok(c_image)
+        create_color_image(&self.name, image_size, image_type, data)
     }
 }
 
@@ -349,6 +321,9 @@ struct ImageMultiInner {
 }
 
 /// A server-controlled sparse collection of RGBA textures indexed by `u32` keys.
+///
+/// Each image dimension is limited to 65,536 pixels, inclusive; renderer and
+/// memory limits may be smaller.
 ///
 /// Call [`Self::initialize`] once with an egui context before expecting server
 /// images to become visible. Complete images received for absent keys create
@@ -448,6 +423,7 @@ impl ImageMulti {
             ImageSetMessage::Start(size, pixels) => {
                 let pixels = pixels as usize;
                 let size = [size[0] as usize, size[1] as usize];
+                checked_image_bytes(size, 4)?;
                 let mut image = ColorImage::filled(size, egui::Color32::WHITE);
                 update_color_image(&self.name, &mut image, 0, pixels, data, image_type)?;
                 self.buffers.lock().insert(index, (image, pixels));
@@ -514,7 +490,7 @@ impl ImageMulti {
         self.sender.send_ack(self.id);
         let image_size = [rect[2] as usize, rect[3] as usize];
         let origin = [rect[0] as usize, rect[1] as usize];
-        let image = create_color_image(&self.name, image_size, image_type, data)?;
+        checked_image_bounds(origin, image_size)?;
 
         let mut inner = self.inner.write();
         let (texture, saved_size) = inner.images.get_mut(&index).ok_or_else(|| {
@@ -523,17 +499,16 @@ impl ImageMulti {
                 index, self.name
             )
         })?;
+        if origin[0] + image_size[0] > saved_size[0] || origin[1] + image_size[1] > saved_size[1] {
+            return Err(format!(
+                "Image is larger than the texture for image: {} index {}",
+                self.name, index
+            ));
+        }
+        let image = create_color_image(&self.name, image_size, image_type, data)?;
         if *saved_size == image_size && origin == [0, 0] {
             texture.set(image, TEXTURE_OPTIONS);
         } else {
-            if origin[0] + image_size[0] > saved_size[0]
-                || origin[1] + image_size[1] > saved_size[1]
-            {
-                return Err(format!(
-                    "Image is larger than the texture for image: {} index {}",
-                    self.name, index
-                ));
-            }
             texture.set_partial(origin, image, TEXTURE_OPTIONS);
         }
         Ok(())
@@ -560,15 +535,14 @@ impl ImageMulti {
             ));
         }
         let image_size = [size[0] as usize, size[1] as usize];
-        image_size[0]
-            .checked_mul(image_size[1])
-            .ok_or_else(|| format!("Image dimensions overflow for image: {}", self.name))?;
+        checked_image_bytes(image_size, 4)?;
         let [red, green, blue, alpha] = rgba;
         let pixel = egui::Color32::from_rgba_premultiplied(red, green, blue, alpha);
         self.set_texture(index, ColorImage::filled(image_size, pixel))
     }
 
     fn set_texture(&self, index: u32, image: ColorImage) -> Result<(), String> {
+        checked_image_bytes(image.size, 4)?;
         let mut inner = self.inner.write();
         let size = image.size;
         if let Some((texture, saved_size)) = inner.images.get_mut(&index) {
@@ -641,11 +615,8 @@ fn create_color_image(
     image_type: ImageType,
     data: &[u8],
 ) -> Result<ColorImage, String> {
-    let expected = image_type
-        .bytes_per_pixel()
-        .checked_mul(image_size[0])
-        .and_then(|value| value.checked_mul(image_size[1]))
-        .ok_or_else(|| format!("Image dimensions overflow in {name}"))?;
+    checked_image_bytes(image_size, 4)?;
+    let expected = checked_image_bytes(image_size, image_type.bytes_per_pixel())?;
     if expected != data.len() {
         return Err(format!(
             "Data length does not match expected size in {name}"
@@ -740,6 +711,166 @@ mod tests {
     }
 
     #[test]
+    fn oversized_wire_images_preserve_textures_buffers_and_ack_behavior() {
+        for initialized in [false, true] {
+            let context = egui::Context::default();
+            let (sender, mut receiver) = MessageSender::new();
+            let image = Image::new("image".into(), 1, sender);
+            let (sender, mut multi_receiver) = MessageSender::new();
+            let images = ImageMulti::new("images".into(), 2, sender);
+            if initialized {
+                image
+                    .initialize(&context, ColorImage::filled([1, 1], egui::Color32::BLACK))
+                    .unwrap();
+                images.initialize(&context);
+                images.fill_image(7, [1, 1], [0; 4], &[]).unwrap();
+                assert_single_ack(&mut multi_receiver, 2);
+            }
+            let before = image.get();
+            let multi_before = images.get(7);
+            crate::test_support::texture_updates(&context);
+
+            for size in [[65_537, 1], [1, 65_537]] {
+                for operation in 0..4 {
+                    let result = match operation {
+                        0 => image.set_image(ImageSetMessage::All(size), ImageType::Gray, &[]),
+                        1 => {
+                            image.set_image(ImageSetMessage::Start(size, 1), ImageType::Gray, &[9])
+                        }
+                        2 => image.fill_image(size, [9; 4], &[]),
+                        _ => image.update_image([0, 0, size[0], size[1]], ImageType::Gray, &[]),
+                    };
+                    assert!(result.unwrap_err().contains("65536"));
+                    let result = match operation {
+                        0 => images.set_image(7, ImageSetMessage::All(size), ImageType::Gray, &[]),
+                        1 => images.set_image(
+                            7,
+                            ImageSetMessage::Start(size, 1),
+                            ImageType::Gray,
+                            &[9],
+                        ),
+                        2 => images.fill_image(7, size, [9; 4], &[]),
+                        _ => images.update_image(7, [0, 0, size[0], size[1]], ImageType::Gray, &[]),
+                    };
+                    assert!(result.unwrap_err().contains("65536"));
+                    if operation != 1 {
+                        assert_single_ack(&mut receiver, 1);
+                        assert_single_ack(&mut multi_receiver, 2);
+                    } else {
+                        assert!(receiver.try_recv().is_err());
+                        assert!(multi_receiver.try_recv().is_err());
+                    }
+                    assert_eq!(image.get(), before);
+                    assert_eq!(images.get(7), multi_before);
+                    assert!(image.buffer.lock().is_none());
+                    assert!(images.buffers.lock().is_empty());
+                    assert!(crate::test_support::texture_updates(&context).is_empty());
+                }
+            }
+            for origin in [[65_536, 0], [0, 65_536], [u32::MAX, 0], [0, u32::MAX]] {
+                let rect = [origin[0], origin[1], 1, 1];
+                assert!(image.update_image(rect, ImageType::Gray, &[9]).is_err());
+                assert!(images.update_image(7, rect, ImageType::Gray, &[9]).is_err());
+                assert_single_ack(&mut receiver, 1);
+                assert_single_ack(&mut multi_receiver, 2);
+            }
+            assert_eq!(image.get(), before);
+            assert_eq!(images.get(7), multi_before);
+            assert!(crate::test_support::texture_updates(&context).is_empty());
+        }
+    }
+
+    #[test]
+    fn initialization_and_received_images_accept_the_inclusive_limit() {
+        for size in [[65_536, 1], [1, 65_536]] {
+            let context = egui::Context::default();
+            context.input_mut(|input| input.max_texture_side = 65_536);
+            crate::test_support::texture_updates(&context);
+            let (sender, mut receiver) = MessageSender::new();
+            let image = Image::new("image".into(), 1, sender);
+            let (sender, mut multi_receiver) = MessageSender::new();
+            let images = ImageMulti::new("images".into(), 2, sender);
+
+            let mut oversized = ColorImage::filled([1, 1], egui::Color32::BLACK);
+            oversized.size = [size[0] + 1, size[1] + 1];
+            assert!(
+                image
+                    .initialize(&context, oversized)
+                    .unwrap_err()
+                    .contains("65536")
+            );
+            assert!(image.get().is_none());
+            assert!(crate::test_support::texture_updates(&context).is_empty());
+
+            image
+                .initialize(&context, ColorImage::filled(size, egui::Color32::BLACK))
+                .unwrap();
+            let initial = image.get();
+            image
+                .initialize(
+                    &egui::Context::default(),
+                    ColorImage::filled([1, 1], egui::Color32::WHITE),
+                )
+                .unwrap();
+            assert_eq!(image.get(), initial);
+            images.initialize(&context);
+            let wire_size = [size[0] as u32, size[1] as u32];
+            let data = vec![7; 65_536];
+            image
+                .set_image(ImageSetMessage::All(wire_size), ImageType::Gray, &data)
+                .unwrap();
+            images
+                .set_image(7, ImageSetMessage::All(wire_size), ImageType::Gray, &data)
+                .unwrap();
+            assert_single_ack(&mut receiver, 1);
+            assert_single_ack(&mut multi_receiver, 2);
+
+            image
+                .set_image(ImageSetMessage::Start(wire_size, 1), ImageType::Gray, &[8])
+                .unwrap();
+            images
+                .set_image(
+                    7,
+                    ImageSetMessage::Start(wire_size, 1),
+                    ImageType::Gray,
+                    &[8],
+                )
+                .unwrap();
+            image
+                .set_image(
+                    ImageSetMessage::End(65_535),
+                    ImageType::Gray,
+                    &data[..65_535],
+                )
+                .unwrap();
+            images
+                .set_image(
+                    7,
+                    ImageSetMessage::End(65_535),
+                    ImageType::Gray,
+                    &data[..65_535],
+                )
+                .unwrap();
+            assert_single_ack(&mut receiver, 1);
+            assert_single_ack(&mut multi_receiver, 2);
+
+            image.fill_image(wire_size, [9; 4], &[]).unwrap();
+            images.fill_image(7, wire_size, [9; 4], &[]).unwrap();
+            assert_single_ack(&mut receiver, 1);
+            assert_single_ack(&mut multi_receiver, 2);
+            let rect = [wire_size[0] - 1, wire_size[1] - 1, 1, 1];
+            image.update_image(rect, ImageType::Gray, &[10]).unwrap();
+            images
+                .update_image(7, rect, ImageType::Gray, &[10])
+                .unwrap();
+            assert_single_ack(&mut receiver, 1);
+            assert_single_ack(&mut multi_receiver, 2);
+            assert_eq!(image.get_size(), Some(size));
+            assert_eq!(images.get_size(7), Some(size));
+        }
+    }
+
+    #[test]
     fn invalid_fill_messages_still_ack() {
         let id = 51;
         let (sender, mut receiver) = MessageSender::new();
@@ -819,7 +950,9 @@ mod tests {
         let id = 54;
         let (sender, mut receiver) = MessageSender::new();
         let images = ImageMulti::new("images".to_string(), id, sender);
-        images.initialize(&egui::Context::default());
+        let context = egui::Context::default();
+        images.initialize(&context);
+        crate::test_support::texture_updates(&context);
 
         for index in [2, 7] {
             images
@@ -831,6 +964,9 @@ mod tests {
                 )
                 .unwrap();
         }
+        assert!(images.is_empty(), "unfinished images must not publish");
+        assert!(crate::test_support::texture_updates(&context).is_empty());
+        assert!(receiver.try_recv().is_err());
         images
             .set_image(
                 7,
@@ -840,6 +976,19 @@ mod tests {
             )
             .unwrap();
         assert_single_ack(&mut receiver, id);
+        assert_eq!(images.indices(), vec![7]);
+        let delta = crate::test_support::texture_updates(&context);
+        assert_eq!(delta.len(), 1);
+        let egui::ImageData::Color(pixels) = &delta.values().next().unwrap()[0].image;
+        assert_eq!(pixels.size, [2, 1]);
+        assert_eq!(
+            pixels
+                .pixels
+                .iter()
+                .map(|p| p.to_array())
+                .collect::<Vec<_>>(),
+            [[7, 0, 0, 255], [70, 0, 0, 255]]
+        );
         images
             .set_image(
                 2,
@@ -850,6 +999,18 @@ mod tests {
             .unwrap();
         assert_single_ack(&mut receiver, id);
         assert_eq!(images.indices(), vec![2, 7]);
+        let delta = crate::test_support::texture_updates(&context);
+        assert_eq!(delta.len(), 1);
+        let egui::ImageData::Color(pixels) = &delta.values().next().unwrap()[0].image;
+        assert_eq!(pixels.size, [2, 1]);
+        assert_eq!(
+            pixels
+                .pixels
+                .iter()
+                .map(|p| p.to_array())
+                .collect::<Vec<_>>(),
+            [[2, 0, 0, 255], [20, 0, 0, 255]]
+        );
 
         images
             .set_image(11, ImageSetMessage::Start([2, 1], 1), ImageType::Gray, &[1])

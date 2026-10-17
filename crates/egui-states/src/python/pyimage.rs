@@ -2,7 +2,7 @@ use pyo3::buffer::PyBuffer;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
-use crate::image_transport::ImageType;
+use crate::image_transport::{ImageType, checked_image_bytes};
 use crate::server_core::image_core::ImageData;
 use crate::server_core::image_multi_core::ImageMultiData;
 
@@ -51,6 +51,7 @@ pub(crate) fn image_data(image: &PyBuffer<u8>) -> PyResult<ImageData> {
     let contiguous = image.is_c_contiguous();
     let image_type = check_image_type(shape, strides)?;
     let size = [shape[0], shape[1]];
+    checked_image_bytes(size, 4).map_err(PyValueError::new_err)?;
     if size[0] == 0 || size[1] == 0 {
         return Err(PyValueError::new_err("Image dimensions cannot be zero"));
     }
@@ -82,6 +83,7 @@ pub(crate) fn image_multi_data(image: &PyBuffer<u8>) -> PyResult<ImageMultiData>
     let contiguous = image.is_c_contiguous();
     let image_type = check_image_type(shape, strides)?;
     let size = [shape[0], shape[1]];
+    checked_image_bytes(size, 4).map_err(PyValueError::new_err)?;
     if size[0] == 0 || size[1] == 0 {
         return Err(PyValueError::new_err("Image dimensions cannot be zero"));
     }

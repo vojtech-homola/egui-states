@@ -86,7 +86,7 @@ class StateServerCore:
             with_previous (bool): Whether events should retain the previous
                 value.
         """
-    def signal_get(self, last_id: int | None) -> tuple[int, Any, bool, Any]:
+    def signal_get(self, last_id: int | None) -> tuple[int, Any, bool, Any] | None:
         """Wait for and claim the next callback event.
 
         Args:
@@ -94,9 +94,12 @@ class StateServerCore:
                 which this call releases, or ``None`` on the first call.
 
         Returns:
-            tuple[int, Any, bool, Any]: ``(value_id, value, has_previous,
-                previous)`` for the claimed event.
+            tuple[int, Any, bool, Any] | None: ``(value_id, value, has_previous,
+                previous)`` for the claimed event, or ``None`` after
+                ``signals_close``.
         """
+    def signals_close(self) -> None:
+        """Make every current and future ``signal_get`` return ``None``."""
     def signal_set_to_queue(self, value_id: int) -> None: ...
     def signal_set_to_single(self, value_id: int) -> None: ...
 

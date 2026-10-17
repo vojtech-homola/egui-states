@@ -1,14 +1,12 @@
-use crate::image_transport::ImageType;
+use crate::image_transport::{
+    ImageType, checked_image_bounds, checked_image_bytes, checked_image_shape,
+};
 
 pub(crate) fn checked_image_size(size: [usize; 2]) -> Result<[u32; 2], String> {
+    let [height, width] = checked_image_shape(size)?;
     if size[0] == 0 || size[1] == 0 {
         return Err("Image dimensions cannot be zero".to_string());
     }
-
-    let height = u32::try_from(size[0])
-        .map_err(|_| "Image dimensions exceed protocol limits".to_string())?;
-    let width = u32::try_from(size[1])
-        .map_err(|_| "Image dimensions exceed protocol limits".to_string())?;
 
     Ok([width, height])
 }
@@ -18,31 +16,15 @@ pub(crate) fn checked_image_rect(
     size: [usize; 2],
 ) -> Result<[u32; 4], String> {
     let [width, height] = checked_image_size(size)?;
-    let y = u32::try_from(origin[0])
-        .map_err(|_| "Image coordinates exceed protocol limits".to_string())?;
-    let x = u32::try_from(origin[1])
-        .map_err(|_| "Image coordinates exceed protocol limits".to_string())?;
-    let end_y = origin[0]
-        .checked_add(size[0])
-        .ok_or_else(|| "Image coordinates overflow".to_string())?;
-    let end_x = origin[1]
-        .checked_add(size[1])
-        .ok_or_else(|| "Image coordinates overflow".to_string())?;
-    u32::try_from(end_y)
-        .and_then(|_| u32::try_from(end_x))
-        .map_err(|_| "Image coordinates exceed protocol limits".to_string())?;
+    checked_image_bounds(*origin, size)?;
+    let [y, x] = checked_image_shape(*origin)?;
 
     Ok([x, y, width, height])
 }
 
 pub(crate) fn checked_fill_size(size: [usize; 2]) -> Result<([u32; 2], usize), String> {
     let wire_size = checked_image_size(size)?;
-    let pixels = size[0]
-        .checked_mul(size[1])
-        .ok_or_else(|| "Image dimensions overflow".to_string())?;
-    let rgba_size = pixels
-        .checked_mul(4)
-        .ok_or_else(|| "Image dimensions overflow".to_string())?;
+    let rgba_size = checked_image_bytes(size, 4)?;
 
     Ok((wire_size, rgba_size))
 }

@@ -1,0 +1,33 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Sync new worktree",
+            "type": "process",
+            "command": "uv",
+            "args": ["sync"],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "runOptions": {
+                "runOn": "folderOpen"
+            },
+            "presentation": {
+                "reveal": "silent",
+                "focus": false
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "Build Showcase GUI",
+            "type": "process",
+            "command": "cargo",
+            "args": ["build", "-p", "showcase_gui", "--bin", "showcase-gui"],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "group": "build",
+            "problemMatcher": ["$rustc"]
+        }
+    ]
+}

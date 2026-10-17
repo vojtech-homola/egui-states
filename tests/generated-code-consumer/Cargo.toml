@@ -1,0 +1,109 @@
+[workspace]
+members = ["derive"]
+
+[package]
+name = "egui_states_codegen_probe"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+egui_states = { path = "../../crates/egui-states", features = ["server", "build_scripts"] }
+custom_macros = { path = "derive" }
+
+[build-dependencies]
+egui_states = { path = "../../crates/egui-states", features = ["build_scripts"] }
+
+[features]
+invalid = []
+conflicting = []
+awkward = []
+
+[[bin]]
+name = "codegen-probe"
+path = "src/main.rs"
+
+[[bin]]
+name = "typed-generic"
+path = "src/bin/typed-generic.rs"
+required-features = ["invalid"]
+
+[[bin]]
+name = "typed-tuple"
+path = "src/bin/typed-tuple.rs"
+required-features = ["invalid"]
+
+[[bin]]
+name = "typed-payload-enum"
+path = "src/bin/typed-payload-enum.rs"
+required-features = ["invalid"]
+
+[[bin]]
+name = "typed-union"
+path = "src/bin/typed-union.rs"
+required-features = ["invalid"]
+
+[[bin]]
+name = "typed-option"
+path = "src/bin/typed-option.rs"
+required-features = ["invalid"]
+
+[[bin]]
+name = "typed-duplicate-option"
+path = "src/bin/typed-duplicate-option.rs"
+required-features = ["invalid"]
+
+[[bin]]
+name = "state-generic"
+path = "src/bin/state-generic.rs"
+required-features = ["invalid"]
+
+[[bin]]
+name = "state-empty"
+path = "src/bin/state-empty.rs"
+required-features = ["invalid"]
+
+[[bin]]
+name = "atomic-payload"
+path = "src/bin/atomic-payload.rs"
+required-features = ["invalid"]
+
+[[bin]]
+name = "initial-tuple"
+path = "src/bin/initial-tuple.rs"
+required-features = ["invalid"]
+
+[[bin]]
+name = "atomic-static-payload"
+path = "src/bin/atomic-static-payload.rs"
+required-features = ["invalid"]
+
+[[bin]]
+name = "typed-serde-skip"
+path = "src/bin/typed-serde-skip.rs"
+required-features = ["invalid"]
+
+[[bin]]
+name = "typed-serde-flatten"
+path = "src/bin/typed-serde-flatten.rs"
+required-features = ["invalid"]
+
+[[bin]]
+name = "typed-serde-untagged"
+path = "src/bin/typed-serde-untagged.rs"
+required-features = ["invalid"]
+
+[[bin]]
+name = "typed-discriminant-range"
+path = "src/bin/typed-discriminant-range.rs"
+required-features = ["invalid"]
+
+[[bin]]
+name = "typed-discriminant-expression"
+path = "src/bin/typed-discriminant-expression.rs"
+required-features = ["invalid"]
+
+[[bin]]
+name = "typed-discriminant-overflow"
+path = "src/bin/typed-discriminant-overflow.rs"
+required-features = ["invalid"]

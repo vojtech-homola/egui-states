@@ -340,3 +340,52 @@ unsafe impl AtomicStatic for [f32; 2] {
     #[cfg(not(target_has_atomic = "64"))]
     type Lock = FallbackLock<[f32; 2]>;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn float_storage_preserves_bits_including_signed_zero_and_nan() {
+        let f32_lock = <f32 as Atomic>::Lock::new(0.0);
+        for bits in [0, 0x80000000, 0x7f800000, 0x7fc01234, 1] {
+            f32_lock.store(f32::from_bits(bits));
+            assert_eq!(AtomicLockStatic::<f32>::load(&f32_lock).to_bits(), bits);
+        }
+        let f64_lock = <f64 as Atomic>::Lock::new(0.0);
+        for bits in [
+            0,
+            0x8000000000000000,
+            0x7ff0000000000000,
+            0x7ff8000000001234,
+            1,
+        ] {
+            f64_lock.store(f64::from_bits(bits));
+            assert_eq!(AtomicLockStatic::<f64>::load(&f64_lock).to_bits(), bits);
+        }
+    }
+
+    #[test]
+    fn concurrent_pair_storage_never_tears() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let lock = std::sync::Arc::new(<[f32; 2] as Atomic>::Lock::new([1.0, -1.0]));
+        let writer = lock.clone();
+        let thread = std::thread::spawn(move || {
+            for n in 1..50_000 {
+                let v = n as f32;
+                writer.store([v, -v]);
+            }
+        });
+        for _ in 0..50_000 {
+            let pair: [f32; 2] = lock.load();
+            assert_eq!(pair[0], -pair[1]);
+        }
+        thread.join().unwrap();
+        assert_eq!(
+            AtomicLockStatic::<[f32; 2]>::load(&*lock),
+            [49_999.0, -49_999.0]
+        );
+    }
+}

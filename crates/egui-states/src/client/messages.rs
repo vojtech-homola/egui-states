@@ -92,13 +92,13 @@ impl MessagesSerializer {
             Some(Some(msg)) => {
                 let mut message = FastVec::<64>::new();
                 parse_to_send(msg, &mut message);
-                let mut counter = 0;
+                let mut counter = 1;
                 loop {
                     match self.rx.try_recv() {
                         Ok(Some(msg)) => {
                             counter += 1;
                             parse_to_send(msg, &mut message);
-                            if counter > MAX_MSG_COUNT || message.len() > MSG_SIZE_THRESHOLD {
+                            if counter >= MAX_MSG_COUNT || message.len() > MSG_SIZE_THRESHOLD {
                                 return Some(message);
                             }
                         }
@@ -871,5 +871,195 @@ mod tests {
                 false,
             ),
         )));
+    }
+}
+
+#[cfg(test)]
+mod malformed_tests {
+    use super::*;
+    use crate::client::states_creator::StatesCreatorClient;
+    use crate::{StatesCreator, Typed};
+
+    #[test]
+    fn truncated_headers_payloads_and_later_messages_do_not_hide_valid_updates() {
+        let header = ServerHeader::Value(17, 2, false, 2);
+        let mut full = postcard::to_stdvec(&header).unwrap();
+        full.extend([1, 2]);
+        for length in 0..full.len() {
+            assert!(
+                MessagesParser::from_bytes(Bytes::copy_from_slice(&full[..length])).is_err(),
+                "accepted truncated frame length {length}"
+            );
+        }
+        let mut mixed = full.clone();
+        mixed.push(255);
+        let (mut parser, first) = MessagesParser::from_bytes(mixed.into()).unwrap();
+        assert!(
+            matches!(first, ServerMessage::Value(17, 2, false, ref data) if data.as_ref() == [1, 2])
+        );
+        assert!(parser.next().is_err());
+        assert!(
+            MessagesParser::from_bytes(full.into()).is_ok(),
+            "next frame remains parseable"
+        );
+    }
+
+    #[test]
+    fn invalid_value_type_and_payload_ack_preserve_state_and_allow_recovery() {
+        let (sender, mut receiver) = MessageSender::new();
+        let mut creator = StatesCreatorClient::new(sender.clone(), "root".into());
+        let value: crate::Value<i32> = creator.value("number", 37);
+        let values = creator.get_values();
+        let id = *values.values.keys().next().unwrap();
+        let type_id = <i32 as Typed>::get_type().get_hash();
+        let client = Client::new(None, sender);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        for (kind, payload) in [
+            (type_id.wrapping_add(1), Bytes::from_static(&[0])),
+            (type_id, Bytes::from_static(&[255])),
+        ] {
+            assert!(
+                runtime
+                    .block_on(handle_message(
+                        ServerMessage::Value(id, kind, false, payload),
+                        &values,
+                        &client
+                    ))
+                    .is_err()
+            );
+            assert_eq!(value.get(), 37);
+            crate::test_support::ack(&mut receiver, id);
+        }
+        runtime
+            .block_on(handle_message(
+                ServerMessage::Value(
+                    id,
+                    type_id,
+                    false,
+                    postcard::to_stdvec(&-91i32).unwrap().into(),
+                ),
+                &values,
+                &client,
+            ))
+            .unwrap();
+        assert_eq!(value.get(), -91);
+        crate::test_support::ack(&mut receiver, id);
+    }
+}
+
+#[cfg(test)]
+mod serializer_tests {
+    use super::*;
+    use crate::serialization::{VALUE_MAX_SIZE, WEBSOCKET_MAX_SIZE};
+
+    /// Splits one outgoing frame into its client messages.
+    fn headers(frame: &FastVec<64>) -> Vec<ClientHeader> {
+        let bytes = match frame {
+            FastVec::Heap(data) => data.clone(),
+            FastVec::Stack(data) => data.as_ref().to_vec(),
+        };
+        let mut rest = &bytes[..];
+        let mut headers = Vec::new();
+        while !rest.is_empty() {
+            let (header, after) = postcard::take_from_bytes::<ClientHeader>(rest).unwrap();
+            let payload = match header {
+                ClientHeader::Value(_, _, _, size)
+                | ClientHeader::Signal(_, _, size)
+                | ClientHeader::Message(size) => size as usize,
+                ClientHeader::Ack(_) | ClientHeader::Handshake(..) => 0,
+            };
+            rest = &after[payload..];
+            headers.push(header);
+        }
+        headers
+    }
+
+    fn frames(sender: &MessageSender, serializer: &mut MessagesSerializer) -> Vec<FastVec<64>> {
+        sender.close();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let mut frames = Vec::new();
+        while let Some(frame) = runtime.block_on(serializer.next()) {
+            frames.push(frame);
+        }
+        frames
+    }
+
+    /// Same batching contract as the server: at most `MAX_MSG_COUNT` messages.
+    #[test]
+    fn batches_hold_at_most_max_msg_count_messages_in_order() {
+        let (sender, receiver) = MessageSender::new();
+        let mut serializer = MessagesSerializer::new(receiver);
+        let total = MAX_MSG_COUNT as u64 + 5;
+        for id in 0..total {
+            sender.send_ack(id);
+        }
+        let frames = frames(&sender, &mut serializer);
+        let mut acked = Vec::new();
+        for frame in &frames {
+            let headers = headers(frame);
+            assert!(
+                headers.len() <= MAX_MSG_COUNT,
+                "a frame held {} messages",
+                headers.len()
+            );
+            acked.extend(headers.into_iter().map(|header| match header {
+                ClientHeader::Ack(id) => id,
+                _ => panic!("unexpected message"),
+            }));
+        }
+        assert_eq!(acked, (0..total).collect::<Vec<_>>());
+    }
+
+    /// Values may each be as large as `VALUE_MAX_SIZE`; batching them must not
+    /// produce a frame the server rejects.
+    #[test]
+    fn batches_of_maximum_values_stay_within_the_frame_limit() {
+        let (sender, receiver) = MessageSender::new();
+        let mut serializer = MessagesSerializer::new(receiver);
+        let payload = vec![7u8; VALUE_MAX_SIZE];
+        for id in 0..15 {
+            sender.send(ChannelMessage::Value(
+                id,
+                1,
+                false,
+                FastVec::Heap(payload.clone()),
+            ));
+        }
+        let frames = frames(&sender, &mut serializer);
+        let mut ids = Vec::new();
+        for frame in &frames {
+            assert!(
+                frame.len() <= WEBSOCKET_MAX_SIZE,
+                "frame of {} bytes exceeds the {WEBSOCKET_MAX_SIZE} byte limit",
+                frame.len()
+            );
+            ids.extend(headers(frame).into_iter().map(|header| match header {
+                ClientHeader::Value(id, ..) => id,
+                _ => panic!("unexpected message"),
+            }));
+        }
+        assert_eq!(ids, (0..15).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn close_flushes_queued_messages_and_then_stops() {
+        let (sender, receiver) = MessageSender::new();
+        let mut serializer = MessagesSerializer::new(receiver);
+        sender.send_ack(1);
+        sender.send_message(&"diagnostic".to_string());
+        let frames = frames(&sender, &mut serializer);
+        assert_eq!(frames.len(), 1);
+        assert!(matches!(
+            headers(&frames[0])[..],
+            [ClientHeader::Ack(1), ClientHeader::Message(_)]
+        ));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        assert!(runtime.block_on(serializer.next()).is_none());
     }
 }

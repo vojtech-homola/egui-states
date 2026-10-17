@@ -1,0 +1,5 @@
+[package]
+name = "egui_states_test_process"
+version.workspace = true
+edition.workspace = true
+publish = false

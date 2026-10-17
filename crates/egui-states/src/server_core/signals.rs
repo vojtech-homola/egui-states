@@ -1,7 +1,9 @@
 use std::collections::{VecDeque, hash_map::Entry};
 use std::sync::Arc;
-#[cfg(feature = "server")]
+#[cfg(any(feature = "server", feature = "python"))]
 use std::sync::atomic::AtomicBool;
+#[cfg(feature = "python")]
+use std::sync::atomic::Ordering;
 
 use bytes::Bytes;
 use parking_lot::Mutex;
@@ -48,7 +50,8 @@ impl ChangedInner {
     fn clear(&mut self) {
         self.values.retain(|id, _| *id <= 9);
         self.indexes.retain(|id| *id <= 9);
-        self.blocked_list.retain(|id| *id <= 9);
+        // Keep claimed ids blocked: their callbacks may still be running and are
+        // released when the worker passes the id back.
     }
 
     fn set(&mut self, id: u64, value: Bytes, previous: Option<Bytes>, event: &Event) {
@@ -173,6 +176,8 @@ impl ChangedInner {
 pub(crate) struct SignalsManager {
     event: Event,
     values: Arc<Mutex<ChangedInner>>,
+    #[cfg(feature = "python")]
+    closed: Arc<AtomicBool>,
 }
 
 impl SignalsManager {
@@ -180,6 +185,8 @@ impl SignalsManager {
         Self {
             event: Event::new(),
             values: Arc::new(Mutex::new(ChangedInner::new())),
+            #[cfg(feature = "python")]
+            closed: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -254,17 +261,32 @@ impl SignalsManager {
         self.set(CLIENT_MESSAGE_ID, message);
     }
 
+    /// Blocks until a registered change is available, or returns `None` once
+    /// [`Self::close`] has been called.
     #[cfg(feature = "python")]
     pub(crate) fn wait_changed_value(
         &self,
         mut last_id: Option<u64>,
-    ) -> (u64, Bytes, Option<Bytes>) {
+    ) -> Option<(u64, Bytes, Option<Bytes>)> {
         loop {
-            if let Some(val) = self.values.lock().get(last_id.take()) {
-                return val;
+            if self.closed.load(Ordering::Acquire) {
+                return None;
             }
-            self.event.wait_clear();
+            if let Some(val) = self.values.lock().get(last_id.take()) {
+                return Some(val);
+            }
+            if !self.event.wait_clear_until(&self.closed) {
+                return None;
+            }
         }
+    }
+
+    /// Permanently wakes every waiter in [`Self::wait_changed_value`] and makes
+    /// it return `None`, so the workers waiting on it can exit.
+    #[cfg(feature = "python")]
+    pub(crate) fn close(&self) {
+        self.closed.store(true, Ordering::Release);
+        self.event.set();
     }
 
     #[cfg(feature = "server")]
@@ -328,10 +350,13 @@ impl SignalsManager {
     }
 }
 
-#[cfg(all(test, feature = "python"))]
+#[cfg(test)]
 mod tests {
+    #[cfg(feature = "python")]
     use std::sync::mpsc;
+    #[cfg(feature = "python")]
     use std::thread;
+    #[cfg(feature = "python")]
     use std::time::Duration;
 
     use super::*;
@@ -339,20 +364,24 @@ mod tests {
     /// A caller that fails before passing an id back as `last_id` must not
     /// strand it: `release` is what keeps signals queued behind it reachable.
     #[test]
+    #[cfg(feature = "python")]
     fn release_frees_an_id_that_was_never_passed_back() {
+        if crate::test_support::isolated() {
+            return;
+        }
         let manager = SignalsManager::new();
         manager.set_register(5, true, false);
         manager.set_register(9, true, false);
 
         manager.set(5, Bytes::from_static(b"first"));
-        assert_eq!(manager.wait_changed_value(None).0, 5);
+        assert_eq!(manager.wait_changed_value(None).unwrap().0, 5);
 
         // A second signal for 5 queues silently -- it is blocked, so no wake-up
         // is sent and only 9 is reachable.
         manager.set(5, Bytes::from_static(b"stranded"));
         manager.set(9, Bytes::from_static(b"other"));
         assert_eq!(
-            manager.wait_changed_value(None).0,
+            manager.wait_changed_value(None).unwrap().0,
             9,
             "5 must stay blocked while its holder has not released it"
         );
@@ -365,13 +394,45 @@ mod tests {
         let (sender, receiver) = mpsc::channel();
         let waiter = manager.clone();
         thread::spawn(move || {
-            let _ = sender.send(waiter.wait_changed_value(None).0);
+            let _ = sender.send(waiter.wait_changed_value(None).unwrap().0);
         });
         assert_eq!(
             receiver.recv_timeout(Duration::from_secs(2)).ok(),
             Some(5),
             "the signal queued behind 5 should be reachable again"
         );
+    }
+
+    /// Python workers block here with no other exit; `close` must release every
+    /// one of them, and later calls must not block.
+    #[test]
+    #[cfg(feature = "python")]
+    fn close_releases_blocked_waiters() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let manager = SignalsManager::new();
+        manager.set_register(5, true, false);
+
+        let (sender, receiver) = mpsc::channel();
+        for _ in 0..2 {
+            let waiter = manager.clone();
+            let sender = sender.clone();
+            thread::spawn(move || {
+                let _ = sender.send(waiter.wait_changed_value(None).is_none());
+            });
+        }
+        assert!(receiver.recv_timeout(Duration::from_millis(100)).is_err());
+
+        manager.close();
+        for _ in 0..2 {
+            assert_eq!(
+                receiver.recv_timeout(Duration::from_secs(2)).ok(),
+                Some(true)
+            );
+        }
+        manager.set(5, b("pending"));
+        assert!(manager.wait_changed_value(None).is_none());
     }
 
     /// In single mode changes coalesce, and the consumer only ever learns about the
@@ -386,7 +447,7 @@ mod tests {
         manager.set_with_previous(10, b("b"), b("a"));
         manager.set_with_previous(10, b("c"), b("b"));
 
-        let (id, value, previous) = manager.wait_changed_value(None);
+        let (id, value, previous) = claim(&manager, None);
         assert_eq!(id, 10);
         assert_eq!(value, b("c"));
         assert_eq!(
@@ -406,9 +467,9 @@ mod tests {
         manager.set_with_previous(11, b("c"), b("b"));
 
         // Every queued change is delivered, so the chain is already contiguous.
-        let (_, value, previous) = manager.wait_changed_value(None);
+        let (_, value, previous) = claim(&manager, None);
         assert_eq!((value, previous), (b("b"), Some(b("a"))));
-        let (_, value, previous) = manager.wait_changed_value(Some(11));
+        let (_, value, previous) = claim(&manager, Some(11));
         assert_eq!((value, previous), (b("c"), Some(b("b"))));
     }
 
@@ -424,7 +485,7 @@ mod tests {
         manager.set_with_previous(12, b("c"), b("b"));
         manager.set_to_single(12);
 
-        let (_, value, previous) = manager.wait_changed_value(None);
+        let (_, value, previous) = claim(&manager, None);
         assert_eq!((value, previous), (b("c"), Some(b("a"))));
     }
 
@@ -439,7 +500,7 @@ mod tests {
         manager.set_with_previous(15, b("b"), b("a"));
         manager.set_to_single(15);
 
-        let (_, value, previous) = manager.wait_changed_value(None);
+        let (_, value, previous) = claim(&manager, None);
         assert_eq!((value, previous), (b("b"), Some(b("a"))));
     }
 
@@ -456,7 +517,7 @@ mod tests {
         manager.set_with_previous(16, b("c"), b("b"));
 
         // Coalesced rather than queued, which is what single mode means.
-        let (_, value, previous) = manager.wait_changed_value(None);
+        let (_, value, previous) = claim(&manager, None);
         assert_eq!((value, previous), (b("c"), Some(b("a"))));
         assert!(manager.values.lock().get(Some(16)).is_none());
     }
@@ -470,7 +531,7 @@ mod tests {
         manager.set_register(13, true, false);
 
         manager.set_with_previous(13, b("new"), b("old"));
-        let (_, value, previous) = manager.wait_changed_value(None);
+        let (_, value, previous) = claim(&manager, None);
         assert_eq!(value, b("new"));
         assert_eq!(previous, None);
 
@@ -478,7 +539,7 @@ mod tests {
         // it was kept all along, only masked on the way out.
         manager.set_register(13, true, true);
         manager.set_with_previous(13, b("newer"), b("new"));
-        let (_, value, previous) = manager.wait_changed_value(Some(13));
+        let (_, value, previous) = claim(&manager, Some(13));
         assert_eq!((value, previous), (b("newer"), Some(b("new"))));
     }
 
@@ -489,9 +550,78 @@ mod tests {
         manager.set_register(14, true, true);
 
         manager.set(14, b("fired"));
-        let (_, value, previous) = manager.wait_changed_value(None);
+        let (_, value, previous) = claim(&manager, None);
         assert_eq!(value, b("fired"));
         assert_eq!(previous, None);
+    }
+
+    /// A claimed id stays with its worker until passed back as `last_id`, which is
+    /// what keeps the callbacks of one state from running concurrently.
+    #[test]
+    fn a_claimed_id_is_not_handed_out_again_until_it_is_passed_back() {
+        let manager = SignalsManager::new();
+        manager.set_register(20, true, false);
+
+        manager.set(20, b("first"));
+        assert_eq!(claim(&manager, None).0, 20);
+        manager.set(20, b("second"));
+        assert!(
+            manager.values.lock().get(None).is_none(),
+            "another worker claimed an id that is still running"
+        );
+        let (id, value, _) = claim(&manager, Some(20));
+        assert_eq!((id, value), (20, b("second")));
+    }
+
+    /// A disconnect resets the pending changes, but a worker may still be running
+    /// the callback it claimed before. Unblocking that id lets a second worker run
+    /// the same state's callbacks concurrently.
+    #[test]
+    fn reset_keeps_a_claimed_id_blocked() {
+        let manager = SignalsManager::new();
+        manager.set_register(21, true, false);
+
+        manager.set(21, b("before disconnect"));
+        assert_eq!(claim(&manager, None).0, 21);
+        manager.reset();
+        manager.set(21, b("after reconnect"));
+        assert!(
+            manager.values.lock().get(None).is_none(),
+            "reset released an id whose callback is still running"
+        );
+        let (id, value, _) = claim(&manager, Some(21));
+        assert_eq!((id, value), (21, b("after reconnect")));
+    }
+
+    /// Pins current behavior: a disconnect discards the client's pending changes
+    /// that no callback has claimed yet, but keeps the server's own events.
+    #[test]
+    fn reset_discards_pending_client_changes_and_keeps_system_events() {
+        let manager = SignalsManager::new();
+        manager.set_register(22, true, false);
+        manager.set_register(LOGGING_ID, true, false);
+        manager.set_register(ON_DISCONNECT_ID, true, false);
+
+        manager.set(22, b("pending"));
+        manager.error("logged");
+        manager.on_disconnect();
+        manager.reset();
+
+        let mut claimed = Vec::new();
+        let mut last = None;
+        while let Some((id, _, _)) = manager.values.lock().get(last) {
+            claimed.push(id);
+            last = Some(id);
+        }
+        assert_eq!(claimed, [LOGGING_ID, ON_DISCONNECT_ID]);
+    }
+
+    fn claim(manager: &SignalsManager, last: Option<u64>) -> (u64, Bytes, Option<Bytes>) {
+        manager
+            .values
+            .lock()
+            .get(last)
+            .expect("expected a pending change")
     }
 
     fn b(value: &str) -> Bytes {

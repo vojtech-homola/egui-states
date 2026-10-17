@@ -85,3 +85,33 @@ pub(crate) fn generate_value_id(name: &str) -> u64 {
     name.hash(&mut hasher);
     hasher.finish()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// State ids are computed independently by every peer and by generated
+    /// bindings, so they must not change between releases or toolchains.
+    #[test]
+    fn state_ids_are_stable() {
+        let actual: Vec<_> = ["root", "root.value", "root.nested.state", "root.ünïcødé"]
+            .into_iter()
+            .map(generate_value_id)
+            .collect();
+        assert_eq!(actual, GOLDEN_IDS, "state ids changed: {actual:?}");
+    }
+
+    const GOLDEN_IDS: [u64; 4] = [
+        1439355459928577185,
+        11375068530460040791,
+        946401103240063378,
+        3185887185576548773,
+    ];
+
+    #[test]
+    fn state_ids_avoid_the_reserved_range() {
+        for name in ["", "root", "a", "root.value"] {
+            assert!(generate_value_id(name) > 9, "{name} uses a reserved id");
+        }
+    }
+}

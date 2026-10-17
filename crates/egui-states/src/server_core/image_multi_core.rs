@@ -7,7 +7,8 @@ use parking_lot::{Mutex, MutexGuard, RwLock};
 use crate::event::Event;
 use crate::hashing::NoHashMap;
 use crate::image_transport::{
-    ImageHeader, ImageMultiHeader, ImageSetHeader, ImageType, serialize_image_multi_header,
+    ImageHeader, ImageMultiHeader, ImageSetHeader, ImageType, checked_image_bytes,
+    checked_image_shape, serialize_image_multi_header,
 };
 use crate::serialization::{FastVec, MSG_SIZE_THRESHOLD};
 use crate::server_core::image_core_common::{
@@ -582,6 +583,7 @@ fn pack_fill_data(
     rgba: [u8; 4],
     update: bool,
 ) -> Result<Vec<(FastVec<32>, bool)>, String> {
+    checked_image_shape([size[0] as usize, size[1] as usize])?;
     let message = serialize_image_multi_header(id, index, ImageHeader::Fill(size, rgba, update), 0)
         .map_err(|_| format!("Failed to serialize fill header for image {}", id))?;
     Ok(vec![(message, false)])
@@ -594,6 +596,7 @@ fn pack_set_data(
     update: bool,
 ) -> Result<Vec<(FastVec<32>, bool)>, String> {
     let size = checked_image_size(image.size)?;
+    checked_image_bytes(image.size, 4)?;
     let bytes_line_size = image.size[1] * image.image_type.bytes_per_pixel();
     let bytes_size = image.size[0] * bytes_line_size;
 
@@ -686,6 +689,7 @@ fn pack_update_data(
     update: bool,
 ) -> Result<VecDeque<(FastVec<32>, bool)>, String> {
     let wire_rect = checked_image_rect(origin, image.size)?;
+    checked_image_bytes(image.size, 4)?;
     let bytes_line_size = image.size[1] * image.image_type.bytes_per_pixel();
     let bytes_size = image.size[0] * bytes_line_size;
 
@@ -793,6 +797,44 @@ mod tests {
         assert!(matches!(receiver.try_recv(), Err(TryRecvError::Empty)));
     }
 
+    #[test]
+    fn oversized_images_never_mutate_or_queue_even_when_disconnected() {
+        for connected in [false, true] {
+            let (images, _, mut receiver) = new_image_multi(connected);
+            images.set_all_image(7, [1, 1], [9; 4], false).unwrap();
+            for size in [[65_537, 1], [1, 65_537]] {
+                let data = || image_data(&[], size, ImageType::Gray);
+                for result in [
+                    images.set_image(7, data(), false),
+                    images.set_image(9, data(), false),
+                    images.set_all_image(7, size, [0; 4], false),
+                    images.update_image(7, &[0, 0], data(), false, false),
+                    pack_set_data(1, 7, &data(), false).map(|_| ()),
+                    pack_fill_data(1, 7, [size[0] as u32, size[1] as u32], [0; 4], false)
+                        .map(|_| ()),
+                    pack_update_data(1, 7, &[0, 0], &data(), false).map(|_| ()),
+                ] {
+                    assert!(result.unwrap_err().contains("65536"));
+                }
+            }
+            for origin in [[65_536, 0], [0, 65_536], [usize::MAX, 0]] {
+                let data = image_data(&[0], [1, 1], ImageType::Gray);
+                assert!(images.update_image(7, &origin, data, false, false).is_err());
+                let data = image_data(&[0], [1, 1], ImageType::Gray);
+                assert!(pack_update_data(1, 7, &origin, &data, false).is_err());
+            }
+            assert_eq!(
+                images.get_image(7, |image| image.map(|(data, size)| (data.clone(), *size))),
+                Some((vec![9; 4], [1, 1]))
+            );
+            assert_eq!(images.indices(), vec![7]);
+            assert!(
+                matches!(&images.transfer.state.lock().buffer, Buffer::Set(data) if data.is_empty())
+            );
+            assert_no_message(&mut receiver);
+        }
+    }
+
     fn marker_message(marker: u8) -> FastVec<32> {
         let mut message = FastVec::new();
         message.extend_from_slice(&[marker]);
@@ -819,6 +861,7 @@ mod tests {
         images
             .set_image(4, image_data(&first, [1, 2], ImageType::ColorAlpha), false)
             .unwrap();
+        // Pointer stability is a limited allocation regression, not an allocation counter.
         let allocation = images.inner.read().images[&4].data.as_ptr();
 
         let second = [8, 7, 6, 5, 4, 3, 2, 1];
@@ -826,11 +869,16 @@ mod tests {
             .set_image(4, image_data(&second, [1, 2], ImageType::ColorAlpha), false)
             .unwrap();
         assert_eq!(images.inner.read().images[&4].data.as_ptr(), allocation);
+        assert_eq!(images.get_image(4, |v| v.unwrap().0.clone()), second);
 
         images
             .set_all_image(4, [1, 2], [9, 8, 7, 6], false)
             .unwrap();
         assert_eq!(images.inner.read().images[&4].data.as_ptr(), allocation);
+        assert_eq!(
+            images.get_image(4, |v| v.unwrap().0.clone()),
+            [9, 8, 7, 6].repeat(2)
+        );
     }
 
     #[test]
@@ -856,7 +904,7 @@ mod tests {
                         false,
                     )
                     .unwrap_err()
-                    .contains("protocol limits")
+                    .contains("65536")
             );
             assert!(!images.contains(1));
             assert_no_message(&mut receiver);
@@ -921,7 +969,15 @@ mod tests {
                 ) => assert_eq!(index, expected_index),
                 _ => panic!("unexpected ImageMulti sync header"),
             }
-            assert_eq!(header_size + 4, bytes.len());
+            assert_eq!(
+                &bytes[header_size..],
+                &[
+                    expected_index as u8,
+                    expected_index as u8,
+                    expected_index as u8,
+                    255
+                ]
+            );
         }
         assert_no_message(&mut receiver);
         assert!(!images.transfer.is_idle());
@@ -1017,6 +1073,9 @@ mod tests {
 
     #[test]
     fn cross_key_set_waits_for_every_buffered_update_chunk() {
+        if crate::test_support::isolated() {
+            return;
+        }
         let (images, _, mut receiver) = new_image_multi(true);
         let mut update = VecDeque::from([(marker_message(1), true), (marker_message(2), false)]);
         let lock = images.transfer.lock.lock();
@@ -1040,7 +1099,9 @@ mod tests {
             done_sender.send(result).unwrap();
         });
 
-        started_receiver.recv().unwrap();
+        started_receiver
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
         assert!(matches!(
             done_receiver.recv_timeout(std::time::Duration::from_millis(100)),
             Err(std::sync::mpsc::RecvTimeoutError::Timeout)
@@ -1067,6 +1128,9 @@ mod tests {
 
     #[test]
     fn control_waits_for_every_buffered_update_chunk_without_consuming_idle() {
+        if crate::test_support::isolated() {
+            return;
+        }
         let (images, _, mut receiver) = new_image_multi(true);
         let mut update = VecDeque::from([(marker_message(1), true), (marker_message(2), false)]);
         let lock = images.transfer.lock.lock();
@@ -1088,7 +1152,9 @@ mod tests {
             done_sender.send(()).unwrap();
         });
 
-        started_receiver.recv().unwrap();
+        started_receiver
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
         assert!(matches!(
             done_receiver.recv_timeout(std::time::Duration::from_millis(100)),
             Err(std::sync::mpsc::RecvTimeoutError::Timeout)
@@ -1121,6 +1187,9 @@ mod tests {
 
     #[test]
     fn remove_and_reset_controls_leave_transfer_ready_for_later_sets() {
+        if crate::test_support::isolated() {
+            return;
+        }
         let (images, connected, mut receiver) = new_image_multi(false);
         images
             .set_all_image(1, [1, 1], [1, 1, 1, 255], false)
@@ -1167,6 +1236,9 @@ mod tests {
 
     #[test]
     fn reset_discards_a_set_waiter_from_the_previous_connection() {
+        if crate::test_support::isolated() {
+            return;
+        }
         let (images, connected, mut receiver) = new_image_multi(false);
         images
             .set_all_image(1, [1, 1], [1, 1, 1, 255], false)
@@ -1201,6 +1273,9 @@ mod tests {
     #[test]
     #[cfg(feature = "client")]
     fn force_is_key_scoped_and_cross_key_updates_stay_ordered() {
+        if crate::test_support::isolated() {
+            return;
+        }
         let (images, connected, mut receiver) = new_image_multi(false);
         for index in [1, 2] {
             images

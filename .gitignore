@@ -2,11 +2,9 @@ __pycache__
 /target
 /.venv
 /venv
-/.vscode/settings.json
-.zed/*
-!.zed/debug.json
-!.zed/tasks.json
-/.vscode
+/.vscode/*
+!/.vscode/launch.json
+!/.vscode/tasks.json
 /.tmp
 
 *.pyd
@@ -24,6 +22,6 @@ __pycache__
 
 
 # Generated fixtures and example Python bindings
-/tests/generated/
+/tests/build-artifacts/
 /example/showcase/python/showcase_bindings/
 /example/counter/python/counter_bindings/

@@ -705,10 +705,11 @@ mod tests {
     }
 
     #[test]
-    fn failed_start_does_not_spawn_signal_workers() {
+    fn unfinalized_start_fails_without_spawning_signal_workers() {
         let server = StateServer::new().unwrap();
 
-        assert!(server.start(0, None, None).is_err());
+        let error = server.start(0, None, None).unwrap_err();
+        assert!(error.message().contains("not been finalized"), "{error}");
         assert!(server.inner.workers.lock().is_empty());
     }
 
@@ -734,11 +735,18 @@ mod tests {
 
     #[test]
     fn running_server_stops_when_dropped() {
+        if crate::test_support::isolated() {
+            return;
+        }
         let server = StateServer::new().unwrap();
         server.finalize().unwrap();
-        server.start(0, None, None).unwrap();
-
+        let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        server.start(port, Some(Ipv4Addr::LOCALHOST), None).unwrap();
         drop(server);
+        let _released = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, port))
+            .expect("dropping the last server handle must release its listener");
     }
 
     #[test]
@@ -765,6 +773,9 @@ mod tests {
     #[cfg(feature = "client")]
     #[test]
     fn rust_client_and_server_exchange_values() {
+        if crate::test_support::isolated() {
+            return;
+        }
         let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
         drop(listener);
@@ -809,6 +820,9 @@ mod tests {
     #[cfg(feature = "client")]
     #[test]
     fn stopped_server_restarts_with_new_port_and_token() {
+        if crate::test_support::isolated() {
+            return;
+        }
         let first_listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let second_listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let first_port = first_listener.local_addr().unwrap().port();
@@ -879,7 +893,7 @@ mod tests {
     }
 
     #[test]
-    fn signal_workers_dispatch_and_shutdown() {
+    fn signal_workers_dispatch_callbacks() {
         let mut options = ServerOptions::new();
         options.signal_workers = 3;
         let server = StateServer::with_options(options).unwrap();
@@ -1028,6 +1042,9 @@ mod tests {
 
     #[test]
     fn drop_does_not_block_on_a_worker_stuck_in_a_callback() {
+        if crate::test_support::isolated() {
+            return;
+        }
         let (release_sender, release_receiver) = mpsc::channel::<()>();
         let (entered_sender, entered_receiver) = mpsc::channel::<()>();
 
@@ -1075,6 +1092,9 @@ mod tests {
 
     #[test]
     fn drop_is_prompt_when_workers_are_idle() {
+        if crate::test_support::isolated() {
+            return;
+        }
         let mut options = ServerOptions::new();
         options.signal_workers = 3;
         options.shutdown_timeout = Duration::from_secs(5);
@@ -1092,6 +1112,140 @@ mod tests {
         );
     }
 
+    type Register = fn(&StateServer, &str) -> Result<()>;
+
+    /// One registration per state kind, all sharing the server's id namespace.
+    fn registrations() -> [(&'static str, Register); 12] {
+        use crate::server as s;
+        [
+            ("Value", |sv, n| {
+                s::Value::new(sv, n, 0_i32, false).map(drop)
+            }),
+            ("Static", |sv, n| s::Static::new(sv, n, 0_i32).map(drop)),
+            ("ValueTake", |sv, n| {
+                s::ValueTake::<i32>::new(sv, n).map(drop)
+            }),
+            ("Signal", |sv, n| {
+                s::Signal::<i32>::new(sv, n, false).map(drop)
+            }),
+            ("VecState", |sv, n| s::VecState::<i32>::new(sv, n).map(drop)),
+            ("MapState", |sv, n| {
+                s::MapState::<u8, i32>::new(sv, n).map(drop)
+            }),
+            ("Image", |sv, n| s::Image::new(sv, n).map(drop)),
+            ("ImageMulti", |sv, n| s::ImageMulti::new(sv, n).map(drop)),
+            ("Data", |sv, n| s::Data::<u8>::new(sv, n).map(drop)),
+            ("DataMulti", |sv, n| {
+                s::DataMulti::<u8>::new(sv, n).map(drop)
+            }),
+            ("DataTake", |sv, n| s::DataTake::<u8>::new(sv, n).map(drop)),
+            ("DataMultiTake", |sv, n| {
+                s::DataMultiTake::<u8>::new(sv, n).map(drop)
+            }),
+        ]
+    }
+
+    #[test]
+    fn every_state_kind_is_rejected_after_finalize() {
+        for (kind, register) in registrations() {
+            let server = StateServer::new().unwrap();
+            server.finalize().unwrap();
+            let error = register(&server, "root.late").expect_err(kind);
+            assert!(error.message().contains("finalized"), "{kind}: {error}");
+        }
+    }
+
+    #[test]
+    fn every_state_kind_rejects_a_name_used_by_any_kind() {
+        for (first_kind, first) in registrations() {
+            for (second_kind, second) in registrations() {
+                let server = StateServer::new().unwrap();
+                first(&server, "root.same").unwrap();
+                let error = second(&server, "root.same")
+                    .expect_err(&format!("{second_kind} reused the name of a {first_kind}"));
+                assert!(error.message().contains("already exists"), "{error}");
+            }
+        }
+    }
+
+    /// Reserved ids 0-9 belong to the server's own events.
+    #[test]
+    fn a_state_never_receives_a_reserved_id() {
+        let server = StateServer::new().unwrap();
+        for index in 0..64 {
+            let (id, _) = server
+                .add_signal::<u32>(format!("root.signal_{index}"), false)
+                .unwrap();
+            assert!(id > 9, "root.signal_{index} got reserved id {id}");
+        }
+    }
+
+    #[test]
+    fn panicking_callbacks_and_error_handlers_do_not_stop_the_worker() {
+        let handled = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = handled.clone();
+        let mut options = ServerOptions::new();
+        options.signal_workers = 1;
+        options.error_handler = Some(Arc::new(move |_| {
+            counter.fetch_add(1, Ordering::SeqCst);
+            panic!("error handler failed");
+        }));
+        let server = StateServer::with_options(options).unwrap();
+        let (id, signal) = server
+            .add_signal::<u32>("root.signal".to_string(), true)
+            .unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let _handle = server.add_typed_callback(id, move |value: u32| {
+            sender.send(value).unwrap();
+            if value < 3 {
+                panic!("callback failed");
+            }
+        });
+
+        server.start_signal_workers();
+        for value in 1..=3_u32 {
+            signal.set(serialize_bytes(&value).unwrap());
+        }
+        let received: Vec<_> = (0..3)
+            .map(|_| receiver.recv_timeout(Duration::from_secs(5)).unwrap())
+            .collect();
+        assert_eq!(received, [1, 2, 3]);
+        assert_eq!(handled.load(Ordering::SeqCst), 2);
+    }
+
+    /// Callbacks of one state run one at a time and in order, even when other
+    /// workers are idle.
+    #[test]
+    fn callbacks_for_one_state_never_overlap_and_stay_ordered() {
+        let mut options = ServerOptions::new();
+        options.signal_workers = 3;
+        let server = StateServer::with_options(options).unwrap();
+        let value = crate::server::Value::new(&server, "root.value", 0_u32, true).unwrap();
+        let running = Arc::new(AtomicBool::new(false));
+        let overlapped = Arc::new(AtomicBool::new(false));
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let (flag, overlap, record) = (running.clone(), overlapped.clone(), seen.clone());
+        let _handle = value.connect(move |new: u32| {
+            if flag.swap(true, Ordering::SeqCst) {
+                overlap.store(true, Ordering::SeqCst);
+            }
+            thread::sleep(Duration::from_millis(1));
+            record.lock().push(new);
+            flag.store(false, Ordering::SeqCst);
+        });
+
+        server.start_signal_workers();
+        for new in 1..=40 {
+            value.set_signal(new, false).unwrap();
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while seen.lock().len() < 40 && std::time::Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(!overlapped.load(Ordering::SeqCst), "callbacks overlapped");
+        assert_eq!(*seen.lock(), (1..=40).collect::<Vec<_>>());
+    }
+
     #[test]
     fn deserialize_rejects_trailing_bytes() {
         let mut data = serialize_bytes(&12_u16).unwrap().to_vec();
@@ -1101,5 +1255,751 @@ mod tests {
             deserialize_bytes::<u16>(&data).unwrap_err().message(),
             "deserialized value did not consume all bytes"
         );
+    }
+}
+
+#[cfg(all(test, feature = "client"))]
+mod wire_tests {
+    use super::*;
+    use crate::serialization::{ClientHeader, ServerHeader};
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+
+    async fn peer(port: u16, header: ClientHeader, valid: bool) {
+        let stream = tokio::net::TcpStream::connect((Ipv4Addr::LOCALHOST, port))
+            .await
+            .unwrap();
+        let (mut ws, _) = tokio_tungstenite::client_async(format!("ws://127.0.0.1:{port}"), stream)
+            .await
+            .unwrap();
+        ws.send(Message::Binary(
+            postcard::to_stdvec(&header).unwrap().into(),
+        ))
+        .await
+        .unwrap();
+        let response = ws.next().await;
+        if valid {
+            let Some(Ok(Message::Binary(bytes))) = response else {
+                panic!("valid handshake did not synchronize");
+            };
+            let (header, offset) = ServerHeader::deserialize(&bytes).unwrap();
+            match header {
+                ServerHeader::Value(_, _, false, length) => {
+                    assert_eq!(
+                        postcard::from_bytes::<i32>(&bytes[offset..offset + length as usize])
+                            .unwrap(),
+                        731
+                    );
+                }
+                _ => panic!("non-default state missing from sync"),
+            }
+            ws.close(None).await.unwrap();
+        } else {
+            assert!(
+                !matches!(response, Some(Ok(Message::Binary(_)))),
+                "rejected client received synchronization"
+            );
+        }
+    }
+
+    #[test]
+    fn rejected_handshakes_recover_and_start_restart_preserve_credentials() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let server = StateServer::with_options(ServerOptions {
+            version: Some(17),
+            ..Default::default()
+        })
+        .unwrap();
+        let _value = crate::server::Value::new(&server, "root.value", 731i32, false).unwrap();
+        server.finalize().unwrap();
+        server
+            .start(port, Some(Ipv4Addr::LOCALHOST), Some("first".into()))
+            .unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .build()
+            .unwrap();
+        let good =
+            || ClientHeader::Handshake(crate::PROTOCOL_VERSION, Some(17), Some("first".into()));
+        runtime.block_on(async {
+            for bad in [
+                ClientHeader::Ack(1),
+                ClientHeader::Handshake(0, Some(17), Some("first".into())),
+                ClientHeader::Handshake(
+                    crate::PROTOCOL_VERSION + 1,
+                    Some(17),
+                    Some("first".into()),
+                ),
+                ClientHeader::Handshake(crate::PROTOCOL_VERSION, None, Some("first".into())),
+                ClientHeader::Handshake(crate::PROTOCOL_VERSION, Some(18), Some("first".into())),
+                ClientHeader::Handshake(crate::PROTOCOL_VERSION, Some(17), None),
+                ClientHeader::Handshake(crate::PROTOCOL_VERSION, Some(17), Some("wrong".into())),
+            ] {
+                peer(port, bad, false).await;
+                peer(port, good(), true).await;
+            }
+            // A repeated start cannot change the original address or token.
+            let occupied = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+            server
+                .start(
+                    occupied.local_addr().unwrap().port(),
+                    Some(Ipv4Addr::LOCALHOST),
+                    Some("ignored".into()),
+                )
+                .unwrap();
+            peer(
+                port,
+                ClientHeader::Handshake(crate::PROTOCOL_VERSION, Some(17), Some("ignored".into())),
+                false,
+            )
+            .await;
+            peer(port, good(), true).await;
+        });
+        server.stop();
+        server
+            .start(port, Some(Ipv4Addr::LOCALHOST), Some("second".into()))
+            .unwrap();
+        runtime.block_on(async {
+            peer(port, good(), false).await;
+            peer(
+                port,
+                ClientHeader::Handshake(crate::PROTOCOL_VERSION, Some(17), Some("second".into())),
+                true,
+            )
+            .await;
+        });
+        server.stop();
+    }
+
+    #[test]
+    fn connection_message_and_disconnection_callbacks_follow_socket_events() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let server = StateServer::new().unwrap();
+        server.finalize().unwrap();
+        let (tx, rx) = mpsc::channel();
+        let connect = tx.clone();
+        let _on_connect = server.on_connect(move |address| {
+            assert!(address.starts_with("127.0.0.1:"));
+            connect.send("connect".to_string()).unwrap();
+        });
+        let message = tx.clone();
+        let _on_message = server.on_client_message(move |value| {
+            message.send(value).unwrap();
+        });
+        let _on_disconnect = server.on_disconnect(move || {
+            tx.send("disconnect".into()).unwrap();
+        });
+        server.start(port, Some(Ipv4Addr::LOCALHOST), None).unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let stream = tokio::net::TcpStream::connect((Ipv4Addr::LOCALHOST, port))
+                .await
+                .unwrap();
+            let (mut ws, _) =
+                tokio_tungstenite::client_async(format!("ws://127.0.0.1:{port}"), stream)
+                    .await
+                    .unwrap();
+            ws.send(Message::Binary(
+                postcard::to_stdvec(&ClientHeader::Handshake(
+                    crate::PROTOCOL_VERSION,
+                    None,
+                    None,
+                ))
+                .unwrap()
+                .into(),
+            ))
+            .await
+            .unwrap();
+            assert!(matches!(ws.next().await, Some(Ok(Message::Binary(_)))));
+            assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), "connect");
+            let payload = postcard::to_stdvec("client diagnostic 🦀").unwrap();
+            let mut bytes =
+                postcard::to_stdvec(&ClientHeader::Message(payload.len() as u32)).unwrap();
+            bytes.extend(payload);
+            ws.send(Message::Binary(bytes.into())).await.unwrap();
+            assert_eq!(
+                rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+                "client diagnostic 🦀"
+            );
+            ws.close(None).await.unwrap();
+        });
+        assert_eq!(
+            rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+            "disconnect"
+        );
+        assert!(rx.try_recv().is_err());
+        server.stop();
+    }
+}
+
+#[cfg(all(test, feature = "client"))]
+mod connection_tests {
+    use std::net::TcpStream;
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+
+    use super::*;
+    use crate::serialization::{ClientHeader, ServerHeader, VALUE_MAX_SIZE};
+    use crate::{ClientBuilder, ConnectionState};
+    use tokio_tungstenite::tungstenite::{self, Message};
+
+    struct ClientTestState {
+        value: crate::Value<i32>,
+    }
+
+    impl crate::State for ClientTestState {
+        const NAME: &'static str = "ClientTestState";
+
+        fn new(c: &mut impl crate::StatesCreator) -> Self {
+            Self {
+                value: c.value("value", 0),
+            }
+        }
+    }
+
+    struct CollectionTestState {
+        items: crate::VecState<String>,
+        entries: crate::MapState<u32, String>,
+    }
+
+    impl crate::State for CollectionTestState {
+        const NAME: &'static str = "CollectionTestState";
+
+        fn new(c: &mut impl crate::StatesCreator) -> Self {
+            Self {
+                items: c.vec("items"),
+                entries: c.map("entries"),
+            }
+        }
+    }
+
+    fn free_port() -> u16 {
+        std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port()
+    }
+
+    fn wait(label: &str, mut condition: impl FnMut() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !condition() {
+            assert!(Instant::now() < deadline, "timed out: {label}");
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// A server with one `i32` value, started on a free port.
+    fn server(
+        options: ServerOptions,
+        token: Option<&str>,
+    ) -> (StateServer, crate::server::Value<i32>, u16) {
+        let port = free_port();
+        let server = StateServer::with_options(options).unwrap();
+        let value = crate::server::Value::new(&server, "root.value", 731_i32, false).unwrap();
+        server.finalize().unwrap();
+        server
+            .start(port, Some(Ipv4Addr::LOCALHOST), token.map(str::to_owned))
+            .unwrap();
+        (server, value, port)
+    }
+
+    enum Event {
+        Frame(Vec<(ServerHeader, Vec<u8>)>),
+        Closed,
+        Silent,
+    }
+
+    /// Splits a server frame into its messages and their payloads.
+    fn messages(bytes: &[u8]) -> Vec<(ServerHeader, Vec<u8>)> {
+        let mut rest = bytes;
+        let mut messages = Vec::new();
+        while !rest.is_empty() {
+            let (header, size) = ServerHeader::deserialize(rest).unwrap();
+            let payload = match &header {
+                ServerHeader::Value(.., length) | ServerHeader::Static(.., length) => {
+                    *length as usize
+                }
+                ServerHeader::ValueVec(.., length) => *length as usize,
+                ServerHeader::Update(_) => 0,
+                _ => panic!("unexpected message kind in a connection test"),
+            };
+            messages.push((header, rest[size..size + payload].to_vec()));
+            rest = &rest[size + payload..];
+        }
+        messages
+    }
+
+    /// A raw synchronous WebSocket peer speaking the client protocol.
+    struct Peer(tungstenite::WebSocket<TcpStream>);
+
+    impl Peer {
+        fn connect(port: u16, token: Option<&str>) -> Self {
+            let stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
+            let (socket, _) =
+                tungstenite::client(format!("ws://127.0.0.1:{port}"), stream).unwrap();
+            socket
+                .get_ref()
+                .set_read_timeout(Some(Duration::from_millis(20)))
+                .unwrap();
+            let mut peer = Self(socket);
+            let handshake =
+                ClientHeader::Handshake(crate::PROTOCOL_VERSION, None, token.map(str::to_owned));
+            peer.send(handshake, &[]);
+            peer
+        }
+
+        fn send(&mut self, header: ClientHeader, payload: &[u8]) {
+            let mut bytes = postcard::to_stdvec(&header).unwrap();
+            bytes.extend(payload);
+            self.0.send(Message::Binary(bytes.into())).unwrap();
+        }
+
+        fn next(&mut self, within: Duration) -> Event {
+            let deadline = Instant::now() + within;
+            loop {
+                match self.0.read() {
+                    Ok(Message::Binary(bytes)) => return Event::Frame(messages(&bytes)),
+                    Ok(Message::Close(_)) => return Event::Closed,
+                    Ok(_) => {}
+                    Err(tungstenite::Error::Io(error))
+                        if matches!(
+                            error.kind(),
+                            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                        ) =>
+                    {
+                        if Instant::now() >= deadline {
+                            return Event::Silent;
+                        }
+                    }
+                    Err(_) => return Event::Closed,
+                }
+            }
+        }
+
+        /// Reads frames until one holds a message matching `found`.
+        fn wait_for(&mut self, label: &str, mut found: impl FnMut(&ServerHeader, &[u8]) -> bool) {
+            loop {
+                match self.next(Duration::from_secs(5)) {
+                    Event::Frame(messages) => {
+                        if messages
+                            .iter()
+                            .any(|(header, payload)| found(header, payload))
+                        {
+                            return;
+                        }
+                    }
+                    Event::Closed => panic!("{label}: connection closed"),
+                    Event::Silent => panic!("{label}: no message within 5s"),
+                }
+            }
+        }
+
+        fn wait_for_value(&mut self, expected: i32) {
+            self.wait_for(&format!("value {expected}"), |header, payload| {
+                matches!(header, ServerHeader::Value(..))
+                    && postcard::from_bytes::<i32>(payload).unwrap() == expected
+            });
+        }
+
+        fn close(mut self) {
+            let _ = self.0.close(None);
+            while !matches!(
+                self.next(Duration::from_secs(5)),
+                Event::Closed | Event::Silent
+            ) {}
+        }
+    }
+
+    #[test]
+    fn a_second_client_takes_over_the_connection() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let (server, value, port) = server(ServerOptions::new(), None);
+        let mut first = Peer::connect(port, None);
+        first.wait_for_value(731);
+
+        let mut second = Peer::connect(port, None);
+        second.wait_for_value(731);
+        assert!(
+            matches!(first.next(Duration::from_secs(5)), Event::Closed),
+            "the replaced client stayed connected"
+        );
+
+        value.set(5, false).unwrap();
+        second.wait_for_value(5);
+        assert!(server.is_connected());
+        server.stop();
+    }
+
+    #[test]
+    fn a_rejected_client_does_not_disturb_the_connected_one() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let (server, value, port) = server(ServerOptions::new(), Some("secret"));
+        let mut accepted = Peer::connect(port, Some("secret"));
+        accepted.wait_for_value(731);
+
+        let mut rejected = Peer::connect(port, Some("wrong"));
+        assert!(
+            matches!(rejected.next(Duration::from_secs(5)), Event::Closed),
+            "a rejected client must be closed without data"
+        );
+
+        value.set(6, false).unwrap();
+        accepted.wait_for_value(6);
+        assert!(server.is_connected());
+        server.stop();
+    }
+
+    #[test]
+    fn repaint_requests_reach_the_client() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let (server, _value, port) = server(ServerOptions::new(), None);
+        let mut peer = Peer::connect(port, None);
+        // Every synchronization ends with an immediate repaint.
+        peer.wait_for(
+            "initial repaint",
+            |header, _| matches!(header, ServerHeader::Update(delay) if *delay == 0.0),
+        );
+
+        server.update(Some(0.5)).unwrap();
+        peer.wait_for(
+            "delayed repaint",
+            |header, _| matches!(header, ServerHeader::Update(delay) if *delay == 0.5),
+        );
+        server.update(None).unwrap();
+        peer.wait_for(
+            "immediate repaint",
+            |header, _| matches!(header, ServerHeader::Update(delay) if *delay == 0.0),
+        );
+        server.stop();
+    }
+
+    #[test]
+    fn disconnect_client_keeps_the_server_listening() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let (server, _value, port) = server(ServerOptions::new(), None);
+        let mut first = Peer::connect(port, None);
+        first.wait_for_value(731);
+
+        server.disconnect_client();
+        assert!(matches!(first.next(Duration::from_secs(5)), Event::Closed));
+        wait("disconnect", || !server.is_connected());
+        assert!(server.is_running());
+
+        let mut second = Peer::connect(port, None);
+        second.wait_for_value(731);
+        server.stop();
+    }
+
+    #[test]
+    fn rejected_handshakes_are_logged_as_warnings_only() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let port = free_port();
+        let server = StateServer::new().unwrap();
+        server.finalize().unwrap();
+        let logging = crate::server::LoggingSignal::new(&server);
+        let (warnings, warning) = mpsc::channel();
+        let (errors, error) = mpsc::channel();
+        let _warnings = logging.add_logger(crate::server::LogLevel::Warning, move |message| {
+            let _ = warnings.send(message);
+        });
+        let _errors = logging.add_logger(crate::server::LogLevel::Error, move |message| {
+            let _ = errors.send(message);
+        });
+        server
+            .start(port, Some(Ipv4Addr::LOCALHOST), Some("secret".into()))
+            .unwrap();
+
+        let mut rejected = Peer::connect(port, Some("wrong"));
+        assert!(matches!(
+            rejected.next(Duration::from_secs(5)),
+            Event::Closed
+        ));
+        let message = warning.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(message.contains("wrong token"), "{message}");
+        assert!(
+            error.recv_timeout(Duration::from_millis(200)).is_err(),
+            "a rejected handshake is not a server error"
+        );
+        server.stop();
+    }
+
+    /// A disconnect resets pending signals while a worker may still be running a
+    /// callback; the next connection must not start the same state's callback on
+    /// a second worker before that one returns.
+    #[test]
+    fn callbacks_for_one_state_do_not_overlap_across_a_reconnect() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let port = free_port();
+        let server = StateServer::new().unwrap();
+        let signal = crate::server::Signal::<i32>::new(&server, "root.signal", true).unwrap();
+        server.finalize().unwrap();
+        server.start(port, Some(Ipv4Addr::LOCALHOST), None).unwrap();
+
+        let (entered_sender, entered) = mpsc::channel();
+        let (release, released) = mpsc::channel::<()>();
+        let released = Mutex::new(released);
+        let running = Arc::new(AtomicBool::new(false));
+        let overlapped = Arc::new(AtomicBool::new(false));
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let (flag, overlap, record) = (running.clone(), overlapped.clone(), seen.clone());
+        let _handle = signal.connect(move |value: i32| {
+            if flag.swap(true, Ordering::SeqCst) {
+                overlap.store(true, Ordering::SeqCst);
+            }
+            record.lock().push(value);
+            if value == 1 {
+                entered_sender.send(()).unwrap();
+                let _ = released.lock().recv_timeout(Duration::from_secs(5));
+            }
+            flag.store(false, Ordering::SeqCst);
+        });
+
+        let id = crate::hashing::generate_value_id("root.signal");
+        let type_id = <i32 as Typed>::get_type().get_hash();
+        let send = |peer: &mut Peer, value: i32| {
+            let payload = postcard::to_stdvec(&value).unwrap();
+            peer.send(
+                ClientHeader::Signal(id, type_id, payload.len() as u32),
+                &payload,
+            );
+        };
+        let initial_repaint =
+            |header: &ServerHeader, _: &[u8]| matches!(header, ServerHeader::Update(_));
+
+        let mut first = Peer::connect(port, None);
+        first.wait_for("first connection", initial_repaint);
+        send(&mut first, 1);
+        entered.recv_timeout(Duration::from_secs(5)).unwrap();
+        first.close();
+        wait("first disconnect", || !server.is_connected());
+        thread::sleep(Duration::from_millis(50));
+
+        let mut second = Peer::connect(port, None);
+        second.wait_for("second connection", initial_repaint);
+        send(&mut second, 2);
+        thread::sleep(Duration::from_millis(300));
+        let early = seen.lock().clone();
+        let overlapped_early = overlapped.load(Ordering::SeqCst);
+        let _ = release.send(());
+
+        wait("second callback", || seen.lock().len() == 2);
+        assert!(
+            !overlapped_early && early == [1],
+            "the second callback started while the first was still running: {early:?}"
+        );
+        assert!(!overlapped.load(Ordering::SeqCst));
+        assert_eq!(*seen.lock(), [1, 2]);
+        server.stop();
+    }
+
+    /// `Connected` means the server accepted the handshake, not merely that the
+    /// handshake was sent. This peer reads the handshake and never answers.
+    #[test]
+    fn client_reports_connected_only_after_the_server_accepts() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let received = Arc::new(AtomicBool::new(false));
+        let handshake_received = received.clone();
+        let silent_server = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut socket = tungstenite::accept(stream).unwrap();
+            let _handshake = socket.read();
+            handshake_received.store(true, Ordering::SeqCst);
+            thread::sleep(Duration::from_secs(1));
+        });
+
+        let (_state, client) = ClientBuilder::<ClientTestState>::new().build(port);
+        let mut connected = false;
+        // Repeat the request until the handshake arrives, then keep watching.
+        let mut deadline = Instant::now() + Duration::from_secs(5);
+        let mut watching = false;
+        while Instant::now() < deadline && !connected {
+            if !watching {
+                client.connect();
+                if received.load(Ordering::SeqCst) {
+                    watching = true;
+                    deadline = Instant::now() + Duration::from_millis(500);
+                }
+            }
+            connected |= client.get_state() == ConnectionState::Connected;
+            thread::sleep(Duration::from_millis(1));
+        }
+        client.disconnect();
+        silent_server.join().unwrap();
+        assert!(watching, "the client never sent its handshake");
+        assert!(
+            !connected,
+            "client reported Connected before the server accepted it"
+        );
+    }
+
+    /// A connection request made before the background task starts waiting
+    /// must not be lost.
+    #[test]
+    fn connect_requested_right_after_build_is_not_lost() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let (server, _value, port) = server(ServerOptions::new(), None);
+        let (state, client) = ClientBuilder::<ClientTestState>::new().build(port);
+        client.connect();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while state.value.get() != 731 && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(
+            state.value.get(),
+            731,
+            "the single connect request was lost"
+        );
+        client.disconnect();
+        server.stop();
+    }
+
+    /// Pins current behavior: writes made while disconnected are discarded, and
+    /// the reconnect synchronization restores the server's value.
+    #[test]
+    fn writes_made_while_disconnected_are_replaced_by_the_server_value() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let port = free_port();
+        let server = StateServer::new().unwrap();
+        let value = crate::server::Value::new(&server, "root.value", 7_i32, false).unwrap();
+        server.finalize().unwrap();
+        let (sender, received) = mpsc::channel();
+        let _handle = value.connect(move |new| {
+            let _ = sender.send(new);
+        });
+        server.start(port, Some(Ipv4Addr::LOCALHOST), None).unwrap();
+
+        let (state, client) = ClientBuilder::<ClientTestState>::new().build(port);
+        wait("first connection", || {
+            client.connect();
+            server.is_connected() && state.value.get() == 7
+        });
+        server.stop();
+        wait("client disconnect", || {
+            client.get_state() != ConnectionState::Connected
+        });
+
+        state.value.set_signal(99);
+        server.start(port, Some(Ipv4Addr::LOCALHOST), None).unwrap();
+        wait("reconnection", || {
+            client.connect();
+            server.is_connected() && state.value.get() == 7
+        });
+        thread::sleep(Duration::from_millis(200));
+        assert!(
+            received.try_recv().is_err(),
+            "an offline write reached the server"
+        );
+        assert_eq!(value.get().unwrap(), 7);
+        client.disconnect();
+        server.stop();
+    }
+
+    /// Items are limited to `VALUE_MAX_SIZE` each, but a full replacement is one
+    /// message; a large collection must still reach the client.
+    #[test]
+    fn a_collection_larger_than_one_frame_reaches_the_client() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let port = free_port();
+        let server = StateServer::new().unwrap();
+        let items = crate::server::VecState::<String>::new(&server, "root.items").unwrap();
+        server.finalize().unwrap();
+        server.start(port, Some(Ipv4Addr::LOCALHOST), None).unwrap();
+
+        let (state, client) = ClientBuilder::<CollectionTestState>::new().build(port);
+        wait("connection", || {
+            client.connect();
+            server.is_connected()
+        });
+        items
+            .set(vec!["x".repeat(VALUE_MAX_SIZE - 8); 13], false)
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while state.items.read(Vec::len) != 13 && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            state.items.read(Vec::len),
+            13,
+            "client state: {:?}",
+            client.get_state() == ConnectionState::Connected
+        );
+        client.disconnect();
+        server.stop();
+    }
+
+    /// Like [`a_collection_larger_than_one_frame_reaches_the_client`], for a map
+    /// that is already set when the client connects, so the initial sync is split.
+    #[test]
+    fn a_map_larger_than_one_frame_is_synced_to_the_client() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let port = free_port();
+        let server = StateServer::new().unwrap();
+        let entries = crate::server::MapState::<u32, String>::new(&server, "root.entries").unwrap();
+        server.finalize().unwrap();
+        entries
+            .set(
+                (0..13)
+                    .map(|key| (key, "x".repeat(VALUE_MAX_SIZE - 16)))
+                    .collect(),
+                false,
+            )
+            .unwrap();
+        server.start(port, Some(Ipv4Addr::LOCALHOST), None).unwrap();
+
+        let (state, client) = ClientBuilder::<CollectionTestState>::new().build(port);
+        wait("connection", || {
+            client.connect();
+            server.is_connected()
+        });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while state.entries.read(|map| map.len()) != 13 && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(state.entries.read(|map| map.len()), 13);
+        assert!(
+            state
+                .entries
+                .read(|map| map.values().all(|v| v.len() == VALUE_MAX_SIZE - 16))
+        );
+        client.disconnect();
+        server.stop();
     }
 }

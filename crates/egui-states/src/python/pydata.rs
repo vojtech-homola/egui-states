@@ -8,6 +8,23 @@ pub(crate) fn check_data_type(buffer: &PyUntypedBuffer, data_type: DataType) -> 
     }
 
     let format = buffer.format();
+    // pyo3's format check ignores the byte-order prefix, and the bytes are copied as-is.
+    let non_native: &[u8] = if cfg!(target_endian = "little") {
+        b">!"
+    } else {
+        b"<"
+    };
+    if format
+        .to_bytes()
+        .first()
+        .is_some_and(|order| non_native.contains(order))
+    {
+        return Err(format!(
+            "Data buffer must use native byte order, got format '{:?}'",
+            format
+        ));
+    }
+
     let result = match data_type {
         DataType::F32 => f32::is_compatible_format(format),
         DataType::F64 => f64::is_compatible_format(format),

@@ -84,6 +84,7 @@ fn impl_enum_typed(input: TokenStream, rust_derives: &[Path]) -> TokenStream {
         names,
         values,
     } = parse_enum(input);
+    let values = discriminant_expressions(&values);
 
     let out = quote!(
         unsafe impl egui_states::Typed for #ident {
@@ -146,6 +147,7 @@ fn impl_enum_atomic(input: TokenStream, kind: AtomicKind) -> TokenStream {
         names,
         values,
     } = parse_enum(input);
+    let values = discriminant_expressions(&values);
 
     let (private_ident, private_mod) = match kind {
         AtomicKind::Atomic => (
@@ -207,6 +209,19 @@ fn impl_enum_atomic(input: TokenStream, kind: AtomicKind) -> TokenStream {
     );
 
     out.into()
+}
+
+fn discriminant_expressions(values: &[i32]) -> Vec<syn::Expr> {
+    // A negative Literal token confuses rust-analyzer in nested macro calls.
+    // Parsing emits a separate unary minus, including for i32::MIN, while
+    // retaining the i32 suffix used by the original integer interpolation.
+    values
+        .iter()
+        .map(|value| {
+            syn::parse_str(&format!("{value}i32"))
+                .expect("an i32 always forms a valid Rust expression")
+        })
+        .collect()
 }
 
 struct StructInfo {
@@ -319,4 +334,26 @@ fn parse_discriminant(expr: &syn::Expr) -> i32 {
         .expect("Enum discriminants must fit in i32");
     let value = if negative { -magnitude } else { magnitude };
     i32::try_from(value).expect("Enum discriminants must fit in i32")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::discriminant_expressions;
+    use proc_macro2::TokenTree;
+    use quote::ToTokens;
+
+    #[test]
+    fn negative_discriminants_emit_a_separate_minus_token() {
+        for value in [i32::MIN, -2, -1] {
+            let expressions = discriminant_expressions(&[value]);
+            let tokens: Vec<_> = expressions[0].to_token_stream().into_iter().collect();
+            assert_eq!(tokens.len(), 2, "unexpected tokens for {value}: {tokens:?}");
+            assert!(matches!(&tokens[0], TokenTree::Punct(p) if p.as_char() == '-'));
+            assert!(matches!(&tokens[1], TokenTree::Literal(_)));
+            assert_eq!(
+                tokens[1].to_string(),
+                format!("{}i32", value.unsigned_abs())
+            );
+        }
+    }
 }

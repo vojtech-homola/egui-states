@@ -346,4 +346,82 @@ mod tests {
         data.remove_index(3, false).unwrap();
         assert_eq!(data.get(3).unwrap(), None);
     }
+
+    #[test]
+    fn invalid_data_ranges_are_rejected_without_changes() {
+        let server = StateServer::new().unwrap();
+        let data = Data::<u16>::new(&server, "root.data").unwrap();
+        data.set(&[1, 2, 3], false).unwrap();
+
+        assert!(data.replace(&[9, 9], 2, false).is_err());
+        assert!(data.remove(2, 2, false).is_err());
+        assert!(data.remove(0, 0, false).is_err());
+        assert_eq!(data.get().unwrap(), [1, 2, 3]);
+
+        // Empty edits at the end are valid no-ops.
+        data.replace(&[], 3, false).unwrap();
+        data.add(&[], false).unwrap();
+        assert_eq!(data.get().unwrap(), [1, 2, 3]);
+    }
+
+    /// Range checks must not overflow: a huge index is an ordinary error.
+    #[test]
+    fn overflowing_data_ranges_are_rejected_without_changes() {
+        let server = StateServer::new().unwrap();
+        let data = Data::<u16>::new(&server, "root.data").unwrap();
+        let multi = DataMulti::<u16>::new(&server, "root.multi").unwrap();
+        data.set(&[1, 2, 3], false).unwrap();
+        multi.set(4, &[1, 2, 3], false).unwrap();
+
+        let attempts: [(&str, Box<dyn Fn() -> Result<()>>); 4] = [
+            (
+                "replace",
+                Box::new(|| data.replace(&[9], usize::MAX, false)),
+            ),
+            ("remove", Box::new(|| data.remove(usize::MAX, 1, false))),
+            (
+                "multi replace",
+                Box::new(|| multi.replace(4, usize::MAX, &[9], false)),
+            ),
+            (
+                "multi remove",
+                Box::new(|| multi.remove(4, usize::MAX, 1, false)),
+            ),
+        ];
+        for (name, attempt) in attempts {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(attempt));
+            assert!(
+                matches!(result, Ok(Err(_))),
+                "{name} with a huge index did not return an error"
+            );
+        }
+        assert_eq!(data.get().unwrap(), [1, 2, 3]);
+        assert_eq!(multi.get(4).unwrap(), Some(vec![1, 2, 3]));
+    }
+
+    #[test]
+    fn multi_data_edits_require_an_existing_key_and_range() {
+        let server = StateServer::new().unwrap();
+        let data = DataMulti::<u8>::new(&server, "root.data").unwrap();
+        data.set(1, &[1, 2, 3], false).unwrap();
+
+        assert!(data.add(2, &[4], false).is_err());
+        assert!(data.replace(2, 0, &[4], false).is_err());
+        assert!(data.remove(2, 0, 1, false).is_err());
+        assert!(data.clear(2, false).is_err());
+        assert_eq!(data.get(2).unwrap(), None);
+
+        assert!(data.replace(1, 2, &[8, 9], false).is_err());
+        assert!(data.remove(1, 1, 3, false).is_err());
+        assert!(data.remove(1, 0, 0, false).is_err());
+        assert_eq!(data.get(1).unwrap(), Some(vec![1, 2, 3]));
+
+        data.clear(1, false).unwrap();
+        assert_eq!(data.get(1).unwrap(), Some(vec![]));
+        // Removing or resetting missing keys is harmless.
+        data.remove_index(7, false).unwrap();
+        data.reset(false).unwrap();
+        data.reset(false).unwrap();
+        assert_eq!(data.get(1).unwrap(), None);
+    }
 }
