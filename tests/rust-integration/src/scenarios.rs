@@ -502,10 +502,14 @@ fn images_wire(port: u16) {
         ClientBuilder::<State>::new().context(context.clone()),
         port,
         |state| {
-            state.image.image.initialize(
-                &context,
-                egui::ColorImage::filled([1, 1], egui::Color32::BLACK),
-            );
+            state
+                .image
+                .image
+                .initialize(
+                    &context,
+                    egui::ColorImage::filled([1, 1], egui::Color32::BLACK),
+                )
+                .unwrap();
             state.image.images.initialize(&context);
         },
     );

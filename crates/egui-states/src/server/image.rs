@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use crate::image_transport::ImageType;
+use crate::image_transport::{ImageType, checked_image_bytes};
 use crate::server_core::image_core::{Image as CoreImage, ImageData};
 use crate::server_core::image_core_common::checked_fill_size;
 use crate::server_core::image_multi_core::{ImageMulti as CoreImageMulti, ImageMultiData};
@@ -66,6 +66,8 @@ impl ImageFormat {
 
 #[derive(Clone)]
 /// Server-controlled image retained as RGBA pixels and mirrored to the client.
+/// Each dimension is limited to 65,536 pixels, inclusive. Client renderer and
+/// memory limits may be smaller.
 pub struct Image {
     inner: Arc<CoreImage>,
 }
@@ -94,8 +96,9 @@ impl Image {
     ///
     /// # Errors
     ///
-    /// Returns an error if the dimensions overflow, the data length does not
-    /// match `size` and `format`, or the update cannot be queued.
+    /// Returns an error if a dimension exceeds 65,536 pixels, dimensions
+    /// overflow, the data length does not match `size` and `format`, or the
+    /// update cannot be queued.
     pub fn set(
         &self,
         data: &[u8],
@@ -124,8 +127,8 @@ impl Image {
     ///
     /// # Errors
     ///
-    /// Returns an error for zero or overflowing dimensions, or when the update
-    /// cannot be queued.
+    /// Returns an error for zero dimensions, dimensions exceeding 65,536 pixels,
+    /// overflowing dimensions, or when the update cannot be queued.
     pub fn set_all(&self, shape: [usize; 2], color: ImageColor, update: bool) -> Result<()> {
         self.inner
             .set_all_image(shape, color.rgba(), update)
@@ -140,7 +143,8 @@ impl Image {
     /// # Errors
     ///
     /// Returns an error if the rectangle lies outside the current image, its
-    /// dimensions overflow, its data length is invalid, or it cannot be queued.
+    /// dimensions exceed 65,536 pixels or overflow, its data length is invalid,
+    /// or it cannot be queued.
     pub fn update(
         &self,
         data: &[u8],
@@ -169,6 +173,7 @@ impl Image {
         size: [usize; 2],
         format: ImageFormat,
     ) -> Result<usize> {
+        checked_image_bytes(size, 4).map_err(ServerError::new)?;
         let stride = size[1]
             .checked_mul(format.bytes_per_pixel())
             .ok_or_else(|| ServerError::new("image dimensions overflow"))?;
@@ -187,6 +192,8 @@ impl Image {
 
 #[derive(Clone)]
 /// Server-controlled images retained as RGBA pixels and indexed by sparse `u32` keys.
+/// Each image dimension is limited to 65,536 pixels, inclusive. Client renderer
+/// and memory limits may be smaller.
 pub struct ImageMulti {
     inner: Arc<CoreImageMulti>,
 }
@@ -336,6 +343,61 @@ mod tests {
     use super::*;
 
     #[test]
+    fn public_images_enforce_the_inclusive_shape_limit() {
+        let server = StateServer::new().unwrap();
+        let image = Image::new(&server, "root.image").unwrap();
+        let images = ImageMulti::new(&server, "root.images").unwrap();
+        for shape in [[65_536, 1], [1, 65_536]] {
+            let data = vec![7; 65_536];
+            image.set(&data, shape, ImageFormat::Gray, false).unwrap();
+            images
+                .set(7, &data, shape, ImageFormat::Gray, false)
+                .unwrap();
+            image.set_all(shape, ImageColor::Gray(9), false).unwrap();
+            images
+                .set_all(7, shape, ImageColor::Gray(9), false)
+                .unwrap();
+            let origin = [shape[0] - 1, shape[1] - 1];
+            image
+                .update(&[8], origin, [1, 1], ImageFormat::Gray, false, false)
+                .unwrap();
+            images
+                .update(7, &[8], origin, [1, 1], ImageFormat::Gray, false, false)
+                .unwrap();
+            assert_eq!(image.shape(), shape);
+            assert_eq!(images.shape(7), Some(shape));
+            let before = image.get();
+            for oversized in [[65_537, 1], [1, 65_537]] {
+                for result in [
+                    image.set(&[], oversized, ImageFormat::Gray, false),
+                    images.set(9, &[], oversized, ImageFormat::Gray, false),
+                    image.set_all(oversized, ImageColor::Gray(0), false),
+                    images.set_all(9, oversized, ImageColor::Gray(0), false),
+                    image.update(&[], [0, 0], oversized, ImageFormat::Gray, false, false),
+                    images.update(7, &[], [0, 0], oversized, ImageFormat::Gray, false, false),
+                ] {
+                    assert!(result.unwrap_err().to_string().contains("65536"));
+                }
+            }
+            for origin in [[65_536, 0], [0, 65_536], [usize::MAX, 0], [0, usize::MAX]] {
+                assert!(
+                    image
+                        .update(&[0], origin, [1, 1], ImageFormat::Gray, false, false)
+                        .is_err()
+                );
+                assert!(
+                    images
+                        .update(7, &[0], origin, [1, 1], ImageFormat::Gray, false, false)
+                        .is_err()
+                );
+            }
+            assert_eq!(image.get(), before);
+            assert_eq!(images.get(7), Some(before));
+            assert!(!images.contains(9));
+        }
+    }
+
+    #[test]
     fn image_color_normalizes_to_rgba() {
         assert_eq!(ImageColor::Gray(1).rgba(), [1, 1, 1, 255]);
         assert_eq!(ImageColor::GrayAlpha(1, 2).rgba(), [1, 1, 1, 2]);
@@ -468,7 +530,7 @@ mod tests {
                     .set(9, &[], [1, too_large], ImageFormat::Gray, false)
                     .unwrap_err()
                     .to_string()
-                    .contains("protocol limits")
+                    .contains("65536")
             );
             assert!(!images.contains(9));
         }

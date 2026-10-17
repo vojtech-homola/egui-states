@@ -5,7 +5,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use parking_lot::{Mutex, MutexGuard, RwLock, RwLockWriteGuard};
 
 use crate::event::Event;
-use crate::image_transport::{ImageHeader, ImageSetHeader, ImageType};
+use crate::image_transport::{
+    ImageHeader, ImageSetHeader, ImageType, checked_image_bounds, checked_image_bytes,
+    checked_image_shape,
+};
 use crate::serialization::ServerHeader;
 use crate::serialization::{FastVec, MSG_SIZE_THRESHOLD};
 use crate::server_core::image_core_common::{
@@ -83,6 +86,7 @@ impl Image {
     }
 
     pub(crate) fn set_image(&self, image: ImageData, update: bool) -> Result<(), String> {
+        let rgba_size = checked_image_bytes(image.size, 4)?;
         // Prepare data to send if connected before locking
         let to_send = if self.connected.load(Ordering::Acquire) {
             Some(pack_set_data(self.id, &image, update)?)
@@ -90,7 +94,7 @@ impl Image {
             None
         };
 
-        let pixels_count = image.size[0] * image.size[1];
+        let pixels_count = rgba_size / 4;
 
         // this is main lock for set and update operation
         let lock = self.lock.lock();
@@ -100,7 +104,7 @@ impl Image {
         let size_changed = image.size != w.size;
         if size_changed {
             w.size = image.size;
-            w.data = Vec::with_capacity(pixels_count * 4);
+            w.data = Vec::with_capacity(rgba_size);
         }
 
         if image.contiguous {
@@ -126,7 +130,7 @@ impl Image {
 
         if size_changed {
             // The pixel writers initialized every byte in the allocation.
-            unsafe { w.data.set_len(pixels_count * 4) };
+            unsafe { w.data.set_len(rgba_size) };
         }
 
         // A connection sync sends the latest complete image. Do not enqueue a
@@ -260,6 +264,8 @@ impl Image {
         update: bool,
         force: bool,
     ) -> Result<(), String> {
+        checked_image_bytes(image.size, 4)?;
+        checked_image_bounds(*origin, image.size)?;
         // Prepare data to send if connected before locking
         let to_send = if self.connected.load(Ordering::Acquire) {
             Some(pack_update_data(self.id, origin, &image, update)?)
@@ -455,6 +461,7 @@ fn pack_fill_data(
     rgba: [u8; 4],
     update: bool,
 ) -> Result<Vec<(FastVec<32>, bool)>, String> {
+    checked_image_shape([size[0] as usize, size[1] as usize])?;
     let header = ServerHeader::Image(id, ImageHeader::Fill(size, rgba, update), 0);
     let message = crate::serialization::serialize_heap(&header)
         .map_err(|_| format!("Failed to serialize fill header for image {}", id))?;
@@ -466,7 +473,9 @@ fn pack_set_data(
     image: &ImageData,
     update: bool,
 ) -> Result<Vec<(FastVec<32>, bool)>, String> {
-    let size = [image.size[1] as u32, image.size[0] as u32]; // reverse for egui
+    let [height, width] = checked_image_shape(image.size)?;
+    let size = [width, height]; // reverse for egui
+    checked_image_bytes(image.size, 4)?;
     let bytes_line_size = image.size[1] * image.image_type.bytes_per_pixel();
     let bytes_size = image.size[0] * bytes_line_size;
 
@@ -557,6 +566,10 @@ fn pack_update_data(
     image: &ImageData,
     update: bool,
 ) -> Result<VecDeque<(FastVec<32>, bool)>, String> {
+    checked_image_bounds(*origin, image.size)?;
+    checked_image_bytes(image.size, 4)?;
+    let [height, width] = checked_image_shape(image.size)?;
+    let [y, x] = checked_image_shape(*origin)?;
     let bytes_line_size = image.size[1] * image.image_type.bytes_per_pixel();
     let bytes_size = image.size[0] * bytes_line_size;
 
@@ -578,12 +591,7 @@ fn pack_update_data(
 
     if bytes_size <= MSG_SIZE_THRESHOLD {
         // swap for egui
-        let rect = [
-            origin[1] as u32,
-            origin[0] as u32,
-            image.size[1] as u32,
-            image.size[0] as u32,
-        ];
+        let rect = [x, y, width, height];
         let header = ServerHeader::Image(
             id,
             ImageHeader::Update(rect, image.image_type, update),
@@ -607,12 +615,7 @@ fn pack_update_data(
             let lines = remaining_lines.min(chunk_lines);
             let data_size = lines * bytes_line_size;
             let is_last = lines == remaining_lines;
-            let rect = [
-                origin[1] as u32,
-                (origin[0] + processed_lines) as u32,
-                image.size[1] as u32,
-                lines as u32,
-            ];
+            let rect = [x, y + processed_lines as u32, width, lines as u32];
             let header = ServerHeader::Image(
                 id,
                 ImageHeader::Update(rect, image.image_type, is_last && update),
@@ -662,6 +665,39 @@ mod tests {
 
     fn assert_no_message(receiver: &mut MessageReceiver) {
         assert!(matches!(receiver.try_recv(), Err(TryRecvError::Empty)));
+    }
+
+    #[test]
+    fn oversized_images_never_mutate_or_queue_even_when_disconnected() {
+        for connected in [false, true] {
+            let (image, _, mut receiver) = new_image(connected);
+            image.set_all_image([1, 1], [9; 4], false).unwrap();
+            for size in [[65_537, 1], [1, 65_537]] {
+                let data = || image_data(&[], size, ImageType::Gray);
+                for result in [
+                    image.set_image(data(), false),
+                    image.set_all_image(size, [0; 4], false),
+                    image.update_image(&[0, 0], data(), false, false),
+                    pack_set_data(1, &data(), false).map(|_| ()),
+                    pack_fill_data(1, [size[0] as u32, size[1] as u32], [0; 4], false).map(|_| ()),
+                    pack_update_data(1, &[0, 0], &data(), false).map(|_| ()),
+                ] {
+                    assert!(result.unwrap_err().contains("65536"));
+                }
+            }
+            for origin in [[65_536, 0], [0, 65_536], [usize::MAX, 0]] {
+                let data = image_data(&[0], [1, 1], ImageType::Gray);
+                assert!(image.update_image(&origin, data, false, false).is_err());
+                let data = image_data(&[0], [1, 1], ImageType::Gray);
+                assert!(pack_update_data(1, &origin, &data, false).is_err());
+            }
+            assert_eq!(
+                image.get_image(|(data, size)| (data.clone(), *size)),
+                (vec![9; 4], [1, 1])
+            );
+            assert!(matches!(&image.image.read().buffer, Buffer::Set(data) if data.is_empty()));
+            assert_no_message(&mut receiver);
+        }
     }
 
     fn wait_for_image(image: &Image, expected: &[u8]) {
@@ -981,10 +1017,12 @@ mod packing_tests {
             let context = egui::Context::default();
             let (sender, mut receiver) = ClientSender::new();
             let client = ClientImage::new("image".into(), 71, sender);
-            client.initialize(
-                &context,
-                egui::ColorImage::filled([1, 1], egui::Color32::BLACK),
-            );
+            client
+                .initialize(
+                    &context,
+                    egui::ColorImage::filled([1, 1], egui::Color32::BLACK),
+                )
+                .unwrap();
             let _ = crate::test_support::texture_updates(&context);
             let mut expected: Vec<u8> = (0..height * width * 4)
                 .map(|i| (i * 31 % 251) as u8)

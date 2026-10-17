@@ -322,7 +322,11 @@ class SignalEmpty(_SignalBase):
 
 
 class Image(_StaticBase):
-    """Server-controlled image mirrored to an initialized client texture."""
+    """Server-controlled image mirrored to an initialized client texture.
+
+    Each dimension is at most 65,536 pixels, inclusive. Oversized images raise
+    ``ValueError``. Client renderer and memory limits may be smaller.
+    """
 
     def _initialize(self, name: str, types: list[PyObjectType]) -> None:
         self._value_id = self._server.add_image(name)
@@ -399,7 +403,11 @@ class Image(_StaticBase):
 
 
 class SingleImage:
-    """Handle for one indexed image within an :class:`ImageMulti` state."""
+    """Handle for one indexed image within an :class:`ImageMulti` state.
+
+    Each dimension is at most 65,536 pixels, inclusive. Oversized images raise
+    ``ValueError``. Client renderer and memory limits may be smaller.
+    """
 
     def __init__(self, server: StateServerCore, value_id: int, index: int) -> None:
         self._server = server
@@ -472,7 +480,11 @@ class SingleImage:
 
 
 class ImageMulti(_StaticBase):
-    """Sparse collection of server-controlled images indexed by integers."""
+    """Sparse collection of server-controlled images indexed by integers.
+
+    Each image dimension is limited to 65,536 pixels, inclusive. Client renderer
+    and memory limits may be smaller.
+    """
 
     def _initialize(self, name: str, types: list[PyObjectType]) -> None:
         self._value_id = self._server.add_image_multi(name)

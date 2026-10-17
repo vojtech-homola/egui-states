@@ -4,6 +4,40 @@ import numpy as np
 import pytest
 from .assertions import assert_array
 
+
+@pytest.mark.parametrize("multi", [False, True], ids=["image", "image-multi"])
+@pytest.mark.parametrize("shape", [(65_536, 1), (1, 65_536)], ids=["height-limit", "width-limit"])
+def test_image_shape_limit(local_bundle, multi, shape):
+    _, states, _ = local_bundle
+    image = states.image.images[7] if multi else states.image.image
+    pixels = np.full(shape, 7, dtype=np.uint8)
+    image.set(pixels)
+    assert image.shape() == shape
+    assert np.all(image.get()[..., :3] == 7)
+    image.set_all(shape, 9)
+    origin = (shape[0] - 1, shape[1] - 1)
+    image.update(np.array([[8]], dtype=np.uint8), origin)
+    assert image.get()[origin].tolist() == [8, 8, 8, 255]
+    before = image.get().copy()
+
+    for oversized in [(65_537, 1), (1, 65_537)]:
+        pixels = np.zeros(oversized, dtype=np.uint8)
+        with pytest.raises(ValueError, match="65536"):
+            image.set(pixels)
+        with pytest.raises(ValueError, match="65536"):
+            image.set_all(oversized, 0)
+        with pytest.raises(ValueError, match="65536"):
+            image.update(pixels, (0, 0))
+        assert_array(image.get(), before)
+    for origin in [(65_536, 0), (0, 65_536)]:
+        with pytest.raises(ValueError, match="65536"):
+            image.update(np.zeros((1, 1), dtype=np.uint8), origin)
+        assert_array(image.get(), before)
+    if multi:
+        with pytest.raises(ValueError, match="65536"):
+            states.image.images[9].set_all((65_537, 1), 0)
+        assert 9 not in states.image.images
+
 from egui_states_test_bindings import (
     State,
     StatesServer,

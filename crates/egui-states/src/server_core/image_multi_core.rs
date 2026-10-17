@@ -7,7 +7,8 @@ use parking_lot::{Mutex, MutexGuard, RwLock};
 use crate::event::Event;
 use crate::hashing::NoHashMap;
 use crate::image_transport::{
-    ImageHeader, ImageMultiHeader, ImageSetHeader, ImageType, serialize_image_multi_header,
+    ImageHeader, ImageMultiHeader, ImageSetHeader, ImageType, checked_image_bytes,
+    checked_image_shape, serialize_image_multi_header,
 };
 use crate::serialization::{FastVec, MSG_SIZE_THRESHOLD};
 use crate::server_core::image_core_common::{
@@ -582,6 +583,7 @@ fn pack_fill_data(
     rgba: [u8; 4],
     update: bool,
 ) -> Result<Vec<(FastVec<32>, bool)>, String> {
+    checked_image_shape([size[0] as usize, size[1] as usize])?;
     let message = serialize_image_multi_header(id, index, ImageHeader::Fill(size, rgba, update), 0)
         .map_err(|_| format!("Failed to serialize fill header for image {}", id))?;
     Ok(vec![(message, false)])
@@ -594,6 +596,7 @@ fn pack_set_data(
     update: bool,
 ) -> Result<Vec<(FastVec<32>, bool)>, String> {
     let size = checked_image_size(image.size)?;
+    checked_image_bytes(image.size, 4)?;
     let bytes_line_size = image.size[1] * image.image_type.bytes_per_pixel();
     let bytes_size = image.size[0] * bytes_line_size;
 
@@ -686,6 +689,7 @@ fn pack_update_data(
     update: bool,
 ) -> Result<VecDeque<(FastVec<32>, bool)>, String> {
     let wire_rect = checked_image_rect(origin, image.size)?;
+    checked_image_bytes(image.size, 4)?;
     let bytes_line_size = image.size[1] * image.image_type.bytes_per_pixel();
     let bytes_size = image.size[0] * bytes_line_size;
 
@@ -793,6 +797,44 @@ mod tests {
         assert!(matches!(receiver.try_recv(), Err(TryRecvError::Empty)));
     }
 
+    #[test]
+    fn oversized_images_never_mutate_or_queue_even_when_disconnected() {
+        for connected in [false, true] {
+            let (images, _, mut receiver) = new_image_multi(connected);
+            images.set_all_image(7, [1, 1], [9; 4], false).unwrap();
+            for size in [[65_537, 1], [1, 65_537]] {
+                let data = || image_data(&[], size, ImageType::Gray);
+                for result in [
+                    images.set_image(7, data(), false),
+                    images.set_image(9, data(), false),
+                    images.set_all_image(7, size, [0; 4], false),
+                    images.update_image(7, &[0, 0], data(), false, false),
+                    pack_set_data(1, 7, &data(), false).map(|_| ()),
+                    pack_fill_data(1, 7, [size[0] as u32, size[1] as u32], [0; 4], false)
+                        .map(|_| ()),
+                    pack_update_data(1, 7, &[0, 0], &data(), false).map(|_| ()),
+                ] {
+                    assert!(result.unwrap_err().contains("65536"));
+                }
+            }
+            for origin in [[65_536, 0], [0, 65_536], [usize::MAX, 0]] {
+                let data = image_data(&[0], [1, 1], ImageType::Gray);
+                assert!(images.update_image(7, &origin, data, false, false).is_err());
+                let data = image_data(&[0], [1, 1], ImageType::Gray);
+                assert!(pack_update_data(1, 7, &origin, &data, false).is_err());
+            }
+            assert_eq!(
+                images.get_image(7, |image| image.map(|(data, size)| (data.clone(), *size))),
+                Some((vec![9; 4], [1, 1]))
+            );
+            assert_eq!(images.indices(), vec![7]);
+            assert!(
+                matches!(&images.transfer.state.lock().buffer, Buffer::Set(data) if data.is_empty())
+            );
+            assert_no_message(&mut receiver);
+        }
+    }
+
     fn marker_message(marker: u8) -> FastVec<32> {
         let mut message = FastVec::new();
         message.extend_from_slice(&[marker]);
@@ -862,7 +904,7 @@ mod tests {
                         false,
                     )
                     .unwrap_err()
-                    .contains("protocol limits")
+                    .contains("65536")
             );
             assert!(!images.contains(1));
             assert_no_message(&mut receiver);

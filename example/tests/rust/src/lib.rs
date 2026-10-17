@@ -61,10 +61,14 @@ pub fn showcase(port: u16) {
     let (state, client) = ClientBuilder::<showcase_gui_core::ShowcaseState>::new()
         .context(context.clone())
         .build(port);
-    state.image.image.initialize(
-        &context,
-        egui::ColorImage::filled([256, 256], egui::Color32::BLACK),
-    );
+    state
+        .image
+        .image
+        .initialize(
+            &context,
+            egui::ColorImage::filled([256, 256], egui::Color32::BLACK),
+        )
+        .unwrap();
     state.image.images.initialize(&context);
     let connection = Connection(client);
     connect(&connection.0);
