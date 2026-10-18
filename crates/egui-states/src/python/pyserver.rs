@@ -1,6 +1,7 @@
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddrV4};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::OnceLock;
 
@@ -21,6 +22,7 @@ use crate::server_core::server::Server;
 use crate::server_core::signals::{self, SignalsManager};
 use crate::server_core::value_parsing::{ValueCreator, ValueParser};
 use crate::server_core::values_core::{SignalCore, ValueCore, ValueStaticCore, ValueTakeCore};
+use crate::server_core::web::WebSite;
 use crate::server_core::{
     image_core::Image, image_multi_core::ImageMulti, map_core::ValueMap, vec_core::ValueList,
 };
@@ -305,6 +307,22 @@ impl StateServerCore {
 
     fn disconnect_client(&self) {
         self.server.write().disconnect_client();
+    }
+
+    fn serve_web(&self, py: Python, path: PathBuf) -> PyResult<()> {
+        let site = py
+            .detach(|| WebSite::load(&path))
+            .map_err(PyValueError::new_err)?;
+        self.server.read().set_web(Some(site));
+        Ok(())
+    }
+
+    fn stop_web(&self) {
+        self.server.read().set_web(None);
+    }
+
+    fn web_path(&self) -> Option<PathBuf> {
+        self.server.read().web_path()
     }
 
     fn update(&self, duration: Option<f32>) -> PyResult<()> {

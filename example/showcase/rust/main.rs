@@ -1,14 +1,23 @@
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
-    let port = match args.next().as_deref() {
-        None => 8091,
-        Some("--port") => args
-            .next()
-            .ok_or("--port requires a number")?
-            .parse::<u16>()?,
-        _ => return Err("Usage: showcase-server [--port PORT]".into()),
-    };
+    let mut port = 8091;
+    let mut web = None;
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--port" => {
+                port = args
+                    .next()
+                    .ok_or("--port requires a number")?
+                    .parse::<u16>()?
+            }
+            "--web" => web = Some(args.next().ok_or("--web requires a directory")?),
+            _ => return Err("Usage: showcase-server [--port PORT] [--web DIR]".into()),
+        }
+    }
     let demo = showcase_server::setup_server()?;
+    if let Some(web) = web {
+        demo.server.serve_web(web)?;
+    }
     demo.server
         .start(port, Some(std::net::Ipv4Addr::LOCALHOST), None)?;
     let runtime = tokio::runtime::Builder::new_current_thread()

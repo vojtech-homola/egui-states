@@ -39,7 +39,7 @@ pub(crate) struct ImageData {
 }
 
 pub(crate) struct Image {
-    // #[cfg_attr(not(feature = "python"), allow(dead_code))]
+    #[cfg_attr(not(feature = "python"), allow(dead_code))]
     pub(crate) name: String,
     id: u64,
     image: RwLock<ImageDataInner>,

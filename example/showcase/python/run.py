@@ -206,11 +206,14 @@ def main() -> None:
     """Run until interrupted and release the listening socket on exit."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=PORT)
+    parser.add_argument("--web", help="directory of a built browser GUI to serve on the port")
     args = parser.parse_args()
     stopped = threading.Event()
     signal.signal(signal.SIGINT, lambda *_: stopped.set())
     signal.signal(signal.SIGTERM, lambda *_: stopped.set())
     server = setup_server()
+    if args.web is not None:
+        server.serve_web(args.web)
     try:
         server.start(args.port, (127, 0, 0, 1))
         print(f"Showcase server listening on {args.port}", flush=True)

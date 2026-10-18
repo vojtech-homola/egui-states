@@ -11,8 +11,8 @@ readme = "../../README.md"
 [features]
 default = ["client"]
 client = ["dep:egui"]
-server = ["tokio/macros"]
-python = ["tokio/macros", "dep:pyo3"]
+server = ["tokio/macros", "dep:httparse"]
+python = ["tokio/macros", "dep:pyo3", "dep:httparse"]
 c_abi = ["server"]
 build_scripts = ["client"]
 
@@ -31,8 +31,9 @@ event-listener = "5.4"
 egui_states_macros = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-tokio = { version = "1.52", features = ["sync", "rt-multi-thread", "net"] }
+tokio = { version = "1.52", features = ["sync", "rt-multi-thread", "net", "time", "io-util"] }
 tokio-tungstenite = { version = "0.30" }
+httparse = { version = "1.10", optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 tokio = { version = "1.52", features = ["sync", "macros"] }

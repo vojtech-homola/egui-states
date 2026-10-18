@@ -40,3 +40,37 @@ def test_server_restarts_on_a_different_port():
     finally:
         server.stop()
     assert not errors, errors
+
+
+def test_server_serves_web_page_on_its_port(tmp_path):
+    import urllib.request
+    import pytest
+    from egui_states_test_bindings import StatesServer
+    from tests.python_test_helpers.network import free_port
+
+    first, second = tmp_path / "first", tmp_path / "second"
+    for directory in (first, second):
+        directory.mkdir()
+        (directory / "index.html").write_text(directory.name)
+
+    port = free_port()
+    server = StatesServer(signals_workers=1)
+    try:
+        assert server.web_path() is None
+        server.serve_web(first)
+        server.start(port, (127, 0, 0, 1))
+        assert server.web_path() == first.absolute()
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=5) as response:
+            assert response.status == 200
+            assert response.read() == b"first"
+
+        with pytest.raises(ValueError, match="index.html"):
+            server.serve_web(tmp_path)
+        server.serve_web(str(second))
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/index.html", timeout=5) as response:
+            assert response.read() == b"second"
+
+        server.stop_web()
+        assert server.web_path() is None
+    finally:
+        server.stop()
