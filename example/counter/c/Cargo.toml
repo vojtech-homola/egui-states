@@ -1,0 +1,17 @@
+[package]
+name = "counter_c"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+# Experimental C server for the counter. The build script generates
+# `bindings/counter_state.h`; the server itself is `main.c`.
+[lib]
+path = "lib.rs"
+
+[build-dependencies]
+egui_states = { workspace = true, features = ["build_scripts", "c_abi"] }
+
+[dev-dependencies]
+cc = "1"
+egui_states_test_process = { path = "../../../tests/rust-process-helpers" }

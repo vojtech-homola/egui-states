@@ -13,6 +13,7 @@ default = ["client"]
 client = ["dep:egui"]
 server = ["tokio/macros"]
 python = ["tokio/macros", "dep:pyo3"]
+c_abi = ["server"]
 build_scripts = ["client"]
 
 [dependencies]

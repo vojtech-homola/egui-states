@@ -222,7 +222,7 @@ impl Data {
         Ok(())
     }
 
-    pub(crate) fn get<R>(&self, f: impl Fn(&[u8]) -> R) -> R {
+    pub(crate) fn get<R>(&self, f: impl FnOnce(&[u8]) -> R) -> R {
         let value = self.value.read();
         f(&value.0)
     }
@@ -547,7 +547,7 @@ impl DataMulti {
         Ok(())
     }
 
-    pub(crate) fn get<R>(&self, key: u32, f: impl Fn(Option<&[u8]>) -> R) -> R {
+    pub(crate) fn get<R>(&self, key: u32, f: impl FnOnce(Option<&[u8]>) -> R) -> R {
         f(self
             .values
             .read()

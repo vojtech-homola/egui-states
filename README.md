@@ -37,6 +37,11 @@ Generate matching server bindings from the same state definition with
 Rebuild bindings after changing the state definition; generated files should
 not be edited.
 
+For other languages, the experimental [C ABI](crates/egui-states-c/README.md)
+exposes a low-level server for wrappers to build on, and `generate_c` writes a
+C header that registers the same state tree. It is opt-in and does not change
+the Rust or Python servers.
+
 On the client, `set_signal` changes a value and invokes server callbacks.
 Server setters can request an egui repaint with their `update` flag.
 
@@ -59,6 +64,8 @@ when built.
 - `server`: native Rust server API.
 - `build_scripts`: Python and Rust binding generators.
 - `python`: PyO3 support for building the Python extension.
+- `c_abi` (experimental): support for the `egui_states_c` C ABI library; with
+  `build_scripts`, also the `generate_c` header generator.
 
 See the [API reference](https://docs.rs/egui_states),
 [synchronization model](docs/architecture.md), and [test commands](tests/README.md)
