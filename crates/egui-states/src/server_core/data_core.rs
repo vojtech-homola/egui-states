@@ -22,7 +22,7 @@ unsafe impl Sync for DataHolder {}
 
 // Data --------------------------------------------------
 pub(crate) struct Data {
-    // #[cfg_attr(not(feature = "python"), allow(dead_code))]
+    #[cfg_attr(not(feature = "python"), allow(dead_code))]
     pub(crate) name: String,
     id: u64,
     pub(crate) data_type: DataType,
@@ -269,7 +269,7 @@ impl SyncTrait for Data {
 
 // DataMulti --------------------------------------------------
 pub(crate) struct DataMulti {
-    // #[cfg_attr(not(feature = "python"), allow(dead_code))]
+    #[cfg_attr(not(feature = "python"), allow(dead_code))]
     pub(crate) name: String,
     id: u64,
     pub(crate) data_type: DataType,
