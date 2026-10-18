@@ -2,11 +2,13 @@ use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
+use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt, stream::SplitSink};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::error::TryRecvError;
-use tokio::task::JoinHandle;
+use tokio::task::{JoinHandle, JoinSet};
+use tokio::time::{Instant, timeout_at};
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::{Message, protocol::WebSocketConfig};
 
@@ -19,6 +21,7 @@ use crate::server_core::sender::{MessageReceiver, MessageSender, SenderData};
 use crate::server_core::server::ServerStatesList;
 use crate::server_core::signals::SignalsManager;
 use crate::server_core::socket_reader::{ClientMessage, SocketReader};
+use crate::server_core::web::{self, Dispatch, WebSite, WebSlot};
 
 enum ChannelHolder {
     Transfer(JoinHandle<MessageReceiver>),
@@ -31,6 +34,18 @@ pub(crate) struct Handshake {
     pub token: Option<String>,
 }
 
+/// Bounds how long a new connection may take to send its request head and
+/// complete the WebSocket and protocol handshakes.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// A connection that passed the protocol handshake and may replace the
+/// current client.
+struct ClientReady {
+    socket_tx: SplitSink<WebSocketStream<TcpStream>, Message>,
+    socket_reader: SocketReader,
+    peer_addr: String,
+}
+
 pub(crate) async fn run(
     listener: TcpListener,
     sender: MessageSender,
@@ -40,138 +55,123 @@ pub(crate) async fn run(
     values: ServerStatesList,
     signals: SignalsManager,
     handshake: Handshake,
+    web: WebSlot,
 ) -> MessageReceiver {
     let mut holder = ChannelHolder::Rx(rx);
+    // Connections still handshaking or receiving the web page. They run
+    // concurrently so an idle connection cannot hold up the others; dropping
+    // the set on shutdown aborts them.
+    let mut pending: JoinSet<Option<ClientReady>> = JoinSet::new();
 
     loop {
-        // check for stop event or incoming connection
-        let stream = tokio::select! {
+        // check for stop event, a finished handshake or incoming connection
+        let client = tokio::select! {
             biased;
             _ = stop_event.wait_clear_async() => {
                 break;
             }
+            Some(result) = pending.join_next(), if !pending.is_empty() => {
+                match result {
+                    Ok(Some(client)) => client,
+                    Ok(None) => continue,
+                    Err(e) => {
+                        if e.is_panic() {
+                            signals.error("connection task panicked");
+                        }
+                        continue;
+                    }
+                }
+            }
             s = listener.accept() => {
-                s
-            }
-        };
-
-        // check if error accepting connection
-        let stream = match stream {
-            Ok(s) => s.0,
-            Err(e) => {
-                signals.error(&format!("accepting connection failed: {:?}", e));
+                match s {
+                    Ok((stream, _)) => {
+                        if let Err(e) = stream.set_nodelay(true) {
+                            signals.error(&format!("failed to set TCP_NODELAY: {:?}", e));
+                            continue;
+                        }
+                        let site = web.read().clone();
+                        pending.spawn(accept_client(
+                            stream,
+                            site,
+                            handshake.clone(),
+                            signals.clone(),
+                        ));
+                    }
+                    Err(e) => {
+                        signals.error(&format!("accepting connection failed: {:?}", e));
+                    }
+                }
                 continue;
             }
         };
 
-        if let Err(e) = stream.set_nodelay(true) {
-            signals.error(&format!("failed to set TCP_NODELAY: {:?}", e));
-            continue;
+        let ClientReady {
+            socket_tx,
+            socket_reader,
+            peer_addr,
+        } = client;
+
+        let mut rx = match holder {
+            // disconnect previous client
+            ChannelHolder::Transfer(handler) => {
+                #[cfg(debug_assertions)]
+                signals.debug("terminating previous connection");
+                connected.store(false, Ordering::Release);
+                sender.close();
+                handler.await.expect("joining communication handler failed")
+            }
+            ChannelHolder::Rx(rx) => rx,
+        };
+
+        // clean mesage queue and send sync signals
+        while !rx.is_empty() {
+            let _ = rx.recv().await;
         }
 
-        let mut websocket_config = WebSocketConfig::default();
-        websocket_config.max_message_size = Some(WEBSOCKET_MAX_SIZE);
-        websocket_config.max_frame_size = Some(WEBSOCKET_MAX_SIZE);
-        let websocket =
-            match tokio_tungstenite::accept_async_with_config(stream, Some(websocket_config)).await
-            {
-                Ok(ws) => ws,
-                Err(e) => {
-                    signals.error(&format!("websocket handshake failed: {:?}", e));
-                    connected.store(false, Ordering::Release);
-                    continue;
-                }
-            };
-
-        let peer_addr = websocket
-            .get_ref()
-            .peer_addr()
-            .map_or("".to_string(), |addr| addr.to_string());
-        let (socket_tx, socket_rx) = websocket.split();
-        let mut socket_reader = SocketReader::new(socket_rx);
-
-        match socket_reader.next().await {
-            Err(e) => {
-                if let Some(e) = e {
-                    signals.error(e);
-                }
-                connected.store(false, Ordering::Release);
-                continue;
-            }
-            Ok(ClientMessage::Handshake(p, v, h)) => {
-                if let Err(e) = check_handshake(&handshake, p, v, h) {
-                    signals.warning(&e);
-                    continue;
-                }
-
-                let mut rx = match holder {
-                    // disconnect previous client
-                    ChannelHolder::Transfer(handler) => {
-                        #[cfg(debug_assertions)]
-                        signals.debug("terminating previous connection");
-                        connected.store(false, Ordering::Release);
-                        sender.close();
-                        handler.await.expect("joining communication handler failed")
-                    }
-                    ChannelHolder::Rx(rx) => rx,
-                };
-
-                // clean mesage queue and send sync signals
-                while !rx.is_empty() {
-                    let _ = rx.recv().await;
-                }
-
-                // std::thread::sleep(std::time::Duration::from_millis(100));
-                connected.store(true, Ordering::Release);
-                let mut success = true;
-                for v in values.sync.iter() {
-                    if let Err(_) = v.sync() {
-                        success = false;
-                        break;
-                    }
-                }
-                if !success {
-                    signals.error("failed to sync value after handshake");
-                    connected.store(false, Ordering::Release);
-                    holder = ChannelHolder::Rx(rx);
-                    break;
-                }
-                match serialize(&ServerHeader::Update(0.0)) {
-                    Ok(data) => sender.send(data),
-                    Err(_) => {
-                        signals.error("failed to serialize update message");
-                        connected.store(false, Ordering::Release);
-                        holder = ChannelHolder::Rx(rx);
-                        break;
-                    }
-                }
-
-                signals.on_connect(peer_addr);
-
-                let reader_handler = tokio::spawn(reader(
-                    socket_reader,
-                    connected.clone(),
-                    signals.clone(),
-                    values.clone(),
-                    sender.clone(),
-                ));
-                let handler = tokio::spawn(writer(
-                    rx,
-                    connected.clone(),
-                    socket_tx,
-                    signals.clone(),
-                    values.clone(),
-                    reader_handler,
-                ));
-
-                holder = ChannelHolder::Transfer(handler);
-            }
-            Ok(_) => {
-                signals.error("expected handshake message from client");
-                connected.store(false, Ordering::Release);
-                continue;
+        // std::thread::sleep(std::time::Duration::from_millis(100));
+        connected.store(true, Ordering::Release);
+        let mut success = true;
+        for v in values.sync.iter() {
+            if let Err(_) = v.sync() {
+                success = false;
+                break;
             }
         }
+        if !success {
+            signals.error("failed to sync value after handshake");
+            connected.store(false, Ordering::Release);
+            holder = ChannelHolder::Rx(rx);
+            break;
+        }
+        match serialize(&ServerHeader::Update(0.0)) {
+            Ok(data) => sender.send(data),
+            Err(_) => {
+                signals.error("failed to serialize update message");
+                connected.store(false, Ordering::Release);
+                holder = ChannelHolder::Rx(rx);
+                break;
+            }
+        }
+
+        signals.on_connect(peer_addr);
+
+        let reader_handler = tokio::spawn(reader(
+            socket_reader,
+            connected.clone(),
+            signals.clone(),
+            values.clone(),
+            sender.clone(),
+        ));
+        let handler = tokio::spawn(writer(
+            rx,
+            connected.clone(),
+            socket_tx,
+            signals.clone(),
+            values.clone(),
+            reader_handler,
+        ));
+
+        holder = ChannelHolder::Transfer(handler);
     }
 
     match holder {
@@ -184,6 +184,99 @@ pub(crate) async fn run(
             handler.await.expect("joining communication handler failed")
         }
         ChannelHolder::Rx(rx) => rx,
+    }
+}
+
+/// Takes a new connection up to a passed protocol handshake.
+///
+/// With a web page configured, plain HTTP requests are answered here and
+/// yield `None`. Failures never touch the current client's connection.
+async fn accept_client(
+    stream: TcpStream,
+    site: Option<Arc<WebSite>>,
+    handshake: Handshake,
+    signals: SignalsManager,
+) -> Option<ClientReady> {
+    let deadline = Instant::now() + HANDSHAKE_TIMEOUT;
+
+    let stream = match site {
+        None => stream,
+        Some(site) => match timeout_at(deadline, web::dispatch(stream)).await {
+            Ok(Ok(Dispatch::WebSocket(stream))) => stream,
+            Ok(Ok(Dispatch::Http(stream, request))) => {
+                // Browsers abort downloads on navigation, so failures here are
+                // not server errors.
+                if let Err(_e) = web::serve(stream, request, &site).await {
+                    #[cfg(debug_assertions)]
+                    signals.debug(format!("serving web page failed: {:?}", _e));
+                }
+                return None;
+            }
+            // Browsers open speculative connections that may stay idle and be
+            // closed unused, so these are not reported.
+            Ok(Ok(Dispatch::Closed)) | Err(_) => return None,
+            Ok(Err(e)) => {
+                signals.error(&format!("reading request failed: {:?}", e));
+                return None;
+            }
+        },
+    };
+
+    match timeout_at(deadline, handshake_client(stream, &handshake, &signals)).await {
+        Ok(client) => client,
+        Err(_) => {
+            signals.warning("client handshake timed out");
+            None
+        }
+    }
+}
+
+async fn handshake_client(
+    stream: TcpStream,
+    handshake: &Handshake,
+    signals: &SignalsManager,
+) -> Option<ClientReady> {
+    let mut websocket_config = WebSocketConfig::default();
+    websocket_config.max_message_size = Some(WEBSOCKET_MAX_SIZE);
+    websocket_config.max_frame_size = Some(WEBSOCKET_MAX_SIZE);
+    let websocket =
+        match tokio_tungstenite::accept_async_with_config(stream, Some(websocket_config)).await {
+            Ok(ws) => ws,
+            Err(e) => {
+                signals.error(&format!("websocket handshake failed: {:?}", e));
+                return None;
+            }
+        };
+
+    let peer_addr = websocket
+        .get_ref()
+        .peer_addr()
+        .map_or("".to_string(), |addr| addr.to_string());
+    let (socket_tx, socket_rx) = websocket.split();
+    let mut socket_reader = SocketReader::new(socket_rx);
+
+    match socket_reader.next().await {
+        Err(e) => {
+            if let Some(e) = e {
+                signals.error(e);
+            }
+            None
+        }
+        Ok(ClientMessage::Handshake(p, v, h)) => {
+            if let Err(e) = check_handshake(handshake, p, v, h) {
+                signals.warning(&e);
+                return None;
+            }
+            Some(ClientReady {
+                socket_tx,
+                socket_reader,
+                peer_addr,
+            })
+        }
+        Ok(_) => {
+            signals.error("expected handshake message from client");
+            None
+        }
     }
 }
 

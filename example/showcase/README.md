@@ -44,6 +44,17 @@ trunk serve
 Open [localhost:8090](http://localhost:8090) and click **Connect** while either
 showcase server is running.
 
+To serve the page from the showcase server on its single port instead, build it
+and pass the output directory to either server, still from the repository root:
+
+```sh
+trunk build
+cargo run -p showcase_server --bin showcase-server -- --web example/showcase/gui/web
+# or: uv run python example/showcase/python/run.py --web example/showcase/gui/web
+```
+
+Then open [localhost:8091](http://localhost:8091) and click **Connect**.
+
 ## Read the code
 
 - [State definitions](gui-core/src/state/mod.rs): follow each feature's module

@@ -2,6 +2,7 @@
 
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::path::{Path, PathBuf};
 use std::sync::{
     Arc, Weak,
     atomic::{AtomicBool, Ordering},
@@ -33,6 +34,7 @@ use crate::server_core::values_core::{
     ValueTakeCore as CoreValueTake,
 };
 use crate::server_core::vec_core::ValueList as CoreVec;
+use crate::server_core::web::WebSite;
 
 use super::callbacks::{CallbackHandle, CallbackRegistry};
 use super::data::DataElement;
@@ -201,6 +203,46 @@ impl StateServer {
     /// Returns whether a client is connected.
     pub fn is_connected(&self) -> bool {
         self.inner.server.read().is_connected()
+    }
+
+    /// Serves the static web page in directory `path` on the server port.
+    ///
+    /// This lets a browser load a WASM client from the same port it then
+    /// connects to. WebSocket upgrade requests reach the state server as before;
+    /// other HTTP `GET` and `HEAD` requests are answered from the page, with
+    /// `/` and paths ending in `/` mapped to `index.html`.
+    ///
+    /// Every file below `path` is read into memory during this call, so later
+    /// changes on disk are not served until it is called again. Calling it
+    /// again replaces the previous page, also with a different directory. The
+    /// page may be set before [`Self::start`], applies to connections accepted
+    /// afterwards, and stays configured across [`Self::stop`] and restarts. A
+    /// page load that overlaps a replacement may combine files of both pages;
+    /// reloading the page resolves it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `path` is not a directory, a file cannot be read,
+    /// or the directory does not contain `index.html`. The previously served
+    /// page, if any, is kept in that case.
+    pub fn serve_web(&self, path: impl AsRef<Path>) -> Result<()> {
+        let site = WebSite::load(path.as_ref()).map_err(ServerError::new)?;
+        self.inner.server.read().set_web(Some(site));
+        Ok(())
+    }
+
+    /// Stops serving the static web page.
+    ///
+    /// Without a page, the port accepts only WebSocket connections, as if
+    /// [`Self::serve_web`] had never been called. Requests already being
+    /// answered complete; the connected client is not affected.
+    pub fn stop_web(&self) {
+        self.inner.server.read().set_web(None);
+    }
+
+    /// Returns the absolute directory of the served web page, if any.
+    pub fn web_path(&self) -> Option<PathBuf> {
+        self.inner.server.read().web_path()
     }
 
     /// Requests a client repaint.
@@ -2001,5 +2043,169 @@ mod connection_tests {
         );
         client.disconnect();
         server.stop();
+    }
+
+    /// A temporary web page directory, removed on drop.
+    struct WebDir(std::path::PathBuf);
+
+    impl WebDir {
+        fn new(index: &str) -> Self {
+            static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+            let path = std::env::temp_dir().join(format!(
+                "egui-states-page-{}-{}",
+                std::process::id(),
+                COUNTER.fetch_add(1, Ordering::Relaxed)
+            ));
+            std::fs::create_dir_all(&path).unwrap();
+            std::fs::write(path.join("index.html"), index).unwrap();
+            std::fs::write(path.join("app.wasm"), b"\0asm").unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for WebDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Sends raw request bytes, possibly in pieces, and reads until the server closes.
+    fn http(port: u16, parts: &[&[u8]]) -> String {
+        use std::io::{Read, Write};
+        let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        for (index, part) in parts.iter().enumerate() {
+            if index > 0 {
+                thread::sleep(Duration::from_millis(50));
+            }
+            stream.write_all(part).unwrap();
+        }
+        let mut response = Vec::new();
+        let _ = stream.read_to_end(&mut response);
+        String::from_utf8_lossy(&response).into_owned()
+    }
+
+    fn get(port: u16, path: &str) -> String {
+        http(
+            port,
+            &[format!("GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n").as_bytes()],
+        )
+    }
+
+    #[test]
+    fn web_page_and_client_share_the_port_and_switch_at_runtime() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let first = WebDir::new("first");
+        let second = WebDir::new("second");
+        let (server, value, port) = server(ServerOptions::new(), None);
+        assert_eq!(server.web_path(), None);
+
+        let mut peer = Peer::connect(port, None);
+        peer.wait_for_value(731);
+
+        // Enabled while running and while a client is connected.
+        server.serve_web(&first.0).unwrap();
+        assert_eq!(server.web_path().as_deref(), Some(first.0.as_path()));
+        let page = get(port, "/");
+        assert!(page.starts_with("HTTP/1.1 200 OK\r\n"), "{page}");
+        assert!(page.ends_with("\r\n\r\nfirst"), "{page}");
+        let wasm = get(port, "/app.wasm");
+        assert!(
+            wasm.contains("Content-Type: application/wasm\r\n"),
+            "{wasm}"
+        );
+        assert!(get(port, "/missing.js").starts_with("HTTP/1.1 404"));
+        let head = http(port, &[b"HEAD / HTTP/1.1\r\n\r\n"]);
+        assert!(
+            head.starts_with("HTTP/1.1 200") && head.ends_with("\r\n\r\n"),
+            "{head}"
+        );
+        let post = http(port, &[b"POST / HTTP/1.1\r\nContent-Length: 2\r\n\r\nhi"]);
+        assert!(post.starts_with("HTTP/1.1 405"), "{post}");
+        let garbage = http(port, &[b"\x00\x01 not http\r\n\r\n"]);
+        assert!(garbage.starts_with("HTTP/1.1 400"), "{garbage}");
+
+        // A failed reload keeps the current page.
+        assert!(server.serve_web(first.0.join("missing")).is_err());
+        assert!(get(port, "/").ends_with("first"));
+
+        server.serve_web(&second.0).unwrap();
+        assert!(get(port, "/").ends_with("second"));
+
+        // Without a page, HTTP requests fail the WebSocket handshake as before.
+        server.stop_web();
+        assert_eq!(server.web_path(), None);
+        assert!(!get(port, "/").starts_with("HTTP/1.1 200"));
+
+        // None of the above disturbed the connected client.
+        value.set(5, false).unwrap();
+        peer.wait_for_value(5);
+        assert!(server.is_connected());
+        server.stop();
+    }
+
+    #[test]
+    fn idle_connections_do_not_block_new_clients() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let page = WebDir::new("page");
+        for serve_page in [false, true] {
+            let (server, _value, port) = server(ServerOptions::new(), None);
+            if serve_page {
+                server.serve_web(&page.0).unwrap();
+            }
+            // Like a browser's speculative connection that never sends a request.
+            let _idle = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
+            thread::sleep(Duration::from_millis(50));
+
+            // Peer waits 5s, well below the 10s handshake timeout.
+            let mut peer = Peer::connect(port, None);
+            peer.wait_for_value(731);
+            if serve_page {
+                assert!(get(port, "/").ends_with("page"));
+            }
+            server.stop();
+        }
+    }
+
+    #[test]
+    fn a_request_head_split_across_packets_is_served() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let page = WebDir::new("page");
+        let (server, _value, port) = server(ServerOptions::new(), None);
+        server.serve_web(&page.0).unwrap();
+
+        let response = http(port, &[b"GET / HTTP/1.1\r\nHo", b"st: localhost\r\n\r\n"]);
+        assert!(
+            response.starts_with("HTTP/1.1 200") && response.ends_with("page"),
+            "{response}"
+        );
+        server.stop();
+    }
+
+    #[test]
+    fn web_page_set_before_start_survives_restart() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let page = WebDir::new("page");
+        let server = StateServer::new().unwrap();
+        server.finalize().unwrap();
+        server.serve_web(&page.0).unwrap();
+
+        for _ in 0..2 {
+            let port = free_port();
+            server.start(port, Some(Ipv4Addr::LOCALHOST), None).unwrap();
+            assert!(get(port, "/").ends_with("page"));
+            server.stop();
+        }
+        assert_eq!(server.web_path().as_deref(), Some(page.0.as_path()));
     }
 }

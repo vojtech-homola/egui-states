@@ -40,6 +40,15 @@ not be edited.
 On the client, `set_signal` changes a value and invokes server callbacks.
 Server setters can request an egui repaint with their `update` flag.
 
+## Browser clients
+
+A browser (WASM) client is usually loaded from the machine that runs the
+server. Instead of running a separate web server, pass the directory of the
+built page (for example Trunk's output) to the server's `serve_web`. The page is
+then served on the WebSocket port, so a single port must be reachable.
+`serve_web` and `stop_web` can be called before or after `start` and do not
+affect the connected client.
+
 ## Examples
 
 Start with the counter, then explore individual features in the showcase.

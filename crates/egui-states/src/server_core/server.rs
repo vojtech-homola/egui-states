@@ -1,4 +1,5 @@
 use std::net::SocketAddrV4;
+use std::path::PathBuf;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -24,6 +25,7 @@ use crate::server_core::sender::{MessageReceiver, MessageSender};
 use crate::server_core::signals::{CLIENT_MESSAGE_ID, SignalsManager};
 use crate::server_core::values_core::{SignalCore, ValueCore, ValueStaticCore, ValueTakeCore};
 use crate::server_core::vec_core::ValueList;
+use crate::server_core::web::{WebSite, WebSlot};
 
 pub(crate) trait SyncTrait: Sync + Send {
     fn sync(&self) -> Result<(), ()>;
@@ -164,6 +166,7 @@ pub(crate) struct Server {
     states_server: Option<ServerStatesList>,
     signals: SignalsManager,
     version: Option<u64>,
+    web: WebSlot,
 
     runner_state: RunnerState,
 }
@@ -182,6 +185,7 @@ impl Server {
             states_server: None,
             signals,
             version,
+            web: WebSlot::default(),
             runner_state: RunnerState::Stopped(rx),
         };
 
@@ -242,6 +246,7 @@ impl Server {
                 let runtime = match Builder::new_multi_thread()
                     .thread_name("ServerRuntime")
                     .enable_io()
+                    .enable_time()
                     .worker_threads(2)
                     .thread_keep_alive(Duration::from_hours(1))
                     .build()
@@ -268,6 +273,7 @@ impl Server {
                 let stop_event = self.stop_event.clone();
                 let values = states_server.clone();
                 let signals = self.signals.clone();
+                let web = self.web.clone();
 
                 let handshake = core::Handshake {
                     version: self.version,
@@ -279,7 +285,8 @@ impl Server {
                 let thread_handle_res = server_thread.spawn(move || {
                     runtime.block_on(async move {
                         core::run(
-                            listener, sender, rx, connected, stop_event, values, signals, handshake,
+                            listener, sender, rx, connected, stop_event, values, signals,
+                            handshake, web,
                         )
                         .await
                     })
@@ -346,6 +353,21 @@ impl Server {
 
     pub(crate) fn is_connected(&self) -> bool {
         self.connected.load(Ordering::Acquire)
+    }
+
+    /// Replaces the served web page, or stops serving it with `None`.
+    ///
+    /// The setting applies to connections accepted afterwards and is kept
+    /// while the server is stopped.
+    pub(crate) fn set_web(&self, site: Option<WebSite>) {
+        *self.web.write() = site.map(Arc::new);
+    }
+
+    pub(crate) fn web_path(&self) -> Option<PathBuf> {
+        self.web
+            .read()
+            .as_ref()
+            .map(|site| site.root().to_path_buf())
     }
 
     pub(crate) fn update(&self, duration: Option<f32>) -> Result<(), ()> {

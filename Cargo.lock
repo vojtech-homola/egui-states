@@ -1037,6 +1037,7 @@ dependencies = [
  "egui_states_macros",
  "event-listener",
  "futures-util",
+ "httparse",
  "log",
  "parking_lot",
  "postcard",

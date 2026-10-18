@@ -3,6 +3,8 @@
 
 from abc import ABC, abstractmethod
 from collections.abc import Callable
+from os import PathLike
+from pathlib import Path
 from typing import Any
 
 from egui_states._core import PyObjectType, StateServerCore
@@ -174,6 +176,49 @@ class StateServerBase[T: StatesBase]:
             bool: Whether a client is connected.
         """
         return self._server.is_connected()
+
+    def serve_web(self, path: str | PathLike[str]) -> None:
+        """Serve a static web page on the state server port.
+
+        This lets a browser load a WASM client from the same port it then
+        connects to. WebSocket upgrade requests reach the state server as
+        before; other HTTP ``GET`` and ``HEAD`` requests are answered from the
+        page, with ``/`` and paths ending in ``/`` mapped to ``index.html``.
+
+        Every file below ``path`` is read into memory during this call, so
+        later changes on disk are not served until it is called again. Calling
+        it again replaces the previous page, also with a different directory.
+        The page may be set before :meth:`start`, applies to connections
+        accepted afterwards, and stays configured across :meth:`stop` and
+        restarts.
+
+        Args:
+            path (str | PathLike[str]): Directory containing ``index.html``.
+
+        Raises:
+            ValueError: If ``path`` is not a directory, a file cannot be read,
+                or the directory does not contain ``index.html``. The
+                previously served page, if any, is kept.
+        """
+        self._server.serve_web(path)
+
+    def stop_web(self) -> None:
+        """Stop serving the static web page.
+
+        Requests already being answered complete; the connected client is not
+        affected.
+        """
+        self._server.stop_web()
+
+    def web_path(self) -> Path | None:
+        """Return the absolute directory of the served web page.
+
+        Returns:
+            Path | None: Served page directory, or ``None`` when no page is
+            served.
+        """
+        path = self._server.web_path()
+        return None if path is None else Path(path)
 
     def set_error_handler(self, error_handler: Callable[[Exception], None] | None) -> None:
         """Set the handler for callback and signal-worker errors.
