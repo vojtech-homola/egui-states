@@ -1,10 +1,11 @@
 # ruff: noqa: D103
+"""Numeric buffer mutation and range validation through generated state handles."""
 
 import numpy as np
 import pytest
 from .assertions import assert_array
 
-from egui_states_test_bindings import (
+from egui_states_test_bindings import (  # ty: ignore[unresolved-import]
     State,
     StatesServer,
 )

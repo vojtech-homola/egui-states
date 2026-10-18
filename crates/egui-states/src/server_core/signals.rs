@@ -2,13 +2,17 @@ use std::collections::{VecDeque, hash_map::Entry};
 use std::sync::Arc;
 #[cfg(any(feature = "server", feature = "python"))]
 use std::sync::atomic::AtomicBool;
-#[cfg(feature = "python")]
+#[cfg(any(feature = "python", feature = "c_abi"))]
 use std::sync::atomic::Ordering;
+#[cfg(feature = "c_abi")]
+use std::time::Instant;
 
 use bytes::Bytes;
 use parking_lot::Mutex;
 
 use crate::event::Event;
+#[cfg(feature = "c_abi")]
+use crate::event::WaitOutcome;
 use crate::hashing::{NoHashMap, NoHashSet};
 use crate::serialization::{FastVec, serialize, serialize_to_data};
 
@@ -172,11 +176,22 @@ impl ChangedInner {
     }
 }
 
+/// Result of [`SignalsManager::claim_next`].
+#[cfg(feature = "c_abi")]
+pub(crate) enum ClaimResult {
+    /// A claimed change: id, value, and the previous value when registered for it.
+    Ready(u64, Bytes, Option<Bytes>),
+    /// The deadline passed without a change.
+    TimedOut,
+    /// [`SignalsManager::close`] was called.
+    Closed,
+}
+
 #[derive(Clone)]
 pub(crate) struct SignalsManager {
     event: Event,
     values: Arc<Mutex<ChangedInner>>,
-    #[cfg(feature = "python")]
+    #[cfg(any(feature = "python", feature = "c_abi"))]
     closed: Arc<AtomicBool>,
 }
 
@@ -185,7 +200,7 @@ impl SignalsManager {
         Self {
             event: Event::new(),
             values: Arc::new(Mutex::new(ChangedInner::new())),
-            #[cfg(feature = "python")]
+            #[cfg(any(feature = "python", feature = "c_abi"))]
             closed: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -283,7 +298,7 @@ impl SignalsManager {
 
     /// Permanently wakes every waiter in [`Self::wait_changed_value`] and makes
     /// it return `None`, so the workers waiting on it can exit.
-    #[cfg(feature = "python")]
+    #[cfg(any(feature = "python", feature = "c_abi"))]
     pub(crate) fn close(&self) {
         self.closed.store(true, Ordering::Release);
         self.event.set();
@@ -314,13 +329,41 @@ impl SignalsManager {
 
     /// Releases an id that was handed out but will never be passed back as
     /// `last_id`, because the caller failed before it could use the value.
-    #[cfg(feature = "python")]
+    #[cfg(any(feature = "python", feature = "c_abi"))]
     pub(crate) fn release(&self, id: u64) {
         self.values.lock().blocked_list.remove(&id);
         // Anything that arrived while the id was blocked did not set the event
         // (`ChangedInner::set` skips blocked ids), so wake a waiter to drain it.
         // A spurious wake-up is harmless: the waiter just finds nothing.
         self.event.set_one();
+    }
+
+    /// Claims the next registered change, waiting until `deadline` (`None`
+    /// waits indefinitely).
+    ///
+    /// The returned id stays blocked for every other consumer until the caller
+    /// passes it to [`Self::release`], which it must do exactly once.
+    #[cfg(feature = "c_abi")]
+    pub(crate) fn claim_next(&self, deadline: Option<Instant>) -> ClaimResult {
+        loop {
+            if self.closed.load(Ordering::Acquire) {
+                return ClaimResult::Closed;
+            }
+            if let Some((id, value, previous)) = self.values.lock().get(None) {
+                // The event is a flag and `notify(1)` does not add listeners,
+                // so two changes that arrive before any waiter wakes up are
+                // announced only once. Pass the wake-up on, so another waiter
+                // checks for a second ready id instead of sleeping until the
+                // next change.
+                self.event.set_one();
+                return ClaimResult::Ready(id, value, previous);
+            }
+            match self.event.wait_clear_deadline(&self.closed, deadline) {
+                WaitOutcome::Set => {}
+                WaitOutcome::Stopped => return ClaimResult::Closed,
+                WaitOutcome::TimedOut => return ClaimResult::TimedOut,
+            }
+        }
     }
 
     /// Registers `id` to be signaled. `with_previous` asks for the replaced value to
@@ -352,12 +395,14 @@ impl SignalsManager {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "python")]
+    #[cfg(any(feature = "python", feature = "c_abi"))]
     use std::sync::mpsc;
-    #[cfg(feature = "python")]
+    #[cfg(any(feature = "python", feature = "c_abi"))]
     use std::thread;
-    #[cfg(feature = "python")]
+    #[cfg(any(feature = "python", feature = "c_abi"))]
     use std::time::Duration;
+    #[cfg(feature = "c_abi")]
+    use std::time::Instant;
 
     use super::*;
 
@@ -614,6 +659,117 @@ mod tests {
             last = Some(id);
         }
         assert_eq!(claimed, [LOGGING_ID, ON_DISCONNECT_ID]);
+    }
+
+    #[cfg(feature = "c_abi")]
+    fn claim_ready(manager: &SignalsManager, deadline: Option<Instant>) -> (u64, Bytes) {
+        match manager.claim_next(deadline) {
+            ClaimResult::Ready(id, value, _) => (id, value),
+            ClaimResult::TimedOut => panic!("claim timed out"),
+            ClaimResult::Closed => panic!("signals closed"),
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "c_abi")]
+    fn claim_next_times_out_without_changes() {
+        let manager = SignalsManager::new();
+        manager.set_register(30, true, false);
+
+        let start = Instant::now();
+        let result = manager.claim_next(Some(start + Duration::from_millis(50)));
+        assert!(matches!(result, ClaimResult::TimedOut));
+        assert!(start.elapsed() >= Duration::from_millis(50));
+        assert!(start.elapsed() < Duration::from_secs(5));
+
+        // A past deadline still claims a change that is already pending.
+        manager.set(30, b("ready"));
+        let (id, value) = claim_ready(&manager, Some(Instant::now()));
+        assert_eq!((id, value), (30, b("ready")));
+    }
+
+    /// A claim taken with `claim_next` is held until `release`, so a second
+    /// change for the same state cannot be handed to another consumer.
+    #[test]
+    #[cfg(feature = "c_abi")]
+    fn claim_next_holds_the_id_until_release() {
+        let manager = SignalsManager::new();
+        manager.set_register(31, true, false);
+
+        manager.set(31, b("first"));
+        assert_eq!(claim_ready(&manager, None).0, 31);
+        manager.set(31, b("second"));
+        assert!(matches!(
+            manager.claim_next(Some(Instant::now())),
+            ClaimResult::TimedOut
+        ));
+
+        manager.release(31);
+        assert_eq!(
+            claim_ready(&manager, Some(Instant::now())),
+            (31, b("second"))
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "c_abi")]
+    fn close_wakes_a_blocked_claim() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let manager = SignalsManager::new();
+        manager.set_register(32, true, false);
+
+        let (sender, receiver) = mpsc::channel();
+        let waiter = manager.clone();
+        thread::spawn(move || {
+            let closed = matches!(waiter.claim_next(None), ClaimResult::Closed);
+            let _ = sender.send(closed);
+        });
+        assert!(receiver.recv_timeout(Duration::from_millis(100)).is_err());
+
+        manager.close();
+        assert_eq!(
+            receiver.recv_timeout(Duration::from_secs(2)).ok(),
+            Some(true)
+        );
+        manager.set(32, b("late"));
+        assert!(matches!(manager.claim_next(None), ClaimResult::Closed));
+    }
+
+    /// Two changes that arrive before any waiter wakes notify only once; the
+    /// first waiter must pass the wake-up on so the second id is not stranded.
+    #[test]
+    #[cfg(feature = "c_abi")]
+    fn every_waiter_receives_a_ready_id() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let manager = SignalsManager::new();
+        manager.set_register(33, true, false);
+        manager.set_register(34, true, false);
+
+        let (sender, receiver) = mpsc::channel();
+        for _ in 0..2 {
+            let waiter = manager.clone();
+            let sender = sender.clone();
+            thread::spawn(move || {
+                let deadline = Instant::now() + Duration::from_secs(5);
+                if let ClaimResult::Ready(id, _, _) = waiter.claim_next(Some(deadline)) {
+                    let _ = sender.send(id);
+                }
+            });
+        }
+        thread::sleep(Duration::from_millis(50));
+        manager.set(33, b("a"));
+        manager.set(34, b("b"));
+
+        let mut ids = [
+            receiver.recv_timeout(Duration::from_secs(2)).unwrap(),
+            receiver.recv_timeout(Duration::from_secs(2)).unwrap(),
+        ];
+        ids.sort_unstable();
+        assert_eq!(ids, [33, 34]);
     }
 
     fn claim(manager: &SignalsManager, last: Option<u64>) -> (u64, Bytes, Option<Bytes>) {

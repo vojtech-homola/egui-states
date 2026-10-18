@@ -34,6 +34,7 @@ def test_map_mutation(local_bundle):
 
 
 def test_vector_boundary_errors_preserve_state(local_bundle):
+    """Reject invalid vector indices without mutating stored items."""
     _, states, _ = local_bundle
     values = states.value_vec.items
     for before in ([], [10], [10, 20, 30]):
@@ -49,6 +50,7 @@ def test_vector_boundary_errors_preserve_state(local_bundle):
 
 
 def test_collection_operation_sequences_match_reference_models(local_bundle):
+    """Compare mixed collection operations with Python reference containers."""
     _, states, _ = local_bundle
     vector, mapping = states.value_vec.items, states.value_map.items
     expected_vector, expected_map = [], {}
@@ -82,6 +84,7 @@ def test_collection_operation_sequences_match_reference_models(local_bundle):
 
 
 def test_collection_overwrites_and_rejected_items(local_bundle):
+    """Check replacement and invalid writes through vector and map handles."""
     _, states, _ = local_bundle
     vector, mapping = states.value_vec.items, states.value_map.items
     vector.set([10, 20, 30])

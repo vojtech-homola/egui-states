@@ -131,6 +131,109 @@ impl ObjectType {
     }
 }
 
+/// Formats `object_type` in the Rust type syntax accepted by the C ABI.
+///
+/// Named structs and enums are referenced by name; [`type_definition`]
+/// formats their definitions.
+#[cfg(feature = "c_abi")]
+pub(crate) fn type_expression(object_type: &ObjectType) -> String {
+    let mut output = String::new();
+    write_type_expression(object_type, &mut output);
+    output
+}
+
+#[cfg(feature = "c_abi")]
+fn write_type_expression(object_type: &ObjectType, output: &mut String) {
+    match object_type {
+        ObjectType::U8 => output.push_str("u8"),
+        ObjectType::U16 => output.push_str("u16"),
+        ObjectType::U32 => output.push_str("u32"),
+        ObjectType::U64 => output.push_str("u64"),
+        ObjectType::I8 => output.push_str("i8"),
+        ObjectType::I16 => output.push_str("i16"),
+        ObjectType::I32 => output.push_str("i32"),
+        ObjectType::I64 => output.push_str("i64"),
+        ObjectType::F32 => output.push_str("f32"),
+        ObjectType::F64 => output.push_str("f64"),
+        ObjectType::String => output.push_str("String"),
+        ObjectType::Bool => output.push_str("bool"),
+        ObjectType::Empty => output.push_str("()"),
+        ObjectType::Enum(name, _) | ObjectType::Struct(name, _) => output.push_str(name),
+        // A zero-element tuple has no Rust spelling of its own and prints as
+        // `()`, which parses back as `Empty`; Rust never produces one.
+        ObjectType::Tuple(elements) => {
+            output.push('(');
+            for (index, element) in elements.iter().enumerate() {
+                if index > 0 {
+                    output.push_str(", ");
+                }
+                write_type_expression(element, output);
+            }
+            if elements.len() == 1 {
+                output.push(',');
+            }
+            output.push(')');
+        }
+        ObjectType::List(size, element) => {
+            output.push('[');
+            write_type_expression(element, output);
+            output.push_str("; ");
+            output.push_str(&size.to_string());
+            output.push(']');
+        }
+        ObjectType::Vec(element) => {
+            output.push_str("Vec<");
+            write_type_expression(element, output);
+            output.push('>');
+        }
+        ObjectType::Map(key, value) => {
+            output.push_str("HashMap<");
+            write_type_expression(key, output);
+            output.push_str(", ");
+            write_type_expression(value, output);
+            output.push('>');
+        }
+        ObjectType::Option(inner) => {
+            output.push_str("Option<");
+            write_type_expression(inner, output);
+            output.push('>');
+        }
+    }
+}
+
+/// Formats the definition of a named struct or enum, or returns `None` for
+/// other types.
+///
+/// Enum discriminants are always written explicitly.
+#[cfg(feature = "c_abi")]
+pub(crate) fn type_definition(object_type: &ObjectType) -> Option<String> {
+    match object_type {
+        ObjectType::Struct(name, fields) if fields.is_empty() => {
+            Some(format!("struct {name} {{}}"))
+        }
+        ObjectType::Struct(name, fields) => {
+            let fields = fields
+                .iter()
+                .map(|(field, field_type)| format!("{field}: {}", type_expression(field_type)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            Some(format!("struct {name} {{ {fields} }}"))
+        }
+        ObjectType::Enum(name, variants) if variants.is_empty() => {
+            Some(format!("enum {name} {{}}"))
+        }
+        ObjectType::Enum(name, variants) => {
+            let variants = variants
+                .iter()
+                .map(|(variant, value)| format!("{variant} = {value}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            Some(format!("enum {name} {{ {variants} }}"))
+        }
+        _ => None,
+    }
+}
+
 /// Rust derives requested for a custom type emitted by the Rust server generator.
 ///
 /// This is public because [`crate::typed`] emits it in downstream crates. It is
@@ -396,6 +499,56 @@ mod tests {
         assert_ne!(
             ObjectType::List(2, Box::new(ObjectType::U8)).get_hash(),
             ObjectType::List(3, Box::new(ObjectType::U8)).get_hash()
+        );
+    }
+
+    /// The C ABI parses these spellings and `generate_c` emits them, so they
+    /// are part of the public C contract.
+    #[test]
+    #[cfg(feature = "c_abi")]
+    fn type_syntax_is_rust_syntax() {
+        let expressions: Vec<_> = samples().iter().map(type_expression).collect();
+        assert_eq!(
+            expressions,
+            [
+                "u8",
+                "u16",
+                "u32",
+                "u64",
+                "i8",
+                "i16",
+                "i32",
+                "i64",
+                "f64",
+                "f32",
+                "String",
+                "bool",
+                "()",
+                "Choice",
+                "Point",
+                "(u8, bool)",
+                "[u16; 3]",
+                "Vec<f64>",
+                "HashMap<String, u32>",
+                "Option<i64>",
+            ]
+        );
+        assert_eq!(
+            type_expression(&ObjectType::Tuple(vec![ObjectType::Empty])),
+            "((),)"
+        );
+
+        let definitions: Vec<_> = samples().iter().filter_map(type_definition).collect();
+        assert_eq!(
+            definitions,
+            [
+                "enum Choice { A = 0, B = -1 }",
+                "struct Point { x: i32, label: String }"
+            ]
+        );
+        assert_eq!(
+            type_definition(&ObjectType::Struct("Unit".into(), Vec::new())).as_deref(),
+            Some("struct Unit {}")
         );
     }
 }

@@ -25,6 +25,18 @@ uv run cargo test --locked -p egui_states --features "server build_scripts pytho
 cargo test --locked -p example_smoke_tests                                      # Rust examples
 ```
 
+The experimental C ABI is not part of the default packages and has its own runs:
+
+```sh
+cargo test --locked -p egui_states --no-default-features --features c_abi --lib -- --test-threads=1
+cargo test --locked -p egui_states --features "build_scripts c_abi" --test build_scripts_c
+cargo test --locked -p egui_states_c -- --test-threads=1   # also checks include/egui_states.h
+cargo test --locked -p counter_c                           # C counter example; needs a C and C++ compiler
+```
+
+Regenerate the header with `EGUI_STATES_BLESS=1 cargo test -p egui_states_c --test header`.
+Set `EGUI_STATES_SKIP_C_TESTS=1` to skip the C compiler test.
+
 The `python` feature links against `libpython`. If the linker cannot find it,
 install the Python development package or put its directory in `LIBRARY_PATH`;
 set `PYO3_PYTHON` to choose another interpreter.
@@ -89,6 +101,8 @@ expected values live in `src/scenarios.rs`, `src/fixture.rs`, and
   and a unit struct.
 - `crates/egui-states/tests/build_scripts_codegen.rs` checks the generated files
   themselves: determinism, ordering, layout hashes, and validation panics.
+  `build_scripts_c.rs` does the same for the experimental C header (with
+  `c_abi`) and parses its type strings with the C ABI.
 
 ## Conventions
 
