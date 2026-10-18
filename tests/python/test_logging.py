@@ -8,6 +8,7 @@ from egui_states.logging import LogLevel
 
 
 def test_logger_dispatch_filters_levels_and_removes_loggers(local_bundle):
+    """Dispatch each level only to registered loggers and honor their removal."""
     server, _, _ = local_bundle
     info, warning = [], []
     server.logging.add_logger(LogLevel.Info, info.append)

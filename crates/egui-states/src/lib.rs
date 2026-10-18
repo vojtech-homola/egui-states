@@ -44,7 +44,8 @@
 //! `client` is enabled by default. Enable `server` for the native Rust server
 //! API, `python` when building the PyO3 extension module, or `build_scripts` for
 //! `generate_python` and `generate_rust`. Native and WebAssembly egui clients
-//! use the same state API.
+//! use the same state API. The experimental `c_abi` feature supports the
+//! `egui_states_c` library and, with `build_scripts`, `generate_c`.
 //!
 //! See the [project README](https://github.com/vojtech-homola/egui-states) for
 //! complete setup instructions and runnable examples.
@@ -65,6 +66,10 @@ mod typed;
 /// Build-time generators for typed Rust and Python server bindings.
 #[cfg(feature = "build_scripts")]
 pub mod build_scripts;
+/// Experimental support for the `egui_states_c` crate; not a stable Rust API.
+#[cfg(feature = "c_abi")]
+#[doc(hidden)]
+pub mod c_abi;
 #[cfg(feature = "client")]
 mod client;
 /// Python extension-module support used by the `egui-states` Python package.

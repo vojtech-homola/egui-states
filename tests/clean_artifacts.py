@@ -38,6 +38,7 @@ def clean_runtime_packages(directory: Path, *, delete: bool = False) -> int:
 
 
 def main() -> int:
+    """Preview or delete staged runtime packages selected by command-line options."""
     parser = argparse.ArgumentParser(
         description=__doc__,
         epilog="This command does not detect active sessions. Stop pytest and its subprocesses before --delete.",

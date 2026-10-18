@@ -13,7 +13,7 @@ GENERATED = ROOT / "tests" / "build-artifacts"
 
 def pytest_configure(config):
     """Generate bindings and locate the native client from Cargo artifacts."""
-    from tests.preparation import build, executable, run
+    from tests.preparation import build, executable, run  # noqa: PLC0415
 
     try:
         artifacts = build("egui_states_test_support", bins=True)
@@ -35,8 +35,8 @@ def pytest_generate_tests(metafunc):
 
 
 def _bundle(running):
-    from egui_states_test_bindings import StatesServer
-    from egui_states.logging import LogLevel
+    from egui_states_test_bindings import StatesServer  # noqa: PLC0415  # ty: ignore[unresolved-import]
+    from egui_states.logging import LogLevel  # noqa: PLC0415
 
     errors = []
     server = StatesServer(signals_workers=1, error_handler=errors.append)

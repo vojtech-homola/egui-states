@@ -7,7 +7,7 @@ import sys
 # first on PYTHONPATH. The script directory itself is tests/, not the repo root.
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 from tests.python.integration_server import run_scenario
-import egui_states._core as core
+import egui_states._core as core  # noqa: PLC2701
 
 print(f"Integration worker extension: {core.__file__}", flush=True)
 assert "runtime-" in str(core.__file__), "integration worker loaded an unstaged extension"

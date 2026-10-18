@@ -2,6 +2,8 @@ use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
+#[cfg(feature = "c_abi")]
+use std::time::Instant;
 
 use event_listener::Event as ListenerEvent;
 #[cfg(any(feature = "server", feature = "python"))]
@@ -127,6 +129,55 @@ impl Event {
         }
     }
 
+    /// Like [`Self::wait_clear_until`], but gives up at `deadline`.
+    ///
+    /// `None` waits without a deadline.
+    #[cfg(feature = "c_abi")]
+    pub(crate) fn wait_clear_deadline(
+        &self,
+        stop: &AtomicBool,
+        deadline: Option<Instant>,
+    ) -> WaitOutcome {
+        loop {
+            if stop.load(Ordering::Acquire) {
+                return WaitOutcome::Stopped;
+            }
+
+            if self
+                .0
+                .flag
+                .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                return WaitOutcome::Set;
+            }
+
+            let listener = self.0.notify.listen();
+
+            if stop.load(Ordering::Acquire) {
+                return WaitOutcome::Stopped;
+            }
+
+            if self
+                .0
+                .flag
+                .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                return WaitOutcome::Set;
+            }
+
+            match deadline {
+                Some(deadline) => {
+                    if listener.wait_deadline(deadline).is_none() {
+                        return WaitOutcome::TimedOut;
+                    }
+                }
+                None => listener.wait(),
+            }
+        }
+    }
+
     pub(crate) async fn wait_clear_async(&self) {
         loop {
             if self
@@ -152,4 +203,16 @@ impl Event {
             listener.await;
         }
     }
+}
+
+/// Result of [`Event::wait_clear_deadline`].
+#[cfg(feature = "c_abi")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WaitOutcome {
+    /// The event was set and has been cleared by this waiter.
+    Set,
+    /// The stop flag was raised.
+    Stopped,
+    /// The deadline passed before the event was set.
+    TimedOut,
 }

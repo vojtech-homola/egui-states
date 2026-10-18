@@ -10,6 +10,7 @@ NAMES = ["u8", "i8", "u16", "i16", "u32", "i32", "u64", "i64", "f32", "f64"]
 
 @pytest.mark.parametrize("name,dtype", list(zip(NAMES, DTYPES)), ids=NAMES)
 def test_numeric_storage_and_replacement(local_bundle, name, dtype):
+    """Round-trip each numeric dtype through storage, replacement, and clearing."""
     _, states, _ = local_bundle
     data = getattr(states.numeric, name + "_data")
     limits = np.iinfo(dtype) if np.issubdtype(dtype, np.integer) else None
@@ -26,6 +27,7 @@ def test_numeric_storage_and_replacement(local_bundle, name, dtype):
 @pytest.mark.parametrize("operation", ["set", "add", "replace"])
 @pytest.mark.parametrize("invalid", ["dtype", "noncontiguous", "byteorder"])
 def test_rejected_numeric_buffers_preserve_state(local_bundle, operation, invalid):
+    """Reject incompatible numeric buffers without modifying stored data."""
     _, states, _ = local_bundle
     data = states.numeric.u16_data
     before = np.array([11, 22, 33], dtype=np.uint16)
@@ -52,6 +54,7 @@ def test_rejected_numeric_buffers_preserve_state(local_bundle, operation, invali
 @pytest.mark.parametrize("channels", [1, 2, 3, 4], ids=["gray", "gray-alpha", "rgb", "rgba"])
 @pytest.mark.parametrize("padded", [False, True], ids=["contiguous", "padded-rows"])
 def test_image_formats_and_padded_rows(local_bundle, channels, padded):
+    """Convert supported channel counts and padded rows to RGBA images."""
     _, states, _ = local_bundle
     shape = (3, 7 if padded else 4) + (() if channels == 1 else (channels,))
     storage = np.arange(np.prod(shape), dtype=np.uint8).reshape(shape)
@@ -62,7 +65,7 @@ def test_image_formats_and_padded_rows(local_bundle, channels, padded):
         rgba[..., :3] = gray[..., None]
     else:
         rgba[..., :3] = data[..., :3]
-    rgba[..., 3] = data[..., -1] if channels in (2, 4) else 255
+    rgba[..., 3] = data[..., -1] if channels in (2, 4) else 255  # noqa: PLR6201
     states.image.image.set(data)
     assert_array(states.image.image.get(), rgba)
     states.image.images[79].set(data)
@@ -76,6 +79,7 @@ def test_image_formats_and_padded_rows(local_bundle, channels, padded):
 
 @pytest.mark.parametrize("view", ["rows", "columns", "channels"])
 def test_invalid_image_strides_preserve_image(local_bundle, view):
+    """Preserve stored pixels when image strides are rejected."""
     _, states, _ = local_bundle
     image = np.arange(3 * 4 * 4, dtype=np.uint8).reshape(3, 4, 4)
     states.image.image.set(image)

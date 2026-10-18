@@ -3,18 +3,20 @@ members = [
     "crates/egui-states",
     "crates/egui-states-macros",
     "crates/egui-states-python",
+    "crates/egui-states-c",
 
     "example/showcase/gui-core",
     "example/showcase/gui",
     "example/showcase/rust",
     "example/counter/gui",
     "example/counter/rust",
+    "example/counter/c",
     "tests/shared-test-states",
     "tests/rust-integration",
     "tests/rust-process-helpers",
     "example/tests/rust"
 ]
-# Library development defaults; Python and example packages remain opt-in.
+# Library development defaults; Python, C ABI, and example packages remain opt-in.
 default-members = [
     "crates/egui-states",
     "crates/egui-states-macros",

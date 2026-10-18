@@ -4,6 +4,7 @@ import numpy as np
 
 
 def assert_array(actual, expected):
+    """Assert matching array dtypes, shapes, and element values."""
     assert actual.dtype == expected.dtype
     assert actual.shape == expected.shape
     np.testing.assert_array_equal(actual, expected)

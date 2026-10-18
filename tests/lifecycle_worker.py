@@ -3,7 +3,7 @@
 import gc
 import threading
 import time
-from egui_states_test_bindings import StatesServer
+from egui_states_test_bindings import StatesServer  # ty: ignore[unresolved-import]
 from egui_states.logging import LogLevel
 
 errors = []

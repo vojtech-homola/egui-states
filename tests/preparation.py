@@ -29,7 +29,7 @@ def run(command, *, timeout=600, cwd=ROOT, env=None):
         output, _ = process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
         if os.name == "nt":
-            subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"], capture_output=True)
+            subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"], capture_output=True, check=False)
         else:
             os.killpg(process.pid, signal.SIGKILL)
         output, _ = process.communicate()
@@ -94,7 +94,7 @@ def prepare_extension():
     shutil.copy2(candidates[0], extension)
     sys.path.insert(0, str(stage))
     os.environ["PYTHONPATH"] = os.pathsep.join(filter(None, [str(stage), os.environ.get("PYTHONPATH")]))
-    import egui_states._core as core
+    import egui_states._core as core  # noqa: PLC0415, PLC2701
 
     if Path(core.__file__).resolve() != extension.resolve():
         raise RuntimeError(f"Loaded stale extension: {core.__file__}; expected {extension}")

@@ -1,3 +1,4 @@
+# ruff: noqa: PLC0415
 """Native worker regressions run outside pytest so leaked threads cannot accumulate."""
 
 import sys
@@ -5,14 +6,16 @@ from tests.preparation import ROOT, run
 
 
 def test_disposal_releases_workers(tmp_path):
+    """Release callback workers when their owning servers are disposed."""
     # A different cwd ensures subprocess imports honor the staged PYTHONPATH.
     run([sys.executable, ROOT / "tests/lifecycle_worker.py"], cwd=tmp_path, timeout=15)
 
 
 def test_server_restarts_on_a_different_port():
+    """Restart a server with a new port and release the previous listener."""
     import socket
     import pytest
-    from egui_states_test_bindings import StatesServer
+    from egui_states_test_bindings import StatesServer  # ty: ignore[unresolved-import]
     from egui_states.logging import LogLevel
 
     # Hold both reservations together so the ports are guaranteed distinct.

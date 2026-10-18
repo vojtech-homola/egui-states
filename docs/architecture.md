@@ -14,6 +14,10 @@ and synchronization bookkeeping.
    dispatch table.
 3. `generate_python` or `generate_rust` walks the same state definition from a
    build script or a generator executable and writes matching server bindings.
+   The experimental `generate_c` writes a C header that registers the same
+   states through the [C ABI](../crates/egui-states-c/README.md), which computes
+   the same state ids and type hashes from names and Rust type strings at
+   runtime.
 4. The peers always compare the wire-protocol version during the WebSocket
    handshake. They can also compare an application version and token when those
    checks are configured.

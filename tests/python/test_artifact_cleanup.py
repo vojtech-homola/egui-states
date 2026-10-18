@@ -6,6 +6,7 @@ from tests.clean_artifacts import clean_runtime_packages
 
 
 def test_preview_preserves_packages_and_delete_preserves_other_artifacts(tmp_path, capsys):
+    """Remove only staged packages when deletion is explicitly requested."""
     package = tmp_path / "runtime-old" / "egui_states"
     package.mkdir(parents=True)
     extension = package / "_core.so"
@@ -28,6 +29,7 @@ def test_preview_preserves_packages_and_delete_preserves_other_artifacts(tmp_pat
 
 
 def test_cleanup_refuses_symlinks_and_preserves_their_targets(tmp_path, capsys):
+    """Preserve linked directories and their contents during cleanup."""
     artifacts = tmp_path / "artifacts"
     artifacts.mkdir()
     outside = tmp_path / "outside"
@@ -51,7 +53,8 @@ def test_cleanup_refuses_symlinks_and_preserves_their_targets(tmp_path, capsys):
 
 
 def test_cleanup_reports_locked_packages_and_continues(tmp_path, monkeypatch, capsys):
-    from tests import clean_artifacts
+    """Continue removing unused packages after a locked package fails."""
+    from tests import clean_artifacts  # noqa: PLC0415
 
     locked = tmp_path / "runtime-a-locked"
     removable = tmp_path / "runtime-b-unused"

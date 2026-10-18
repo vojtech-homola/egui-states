@@ -1,8 +1,11 @@
 """Opt-in example bindings and native smoke probe preparation."""
 
 import importlib.util
+from importlib.abc import Loader
+from importlib.machinery import ModuleSpec
 from pathlib import Path
 import sys
+from typing import cast
 
 import pytest
 
@@ -30,12 +33,12 @@ def example_server(request):
     directory = ROOT / "example" / name / "python"
     sys.path.insert(0, str(directory))
     try:
-        spec = importlib.util.spec_from_file_location(f"{name}_example", directory / "run.py")
+        spec = cast(ModuleSpec, importlib.util.spec_from_file_location(f"{name}_example", directory / "run.py"))
         module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+        cast(Loader, spec.loader).exec_module(module)
         errors = []
         server = module.setup_server(error_handler=errors.append)
-        from egui_states.logging import LogLevel
+        from egui_states.logging import LogLevel  # noqa: PLC0415
 
         server.logging.add_logger(LogLevel.Error, lambda message: errors.append(RuntimeError(message)))
         assert not server.is_running(), "Import/setup must not start a server"

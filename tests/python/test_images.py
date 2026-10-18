@@ -1,8 +1,14 @@
 # ruff: noqa: D103
+"""Image conversion, updates, and validation through generated state handles."""
 
 import numpy as np
 import pytest
 from .assertions import assert_array
+
+from egui_states_test_bindings import (  # ty: ignore[unresolved-import]
+    State,
+    StatesServer,
+)
 
 
 @pytest.mark.parametrize("multi", [False, True], ids=["image", "image-multi"])
@@ -37,11 +43,6 @@ def test_image_shape_limit(local_bundle, multi, shape):
         with pytest.raises(ValueError, match="65536"):
             states.image.images[9].set_all((65_537, 1), 0)
         assert 9 not in states.image.images
-
-from egui_states_test_bindings import (
-    State,
-    StatesServer,
-)
 
 
 def test_image_value_roundtrip(local_bundle: tuple[StatesServer, State, list[Exception]]) -> None:
