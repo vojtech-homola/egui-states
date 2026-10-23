@@ -31,8 +31,10 @@ impl MessageSender {
         (Self { sender }, receiver)
     }
 
+    // Sends fail only once the connection thread has stopped; the UI thread
+    // must not panic because of that.
     pub(crate) fn send(&self, msg: ChannelMessage) {
-        self.sender.send(Some(msg)).unwrap();
+        let _ = self.sender.send(Some(msg));
     }
 
     pub(crate) fn send_message(&self, msg: &String) {
@@ -45,7 +47,7 @@ impl MessageSender {
     }
 
     pub(crate) fn close(&self) {
-        self.sender.send(None).unwrap();
+        let _ = self.sender.send(None);
     }
 }
 
@@ -646,6 +648,16 @@ mod tests {
             receiver.try_recv(),
             Err(TryRecvError::Empty | TryRecvError::Disconnected)
         ));
+    }
+
+    /// UI handles keep sending after the connection thread is gone.
+    #[test]
+    fn sending_after_the_receiver_is_dropped_does_not_panic() {
+        let (sender, receiver) = MessageSender::new();
+        drop(receiver);
+        sender.send_ack(1);
+        sender.send_message(&"late".to_string());
+        sender.close();
     }
 
     #[test]

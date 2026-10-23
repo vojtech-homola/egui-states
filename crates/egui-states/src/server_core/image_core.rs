@@ -86,7 +86,7 @@ impl Image {
     }
 
     pub(crate) fn set_image(&self, image: ImageData, update: bool) -> Result<(), String> {
-        let rgba_size = checked_image_bytes(image.size, 4)?;
+        let (_, rgba_size) = checked_fill_size(image.size)?;
         // Prepare data to send if connected before locking
         let to_send = if self.connected.load(Ordering::Acquire) {
             Some(pack_set_data(self.id, &image, update)?)
@@ -264,7 +264,7 @@ impl Image {
         update: bool,
         force: bool,
     ) -> Result<(), String> {
-        checked_image_bytes(image.size, 4)?;
+        checked_fill_size(image.size)?;
         checked_image_bounds(*origin, image.size)?;
         // Prepare data to send if connected before locking
         let to_send = if self.connected.load(Ordering::Acquire) {
@@ -836,6 +836,25 @@ mod tests {
             image.get_image(|(data, _)| data.clone()),
             [7, 7, 7, 8].repeat(20)
         );
+    }
+
+    #[test]
+    fn zero_sized_images_are_rejected_without_mutating_the_image() {
+        for connected in [false, true] {
+            let (image, _, mut receiver) = new_image(connected);
+            image.set_all_image([1, 1], [9; 4], false).unwrap();
+            for size in [[0, 5], [5, 0], [0, 0]] {
+                let data = || image_data(&[], size, ImageType::Gray);
+                assert!(image.set_image(data(), false).unwrap_err().contains("zero"));
+                let result = image.update_image(&[0, 0], data(), false, false);
+                assert!(result.unwrap_err().contains("zero"));
+            }
+            assert_eq!(
+                image.get_image(|(data, size)| (data.clone(), *size)),
+                (vec![9; 4], [1, 1])
+            );
+            assert_no_message(&mut receiver);
+        }
     }
 
     #[test]

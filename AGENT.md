@@ -30,3 +30,8 @@
    if all unreleased changes are wire compatible; otherwise use the released
    value plus one, regardless of how many incompatible changes are made before
    the next release.
+6. Every commit on `main` and every pull request title follows Conventional
+   Commits (`<type>: <summary>`). Pull requests are squash-merged, so the title
+   becomes the commit message on `main`. `git-cliff` lists `feat`, `fix`,
+   `refactor`, `doc`, `perf`, `change`, `style`, `test`, and `revert` in the
+   changelog, skips `chore` and `ci`, and silently drops any other message.

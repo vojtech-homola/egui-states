@@ -130,27 +130,28 @@ pub(crate) async fn run(
 
         // std::thread::sleep(std::time::Duration::from_millis(100));
         connected.store(true, Ordering::Release);
-        let mut success = true;
-        for v in values.sync.iter() {
-            if let Err(_) = v.sync() {
-                success = false;
-                break;
+        let failure = if values.sync.iter().any(|v| v.sync().is_err()) {
+            Some("failed to sync value after handshake")
+        } else {
+            match serialize(&ServerHeader::Update(0.0)) {
+                Ok(data) => {
+                    sender.send(data);
+                    None
+                }
+                Err(_) => Some("failed to serialize update message"),
             }
-        }
-        if !success {
-            signals.error("failed to sync value after handshake");
+        };
+        if let Some(error) = failure {
+            // Drop only this client; the server keeps accepting connections.
+            // The partial sync may have left producers waiting for this
+            // client's acknowledgements, so release them.
+            signals.error(error);
             connected.store(false, Ordering::Release);
-            holder = ChannelHolder::Rx(rx);
-            break;
-        }
-        match serialize(&ServerHeader::Update(0.0)) {
-            Ok(data) => sender.send(data),
-            Err(_) => {
-                signals.error("failed to serialize update message");
-                connected.store(false, Ordering::Release);
-                holder = ChannelHolder::Rx(rx);
-                break;
+            for v in values.ack.values() {
+                v.reset();
             }
+            holder = ChannelHolder::Rx(rx);
+            continue;
         }
 
         signals.on_connect(peer_addr);
@@ -621,6 +622,116 @@ mod tests {
             [MAX_MSG_COUNT as u8, MAX_MSG_COUNT as u8 + 1]
         );
         assert!(receiver.next().await.is_none());
+    }
+}
+
+#[cfg(test)]
+mod run_tests {
+    use std::net::{Ipv4Addr, SocketAddr};
+    use std::sync::atomic::AtomicUsize;
+
+    use parking_lot::RwLock;
+    use tokio_tungstenite::MaybeTlsStream;
+
+    use super::*;
+    use crate::serialization::ClientHeader;
+    use crate::server_core::server::{Acknowledge, SyncTrait};
+
+    /// Fails only its first connection sync.
+    struct FailFirstSync(AtomicUsize);
+
+    impl SyncTrait for FailFirstSync {
+        fn sync(&self) -> Result<(), ()> {
+            match self.0.fetch_add(1, Ordering::AcqRel) {
+                0 => Err(()),
+                _ => Ok(()),
+            }
+        }
+    }
+
+    struct ResetProbe(AtomicBool);
+
+    impl Acknowledge for ResetProbe {
+        fn acknowledge(&self) {}
+
+        fn reset(&self) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+
+    async fn connect(addr: SocketAddr) -> WebSocketStream<MaybeTlsStream<TcpStream>> {
+        let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}"))
+            .await
+            .unwrap();
+        let handshake = ClientHeader::Handshake(PROTOCOL_VERSION, None, None);
+        let bytes = postcard::to_stdvec(&handshake).unwrap();
+        ws.send(Message::Binary(bytes.into())).await.unwrap();
+        ws
+    }
+
+    #[test]
+    fn failed_sync_drops_only_that_client() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let (sender, rx) = MessageSender::new();
+            let connected = Arc::new(AtomicBool::new(false));
+            let stop_event = Event::new();
+            let probe = Arc::new(ResetProbe(AtomicBool::new(false)));
+            let mut values = ServerStatesList::default();
+            values.ack.insert(1, probe.clone());
+            values
+                .sync
+                .push(Arc::new(FailFirstSync(AtomicUsize::new(0))));
+            let server = tokio::spawn(run(
+                listener,
+                sender.clone(),
+                rx,
+                connected.clone(),
+                stop_event.clone(),
+                values,
+                SignalsManager::new(),
+                Handshake {
+                    version: None,
+                    token: None,
+                },
+                Arc::new(RwLock::new(None)),
+            ));
+            let deadline = Duration::from_secs(5);
+
+            let mut rejected = connect(addr).await;
+            let closed = tokio::time::timeout(deadline, rejected.next())
+                .await
+                .expect("the client whose sync failed was not dropped");
+            assert!(!matches!(closed, Some(Ok(Message::Binary(_)))));
+            assert!(
+                probe.0.load(Ordering::Acquire),
+                "pending states were not reset"
+            );
+            assert!(!connected.load(Ordering::Acquire));
+
+            let mut accepted = connect(addr).await;
+            let update = tokio::time::timeout(deadline, accepted.next())
+                .await
+                .expect("the next client was not synchronized");
+            assert!(matches!(update, Some(Ok(Message::Binary(_)))));
+            assert!(connected.load(Ordering::Acquire));
+
+            connected.store(false, Ordering::Release);
+            stop_event.set();
+            sender.close();
+            tokio::time::timeout(deadline, server)
+                .await
+                .expect("the server did not stop")
+                .unwrap();
+        });
     }
 }
 

@@ -184,13 +184,13 @@ impl DataMultiTake {
                 false => self.event.wait(),
             }
 
-            {
-                let mut w = self.values.write();
-                if cache {
-                    w.insert(index, (slice.to_vec(), data.count));
-                } else {
-                    w.remove(&index);
-                }
+            // Held until every chunk is queued, so concurrent non-blocking
+            // transfers cannot interleave their chunks on the wire.
+            let mut w = self.values.write();
+            if cache {
+                w.insert(index, (slice.to_vec(), data.count));
+            } else {
+                w.remove(&index);
             }
 
             if !self.connected.load(Ordering::Acquire) {

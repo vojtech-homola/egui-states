@@ -156,7 +156,7 @@ impl Image {
                 if let Some((ref mut c_image, ref mut actual_pixel)) = *self.buffer.lock() {
                     let actual = *actual_pixel as usize;
 
-                    if actual + pixels >= c_image.pixels.len() {
+                    if actual + pixels > c_image.pixels.len() {
                         return Err(format!("Pixels exceed image size in {}", self.name));
                     }
 
@@ -438,7 +438,7 @@ impl ImageMulti {
                         self.name, index
                     )
                 })?;
-                if *actual_pixel + pixels >= image.pixels.len() {
+                if *actual_pixel + pixels > image.pixels.len() {
                     return Err(format!(
                         "Pixels exceed image size in {} index {}",
                         self.name, index
@@ -868,6 +868,38 @@ mod tests {
             assert_eq!(image.get_size(), Some(size));
             assert_eq!(images.get_size(7), Some(size));
         }
+    }
+
+    /// A batch may complete the image, which leaves an empty final chunk.
+    #[test]
+    fn a_batch_may_complete_the_image_before_its_end() {
+        let chunks = || {
+            [
+                (ImageSetMessage::Start([3, 1], 1), &[1][..]),
+                (ImageSetMessage::Batch(2), &[2, 3][..]),
+                (ImageSetMessage::End(0), &[][..]),
+            ]
+        };
+        let context = egui::Context::default();
+        let (sender, mut receiver) = MessageSender::new();
+        let image = Image::new("image".into(), 1, sender);
+        image
+            .initialize(&context, ColorImage::filled([1, 1], egui::Color32::BLACK))
+            .unwrap();
+        let (sender, mut multi_receiver) = MessageSender::new();
+        let images = ImageMulti::new("images".into(), 2, sender);
+        images.initialize(&context);
+
+        for (message, data) in chunks() {
+            image.set_image(message, ImageType::Gray, data).unwrap();
+        }
+        for (message, data) in chunks() {
+            images.set_image(7, message, ImageType::Gray, data).unwrap();
+        }
+        assert_single_ack(&mut receiver, 1);
+        assert_single_ack(&mut multi_receiver, 2);
+        assert_eq!(image.get_size(), Some([3, 1]));
+        assert_eq!(images.get_size(7), Some([3, 1]));
     }
 
     #[test]

@@ -96,9 +96,9 @@ impl Image {
     ///
     /// # Errors
     ///
-    /// Returns an error if a dimension exceeds 65,536 pixels, dimensions
-    /// overflow, the data length does not match `size` and `format`, or the
-    /// update cannot be queued.
+    /// Returns an error if a dimension is zero or exceeds 65,536 pixels,
+    /// dimensions overflow, the data length does not match `size` and `format`,
+    /// or the update cannot be queued.
     pub fn set(
         &self,
         data: &[u8],
@@ -142,9 +142,9 @@ impl Image {
     ///
     /// # Errors
     ///
-    /// Returns an error if the rectangle lies outside the current image, its
-    /// dimensions exceed 65,536 pixels or overflow, its data length is invalid,
-    /// or it cannot be queued.
+    /// Returns an error if the rectangle lies outside the current image, a
+    /// dimension is zero, its dimensions exceed 65,536 pixels or overflow, its
+    /// data length is invalid, or it cannot be queued.
     pub fn update(
         &self,
         data: &[u8],

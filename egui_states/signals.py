@@ -26,6 +26,10 @@ def _run(manager_ref: "weakref.ref[SignalsManager]", server: StateServerCore) ->
         try:
             event = server.signal_get(last_id)
         except Exception as e:
+            # `signal_get` released `last_id` before it failed, and the id of
+            # the failed event as well. Passing either again would release a
+            # claim another worker may hold by now.
+            last_id = None
             manager = manager_ref()
             if manager is None:
                 return
