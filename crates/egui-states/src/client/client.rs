@@ -147,7 +147,7 @@ pub(crate) fn print_error(error: &str) {
 /// [`Self::Disconnected`] when an established connection ends. Calling
 /// [`Client::connect`] starts a new attempt and returns the state to
 /// `NotConnected`.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConnectionState {
     /// No connection has been established or a connection attempt is pending.
     NotConnected,

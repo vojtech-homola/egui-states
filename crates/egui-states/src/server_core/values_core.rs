@@ -103,6 +103,11 @@ impl Acknowledge for ValueCore {
             w.1 -= 1;
         }
     }
+
+    fn reset(&self) {
+        // Nothing in flight survives a disconnect.
+        self.value.write().1 = 0;
+    }
 }
 
 impl SyncTrait for ValueCore {
@@ -374,6 +379,19 @@ mod tests {
         value.acknowledge();
         value.update_value(TYPE_ID, false, b("again")).unwrap();
         assert_eq!(value.get(), b("again"));
+    }
+
+    #[test]
+    fn reset_discards_every_unacknowledged_send() {
+        let (value, _signals, mut receiver) = value(true);
+        value.set(b("first"), false, false).unwrap();
+        value.set(b("second"), false, false).unwrap();
+        next_message(&mut receiver);
+        next_message(&mut receiver);
+
+        value.reset();
+        value.update_value(TYPE_ID, false, b("client")).unwrap();
+        assert_eq!(value.get(), b("client"));
     }
 
     #[test]

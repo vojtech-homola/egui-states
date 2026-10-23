@@ -327,7 +327,7 @@ impl StateServerCore {
 
     fn update(&self, duration: Option<f32>) -> PyResult<()> {
         self.server
-            .write()
+            .read()
             .update(duration)
             .map_err(|_| PyRuntimeError::new_err("Update failed."))
     }

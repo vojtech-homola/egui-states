@@ -288,6 +288,8 @@ impl SignalsManager {
                 return None;
             }
             if let Some(val) = self.values.lock().get(last_id.take()) {
+                // Pass the wake-up on, as in `claim_next`.
+                self.event.set_one();
                 return Some(val);
             }
             if !self.event.wait_clear_until(&self.closed) {
@@ -309,7 +311,12 @@ impl SignalsManager {
         &self,
         last_id: Option<u64>,
     ) -> Option<(u64, Bytes, Option<Bytes>)> {
-        self.values.lock().get(last_id)
+        let value = self.values.lock().get(last_id);
+        if value.is_some() {
+            // Pass the wake-up on, as in `claim_next`.
+            self.event.set_one();
+        }
+        value
     }
 
     // #[cfg(feature = "python")]
@@ -395,11 +402,8 @@ impl SignalsManager {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(any(feature = "python", feature = "c_abi"))]
     use std::sync::mpsc;
-    #[cfg(any(feature = "python", feature = "c_abi"))]
     use std::thread;
-    #[cfg(any(feature = "python", feature = "c_abi"))]
     use std::time::Duration;
     #[cfg(feature = "c_abi")]
     use std::time::Instant;
@@ -770,6 +774,69 @@ mod tests {
         ];
         ids.sort_unstable();
         assert_eq!(ids, [33, 34]);
+    }
+
+    /// Two changes that arrive before any worker wakes notify only once. The
+    /// worker that claims the first must pass the wake-up on, or the second
+    /// waits until the first callback has finished.
+    fn every_worker_receives_a_ready_id(claim_one: fn(SignalsManager) -> Option<u64>) {
+        let manager = SignalsManager::new();
+        manager.set_register(35, true, false);
+        manager.set_register(36, true, false);
+
+        let (sender, receiver) = mpsc::channel();
+        for _ in 0..2 {
+            let worker = manager.clone();
+            let sender = sender.clone();
+            // Each worker keeps its claim, like one that is still running a callback.
+            thread::spawn(move || {
+                if let Some(id) = claim_one(worker) {
+                    let _ = sender.send(id);
+                }
+            });
+        }
+        thread::sleep(Duration::from_millis(50));
+        manager.set(35, b("a"));
+        manager.set(36, b("b"));
+
+        let mut ids = [
+            receiver.recv_timeout(Duration::from_secs(2)).unwrap(),
+            receiver.recv_timeout(Duration::from_secs(2)).unwrap(),
+        ];
+        ids.sort_unstable();
+        assert_eq!(ids, [35, 36]);
+    }
+
+    /// The claim loop of the Rust callback worker.
+    #[test]
+    #[cfg(feature = "server")]
+    fn every_polling_worker_receives_a_ready_id() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        every_worker_receives_a_ready_id(|worker| {
+            let stop = AtomicBool::new(false);
+            loop {
+                if let Some((id, _, _)) = worker.try_changed_value(None) {
+                    return Some(id);
+                }
+                if !worker.wait_for_change_until(&stop) {
+                    return None;
+                }
+            }
+        });
+    }
+
+    /// The claim loop of the Python callback worker.
+    #[test]
+    #[cfg(feature = "python")]
+    fn every_blocking_worker_receives_a_ready_id() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        every_worker_receives_a_ready_id(|worker| {
+            worker.wait_changed_value(None).map(|(id, _, _)| id)
+        });
     }
 
     fn claim(manager: &SignalsManager, last: Option<u64>) -> (u64, Bytes, Option<Bytes>) {

@@ -568,6 +568,13 @@ impl Acknowledge for DataMulti {
 
         self.event.set();
     }
+
+    fn reset(&self) {
+        // A connection sync waits for one acknowledgement per key, so the
+        // default single `acknowledge` would leave a producer blocked.
+        *self.sync_counter.lock() = 0;
+        self.event.set();
+    }
 }
 
 impl SyncTrait for DataMulti {
@@ -695,6 +702,69 @@ pub(crate) fn pack_data(
     }
 
     Ok(messages)
+}
+
+#[cfg(all(test, feature = "server"))]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+
+    fn holder(data: &[u16]) -> DataHolder {
+        DataHolder {
+            data: data.as_ptr() as *const u8,
+            count: data.len(),
+            data_size: size_of_val(data),
+            data_type: DataType::U16,
+        }
+    }
+
+    #[test]
+    fn reset_releases_a_producer_waiting_for_a_multi_key_sync() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let (sender, _receiver) = MessageSender::new();
+        let connected = Arc::new(AtomicBool::new(false));
+        let data = DataMulti::new(
+            "root.data".into(),
+            5,
+            DataType::U16,
+            sender,
+            connected.clone(),
+        );
+        data.set(1, holder(&[1, 2]), false).unwrap();
+        data.set(2, holder(&[3, 4]), false).unwrap();
+        data.set(3, holder(&[7, 8]), false).unwrap();
+
+        connected.store(true, Ordering::Release);
+        data.sync().unwrap();
+        // Only one of the three sync acknowledgements arrives before the disconnect.
+        data.acknowledge();
+
+        let waiting = data.clone();
+        let (done_sender, done_receiver) = std::sync::mpsc::channel();
+        let waiter = std::thread::spawn(move || {
+            done_sender
+                .send(waiting.set(1, holder(&[5, 6]), false))
+                .unwrap();
+        });
+        assert!(
+            done_receiver
+                .recv_timeout(Duration::from_millis(100))
+                .is_err(),
+            "the producer must wait for the remaining sync acknowledgements"
+        );
+
+        connected.store(false, Ordering::Release);
+        Acknowledge::reset(&*data);
+        done_receiver
+            .recv_timeout(Duration::from_secs(5))
+            .expect("reset did not release the waiting producer")
+            .unwrap();
+        waiter.join().unwrap();
+        data.get(1, |v| assert_eq!(v, Some(&[5, 0, 6, 0][..])));
+    }
 }
 
 #[cfg(all(test, feature = "client"))]

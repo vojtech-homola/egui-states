@@ -5,7 +5,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 use parking_lot::{Mutex, RwLock};
 
-use crate::client::data::private;
+use crate::client::data::{private, start_batch_buffer};
 use crate::client::messages::{ChannelMessage, MessageSender};
 use crate::data_transport::DataType;
 use crate::hashing::NoHashMap;
@@ -143,7 +143,7 @@ where
                             data_type, self.data_type, self.name
                         ));
                     }
-                    if data.len() as u64 != count * self.element_size as u64 {
+                    if count.checked_mul(self.element_size as u64) != Some(data.len() as u64) {
                         return Err(format!(
                             "Data size {} does not match expected count {} for DataTake: {}",
                             data.len(),
@@ -177,34 +177,7 @@ where
                 }
             }
             DataTakeMessage::BatchStart(count, data) => {
-                let result = (|| {
-                    let all_data_size = count * self.element_size as u64;
-                    if data.len() as u64 > all_data_size {
-                        return Err(format!(
-                            "Batch start data size {} exceeds total data size {}",
-                            data.len(),
-                            all_data_size
-                        ));
-                    }
-                    if data.len() % self.element_size != 0 {
-                        return Err(format!(
-                            "Batch start data size {} is not a multiple of element size {}",
-                            data.len(),
-                            self.element_size
-                        ));
-                    }
-
-                    let mut buffer = Vec::with_capacity(count as usize);
-                    unsafe {
-                        std::ptr::copy_nonoverlapping(
-                            data.as_ptr(),
-                            buffer.as_mut_ptr() as *mut u8,
-                            data.len(),
-                        );
-                        buffer.set_len(data.len() / self.element_size);
-                    }
-                    Ok(buffer)
-                })();
+                let result = start_batch_buffer(&data, count, self.element_size);
 
                 *self.batch.lock() = match result {
                     Ok(buffer) => TakeBatch::Receiving { buffer, blocking },
@@ -465,7 +438,7 @@ where
                             data_type, self.data_type, self.name
                         ));
                     }
-                    if data.len() as u64 != count * self.element_size as u64 {
+                    if count.checked_mul(self.element_size as u64) != Some(data.len() as u64) {
                         return Err(format!(
                             "Data size {} does not match expected count {} for DataMultiTake: {}",
                             data.len(),
@@ -499,34 +472,7 @@ where
                 }
             }
             DataTakeMessage::BatchStart(count, data) => {
-                let result = (|| {
-                    let all_data_size = count * self.element_size as u64;
-                    if data.len() as u64 > all_data_size {
-                        return Err(format!(
-                            "Batch start data size {} exceeds total data size {}",
-                            data.len(),
-                            all_data_size
-                        ));
-                    }
-                    if data.len() % self.element_size != 0 {
-                        return Err(format!(
-                            "Batch start data size {} is not a multiple of element size {}",
-                            data.len(),
-                            self.element_size
-                        ));
-                    }
-
-                    let mut buffer = Vec::with_capacity(count as usize);
-                    unsafe {
-                        std::ptr::copy_nonoverlapping(
-                            data.as_ptr(),
-                            buffer.as_mut_ptr() as *mut u8,
-                            data.len(),
-                        );
-                        buffer.set_len(data.len() / self.element_size);
-                    }
-                    Ok(buffer)
-                })();
+                let result = start_batch_buffer(&data, count, self.element_size);
 
                 let batch = match result {
                     Ok(buffer) => TakeBatch::Receiving { buffer, blocking },
@@ -787,6 +733,30 @@ mod tests {
         assert_single_ack(&mut receiver, id);
         assert_eq!(take.take(), Some(vec![9]));
         assert_no_message(&mut receiver);
+    }
+
+    /// Counts come from the network, so absurd values must be errors rather
+    /// than panics, aborts, or short buffers.
+    #[test]
+    fn oversized_wire_counts_are_rejected() {
+        let (sender, _receiver) = MessageSender::new();
+        let take = DataTake::<u16>::new("take".to_string(), 65, sender.clone());
+        let multi = DataMultiTake::<u16>::new("takes".to_string(), 65, sender);
+
+        for count in [u64::MAX, u64::MAX / 2 + 1, 1 << 62] {
+            let all = || DataTakeMessage::All(DataType::U16, count, Bytes::new());
+            assert!(take.update(all(), false).is_err());
+            assert!(multi.update(4, all(), false).is_err());
+
+            let start = || DataTakeMessage::BatchStart(count, Bytes::from_static(&[1, 0]));
+            let end = || DataTakeMessage::BatchEnd(DataType::U16, count, Bytes::new());
+            take.update(start(), false).unwrap();
+            assert!(take.update(end(), false).is_err());
+            multi.update(4, start(), false).unwrap();
+            assert!(multi.update(4, end(), false).is_err());
+        }
+        assert_eq!(take.take(), None);
+        assert_eq!(multi.take(4), None);
     }
 
     #[test]

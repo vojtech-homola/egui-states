@@ -3,9 +3,11 @@
 
 import threading
 import time
+import weakref
 
 import pytest
 from egui_states.logging import LogLevel
+from egui_states import signals
 
 from egui_states_test_bindings import (  # ty: ignore[unresolved-import]
     State,
@@ -424,3 +426,36 @@ def test_single_mode_signal_coalesces_while_its_callback_runs(server_bundle):
     drain_callbacks(states)
     assert received == [1.0, 3.0]
     assert errors == []
+
+
+def test_worker_does_not_pass_back_a_released_claim_after_a_failed_get():
+    """A failed ``signal_get`` has released its ids; passing one again could free another worker's claim."""
+
+    class FakeServer:
+        def __init__(self) -> None:
+            self.calls: list[int | None] = []
+            self.results: list[object] = [(5, "first", False, None), RuntimeError("decode failed"), None]
+
+        def signal_get(self, last_id):
+            self.calls.append(last_id)
+            result = self.results.pop(0)
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+    class FakeManager:
+        def __init__(self) -> None:
+            self.dispatched: list[int] = []
+            self.errors: list[Exception] = []
+
+        def _dispatch(self, value_id, arg, has_previous, previous):
+            self.dispatched.append(value_id)
+
+        def _error_handler(self, error):
+            self.errors.append(error)
+
+    server, manager = FakeServer(), FakeManager()
+    signals._run(weakref.ref(manager), server)  # ty: ignore[invalid-argument-type]
+    assert server.calls == [None, 5, None]
+    assert manager.dispatched == [5]
+    assert [str(error) for error in manager.errors] == ["Error while getting signal from server: decode failed"]

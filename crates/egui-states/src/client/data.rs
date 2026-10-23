@@ -74,6 +74,55 @@ pub(crate) mod private {
     impl_get_data_type!(f64, DataType::F64, 9);
 }
 
+/// Allocates the buffer of a chunked transfer of `count` elements and copies
+/// the first chunk into it. Batches rely on the capacity being exactly `count`.
+///
+/// `count` comes from the network, so a size that overflows or cannot be
+/// allocated is an error rather than a panic or a short buffer.
+pub(crate) fn start_batch_buffer<T>(
+    data: &[u8],
+    count: u64,
+    element_size: usize,
+) -> Result<Vec<T>, String> {
+    debug_assert_eq!(element_size, size_of::<T>());
+    let all_data_size = count
+        .checked_mul(element_size as u64)
+        .ok_or_else(|| format!("Batch start count {count} overflows the data size"))?;
+    if data.len() as u64 > all_data_size {
+        return Err(format!(
+            "Batch start data size {} exceeds total data size {}",
+            data.len(),
+            all_data_size
+        ));
+    }
+    if data.len() % element_size != 0 {
+        return Err(format!(
+            "Batch start data size {} is not a multiple of element size {}",
+            data.len(),
+            element_size
+        ));
+    }
+
+    let mut buffer = Vec::new();
+    usize::try_from(count)
+        .ok()
+        .and_then(|count| buffer.try_reserve_exact(count).ok())
+        .ok_or_else(|| format!("Cannot allocate a batch buffer for {count} elements"))?;
+    unsafe {
+        std::ptr::copy_nonoverlapping(data.as_ptr(), buffer.as_mut_ptr() as *mut u8, data.len());
+        buffer.set_len(data.len() / element_size);
+    }
+    Ok(buffer)
+}
+
+/// Converts a range received from the network to indexes into a buffer of
+/// `len` elements, or `None` if it overflows or ends past the buffer.
+fn checked_range(start: u64, count: u64, len: usize) -> Option<std::ops::Range<usize>> {
+    let start = usize::try_from(start).ok()?;
+    let end = start.checked_add(usize::try_from(count).ok()?)?;
+    (end <= len).then_some(start..end)
+}
+
 // Data -------------------------------------------------------------------
 pub(crate) trait UpdateData: Sync + Send {
     fn update_data(&self, message: DataMessage) -> Result<(), String>;
@@ -157,31 +206,7 @@ where
     }
 
     fn batch_start(&self, data: &[u8], elements_count: u64) -> Result<(), String> {
-        let all_data_size = elements_count * self.element_size as u64;
-        if data.len() as u64 > all_data_size {
-            return Err(format!(
-                "Batch start data size {} exceeds total data size {}",
-                data.len(),
-                all_data_size
-            ));
-        }
-        if data.len() % self.element_size != 0 {
-            return Err(format!(
-                "Batch start data size {} is not a multiple of element size {}",
-                data.len(),
-                self.element_size
-            ));
-        }
-
-        let mut buffer = Vec::with_capacity(elements_count as usize);
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                data.as_ptr(),
-                buffer.as_mut_ptr() as *mut u8,
-                data.len(),
-            );
-            buffer.set_len(data.len() / self.element_size);
-        }
+        let buffer = start_batch_buffer(data, elements_count, self.element_size)?;
         self.buffer.lock().replace(buffer);
         Ok(())
     }
@@ -268,15 +293,15 @@ where
         self.sender.send(ChannelMessage::Ack(self.id));
 
         let mut w = self.inner.write();
-        if index as usize + count as usize > w.len() {
+        let Some(range) = checked_range(index, count, w.len()) else {
             return Err(format!(
                 "Drain range ({} to {}) exceeds current data size {}",
                 index,
-                index + count,
+                index.saturating_add(count),
                 w.len()
             ));
-        }
-        w.drain(index as usize..(index as usize + count as usize));
+        };
+        w.drain(range);
 
         Ok(())
     }
@@ -313,15 +338,15 @@ where
                     ));
                 }
                 let mut w = self.inner.write();
-                if start as usize + data.len() > w.len() {
+                let Some(range) = checked_range(start, count, w.len()) else {
                     return Err(format!(
                         "Replace range ({} to {}) exceeds current data size {}",
                         start,
-                        start + count,
+                        start.saturating_add(count),
                         w.len()
                     ));
-                }
-                w.splice(start as usize..(start as usize + data.len()), data);
+                };
+                w.splice(range, data);
             }
         }
         Ok(())
@@ -471,31 +496,7 @@ where
     }
 
     fn batch_start(&self, key: u32, data: &[u8], elements_count: u64) -> Result<(), String> {
-        let all_data_size = elements_count * self.element_size as u64;
-        if data.len() as u64 > all_data_size {
-            return Err(format!(
-                "Batch start data size {} exceeds total data size {}",
-                data.len(),
-                all_data_size
-            ));
-        }
-        if data.len() % self.element_size != 0 {
-            return Err(format!(
-                "Batch start data size {} is not a multiple of element size {}",
-                data.len(),
-                self.element_size
-            ));
-        }
-
-        let mut buffer = Vec::with_capacity(elements_count as usize);
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                data.as_ptr(),
-                buffer.as_mut_ptr() as *mut u8,
-                data.len(),
-            );
-            buffer.set_len(data.len() / self.element_size);
-        }
+        let buffer = start_batch_buffer(data, elements_count, self.element_size)?;
         self.buffers.lock().insert(key, buffer);
         Ok(())
     }
@@ -587,15 +588,15 @@ where
         self.sender.send(ChannelMessage::Ack(self.id));
 
         if let Some(data) = self.inner.write().get_mut(&key) {
-            if index as usize + count as usize > data.len() {
+            let Some(range) = checked_range(index, count, data.len()) else {
                 return Err(format!(
                     "Drain range ({} to {}) exceeds current data size {}",
                     index,
-                    index + count,
+                    index.saturating_add(count),
                     data.len()
                 ));
-            }
-            data.drain(index as usize..(index as usize + count as usize));
+            };
+            data.drain(range);
             return Ok(());
         }
 
@@ -653,17 +654,17 @@ where
                 match self.inner.write().entry(key) {
                     Entry::Occupied(mut entry) => {
                         let w = entry.get_mut();
-                        if start as usize + data.len() > w.len() {
+                        let Some(range) = checked_range(start, count, w.len()) else {
                             return Err(format!(
                                 "Replace range ({} to {}) exceeds current data size {} for key {} in MultiData: {}",
                                 start,
-                                start + count,
+                                start.saturating_add(count),
                                 w.len(),
                                 key,
                                 self.name
                             ));
-                        }
-                        w.splice(start as usize..(start as usize + data.len()), data);
+                        };
+                        w.splice(range, data);
                     }
                     Entry::Vacant(_) => {
                         return Err(format!(
@@ -945,5 +946,45 @@ mod malformed_tests {
         data.update_data(DataMessage::Drain(0, 1)).unwrap();
         crate::test_support::ack(&mut receiver, 94);
         data.read(|v| assert_eq!(v, [2, 3]));
+    }
+
+    /// Counts and ranges come from the network, so absurd values must be
+    /// errors rather than panics, aborts, or short buffers.
+    #[test]
+    fn oversized_wire_counts_and_ranges_are_rejected() {
+        let (sender, _receiver) = MessageSender::new();
+        let data = Data::<u16>::new("buffer".into(), 95, sender.clone());
+        let multi = DataMulti::<u16>::new("buffers".into(), 95, sender);
+        let values = || {
+            DataMessage::All(
+                DataType::U16,
+                TransportType::Set(3),
+                Bytes::from_static(&[1, 0, 2, 0, 3, 0]),
+            )
+        };
+        data.update_data(values()).unwrap();
+        multi.update(4, values()).unwrap();
+
+        for count in [u64::MAX, u64::MAX / 2, 1 << 62] {
+            let start = || DataMessage::BatchStart(count, Bytes::from_static(&[1, 0]));
+            assert!(data.update_data(start()).is_err());
+            assert!(multi.update(4, start()).is_err());
+        }
+        for start in [u64::MAX, u64::MAX - 1] {
+            let drain = || DataMessage::Drain(start, 2);
+            assert!(data.update_data(drain()).is_err());
+            assert!(multi.update(4, drain()).is_err());
+            let replace = || {
+                DataMessage::All(
+                    DataType::U16,
+                    TransportType::Replace(start, 1),
+                    Bytes::from_static(&[9, 0]),
+                )
+            };
+            assert!(data.update_data(replace()).is_err());
+            assert!(multi.update(4, replace()).is_err());
+        }
+        data.read(|v| assert_eq!(v, [1, 2, 3]));
+        multi.read(4, |v| assert_eq!(v, Some(&[1, 2, 3][..])));
     }
 }

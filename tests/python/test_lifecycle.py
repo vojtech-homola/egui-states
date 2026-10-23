@@ -43,9 +43,10 @@ def test_server_restarts_on_a_different_port():
 
 
 def test_server_serves_web_page_on_its_port(tmp_path):
+    """Serve web pages on the server port and replace or stop them at runtime."""
     import urllib.request
     import pytest
-    from egui_states_test_bindings import StatesServer
+    from egui_states_test_bindings import StatesServer  # ty: ignore[unresolved-import]
     from tests.python_test_helpers.network import free_port
 
     first, second = tmp_path / "first", tmp_path / "second"

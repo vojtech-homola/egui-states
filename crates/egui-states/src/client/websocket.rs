@@ -51,7 +51,15 @@ impl WsClientRead {
             return Ok(message);
         }
 
-        match self.stream.next().await {
+        let message = loop {
+            match self.stream.next().await {
+                // Keep-alive frames carry no data; tungstenite answers pings itself.
+                Some(Ok(Message::Ping(_) | Message::Pong(_))) => continue,
+                message => break message,
+            }
+        };
+
+        match message {
             Some(message) => match message {
                 Ok(message) => match message {
                     Message::Binary(data) => {
@@ -60,7 +68,6 @@ impl WsClientRead {
                         Ok(message)
                     }
                     Message::Close(_) => Err("Connection closed by server"),
-                    // TODO: handle also ping and pong messages?
                     _ => {
                         #[cfg(debug_assertions)]
                         println!("Unexpected message from server: {:?}", message);
@@ -103,5 +110,47 @@ impl WsClientSend {
                 Err(())
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::serialization::{ServerHeader, serialize};
+
+    #[test]
+    fn client_reader_skips_keep_alive_frames() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+                .await
+                .unwrap();
+            let std::net::SocketAddr::V4(addr) = listener.local_addr().unwrap() else {
+                unreachable!("bound to an IPv4 address");
+            };
+            let peer = tokio::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+                let update = serialize::<_, 32>(&ServerHeader::Update(0.5)).unwrap();
+                for message in [
+                    Message::Ping(bytes::Bytes::from_static(b"ping")),
+                    Message::Pong(bytes::Bytes::new()),
+                    Message::Binary(update.to_bytes()),
+                ] {
+                    ws.send(message).await.unwrap();
+                }
+                ws.close(None).await.unwrap();
+            });
+            let (mut reader, _writer) = build_ws(addr).await.unwrap();
+            assert!(matches!(reader.read().await, Ok(ServerMessage::Update(dt)) if dt == 0.5));
+            assert!(reader.read().await.is_err());
+            peer.await.unwrap();
+        });
     }
 }
