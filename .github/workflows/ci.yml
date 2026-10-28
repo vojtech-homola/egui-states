@@ -28,7 +28,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.3.3
       - run: cargo fmt --all --check
       - run: uvx ruff@0.17.3 check .
       - run: uvx ruff@0.17.3 format --check .
@@ -51,7 +51,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.3.3
       # The `python` feature needs the interpreter `.cargo/config.toml` points at.
       - run: uv venv --python 3.12
       - run: cargo clippy --locked --all-targets -- -D warnings
@@ -76,7 +76,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.3.3
         with:
           python-version: "3.12"
       - run: uv sync --locked --no-install-project
@@ -135,7 +135,7 @@ jobs:
         with:
           key: python-${{ matrix.python }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.3.3
         with:
           python-version: ${{ matrix.python }}
       # conftest.py builds and stages the extension itself.
