@@ -1101,6 +1101,7 @@ version = "0.16.0"
 dependencies = [
  "egui_states",
  "pyo3",
+ "pyo3-build-config",
 ]
 
 [[package]]

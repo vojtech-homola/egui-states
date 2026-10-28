@@ -6,6 +6,7 @@ __pycache__
 !/.vscode/launch.json
 !/.vscode/tasks.json
 /.tmp
+.DS_Store
 
 *.pyd
 *.so

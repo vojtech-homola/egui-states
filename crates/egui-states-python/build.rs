@@ -12,6 +12,11 @@ fn create_version_file() {
         if line.contains("version") {
             let mut version_file = fs::File::create("../../egui_states/version.py").unwrap();
             let version = line.replace("version", "VERSION");
+            version_file
+                .write_all(
+                    b"\"\"\"Package version, generated from Cargo.toml by build.rs.\"\"\"\n\n",
+                )
+                .unwrap();
             version_file.write_all(version.as_bytes()).unwrap();
             version_file.write_all(b"\n").unwrap();
             version_file.write_all(b"__version__ = VERSION\n").unwrap();
@@ -25,4 +30,6 @@ fn main() {
     println!("cargo:rerun-if-changed=../../egui_states/version.py");
 
     create_version_file();
+    // Lets plain `cargo build` link the extension on macOS, as maturin does.
+    pyo3_build_config::add_extension_module_link_args();
 }
