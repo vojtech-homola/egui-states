@@ -12,3 +12,6 @@ path = "lib.rs"
 pyo3 = { workspace = true, features = ["extension-module"] }
 
 egui_states = { path = "../egui-states", default-features = false, features = ["python"] }
+
+[build-dependencies]
+pyo3-build-config = { workspace = true }

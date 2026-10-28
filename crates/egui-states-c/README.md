@@ -31,8 +31,8 @@ A static library also needs the system libraries that Rust's standard
 library uses; `cargo rustc -p egui_states_c --release -- --print native-static-libs`
 lists them.
 
-This workspace builds x86-64 code for `x86-64-v3` CPUs (see
-`.cargo/config.toml`). Remove that setting to build a library for older CPUs.
+On Linux and Windows, this workspace builds x86-64 code for `x86-64-v3` CPUs
+(see `.cargo/config.toml`). Remove that setting to build a library for older CPUs.
 
 ## Use
 
