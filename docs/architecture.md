@@ -57,7 +57,10 @@ Signals and signaled `Value` changes use one of two server-side modes:
 
 Callbacks for different states may run concurrently when the server has more
 than one signal worker. A callback handle owns its registration; dropping the
-handle disconnects it.
+handle disconnects it. In the native Rust server, neither state handles nor
+callback handles keep the server alive, so callbacks may capture state handles
+without forming a cycle; the server stops when its last `StateServer` is
+dropped.
 
 `connect_previous` receives the value last delivered to that callback. In
 single mode this is not necessarily the immediately preceding network update:

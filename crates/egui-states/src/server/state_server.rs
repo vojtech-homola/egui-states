@@ -49,6 +49,10 @@ use super::{Result, ServerError, ServerOptions};
 /// drop the last clone. A stopped server may be restarted with different
 /// connection settings.
 /// Generated server bindings perform registration and finalization for you.
+///
+/// State handles and [`CallbackHandle`]s do not keep the server alive; only
+/// `StateServer` clones do. A callback that captures a clone therefore keeps
+/// the server running until its `CallbackHandle` is dropped.
 pub struct StateServer {
     inner: Arc<ServerInner>,
 }
@@ -77,6 +81,9 @@ impl ServerInner {
 impl Drop for ServerInner {
     fn drop(&mut self) {
         self.worker_shutdown.store(true, Ordering::Release);
+        // Before waiting on the workers, so a callback still running cannot
+        // queue changes either.
+        self.callbacks.clear(&self.signals);
         self.signals.wake_waiters();
         self.server.get_mut().stop();
 
@@ -625,6 +632,81 @@ impl StateServer {
     pub(super) fn set_signal_to_single(&self, id: u64) {
         self.inner.signals.set_to_single(id);
     }
+
+    /// Returns a link to this server that does not keep it alive.
+    pub(super) fn downgrade(&self) -> WeakServer {
+        WeakServer(Arc::downgrade(&self.inner))
+    }
+}
+
+/// Non-owning link from a state handle back to its server.
+///
+/// State handles must not own the server. The server owns its callbacks, and a
+/// callback routinely captures a state handle, for example to set another value
+/// when this one changes. An owning link would form a cycle broken only by
+/// dropping the [`CallbackHandle`], so a handle kept in a global or leaked would
+/// keep the server listening after its last [`StateServer`] was dropped.
+///
+/// Once the server is gone these methods do nothing, and connecting returns an
+/// inert handle: no callback can run without the server's workers anyway.
+#[derive(Clone)]
+pub(super) struct WeakServer(Weak<ServerInner>);
+
+impl WeakServer {
+    fn upgrade(&self) -> Option<StateServer> {
+        self.0.upgrade().map(|inner| StateServer { inner })
+    }
+
+    pub(super) fn add_typed_callback<T>(
+        &self,
+        value_id: u64,
+        callback: impl Fn(T) + Send + Sync + 'static,
+    ) -> CallbackHandle
+    where
+        T: for<'a> Deserialize<'a> + Send + 'static,
+    {
+        match self.upgrade() {
+            Some(server) => server.add_typed_callback(value_id, callback),
+            None => CallbackHandle::detached(value_id),
+        }
+    }
+
+    pub(super) fn add_typed_callback_previous<T>(
+        &self,
+        value_id: u64,
+        callback: impl Fn(T, T) + Send + Sync + 'static,
+    ) -> CallbackHandle
+    where
+        T: for<'a> Deserialize<'a> + Send + 'static,
+    {
+        match self.upgrade() {
+            Some(server) => server.add_typed_callback_previous(value_id, callback),
+            None => CallbackHandle::detached(value_id),
+        }
+    }
+
+    pub(super) fn add_raw_callback(
+        &self,
+        value_id: u64,
+        callback: impl Fn(Bytes, Option<Bytes>) -> Result<()> + Send + Sync + 'static,
+    ) -> CallbackHandle {
+        match self.upgrade() {
+            Some(server) => server.add_raw_callback(value_id, callback),
+            None => CallbackHandle::detached(value_id),
+        }
+    }
+
+    pub(super) fn set_signal_to_queue(&self, id: u64) {
+        if let Some(server) = self.upgrade() {
+            server.set_signal_to_queue(id);
+        }
+    }
+
+    pub(super) fn set_signal_to_single(&self, id: u64) {
+        if let Some(server) = self.upgrade() {
+            server.set_signal_to_single(id);
+        }
+    }
 }
 
 fn run_signal_worker(
@@ -744,6 +826,133 @@ mod tests {
 
         signal.set(serialize_bytes(&42_u32).unwrap());
         assert!(server.inner.signals.try_changed_value(None).is_none());
+    }
+
+    /// The server owns its callbacks, and a callback routinely captures a state
+    /// handle, for example to set another value. If state handles owned the
+    /// server, that would be a cycle broken only by dropping the
+    /// `CallbackHandle`, so a handle kept in a global or leaked would keep the
+    /// server listening forever.
+    #[test]
+    fn callbacks_capturing_state_handles_do_not_keep_server_alive() {
+        use crate::server::{LogLevel, LoggingSignal, Signal, Value};
+
+        let server = StateServer::new().unwrap();
+        let source = Value::new(&server, "root.source", 0_i32, false).unwrap();
+        let target = Value::new(&server, "root.target", 0_i32, false).unwrap();
+        let signal = Signal::<i32>::new(&server, "root.signal", false).unwrap();
+        let empty = Signal::<()>::new(&server, "root.empty", false).unwrap();
+        let logging = LoggingSignal::new(&server);
+
+        let handles = vec![
+            source.connect({
+                let target = target.clone();
+                move |value| {
+                    let _ = target.set(value, false);
+                }
+            }),
+            source.connect_previous({
+                let target = target.clone();
+                move |value, _| {
+                    let _ = target.set(value, false);
+                }
+            }),
+            signal.connect({
+                let signal = signal.clone();
+                move |value| {
+                    let _ = signal.set(value);
+                }
+            }),
+            empty.connect_empty({
+                let empty = empty.clone();
+                move || {
+                    let _ = empty.set(());
+                }
+            }),
+            logging.add_logger(LogLevel::Info, {
+                let logging = logging.clone();
+                move |_| {
+                    let _ = &logging;
+                }
+            }),
+        ];
+        let inner = Arc::downgrade(&server.inner);
+
+        drop((server, source, target, signal, empty, logging));
+        std::mem::forget(handles);
+
+        assert!(
+            inner.upgrade().is_none(),
+            "callbacks capturing state handles kept the server alive"
+        );
+    }
+
+    /// State handles may outlive the server. Dropping its last owner still
+    /// stops it, and connecting afterwards yields an inert handle.
+    #[test]
+    fn state_handles_outliving_the_server_do_not_keep_it_alive() {
+        use crate::server::{LogLevel, LoggingSignal, Signal, Value};
+
+        let server = StateServer::new().unwrap();
+        let value = Value::new(&server, "root.value", 1_i32, false).unwrap();
+        let signal = Signal::<i32>::new(&server, "root.signal", false).unwrap();
+        let empty = Signal::<()>::new(&server, "root.empty", false).unwrap();
+        let logging = LoggingSignal::new(&server);
+        let inner = Arc::downgrade(&server.inner);
+
+        drop(server);
+        assert!(
+            inner.upgrade().is_none(),
+            "state handles kept the server alive"
+        );
+
+        let handles = [
+            value.connect(|_| {}),
+            value.connect_previous(|_, _| {}),
+            signal.connect(|_| {}),
+            empty.connect_empty(|| {}),
+            logging.add_logger(LogLevel::Info, |_| {}),
+        ];
+        for handle in &handles {
+            handle.disconnect();
+        }
+        value.signal_set_to_queue();
+        value.signal_set_to_single();
+        signal.signal_set_to_queue();
+        signal.signal_set_to_single();
+
+        // The state itself stays usable locally, like every other handle.
+        value.set(2, false).unwrap();
+        assert_eq!(value.get().unwrap(), 2);
+    }
+
+    /// Without workers nothing drains signaled changes, so a state that
+    /// outlives the server must stop queueing them, even while a callback
+    /// handle that can no longer reach the server keeps its callback connected.
+    #[test]
+    fn signals_emitted_after_the_server_is_dropped_are_not_queued() {
+        use crate::server::{Signal, Value};
+
+        let server = StateServer::new().unwrap();
+        let value = Value::new(&server, "root.value", 0_i32, true).unwrap();
+        let signal = Signal::<i32>::new(&server, "root.signal", true).unwrap();
+        let handles = [value.connect_previous(|_, _| {}), signal.connect(|_| {})];
+        let signals = server.inner.signals.clone();
+
+        // Left pending: workers are never started.
+        value.set_signal(1, false).unwrap();
+        signal.set(1).unwrap();
+        drop(server);
+
+        for index in 0..3 {
+            value.set_signal(index, false).unwrap();
+            signal.set(index).unwrap();
+        }
+        assert!(
+            signals.try_changed_value(None).is_none(),
+            "changes were queued for a server that is gone"
+        );
+        drop(handles);
     }
 
     #[test]
