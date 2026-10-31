@@ -177,7 +177,7 @@ impl Server {
         let (sender, rx) = MessageSender::new();
         let signals = SignalsManager::new();
 
-        let obj = Self {
+        Self {
             connected,
             stop_event: Event::new(),
             sender,
@@ -187,9 +187,7 @@ impl Server {
             version,
             web: WebSlot::default(),
             runner_state: RunnerState::Stopped(rx),
-        };
-
-        obj
+        }
     }
 
     pub(crate) fn finalize(&mut self) -> Option<StatesList> {
@@ -257,10 +255,11 @@ impl Server {
                         return Err("Failed to create server runtime".to_string());
                     }
                 };
-                let listener = match {
+                let registered = {
                     let _guard = runtime.enter();
                     TcpListener::from_std(listener)
-                } {
+                };
+                let listener = match registered {
                     Ok(listener) => listener,
                     Err(error) => {
                         self.runner_state = RunnerState::Stopped(rx);
@@ -391,7 +390,7 @@ impl Server {
             return Err("Cannot add new values after server has been finalized".to_string());
         }
 
-        let id = generate_value_id(&name);
+        let id = generate_value_id(name);
         if self.states.contains_id(id) {
             return Err(format!("Value with id {} already exists", id));
         }
@@ -421,7 +420,7 @@ impl Server {
             return Err("Cannot add new values after server has been finalized".to_string());
         }
 
-        let id = generate_value_id(&name);
+        let id = generate_value_id(name);
         if self.states.contains_id(id) {
             return Err(format!("ValueTake with id {} already exists", id));
         }
@@ -449,7 +448,7 @@ impl Server {
             return Err("Cannot add new values after server has been finalized".to_string());
         }
 
-        let id = generate_value_id(&name);
+        let id = generate_value_id(name);
         if self.states.contains_id(id) {
             return Err(format!("Static value with id {} already exists", id));
         }
@@ -478,7 +477,7 @@ impl Server {
             return Err("Cannot add new values after server has been finalized".to_string());
         }
 
-        let id = generate_value_id(&name);
+        let id = generate_value_id(name);
         if self.states.contains_id(id) {
             return Err(format!("Signal with id {} already exists", id));
         }
@@ -499,7 +498,7 @@ impl Server {
             return Err("Cannot add new values after server has been finalized".to_string());
         }
 
-        let id = generate_value_id(&name);
+        let id = generate_value_id(name);
         if self.states.contains_id(id) {
             return Err(format!("Vec with id {} already exists", id));
         }
@@ -521,7 +520,7 @@ impl Server {
             return Err("Cannot add new values after server has been finalized".to_string());
         }
 
-        let id = generate_value_id(&name);
+        let id = generate_value_id(name);
         if self.states.contains_id(id) {
             return Err(format!("Map with id {} already exists", id));
         }
@@ -544,7 +543,7 @@ impl Server {
             return Err("Cannot add new values after server has been finalized".to_string());
         }
 
-        let id = generate_value_id(&name);
+        let id = generate_value_id(name);
         if self.states.contains_id(id) {
             return Err(format!("Image with id {} already exists", id));
         }
@@ -565,7 +564,7 @@ impl Server {
             return Err("Cannot add new values after server has been finalized".to_string());
         }
 
-        let id = generate_value_id(&name);
+        let id = generate_value_id(name);
         if self.states.contains_id(id) {
             return Err(format!("ImageMulti with id {} already exists", id));
         }
@@ -585,7 +584,7 @@ impl Server {
             return Err("Cannot add new values after server has been finalized".to_string());
         }
 
-        let id = generate_value_id(&name);
+        let id = generate_value_id(name);
         if self.states.contains_id(id) {
             return Err(format!("Data with id {} already exists", id));
         }
@@ -609,7 +608,7 @@ impl Server {
             return Err("Cannot add new values after server has been finalized".to_string());
         }
 
-        let id = generate_value_id(&name);
+        let id = generate_value_id(name);
         if self.states.contains_id(id) {
             return Err(format!("DataMulti with id {} already exists", id));
         }
@@ -633,7 +632,7 @@ impl Server {
             return Err("Cannot add new values after server has been finalized".to_string());
         }
 
-        let id = generate_value_id(&name);
+        let id = generate_value_id(name);
         if self.states.contains_id(id) {
             return Err(format!("DataTake with id {} already exists", id));
         }
@@ -657,7 +656,7 @@ impl Server {
             return Err("Cannot add new values after server has been finalized".to_string());
         }
 
-        let id = generate_value_id(&name);
+        let id = generate_value_id(name);
         if self.states.contains_id(id) {
             return Err(format!("DataMultiTake with id {} already exists", id));
         }

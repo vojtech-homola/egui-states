@@ -96,7 +96,7 @@ impl Drop for ServerInner {
             None => true,
         };
 
-        let workers = self.workers.get_mut().drain(..).collect::<Vec<_>>();
+        let workers = std::mem::take(self.workers.get_mut());
         if !all_workers_returned {
             return;
         }
@@ -686,7 +686,7 @@ where
     T: Serialize,
 {
     serialize::<T, 32>(value)
-        .map(|data| data.to_bytes())
+        .map(|data| data.into_bytes())
         .map_err(|_| ServerError::new("failed to serialize value"))
 }
 

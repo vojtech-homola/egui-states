@@ -73,7 +73,7 @@ impl<'a, T: Serialize + Clone + PartialEq + Atomic> DiffAtomic<'a, T> {
     pub fn new(value: &'a ValueAtomic<T>) -> Self {
         let v = value.get();
         Self {
-            v: v,
+            v,
             original: v,
             value,
         }
@@ -188,7 +188,7 @@ where
     }
 
     fn write_inner(&self, value: &T, signal: bool) {
-        let data = to_message(&value);
+        let data = to_message(value);
 
         if let Err(e) = check_value_size(&self.name, data.len()) {
             report_error(
@@ -331,7 +331,7 @@ where
     }
 
     fn set_inner(&self, value: T, signal: bool) {
-        let data = to_message(&value);
+        let data = to_message(value);
 
         // the built in atomic types are always small, but `Atomic` is public and
         // hand written implementations are not limited in size
@@ -518,7 +518,7 @@ impl<T: Serialize + Clone, Q: GetQueueType> Signal<T, Q> {
     /// The `Into<T>` parameter accepts values that can be converted to the
     /// signal's payload type, such as `&str` for a `Signal<String>`.
     pub fn set(&self, value: impl Into<T>) {
-        let message = to_message(&value.into());
+        let message = to_message(value.into());
 
         if let Err(e) = check_value_size(&self.name, message.len()) {
             report_error(&self.sender, format!("{}, the signal was not sent", e));
@@ -652,13 +652,13 @@ mod tests {
         diff.set();
         match rx.try_recv().unwrap().unwrap() {
             ChannelMessage::Value(31, 7, true, data) => {
-                assert_eq!(deserialize::<i32>(&data.to_bytes()).unwrap(), -7)
+                assert_eq!(deserialize::<i32>(&data.into_bytes()).unwrap(), -7)
             }
             _ => panic!("expected signaled scalar first"),
         }
         match rx.try_recv().unwrap().unwrap() {
             ChannelMessage::Value(32, 9, false, data) => {
-                assert_eq!(deserialize::<f64>(&data.to_bytes()).unwrap(), 2.75)
+                assert_eq!(deserialize::<f64>(&data.into_bytes()).unwrap(), 2.75)
             }
             _ => panic!("expected atomic value second"),
         }
@@ -739,7 +739,7 @@ mod concurrent_tests {
         for _ in 0..200 {
             match receiver.try_recv().unwrap().unwrap() {
                 ChannelMessage::Value(33, 4, false, data) => {
-                    let sent: u32 = deserialize(&data.to_bytes()).unwrap();
+                    let sent: u32 = deserialize(&data.into_bytes()).unwrap();
                     let writer = (sent / 1000) as usize;
                     assert_eq!(sent % 1000, previous[writer] + 1);
                     previous[writer] += 1;

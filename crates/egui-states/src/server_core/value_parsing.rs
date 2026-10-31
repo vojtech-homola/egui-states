@@ -38,6 +38,6 @@ impl ValueCreator {
     }
 
     pub(crate) fn finalize(self) -> Bytes {
-        self.data.to_bytes()
+        self.data.into_bytes()
     }
 }

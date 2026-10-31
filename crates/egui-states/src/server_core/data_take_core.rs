@@ -53,7 +53,7 @@ impl DataTake {
     ) -> Result<(), String> {
         check_data_type(&data, self.data_type, self.item_size)?;
 
-        let slice = unsafe { std::slice::from_raw_parts(data.data as *const u8, data.data_size) };
+        let slice = unsafe { std::slice::from_raw_parts(data.data, data.data_size) };
 
         if self.connected.load(Ordering::Acquire) {
             let messages = pack_data_take(
@@ -72,7 +72,7 @@ impl DataTake {
 
             let mut guard = self.lock.lock();
             if cache {
-                *guard = Some((slice.to_vec(), data.count as usize));
+                *guard = Some((slice.to_vec(), data.count));
             } else {
                 *guard = None;
             }
@@ -87,7 +87,7 @@ impl DataTake {
         } else {
             let mut guard = self.lock.lock();
             if cache {
-                *guard = Some((slice.to_vec(), data.count as usize));
+                *guard = Some((slice.to_vec(), data.count));
             } else {
                 *guard = None;
             }
@@ -166,7 +166,7 @@ impl DataMultiTake {
     ) -> Result<(), String> {
         check_data_type(&data, self.data_type, self.item_size)?;
 
-        let slice = unsafe { std::slice::from_raw_parts(data.data as *const u8, data.data_size) };
+        let slice = unsafe { std::slice::from_raw_parts(data.data, data.data_size) };
 
         if self.connected.load(Ordering::Acquire) {
             let messages = pack_data_multi_take(
@@ -300,7 +300,7 @@ fn pack_data_take(
             .serialize(id, blocking, true)
             .map_err(|_| "Failed to serialize DataTake header".to_string())?;
         message.reserve_exact(data.len());
-        message.extend_from_slice(&data);
+        message.extend_from_slice(data);
         messages.push((message, true));
     } else {
         let element_size = data_type.item_size();
@@ -363,7 +363,7 @@ fn pack_data_multi_take(
         let mut message = DataMultiTakeHeader::serialize_modify(id, index, header, blocking)
             .map_err(|_| "Failed to serialize DataMultiTake header".to_string())?;
         message.reserve_exact(data.len());
-        message.extend_from_slice(&data);
+        message.extend_from_slice(data);
         messages.push((message, true));
     } else {
         let element_size = data_type.item_size();
@@ -450,7 +450,7 @@ mod transfer_tests {
                         assert_eq!(total, size.div_ceil(MSG_SIZE_THRESHOLD));
                         for (n, (message, _)) in messages.into_iter().enumerate() {
                             let (mut parser, message) =
-                                MessagesParser::from_bytes(message.to_bytes()).unwrap();
+                                MessagesParser::from_bytes(message.into_bytes()).unwrap();
                             match message {
                                 ServerMessage::DataTake(61, actual_blocking, repaint, message) => {
                                     assert_eq!(actual_blocking, blocking);

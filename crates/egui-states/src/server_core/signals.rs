@@ -227,7 +227,7 @@ impl SignalsManager {
         let mut message = FastVec::<64>::new();
         serialize_to_data(&level, &mut message)?;
         serialize_to_data(&data, &mut message)?;
-        Ok(message.to_bytes())
+        Ok(message.into_bytes())
     }
 
     #[allow(dead_code)]
@@ -262,7 +262,7 @@ impl SignalsManager {
     #[inline]
     pub(crate) fn on_connect(&self, peer_addr: String) {
         if let Ok(result) = serialize::<String, 32>(&peer_addr) {
-            self.set(ON_CONNECT_ID, result.to_bytes());
+            self.set(ON_CONNECT_ID, result.into_bytes());
         }
     }
 
