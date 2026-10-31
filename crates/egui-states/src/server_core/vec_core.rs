@@ -187,7 +187,7 @@ mod tests {
     ) -> Vec<(&'static str, u64, bool, usize)> {
         let mut messages = Vec::new();
         while let Ok(Some((message, _))) = receiver.try_recv() {
-            let message = message.to_bytes();
+            let message = message.into_bytes();
             let (header, used) = deserialize_value::<ServerHeader>(&message).unwrap();
             let ServerHeader::ValueVec(7, 3, update, header, size) = header else {
                 panic!("not a list message");

@@ -43,6 +43,11 @@ impl DataMultiMessage {
 pub(crate) mod private {
     use super::DataType;
 
+    /// # Safety
+    ///
+    /// The type must be plain old data valid for any bit pattern, and
+    /// `get_type` must describe its exact size, because received bytes are
+    /// copied straight into buffers of it.
     pub(crate) unsafe trait GetDataType: Clone + Copy {
         fn get_type() -> DataType;
         fn get_type_id() -> u32;
@@ -95,7 +100,7 @@ pub(crate) fn start_batch_buffer<T>(
             all_data_size
         ));
     }
-    if data.len() % element_size != 0 {
+    if !data.len().is_multiple_of(element_size) {
         return Err(format!(
             "Batch start data size {} is not a multiple of element size {}",
             data.len(),
@@ -184,7 +189,7 @@ where
     fn set_all(&self, data: &[u8], transport_type: TransportType) -> Result<(), String> {
         self.sender.send(ChannelMessage::Ack(self.id));
 
-        if data.len() % self.element_size != 0 {
+        if !data.len().is_multiple_of(self.element_size) {
             return Err(format!(
                 "Data size {} is not a multiple of element size {}",
                 data.len(),
@@ -214,7 +219,7 @@ where
     fn batch(&self, data: &[u8]) -> Result<(), String> {
         match *self.buffer.lock() {
             Some(ref mut buffer) => {
-                if data.len() % self.element_size != 0 {
+                if !data.len().is_multiple_of(self.element_size) {
                     return Err(format!(
                         "Batch data size {} is not a multiple of element size {}",
                         data.len(),
@@ -254,7 +259,7 @@ where
 
         match self.buffer.lock().take() {
             Some(mut buffer) => {
-                if data.len() % self.element_size != 0 {
+                if !data.len().is_multiple_of(self.element_size) {
                     return Err(format!(
                         "Batch data size {} is not a multiple of element size {}",
                         data.len(),
@@ -451,7 +456,7 @@ where
         self.inner
             .read()
             .get(&key)
-            .map(|v| f(Some(&v)))
+            .map(|v| f(Some(v)))
             .unwrap_or_else(|| f(None))
     }
 
@@ -468,13 +473,13 @@ where
     /// The synchronization read lock remains held for the full iteration.
     #[inline]
     pub fn for_each<F>(&self, f: impl Fn(u32, &[T])) {
-        self.inner.read().iter().for_each(|(k, v)| f(*k, &v));
+        self.inner.read().iter().for_each(|(k, v)| f(*k, v));
     }
 
     fn set_all(&self, key: u32, data: &[u8], transport_type: TransportType) -> Result<(), String> {
         self.sender.send(ChannelMessage::Ack(self.id));
 
-        if data.len() % self.element_size != 0 {
+        if !data.len().is_multiple_of(self.element_size) {
             return Err(format!(
                 "Data size {} is not a multiple of element size {}",
                 data.len(),
@@ -504,7 +509,7 @@ where
     fn batch(&self, key: u32, data: &[u8]) -> Result<(), String> {
         match self.buffers.lock().get_mut(&key) {
             Some(ref mut buffer) => {
-                if data.len() % self.element_size != 0 {
+                if !data.len().is_multiple_of(self.element_size) {
                     return Err(format!(
                         "Batch data size {} is not a multiple of element size {}",
                         data.len(),
@@ -549,7 +554,7 @@ where
 
         match self.buffers.lock().remove(&key) {
             Some(mut buffer) => {
-                if data.len() % self.element_size != 0 {
+                if !data.len().is_multiple_of(self.element_size) {
                     return Err(format!(
                         "Batch data size {} is not a multiple of element size {}",
                         data.len(),

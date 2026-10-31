@@ -11,6 +11,9 @@ use pyo3::prelude::*;
 use pyo3::types::{PyByteArray, PyDict, PyList};
 
 use crate::hashing::NoHashMap;
+
+/// A signal event: id, value, whether it blocks, and the previous value.
+type SignalEvent<'py> = (u64, Bound<'py, PyAny>, bool, Option<Bound<'py, PyAny>>);
 use crate::python::{
     pydata::check_data_type,
     pyimage, pyparsing,
@@ -467,7 +470,7 @@ impl StateServerCore {
         &self,
         py: Python<'py>,
         last_id: Option<u64>,
-    ) -> PyResult<Option<(u64, Bound<'py, PyAny>, bool, Option<Bound<'py, PyAny>>)>> {
+    ) -> PyResult<Option<SignalEvent<'py>>> {
         let Some((id, data, previous)) = py.detach(|| self.signals.wait_changed_value(last_id))
         else {
             return Ok(None);
@@ -576,7 +579,7 @@ impl StateServerCore {
         let (list, value_type) = self.inner_vec(value_id)?;
         let data = list
             .get_item(index)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?;
+            .map_err(pyo3::exceptions::PyValueError::new_err)?;
         let mut parser = ValueParser::new(data);
         let py_value = pyparsing::deserialize_py(py, &mut parser, value_type)?;
         Ok(py_value)
@@ -592,7 +595,7 @@ impl StateServerCore {
         let (list, value_type) = self.inner_vec(value_id)?;
         let data = list
             .remove_item(index, update)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?;
+            .map_err(pyo3::exceptions::PyValueError::new_err)?;
         let mut parser = ValueParser::new(data);
         let py_value = pyparsing::deserialize_py(py, &mut parser, value_type)?;
         Ok(py_value)
@@ -755,7 +758,7 @@ impl StateServerCore {
             let image_data = pyimage::image_data(&image)?;
             image_val
                 .set_image(image_data, update)
-                .map_err(|e| PyValueError::new_err(e))
+                .map_err(PyValueError::new_err)
         })
     }
 
@@ -796,7 +799,7 @@ impl StateServerCore {
                     update,
                     force,
                 )
-                .map_err(|e| PyValueError::new_err(e))
+                .map_err(PyValueError::new_err)
         })
     }
 
@@ -859,6 +862,7 @@ impl StateServerCore {
     }
 
     #[pyo3(signature = (value_id, index, image, origin, update, force=false))]
+    #[allow(clippy::too_many_arguments)]
     fn image_multi_update(
         &self,
         py: Python,
@@ -936,8 +940,7 @@ impl StateServerCore {
             .map_err(|_| PyValueError::new_err("Data must be a bytes-like object."))?;
 
         let data_value = self.inner_data(value_id)?;
-        check_data_type(&buffer_untyped, data_value.data_type)
-            .map_err(|e| PyValueError::new_err(e))?;
+        check_data_type(&buffer_untyped, data_value.data_type).map_err(PyValueError::new_err)?;
 
         let data_holder = DataHolder {
             data: buffer_untyped.buf_ptr() as *const u8,
@@ -949,7 +952,7 @@ impl StateServerCore {
         py.detach(|| {
             data_value
                 .set(data_holder, update)
-                .map_err(|e| PyValueError::new_err(e))
+                .map_err(PyValueError::new_err)
         })
     }
 
@@ -964,8 +967,7 @@ impl StateServerCore {
             .map_err(|_| PyValueError::new_err("Data must be a bytes-like object."))?;
 
         let data_value = self.inner_data(value_id)?;
-        check_data_type(&buffer_untyped, data_value.data_type)
-            .map_err(|e| PyValueError::new_err(e))?;
+        check_data_type(&buffer_untyped, data_value.data_type).map_err(PyValueError::new_err)?;
 
         let data_holder = DataHolder {
             data: buffer_untyped.buf_ptr() as *const u8,
@@ -977,7 +979,7 @@ impl StateServerCore {
         py.detach(|| {
             data_value
                 .add(data_holder, update)
-                .map_err(|e| PyValueError::new_err(e))
+                .map_err(PyValueError::new_err)
         })
     }
 
@@ -993,8 +995,7 @@ impl StateServerCore {
             .map_err(|_| PyValueError::new_err("Data must be a bytes-like object."))?;
 
         let data_value = self.inner_data(value_id)?;
-        check_data_type(&buffer_untyped, data_value.data_type)
-            .map_err(|e| PyValueError::new_err(e))?;
+        check_data_type(&buffer_untyped, data_value.data_type).map_err(PyValueError::new_err)?;
 
         let data_holder = DataHolder {
             data: buffer_untyped.buf_ptr() as *const u8,
@@ -1006,7 +1007,7 @@ impl StateServerCore {
         py.detach(|| {
             data_value
                 .replace(data_holder, index, update)
-                .map_err(|e| PyValueError::new_err(e))
+                .map_err(PyValueError::new_err)
         })
     }
 
@@ -1021,7 +1022,7 @@ impl StateServerCore {
         py.detach(|| {
             self.inner_data(value_id)?
                 .remove(index, count, update)
-                .map_err(|e| PyValueError::new_err(e))
+                .map_err(PyValueError::new_err)
         })
     }
 
@@ -1029,7 +1030,7 @@ impl StateServerCore {
         py.detach(|| {
             self.inner_data(value_id)?
                 .clear(update)
-                .map_err(|e| PyValueError::new_err(e))
+                .map_err(PyValueError::new_err)
         })
     }
 
@@ -1047,8 +1048,7 @@ impl StateServerCore {
             .map_err(|_| PyValueError::new_err("Data must be a bytes-like object."))?;
 
         let data_value = self.inner_data_take(value_id)?;
-        check_data_type(&buffer_untyped, data_value.data_type)
-            .map_err(|e| PyValueError::new_err(e))?;
+        check_data_type(&buffer_untyped, data_value.data_type).map_err(PyValueError::new_err)?;
 
         let data_holder = DataHolder {
             data: buffer_untyped.buf_ptr() as *const u8,
@@ -1060,7 +1060,7 @@ impl StateServerCore {
         py.detach(|| {
             data_value
                 .set(data_holder, blocking, update, cache)
-                .map_err(|e| PyValueError::new_err(e))
+                .map_err(PyValueError::new_err)
         })
     }
 
@@ -1090,8 +1090,7 @@ impl StateServerCore {
             .map_err(|_| PyValueError::new_err("Data must be a bytes-like object."))?;
 
         let data_value = self.inner_data_multi(value_id)?;
-        check_data_type(&buffer_untyped, data_value.data_type)
-            .map_err(|e| PyValueError::new_err(e))?;
+        check_data_type(&buffer_untyped, data_value.data_type).map_err(PyValueError::new_err)?;
 
         let data_holder = DataHolder {
             data: buffer_untyped.buf_ptr() as *const u8,
@@ -1103,7 +1102,7 @@ impl StateServerCore {
         py.detach(|| {
             data_value
                 .set(index, data_holder, update)
-                .map_err(|e| PyValueError::new_err(e))
+                .map_err(PyValueError::new_err)
         })
     }
 
@@ -1119,8 +1118,7 @@ impl StateServerCore {
             .map_err(|_| PyValueError::new_err("Data must be a bytes-like object."))?;
 
         let data_value = self.inner_data_multi(value_id)?;
-        check_data_type(&buffer_untyped, data_value.data_type)
-            .map_err(|e| PyValueError::new_err(e))?;
+        check_data_type(&buffer_untyped, data_value.data_type).map_err(PyValueError::new_err)?;
 
         let data_holder = DataHolder {
             data: buffer_untyped.buf_ptr() as *const u8,
@@ -1132,7 +1130,7 @@ impl StateServerCore {
         py.detach(|| {
             data_value
                 .add(index, data_holder, update)
-                .map_err(|e| PyValueError::new_err(e))
+                .map_err(PyValueError::new_err)
         })
     }
 
@@ -1149,8 +1147,7 @@ impl StateServerCore {
             .map_err(|_| PyValueError::new_err("Data must be a bytes-like object."))?;
 
         let data_value = self.inner_data_multi(value_id)?;
-        check_data_type(&buffer_untyped, data_value.data_type)
-            .map_err(|e| PyValueError::new_err(e))?;
+        check_data_type(&buffer_untyped, data_value.data_type).map_err(PyValueError::new_err)?;
 
         let data_holder = DataHolder {
             data: buffer_untyped.buf_ptr() as *const u8,
@@ -1162,7 +1159,7 @@ impl StateServerCore {
         py.detach(|| {
             data_value
                 .replace(index, data_index, data_holder, update)
-                .map_err(|e| PyValueError::new_err(e))
+                .map_err(PyValueError::new_err)
         })
     }
 
@@ -1178,29 +1175,30 @@ impl StateServerCore {
         py.detach(|| {
             self.inner_data_multi(value_id)?
                 .remove(index, data_index, count, update)
-                .map_err(|e| PyValueError::new_err(e))
+                .map_err(PyValueError::new_err)
         })
     }
 
     fn data_multi_clear(&self, value_id: u64, index: u32, update: bool) -> PyResult<()> {
         self.inner_data_multi(value_id)?
             .clear(index, update)
-            .map_err(|e| PyValueError::new_err(e))
+            .map_err(PyValueError::new_err)
     }
 
     fn data_multi_remove_index(&self, value_id: u64, index: u32, update: bool) -> PyResult<()> {
         self.inner_data_multi(value_id)?
             .remove_index(index, update)
-            .map_err(|e| PyValueError::new_err(e))
+            .map_err(PyValueError::new_err)
     }
 
     fn data_multi_reset(&self, value_id: u64, update: bool) -> PyResult<()> {
         self.inner_data_multi(value_id)?
             .reset(update)
-            .map_err(|e| PyValueError::new_err(e))
+            .map_err(PyValueError::new_err)
     }
 
     // data multi take --------------------------------------------------
+    #[allow(clippy::too_many_arguments)]
     fn data_multi_take_set(
         &self,
         py: Python,
@@ -1215,8 +1213,7 @@ impl StateServerCore {
             .map_err(|_| PyValueError::new_err("Data must be a bytes-like object."))?;
 
         let data_value = self.inner_data_multi_take(value_id)?;
-        check_data_type(&buffer_untyped, data_value.data_type)
-            .map_err(|e| PyValueError::new_err(e))?;
+        check_data_type(&buffer_untyped, data_value.data_type).map_err(PyValueError::new_err)?;
 
         let data_holder = DataHolder {
             data: buffer_untyped.buf_ptr() as *const u8,
@@ -1228,7 +1225,7 @@ impl StateServerCore {
         py.detach(|| {
             data_value
                 .set(index, data_holder, blocking, update, cache)
-                .map_err(|e| PyValueError::new_err(e))
+                .map_err(PyValueError::new_err)
         })
     }
 
@@ -1240,13 +1237,13 @@ impl StateServerCore {
     ) -> PyResult<()> {
         self.inner_data_multi_take(value_id)?
             .remove_index(index, update)
-            .map_err(|e| PyValueError::new_err(e))
+            .map_err(PyValueError::new_err)
     }
 
     fn data_multi_take_reset(&self, value_id: u64, update: bool) -> PyResult<()> {
         self.inner_data_multi_take(value_id)?
             .reset(update)
-            .map_err(|e| PyValueError::new_err(e))
+            .map_err(PyValueError::new_err)
     }
 
     // add states -------------------------------------------------------

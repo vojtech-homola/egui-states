@@ -49,7 +49,7 @@ async fn start_gui_client(
 
         // communicate handshake and initialization -------------------------
         let message = ClientHeader::serialize_handshake(PROTOCOL_VERSION, version, hash.clone());
-        if let Err(_) = socket_send.send(message).await {
+        if socket_send.send(message).await.is_err() {
             #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
             println!("Sending handshake failed.");
             #[cfg(all(debug_assertions, target_arch = "wasm32"))]
@@ -98,7 +98,7 @@ async fn start_gui_client(
             let mut serializer = MessagesSerializer::new(rx);
 
             while let Some(message) = serializer.next().await {
-                if let Err(_) = socket_send.send(message).await {
+                if socket_send.send(message).await.is_err() {
                     break;
                 }
             }
@@ -375,6 +375,15 @@ where
         }
 
         (states, client_out)
+    }
+}
+
+impl<T> Default for ClientBuilder<T>
+where
+    T: State,
+{
+    fn default() -> Self {
+        Self::new()
     }
 }
 

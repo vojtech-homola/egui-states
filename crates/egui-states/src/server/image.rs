@@ -280,6 +280,7 @@ impl ImageMulti {
     /// With `force`, a buffered update may be replaced only when it targets the
     /// same `index` and rectangle. Updates for other indices remain ordered and
     /// are never dropped.
+    #[allow(clippy::too_many_arguments)]
     pub fn update(
         &self,
         index: u32,

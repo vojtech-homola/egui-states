@@ -1,4 +1,5 @@
 pub(crate) mod atomics;
+#[allow(clippy::module_inception)]
 pub(crate) mod client;
 pub(crate) mod data;
 pub(crate) mod data_take;
