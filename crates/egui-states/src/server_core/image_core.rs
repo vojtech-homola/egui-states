@@ -401,7 +401,6 @@ impl Acknowledge for Image {
                 }
                 None => {
                     self.event.set();
-                    return;
                 }
             },
         }
@@ -510,7 +509,7 @@ fn pack_set_data(
 
         message.reserve_exact(bytes_size);
         append_data(&mut message, 0, bytes_size);
-        return Ok(vec![(message, true)]);
+        Ok(vec![(message, true)])
     } else {
         let mut messages = Vec::new();
         let pixel_size = image.image_type.bytes_per_pixel();
@@ -556,7 +555,7 @@ fn pack_set_data(
             processed += chunk_size;
         }
 
-        return Ok(messages);
+        Ok(messages)
     }
 }
 
@@ -604,7 +603,7 @@ fn pack_update_data(
         append_lines(&mut message, 0, image.size[0]);
         let mut result = VecDeque::with_capacity(1);
         result.push_back((message, update));
-        return Ok(result);
+        Ok(result)
     } else {
         let mut messages = VecDeque::new();
         let chunk_lines = (MSG_SIZE_THRESHOLD / bytes_line_size).max(1);
@@ -629,7 +628,7 @@ fn pack_update_data(
             processed_lines += lines;
         }
 
-        return Ok(messages);
+        Ok(messages)
     }
 }
 
@@ -810,7 +809,7 @@ mod tests {
         connected.store(true, Ordering::Release);
         image.sync().unwrap();
         let (sync_message, _) = receiver.try_recv().unwrap().unwrap();
-        let sync_bytes = sync_message.to_bytes();
+        let sync_bytes = sync_message.into_bytes();
         let (sync_header, sync_header_size) = ServerHeader::deserialize(&sync_bytes).unwrap();
         match sync_header {
             ServerHeader::Image(
@@ -825,7 +824,7 @@ mod tests {
 
         image.set_all_image([4, 5], [7, 7, 7, 8], true).unwrap();
         let (message, _) = receiver.try_recv().unwrap().unwrap();
-        let bytes = message.to_bytes();
+        let bytes = message.into_bytes();
         let (header, header_size) = ServerHeader::deserialize(&bytes).unwrap();
         assert_eq!(header_size, bytes.len());
         match header {
@@ -1057,7 +1056,8 @@ mod packing_tests {
             let total = packed.len();
             assert_eq!(total, expected.len().div_ceil(MSG_SIZE_THRESHOLD));
             for (n, (message, _)) in packed.into_iter().enumerate() {
-                let (mut parser, message) = MessagesParser::from_bytes(message.to_bytes()).unwrap();
+                let (mut parser, message) =
+                    MessagesParser::from_bytes(message.into_bytes()).unwrap();
                 match message {
                     ServerMessage::Image(
                         71,
@@ -1104,7 +1104,7 @@ mod packing_tests {
             let mut reconstructed = vec![0; expected.len()];
             let mut next_row = 0;
             for (n, (message, _)) in packed.into_iter().enumerate() {
-                let (_, message) = MessagesParser::from_bytes(message.to_bytes()).unwrap();
+                let (_, message) = MessagesParser::from_bytes(message.into_bytes()).unwrap();
                 match message {
                     ServerMessage::Image(
                         71,

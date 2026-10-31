@@ -327,7 +327,7 @@ mod tests {
             .try_recv()
             .expect("expected a queued message")
             .expect("expected a message, not a close request");
-        let bytes = message.to_bytes();
+        let bytes = message.into_bytes();
         let (header, payload) = postcard::take_from_bytes::<ServerHeader>(&bytes).unwrap();
         (header, payload.to_vec())
     }

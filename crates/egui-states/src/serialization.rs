@@ -60,7 +60,7 @@ impl<const N: usize> FastVec<N> {
 
     #[cfg(not(target_arch = "wasm32"))]
     #[inline]
-    pub fn to_bytes(self) -> bytes::Bytes {
+    pub fn into_bytes(self) -> bytes::Bytes {
         match self {
             Self::Heap(vec) => bytes::Bytes::from_owner(vec),
             Self::Stack(vec) => bytes::Bytes::from_owner(vec),
@@ -69,7 +69,7 @@ impl<const N: usize> FastVec<N> {
 
     #[cfg(target_arch = "wasm32")]
     #[inline]
-    pub fn to_vec(self) -> Vec<u8> {
+    pub fn into_vec(self) -> Vec<u8> {
         match self {
             Self::Heap(vec) => vec,
             Self::Stack(stack_vec) => stack_vec.0[..stack_vec.1].to_vec(),
@@ -127,12 +127,12 @@ impl<const N: usize> FastVec<N> {
             Self::Stack(stack_vec) => match data {
                 FastVec::Heap(dvec) => {
                     if stack_vec.1 + dvec.len() <= N {
-                        stack_vec.0[stack_vec.1..stack_vec.1 + dvec.len()].copy_from_slice(&dvec);
+                        stack_vec.0[stack_vec.1..stack_vec.1 + dvec.len()].copy_from_slice(dvec);
                         stack_vec.1 += dvec.len();
                     } else {
                         let mut new_vec = Vec::with_capacity(stack_vec.1 + dvec.len());
                         new_vec.extend_from_slice(&stack_vec.0[..stack_vec.1]);
-                        new_vec.extend_from_slice(&dvec);
+                        new_vec.extend_from_slice(dvec);
                         *self = Self::Heap(new_vec);
                     }
                 }
@@ -351,7 +351,7 @@ impl<'a> Deserializer<'a> {
 
     pub(crate) fn get<T: for<'b> Deserialize<'b>>(&mut self) -> Result<T, String> {
         let (value, new_data) =
-            postcard::take_from_bytes::<T>(&self.data).map_err(|e| e.to_string())?;
+            postcard::take_from_bytes::<T>(self.data).map_err(|e| e.to_string())?;
         self.data = new_data;
         Ok(value)
     }
@@ -398,9 +398,9 @@ impl<'a, const N: usize> Flavor for FastVecRef<'a, N> {
 }
 
 #[inline]
-pub(crate) fn serialize_to_data<'a, T, const N: usize>(
+pub(crate) fn serialize_to_data<T, const N: usize>(
     value: &T,
-    data: &'a mut FastVec<N>,
+    data: &mut FastVec<N>,
 ) -> Result<(), ()>
 where
     T: Serialize,
@@ -592,7 +592,7 @@ mod tests {
                 assert_eq!(data.len(), model.len());
             }
             #[cfg(not(target_arch = "wasm32"))]
-            assert_eq!(data.to_bytes().as_ref(), model.as_slice());
+            assert_eq!(data.into_bytes().as_ref(), model.as_slice());
         }
     }
 

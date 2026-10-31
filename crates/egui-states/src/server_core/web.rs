@@ -30,6 +30,9 @@ const LINGER_TIMEOUT: Duration = Duration::from_secs(1);
 // A slow link still makes progress; a peer that accepts nothing for this long
 // has stalled and would otherwise hold its socket and page snapshot forever.
 const WRITE_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+// Windows accepts a whole non-blocking send while its send buffer has room, so
+// one unbounded write would hide a stalled peer from the idle timeout.
+const MAX_WRITE_CHUNK: usize = 256 * 1024;
 
 struct WebFile {
     body: Bytes,
@@ -319,7 +322,8 @@ async fn write_all_with_idle_timeout(
     idle_timeout: Duration,
 ) -> io::Result<()> {
     while !data.is_empty() {
-        let written = tokio::time::timeout(idle_timeout, stream.write(data))
+        let chunk = &data[..data.len().min(MAX_WRITE_CHUNK)];
+        let written = tokio::time::timeout(idle_timeout, stream.write(chunk))
             .await
             .map_err(|_| io::Error::from(io::ErrorKind::TimedOut))??;
         if written == 0 {

@@ -10,6 +10,9 @@ use crate::client::messages::{ChannelMessage, MessageSender};
 use crate::data_transport::DataType;
 use crate::hashing::NoHashMap;
 
+/// A completed transfer and whether taking it must acknowledge it.
+type Completed<T> = (Vec<T>, bool);
+
 pub(crate) enum DataTakeMessage {
     All(DataType, u64, Bytes),
     BatchStart(u64, Bytes),
@@ -69,7 +72,7 @@ pub struct DataTake<T> {
     id: u64,
     data_type: DataType,
     element_size: usize,
-    inner: Arc<RwLock<Option<(Vec<T>, bool)>>>,
+    inner: Arc<RwLock<Option<Completed<T>>>>,
     batch: Arc<Mutex<TakeBatch<T>>>,
     sender: MessageSender,
 }
@@ -366,7 +369,7 @@ pub struct DataMultiTake<T> {
     id: u64,
     data_type: DataType,
     element_size: usize,
-    inner: Arc<RwLock<NoHashMap<u32, (Vec<T>, bool)>>>,
+    inner: Arc<RwLock<NoHashMap<u32, Completed<T>>>>,
     batches: Arc<Mutex<NoHashMap<u32, TakeBatch<T>>>>,
     sender: MessageSender,
 }

@@ -373,7 +373,8 @@ mod tests {
         data.set(&[1, 2, 3], false).unwrap();
         multi.set(4, &[1, 2, 3], false).unwrap();
 
-        let attempts: [(&str, Box<dyn Fn() -> Result<()>>); 4] = [
+        type Attempt<'a> = (&'a str, Box<dyn Fn() -> Result<()> + 'a>);
+        let attempts: [Attempt<'_>; 4] = [
             (
                 "replace",
                 Box::new(|| data.replace(&[9], usize::MAX, false)),
