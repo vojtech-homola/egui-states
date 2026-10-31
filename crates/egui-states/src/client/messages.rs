@@ -119,9 +119,7 @@ impl MessagesSerializer {
                     }
                 }
             }
-            None | Some(None) => {
-                return None;
-            }
+            None | Some(None) => None,
         }
     }
 

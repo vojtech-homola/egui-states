@@ -95,7 +95,7 @@ impl WsClientSend {
     }
 
     pub(crate) async fn send(&mut self, data: FastVec<64>) -> Result<(), ()> {
-        let message = Message::Binary(data.to_bytes());
+        let message = Message::Binary(data.into_bytes());
         match self.sink.send(message).await {
             Ok(_) => Ok(()),
             Err(_e) => {
@@ -135,7 +135,7 @@ mod tests {
                 for message in [
                     Message::Ping(bytes::Bytes::from_static(b"ping")),
                     Message::Pong(bytes::Bytes::new()),
-                    Message::Binary(update.to_bytes()),
+                    Message::Binary(update.into_bytes()),
                 ] {
                     ws.send(message).await.unwrap();
                 }

@@ -527,6 +527,15 @@ where
     }
 }
 
+impl<T> Default for ClientBuilder<T>
+where
+    T: State,
+{
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

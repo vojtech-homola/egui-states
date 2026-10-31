@@ -122,10 +122,7 @@ impl ValueMap {
     }
 
     pub(crate) fn get_item(&self, key: &Bytes) -> Option<Bytes> {
-        match self.map.read().get(key) {
-            Some(v) => Some(v.clone()),
-            None => None,
-        }
+        self.map.read().get(key).cloned()
     }
 
     pub(crate) fn remove_item(&self, key: &Bytes, update: bool) -> Result<Option<Bytes>, ()> {
@@ -144,7 +141,7 @@ impl ValueMap {
                 key.len() as u32,
             );
             let mut data = serialize(&header)?;
-            data.extend_from_slice(&key);
+            data.extend_from_slice(key);
             self.sender.send(data);
         }
 

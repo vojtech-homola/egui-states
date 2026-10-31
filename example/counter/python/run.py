@@ -38,7 +38,10 @@ def main() -> None:
     try:
         server.start(args.port, (127, 0, 0, 1))
         print(f"Counter server listening on {args.port}", flush=True)
-        stopped.wait()
+        # Another thread may take the signal, which only flags it for the
+        # main thread; a timed wait lets the main thread run the handler.
+        while not stopped.wait(0.5):
+            pass
     finally:
         server.stop()
 
