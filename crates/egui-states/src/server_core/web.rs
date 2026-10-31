@@ -323,7 +323,7 @@ async fn write_all_with_idle_timeout(
 ) -> io::Result<()> {
     while !data.is_empty() {
         let chunk = &data[..data.len().min(MAX_WRITE_CHUNK)];
-         let written = tokio::time::timeout(idle_timeout, stream.write(chunk))
+        let written = tokio::time::timeout(idle_timeout, stream.write(chunk))
             .await
             .map_err(|_| io::Error::from(io::ErrorKind::TimedOut))??;
         if written == 0 {
