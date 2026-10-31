@@ -57,7 +57,7 @@ impl Data {
         check_data_type(&data, self.data_type, self.item_size)?;
 
         let mut w = self.value.write();
-        let slice = unsafe { std::slice::from_raw_parts(data.data as *const u8, data.data_size) };
+        let slice = unsafe { std::slice::from_raw_parts(data.data, data.data_size) };
         w.0.clear();
         w.0.extend_from_slice(slice);
         w.1 = data.count;
@@ -304,13 +304,13 @@ impl DataMulti {
 
     pub(crate) fn remove_index(&self, index: u32, update: bool) -> Result<(), String> {
         let mut w = self.values.write();
-        if let Some(_) = w.remove(&index) {
+        if w.remove(&index).is_some() {
             let _r = RwLockWriteGuard::downgrade(w);
             if self.connected.load(std::sync::atomic::Ordering::Acquire) {
                 let header = MultiDataHeader::Remove(index, update);
                 let message = header
                     .serialize(self.id)
-                    .map_err(|_| format!("Failed to serialize remove index header"))?;
+                    .map_err(|_| "Failed to serialize remove index header".to_string())?;
                 self.sender.send(message);
             }
         }
@@ -328,7 +328,7 @@ impl DataMulti {
                 let header = MultiDataHeader::Reset(update);
                 let message = header
                     .serialize(self.id)
-                    .map_err(|_| format!("Failed to serialize reset header"))?;
+                    .map_err(|_| "Failed to serialize reset header".to_string())?;
                 self.sender.send(message);
             }
         }
@@ -628,7 +628,7 @@ pub(crate) fn check_data_type(
         ));
     }
 
-    if data.data_size % item_size != 0 {
+    if !data.data_size.is_multiple_of(item_size) {
         return Err(format!(
             "Data size must be a multiple of element size: expected multiple of {}, got {}",
             item_size, data.data_size
@@ -657,7 +657,7 @@ pub(crate) fn pack_data(
         }
         .map_err(|_| "Failed to serialize header".to_string())?;
         message.reserve_exact(data.len());
-        message.extend_from_slice(&data);
+        message.extend_from_slice(data);
         messages.push((message, true));
     } else {
         let element_size = data_type.item_size();
@@ -809,7 +809,7 @@ mod transfer_tests {
                     assert_eq!(total, bytes.len().div_ceil(MSG_SIZE_THRESHOLD));
                     for (n, (message, _)) in messages.into_iter().enumerate() {
                         let (mut parser, message) =
-                            MessagesParser::from_bytes(message.to_bytes()).unwrap();
+                            MessagesParser::from_bytes(message.into_bytes()).unwrap();
                         match message {
                             ServerMessage::Data(51, repaint, message) => {
                                 assert_eq!(repaint, n + 1 == total);
@@ -910,7 +910,7 @@ mod transfer_tests {
                 .unwrap();
                 let total = messages.len();
                 for (n, (message, _)) in messages.into_iter().enumerate() {
-                    let (_, message) = MessagesParser::from_bytes(message.to_bytes()).unwrap();
+                    let (_, message) = MessagesParser::from_bytes(message.into_bytes()).unwrap();
                     match message {
                         ServerMessage::Data(52, _, message) => single.update_data(message).unwrap(),
                         ServerMessage::DataMulti(52, _, DataMultiMessage::Modify(79, message)) => {

@@ -37,12 +37,9 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
 
-  # Not blocking until the existing clippy warnings are fixed; then drop
-  # `continue-on-error`.
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable

@@ -6,6 +6,11 @@ use crate::State;
 use crate::build_scripts::states_creator_build::{RustDerives, StateType, StatesCreatorBuild};
 use crate::typed::ObjectType;
 
+/// Enum name to its `(variant, value)` pairs.
+type Enums = BTreeMap<String, Vec<(String, i32)>>;
+/// Struct name to its `(field, type)` pairs.
+type Structs = BTreeMap<String, Vec<(String, ObjectType)>>;
+
 pub(crate) fn parse_states<S: State>() -> (StateType, u64, RustDerives) {
     let mut creator = StatesCreatorBuild::new("root");
     let _ = S::new(&mut creator);
@@ -76,16 +81,14 @@ pub(crate) fn write_generated_files<const N: usize>(
     Ok(())
 }
 
-fn collect_enums(type_info: &ObjectType, enums: &mut BTreeMap<String, Vec<(String, i32)>>) {
+fn collect_enums(type_info: &ObjectType, enums: &mut Enums) {
     match type_info {
         ObjectType::Enum(name, variants) => {
-            if enums.contains_key(name) {
-                if enums[name] != *variants {
-                    panic!(
-                        "Enum {} defined multiple times with different variants",
-                        name
-                    );
-                }
+            if enums.contains_key(name) && enums[name] != *variants {
+                panic!(
+                    "Enum {} defined multiple times with different variants",
+                    name
+                );
             }
 
             enums.insert(name.clone(), variants.clone());
@@ -117,19 +120,14 @@ fn collect_enums(type_info: &ObjectType, enums: &mut BTreeMap<String, Vec<(Strin
     }
 }
 
-fn collect_structs(
-    type_info: &ObjectType,
-    structs: &mut BTreeMap<String, Vec<(String, ObjectType)>>,
-) {
+fn collect_structs(type_info: &ObjectType, structs: &mut Structs) {
     match type_info {
         ObjectType::Struct(name, fields) => {
-            if structs.contains_key(name) {
-                if structs[name] != *fields {
-                    panic!(
-                        "Struct {} defined multiple times with different fields",
-                        name
-                    );
-                }
+            if structs.contains_key(name) && structs[name] != *fields {
+                panic!(
+                    "Struct {} defined multiple times with different fields",
+                    name
+                );
             }
 
             structs.insert(name.clone(), fields.clone());
@@ -164,12 +162,7 @@ fn collect_structs(
     }
 }
 
-pub(crate) fn get_all_enums_struct(
-    values: &[StateType],
-) -> (
-    BTreeMap<String, Vec<(String, i32)>>,
-    BTreeMap<String, Vec<(String, ObjectType)>>,
-) {
+pub(crate) fn get_all_enums_struct(values: &[StateType]) -> (Enums, Structs) {
     let mut enums = BTreeMap::new();
     let mut structs = BTreeMap::new();
 

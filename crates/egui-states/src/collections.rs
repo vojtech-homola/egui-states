@@ -105,7 +105,7 @@ mod tests {
             vec![(Part::Begin, 1, MSG_SIZE_THRESHOLD), (Part::End, 1, 1)]
         );
 
-        let items = vec![VALUE_MAX_SIZE; 25];
+        let items = [VALUE_MAX_SIZE; 25];
         let chunks = split_collection(items.iter().copied());
         let parts: Vec<Part> = chunks.iter().map(|(part, ..)| *part).collect();
         assert_eq!(parts, [Part::Begin, Part::Chunk, Part::End]);

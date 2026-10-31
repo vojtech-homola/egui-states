@@ -3,17 +3,22 @@
 pub(crate) fn isolated() -> bool {
     let name = std::thread::current().name().unwrap().to_owned();
     if std::env::var("EGUI_TEST_CHILD").as_deref() == Ok(&name) {
+        std::fs::File::create(std::env::var_os("EGUI_TEST_MARKER").unwrap()).unwrap();
         return false;
     }
-    let path = std::env::temp_dir().join(format!(
-        "egui-test-{}-{}.log",
+    let base = format!(
+        "egui-test-{}-{}",
         std::process::id(),
         name.replace(':', "_")
-    ));
+    );
+    let path = std::env::temp_dir().join(format!("{base}.log"));
+    let marker = std::env::temp_dir().join(format!("{base}.ran"));
+    let _ = std::fs::remove_file(&marker);
     let log = std::fs::File::create(&path).unwrap();
     let mut child = std::process::Command::new(std::env::current_exe().unwrap())
         .args(["--exact", &name, "--nocapture"])
         .env("EGUI_TEST_CHILD", &name)
+        .env("EGUI_TEST_MARKER", &marker)
         .stdout(log.try_clone().unwrap())
         .stderr(log)
         .spawn()
@@ -37,9 +42,11 @@ pub(crate) fn isolated() -> bool {
         "{name}: child failed or exceeded 25s\n{output}"
     );
     // A renamed or moved test matches nothing and would otherwise pass silently.
+    // The child marks that it reached this test because its output can
+    // interleave with prints from background threads.
     assert!(
-        output.contains("test result: ok. 1 passed"),
-        "{name}: child did not run exactly this test\n{output}"
+        std::fs::remove_file(&marker).is_ok(),
+        "{name}: child did not run this test\n{output}"
     );
     true
 }

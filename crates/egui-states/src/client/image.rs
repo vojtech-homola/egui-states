@@ -10,6 +10,9 @@ use crate::client::messages::{ChannelMessage, MessageSender};
 use crate::hashing::NoHashMap;
 use crate::image_transport::{ImageType, checked_image_bounds, checked_image_bytes};
 
+/// A texture and its `[width, height]` size.
+type Texture = (TextureHandle, [usize; 2]);
+
 const TEXTURE_OPTIONS: egui::TextureOptions = egui::TextureOptions {
     magnification: egui::TextureFilter::Nearest,
     minification: egui::TextureFilter::Nearest,
@@ -64,7 +67,7 @@ impl ImageMessage {
 pub struct Image {
     name: Arc<String>,
     id: u64,
-    inner: Arc<(RwLock<Option<(TextureHandle, [usize; 2])>>, MessageSender)>,
+    inner: Arc<(RwLock<Option<Texture>>, MessageSender)>,
     buffer: Arc<Mutex<Option<(ColorImage, usize)>>>,
 }
 
@@ -154,7 +157,7 @@ impl Image {
             ImageSetMessage::Batch(pixels) => {
                 let pixels = pixels as usize;
                 if let Some((ref mut c_image, ref mut actual_pixel)) = *self.buffer.lock() {
-                    let actual = *actual_pixel as usize;
+                    let actual = *actual_pixel;
 
                     if actual + pixels > c_image.pixels.len() {
                         return Err(format!("Pixels exceed image size in {}", self.name));
@@ -210,14 +213,14 @@ impl Image {
 
         checked_image_bounds(origin, image_size)?;
         let mut w = self.inner.0.write();
-        if let Some((_, save_size)) = w.as_ref() {
-            if origin[0] + image_size[0] > save_size[0] || origin[1] + image_size[1] > save_size[1]
-            {
-                return Err(format!(
-                    "Image is larger than the texture for image: {}",
-                    self.name
-                ));
-            }
+        if let Some((_, save_size)) = w.as_ref()
+            && (origin[0] + image_size[0] > save_size[0]
+                || origin[1] + image_size[1] > save_size[1])
+        {
+            return Err(format!(
+                "Image is larger than the texture for image: {}",
+                self.name
+            ));
         }
         let c_image = self.create_c_image(image_size, image_type, data)?;
         if let Some((ref mut texture_handle, ref mut save_size)) = *w {
@@ -317,7 +320,7 @@ impl Clone for Image {
 
 struct ImageMultiInner {
     context: Option<egui::Context>,
-    images: NoHashMap<u32, (TextureHandle, [usize; 2])>,
+    images: NoHashMap<u32, Texture>,
 }
 
 /// A server-controlled sparse collection of RGBA textures indexed by `u32` keys.
