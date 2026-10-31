@@ -1,10 +1,15 @@
 //! Client construction, connection control, and egui repaint integration.
 
+use std::any::Any;
+use std::future::Future;
 use std::net::{Ipv4Addr, SocketAddrV4};
+use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use std::time::Duration;
 
 use egui::Context;
+use futures_util::FutureExt;
+use futures_util::future::{AbortHandle, Abortable};
 use parking_lot::RwLock;
 use tokio::sync::mpsc::UnboundedReceiver;
 
@@ -16,15 +21,17 @@ use crate::event::Event;
 use crate::serialization::ClientHeader;
 
 #[cfg(not(target_arch = "wasm32"))]
-use crate::client::websocket::build_ws;
+use crate::client::websocket::{WsClientRead, WsClientSend, build_ws};
 
 #[cfg(target_arch = "wasm32")]
-use crate::client::websocket_wasm::build_ws;
+use crate::client::websocket_wasm::{WsClientRead, WsClientSend, build_ws};
+
+type MessageReceiver = UnboundedReceiver<Option<ChannelMessage>>;
 
 async fn start_gui_client(
     addr: SocketAddrV4,
     vals: ValuesList,
-    mut rx: UnboundedReceiver<Option<ChannelMessage>>,
+    mut rx: MessageReceiver,
     sender: MessageSender,
     client: Client,
     version: Option<u64>,
@@ -36,11 +43,13 @@ async fn start_gui_client(
         client.set_state(ConnectionState::NotConnected);
 
         // try to connect to the server
-        let res = build_ws(addr).await;
-        if res.is_err() {
-            continue;
-        }
-        let (mut socket_read, mut socket_send) = res.unwrap();
+        let (socket_read, mut socket_send) = match build_ws(addr).await {
+            Ok(socket) => socket,
+            Err(error) => {
+                client.fail(error);
+                continue;
+            }
+        };
 
         // clean message queue before starting
         while !rx.is_empty() {
@@ -49,86 +58,194 @@ async fn start_gui_client(
 
         // communicate handshake and initialization -------------------------
         let message = ClientHeader::serialize_handshake(PROTOCOL_VERSION, version, hash.clone());
-        if let Err(_) = socket_send.send(message).await {
-            #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
-            println!("Sending handshake failed.");
-            #[cfg(all(debug_assertions, target_arch = "wasm32"))]
-            log::error!("Sending handshake failed.");
+        if socket_send.send(message).await.is_err() {
+            client.fail("Sending handshake failed.".to_string());
             continue;
         }
 
-        // read -----------------------------------------
-        let th_vals = vals.clone();
-        let th_client = client.clone();
-        let th_sender = sender.clone();
-
-        let recv_future = async move {
-            // The server answers an accepted handshake with its synchronization
-            // messages and sends nothing to a rejected client.
-            let mut accepted = false;
-            loop {
-                // read the message
-                match socket_read.read().await {
-                    Ok(msg) => {
-                        if !accepted {
-                            accepted = true;
-                            th_client.set_state(ConnectionState::Connected);
-                        }
-                        if let Err(e) = handle_message(msg, &th_vals, &th_client).await {
-                            let error = format!("handling message from server failed: {:?}", e);
-                            th_sender.send_message(&error);
-                            print_error(&error);
-                            // break; TODO: decide if we want to break the loop on error
-                        }
-                    }
-                    Err(e) => {
-                        print_error(&format!("Connection with server failed: {:?}", e));
-                        break;
-                    }
-                }
+        let session = run_session(socket_read, socket_send, rx, &vals, &sender, &client).await;
+        let end = match session {
+            Ok((rx_back, end)) => {
+                rx = rx_back;
+                end
             }
-            th_sender.close();
-        };
-
-        #[cfg(not(target_arch = "wasm32"))]
-        let recv_future = tokio::spawn(recv_future);
-
-        // send -----------------------------------------
-        let send_future = async move {
-            let mut serializer = MessagesSerializer::new(rx);
-
-            while let Some(message) = serializer.next().await {
-                if let Err(_) = socket_send.send(message).await {
-                    break;
-                }
+            Err(error) => {
+                // Without the message queue no further connection can work.
+                vals.disconnected();
+                client.fail(format!(
+                    "Client connection task stopped, build a new client: {}",
+                    error
+                ));
+                return;
             }
-
-            socket_send.close().await;
-            serializer.close()
         };
-
-        #[cfg(not(target_arch = "wasm32"))]
-        let send_future = tokio::spawn(send_future);
-
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            // wait for the read thread to finish
-            let _ = recv_future.await;
-
-            // wait for the send thread
-            rx = send_future.await.unwrap();
-        }
-
-        #[cfg(target_arch = "wasm32")]
-        {
-            let (_, rx_) = tokio::join!(recv_future, send_future);
-            rx = rx_;
-        }
 
         vals.disconnected();
         // Requests made while connected do not start a reconnect.
         client.0.connect_signal.clear();
-        client.set_state(ConnectionState::Disconnected);
+        match end {
+            SessionEnd::Closed => client.set_state(ConnectionState::Disconnected),
+            SessionEnd::NotAccepted(error) => client.fail(format!(
+                "Connection closed before the server accepted the handshake: {}",
+                error
+            )),
+            SessionEnd::Panicked(task, message) => {
+                client.fail(format!("Client {} task panicked: {}", task, message))
+            }
+        }
+    }
+}
+
+/// How one connection ended.
+enum SessionEnd {
+    /// An established connection ended.
+    Closed,
+    /// The connection ended before the server accepted the handshake.
+    NotAccepted(String),
+    /// A connection task panicked; holds the task name and the panic message.
+    Panicked(&'static str, String),
+}
+
+/// Runs the receive and send tasks of one connection until both end.
+///
+/// Returns the message queue receiver for the next connection and how this
+/// one ended. A panic in either task ends the connection instead of the
+/// client. The error case means the receiver was lost, which only happens if
+/// the send task stopped outside its panic guard.
+async fn run_session(
+    socket_read: WsClientRead,
+    socket_send: WsClientSend,
+    rx: MessageReceiver,
+    vals: &ValuesList,
+    sender: &MessageSender,
+    client: &Client,
+) -> Result<(MessageReceiver, SessionEnd), String> {
+    // A panicking send task stops the receive task; reading alone would keep
+    // the connection open while nothing can be sent.
+    let (abort_receive, abort_registration) = AbortHandle::new_pair();
+
+    let recv_future = {
+        let (vals, client, sender) = (vals.clone(), client.clone(), sender.clone());
+        async move {
+            let read = catch_panic(receive(socket_read, &vals, &client, &sender));
+            let end = Abortable::new(read, abort_registration).await;
+            // Closing the queue ends the send task.
+            sender.close();
+            // The read is aborted only after the send task panicked, which is
+            // reported instead.
+            end.unwrap_or(Ok(SessionEnd::Closed))
+        }
+    };
+
+    let send_future = async move {
+        // The serializer owns the queue receiver and stays outside the panic
+        // guard, so the receiver survives a panic.
+        let mut serializer = MessagesSerializer::new(rx);
+        let end = catch_panic(send(&mut serializer, socket_send)).await;
+        if end.is_err() {
+            abort_receive.abort();
+        }
+        (serializer.close(), end)
+    };
+
+    #[cfg(not(target_arch = "wasm32"))]
+    let (recv_end, send_end) = {
+        let recv_task = tokio::spawn(recv_future);
+        let send_task = tokio::spawn(send_future);
+        let recv_end = recv_task.await.unwrap_or_else(|error| {
+            // The task stopped before closing the queue.
+            sender.close();
+            Err(join_error_message(error))
+        });
+        let send_end = send_task.await.map_err(join_error_message)?;
+        (recv_end, send_end)
+    };
+
+    #[cfg(target_arch = "wasm32")]
+    let (recv_end, send_end) = tokio::join!(recv_future, send_future);
+
+    let (rx, send_end) = send_end;
+    let end = match (recv_end, send_end) {
+        (Err(message), _) => SessionEnd::Panicked("receive", message),
+        (Ok(_), Err(message)) => SessionEnd::Panicked("send", message),
+        (Ok(end), Ok(())) => end,
+    };
+    Ok((rx, end))
+}
+
+/// Reads and applies server messages until the connection ends.
+async fn receive(
+    mut socket_read: WsClientRead,
+    vals: &ValuesList,
+    client: &Client,
+    sender: &MessageSender,
+) -> SessionEnd {
+    // The server answers an accepted handshake with its synchronization
+    // messages and sends nothing to a rejected client.
+    let mut accepted = false;
+    let error = loop {
+        match socket_read.read().await {
+            Ok(msg) => {
+                if !accepted {
+                    accepted = true;
+                    client.set_state(ConnectionState::Connected);
+                }
+                if let Err(e) = handle_message(msg, vals, client).await {
+                    let error = format!("handling message from server failed: {:?}", e);
+                    sender.send_message(&error);
+                    print_error(&error);
+                    // break; TODO: decide if we want to break the loop on error
+                }
+            }
+            Err(e) => break e,
+        }
+    };
+
+    if accepted {
+        print_error(&format!("Connection with server failed: {:?}", error));
+        SessionEnd::Closed
+    } else {
+        SessionEnd::NotAccepted(error.to_string())
+    }
+}
+
+/// Writes queued messages until the queue closes or the socket fails.
+async fn send(serializer: &mut MessagesSerializer, mut socket_send: WsClientSend) {
+    while let Some(message) = serializer.next().await {
+        if socket_send.send(message).await.is_err() {
+            break;
+        }
+    }
+    socket_send.close().await;
+}
+
+/// Runs `future`, turning a panic into its message.
+///
+/// After a panic the connection is torn down: `ValuesList::disconnected`
+/// resets partial transfers and the next connection resynchronizes every
+/// value, so no state observed during the panic outlives it.
+async fn catch_panic<F: Future>(future: F) -> Result<F::Output, String> {
+    AssertUnwindSafe(future)
+        .catch_unwind()
+        .await
+        .map_err(panic_message)
+}
+
+fn panic_message(payload: Box<dyn Any + Send>) -> String {
+    match payload.downcast::<String>() {
+        Ok(message) => *message,
+        Err(payload) => match payload.downcast::<&'static str>() {
+            Ok(message) => message.to_string(),
+            Err(_) => "unknown panic payload".to_string(),
+        },
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn join_error_message(error: tokio::task::JoinError) -> String {
+    match error.try_into_panic() {
+        Ok(payload) => panic_message(payload),
+        Err(error) => error.to_string(),
     }
 }
 
@@ -144,10 +261,12 @@ pub(crate) fn print_error(error: &str) {
 ///
 /// A connection attempt starts in [`Self::NotConnected`], becomes
 /// [`Self::Connected`] once the server accepts the handshake, and becomes
-/// [`Self::Disconnected`] when an established connection ends. Calling
-/// [`Client::connect`] starts a new attempt and returns the state to
-/// `NotConnected`.
+/// [`Self::Disconnected`] when an established connection ends. An attempt that
+/// does not reach an established connection, or a connection whose background
+/// task panicked, ends in [`Self::Failed`]. Calling [`Client::connect`] starts
+/// a new attempt and returns the state to `NotConnected`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ConnectionState {
     /// No connection has been established or a connection attempt is pending.
     NotConnected,
@@ -155,12 +274,17 @@ pub enum ConnectionState {
     Connected,
     /// A previously active connection ended.
     Disconnected,
+    /// The server could not be reached, did not accept the handshake, or a
+    /// background connection task panicked. [`Client::last_error`] describes
+    /// the cause; call [`Client::connect`] to retry.
+    Failed,
 }
 
 struct ClientInner {
     context: Option<Context>,
     connect_signal: Event,
-    state: Arc<RwLock<ConnectionState>>,
+    // The error is set only together with `ConnectionState::Failed`.
+    state: RwLock<(ConnectionState, Option<String>)>,
     sender: MessageSender,
 }
 
@@ -179,7 +303,7 @@ impl Client {
         let inner = ClientInner {
             context,
             connect_signal: Event::new(),
-            state: Arc::new(RwLock::new(ConnectionState::NotConnected)),
+            state: RwLock::new((ConnectionState::NotConnected, None)),
             sender,
         };
 
@@ -199,12 +323,15 @@ impl Client {
     }
 
     /// Requests an egui repaint immediately, or after `time` seconds if positive.
+    ///
+    /// A delay that is not finite or does not fit in a [`Duration`] requests an
+    /// immediate repaint.
     pub fn update(&self, time: f32) {
         if let Some(ctx) = &self.0.context {
-            if time > 0.0 {
-                ctx.request_repaint_after(Duration::from_secs_f32(time));
-            } else {
-                ctx.request_repaint();
+            // The delay comes from the server and must not panic this task.
+            match Duration::try_from_secs_f32(time) {
+                Ok(delay) if !delay.is_zero() => ctx.request_repaint_after(delay),
+                _ => ctx.request_repaint(),
             }
         }
     }
@@ -227,7 +354,15 @@ impl Client {
     }
 
     pub(crate) fn set_state(&self, state: ConnectionState) {
-        *self.0.state.write() = state;
+        *self.0.state.write() = (state, None);
+        if let Some(ctx) = &self.0.context {
+            ctx.request_repaint();
+        }
+    }
+
+    pub(crate) fn fail(&self, error: String) {
+        print_error(&error);
+        *self.0.state.write() = (ConnectionState::Failed, Some(error));
         if let Some(ctx) = &self.0.context {
             ctx.request_repaint();
         }
@@ -240,7 +375,21 @@ impl Client {
 
     /// Returns the current connection status.
     pub fn get_state(&self) -> ConnectionState {
-        *self.0.state.read()
+        self.0.state.read().0
+    }
+
+    /// Returns why the client is in [`ConnectionState::Failed`].
+    ///
+    /// Returns `None` in every other state; a new connection attempt clears
+    /// the error.
+    pub fn last_error(&self) -> Option<String> {
+        self.0.state.read().1.clone()
+    }
+
+    /// Makes the send task panic on the next queued message.
+    #[cfg(test)]
+    pub(crate) fn inject_send_panic(&self) {
+        self.0.sender.send(ChannelMessage::TestPanic);
     }
 }
 
@@ -382,30 +531,62 @@ where
 mod tests {
     use super::*;
 
+    /// Returns the repaint requests made by `Client::update(delay)`.
+    fn repaint_requests(delay: f32) -> Vec<Duration> {
+        let context = egui::Context::default();
+        // Drain initial repaint requests so the requested one is observable.
+        for _ in 0..3 {
+            let mut output = context.run_ui(
+                egui::RawInput {
+                    predicted_dt: 0.0,
+                    ..Default::default()
+                },
+                |_| {},
+            );
+            output.textures_delta.clear();
+        }
+        let requests = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let received = requests.clone();
+        context.set_request_repaint_callback(move |info| received.lock().push(info.delay));
+        let (sender, _receiver) = MessageSender::new();
+        let client = Client::new(Some(context), sender);
+        client.update(delay);
+        requests.lock().clone()
+    }
+
     #[test]
     fn update_requests_immediate_and_delayed_repaints() {
         for delay in [0.0, 0.25] {
-            let context = egui::Context::default();
-            // Drain initial repaint requests so the delayed request is observable.
-            for _ in 0..3 {
-                let mut output = context.run_ui(
-                    egui::RawInput {
-                        predicted_dt: 0.0,
-                        ..Default::default()
-                    },
-                    |_| {},
-                );
-                output.textures_delta.clear();
-            }
-            let requests = Arc::new(parking_lot::Mutex::new(Vec::new()));
-            let received = requests.clone();
-            context.set_request_repaint_callback(move |info| received.lock().push(info.delay));
-            let (sender, _receiver) = MessageSender::new();
-            let client = Client::new(Some(context), sender);
-            client.update(delay);
-            let requests = requests.lock();
-            assert_eq!(requests.len(), 1, "no observable repaint for delay {delay}");
-            assert_eq!(requests[0], Duration::from_secs_f32(delay));
+            assert_eq!(
+                repaint_requests(delay),
+                [Duration::from_secs_f32(delay)],
+                "delay {delay}"
+            );
         }
+    }
+
+    /// Delays that are not finite or too large for a `Duration` request an
+    /// immediate repaint instead of panicking.
+    #[test]
+    fn update_with_an_unrepresentable_delay_repaints_immediately() {
+        for delay in [f32::INFINITY, f32::NAN, 1e20, -1.0] {
+            assert_eq!(repaint_requests(delay), [Duration::ZERO], "delay {delay}");
+        }
+    }
+
+    #[test]
+    fn catch_panic_returns_the_panic_message() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            assert_eq!(catch_panic(async { 3 }).await, Ok(3));
+            let literal = catch_panic(async { panic!("literal") }).await;
+            assert_eq!(literal, Err::<(), _>("literal".to_string()));
+            let formatted = catch_panic(async { panic!("formatted {}", 7) }).await;
+            assert_eq!(formatted, Err::<(), _>("formatted 7".to_string()));
+            let other = catch_panic(async { std::panic::panic_any(7_u8) }).await;
+            assert_eq!(other, Err::<(), _>("unknown panic payload".to_string()));
+        });
     }
 }

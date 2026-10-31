@@ -1904,6 +1904,180 @@ mod connection_tests {
         );
     }
 
+    /// An unreachable server and a refused handshake end in `Failed` with the
+    /// cause.
+    #[test]
+    fn failed_connection_attempts_report_the_cause() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let (_state, client) = ClientBuilder::<ClientTestState>::new().build(free_port());
+        assert_eq!(client.last_error(), None);
+        client.connect();
+        wait("unreachable server", || {
+            client.get_state() == ConnectionState::Failed
+        });
+        let error = client.last_error().unwrap();
+        assert!(error.contains("Connecting to server"), "{error}");
+
+        let (server, _value, port) = server(ServerOptions::new(), Some("secret"));
+        let (_state, client) = ClientBuilder::<ClientTestState>::new()
+            .token("wrong".to_string())
+            .build(port);
+        client.connect();
+        wait("refused handshake", || {
+            client.get_state() == ConnectionState::Failed
+        });
+        let error = client.last_error().unwrap();
+        assert!(
+            error.contains("before the server accepted the handshake"),
+            "{error}"
+        );
+        server.stop();
+    }
+
+    const PANIC_VALUE: i32 = -13;
+
+    /// An `i32` whose client-side decoding panics on [`PANIC_VALUE`], standing
+    /// in for a panicking user `Deserialize` implementation.
+    #[derive(Clone, Serialize)]
+    struct PanicOnDecode(i32);
+
+    impl<'de> Deserialize<'de> for PanicOnDecode {
+        fn deserialize<D: serde::Deserializer<'de>>(
+            deserializer: D,
+        ) -> std::result::Result<Self, D::Error> {
+            let value = i32::deserialize(deserializer)?;
+            if value == PANIC_VALUE {
+                panic!("injected receive task panic");
+            }
+            Ok(Self(value))
+        }
+    }
+
+    // SAFETY: serialized exactly like the wrapped `i32`.
+    unsafe impl Typed for PanicOnDecode {
+        fn get_type() -> crate::ObjectType {
+            <i32 as Typed>::get_type()
+        }
+    }
+
+    // SAFETY: same shape and meaning as the wrapped `i32`.
+    unsafe impl crate::InitialValue for PanicOnDecode {
+        fn init_value(&self) -> crate::InitValue {
+            crate::InitialValue::init_value(&self.0)
+        }
+    }
+
+    /// Like [`ClientTestState`], with a value that can panic the receive task.
+    struct PanicTestState {
+        value: crate::Value<PanicOnDecode>,
+    }
+
+    impl crate::State for PanicTestState {
+        const NAME: &'static str = "PanicTestState";
+
+        fn new(c: &mut impl crate::StatesCreator) -> Self {
+            Self {
+                value: c.value("value", PanicOnDecode(0)),
+            }
+        }
+    }
+
+    /// A panic while applying a server message ends the connection in `Failed`
+    /// instead of stopping the client, and the next connection works in both
+    /// directions.
+    #[test]
+    fn a_receive_task_panic_fails_the_connection_and_the_client_recovers() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let (server, value, port) = server(ServerOptions::new(), None);
+        let (state, client) = ClientBuilder::<PanicTestState>::new().build(port);
+        client.connect();
+        wait("first connection", || state.value.get().0 == 731);
+
+        value.set(PANIC_VALUE, false).unwrap();
+        wait("receive panic", || {
+            client.get_state() == ConnectionState::Failed
+        });
+        let error = client.last_error().unwrap();
+        assert!(
+            error.contains("receive task panicked: injected receive task panic"),
+            "{error}"
+        );
+        wait("server disconnect", || !server.is_connected());
+
+        value.set(5, false).unwrap();
+        wait("reconnection", || {
+            client.connect();
+            state.value.get().0 == 5
+        });
+        assert_eq!(client.get_state(), ConnectionState::Connected);
+        state.value.set_signal(PanicOnDecode(9));
+        wait("client write", || value.get().unwrap() == 9);
+        client.disconnect();
+        server.stop();
+    }
+
+    /// A panic in the send task ends the connection in `Failed`, closes the
+    /// socket, and keeps the outgoing queue for the next connection.
+    #[test]
+    fn a_send_task_panic_fails_the_connection_and_the_client_recovers() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let (server, value, port) = server(ServerOptions::new(), None);
+        let (state, client) = ClientBuilder::<ClientTestState>::new().build(port);
+        client.connect();
+        wait("first connection", || state.value.get() == 731);
+
+        client.inject_send_panic();
+        wait("send panic", || {
+            client.get_state() == ConnectionState::Failed
+        });
+        let error = client.last_error().unwrap();
+        assert!(
+            error.contains("send task panicked: injected send task panic"),
+            "{error}"
+        );
+        wait("server disconnect", || !server.is_connected());
+
+        value.set(5, false).unwrap();
+        wait("reconnection", || {
+            client.connect();
+            state.value.get() == 5
+        });
+        assert_eq!(client.get_state(), ConnectionState::Connected);
+        state.value.set_signal(9);
+        wait("client write", || value.get().unwrap() == 9);
+        client.disconnect();
+        server.stop();
+    }
+
+    /// Repaint delays come from server code unchecked; one that does not fit
+    /// in a `Duration` must not panic the client.
+    #[test]
+    fn an_unrepresentable_repaint_delay_keeps_the_client_connected() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let (server, value, port) = server(ServerOptions::new(), None);
+        let (state, client) = ClientBuilder::<ClientTestState>::new()
+            .context(egui::Context::default())
+            .build(port);
+        client.connect();
+        wait("first connection", || state.value.get() == 731);
+
+        server.update(Some(f32::INFINITY)).unwrap();
+        server.update(Some(1e20)).unwrap();
+        value.set(5, false).unwrap();
+        wait("update after the delays", || state.value.get() == 5);
+        assert_eq!(client.get_state(), ConnectionState::Connected);
+        client.disconnect();
+        server.stop();
+    }
+
     /// A connection request made before the background task starts waiting
     /// must not be lost.
     #[test]

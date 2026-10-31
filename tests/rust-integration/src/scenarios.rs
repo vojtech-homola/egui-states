@@ -569,6 +569,14 @@ fn rejected_client(port: u16) {
         );
         std::thread::sleep(Duration::from_millis(20));
     }
+    // An error is reported only in `ConnectionState::Failed`.
+    let error = wait("rejected client failure", || {
+        rejected_connection.0.last_error()
+    });
+    assert!(
+        error.contains("before the server accepted the handshake"),
+        "{error}"
+    );
     barrier(&state.integration);
     assert!(connection.0.get_state() == ConnectionState::Connected);
 }
