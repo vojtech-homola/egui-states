@@ -1,0 +1,40 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: ci
+    groups:
+      github-actions:
+        patterns: ["*"]
+
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: chore
+    # Dependabot treats 0.x -> 0.(x+1) as a minor update, but for these crates
+    # it is breaking. A dependency joins the first group that matches, so the
+    # crates that must move together get their own PR and cannot hold back the
+    # routine updates.
+    groups:
+      egui:
+        patterns: ["egui", "eframe"]
+      pyo3:
+        patterns: ["pyo3*"]
+      cargo:
+        update-types: [minor, patch]
+        exclude-patterns: ["tokio-tungstenite"]
+
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: chore
+    groups:
+      uv:
+        update-types: [minor, patch]

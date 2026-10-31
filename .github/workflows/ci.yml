@@ -1,0 +1,157 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  lint:
+    name: Lint and docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: astral-sh/setup-uv@v10.3.3
+      - run: cargo fmt --all --check
+      - run: uvx ruff@0.17.3 check .
+      - run: uvx ruff@0.17.3 format --check .
+      # docs.rs builds the default features.
+      - run: cargo doc --locked --no-deps -p egui_states -p egui_states_macros
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  # Not blocking until the existing clippy warnings are fixed; then drop
+  # `continue-on-error`.
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: astral-sh/setup-uv@v10.3.3
+      # The `python` feature needs the interpreter `.cargo/config.toml` points at.
+      - run: uv venv --python 3.12
+      - run: cargo clippy --locked --all-targets -- -D warnings
+        if: ${{ !cancelled() }}
+      - run: cargo clippy --locked -p egui_states --no-default-features --features server --all-targets -- -D warnings
+        if: ${{ !cancelled() }}
+      - run: cargo clippy --locked -p egui_states --features "server build_scripts python" --all-targets -- -D warnings
+        if: ${{ !cancelled() }}
+      - run: cargo clippy --locked -p egui_states_c --all-targets -- -D warnings
+        if: ${{ !cancelled() }}
+
+  rust-tests:
+    name: Rust tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          python-version: "3.12"
+      - run: uv sync --locked --no-install-project
+      - name: Default packages
+        run: cargo test --locked --no-fail-fast -- --test-threads=1
+      - name: Client defaults
+        run: cargo test --locked -p egui_states
+      - name: Server feature
+        run: cargo test --locked -p egui_states --no-default-features --features server --lib
+      # The test binary links libpython; pytest covers the Python server on
+      # every platform.
+      - name: Python feature
+        if: runner.os == 'Linux'
+        run: uv run --no-sync cargo test --locked -p egui_states --features "server build_scripts python" --lib -- --test-threads=1
+      - name: Examples
+        run: cargo test --locked -p example_smoke_tests
+
+  c-abi:
+    name: C ABI (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo test --locked -p egui_states --no-default-features --features c_abi --lib -- --test-threads=1
+      - run: cargo test --locked -p egui_states --features "build_scripts c_abi" --test build_scripts_c
+      # Also fails when include/egui_states.h is out of date.
+      - run: cargo test --locked -p egui_states_c -- --test-threads=1
+      - run: cargo test --locked -p counter_c
+
+  python-tests:
+    name: Python ${{ matrix.python }} (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        python: ["3.12", "3.13", "3.14", "3.14t", "3.15", "3.15t"]
+        include:
+          - { os: windows-latest, python: "3.12" }
+          - { os: windows-latest, python: "3.15" }
+          - { os: windows-latest, python: "3.15t" }
+          - { os: macos-latest, python: "3.12" }
+          - { os: macos-latest, python: "3.15" }
+          - { os: macos-latest, python: "3.15t" }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: python-${{ matrix.python }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          python-version: ${{ matrix.python }}
+      # conftest.py builds and stages the extension itself.
+      - run: uv sync --locked --no-install-project
+      - run: uv run --no-sync python -m pytest tests/python example/tests/python -ra
+
+  wasm:
+    name: Wasm client
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo check --locked --target wasm32-unknown-unknown -p egui_states
+      - run: cargo check --locked --target wasm32-unknown-unknown -p showcase_gui

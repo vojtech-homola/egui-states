@@ -21,7 +21,6 @@ __pycache__
 # version
 /egui_states/version.py
 
-
 # Generated fixtures and example Python and C bindings
 /tests/build-artifacts/
 /example/showcase/python/showcase_bindings/

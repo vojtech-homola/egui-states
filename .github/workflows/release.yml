@@ -1,0 +1,242 @@
+name: Release
+
+# Run from the Actions tab once the release commit (version bump and
+# regenerated CHANGELOG.md) is on `main`. The version comes from
+# `workspace.package.version` in Cargo.toml; the workflow creates the tag.
+on:
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: Build and test the wheels without publishing or tagging
+        type: boolean
+        default: false
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  PYTHONS: 3.12 3.13 3.14 3.14t 3.15 3.15t
+
+jobs:
+  prepare:
+    name: Check version and changelog
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Read version
+        id: version
+        run: |
+          version=$(python3 -c "import tomllib; print(tomllib.load(open('Cargo.toml', 'rb'))['workspace']['package']['version'])")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Releasing $version"
+      - name: Check branch and tag
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          DRY_RUN: ${{ inputs.dry-run }}
+        run: |
+          if [[ "$DRY_RUN" != true && "$GITHUB_REF" != refs/heads/main ]]; then
+            echo "::error::Releases are published from main, not $GITHUB_REF."
+            exit 1
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/$VERSION" > /dev/null; then
+            echo "::error::Tag $VERSION already exists; bump the version in Cargo.toml."
+            exit 1
+          fi
+      - name: Extract release notes from CHANGELOG.md
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          awk -v heading="## [$VERSION]" '
+            index($0, heading) == 1 { found = 1; next }
+            found && /^## \[/ { exit }
+            found { print }
+          ' CHANGELOG.md > release-notes.md
+          if [[ ! -s release-notes.md ]]; then
+            echo "::error::CHANGELOG.md has no section for $VERSION; regenerate it with git-cliff."
+            exit 1
+          fi
+          cat release-notes.md
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-notes
+          path: release-notes.md
+
+  wheels-linux:
+    name: Wheels (linux ${{ matrix.target }})
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - { target: x86_64, runner: ubuntu-latest }
+          - { target: aarch64, runner: ubuntu-24.04-arm }
+    steps:
+      - uses: actions/checkout@v7
+      - id: interpreters
+        run: echo "args=$(printf 'python%s ' $PYTHONS)" >> "$GITHUB_OUTPUT"
+      - uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          manylinux: "2_28"
+          args: --release --out dist --compression-level 9 --interpreter ${{ steps.interpreters.outputs.args }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist-linux-${{ matrix.target }}
+          path: dist/*.whl
+
+  wheels-native:
+    name: Wheels (${{ matrix.name }})
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - { name: windows-x64, runner: windows-latest }
+          - { name: macos-arm64, runner: macos-latest }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: astral-sh/setup-uv@v10.3.3
+      - name: Build wheels
+        shell: bash
+        run: |
+          for python in $PYTHONS; do
+            uv build --wheel --out-dir dist --python "$python" -C maturin.build-args="--compression-level 9"
+          done
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist-${{ matrix.name }}
+          path: dist/*.whl
+
+  sdist:
+    name: Source distribution
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --out dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist-sdist
+          path: dist/*.tar.gz
+
+  check-dist:
+    name: Check distribution set
+    needs: [prepare, wheels-linux, wheels-native, sdist]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+      - name: Expect one wheel per platform and interpreter
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          ls -l dist
+          expected=1
+          missing=0
+          for python in $PYTHONS; do
+            abi="cp${python//[.t]/}"
+            tag="$abi-$abi${python//[0-9.]/}"
+            for platform in manylinux_2_28_x86_64 manylinux_2_28_aarch64 win_amd64 'macosx_*_arm64'; do
+              expected=$((expected + 1))
+              if ! compgen -G "dist/egui_states-$VERSION-$tag-$platform.whl" > /dev/null; then
+                echo "::error::Missing wheel for $tag on $platform."
+                missing=1
+              fi
+            done
+          done
+          [[ -f "dist/egui_states-$VERSION.tar.gz" ]] || { echo "::error::Missing sdist."; missing=1; }
+          actual=$(ls dist | wc -l)
+          if [[ "$actual" -ne "$expected" ]]; then
+            echo "::error::Expected $expected files in dist, found $actual."
+            missing=1
+          fi
+          exit "$missing"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist
+
+  smoke-test:
+    name: Smoke test (${{ matrix.runner }})
+    needs: [prepare, check-dist]
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm, windows-latest, macos-latest]
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist
+      - uses: astral-sh/setup-uv@v10.3.3
+      - name: Install and import each wheel
+        shell: bash
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          for python in $PYTHONS; do
+            echo "::group::Python $python"
+            venv="smoke-$python"
+            uv venv --python "$python" "$venv"
+            uv pip install --python "$venv" numpy
+            uv pip install --python "$venv" --no-index --find-links dist "egui-states==$VERSION"
+            interpreter="$venv/bin/python"
+            [[ -x "$interpreter" ]] || interpreter="$venv/Scripts/python.exe"
+            "$interpreter" -c 'import sys, egui_states; assert egui_states.__version__ == sys.argv[1], egui_states.__version__' "$VERSION"
+            echo "::endgroup::"
+          done
+
+  publish-pypi:
+    name: Publish to PyPI
+    needs: [prepare, smoke-test]
+    if: ${{ !inputs.dry-run }}
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/egui-states/${{ needs.prepare.outputs.version }}/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  github-release:
+    name: Tag and GitHub release
+    needs: [prepare, publish-pypi]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-notes
+      - uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ needs.prepare.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          name: ${{ needs.prepare.outputs.version }}
+          body_path: release-notes.md
+          files: dist/*
+          fail_on_unmatched_files: true
