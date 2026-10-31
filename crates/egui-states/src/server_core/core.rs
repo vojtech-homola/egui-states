@@ -46,6 +46,7 @@ struct ClientReady {
     peer_addr: String,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn run(
     listener: TcpListener,
     sender: MessageSender,
@@ -86,7 +87,7 @@ pub(crate) async fn run(
                 match s {
                     Ok((stream, _)) => {
                         if let Err(e) = stream.set_nodelay(true) {
-                            signals.error(&format!("failed to set TCP_NODELAY: {:?}", e));
+                            signals.error(format!("failed to set TCP_NODELAY: {:?}", e));
                             continue;
                         }
                         let site = web.read().clone();
@@ -98,7 +99,7 @@ pub(crate) async fn run(
                         ));
                     }
                     Err(e) => {
-                        signals.error(&format!("accepting connection failed: {:?}", e));
+                        signals.error(format!("accepting connection failed: {:?}", e));
                     }
                 }
                 continue;
@@ -217,7 +218,7 @@ async fn accept_client(
             // closed unused, so these are not reported.
             Ok(Ok(Dispatch::Closed)) | Err(_) => return None,
             Ok(Err(e)) => {
-                signals.error(&format!("reading request failed: {:?}", e));
+                signals.error(format!("reading request failed: {:?}", e));
                 return None;
             }
         },
@@ -244,7 +245,7 @@ async fn handshake_client(
         match tokio_tungstenite::accept_async_with_config(stream, Some(websocket_config)).await {
             Ok(ws) => ws,
             Err(e) => {
-                signals.error(&format!("websocket handshake failed: {:?}", e));
+                signals.error(format!("websocket handshake failed: {:?}", e));
                 return None;
             }
         };
@@ -359,25 +360,25 @@ async fn reader(
                         val.acknowledge();
                     }
                     None => {
-                        signals.error(&format!("value with id {} not found for Acknowledge", id))
+                        signals.error(format!("value with id {} not found for Acknowledge", id))
                     }
                 }
             }
             Ok(ClientMessage::Value(id, type_id, signal, data)) => match values.values.get(&id) {
                 Some(val) => {
                     if let Err(e) = val.update_value(type_id, signal, data) {
-                        signals.error(&format!("value updating failed: {}", e));
+                        signals.error(format!("value updating failed: {}", e));
                     }
                 }
-                None => signals.error(&format!("value with id {} not found", id)),
+                None => signals.error(format!("value with id {} not found", id)),
             },
             Ok(ClientMessage::Signal(id, type_id, data)) => match values.signals.get(&id) {
                 Some(val) => {
                     if let Err(e) = val.update_signal(type_id, data) {
-                        signals.error(&format!("signal updating failed: {}", e));
+                        signals.error(format!("signal updating failed: {}", e));
                     }
                 }
-                None => signals.error(&format!("value with id {} not found", id)),
+                None => signals.error(format!("value with id {} not found", id)),
             },
             Ok(ClientMessage::Message(data)) => {
                 signals.client_message(data);
@@ -416,9 +417,9 @@ async fn writer(
                 }
 
                 // send message
-                let data = Message::Binary(msg.to_bytes());
+                let data = Message::Binary(msg.into_bytes());
                 if let Err(e) = websocket.send(data).await {
-                    signals.error(&format!("sending message to client failed: {:?}", e));
+                    signals.error(format!("sending message to client failed: {:?}", e));
                     reader_handle.abort();
                     let _ = reader_handle.await;
                     break;
@@ -534,12 +535,12 @@ mod tests {
 
         let mut receiver = DataReceiver::new(rx);
         assert_eq!(
-            receiver.next().await.unwrap().to_bytes(),
-            data(MSG_SIZE_THRESHOLD - 10).to_bytes()
+            receiver.next().await.unwrap().into_bytes(),
+            data(MSG_SIZE_THRESHOLD - 10).into_bytes()
         );
         assert_eq!(
-            receiver.next().await.unwrap().to_bytes(),
-            data(11).to_bytes()
+            receiver.next().await.unwrap().into_bytes(),
+            data(11).into_bytes()
         );
         assert!(receiver.next().await.is_none());
     }
@@ -553,9 +554,12 @@ mod tests {
         drop(tx);
 
         let mut receiver = DataReceiver::new(rx);
-        let mut expected = data(MSG_SIZE_THRESHOLD - 10).to_bytes().to_vec();
-        expected.extend_from_slice(&data(10).to_bytes());
-        assert_eq!(receiver.next().await.unwrap().to_bytes().as_ref(), expected);
+        let mut expected = data(MSG_SIZE_THRESHOLD - 10).into_bytes().to_vec();
+        expected.extend_from_slice(&data(10).into_bytes());
+        assert_eq!(
+            receiver.next().await.unwrap().into_bytes().as_ref(),
+            expected
+        );
         assert!(receiver.next().await.is_none());
     }
 
@@ -570,12 +574,15 @@ mod tests {
 
         let mut receiver = DataReceiver::new(rx);
         assert_eq!(
-            receiver.next().await.unwrap().to_bytes(),
-            data(MSG_SIZE_THRESHOLD - 10).to_bytes()
+            receiver.next().await.unwrap().into_bytes(),
+            data(MSG_SIZE_THRESHOLD - 10).into_bytes()
         );
-        let mut expected = data(11).to_bytes().to_vec();
-        expected.extend_from_slice(&data(5).to_bytes());
-        assert_eq!(receiver.next().await.unwrap().to_bytes().as_ref(), expected);
+        let mut expected = data(11).into_bytes().to_vec();
+        expected.extend_from_slice(&data(5).into_bytes());
+        assert_eq!(
+            receiver.next().await.unwrap().into_bytes().as_ref(),
+            expected
+        );
         assert!(receiver.next().await.is_none());
     }
 
@@ -589,16 +596,16 @@ mod tests {
 
         let mut receiver = DataReceiver::new(rx);
         assert_eq!(
-            receiver.next().await.unwrap().to_bytes(),
-            data(10).to_bytes()
+            receiver.next().await.unwrap().into_bytes(),
+            data(10).into_bytes()
         );
         assert_eq!(
-            receiver.next().await.unwrap().to_bytes(),
-            data(11).to_bytes()
+            receiver.next().await.unwrap().into_bytes(),
+            data(11).into_bytes()
         );
         assert_eq!(
-            receiver.next().await.unwrap().to_bytes(),
-            data(5).to_bytes()
+            receiver.next().await.unwrap().into_bytes(),
+            data(5).into_bytes()
         );
         assert!(receiver.next().await.is_none());
     }
@@ -614,11 +621,11 @@ mod tests {
 
         let mut receiver = DataReceiver::new(rx);
         assert_eq!(
-            receiver.next().await.unwrap().to_bytes().as_ref(),
+            receiver.next().await.unwrap().into_bytes().as_ref(),
             (0..MAX_MSG_COUNT as u8).collect::<Vec<_>>()
         );
         assert_eq!(
-            receiver.next().await.unwrap().to_bytes().as_ref(),
+            receiver.next().await.unwrap().into_bytes().as_ref(),
             [MAX_MSG_COUNT as u8, MAX_MSG_COUNT as u8 + 1]
         );
         assert!(receiver.next().await.is_none());

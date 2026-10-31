@@ -170,7 +170,7 @@ impl ImageMultiTransfer {
                         self.sender.send_set(message, send_now);
                     }
                 }
-                state.buffer = Buffer::Update(index, rect, to_send.drain(..).collect());
+                state.buffer = Buffer::Update(index, rect, std::mem::take(to_send));
                 return Ok(());
             }
             Buffer::Set(_) => {}
@@ -191,7 +191,7 @@ impl ImageMultiTransfer {
         if let Some((message, send_now)) = to_send.pop_front() {
             self.sender.send_set(message, send_now);
         }
-        state.buffer = Buffer::Update(index, rect, to_send.drain(..).collect());
+        state.buffer = Buffer::Update(index, rect, std::mem::take(to_send));
         Ok(())
     }
 
@@ -236,7 +236,7 @@ impl ImageMultiTransfer {
                 if data.is_empty() {
                     self.event.set();
                 } else {
-                    let messages = data.drain(..).collect::<Vec<_>>();
+                    let messages = std::mem::take(data);
                     drop(state);
                     self.send_all(messages);
                 }
@@ -843,7 +843,7 @@ mod tests {
 
     fn assert_marker(receiver: &mut MessageReceiver, expected: u8) {
         let (message, _) = receiver.try_recv().unwrap().unwrap();
-        assert_eq!(message.to_bytes().as_ref(), &[expected]);
+        assert_eq!(message.into_bytes().as_ref(), &[expected]);
     }
 
     fn wait_until(mut predicate: impl FnMut() -> bool) {
@@ -948,7 +948,7 @@ mod tests {
         images.sync().unwrap();
 
         let (reset, _) = receiver.try_recv().unwrap().unwrap();
-        let (reset, _) = ServerHeader::deserialize(&reset.to_bytes()).unwrap();
+        let (reset, _) = ServerHeader::deserialize(&reset.into_bytes()).unwrap();
         assert!(matches!(
             reset,
             ServerHeader::ImageMulti(1, ImageMultiHeader::Reset(false))
@@ -956,7 +956,7 @@ mod tests {
 
         for expected_index in [2, 7] {
             let (message, _) = receiver.try_recv().unwrap().unwrap();
-            let bytes = message.to_bytes();
+            let bytes = message.into_bytes();
             let (header, header_size) = ServerHeader::deserialize(&bytes).unwrap();
             match header {
                 ServerHeader::ImageMulti(
@@ -991,7 +991,7 @@ mod tests {
         images.acknowledge();
 
         let (message, _) = receiver.try_recv().unwrap().unwrap();
-        let (header, _) = ServerHeader::deserialize(&message.to_bytes()).unwrap();
+        let (header, _) = ServerHeader::deserialize(&message.into_bytes()).unwrap();
         assert!(matches!(
             header,
             ServerHeader::ImageMulti(
@@ -1033,7 +1033,7 @@ mod tests {
         assert_message(&mut receiver); // reset
         for expected_index in [1, 13] {
             let (message, _) = receiver.try_recv().unwrap().unwrap();
-            let (header, _) = ServerHeader::deserialize(&message.to_bytes()).unwrap();
+            let (header, _) = ServerHeader::deserialize(&message.into_bytes()).unwrap();
             match header {
                 ServerHeader::ImageMulti(
                     1,
@@ -1301,7 +1301,7 @@ mod tests {
             )
             .unwrap();
         let (message, _) = receiver.try_recv().unwrap().unwrap();
-        let bytes = message.to_bytes();
+        let bytes = message.into_bytes();
         let (header, header_size) = ServerHeader::deserialize(&bytes).unwrap();
         assert!(matches!(
             header,
@@ -1354,14 +1354,14 @@ mod tests {
 
         images.acknowledge();
         let (message, _) = receiver.try_recv().unwrap().unwrap();
-        let bytes = message.to_bytes();
+        let bytes = message.into_bytes();
         let (_, header_size) = ServerHeader::deserialize(&bytes).unwrap();
         assert_eq!(&bytes[header_size..], &[30]);
 
         images.acknowledge();
         cross_key.join().unwrap().unwrap();
         let (message, _) = receiver.try_recv().unwrap().unwrap();
-        let bytes = message.to_bytes();
+        let bytes = message.into_bytes();
         let (header, header_size) = ServerHeader::deserialize(&bytes).unwrap();
         assert!(matches!(
             header,
