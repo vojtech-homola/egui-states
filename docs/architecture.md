@@ -138,7 +138,8 @@ egui's `[width, height]` size convention.
 The client creates each texture in the egui context passed to
 `ClientBuilder::new` when the first complete image for it arrives, so an image
 sent right after connecting is never lost. Until then the client handles
-report no texture.
+report no texture, unless `Image::initialize` set a placeholder. A placeholder
+is only created while no texture exists, so it never replaces a server image.
 
 Every image dimension is limited to **65,536 pixels, inclusive**, for both `Image`
 and each entry in `ImageMulti`. Rust and Python inputs, server storage and

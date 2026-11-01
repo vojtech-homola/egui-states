@@ -62,7 +62,8 @@ impl ImageMessage {
 /// limits may be smaller.
 ///
 /// The texture is created in the client's egui context when the first complete
-/// image arrives from the server; until then the getters return `None`. It uses
+/// image arrives from the server, or earlier with a placeholder from
+/// [`Self::initialize`]; until then the getters return `None`. It uses
 /// nearest-neighbor filtering and clamps sampling at its edges.
 pub struct Image {
     name: Arc<String>,
@@ -90,8 +91,8 @@ impl Image {
         }
     }
 
-    /// Returns the texture identifier and `[width, height]`, if the server has
-    /// sent an image.
+    /// Returns the texture identifier and `[width, height]`, if the texture
+    /// exists.
     pub fn get(&self) -> Option<(egui::TextureId, [usize; 2])> {
         self.texture
             .read()
@@ -99,7 +100,7 @@ impl Image {
             .map(|(texture_handle, size)| (texture_handle.id(), *size))
     }
 
-    /// Returns the texture identifier, if the server has sent an image.
+    /// Returns the texture identifier, if the texture exists.
     pub fn get_id(&self) -> Option<egui::TextureId> {
         self.texture
             .read()
@@ -107,27 +108,55 @@ impl Image {
             .map(|(texture_handle, _)| texture_handle.id())
     }
 
-    /// Returns the texture size as `[width, height]`, if the server has sent an
-    /// image.
+    /// Returns the texture size as `[width, height]`, if the texture exists.
     pub fn get_size(&self) -> Option<[usize; 2]> {
         self.texture.read().as_ref().map(|(_, size)| *size)
     }
 
+    /// Shows `image` as a placeholder until the server sends an image.
+    ///
+    /// Does nothing once the texture exists, so it never replaces an image
+    /// from the server, whether it is called before or after connecting. The
+    /// first image from the server replaces the placeholder. The getters then
+    /// return `Some` even though the server has not sent an image yet.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if either image dimension is zero or exceeds 65,536
+    /// pixels, or its RGBA byte count overflows. The renderer may impose a
+    /// smaller size limit.
+    pub fn initialize(&self, image: ColorImage) -> Result<(), String> {
+        // Renderers such as wgpu panic on zero-sized textures.
+        if image.size[0] == 0 || image.size[1] == 0 {
+            return Err(format!(
+                "Placeholder for image {} has zero dimensions",
+                self.name
+            ));
+        }
+        checked_image_bytes(image.size, 4)?;
+        let mut texture = self.texture.write();
+        if texture.is_none() {
+            *texture = Some(self.create_texture(image));
+        }
+        Ok(())
+    }
+
     /// Shows a complete image, creating the texture for the first one.
     fn set_texture(&self, image: ColorImage) {
-        let size = image.size;
         let mut texture = self.texture.write();
         match texture.as_mut() {
             Some((texture_handle, saved_size)) => {
+                *saved_size = image.size;
                 texture_handle.set(image, TEXTURE_OPTIONS);
-                *saved_size = size;
             }
-            None => {
-                let name = format!("image_{}", self.id);
-                let texture_handle = load_texture(&self.context, name, image);
-                *texture = Some((texture_handle, size));
-            }
+            None => *texture = Some(self.create_texture(image)),
         }
+    }
+
+    fn create_texture(&self, image: ColorImage) -> Texture {
+        let size = image.size;
+        let name = format!("image_{}", self.id);
+        (load_texture(&self.context, name, image), size)
     }
 
     pub(crate) fn set_image(
@@ -931,6 +960,56 @@ mod tests {
             assert_single_ack(&mut receiver, 1);
             assert_eq!(image.get(), Some((id, [3, 2])));
         }
+    }
+
+    /// `initialize` shows a placeholder only while no texture exists, so it
+    /// never replaces an image from the server, whichever arrives first.
+    #[test]
+    fn initialize_sets_a_placeholder_only_without_a_texture() {
+        let placeholder = |size| ColorImage::filled(size, egui::Color32::BLACK);
+        let server_image = |image: &Image| {
+            image
+                .set_image(ImageSetMessage::All([3, 1]), ImageType::Gray, &[1, 2, 3])
+                .unwrap()
+        };
+
+        // An empty or oversized placeholder creates nothing.
+        let context = egui::Context::default();
+        let (sender, mut receiver) = MessageSender::new();
+        let image = Image::new("image".into(), 1, sender, context.clone());
+        crate::test_support::texture_updates(&context);
+        for size in [[0, 0], [0, 1], [1, 0]] {
+            let error = image.initialize(placeholder(size)).unwrap_err();
+            assert!(error.contains("zero dimensions"), "{error}");
+        }
+        let mut oversized = placeholder([1, 1]);
+        oversized.size = [65_537, 1];
+        assert!(image.initialize(oversized).unwrap_err().contains("65536"));
+        assert!(image.get().is_none());
+        assert!(crate::test_support::texture_updates(&context).is_empty());
+
+        // Placeholder first: later calls keep it, the server's image replaces
+        // it in the same texture.
+        image.initialize(placeholder([2, 2])).unwrap();
+        let (id, size) = image.get().unwrap();
+        assert_eq!(size, [2, 2]);
+        image.initialize(placeholder([4, 4])).unwrap();
+        assert_eq!(image.get(), Some((id, [2, 2])));
+        server_image(&image);
+        assert_single_ack(&mut receiver, 1);
+        assert_eq!(image.get(), Some((id, [3, 1])));
+
+        // Server image first: the placeholder is ignored.
+        let context = egui::Context::default();
+        let (sender, mut receiver) = MessageSender::new();
+        let image = Image::new("image".into(), 1, sender, context.clone());
+        server_image(&image);
+        assert_single_ack(&mut receiver, 1);
+        let received = image.get();
+        crate::test_support::texture_updates(&context);
+        image.initialize(placeholder([2, 2])).unwrap();
+        assert_eq!(image.get(), received);
+        assert!(crate::test_support::texture_updates(&context).is_empty());
     }
 
     #[test]

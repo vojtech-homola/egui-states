@@ -1,6 +1,7 @@
 use std::error::Error;
 
 use eframe::{App, CreationContext};
+use egui::{Color32, ColorImage};
 use egui_states::{Client, ClientBuilder, ConnectionState};
 
 mod collections;
@@ -53,6 +54,10 @@ impl MainApp {
     ) -> Result<Box<dyn App>, Box<dyn Error + Send + Sync>> {
         let (state, client) =
             ClientBuilder::<ShowcaseState>::new(cc.egui_ctx.clone(), port).build();
+
+        // Shown until the server sends its image; ignored if it already has.
+        let placeholder = ColorImage::filled([256, 256], Color32::BLACK);
+        state.image.image.initialize(placeholder)?;
 
         Ok(Box::new(Self {
             state: ViewState::new(state),
