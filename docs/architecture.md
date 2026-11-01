@@ -37,7 +37,9 @@ an application library imported by a separate GUI launcher package.
 ## State directions
 
 - `Value` is stored by both peers. Either peer can replace it; signaling an
-  update also schedules registered server callbacks.
+  update also schedules registered server callbacks. When both write at the
+  same time, the server wins; see
+  [Concurrent `Value` writes](#concurrent-value-writes).
 - `Static`, collections, `Data`, and `Image` are controlled by the server and
   read by the client.
 - `Signal` carries an event from the client to server callbacks without
@@ -46,6 +48,30 @@ an application library imported by a separate GUI launcher package.
 - `ValueTake` and `DataTake` carry a server-to-client value that the client
   consumes once. `DataMultiTake` maintains the same lifecycle independently
   for each numeric key.
+
+## Concurrent `Value` writes
+
+The server is authoritative. When the server program and the user change the
+same `Value` or `ValueAtomic` at the same time, the server's write wins: the
+program driving the server takes precedence over a human editing the UI.
+
+Each server write stays pending until the client acknowledges it, and so does
+the synchronization sent when a client connects. A client write that reaches
+the server while a server write is still pending was made before the client
+applied that server value, so the server discards it. The stored value stays
+unchanged, no callback runs (not even for `set_signal`), and neither peer
+reports anything. The client then receives the pending server value and
+replaces its local copy, so both peers end with the server's value and the
+user's edit is lost. Because the synchronization on connect is pending as well,
+edits made before the client received the server's state cannot overwrite it.
+
+A client write is therefore discarded when it arrives within about one network
+round trip after a server write. A server that sets a `Value` continuously, for
+example a progress indicator or a live measurement, leaves the user little or
+no chance to change it, especially over a slower network. Store values that the
+server streams in a `Static`, and send user requests to change them as a
+`Signal`, which the server never discards; the server callback then decides
+whether to apply the request.
 
 ## Callback delivery modes
 

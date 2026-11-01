@@ -14,6 +14,12 @@ use super::{Result, ServerError};
 
 #[derive(Clone)]
 /// Server-side handle for a bidirectional synchronized value.
+///
+/// The server wins concurrent writes. Each [`Self::set`] stays pending until
+/// the client acknowledges it, and a client write that arrives in the meantime
+/// is discarded without running callbacks; the client then takes the server's
+/// value. A value set continuously therefore cannot be changed reliably from
+/// the client.
 pub struct Value<T> {
     server: WeakServer,
     id: u64,

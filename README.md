@@ -23,7 +23,9 @@ pub struct CounterState {
 }
 ```
 
-- `Value<T>` stores a value that either side can change.
+- `Value<T>` stores a value that either side can change. If both change it at
+  the same time, the server's change wins; see
+  [concurrent writes](docs/architecture.md#concurrent-value-writes).
 - `Static<T>` stores a value the server controls and the client reads.
 - `Signal<T>` sends a client event to server callbacks without retaining a value.
 
