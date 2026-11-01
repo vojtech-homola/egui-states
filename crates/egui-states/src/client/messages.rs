@@ -1,7 +1,7 @@
 use bytes::Bytes;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, error, unbounded_channel};
 
-use crate::client::client::Client;
+use crate::client::client::ClientCore;
 use crate::client::data::{DataMessage, DataMultiMessage};
 use crate::client::data_take::{DataMultiTakeMessage, DataTakeMessage};
 use crate::client::image::{ImageMessage, ImageMultiMessage, ImageSetMessage};
@@ -444,7 +444,7 @@ impl MessagesParser {
 pub(crate) async fn handle_message(
     message: ServerMessage,
     vals: &ValuesList,
-    client: &Client,
+    client: &ClientCore,
 ) -> Result<(), String> {
     let update = match message {
         ServerMessage::Update(t) => {
@@ -612,7 +612,7 @@ pub(crate) async fn handle_message(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::client::client::Client;
+    use crate::client::client::ClientCore;
     use crate::client::states_creator::StatesCreatorClient;
     use crate::data_transport::{DataType, TransportType};
     use crate::image_transport::ImageType;
@@ -623,7 +623,7 @@ mod tests {
         let context = egui::Context::default();
         let creator = StatesCreatorClient::new(sender.clone(), context.clone(), "root".to_string());
         let values = creator.get_values();
-        let client = Client::new(context, sender);
+        let client = ClientCore::new(context, sender);
         let runtime = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap();
@@ -929,7 +929,7 @@ mod malformed_tests {
         let values = creator.get_values();
         let id = *values.values.keys().next().unwrap();
         let type_id = <i32 as Typed>::get_type().get_hash();
-        let client = Client::new(context, sender);
+        let client = ClientCore::new(context, sender);
         let runtime = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap();

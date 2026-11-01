@@ -1069,6 +1069,65 @@ mod tests {
         server.stop();
     }
 
+    #[cfg(all(feature = "client", target_os = "linux"))]
+    #[test]
+    fn dropping_the_last_client_handle_stops_the_client() {
+        use crate::test_support::client_thread_count;
+
+        if crate::test_support::isolated() {
+            return;
+        }
+        fn wait(label: &str, mut condition: impl FnMut() -> bool) {
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while !condition() {
+                assert!(std::time::Instant::now() < deadline, "timed out: {label}");
+                thread::sleep(Duration::from_millis(5));
+            }
+        }
+
+        let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        let server = StateServer::new().unwrap();
+        let server_value = crate::server::Value::new(&server, "root.value", 0_i32, false).unwrap();
+        server.finalize().unwrap();
+        server.start(port, Some(Ipv4Addr::LOCALHOST), None).unwrap();
+        assert_eq!(client_thread_count(), 0);
+
+        // A client that never connected stops as well.
+        let (_, idle) =
+            crate::ClientBuilder::<ClientTestState>::new(egui::Context::default(), port).build();
+        wait("idle client threads", || client_thread_count() == 3);
+        drop(idle);
+        wait("idle client shutdown", || client_thread_count() == 0);
+
+        let (client_state, client) =
+            crate::ClientBuilder::<ClientTestState>::new(egui::Context::default(), port).build();
+        let clone = client.clone();
+        wait("connection", || {
+            client.connect();
+            server.is_connected()
+        });
+        server_value.set(5, false).unwrap();
+        wait("synchronization", || client_state.value.get() == 5);
+
+        // Another clone keeps the client running.
+        drop(client);
+        server_value.set(6, false).unwrap();
+        wait("synchronization after dropping a clone", || {
+            client_state.value.get() == 6
+        });
+        assert!(server.is_connected());
+
+        drop(clone);
+        wait("server sees the disconnect", || !server.is_connected());
+        wait("client shutdown", || client_thread_count() == 0);
+        // The state tree outlives the client and keeps its last value.
+        assert_eq!(client_state.value.get(), 6);
+        server.stop();
+    }
+
     #[cfg(feature = "client")]
     #[test]
     fn stopped_server_restarts_with_new_port_and_token() {

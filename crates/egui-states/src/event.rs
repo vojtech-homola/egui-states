@@ -30,7 +30,7 @@ impl Event {
         }))
     }
 
-    #[cfg(any(feature = "server", feature = "python"))]
+    #[cfg(any(feature = "server", feature = "python", feature = "client"))]
     pub(crate) fn is_set(&self) -> bool {
         self.0.flag.load(Ordering::Acquire)
     }
@@ -197,6 +197,24 @@ impl Event {
                 .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
                 .is_ok()
             {
+                return;
+            }
+
+            listener.await;
+        }
+    }
+
+    /// Waits until the event is set, leaving it set.
+    #[cfg(feature = "client")]
+    pub(crate) async fn wait_async(&self) {
+        loop {
+            if self.0.flag.load(Ordering::Acquire) {
+                return;
+            }
+
+            let listener = self.0.notify.listen();
+
+            if self.0.flag.load(Ordering::Acquire) {
                 return;
             }
 
