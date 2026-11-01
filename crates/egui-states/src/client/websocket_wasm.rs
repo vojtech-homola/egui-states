@@ -6,22 +6,16 @@ use ws_stream_wasm::{WsMessage, WsMeta, WsStream};
 use crate::client::messages::{MessagesParser, ServerMessage};
 use crate::serialization::FastVec;
 
-pub(crate) async fn build_ws(address: SocketAddrV4) -> Result<(WsClientRead, WsClientSend), ()> {
+pub(crate) async fn build_ws(
+    address: SocketAddrV4,
+) -> Result<(WsClientRead, WsClientSend), String> {
     let address = format!("ws://{}/ws", address);
     let res = WsMeta::connect(&address, None).await;
 
-    if res.is_err() {
-        #[cfg(debug_assertions)]
-        log::error!(
-            "connecting to server at {:?} failed: {:?}",
-            address,
-            res.err()
-        );
-        return Err(());
-    }
-
-    // get the socket
-    let socket = res.unwrap().1;
+    let socket = match res {
+        Ok(res) => res.1,
+        Err(e) => return Err(format!("Connecting to server at {} failed: {}", address, e)),
+    };
 
     // split the socket
     let (socket_write, socket_read) = socket.split();

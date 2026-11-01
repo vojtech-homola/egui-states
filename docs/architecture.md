@@ -37,7 +37,9 @@ an application library imported by a separate GUI launcher package.
 ## State directions
 
 - `Value` is stored by both peers. Either peer can replace it; signaling an
-  update also schedules registered server callbacks.
+  update also schedules registered server callbacks. When both write at the
+  same time, the server wins; see
+  [Concurrent `Value` writes](#concurrent-value-writes).
 - `Static`, collections, `Data`, and `Image` are controlled by the server and
   read by the client.
 - `Signal` carries an event from the client to server callbacks without
@@ -46,6 +48,30 @@ an application library imported by a separate GUI launcher package.
 - `ValueTake` and `DataTake` carry a server-to-client value that the client
   consumes once. `DataMultiTake` maintains the same lifecycle independently
   for each numeric key.
+
+## Concurrent `Value` writes
+
+The server is authoritative. When the server program and the user change the
+same `Value` or `ValueAtomic` at the same time, the server's write wins: the
+program driving the server takes precedence over a human editing the UI.
+
+Each server write stays pending until the client acknowledges it, and so does
+the synchronization sent when a client connects. A client write that reaches
+the server while a server write is still pending was made before the client
+applied that server value, so the server discards it. The stored value stays
+unchanged, no callback runs (not even for `set_signal`), and neither peer
+reports anything. The client then receives the pending server value and
+replaces its local copy, so both peers end with the server's value and the
+user's edit is lost. Because the synchronization on connect is pending as well,
+edits made before the client received the server's state cannot overwrite it.
+
+A client write is therefore discarded when it arrives within about one network
+round trip after a server write. A server that sets a `Value` continuously, for
+example a progress indicator or a live measurement, leaves the user little or
+no chance to change it, especially over a slower network. Store values that the
+server streams in a `Static`, and send user requests to change them as a
+`Signal`, which the server never discards; the server callback then decides
+whether to apply the request.
 
 ## Callback delivery modes
 
@@ -57,7 +83,10 @@ Signals and signaled `Value` changes use one of two server-side modes:
 
 Callbacks for different states may run concurrently when the server has more
 than one signal worker. A callback handle owns its registration; dropping the
-handle disconnects it.
+handle disconnects it. In the native Rust server, neither state handles nor
+callback handles keep the server alive, so callbacks may capture state handles
+without forming a cycle; the server stops when its last `StateServer` is
+dropped.
 
 `connect_previous` receives the value last delivered to that callback. In
 single mode this is not necessarily the immediately preceding network update:
@@ -104,7 +133,13 @@ form as a portable file format.
 
 Server image shapes use `[height, width]`, origins use `[y, x]`, and public
 server inputs may be gray, gray-alpha, RGB, or RGBA. Client textures expose
-egui's `[width, height]` size convention after initialization.
+egui's `[width, height]` size convention.
+
+The client creates each texture in the egui context passed to
+`ClientBuilder::new` when the first complete image for it arrives, so an image
+sent right after connecting is never lost. Until then the client handles
+report no texture, unless `Image::initialize` set a placeholder. A placeholder
+is only created while no texture exists, so it never replaces a server image.
 
 Every image dimension is limited to **65,536 pixels, inclusive**, for both `Image`
 and each entry in `ImageMulti`. Rust and Python inputs, server storage and
@@ -113,7 +148,6 @@ allocating image storage or applying changes. Partial updates must also end
 within that boundary and the existing image. The wire format retains `u32`
 dimensions because 65,536 does not fit in `u16`.
 
-Client `Image::initialize` returns `Result<(), String>` and rejects an oversized
-initial image before creating a texture. Renderer and available-memory limits
-can be smaller than the library limit; the per-side cap does not guarantee that
-a 65,536-square image can be allocated or displayed.
+Renderer and available-memory limits can be smaller than the library limit;
+the per-side cap does not guarantee that a 65,536-square image can be
+allocated or displayed.

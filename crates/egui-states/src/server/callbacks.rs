@@ -71,6 +71,20 @@ impl CallbackRegistry {
         }
     }
 
+    /// Drops every callback and unregisters its value, which also discards the
+    /// value's pending changes.
+    ///
+    /// Used at teardown: states can outlive the server and share its signals,
+    /// so a value left registered would keep queueing changes nobody drains.
+    /// Handles still alive cannot do this themselves, because their server is
+    /// gone.
+    pub(super) fn clear(&self, signals: &CoreSignalsManager) {
+        let callbacks = std::mem::take(&mut *self.callbacks.lock());
+        for value_id in callbacks.keys() {
+            signals.set_register(*value_id, false, false);
+        }
+    }
+
     pub(super) fn get(&self, value_id: u64) -> Vec<CallbackEntry> {
         self.callbacks
             .lock()
@@ -89,6 +103,9 @@ fn any_wants_previous(entries: &[CallbackEntry]) -> bool {
 ///
 /// Dropping or explicitly disconnecting the handle unregisters the callback.
 /// Keep it alive for as long as the callback should remain connected.
+///
+/// The handle does not keep the server alive. A callback connected after its
+/// server was dropped is discarded, and its handle does nothing.
 pub struct CallbackHandle {
     pub(super) server: Weak<ServerInner>,
     pub(super) value_id: u64,
@@ -96,6 +113,16 @@ pub struct CallbackHandle {
 }
 
 impl CallbackHandle {
+    /// A handle for a callback that was never registered because its server
+    /// had already been dropped. Disconnecting it does nothing.
+    pub(super) fn detached(value_id: u64) -> Self {
+        Self {
+            server: Weak::new(),
+            value_id,
+            callback_id: 0,
+        }
+    }
+
     /// Disconnects the callback.
     ///
     /// Calling this more than once is harmless.

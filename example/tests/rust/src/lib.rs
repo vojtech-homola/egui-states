@@ -38,7 +38,8 @@ fn connect(client: &Client) {
 }
 
 pub fn counter(port: u16) {
-    let (state, client) = ClientBuilder::<CounterState>::new().build(port);
+    let (state, client) =
+        ClientBuilder::<CounterState>::new(egui::Context::default(), port).build();
     let connection = Connection(client);
     connect(&connection.0);
     // The fixture verifies setup starts at zero, then seeds a non-default value
@@ -57,19 +58,9 @@ pub fn counter(port: u16) {
 }
 
 pub fn showcase(port: u16) {
-    let context = egui::Context::default();
-    let (state, client) = ClientBuilder::<showcase_gui_core::ShowcaseState>::new()
-        .context(context.clone())
-        .build(port);
-    state
-        .image
-        .image
-        .initialize(
-            &context,
-            egui::ColorImage::filled([256, 256], egui::Color32::BLACK),
-        )
-        .unwrap();
-    state.image.images.initialize(&context);
+    let (state, client) =
+        ClientBuilder::<showcase_gui_core::ShowcaseState>::new(egui::Context::default(), port)
+            .build();
     let connection = Connection(client);
     connect(&connection.0);
     wait("showcase initial count", || state.values.count.get() == 7);

@@ -28,18 +28,13 @@ impl Drop for Connection {
 }
 
 fn connect(port: u16) -> (State, Connection) {
-    connect_client(ClientBuilder::<State>::new(), port, |_| {})
+    connect_client(ClientBuilder::<State>::new(egui::Context::default(), port))
 }
 
-/// Connects a client whose handles `prepare` may initialize before connecting.
-fn connect_client(
-    builder: ClientBuilder<State>,
-    port: u16,
-    prepare: impl FnOnce(&State),
-) -> (State, Connection) {
+/// Connects a client from `builder`, using the layout hash as its version.
+fn connect_client(builder: ClientBuilder<State>) -> (State, Connection) {
     let hash = builder.get_version_hash();
-    let (state, client) = builder.version(hash).build(port);
-    prepare(&state);
+    let (state, client) = builder.version(hash).build();
     let connection = Connection(client);
     wait("client connection", || {
         connection.0.connect();
@@ -495,24 +490,12 @@ fn rgba(texture: &egui::ColorImage) -> Vec<[u8; 4]> {
 }
 
 /// Server images reach the client textures, including partial updates and
-/// sparse key removal. The servers use opaque pixels only.
+/// sparse key removal. The client creates its textures from the server's
+/// images, with no setup before connecting. The servers use opaque pixels
+/// only.
 fn images_wire(port: u16) {
     let context = egui::Context::default();
-    let (state, _connection) = connect_client(
-        ClientBuilder::<State>::new().context(context.clone()),
-        port,
-        |state| {
-            state
-                .image
-                .image
-                .initialize(
-                    &context,
-                    egui::ColorImage::filled([1, 1], egui::Color32::BLACK),
-                )
-                .unwrap();
-            state.image.images.initialize(&context);
-        },
-    );
+    let (state, _connection) = connect_client(ClientBuilder::<State>::new(context.clone(), port));
     let s = &state.integration;
     s.command.set(34u32);
     phase(s, 34);
@@ -555,9 +538,9 @@ fn takeover(port: u16) {
 /// connected client. The servers check that the refusal was logged.
 fn rejected_client(port: u16) {
     let (state, connection) = connect(port);
-    let builder = ClientBuilder::<State>::new();
+    let builder = ClientBuilder::<State>::new(egui::Context::default(), port);
     let wrong_version = builder.get_version_hash() ^ 1;
-    let (rejected, client) = builder.version(wrong_version).build(port);
+    let (rejected, client) = builder.version(wrong_version).build();
     let rejected_connection = Connection(client);
     let until = Instant::now() + Duration::from_millis(500);
     while Instant::now() < until {
@@ -569,6 +552,14 @@ fn rejected_client(port: u16) {
         );
         std::thread::sleep(Duration::from_millis(20));
     }
+    // An error is reported only in `ConnectionState::Failed`.
+    let error = wait("rejected client failure", || {
+        rejected_connection.0.last_error()
+    });
+    assert!(
+        error.contains("before the server accepted the handshake"),
+        "{error}"
+    );
     barrier(&state.integration);
     assert!(connection.0.get_state() == ConnectionState::Connected);
 }

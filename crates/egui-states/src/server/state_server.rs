@@ -49,6 +49,10 @@ use super::{Result, ServerError, ServerOptions};
 /// drop the last clone. A stopped server may be restarted with different
 /// connection settings.
 /// Generated server bindings perform registration and finalization for you.
+///
+/// State handles and [`CallbackHandle`]s do not keep the server alive; only
+/// `StateServer` clones do. A callback that captures a clone therefore keeps
+/// the server running until its `CallbackHandle` is dropped.
 pub struct StateServer {
     inner: Arc<ServerInner>,
 }
@@ -77,6 +81,9 @@ impl ServerInner {
 impl Drop for ServerInner {
     fn drop(&mut self) {
         self.worker_shutdown.store(true, Ordering::Release);
+        // Before waiting on the workers, so a callback still running cannot
+        // queue changes either.
+        self.callbacks.clear(&self.signals);
         self.signals.wake_waiters();
         self.server.get_mut().stop();
 
@@ -625,6 +632,81 @@ impl StateServer {
     pub(super) fn set_signal_to_single(&self, id: u64) {
         self.inner.signals.set_to_single(id);
     }
+
+    /// Returns a link to this server that does not keep it alive.
+    pub(super) fn downgrade(&self) -> WeakServer {
+        WeakServer(Arc::downgrade(&self.inner))
+    }
+}
+
+/// Non-owning link from a state handle back to its server.
+///
+/// State handles must not own the server. The server owns its callbacks, and a
+/// callback routinely captures a state handle, for example to set another value
+/// when this one changes. An owning link would form a cycle broken only by
+/// dropping the [`CallbackHandle`], so a handle kept in a global or leaked would
+/// keep the server listening after its last [`StateServer`] was dropped.
+///
+/// Once the server is gone these methods do nothing, and connecting returns an
+/// inert handle: no callback can run without the server's workers anyway.
+#[derive(Clone)]
+pub(super) struct WeakServer(Weak<ServerInner>);
+
+impl WeakServer {
+    fn upgrade(&self) -> Option<StateServer> {
+        self.0.upgrade().map(|inner| StateServer { inner })
+    }
+
+    pub(super) fn add_typed_callback<T>(
+        &self,
+        value_id: u64,
+        callback: impl Fn(T) + Send + Sync + 'static,
+    ) -> CallbackHandle
+    where
+        T: for<'a> Deserialize<'a> + Send + 'static,
+    {
+        match self.upgrade() {
+            Some(server) => server.add_typed_callback(value_id, callback),
+            None => CallbackHandle::detached(value_id),
+        }
+    }
+
+    pub(super) fn add_typed_callback_previous<T>(
+        &self,
+        value_id: u64,
+        callback: impl Fn(T, T) + Send + Sync + 'static,
+    ) -> CallbackHandle
+    where
+        T: for<'a> Deserialize<'a> + Send + 'static,
+    {
+        match self.upgrade() {
+            Some(server) => server.add_typed_callback_previous(value_id, callback),
+            None => CallbackHandle::detached(value_id),
+        }
+    }
+
+    pub(super) fn add_raw_callback(
+        &self,
+        value_id: u64,
+        callback: impl Fn(Bytes, Option<Bytes>) -> Result<()> + Send + Sync + 'static,
+    ) -> CallbackHandle {
+        match self.upgrade() {
+            Some(server) => server.add_raw_callback(value_id, callback),
+            None => CallbackHandle::detached(value_id),
+        }
+    }
+
+    pub(super) fn set_signal_to_queue(&self, id: u64) {
+        if let Some(server) = self.upgrade() {
+            server.set_signal_to_queue(id);
+        }
+    }
+
+    pub(super) fn set_signal_to_single(&self, id: u64) {
+        if let Some(server) = self.upgrade() {
+            server.set_signal_to_single(id);
+        }
+    }
 }
 
 fn run_signal_worker(
@@ -746,6 +828,133 @@ mod tests {
         assert!(server.inner.signals.try_changed_value(None).is_none());
     }
 
+    /// The server owns its callbacks, and a callback routinely captures a state
+    /// handle, for example to set another value. If state handles owned the
+    /// server, that would be a cycle broken only by dropping the
+    /// `CallbackHandle`, so a handle kept in a global or leaked would keep the
+    /// server listening forever.
+    #[test]
+    fn callbacks_capturing_state_handles_do_not_keep_server_alive() {
+        use crate::server::{LogLevel, LoggingSignal, Signal, Value};
+
+        let server = StateServer::new().unwrap();
+        let source = Value::new(&server, "root.source", 0_i32, false).unwrap();
+        let target = Value::new(&server, "root.target", 0_i32, false).unwrap();
+        let signal = Signal::<i32>::new(&server, "root.signal", false).unwrap();
+        let empty = Signal::<()>::new(&server, "root.empty", false).unwrap();
+        let logging = LoggingSignal::new(&server);
+
+        let handles = vec![
+            source.connect({
+                let target = target.clone();
+                move |value| {
+                    let _ = target.set(value, false);
+                }
+            }),
+            source.connect_previous({
+                let target = target.clone();
+                move |value, _| {
+                    let _ = target.set(value, false);
+                }
+            }),
+            signal.connect({
+                let signal = signal.clone();
+                move |value| {
+                    let _ = signal.set(value);
+                }
+            }),
+            empty.connect_empty({
+                let empty = empty.clone();
+                move || {
+                    let _ = empty.set(());
+                }
+            }),
+            logging.add_logger(LogLevel::Info, {
+                let logging = logging.clone();
+                move |_| {
+                    let _ = &logging;
+                }
+            }),
+        ];
+        let inner = Arc::downgrade(&server.inner);
+
+        drop((server, source, target, signal, empty, logging));
+        std::mem::forget(handles);
+
+        assert!(
+            inner.upgrade().is_none(),
+            "callbacks capturing state handles kept the server alive"
+        );
+    }
+
+    /// State handles may outlive the server. Dropping its last owner still
+    /// stops it, and connecting afterwards yields an inert handle.
+    #[test]
+    fn state_handles_outliving_the_server_do_not_keep_it_alive() {
+        use crate::server::{LogLevel, LoggingSignal, Signal, Value};
+
+        let server = StateServer::new().unwrap();
+        let value = Value::new(&server, "root.value", 1_i32, false).unwrap();
+        let signal = Signal::<i32>::new(&server, "root.signal", false).unwrap();
+        let empty = Signal::<()>::new(&server, "root.empty", false).unwrap();
+        let logging = LoggingSignal::new(&server);
+        let inner = Arc::downgrade(&server.inner);
+
+        drop(server);
+        assert!(
+            inner.upgrade().is_none(),
+            "state handles kept the server alive"
+        );
+
+        let handles = [
+            value.connect(|_| {}),
+            value.connect_previous(|_, _| {}),
+            signal.connect(|_| {}),
+            empty.connect_empty(|| {}),
+            logging.add_logger(LogLevel::Info, |_| {}),
+        ];
+        for handle in &handles {
+            handle.disconnect();
+        }
+        value.signal_set_to_queue();
+        value.signal_set_to_single();
+        signal.signal_set_to_queue();
+        signal.signal_set_to_single();
+
+        // The state itself stays usable locally, like every other handle.
+        value.set(2, false).unwrap();
+        assert_eq!(value.get().unwrap(), 2);
+    }
+
+    /// Without workers nothing drains signaled changes, so a state that
+    /// outlives the server must stop queueing them, even while a callback
+    /// handle that can no longer reach the server keeps its callback connected.
+    #[test]
+    fn signals_emitted_after_the_server_is_dropped_are_not_queued() {
+        use crate::server::{Signal, Value};
+
+        let server = StateServer::new().unwrap();
+        let value = Value::new(&server, "root.value", 0_i32, true).unwrap();
+        let signal = Signal::<i32>::new(&server, "root.signal", true).unwrap();
+        let handles = [value.connect_previous(|_, _| {}), signal.connect(|_| {})];
+        let signals = server.inner.signals.clone();
+
+        // Left pending: workers are never started.
+        value.set_signal(1, false).unwrap();
+        signal.set(1).unwrap();
+        drop(server);
+
+        for index in 0..3 {
+            value.set_signal(index, false).unwrap();
+            signal.set(index).unwrap();
+        }
+        assert!(
+            signals.try_changed_value(None).is_none(),
+            "changes were queued for a server that is gone"
+        );
+        drop(handles);
+    }
+
     #[test]
     fn unfinalized_start_fails_without_spawning_signal_workers() {
         let server = StateServer::new().unwrap();
@@ -827,7 +1036,8 @@ mod tests {
         server.finalize().unwrap();
         server.start(port, Some(Ipv4Addr::LOCALHOST), None).unwrap();
 
-        let (client_state, client) = crate::ClientBuilder::<ClientTestState>::new().build(port);
+        let (client_state, client) =
+            crate::ClientBuilder::<ClientTestState>::new(egui::Context::default(), port).build();
         let mut connected = false;
         for _ in 0..200 {
             client.connect();
@@ -859,6 +1069,65 @@ mod tests {
         server.stop();
     }
 
+    #[cfg(all(feature = "client", target_os = "linux"))]
+    #[test]
+    fn dropping_the_last_client_handle_stops_the_client() {
+        use crate::test_support::client_thread_count;
+
+        if crate::test_support::isolated() {
+            return;
+        }
+        fn wait(label: &str, mut condition: impl FnMut() -> bool) {
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while !condition() {
+                assert!(std::time::Instant::now() < deadline, "timed out: {label}");
+                thread::sleep(Duration::from_millis(5));
+            }
+        }
+
+        let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        let server = StateServer::new().unwrap();
+        let server_value = crate::server::Value::new(&server, "root.value", 0_i32, false).unwrap();
+        server.finalize().unwrap();
+        server.start(port, Some(Ipv4Addr::LOCALHOST), None).unwrap();
+        assert_eq!(client_thread_count(), 0);
+
+        // A client that never connected stops as well.
+        let (_, idle) =
+            crate::ClientBuilder::<ClientTestState>::new(egui::Context::default(), port).build();
+        wait("idle client threads", || client_thread_count() == 3);
+        drop(idle);
+        wait("idle client shutdown", || client_thread_count() == 0);
+
+        let (client_state, client) =
+            crate::ClientBuilder::<ClientTestState>::new(egui::Context::default(), port).build();
+        let clone = client.clone();
+        wait("connection", || {
+            client.connect();
+            server.is_connected()
+        });
+        server_value.set(5, false).unwrap();
+        wait("synchronization", || client_state.value.get() == 5);
+
+        // Another clone keeps the client running.
+        drop(client);
+        server_value.set(6, false).unwrap();
+        wait("synchronization after dropping a clone", || {
+            client_state.value.get() == 6
+        });
+        assert!(server.is_connected());
+
+        drop(clone);
+        wait("server sees the disconnect", || !server.is_connected());
+        wait("client shutdown", || client_thread_count() == 0);
+        // The state tree outlives the client and keeps its last value.
+        assert_eq!(client_state.value.get(), 6);
+        server.stop();
+    }
+
     #[cfg(feature = "client")]
     #[test]
     fn stopped_server_restarts_with_new_port_and_token() {
@@ -885,10 +1154,11 @@ mod tests {
                 Some("first-token".to_string()),
             )
             .unwrap();
-        let (first_state, first_client) = crate::ClientBuilder::<ClientTestState>::new()
-            .version(17)
-            .token("first-token".to_string())
-            .build(first_port);
+        let (first_state, first_client) =
+            crate::ClientBuilder::<ClientTestState>::new(egui::Context::default(), first_port)
+                .version(17)
+                .token("first-token".to_string())
+                .build();
         for _ in 0..200 {
             first_client.connect();
             if server.is_connected() {
@@ -910,10 +1180,11 @@ mod tests {
                 Some("second-token".to_string()),
             )
             .unwrap();
-        let (second_state, second_client) = crate::ClientBuilder::<ClientTestState>::new()
-            .version(17)
-            .token("second-token".to_string())
-            .build(second_port);
+        let (second_state, second_client) =
+            crate::ClientBuilder::<ClientTestState>::new(egui::Context::default(), second_port)
+                .version(17)
+                .token("second-token".to_string())
+                .build();
         for _ in 0..200 {
             second_client.connect();
             if server.is_connected() {
@@ -1879,7 +2150,8 @@ mod connection_tests {
             thread::sleep(Duration::from_secs(1));
         });
 
-        let (_state, client) = ClientBuilder::<ClientTestState>::new().build(port);
+        let (_state, client) =
+            ClientBuilder::<ClientTestState>::new(egui::Context::default(), port).build();
         let mut connected = false;
         // Repeat the request until the handshake arrives, then keep watching.
         let mut deadline = Instant::now() + Duration::from_secs(5);
@@ -1904,6 +2176,183 @@ mod connection_tests {
         );
     }
 
+    /// An unreachable server and a refused handshake end in `Failed` with the
+    /// cause.
+    #[test]
+    fn failed_connection_attempts_report_the_cause() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let (_state, client) =
+            ClientBuilder::<ClientTestState>::new(egui::Context::default(), free_port()).build();
+        assert_eq!(client.last_error(), None);
+        client.connect();
+        wait("unreachable server", || {
+            client.get_state() == ConnectionState::Failed
+        });
+        let error = client.last_error().unwrap();
+        assert!(error.contains("Connecting to server"), "{error}");
+
+        let (server, _value, port) = server(ServerOptions::new(), Some("secret"));
+        let (_state, client) =
+            ClientBuilder::<ClientTestState>::new(egui::Context::default(), port)
+                .token("wrong".to_string())
+                .build();
+        client.connect();
+        wait("refused handshake", || {
+            client.get_state() == ConnectionState::Failed
+        });
+        let error = client.last_error().unwrap();
+        assert!(
+            error.contains("before the server accepted the handshake"),
+            "{error}"
+        );
+        server.stop();
+    }
+
+    const PANIC_VALUE: i32 = -13;
+
+    /// An `i32` whose client-side decoding panics on [`PANIC_VALUE`], standing
+    /// in for a panicking user `Deserialize` implementation.
+    #[derive(Clone, Serialize)]
+    struct PanicOnDecode(i32);
+
+    impl<'de> Deserialize<'de> for PanicOnDecode {
+        fn deserialize<D: serde::Deserializer<'de>>(
+            deserializer: D,
+        ) -> std::result::Result<Self, D::Error> {
+            let value = i32::deserialize(deserializer)?;
+            if value == PANIC_VALUE {
+                panic!("injected receive task panic");
+            }
+            Ok(Self(value))
+        }
+    }
+
+    // SAFETY: serialized exactly like the wrapped `i32`.
+    unsafe impl Typed for PanicOnDecode {
+        fn get_type() -> crate::ObjectType {
+            <i32 as Typed>::get_type()
+        }
+    }
+
+    // SAFETY: same shape and meaning as the wrapped `i32`.
+    unsafe impl crate::InitialValue for PanicOnDecode {
+        fn init_value(&self) -> crate::InitValue {
+            crate::InitialValue::init_value(&self.0)
+        }
+    }
+
+    /// Like [`ClientTestState`], with a value that can panic the receive task.
+    struct PanicTestState {
+        value: crate::Value<PanicOnDecode>,
+    }
+
+    impl crate::State for PanicTestState {
+        const NAME: &'static str = "PanicTestState";
+
+        fn new(c: &mut impl crate::StatesCreator) -> Self {
+            Self {
+                value: c.value("value", PanicOnDecode(0)),
+            }
+        }
+    }
+
+    /// A panic while applying a server message ends the connection in `Failed`
+    /// instead of stopping the client, and the next connection works in both
+    /// directions.
+    #[test]
+    fn a_receive_task_panic_fails_the_connection_and_the_client_recovers() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let (server, value, port) = server(ServerOptions::new(), None);
+        let (state, client) =
+            ClientBuilder::<PanicTestState>::new(egui::Context::default(), port).build();
+        client.connect();
+        wait("first connection", || state.value.get().0 == 731);
+
+        value.set(PANIC_VALUE, false).unwrap();
+        wait("receive panic", || {
+            client.get_state() == ConnectionState::Failed
+        });
+        let error = client.last_error().unwrap();
+        assert!(
+            error.contains("receive task panicked: injected receive task panic"),
+            "{error}"
+        );
+        wait("server disconnect", || !server.is_connected());
+
+        value.set(5, false).unwrap();
+        wait("reconnection", || {
+            client.connect();
+            state.value.get().0 == 5
+        });
+        assert_eq!(client.get_state(), ConnectionState::Connected);
+        state.value.set_signal(PanicOnDecode(9));
+        wait("client write", || value.get().unwrap() == 9);
+        client.disconnect();
+        server.stop();
+    }
+
+    /// A panic in the send task ends the connection in `Failed`, closes the
+    /// socket, and keeps the outgoing queue for the next connection.
+    #[test]
+    fn a_send_task_panic_fails_the_connection_and_the_client_recovers() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let (server, value, port) = server(ServerOptions::new(), None);
+        let (state, client) =
+            ClientBuilder::<ClientTestState>::new(egui::Context::default(), port).build();
+        client.connect();
+        wait("first connection", || state.value.get() == 731);
+
+        client.inject_send_panic();
+        wait("send panic", || {
+            client.get_state() == ConnectionState::Failed
+        });
+        let error = client.last_error().unwrap();
+        assert!(
+            error.contains("send task panicked: injected send task panic"),
+            "{error}"
+        );
+        wait("server disconnect", || !server.is_connected());
+
+        value.set(5, false).unwrap();
+        wait("reconnection", || {
+            client.connect();
+            state.value.get() == 5
+        });
+        assert_eq!(client.get_state(), ConnectionState::Connected);
+        state.value.set_signal(9);
+        wait("client write", || value.get().unwrap() == 9);
+        client.disconnect();
+        server.stop();
+    }
+
+    /// Repaint delays come from server code unchecked; one that does not fit
+    /// in a `Duration` must not panic the client.
+    #[test]
+    fn an_unrepresentable_repaint_delay_keeps_the_client_connected() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let (server, value, port) = server(ServerOptions::new(), None);
+        let (state, client) =
+            ClientBuilder::<ClientTestState>::new(egui::Context::default(), port).build();
+        client.connect();
+        wait("first connection", || state.value.get() == 731);
+
+        server.update(Some(f32::INFINITY)).unwrap();
+        server.update(Some(1e20)).unwrap();
+        value.set(5, false).unwrap();
+        wait("update after the delays", || state.value.get() == 5);
+        assert_eq!(client.get_state(), ConnectionState::Connected);
+        client.disconnect();
+        server.stop();
+    }
+
     /// A connection request made before the background task starts waiting
     /// must not be lost.
     #[test]
@@ -1912,7 +2361,8 @@ mod connection_tests {
             return;
         }
         let (server, _value, port) = server(ServerOptions::new(), None);
-        let (state, client) = ClientBuilder::<ClientTestState>::new().build(port);
+        let (state, client) =
+            ClientBuilder::<ClientTestState>::new(egui::Context::default(), port).build();
         client.connect();
         let deadline = Instant::now() + Duration::from_secs(5);
         while state.value.get() != 731 && Instant::now() < deadline {
@@ -1944,7 +2394,8 @@ mod connection_tests {
         });
         server.start(port, Some(Ipv4Addr::LOCALHOST), None).unwrap();
 
-        let (state, client) = ClientBuilder::<ClientTestState>::new().build(port);
+        let (state, client) =
+            ClientBuilder::<ClientTestState>::new(egui::Context::default(), port).build();
         wait("first connection", || {
             client.connect();
             server.is_connected() && state.value.get() == 7
@@ -1983,7 +2434,8 @@ mod connection_tests {
         server.finalize().unwrap();
         server.start(port, Some(Ipv4Addr::LOCALHOST), None).unwrap();
 
-        let (state, client) = ClientBuilder::<CollectionTestState>::new().build(port);
+        let (state, client) =
+            ClientBuilder::<CollectionTestState>::new(egui::Context::default(), port).build();
         wait("connection", || {
             client.connect();
             server.is_connected()
@@ -2026,7 +2478,8 @@ mod connection_tests {
             .unwrap();
         server.start(port, Some(Ipv4Addr::LOCALHOST), None).unwrap();
 
-        let (state, client) = ClientBuilder::<CollectionTestState>::new().build(port);
+        let (state, client) =
+            ClientBuilder::<CollectionTestState>::new(egui::Context::default(), port).build();
         wait("connection", || {
             client.connect();
             server.is_connected()

@@ -51,6 +51,16 @@ pub(crate) fn isolated() -> bool {
     true
 }
 
+/// Counts the threads of this process started by native clients.
+#[cfg(all(feature = "client", target_os = "linux"))]
+pub(crate) fn client_thread_count() -> usize {
+    std::fs::read_dir("/proc/self/task")
+        .unwrap()
+        .filter_map(|task| std::fs::read_to_string(task.ok()?.path().join("comm")).ok())
+        .filter(|name| name.starts_with("Client"))
+        .count()
+}
+
 #[cfg(feature = "client")]
 pub(crate) fn ack(
     receiver: &mut tokio::sync::mpsc::UnboundedReceiver<

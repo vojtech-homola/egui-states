@@ -88,7 +88,14 @@ class _SignalBase(_StaticBase):
 
 
 class Value[T](_SignalBase):
-    """Bidirectional value stored by both the server and egui client."""
+    """Bidirectional value stored by both the server and egui client.
+
+    The server wins concurrent writes. Each `set` stays pending until the
+    client acknowledges it, and a client write that arrives in the meantime is
+    discarded without running callbacks; the client then takes the server's
+    value. A value set continuously therefore cannot be changed reliably from
+    the client.
+    """
 
     def __init__(self, obj_id: int, initial_value: T, queue: bool = False) -> None:
         self._initial_value = initial_value

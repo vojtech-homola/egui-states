@@ -52,12 +52,12 @@ impl MainApp {
         cc: &CreationContext,
         port: u16,
     ) -> Result<Box<dyn App>, Box<dyn Error + Send + Sync>> {
-        let builder = ClientBuilder::<ShowcaseState>::new().context(cc.egui_ctx.clone());
-        let (state, client) = builder.build(port);
+        let (state, client) =
+            ClientBuilder::<ShowcaseState>::new(cc.egui_ctx.clone(), port).build();
 
-        let image = ColorImage::filled([256, 256], Color32::BLACK);
-        state.image.image.initialize(&cc.egui_ctx, image)?;
-        state.image.images.initialize(&cc.egui_ctx);
+        // Shown until the server sends its image; ignored if it already has.
+        let placeholder = ColorImage::filled([256, 256], Color32::BLACK);
+        state.image.image.initialize(placeholder)?;
 
         Ok(Box::new(Self {
             state: ViewState::new(state),
@@ -82,8 +82,15 @@ impl eframe::App for MainApp {
                         ConnectionState::Disconnected => {
                             egui::Button::new("Reconnect").fill(egui::Color32::LIGHT_RED)
                         }
+                        // `Failed` and any state added in the future.
+                        _ => egui::Button::new("Retry").fill(egui::Color32::LIGHT_RED),
                     };
-                    if ui.add(button).clicked() {
+                    let response = ui.add(button);
+                    let response = match self.client.last_error() {
+                        Some(error) => response.on_hover_text(error),
+                        None => response,
+                    };
+                    if response.clicked() {
                         self.client.connect();
                     }
                 });

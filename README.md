@@ -23,7 +23,9 @@ pub struct CounterState {
 }
 ```
 
-- `Value<T>` stores a value that either side can change.
+- `Value<T>` stores a value that either side can change. If both change it at
+  the same time, the server's change wins; see
+  [concurrent writes](docs/architecture.md#concurrent-value-writes).
 - `Static<T>` stores a value the server controls and the client reads.
 - `Signal<T>` sends a client event to server callbacks without retaining a value.
 
@@ -33,7 +35,8 @@ numeric buffers, images, custom types, and one-shot transfers are covered in the
 
 Generate matching server bindings from the same state definition with
 `generate_python` or `generate_rust`. Construct the UI state with
-`ClientBuilder`, start the server, and call `client.connect()` to synchronize.
+`ClientBuilder::new`, which takes the app's egui context for repaints and the
+server port, start the server, and call `client.connect()` to synchronize.
 Rebuild bindings after changing the state definition; generated files should
 not be edited.
 
