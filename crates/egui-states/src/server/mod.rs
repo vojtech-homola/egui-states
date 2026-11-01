@@ -7,6 +7,12 @@
 //! then [`StateServer::start`](crate::server::StateServer::start). Retain every
 //! [`CallbackHandle`](crate::server::CallbackHandle) for as long as its
 //! callback should remain registered.
+//!
+//! Only `StateServer` clones keep the server alive: dropping the last one stops
+//! it, even while state handles or callback handles remain. Callbacks may
+//! therefore capture state handles freely. A callback that captures a
+//! `StateServer` clone keeps the server running until its `CallbackHandle` is
+//! dropped.
 
 mod callbacks;
 mod collections;

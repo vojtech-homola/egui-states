@@ -44,6 +44,8 @@ class StateServerCore:
     def __init__(
         self,
         version: int | None = None,
+        heartbeat_interval: float = 5.0,
+        heartbeat_timeout: float | None = 20.0,
     ) -> None: ...
     def start(
         self,

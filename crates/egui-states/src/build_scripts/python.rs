@@ -581,6 +581,8 @@ class StatesServer(StateServerBase[{root_name}]):
         signals_workers: int = 3,
         error_handler: Callable[[Exception], None] | None = None,
         version: int | None = None,
+        heartbeat_interval: float = 5.0,
+        heartbeat_timeout: float | None = 20.0,
     ) -> None:
         """Initialize and finalize the generated state server.
 
@@ -592,8 +594,24 @@ class StatesServer(StateServerBase[{root_name}]):
                 the traceback-printing handler.
             version (int | None, optional): Application version required from
                 the client.
+            heartbeat_interval (float, optional): Seconds between the pings the
+                server sends to the connected client. Defaults to 5.
+            heartbeat_timeout (float | None, optional): Seconds the client may
+                send nothing before it is disconnected. ``None`` disables the
+                heartbeat. Defaults to 20.
+
+        Raises:
+            ValueError: If ``heartbeat_interval`` is not positive, or
+                ``heartbeat_timeout`` is not greater than it.
         """
-        super().__init__({root_name}, signals_workers, error_handler, version)
+        super().__init__(
+            {root_name},
+            signals_workers,
+            error_handler,
+            version,
+            heartbeat_interval,
+            heartbeat_timeout,
+        )
 "#
     )
     .unwrap();

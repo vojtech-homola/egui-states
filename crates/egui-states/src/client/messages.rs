@@ -19,6 +19,9 @@ pub(crate) enum ChannelMessage {
     Signal(u64, u32, MessageData),
     Message(MessageData),
     Ack(u64),
+    /// Panics the send task, to test that its panics are contained.
+    #[cfg(test)]
+    TestPanic,
 }
 
 #[derive(Clone)]
@@ -72,6 +75,8 @@ fn parse_to_send(message: ChannelMessage, data: &mut FastVec<64>) {
             serialize_to_data(&header, data).unwrap();
             data.extend_from_data(&msg_data);
         }
+        #[cfg(test)]
+        ChannelMessage::TestPanic => panic!("injected send task panic"),
     }
 }
 

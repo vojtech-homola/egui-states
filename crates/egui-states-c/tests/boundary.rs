@@ -620,6 +620,38 @@ fn last_error_is_per_thread_and_survives_success() {
 }
 
 #[test]
+fn heartbeat_settings_are_validated() {
+    let server = Server::new();
+    ok(unsafe { egui_states_server_set_heartbeat(server.0, 100, 400) });
+    ok(unsafe {
+        egui_states_server_set_heartbeat(
+            server.0,
+            EGUI_STATES_HEARTBEAT_DEFAULT,
+            EGUI_STATES_HEARTBEAT_DEFAULT,
+        )
+    });
+    // Only the timeout selects disabling; the interval is then ignored.
+    ok(unsafe { egui_states_server_set_heartbeat(server.0, 0, EGUI_STATES_HEARTBEAT_DISABLED) });
+
+    for (interval, timeout) in [
+        (400, 400),
+        (500, 400),
+        (30_000, EGUI_STATES_HEARTBEAT_DEFAULT),
+    ] {
+        fails(
+            unsafe { egui_states_server_set_heartbeat(server.0, interval, timeout) },
+            EGUI_STATES_ERROR_INVALID_ARGUMENT,
+            "must be greater than the interval",
+        );
+    }
+    fails(
+        unsafe { egui_states_server_set_heartbeat(null(), 100, 400) },
+        EGUI_STATES_ERROR_INVALID_ARGUMENT,
+        "server",
+    );
+}
+
+#[test]
 fn lifecycle_errors_and_event_waits() {
     let server = Server::new();
     unsafe {
