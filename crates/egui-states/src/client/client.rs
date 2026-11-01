@@ -281,17 +281,11 @@ pub enum ConnectionState {
 }
 
 struct ClientInner {
-    context: Option<Context>,
+    context: Context,
     connect_signal: Event,
     // The error is set only together with `ConnectionState::Failed`.
     state: RwLock<(ConnectionState, Option<String>)>,
     sender: MessageSender,
-}
-
-impl ClientInner {
-    fn set_context(&mut self, context: Context) {
-        self.context.replace(context);
-    }
 }
 
 #[derive(Clone)]
@@ -299,7 +293,7 @@ impl ClientInner {
 pub struct Client(Arc<ClientInner>);
 
 impl Client {
-    pub(crate) fn new(context: Option<Context>, sender: MessageSender) -> Self {
+    pub(crate) fn new(context: Context, sender: MessageSender) -> Self {
         let inner = ClientInner {
             context,
             connect_signal: Event::new(),
@@ -310,29 +304,16 @@ impl Client {
         Self(Arc::new(inner))
     }
 
-    /// Sets the egui context used to request repaints after incoming updates.
-    ///
-    /// This must be called before cloning the client; use
-    /// [`ClientBuilder::context`] when possible.
-    ///
-    /// # Panics
-    ///
-    /// Panics if this [`Client`] has already been cloned.
-    pub fn set_context(&mut self, context: Context) {
-        Arc::get_mut(&mut self.0).unwrap().set_context(context);
-    }
-
     /// Requests an egui repaint immediately, or after `time` seconds if positive.
     ///
     /// A delay that is not finite or does not fit in a [`Duration`] requests an
     /// immediate repaint.
     pub fn update(&self, time: f32) {
-        if let Some(ctx) = &self.0.context {
-            // The delay comes from the server and must not panic this task.
-            match Duration::try_from_secs_f32(time) {
-                Ok(delay) if !delay.is_zero() => ctx.request_repaint_after(delay),
-                _ => ctx.request_repaint(),
-            }
+        let ctx = &self.0.context;
+        // The delay comes from the server and must not panic this task.
+        match Duration::try_from_secs_f32(time) {
+            Ok(delay) if !delay.is_zero() => ctx.request_repaint_after(delay),
+            _ => ctx.request_repaint(),
         }
     }
 
@@ -355,17 +336,13 @@ impl Client {
 
     pub(crate) fn set_state(&self, state: ConnectionState) {
         *self.0.state.write() = (state, None);
-        if let Some(ctx) = &self.0.context {
-            ctx.request_repaint();
-        }
+        self.0.context.request_repaint();
     }
 
     pub(crate) fn fail(&self, error: String) {
         print_error(&error);
         *self.0.state.write() = (ConnectionState::Failed, Some(error));
-        if let Some(ctx) = &self.0.context {
-            ctx.request_repaint();
-        }
+        self.0.context.request_repaint();
     }
 
     #[inline]
@@ -400,7 +377,8 @@ pub struct ClientBuilder<T> {
     sender: MessageSender,
     rx: UnboundedReceiver<Option<ChannelMessage>>,
     addr: Ipv4Addr,
-    context: Option<Context>,
+    port: u16,
+    context: Context,
     version: Option<u64>,
     token: Option<String>,
 }
@@ -409,14 +387,17 @@ impl<T> ClientBuilder<T>
 where
     T: State,
 {
-    /// Creates the state tree and a builder targeting `127.0.0.1`.
+    /// Creates the state tree and a builder targeting `127.0.0.1:port`.
     ///
-    /// No egui context, application version, or authentication token is set by
-    /// default. The derived [`State::new`] implementation runs during this call.
-    pub fn new() -> Self {
+    /// The client requests repaints of `context` when the connection state
+    /// changes or the server asks for an update. No application version or
+    /// authentication token is set by default. The derived [`State::new`]
+    /// implementation runs during this call.
+    pub fn new(context: Context, port: u16) -> Self {
         let (sender, rx) = MessageSender::new();
 
-        let mut creator = StatesCreatorClient::new(sender.clone(), "root".to_string());
+        let mut creator =
+            StatesCreatorClient::new(sender.clone(), context.clone(), "root".to_string());
         let states = T::new(&mut creator);
         let addr = Ipv4Addr::new(127, 0, 0, 1);
 
@@ -426,7 +407,8 @@ where
             sender,
             rx,
             addr,
-            context: None,
+            port,
+            context,
             version: None,
             token: None,
         }
@@ -453,14 +435,6 @@ where
         }
     }
 
-    /// Sets the egui context used for repaint requests.
-    pub fn context(self, context: Context) -> Self {
-        Self {
-            context: Some(context),
-            ..self
-        }
-    }
-
     /// Returns the stable hash of the configured state tree.
     ///
     /// Generated server bindings expose the same hash so mismatched state
@@ -469,7 +443,7 @@ where
         self.creator.get_version_hash()
     }
 
-    /// Builds the root state and starts the background client task for `port`.
+    /// Builds the root state and starts the background client task.
     ///
     /// The task waits until [`Client::connect`] is called before opening a
     /// connection. On native targets it owns a dedicated Tokio runtime; on WASM
@@ -478,13 +452,14 @@ where
     ///
     /// For native debugging, the owner thread is named `Client`; its two Tokio
     /// workers use the `Client Runtime` prefix.
-    pub fn build(self, port: u16) -> (T, Client) {
+    pub fn build(self) -> (T, Client) {
         let Self {
             creator,
             states,
             sender,
             rx,
             addr,
+            port,
             context,
             version,
             token,
@@ -527,15 +502,6 @@ where
     }
 }
 
-impl<T> Default for ClientBuilder<T>
-where
-    T: State,
-{
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -558,7 +524,7 @@ mod tests {
         let received = requests.clone();
         context.set_request_repaint_callback(move |info| received.lock().push(info.delay));
         let (sender, _receiver) = MessageSender::new();
-        let client = Client::new(Some(context), sender);
+        let client = Client::new(context, sender);
         client.update(delay);
         requests.lock().clone()
     }

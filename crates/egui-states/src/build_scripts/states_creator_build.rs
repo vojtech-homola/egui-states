@@ -351,7 +351,8 @@ impl StatesCreator for StatesCreatorBuild {
         let id = generate_value_id(&full_name);
         hash_id(&mut self.version_hasher, id);
 
-        let value = Image::new(full_name, id, self.sender.clone());
+        // Codegen only walks the layout, so the handle needs no real context.
+        let value = Image::new(full_name, id, self.sender.clone(), egui::Context::default());
 
         self.states.push(StateType::Image(name.to_owned()));
 
@@ -367,7 +368,7 @@ impl StatesCreator for StatesCreatorBuild {
             states_creator::IMAGE_MULTI_HASH_ID,
         );
 
-        let value = ImageMulti::new(full_name, id, self.sender.clone());
+        let value = ImageMulti::new(full_name, id, self.sender.clone(), egui::Context::default());
         self.states.push(StateType::ImageMulti(name.to_owned()));
         value
     }

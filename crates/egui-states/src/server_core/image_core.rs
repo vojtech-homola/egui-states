@@ -1034,13 +1034,10 @@ mod packing_tests {
         ] {
             let context = egui::Context::default();
             let (sender, mut receiver) = ClientSender::new();
-            let client = ClientImage::new("image".into(), 71, sender);
-            client
-                .initialize(
-                    &context,
-                    egui::ColorImage::filled([1, 1], egui::Color32::BLACK),
-                )
-                .unwrap();
+            let client = ClientImage::new("image".into(), 71, sender, context.clone());
+            // A previous image must stay visible until the new set completes.
+            client.fill_image([1, 1], [0; 4], &[]).unwrap();
+            crate::test_support::ack(&mut receiver, 71);
             let _ = crate::test_support::texture_updates(&context);
             let mut expected: Vec<u8> = (0..height * width * 4)
                 .map(|i| (i * 31 % 251) as u8)

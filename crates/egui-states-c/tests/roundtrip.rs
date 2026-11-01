@@ -422,18 +422,7 @@ fn client_and_c_server_synchronize_every_state_kind() {
     let port = free_port();
     ok(unsafe { egui_states_server_start(s, port, c"127.0.0.1".as_ptr(), null()) });
 
-    let context = egui::Context::default();
-    let (state, client) = ClientBuilder::<AllKinds>::new()
-        .context(context.clone())
-        .build(port);
-    state
-        .image
-        .initialize(
-            &context,
-            egui::ColorImage::filled([1, 1], egui::Color32::BLACK),
-        )
-        .unwrap();
-    state.images.initialize(&context);
+    let (state, client) = ClientBuilder::<AllKinds>::new(egui::Context::default(), port).build();
     let connection = Connection(client);
     wait("client connection", || {
         connection.0.connect();

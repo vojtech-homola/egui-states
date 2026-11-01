@@ -35,7 +35,8 @@ numeric buffers, images, custom types, and one-shot transfers are covered in the
 
 Generate matching server bindings from the same state definition with
 `generate_python` or `generate_rust`. Construct the UI state with
-`ClientBuilder`, start the server, and call `client.connect()` to synchronize.
+`ClientBuilder::new`, which takes the app's egui context for repaints and the
+server port, start the server, and call `client.connect()` to synchronize.
 Rebuild bindings after changing the state definition; generated files should
 not be edited.
 

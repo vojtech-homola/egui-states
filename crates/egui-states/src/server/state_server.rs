@@ -1036,7 +1036,8 @@ mod tests {
         server.finalize().unwrap();
         server.start(port, Some(Ipv4Addr::LOCALHOST), None).unwrap();
 
-        let (client_state, client) = crate::ClientBuilder::<ClientTestState>::new().build(port);
+        let (client_state, client) =
+            crate::ClientBuilder::<ClientTestState>::new(egui::Context::default(), port).build();
         let mut connected = false;
         for _ in 0..200 {
             client.connect();
@@ -1094,10 +1095,11 @@ mod tests {
                 Some("first-token".to_string()),
             )
             .unwrap();
-        let (first_state, first_client) = crate::ClientBuilder::<ClientTestState>::new()
-            .version(17)
-            .token("first-token".to_string())
-            .build(first_port);
+        let (first_state, first_client) =
+            crate::ClientBuilder::<ClientTestState>::new(egui::Context::default(), first_port)
+                .version(17)
+                .token("first-token".to_string())
+                .build();
         for _ in 0..200 {
             first_client.connect();
             if server.is_connected() {
@@ -1119,10 +1121,11 @@ mod tests {
                 Some("second-token".to_string()),
             )
             .unwrap();
-        let (second_state, second_client) = crate::ClientBuilder::<ClientTestState>::new()
-            .version(17)
-            .token("second-token".to_string())
-            .build(second_port);
+        let (second_state, second_client) =
+            crate::ClientBuilder::<ClientTestState>::new(egui::Context::default(), second_port)
+                .version(17)
+                .token("second-token".to_string())
+                .build();
         for _ in 0..200 {
             second_client.connect();
             if server.is_connected() {
@@ -2088,7 +2091,8 @@ mod connection_tests {
             thread::sleep(Duration::from_secs(1));
         });
 
-        let (_state, client) = ClientBuilder::<ClientTestState>::new().build(port);
+        let (_state, client) =
+            ClientBuilder::<ClientTestState>::new(egui::Context::default(), port).build();
         let mut connected = false;
         // Repeat the request until the handshake arrives, then keep watching.
         let mut deadline = Instant::now() + Duration::from_secs(5);
@@ -2120,7 +2124,8 @@ mod connection_tests {
         if crate::test_support::isolated() {
             return;
         }
-        let (_state, client) = ClientBuilder::<ClientTestState>::new().build(free_port());
+        let (_state, client) =
+            ClientBuilder::<ClientTestState>::new(egui::Context::default(), free_port()).build();
         assert_eq!(client.last_error(), None);
         client.connect();
         wait("unreachable server", || {
@@ -2130,9 +2135,10 @@ mod connection_tests {
         assert!(error.contains("Connecting to server"), "{error}");
 
         let (server, _value, port) = server(ServerOptions::new(), Some("secret"));
-        let (_state, client) = ClientBuilder::<ClientTestState>::new()
-            .token("wrong".to_string())
-            .build(port);
+        let (_state, client) =
+            ClientBuilder::<ClientTestState>::new(egui::Context::default(), port)
+                .token("wrong".to_string())
+                .build();
         client.connect();
         wait("refused handshake", || {
             client.get_state() == ConnectionState::Failed
@@ -2202,7 +2208,8 @@ mod connection_tests {
             return;
         }
         let (server, value, port) = server(ServerOptions::new(), None);
-        let (state, client) = ClientBuilder::<PanicTestState>::new().build(port);
+        let (state, client) =
+            ClientBuilder::<PanicTestState>::new(egui::Context::default(), port).build();
         client.connect();
         wait("first connection", || state.value.get().0 == 731);
 
@@ -2237,7 +2244,8 @@ mod connection_tests {
             return;
         }
         let (server, value, port) = server(ServerOptions::new(), None);
-        let (state, client) = ClientBuilder::<ClientTestState>::new().build(port);
+        let (state, client) =
+            ClientBuilder::<ClientTestState>::new(egui::Context::default(), port).build();
         client.connect();
         wait("first connection", || state.value.get() == 731);
 
@@ -2272,9 +2280,8 @@ mod connection_tests {
             return;
         }
         let (server, value, port) = server(ServerOptions::new(), None);
-        let (state, client) = ClientBuilder::<ClientTestState>::new()
-            .context(egui::Context::default())
-            .build(port);
+        let (state, client) =
+            ClientBuilder::<ClientTestState>::new(egui::Context::default(), port).build();
         client.connect();
         wait("first connection", || state.value.get() == 731);
 
@@ -2295,7 +2302,8 @@ mod connection_tests {
             return;
         }
         let (server, _value, port) = server(ServerOptions::new(), None);
-        let (state, client) = ClientBuilder::<ClientTestState>::new().build(port);
+        let (state, client) =
+            ClientBuilder::<ClientTestState>::new(egui::Context::default(), port).build();
         client.connect();
         let deadline = Instant::now() + Duration::from_secs(5);
         while state.value.get() != 731 && Instant::now() < deadline {
@@ -2327,7 +2335,8 @@ mod connection_tests {
         });
         server.start(port, Some(Ipv4Addr::LOCALHOST), None).unwrap();
 
-        let (state, client) = ClientBuilder::<ClientTestState>::new().build(port);
+        let (state, client) =
+            ClientBuilder::<ClientTestState>::new(egui::Context::default(), port).build();
         wait("first connection", || {
             client.connect();
             server.is_connected() && state.value.get() == 7
@@ -2366,7 +2375,8 @@ mod connection_tests {
         server.finalize().unwrap();
         server.start(port, Some(Ipv4Addr::LOCALHOST), None).unwrap();
 
-        let (state, client) = ClientBuilder::<CollectionTestState>::new().build(port);
+        let (state, client) =
+            ClientBuilder::<CollectionTestState>::new(egui::Context::default(), port).build();
         wait("connection", || {
             client.connect();
             server.is_connected()
@@ -2409,7 +2419,8 @@ mod connection_tests {
             .unwrap();
         server.start(port, Some(Ipv4Addr::LOCALHOST), None).unwrap();
 
-        let (state, client) = ClientBuilder::<CollectionTestState>::new().build(port);
+        let (state, client) =
+            ClientBuilder::<CollectionTestState>::new(egui::Context::default(), port).build();
         wait("connection", || {
             client.connect();
             server.is_connected()

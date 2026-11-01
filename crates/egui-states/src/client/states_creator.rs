@@ -243,15 +243,17 @@ pub(crate) const IMAGE_MULTI_HASH_ID: u8 = 12;
 pub struct StatesCreatorClient {
     val: ValuesList,
     sender: MessageSender,
+    context: egui::Context,
     parent: String,
     version_hasher: StableHasher,
 }
 
 impl StatesCreatorClient {
-    pub(crate) fn new(sender: MessageSender, parent: String) -> Self {
+    pub(crate) fn new(sender: MessageSender, context: egui::Context, parent: String) -> Self {
         Self {
             val: ValuesList::new(),
             sender,
+            context,
             parent,
             version_hasher: StableHasher::new(),
         }
@@ -272,7 +274,8 @@ impl StatesCreatorClient {
 impl StatesCreator for StatesCreatorClient {
     fn substate<S: State>(&mut self, name: &str) -> S {
         let parent = format!("{}.{}", self.parent, name);
-        let mut creator = StatesCreatorClient::new(self.sender.clone(), parent);
+        let mut creator =
+            StatesCreatorClient::new(self.sender.clone(), self.context.clone(), parent);
         let substate = S::new(&mut creator);
         creator
             .version_hasher
@@ -406,7 +409,7 @@ impl StatesCreator for StatesCreatorClient {
         let id = generate_value_id(&name);
         hash_id(&mut self.version_hasher, id);
 
-        let value = Image::new(name, id, self.sender.clone());
+        let value = Image::new(name, id, self.sender.clone(), self.context.clone());
 
         self.val.images.insert(id, value.clone());
         value
@@ -417,7 +420,7 @@ impl StatesCreator for StatesCreatorClient {
         let id = generate_value_id(&name);
         hash_id_kind(&mut self.version_hasher, id, IMAGE_MULTI_HASH_ID);
 
-        let value = ImageMulti::new(name, id, self.sender.clone());
+        let value = ImageMulti::new(name, id, self.sender.clone(), self.context.clone());
         self.val.image_multi.insert(id, value.clone());
         value
     }

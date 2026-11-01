@@ -620,9 +620,10 @@ mod tests {
 
     fn dispatch_missing(message: ServerMessage) -> UnboundedReceiver<Option<ChannelMessage>> {
         let (sender, receiver) = MessageSender::new();
-        let creator = StatesCreatorClient::new(sender.clone(), "root".to_string());
+        let context = egui::Context::default();
+        let creator = StatesCreatorClient::new(sender.clone(), context.clone(), "root".to_string());
         let values = creator.get_values();
-        let client = Client::new(None, sender);
+        let client = Client::new(context, sender);
         let runtime = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap();
@@ -922,12 +923,13 @@ mod malformed_tests {
     #[test]
     fn invalid_value_type_and_payload_ack_preserve_state_and_allow_recovery() {
         let (sender, mut receiver) = MessageSender::new();
-        let mut creator = StatesCreatorClient::new(sender.clone(), "root".into());
+        let context = egui::Context::default();
+        let mut creator = StatesCreatorClient::new(sender.clone(), context.clone(), "root".into());
         let value: crate::Value<i32> = creator.value("number", 37);
         let values = creator.get_values();
         let id = *values.values.keys().next().unwrap();
         let type_id = <i32 as Typed>::get_type().get_hash();
-        let client = Client::new(None, sender);
+        let client = Client::new(context, sender);
         let runtime = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap();

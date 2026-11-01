@@ -155,7 +155,7 @@ fn header_registers_every_state_with_exact_initial_values() {
     assert!(position("\"enum Sparse { Low = -7, Mid = 3, High = 201 }\"") < outer);
     assert!(position("\"struct Inner { flag: bool, level: u16 }\"") < outer);
 
-    let client = ClientBuilder::<Golden>::new().get_version_hash();
+    let client = ClientBuilder::<Golden>::new(egui::Context::default(), 0).get_version_hash();
     assert!(header.contains(&format!("#define C_GOLDEN_VERSION_HASH UINT64_C({client})")));
     std::fs::remove_dir_all(dir).unwrap();
 }

@@ -21,7 +21,9 @@
 //!     counter: Value<i32>,
 //! }
 //!
-//! let (state, client) = ClientBuilder::<AppState>::new().build(8091);
+//! // In an eframe app, pass `CreationContext::egui_ctx` instead.
+//! let context = egui::Context::default();
+//! let (state, client) = ClientBuilder::<AppState>::new(context, 8091).build();
 //! client.connect();
 //! state.counter.set_signal(state.counter.get() + 1);
 //! ```
