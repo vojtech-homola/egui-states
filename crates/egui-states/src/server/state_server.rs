@@ -21,6 +21,7 @@ use crate::server_core::data_core::{Data as CoreData, DataMulti as CoreDataMulti
 use crate::server_core::data_take_core::{
     DataMultiTake as CoreDataMultiTake, DataTake as CoreDataTake,
 };
+use crate::server_core::heartbeat::Heartbeat;
 use crate::server_core::image_core::Image as CoreImage;
 use crate::server_core::image_multi_core::ImageMulti as CoreImageMulti;
 use crate::server_core::map_core::ValueMap as CoreMap;
@@ -126,9 +127,18 @@ impl StateServer {
         Self::with_options(ServerOptions::new())
     }
 
-    /// Creates a server with explicit application and worker options.
+    /// Creates a server with explicit application, worker, and heartbeat
+    /// options.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the heartbeat interval is zero or the heartbeat
+    /// timeout is not greater than the interval.
     pub fn with_options(options: ServerOptions) -> Result<Self> {
-        let server = CoreServer::new(options.version);
+        let heartbeat = Heartbeat::new(options.heartbeat_interval, options.heartbeat_timeout)
+            .map_err(ServerError::new)?;
+        let mut server = CoreServer::new(options.version);
+        server.set_heartbeat(heartbeat);
         let signals = server.get_signals_manager();
         signals.set_to_queue(LOGGING_ID);
         signals.set_to_queue(ON_CONNECT_ID);
@@ -809,6 +819,30 @@ mod tests {
                 value: c.value("value", 0),
             }
         }
+    }
+
+    #[test]
+    fn invalid_heartbeat_options_are_rejected() {
+        let second = Duration::from_secs(1);
+        for (interval, timeout) in [
+            (Duration::ZERO, Some(second)),
+            (second, Some(second)),
+            (2 * second, Some(second)),
+        ] {
+            let mut options = ServerOptions::new();
+            options.heartbeat_interval = interval;
+            options.heartbeat_timeout = timeout;
+            let Err(error) = StateServer::with_options(options) else {
+                panic!("heartbeat {interval:?}/{timeout:?} was accepted");
+            };
+            assert!(error.message().contains("heartbeat"), "{error}");
+        }
+
+        // A disabled heartbeat ignores its interval.
+        let mut options = ServerOptions::new();
+        options.heartbeat_interval = Duration::ZERO;
+        options.heartbeat_timeout = None;
+        assert!(StateServer::with_options(options).is_ok());
     }
 
     #[test]

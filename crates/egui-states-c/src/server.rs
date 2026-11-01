@@ -2,15 +2,21 @@
 
 use std::ffi::c_char;
 use std::net::Ipv4Addr;
+use std::time::Duration;
 
-use egui_states::c_abi::{CServer, Error, ErrorCode};
+use egui_states::c_abi::{
+    CServer, DEFAULT_HEARTBEAT_INTERVAL, DEFAULT_HEARTBEAT_TIMEOUT, Error, ErrorCode,
+};
 
 use crate::codec::egui_states_writer_t;
 use crate::ffi::{
     c_str, check_flags, copy_text, data_kind, egui_states_status_t, ffi, free, optional,
     optional_c_str, output, reference, write, write_optional,
 };
-use crate::meta::{EGUI_STATES_QUEUE, egui_states_data_type_t, egui_states_state_kind_t};
+use crate::meta::{
+    EGUI_STATES_HEARTBEAT_DEFAULT, EGUI_STATES_HEARTBEAT_DISABLED, EGUI_STATES_QUEUE,
+    egui_states_data_type_t, egui_states_state_kind_t,
+};
 
 /// A state server. Create it with `egui_states_server_new`.
 ///
@@ -284,6 +290,36 @@ pub unsafe extern "C" fn egui_states_server_finalize(
     server: *const egui_states_server_t,
 ) -> egui_states_status_t {
     ffi(|| server_ref(server)?.finalize())
+}
+
+/// Sets how the server detects a client that disappeared without closing the
+/// connection. It applies from the next `egui_states_server_start`.
+///
+/// The server pings the client every `interval_ms` milliseconds and
+/// disconnects it after `timeout_ms` milliseconds without any frame from it.
+/// Clients answer pings automatically. `EGUI_STATES_HEARTBEAT_DEFAULT` selects
+/// the default of either value (5000 and 20000), and a `timeout_ms` of
+/// `EGUI_STATES_HEARTBEAT_DISABLED` disables the heartbeat. The timeout must
+/// be greater than the interval. A server pings with the defaults unless this
+/// is called.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn egui_states_server_set_heartbeat(
+    server: *const egui_states_server_t,
+    interval_ms: u64,
+    timeout_ms: u64,
+) -> egui_states_status_t {
+    ffi(|| {
+        let interval = match interval_ms {
+            EGUI_STATES_HEARTBEAT_DEFAULT => DEFAULT_HEARTBEAT_INTERVAL,
+            ms => Duration::from_millis(ms),
+        };
+        let timeout = match timeout_ms {
+            EGUI_STATES_HEARTBEAT_DISABLED => None,
+            EGUI_STATES_HEARTBEAT_DEFAULT => Some(DEFAULT_HEARTBEAT_TIMEOUT),
+            ms => Some(Duration::from_millis(ms)),
+        };
+        server_ref(server)?.set_heartbeat(interval, timeout)
+    })
 }
 
 /// Starts listening on `port`.

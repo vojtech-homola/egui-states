@@ -4,11 +4,12 @@ use std::sync::{
 };
 use std::time::Duration;
 
+use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt, stream::SplitSink};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::task::{JoinHandle, JoinSet};
-use tokio::time::{Instant, timeout_at};
+use tokio::time::{Instant, Interval, MissedTickBehavior, interval_at, timeout_at};
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::{Message, protocol::WebSocketConfig};
 
@@ -17,6 +18,7 @@ use crate::event::Event;
 use crate::serialization::{
     MAX_MSG_COUNT, MSG_SIZE_THRESHOLD, ServerHeader, WEBSOCKET_MAX_SIZE, serialize,
 };
+use crate::server_core::heartbeat::{Activity, Heartbeat};
 use crate::server_core::sender::{MessageReceiver, MessageSender, SenderData};
 use crate::server_core::server::ServerStatesList;
 use crate::server_core::signals::SignalsManager;
@@ -57,6 +59,7 @@ pub(crate) async fn run(
     signals: SignalsManager,
     handshake: Handshake,
     web: WebSlot,
+    heartbeat: Option<Heartbeat>,
 ) -> MessageReceiver {
     let mut holder = ChannelHolder::Rx(rx);
     // Connections still handshaking or receiving the web page. They run
@@ -157,6 +160,7 @@ pub(crate) async fn run(
 
         signals.on_connect(peer_addr);
 
+        let activity = socket_reader.activity();
         let reader_handler = tokio::spawn(reader(
             socket_reader,
             connected.clone(),
@@ -171,6 +175,8 @@ pub(crate) async fn run(
             signals.clone(),
             values.clone(),
             reader_handler,
+            heartbeat,
+            activity,
         ));
 
         holder = ChannelHolder::Transfer(handler);
@@ -395,6 +401,7 @@ async fn reader(
     sender.close();
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn writer(
     rx: MessageReceiver,
     connected: Arc<AtomicBool>,
@@ -402,39 +409,81 @@ async fn writer(
     signals: SignalsManager,
     values: ServerStatesList,
     reader_handle: tokio::task::JoinHandle<()>,
+    heartbeat: Option<Heartbeat>,
+    activity: Arc<Activity>,
 ) -> MessageReceiver {
+    enum Next {
+        Message(Option<SenderData>),
+        Ping,
+    }
+
     let mut data_receiver = DataReceiver::new(rx);
+    // The connection counts as heard from when it starts, however long the
+    // initial synchronization took.
+    activity.touch();
+    let mut pings = heartbeat.map(|heartbeat| {
+        let mut pings = interval_at(Instant::now() + heartbeat.interval, heartbeat.interval);
+        pings.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        pings
+    });
+
     loop {
-        // get message from channel
-        match data_receiver.next().await {
-            Some(msg) => {
+        // Both branches are cancel safe: `DataReceiver::next` only awaits the
+        // channel, and a missed tick is delivered by the next poll.
+        let next = tokio::select! {
+            message = data_receiver.next() => Next::Message(message),
+            () = next_ping(&mut pings) => Next::Ping,
+        };
+
+        let message = match next {
+            Next::Message(Some(message)) => {
                 // if not connected, stop thread
                 if !connected.load(Ordering::Acquire) {
-                    let _ = websocket.close().await;
-                    reader_handle.abort();
-                    let _ = reader_handle.await;
+                    unless_silent(websocket.close(), heartbeat, &activity).await;
                     break;
                 }
-
-                // send message
-                let data = Message::Binary(msg.into_bytes());
-                if let Err(e) = websocket.send(data).await {
-                    signals.error(format!("sending message to client failed: {:?}", e));
-                    reader_handle.abort();
-                    let _ = reader_handle.await;
-                    break;
-                }
+                Message::Binary(message.into_bytes())
             }
             // check if message is terminate signal
-            None => {
+            Next::Message(None) => {
                 signals.info("writer is closing connection");
-                let _ = websocket.close().await;
-                reader_handle.abort();
-                let _ = reader_handle.await;
+                unless_silent(websocket.close(), heartbeat, &activity).await;
+                break;
+            }
+            Next::Ping => {
+                if let Some(heartbeat) = heartbeat
+                    && activity.silent_for() >= heartbeat.timeout
+                {
+                    report_silent(&signals, heartbeat);
+                    break;
+                }
+                Message::Ping(Bytes::new())
+            }
+        };
+
+        // A dead client stops reading, so a send can wait for buffer space
+        // forever; the heartbeat also ends such a send.
+        match unless_silent(websocket.send(message), heartbeat, &activity).await {
+            Some(Ok(())) => {}
+            Some(Err(e)) => {
+                signals.error(format!("sending message to client failed: {:?}", e));
+                break;
+            }
+            None => {
+                if let Some(heartbeat) = heartbeat {
+                    report_silent(&signals, heartbeat);
+                }
                 break;
             }
         }
     }
+
+    reader_handle.abort();
+    let _ = reader_handle.await;
+    // A reader that ends the connection itself drops the client's pending
+    // changes; an aborted one never gets there, so their callbacks would
+    // otherwise run after the disconnect.
+    signals.reset();
 
     connected.store(false, Ordering::Release);
     signals.on_disconnect();
@@ -445,6 +494,40 @@ async fn writer(
     }
 
     data_receiver.finalize()
+}
+
+/// Completes at the next heartbeat ping, or never without a heartbeat.
+async fn next_ping(pings: &mut Option<Interval>) {
+    match pings {
+        Some(pings) => {
+            pings.tick().await;
+        }
+        None => std::future::pending().await,
+    }
+}
+
+/// Runs `operation` to completion, or with a heartbeat until the client has
+/// been silent for the heartbeat timeout; `None` means the client went silent.
+async fn unless_silent<T>(
+    operation: impl Future<Output = T>,
+    heartbeat: Option<Heartbeat>,
+    activity: &Activity,
+) -> Option<T> {
+    match heartbeat {
+        None => Some(operation.await),
+        Some(heartbeat) => tokio::select! {
+            biased;
+            output = operation => Some(output),
+            () = activity.expired(heartbeat.timeout) => None,
+        },
+    }
+}
+
+fn report_silent(signals: &SignalsManager, heartbeat: Heartbeat) {
+    signals.warning(format!(
+        "client sent nothing for {:?}, disconnecting it",
+        heartbeat.timeout
+    ));
 }
 
 // A helper struct to receive from MessageReceiver and create micro-batches
@@ -638,10 +721,11 @@ mod run_tests {
     use std::sync::atomic::AtomicUsize;
 
     use parking_lot::RwLock;
+    use tokio::io::{AsyncRead, AsyncWrite};
     use tokio_tungstenite::MaybeTlsStream;
 
     use super::*;
-    use crate::serialization::ClientHeader;
+    use crate::serialization::{ClientHeader, FastVec};
     use crate::server_core::server::{Acknowledge, SyncTrait};
 
     /// Fails only its first connection sync.
@@ -670,10 +754,14 @@ mod run_tests {
         let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}"))
             .await
             .unwrap();
+        send_handshake(&mut ws).await;
+        ws
+    }
+
+    async fn send_handshake<S: AsyncRead + AsyncWrite + Unpin>(ws: &mut WebSocketStream<S>) {
         let handshake = ClientHeader::Handshake(PROTOCOL_VERSION, None, None);
         let bytes = postcard::to_stdvec(&handshake).unwrap();
         ws.send(Message::Binary(bytes.into())).await.unwrap();
-        ws
     }
 
     #[test]
@@ -710,6 +798,7 @@ mod run_tests {
                     token: None,
                 },
                 Arc::new(RwLock::new(None)),
+                None,
             ));
             let deadline = Duration::from_secs(5);
 
@@ -738,6 +827,265 @@ mod run_tests {
                 .await
                 .expect("the server did not stop")
                 .unwrap();
+        });
+    }
+
+    const TEST_HEARTBEAT: Heartbeat = Heartbeat {
+        interval: Duration::from_millis(100),
+        timeout: Duration::from_millis(400),
+    };
+    const DEADLINE: Duration = Duration::from_secs(5);
+
+    fn block_on<F: Future>(future: F) -> F::Output {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(future)
+    }
+
+    /// Polls `condition` until it holds; `false` if it did not within `within`.
+    async fn until(within: Duration, mut condition: impl FnMut() -> bool) -> bool {
+        let deadline = Instant::now() + within;
+        while !condition() {
+            if Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        true
+    }
+
+    /// The connection loop with one pending state that records its reset.
+    struct TestServer {
+        addr: SocketAddr,
+        sender: MessageSender,
+        connected: Arc<AtomicBool>,
+        stop_event: Event,
+        probe: Arc<ResetProbe>,
+        handle: JoinHandle<MessageReceiver>,
+    }
+
+    impl TestServer {
+        async fn start(heartbeat: Option<Heartbeat>) -> Self {
+            Self::start_with(heartbeat, SignalsManager::new()).await
+        }
+
+        async fn start_with(heartbeat: Option<Heartbeat>, signals: SignalsManager) -> Self {
+            let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let (sender, rx) = MessageSender::new();
+            let connected = Arc::new(AtomicBool::new(false));
+            let stop_event = Event::new();
+            let probe = Arc::new(ResetProbe(AtomicBool::new(false)));
+            let mut values = ServerStatesList::default();
+            values.ack.insert(1, probe.clone());
+            let handle = tokio::spawn(run(
+                listener,
+                sender.clone(),
+                rx,
+                connected.clone(),
+                stop_event.clone(),
+                values,
+                signals,
+                Handshake {
+                    version: None,
+                    token: None,
+                },
+                Arc::new(RwLock::new(None)),
+                heartbeat,
+            ));
+            Self {
+                addr,
+                sender,
+                connected,
+                stop_event,
+                probe,
+                handle,
+            }
+        }
+
+        fn connected(&self) -> bool {
+            self.connected.load(Ordering::Acquire)
+        }
+
+        fn released(&self) -> bool {
+            self.probe.0.load(Ordering::Acquire)
+        }
+
+        async fn stop(self) {
+            self.connected.store(false, Ordering::Release);
+            self.stop_event.set();
+            self.sender.close();
+            tokio::time::timeout(DEADLINE, self.handle)
+                .await
+                .expect("the server did not stop")
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn heartbeat_disconnects_a_client_that_stops_reading() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        block_on(async {
+            let server = TestServer::start(Some(TEST_HEARTBEAT)).await;
+            // The client never polls its socket, so it never answers a ping.
+            let _client = connect(server.addr).await;
+            let connected_at = Instant::now();
+            assert!(
+                until(DEADLINE, || server.connected()).await,
+                "the client was not accepted"
+            );
+
+            assert!(
+                until(DEADLINE, || !server.connected()).await,
+                "the silent client was not disconnected"
+            );
+            assert!(
+                connected_at.elapsed() >= TEST_HEARTBEAT.timeout / 2,
+                "the client was disconnected before the timeout"
+            );
+            assert!(server.released(), "pending states were not released");
+            server.stop().await;
+        });
+    }
+
+    #[cfg(feature = "server")]
+    #[test]
+    fn heartbeat_disconnect_drops_pending_client_changes() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        block_on(async {
+            const STATE_ID: u64 = 100;
+            let signals = SignalsManager::new();
+            signals.set_register(STATE_ID, true, false);
+            let server = TestServer::start_with(Some(TEST_HEARTBEAT), signals.clone()).await;
+            let _client = connect(server.addr).await;
+            assert!(
+                until(DEADLINE, || server.connected()).await,
+                "the client was not accepted"
+            );
+
+            // A change from this client that no callback has taken yet.
+            signals.set(STATE_ID, Bytes::from_static(b"stale"));
+            assert!(
+                until(DEADLINE, || !server.connected()).await,
+                "the silent client was not disconnected"
+            );
+
+            assert!(
+                signals.try_changed_value(None).is_none(),
+                "a change from the expired connection is still pending"
+            );
+            server.stop().await;
+        });
+    }
+
+    #[test]
+    fn heartbeat_keeps_a_client_that_answers_pings() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        block_on(async {
+            let server = TestServer::start(Some(TEST_HEARTBEAT)).await;
+            let mut client = connect(server.addr).await;
+            assert!(
+                until(DEADLINE, || server.connected()).await,
+                "the client was not accepted"
+            );
+
+            // Reading lets tungstenite answer every ping; the client sends
+            // nothing else.
+            let pings = Arc::new(AtomicUsize::new(0));
+            let reader = tokio::spawn({
+                let pings = pings.clone();
+                async move {
+                    while let Some(Ok(message)) = client.next().await {
+                        if matches!(message, Message::Ping(_)) {
+                            pings.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                }
+            });
+            tokio::time::sleep(TEST_HEARTBEAT.timeout * 3).await;
+
+            assert!(server.connected(), "a responsive client was disconnected");
+            assert!(!server.released(), "pending states were reset");
+            assert!(
+                pings.load(Ordering::Relaxed) >= 3,
+                "the server did not ping the client"
+            );
+            reader.abort();
+            server.stop().await;
+        });
+    }
+
+    #[test]
+    fn disabled_heartbeat_neither_pings_nor_disconnects_a_silent_client() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        block_on(async {
+            let server = TestServer::start(None).await;
+            let mut client = connect(server.addr).await;
+            assert!(
+                until(DEADLINE, || server.connected()).await,
+                "the client was not accepted"
+            );
+
+            // The client sends nothing after the handshake.
+            let quiet = Instant::now() + TEST_HEARTBEAT.timeout * 2;
+            while let Ok(message) = timeout_at(quiet, client.next()).await {
+                let Some(message) = message else {
+                    panic!("the server closed the connection");
+                };
+                assert!(
+                    !matches!(message, Ok(Message::Ping(_))),
+                    "a disabled heartbeat pinged the client"
+                );
+            }
+
+            assert!(server.connected(), "a silent client was disconnected");
+            assert!(!server.released(), "pending states were reset");
+            server.stop().await;
+        });
+    }
+
+    #[test]
+    fn heartbeat_ends_a_send_to_a_client_that_stops_reading() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        block_on(async {
+            let server = TestServer::start(Some(TEST_HEARTBEAT)).await;
+            // A small receive buffer fills the socket buffers sooner, so the
+            // server's send waits for space the client never frees.
+            let socket = tokio::net::TcpSocket::new_v4().unwrap();
+            socket.set_recv_buffer_size(4096).unwrap();
+            let stream = socket.connect(server.addr).await.unwrap();
+            let (mut client, _) =
+                tokio_tungstenite::client_async(format!("ws://{}", server.addr), stream)
+                    .await
+                    .unwrap();
+            send_handshake(&mut client).await;
+            assert!(
+                until(DEADLINE, || server.connected()).await,
+                "the client was not accepted"
+            );
+
+            for _ in 0..32 {
+                server.sender.send(FastVec::Heap(vec![0; 1 << 20]));
+            }
+
+            assert!(
+                until(DEADLINE, || !server.connected()).await,
+                "the blocked send to the silent client did not end"
+            );
+            assert!(server.released(), "pending states were not released");
+            server.stop().await;
         });
     }
 }

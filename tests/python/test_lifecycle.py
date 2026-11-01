@@ -11,6 +11,26 @@ def test_disposal_releases_workers(tmp_path):
     run([sys.executable, ROOT / "tests/lifecycle_worker.py"], cwd=tmp_path, timeout=15)
 
 
+def test_heartbeat_settings_are_validated():
+    """Accept valid or disabled heartbeat settings and reject invalid ones."""
+    import pytest
+    from egui_states_test_bindings import StatesServer  # ty: ignore[unresolved-import]
+
+    StatesServer(signals_workers=1, heartbeat_interval=0.5, heartbeat_timeout=2.0)
+    # A disabled heartbeat ignores its interval.
+    StatesServer(signals_workers=1, heartbeat_interval=0.0, heartbeat_timeout=None)
+    for interval, timeout in [
+        (0.0, 1.0),
+        (-1.0, 1.0),
+        (2.0, 2.0),
+        (2.0, 0.5),
+        (float("nan"), 1.0),
+        (1.0, float("inf")),
+    ]:
+        with pytest.raises(ValueError, match="heartbeat"):
+            StatesServer(signals_workers=1, heartbeat_interval=interval, heartbeat_timeout=timeout)
+
+
 def test_server_restarts_on_a_different_port():
     """Restart a server with a new port and release the previous listener."""
     import socket

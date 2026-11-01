@@ -54,6 +54,16 @@ then served on the WebSocket port, so a single port must be reachable.
 `serve_web` and `stop_web` can be called before or after `start` and do not
 affect the connected client.
 
+## Lost connections
+
+The server pings the connected client every 5 s and disconnects it after 20 s
+without any response, for example when the client's computer sleeps or its
+network drops without closing the connection. Server operations waiting for
+that client's acknowledgements are then released. Clients answer pings
+automatically. Change either time, or disable the heartbeat, with
+`heartbeat_interval` and `heartbeat_timeout` in the Rust `ServerOptions` or the
+Python server's constructor, or with `egui_states_server_set_heartbeat` in C.
+
 ## Examples
 
 Start with the counter, then explore individual features in the showcase.
