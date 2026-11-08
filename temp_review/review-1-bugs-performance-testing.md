@@ -33,11 +33,6 @@ fix. A prioritized action list closes the document.
 
 ### B15. Minor API and robustness issues
 
-- Python `pyparsing.rs` serializes dataclasses by calling `__getstate__` and
-  trusting dict order to match `__match_args__`; a dataclass with
-  `slots=True`, a custom `__getstate__`, or attributes assigned in
-  `__post_init__` fails or mis-serializes. Reading fields by name via
-  `__match_args__` is both safer and clearer.
 - The extension declares `gil_used = false` (free-threaded Python), and
   `image_set`/`data_set` read NumPy memory with the GIL released. A concurrent
   Python writer to the same array produces torn reads. Document it, or hold a

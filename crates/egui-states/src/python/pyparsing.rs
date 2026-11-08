@@ -86,13 +86,16 @@ pub(crate) fn serialize_py(
             }
             Ok(())
         }
-        // A dataclass without fields has no state (`__getstate__()` is `None`).
-        PyObjectType::Class(vec, _) if vec.is_empty() => Ok(()),
-        PyObjectType::Class(vec, _) => {
-            let list = obj.call_method0("__getstate__")?.cast::<PyDict>()?.values();
-            for (i, item_type) in vec.iter().enumerate() {
-                let item = list.get_item(i)?;
-                serialize_py(&item, item_type, creator)?;
+        PyObjectType::Class(fields, class) => {
+            let class = class.bind(obj.py());
+            if !obj.is_instance(class)? {
+                return Err(PyTypeError::new_err(format!(
+                    "Expected an instance of {class}"
+                )));
+            }
+            for (name, field_type) in fields {
+                let item = obj.getattr(name.bind(obj.py()))?;
+                serialize_py(&item, field_type, creator)?;
             }
             Ok(())
         }
@@ -267,9 +270,9 @@ pub(crate) fn deserialize_py<'py, 'a>(
             }
             Ok(PyTuple::new(py, items)?.into_any())
         }
-        PyObjectType::Class(vec, py_class) => {
-            let mut items = Vec::with_capacity(vec.len());
-            for item_type in vec.iter() {
+        PyObjectType::Class(fields, py_class) => {
+            let mut items = Vec::with_capacity(fields.len());
+            for (_, item_type) in fields {
                 let item = deserialize_py(py, parser, item_type)?;
                 items.push(item);
             }
@@ -328,5 +331,111 @@ pub(crate) fn deserialize_py<'py, 'a>(
             }
         }
         PyObjectType::Empty => Ok(PyTuple::empty(py).into_any()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use pyo3::types::PyModule;
+
+    use super::*;
+    use crate::python::pytypes::{PyObjectClass, U32, cl};
+
+    const STRUCTS: &std::ffi::CStr = cr#"
+from dataclasses import dataclass
+
+@dataclass
+class Point:
+    x: int
+    y: int
+
+@dataclass
+class Other:
+    x: int
+    y: int
+
+@dataclass
+class Empty:
+    pass
+
+def reordered():
+    point = Point(1, 2)
+    del point.x
+    point.x = 1
+    return point
+"#;
+
+    fn class_type(
+        module: &Bound<PyModule>,
+        name: &str,
+        fields: Vec<PyObjectClass>,
+    ) -> PyObjectType {
+        let py = module.py();
+        let fields = fields
+            .into_iter()
+            .map(|field| Bound::new(py, field).unwrap())
+            .collect();
+        let class = module.getattr(name).unwrap().unbind();
+        cl(py, fields, class).unwrap().object_type
+    }
+
+    fn roundtrip<'py>(obj: &Bound<'py, PyAny>, object_type: &PyObjectType) -> Bound<'py, PyAny> {
+        let mut creator = ValueCreator::new();
+        serialize_py(obj, object_type, &mut creator).unwrap();
+        let mut parser = ValueParser::new(creator.finalize());
+        deserialize_py(obj.py(), &mut parser, object_type).unwrap()
+    }
+
+    /// Fields are read by name, so an instance whose dict order differs from
+    /// the field order still sends every value in its own field.
+    #[test]
+    fn class_fields_do_not_depend_on_the_instance_dict_order() {
+        Python::initialize();
+        Python::attach(|py| {
+            let module = PyModule::from_code(py, STRUCTS, c"structs.py", c"structs").unwrap();
+            let point = class_type(&module, "Point", vec![U32, U32]);
+
+            let reordered = module.call_method0("reordered").unwrap();
+            let state = reordered.getattr("__dict__").unwrap();
+            let keys: Vec<String> = state.cast::<PyDict>().unwrap().keys().extract().unwrap();
+            assert_eq!(keys, ["y", "x"]);
+
+            let back = roundtrip(&reordered, &point);
+            assert_eq!(back.getattr("x").unwrap().extract::<u32>().unwrap(), 1);
+            assert_eq!(back.getattr("y").unwrap().extract::<u32>().unwrap(), 2);
+            assert!(back.eq(&reordered).unwrap());
+
+            let empty = class_type(&module, "Empty", vec![]);
+            let instance = module.getattr("Empty").unwrap().call0().unwrap();
+            assert!(roundtrip(&instance, &empty).eq(&instance).unwrap());
+        });
+    }
+
+    /// A struct value must be an instance of its class, even when another
+    /// object has fields of the same names and types.
+    #[test]
+    fn class_rejects_instances_of_other_classes() {
+        Python::initialize();
+        Python::attach(|py| {
+            let module = PyModule::from_code(py, STRUCTS, c"structs.py", c"structs").unwrap();
+            let point = class_type(&module, "Point", vec![U32, U32]);
+
+            let other = module.getattr("Other").unwrap().call1((1, 2)).unwrap();
+            let tuple = PyTuple::new(py, [1, 2]).unwrap().into_any();
+            for value in [other, tuple] {
+                let error = serialize_py(&value, &point, &mut ValueCreator::new()).unwrap_err();
+                assert!(error.is_instance_of::<PyTypeError>(py), "{error}");
+                assert!(error.to_string().contains("Point"), "{error}");
+            }
+
+            let error = cl(
+                py,
+                vec![Bound::new(py, U32).unwrap()],
+                module.getattr("Point").unwrap().unbind(),
+            )
+            .err()
+            .unwrap();
+            assert!(error.to_string().contains("__match_args__"), "{error}");
+        });
     }
 }

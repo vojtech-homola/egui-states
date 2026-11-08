@@ -1,5 +1,5 @@
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyDict};
+use pyo3::types::{PyAny, PyDict, PyString};
 
 use crate::typed::ObjectType;
 
@@ -30,7 +30,9 @@ pub(crate) enum PyObjectType {
     Bool,
     Enum(Py<PyAny>),
     Tuple(Vec<PyObjectType>),
-    Class(Vec<PyObjectType>, Py<PyAny>),
+    /// A generated dataclass: its fields as (Python attribute name, type) in
+    /// `__match_args__` order, and the class itself.
+    Class(Vec<(Py<PyString>, PyObjectType)>, Py<PyAny>),
     List(u32, Box<PyObjectType>),
     Vec(Box<PyObjectType>),
     Map(Box<PyObjectType>, Box<PyObjectType>),
@@ -58,9 +60,12 @@ impl PyObjectType {
                 let cloned_vec = vec.iter().map(|t| t.clone_py(py)).collect();
                 PyObjectType::Tuple(cloned_vec)
             }
-            PyObjectType::Class(vec, py_obj) => {
-                let cloned_vec = vec.iter().map(|t| t.clone_py(py)).collect();
-                PyObjectType::Class(cloned_vec, py_obj.clone_ref(py))
+            PyObjectType::Class(fields, py_obj) => {
+                let cloned_fields = fields
+                    .iter()
+                    .map(|(name, t)| (name.clone_ref(py), t.clone_py(py)))
+                    .collect();
+                PyObjectType::Class(cloned_fields, py_obj.clone_ref(py))
             }
             PyObjectType::List(size, elem_type) => {
                 PyObjectType::List(*size, Box::new(elem_type.clone_py(py)))
@@ -114,14 +119,12 @@ impl PyObjectType {
                 }
                 ObjectType::Tuple(core_elements)
             }
-            PyObjectType::Class(elements, obj) => {
+            PyObjectType::Class(fields, obj) => {
                 let struct_type = obj.bind(py);
                 let name = struct_type.getattr("__name__")?.extract::<String>()?;
-                let memebers = struct_type
-                    .getattr("__match_args__")?
-                    .extract::<Vec<String>>()?;
-                let mut core_elements = Vec::with_capacity(elements.len());
-                for (n, t) in memebers.into_iter().zip(elements.iter()) {
+                let mut core_elements = Vec::with_capacity(fields.len());
+                for (n, t) in fields {
+                    let n = n.bind(py).to_str()?.to_string();
                     core_elements.push((wire_name(struct_type, n)?, t.get_core_type(py)?));
                 }
 
@@ -262,8 +265,27 @@ pub(crate) fn cl(
         ));
     }
 
+    // Fields are read by name, so the instance dict order does not matter.
+    let names = class_type
+        .bind(py)
+        .getattr("__match_args__")?
+        .extract::<Vec<String>>()?;
+    if names.len() != object_types.len() {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "{} has {} fields in __match_args__ but {} field types were given",
+            class_type.bind(py),
+            names.len(),
+            object_types.len()
+        )));
+    }
+    let fields = names
+        .into_iter()
+        .map(|name| PyString::intern(py, &name).unbind())
+        .zip(object_types)
+        .collect();
+
     Ok(PyObjectClass {
-        object_type: PyObjectType::Class(object_types, class_type),
+        object_type: PyObjectType::Class(fields, class_type),
     })
 }
 
@@ -373,7 +395,10 @@ class Reserved:
             );
 
             let reserved = PyObjectType::Class(
-                vec![PyObjectType::U32, PyObjectType::Bool],
+                vec![
+                    (PyString::new(py, "from_").unbind(), PyObjectType::U32),
+                    (PyString::new(py, "plain").unbind(), PyObjectType::Bool),
+                ],
                 module.getattr("Reserved").unwrap().unbind(),
             );
             assert_eq!(
