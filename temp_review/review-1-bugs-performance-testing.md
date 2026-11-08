@@ -33,10 +33,6 @@ fix. A prioritized action list closes the document.
 
 ### B15. Minor API and robustness issues
 
-- The extension declares `gil_used = false` (free-threaded Python), and
-  `image_set`/`data_set` read NumPy memory with the GIL released. A concurrent
-  Python writer to the same array produces torn reads. Document it, or hold a
-  read lock on the buffer (`PyBuffer` only guarantees the memory stays valid).
 - Handshake token comparison is not constant-time and the token travels in
   clear text (no TLS anywhere). Acceptable for loopback, worth stating in the
   README's security notes.
