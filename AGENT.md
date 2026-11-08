@@ -35,3 +35,11 @@
    becomes the commit message on `main`. `git-cliff` lists `feat`, `fix`,
    `refactor`, `doc`, `perf`, `change`, `style`, `test`, and `revert` in the
    changelog, skips `chore` and `ci`, and silently drops any other message.
+   Mark a breaking change with `!` (`feat!: ...`) or a `BREAKING CHANGE:`
+   footer; the release bump is derived from these titles.
+7. Releases are prepared by the Prepare release workflow, which runs
+   `scripts/prepare_release.py`: it picks the next version from the commit
+   titles and `PROTOCOL_VERSION`, then updates `Cargo.toml`, `Cargo.lock`, and
+   `CHANGELOG.md` in a `chore: release X.Y.Z` pull request. Pushing the version
+   tag on the merged commit starts `release.yml`, which publishes to PyPI and
+   creates the GitHub release. Do not bump the version or create tags by hand.

@@ -7,5 +7,6 @@ use pyo3::prelude::*;
 #[pyo3(name = "_core")]
 /// Registers the native state-server implementation in the Python module.
 fn init_python_module(m: &Bound<PyModule>) -> PyResult<()> {
+    m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     init_module(m)
 }

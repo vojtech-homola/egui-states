@@ -12,6 +12,9 @@ from typing import Any
 
 from egui_states.structures import _CustomStruct
 
+__version__: str
+"""Package version, taken from the workspace version in Cargo.toml at compile time."""
+
 class PyObjectType:
     """Opaque protocol type descriptor consumed by generated bindings."""
 

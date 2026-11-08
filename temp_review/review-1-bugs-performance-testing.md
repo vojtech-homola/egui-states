@@ -33,9 +33,6 @@ fix. A prioritized action list closes the document.
 
 ### B15. Minor API and robustness issues
 
-- `crates/egui-states-python/build.rs` writes `egui_states/version.py` into
-  the source tree. Build scripts should only write to `OUT_DIR`; this breaks
-  read-only checkouts and is surprising with `cargo publish`.
 - Python `pyparsing.rs` serializes dataclasses by calling `__getstate__` and
   trusting dict order to match `__match_args__`; a dataclass with
   `slots=True`, a custom `__getstate__`, or attributes assigned in

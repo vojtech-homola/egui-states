@@ -1,0 +1,110 @@
+name: Prepare release
+
+# Run from the Actions tab on `main`. Opens a `chore: release X.Y.Z` pull
+# request that bumps the version, refreshes Cargo.lock, and regenerates
+# CHANGELOG.md (see scripts/prepare_release.py for how the bump is chosen).
+# After merging it, push the version tag on the merge commit to start the
+# Release workflow. Opening the pull request needs "Allow GitHub Actions to
+# create and approve pull requests" in Settings > Actions > General; without
+# it the branch is still pushed and the run summary links to open it by hand.
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Version bump; auto derives it from the commits since the last tag
+        type: choice
+        options: [auto, patch, minor, major]
+        default: auto
+
+concurrency:
+  group: prepare-release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  GIT_CLIFF_VERSION: 2.14.2
+
+jobs:
+  prepare:
+    name: Open the release pull request
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # push the release branch
+      pull-requests: write # open the pull request
+      actions: write # start CI on the release branch
+    steps:
+      - name: Require main
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::Prepare releases from main, not $GITHUB_REF."
+          exit 1
+      - uses: actions/checkout@v7
+        with:
+          # The bump and the changelog need the history and the tags.
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: astral-sh/setup-uv@v10.3.3
+      - name: Install git-cliff
+        run: |
+          uv tool install "git-cliff==$GIT_CLIFF_VERSION"
+          uv tool dir --bin >> "$GITHUB_PATH"
+      - name: Bump the version and regenerate the changelog
+        id: release
+        env:
+          BUMP: ${{ inputs.bump }}
+        run: python3 scripts/prepare_release.py --bump "$BUMP"
+      - name: Push the release branch
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "release/$VERSION"
+          git commit -am "chore: release $VERSION"
+          # A rerun replaces the branch of an earlier attempt.
+          git push --force origin "release/$VERSION"
+      - name: Open the pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.release.outputs.version }}
+          LEVEL: ${{ steps.release.outputs.level }}
+          BUMP: ${{ inputs.bump }}
+        run: |
+          branch="release/$VERSION"
+          {
+            echo "Prepared by the Prepare release workflow: \`$LEVEL\` bump (requested: \`$BUMP\`)."
+            echo
+            echo "After merging, tag the merge commit on \`main\` to publish:"
+            echo
+            echo '```bash'
+            echo "git switch main && git pull"
+            echo "git tag $VERSION && git push origin $VERSION"
+            echo '```'
+            echo
+            echo "If anything else is merged into \`main\` first, run Prepare release again;"
+            echo "the Release workflow refuses a changelog that misses commits."
+            echo
+            echo "## Release notes"
+            echo
+            awk -v heading="## [$VERSION]" '
+              index($0, heading) == 1 { found = 1; next }
+              found && /^## \[/ { exit }
+              found { print }
+            ' CHANGELOG.md
+          } > pr-body.md
+
+          if [[ -n "$(gh pr list --head "$branch" --state open --json number --jq '.[].number')" ]]; then
+            gh pr edit "$branch" --body-file pr-body.md
+          elif ! gh pr create --base main --head "$branch" --title "chore: release $VERSION" --body-file pr-body.md; then
+            url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/compare/main...$branch?expand=1"
+            echo "::warning::Could not open the pull request; open it from $url"
+            echo "Open the release pull request: $url" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Start CI on the release branch
+        # Pushes made with GITHUB_TOKEN start no workflows, but dispatches do.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: gh workflow run ci.yml --ref "release/$VERSION"
