@@ -33,9 +33,6 @@ fix. A prioritized action list closes the document.
 
 ### B15. Minor API and robustness issues
 
-- `egui = ">= 0.34"` has no upper bound; a future semver-incompatible egui
-  will break downstream builds. The forced `rayon` feature on egui is also
-  imposed on every client.
 - `crates/egui-states-python/build.rs` writes `egui_states/version.py` into
   the source tree. Build scripts should only write to `OUT_DIR`; this breaks
   read-only checkouts and is surprising with `cargo publish`.
@@ -139,8 +136,8 @@ win.)
 
 ### P9. Compile-time and dependency footprint
 
-The client pulls `tokio` with `rt-multi-thread`, `futures-util`, `sha2`, and
-forces `egui/rayon`. `sha2` is used only to derive ids and layout hashes at
+The client pulls `tokio` with `rt-multi-thread`, `futures-util`, and `sha2`.
+`sha2` is used only to derive ids and layout hashes at
 startup; a smaller stable hash (for example `siphasher` with fixed keys, or a
 vendored FNV-1a 64) would remove a dependency without changing the stability
 guarantee, at the cost of a protocol bump (ids are on the wire). Worth doing
