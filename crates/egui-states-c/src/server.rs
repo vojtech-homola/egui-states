@@ -290,8 +290,10 @@ pub unsafe extern "C" fn egui_states_server_finalize(
 ///
 /// `ipv4` is a dotted address such as `"127.0.0.1"`; null listens on every
 /// IPv4 interface. A non-null `token` requires clients to present it. Starting
-/// a running server succeeds without changing its settings; a stopped server
-/// can be started again with other settings.
+/// a running server with the same settings succeeds without effect; a
+/// different address or token fails with `INVALID_STATE` until the server is
+/// stopped. Port 0 lets the system pick a port and also matches that port
+/// later; `egui_states_server_address` reports it.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn egui_states_server_start(
     server: *const egui_states_server_t,
@@ -343,6 +345,33 @@ pub unsafe extern "C" fn egui_states_server_is_running(
     out_running: *mut bool,
 ) -> egui_states_status_t {
     ffi(|| unsafe { write(out_running, server_ref(server)?.is_running(), "out_running") })
+}
+
+/// Copies the address the server listens on, as dotted IPv4 text such as
+/// `"127.0.0.1"`, NUL-terminated, into `buffer` of `capacity` bytes, and
+/// writes its port to `out_port`.
+///
+/// `out_port` and `out_len` (the text length without the NUL) are written
+/// even when the buffer is too small; 16 bytes always suffice. A null buffer
+/// with zero capacity asks only for the length and the port. A stopped server
+/// fails with `INVALID_STATE`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn egui_states_server_address(
+    server: *const egui_states_server_t,
+    buffer: *mut c_char,
+    capacity: usize,
+    out_len: *mut usize,
+    out_port: *mut u16,
+) -> egui_states_status_t {
+    ffi(|| {
+        output(out_len, "out_len")?;
+        output(out_port, "out_port")?;
+        let address = server_ref(server)?
+            .address()
+            .ok_or_else(|| Error::new(ErrorCode::InvalidState, "the server is not running"))?;
+        unsafe { write(out_port, address.port(), "out_port") }?;
+        unsafe { copy_text(&address.ip().to_string(), buffer, capacity, out_len) }
+    })
 }
 
 /// Reports whether a client is connected.

@@ -296,6 +296,14 @@ impl StateServerCore {
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))
     }
 
+    fn address(&self) -> Option<((u8, u8, u8, u8), u16)> {
+        // A tuple, not `[u8; 4]`, which PyO3 would convert to `bytes`.
+        self.server.read().address().map(|addr| {
+            let [a, b, c, d] = addr.ip().octets();
+            ((a, b, c, d), addr.port())
+        })
+    }
+
     fn stop(&self) {
         self.server.write().stop();
     }

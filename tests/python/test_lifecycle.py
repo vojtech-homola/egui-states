@@ -15,7 +15,7 @@ def test_server_restarts_on_a_different_port():
     """Restart a server with a new port and release the previous listener."""
     import socket
     import pytest
-    from egui_states_test_bindings import StatesServer  # ty: ignore[unresolved-import]
+    from egui_states_test_bindings import StatesServer  # ty: ignore[import-not-found]
     from egui_states.logging import LogLevel
 
     # Hold both reservations together so the ports are guaranteed distinct.
@@ -42,11 +42,38 @@ def test_server_restarts_on_a_different_port():
     assert not errors, errors
 
 
+def test_server_start_while_running_requires_the_active_settings():
+    """Accept a repeated start only with the address and token in use."""
+    import pytest
+    from egui_states_test_bindings import StatesServer  # ty: ignore[import-not-found]
+
+    server = StatesServer(signals_workers=1)
+    try:
+        assert server.address() is None
+        server.start(0, (127, 0, 0, 1), "token")
+        address = server.address()
+        assert address is not None
+        ip_addr, port = address
+        assert ip_addr == (127, 0, 0, 1)
+        assert port != 0
+
+        server.start(0, (127, 0, 0, 1), "token")
+        server.start(port, (127, 0, 0, 1), "token")
+        with pytest.raises(RuntimeError, match="already running on 127.0.0.1"):
+            server.start(port, None, "token")
+        with pytest.raises(RuntimeError, match="different token"):
+            server.start(port, (127, 0, 0, 1), "other")
+        assert server.address() == address
+    finally:
+        server.stop()
+    assert server.address() is None
+
+
 def test_server_serves_web_page_on_its_port(tmp_path):
     """Serve web pages on the server port and replace or stop them at runtime."""
     import urllib.request
     import pytest
-    from egui_states_test_bindings import StatesServer  # ty: ignore[unresolved-import]
+    from egui_states_test_bindings import StatesServer  # ty: ignore[import-not-found]
     from tests.python_test_helpers.network import free_port
 
     first, second = tmp_path / "first", tmp_path / "second"

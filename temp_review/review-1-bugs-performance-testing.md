@@ -33,15 +33,6 @@ fix. A prioritized action list closes the document.
 
 ### B15. Minor API and robustness issues
 
-- `Client::set_context` panics if the client was cloned (`client.rs:322`).
-- `ClientBuilder::build` spawns an OS thread plus a two-worker Tokio runtime
-  per client; the thread loops forever on `wait_connection` and is never
-  joined, so every built client leaks three threads for the process lifetime.
-  A `current_thread` runtime and a shutdown path on `Client` drop would fix
-  both.
-- `StateServer::start` returns `Ok(())` when already running, silently
-  ignoring a different port or token (`server_core/server.rs:227-230`). A
-  distinct error or an `AlreadyRunning` result would prevent surprises.
 - `egui = ">= 0.34"` has no upper bound; a future semver-incompatible egui
   will break downstream builds. The forced `rayon` feature on egui is also
   imposed on every client.

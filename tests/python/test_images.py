@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 from .assertions import assert_array
 
-from egui_states_test_bindings import (  # ty: ignore[unresolved-import]
+from egui_states_test_bindings import (  # ty: ignore[import-not-found]
     State,
     StatesServer,
 )

@@ -16,7 +16,7 @@ use crate::server_core::image_core::Image;
 use crate::server_core::image_core_common::checked_image_size;
 use crate::server_core::image_multi_core::ImageMulti;
 use crate::server_core::map_core::ValueMap;
-use crate::server_core::server::Server;
+use crate::server_core::server::{Server, StartError};
 use crate::server_core::signals::{
     CLIENT_MESSAGE_ID, ClaimResult, LOGGING_ID, ON_CONNECT_ID, ON_DISCONNECT_ID, SignalsManager,
 };
@@ -419,15 +419,24 @@ impl CServer {
     /// Starts listening on `port`, on all IPv4 interfaces unless `ip` is given.
     ///
     /// `token` requires clients to present the same token. Starting a running
-    /// server succeeds without changing its settings; a stopped server can be
-    /// started again with different settings.
+    /// server with the same settings succeeds without effect; a different
+    /// address or token is an `InvalidState` error until the server is
+    /// stopped.
     pub fn start(&self, port: u16, ip: Option<Ipv4Addr>, token: Option<String>) -> Result<()> {
         self.states()?;
         let address = SocketAddrV4::new(ip.unwrap_or(Ipv4Addr::UNSPECIFIED), port);
         self.core
             .write()
             .start(address, token)
-            .map_err(|error| Error::new(ErrorCode::Io, error))
+            .map_err(|error| match error {
+                StartError::InvalidState(message) => Error::new(ErrorCode::InvalidState, message),
+                StartError::Io(message) => Error::new(ErrorCode::Io, message),
+            })
+    }
+
+    /// Returns the address the server listens on, or `None` when stopped.
+    pub fn address(&self) -> Option<SocketAddrV4> {
+        self.core.read().address()
     }
 
     /// Stops listening and disconnects the client.

@@ -620,6 +620,92 @@ fn last_error_is_per_thread_and_survives_success() {
 }
 
 #[test]
+fn start_while_running_and_address() {
+    let server = Server::new();
+    unsafe {
+        let mut buffer = [0 as c_char; 16];
+        let mut len = 0;
+        let mut port = 0;
+        ok(egui_states_server_finalize(server.0));
+        fails(
+            egui_states_server_address(server.0, buffer.as_mut_ptr(), 16, &mut len, null_mut()),
+            EGUI_STATES_ERROR_INVALID_ARGUMENT,
+            "`out_port`",
+        );
+        fails(
+            egui_states_server_address(server.0, buffer.as_mut_ptr(), 16, &mut len, &mut port),
+            EGUI_STATES_ERROR_INVALID_STATE,
+            "not running",
+        );
+
+        let localhost = c"127.0.0.1".as_ptr();
+        ok(egui_states_server_start(
+            server.0,
+            0,
+            localhost,
+            c"token".as_ptr(),
+        ));
+        fails(
+            egui_states_server_address(server.0, buffer.as_mut_ptr(), 4, &mut len, &mut port),
+            EGUI_STATES_ERROR_BUFFER_TOO_SMALL,
+            "needed",
+        );
+        assert_eq!(len, "127.0.0.1".len());
+        assert_ne!(port, 0);
+        let assigned = port;
+        ok(egui_states_server_address(
+            server.0,
+            null_mut(),
+            0,
+            &mut len,
+            &mut port,
+        ));
+        ok(egui_states_server_address(
+            server.0,
+            buffer.as_mut_ptr(),
+            16,
+            &mut len,
+            &mut port,
+        ));
+        assert_eq!(
+            CStr::from_ptr(buffer.as_ptr()).to_str().unwrap(),
+            "127.0.0.1"
+        );
+        assert_eq!(port, assigned);
+
+        ok(egui_states_server_start(
+            server.0,
+            0,
+            localhost,
+            c"token".as_ptr(),
+        ));
+        ok(egui_states_server_start(
+            server.0,
+            assigned,
+            localhost,
+            c"token".as_ptr(),
+        ));
+        fails(
+            egui_states_server_start(server.0, assigned, null(), c"token".as_ptr()),
+            EGUI_STATES_ERROR_INVALID_STATE,
+            "already running on 127.0.0.1",
+        );
+        fails(
+            egui_states_server_start(server.0, assigned, localhost, null()),
+            EGUI_STATES_ERROR_INVALID_STATE,
+            "different token",
+        );
+
+        ok(egui_states_server_stop(server.0));
+        fails(
+            egui_states_server_address(server.0, buffer.as_mut_ptr(), 16, &mut len, &mut port),
+            EGUI_STATES_ERROR_INVALID_STATE,
+            "not running",
+        );
+    }
+}
+
+#[test]
 fn lifecycle_errors_and_event_waits() {
     let server = Server::new();
     unsafe {

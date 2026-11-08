@@ -9,11 +9,11 @@ import pytest
 from egui_states.logging import LogLevel
 from egui_states import signals
 
-from egui_states_test_bindings import (  # ty: ignore[unresolved-import]
+from egui_states_test_bindings import (  # ty: ignore[import-not-found]
     State,
     StatesServer,
 )
-from egui_states_test_bindings.enums import (  # ty: ignore[unresolved-import]
+from egui_states_test_bindings.enums import (  # ty: ignore[import-not-found]
     TestEnum as ExampleTestEnum,
 )
 

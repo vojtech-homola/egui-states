@@ -142,19 +142,67 @@ pub(crate) struct ServerStatesList {
     pub(crate) sync: Vec<Arc<dyn SyncTrait>>,
 }
 
+/// Why [`Server::start`] failed.
+#[derive(Debug)]
+pub(crate) enum StartError {
+    /// The server is in the wrong lifecycle phase: not finalized, in an
+    /// undefined state, or already running with other settings.
+    InvalidState(String),
+    /// The socket could not be bound or configured, or the runtime or thread
+    /// could not be started.
+    Io(String),
+}
+
+impl std::fmt::Display for StartError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StartError::InvalidState(message) | StartError::Io(message) => f.write_str(message),
+        }
+    }
+}
+
+/// Settings of a running server.
+struct Listening {
+    /// The address `start` was called with; its port may be 0.
+    requested: SocketAddrV4,
+    /// The address the listener is bound to.
+    bound: SocketAddrV4,
+    token: Option<String>,
+}
+
+impl Listening {
+    /// Checks a repeated `start` against the active settings.
+    ///
+    /// The address matches the requested one or the bound one, so a server
+    /// started on port 0 also accepts the port it was given. The message never
+    /// contains a token.
+    fn check(&self, addr: SocketAddrV4, token: &Option<String>) -> Result<(), StartError> {
+        if addr != self.requested && addr != self.bound {
+            return Err(StartError::InvalidState(format!(
+                "the server is already running on {}; stop it before starting it on {addr}",
+                self.bound
+            )));
+        }
+        if *token != self.token {
+            return Err(StartError::InvalidState(
+                "the server is already running with a different token; stop it before \
+                 changing the token"
+                    .to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 enum RunnerState {
-    Running(thread::JoinHandle<MessageReceiver>),
+    Running(thread::JoinHandle<MessageReceiver>, Listening),
     Stopped(MessageReceiver),
     Undefined,
 }
 
 impl RunnerState {
     fn take(&mut self) -> Self {
-        match std::mem::replace(self, RunnerState::Undefined) {
-            RunnerState::Running(handle) => RunnerState::Running(handle),
-            RunnerState::Stopped(rx) => RunnerState::Stopped(rx),
-            RunnerState::Undefined => RunnerState::Undefined,
-        }
+        std::mem::replace(self, RunnerState::Undefined)
     }
 }
 
@@ -207,6 +255,9 @@ impl Server {
 
     /// Starts the server on its dedicated thread.
     ///
+    /// Starting a running server with the same address and token succeeds
+    /// without effect; other settings return [`StartError::InvalidState`].
+    ///
     /// This method must not be called from inside a Tokio runtime. The server
     /// creates and owns a Tokio runtime, which must be allowed to shut down on
     /// a non-async thread.
@@ -214,9 +265,9 @@ impl Server {
         &mut self,
         addr: SocketAddrV4,
         token: Option<String>,
-    ) -> Result<(), String> {
+    ) -> Result<(), StartError> {
         let runner_state = match self.runner_state.take() {
-            RunnerState::Running(handle) if handle.is_finished() => match handle.join() {
+            RunnerState::Running(handle, _) if handle.is_finished() => match handle.join() {
                 Ok(rx) => RunnerState::Stopped(rx),
                 Err(_) => RunnerState::Undefined,
             },
@@ -224,21 +275,35 @@ impl Server {
         };
 
         match (runner_state, &self.states_server) {
-            (RunnerState::Running(rx), _) => {
-                self.runner_state = RunnerState::Running(rx);
-                Ok(())
+            (RunnerState::Running(handle, listening), _) => {
+                let checked = listening.check(addr, &token);
+                self.runner_state = RunnerState::Running(handle, listening);
+                checked
             }
             (RunnerState::Stopped(rx), Some(states_server)) => {
                 let listener = match std::net::TcpListener::bind(addr) {
                     Ok(listener) => listener,
                     Err(error) => {
                         self.runner_state = RunnerState::Stopped(rx);
-                        return Err(format!("binding failed: {error:?}"));
+                        return Err(StartError::Io(format!("binding failed: {error:?}")));
+                    }
+                };
+                let bound = match listener.local_addr() {
+                    Ok(std::net::SocketAddr::V4(bound)) => bound,
+                    // Binding an IPv4 address always reports an IPv4 one.
+                    Ok(std::net::SocketAddr::V6(_)) => addr,
+                    Err(error) => {
+                        self.runner_state = RunnerState::Stopped(rx);
+                        return Err(StartError::Io(format!(
+                            "failed to read the listener address: {error:?}"
+                        )));
                     }
                 };
                 if let Err(error) = listener.set_nonblocking(true) {
                     self.runner_state = RunnerState::Stopped(rx);
-                    return Err(format!("failed to configure listener: {error:?}"));
+                    return Err(StartError::Io(format!(
+                        "failed to configure listener: {error:?}"
+                    )));
                 }
 
                 let runtime = match Builder::new_multi_thread()
@@ -252,7 +317,9 @@ impl Server {
                     Ok(runtime) => runtime,
                     Err(_) => {
                         self.runner_state = RunnerState::Stopped(rx);
-                        return Err("Failed to create server runtime".to_string());
+                        return Err(StartError::Io(
+                            "Failed to create server runtime".to_string(),
+                        ));
                     }
                 };
                 let registered = {
@@ -263,7 +330,9 @@ impl Server {
                     Ok(listener) => listener,
                     Err(error) => {
                         self.runner_state = RunnerState::Stopped(rx);
-                        return Err(format!("failed to initialize listener: {error:?}"));
+                        return Err(StartError::Io(format!(
+                            "failed to initialize listener: {error:?}"
+                        )));
                     }
                 };
 
@@ -274,6 +343,11 @@ impl Server {
                 let signals = self.signals.clone();
                 let web = self.web.clone();
 
+                let listening = Listening {
+                    requested: addr,
+                    bound,
+                    token: token.clone(),
+                };
                 let handshake = core::Handshake {
                     version: self.version,
                     token,
@@ -294,21 +368,25 @@ impl Server {
                 match thread_handle_res {
                     Err(_) => {
                         self.runner_state = RunnerState::Undefined;
-                        Err(
+                        Err(StartError::Io(
                             "Failed to start server thread, server is in undefined state"
                                 .to_string(),
-                        )
+                        ))
                     }
                     Ok(thread_handle) => {
-                        self.runner_state = RunnerState::Running(thread_handle);
+                        self.runner_state = RunnerState::Running(thread_handle, listening);
                         Ok(())
                     }
                 }
             }
-            (RunnerState::Undefined, _) => Err("Server is in undefined state".to_string()),
+            (RunnerState::Undefined, _) => Err(StartError::InvalidState(
+                "Server is in undefined state".to_string(),
+            )),
             (state, None) => {
                 self.runner_state = state;
-                Err("Server has not been finalized".to_string())
+                Err(StartError::InvalidState(
+                    "Server has not been finalized".to_string(),
+                ))
             }
         }
     }
@@ -318,7 +396,7 @@ impl Server {
             RunnerState::Stopped(rx) => {
                 self.runner_state = RunnerState::Stopped(rx);
             }
-            RunnerState::Running(handle) => {
+            RunnerState::Running(handle, _) => {
                 self.connected.store(false, Ordering::Release);
                 self.stop_event.set();
                 self.sender.close();
@@ -344,10 +422,25 @@ impl Server {
     }
 
     pub(crate) fn is_running(&self) -> bool {
-        matches!(
-            &self.runner_state,
-            RunnerState::Running(handle) if !handle.is_finished() && !self.stop_event.is_set()
-        )
+        self.listening().is_some()
+    }
+
+    /// Returns the address the server listens on while it is running.
+    ///
+    /// With port 0 this is the port the system assigned.
+    pub(crate) fn address(&self) -> Option<SocketAddrV4> {
+        self.listening().map(|listening| listening.bound)
+    }
+
+    fn listening(&self) -> Option<&Listening> {
+        match &self.runner_state {
+            RunnerState::Running(handle, listening)
+                if !handle.is_finished() && !self.stop_event.is_set() =>
+            {
+                Some(listening)
+            }
+            _ => None,
+        }
     }
 
     pub(crate) fn is_connected(&self) -> bool {

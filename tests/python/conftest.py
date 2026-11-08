@@ -35,7 +35,7 @@ def pytest_generate_tests(metafunc):
 
 
 def _bundle(running):
-    from egui_states_test_bindings import StatesServer  # noqa: PLC0415  # ty: ignore[unresolved-import]
+    from egui_states_test_bindings import StatesServer  # noqa: PLC0415  # ty: ignore[import-not-found]
     from egui_states.logging import LogLevel  # noqa: PLC0415
 
     errors = []

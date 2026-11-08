@@ -169,9 +169,10 @@ impl StateServer {
     ///
     /// `ip_addr` selects a specific IPv4 interface; `None` binds all IPv4
     /// interfaces. `token` optionally requires clients to authenticate during
-    /// the handshake. After [`Self::stop`], the server may be started again
-    /// with different connection settings. Calling this while the server is
-    /// already running succeeds without changing its active settings.
+    /// the handshake. Calling this while the server is running with the same
+    /// settings succeeds without effect; port 0 also matches the port it was
+    /// assigned (see [`Self::address`]). To change the address or token, call
+    /// [`Self::stop`] first.
     ///
     /// The native server owns a dedicated thread and Tokio runtime; call this
     /// from synchronous application code rather than from code that requires
@@ -179,15 +180,16 @@ impl StateServer {
     ///
     /// # Errors
     ///
-    /// Returns an error if the server was not finalized, the socket cannot be
-    /// bound or configured, or its runtime/thread cannot be started.
+    /// Returns an error if the server was not finalized, is already running
+    /// with a different address or token, the socket cannot be bound or
+    /// configured, or its runtime/thread cannot be started.
     pub fn start(&self, port: u16, ip_addr: Option<Ipv4Addr>, token: Option<String>) -> Result<()> {
         let addr = SocketAddrV4::new(ip_addr.unwrap_or(Ipv4Addr::UNSPECIFIED), port);
         self.inner
             .server
             .write()
             .start(addr, token)
-            .map_err(ServerError::new)?;
+            .map_err(|error| ServerError::new(error.to_string()))?;
         self.start_signal_workers();
         Ok(())
     }
@@ -210,6 +212,14 @@ impl StateServer {
     /// Returns whether a client is connected.
     pub fn is_connected(&self) -> bool {
         self.inner.server.read().is_connected()
+    }
+
+    /// Returns the address the server listens on, or `None` when it is not
+    /// running.
+    ///
+    /// After starting on port 0, this reports the port the system assigned.
+    pub fn address(&self) -> Option<SocketAddrV4> {
+        self.inner.server.read().address()
     }
 
     /// Serves the static web page in directory `path` on the server port.
@@ -812,6 +822,51 @@ mod tests {
     }
 
     #[test]
+    fn start_while_running_accepts_only_the_active_settings() {
+        let server = StateServer::new().unwrap();
+        server.finalize().unwrap();
+        assert_eq!(server.address(), None);
+
+        let token = Some("secret-token".to_string());
+        let localhost = Some(Ipv4Addr::LOCALHOST);
+        server.start(0, localhost, token.clone()).unwrap();
+        let address = server.address().unwrap();
+        assert_eq!(*address.ip(), Ipv4Addr::LOCALHOST);
+        assert_ne!(address.port(), 0);
+
+        // The requested port 0 and the assigned port both match.
+        server.start(0, localhost, token.clone()).unwrap();
+        server
+            .start(address.port(), localhost, token.clone())
+            .unwrap();
+
+        let other_port = address.port().wrapping_add(1).max(1);
+        let error = server
+            .start(other_port, localhost, token.clone())
+            .unwrap_err();
+        assert!(error.message().contains("already running on"), "{error}");
+        let error = server
+            .start(address.port(), None, token.clone())
+            .unwrap_err();
+        assert!(error.message().contains("already running on"), "{error}");
+        for other_token in [None, Some("other-token".to_string())] {
+            let error = server.start(0, localhost, other_token).unwrap_err();
+            assert!(error.message().contains("different token"), "{error}");
+            assert!(!error.message().contains("secret-token"), "{error}");
+            assert!(!error.message().contains("other-token"), "{error}");
+        }
+        assert!(server.is_running());
+        assert_eq!(server.address(), Some(address));
+
+        server.stop();
+        assert!(!server.is_running());
+        assert_eq!(server.address(), None);
+        server.start(0, localhost, None).unwrap();
+        assert!(server.address().is_some());
+        server.stop();
+    }
+
+    #[test]
     fn callback_handle_unregisters_on_drop() {
         let server = StateServer::new().unwrap();
         let (id, signal) = server
@@ -998,27 +1053,6 @@ mod tests {
         drop(server);
         let _released = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, port))
             .expect("dropping the last server handle must release its listener");
-    }
-
-    #[test]
-    fn start_is_idempotent_while_server_is_running() {
-        let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-        let port = listener.local_addr().unwrap().port();
-        drop(listener);
-
-        let server = StateServer::new().unwrap();
-        server.finalize().unwrap();
-        server.start(port, Some(Ipv4Addr::LOCALHOST), None).unwrap();
-
-        server
-            .start(
-                port,
-                Some(Ipv4Addr::LOCALHOST),
-                Some("ignored-token".to_string()),
-            )
-            .unwrap();
-        assert!(server.is_running());
-        server.stop();
     }
 
     #[cfg(feature = "client")]
@@ -1656,15 +1690,19 @@ mod wire_tests {
                 peer(port, bad, false).await;
                 peer(port, good(), true).await;
             }
-            // A repeated start cannot change the original address or token.
+            // A repeated start with other settings fails and keeps the original
+            // address and token.
             let occupied = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
             server
                 .start(
                     occupied.local_addr().unwrap().port(),
                     Some(Ipv4Addr::LOCALHOST),
-                    Some("ignored".into()),
+                    Some("first".into()),
                 )
-                .unwrap();
+                .unwrap_err();
+            server
+                .start(port, Some(Ipv4Addr::LOCALHOST), Some("ignored".into()))
+                .unwrap_err();
             peer(
                 port,
                 ClientHeader::Handshake(crate::PROTOCOL_VERSION, Some(17), Some("ignored".into())),
