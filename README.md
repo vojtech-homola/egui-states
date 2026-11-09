@@ -59,6 +59,13 @@ and off at any time, before or after `start`, without affecting the connected
 client; `start_web` reads the directory each time it is called, so calling it
 again after a rebuild serves the new page.
 
+A WASM client connects back to the host and port its page was loaded from (using
+`wss` for HTTPS pages), so a page served this way reaches the server through any
+address, tunnel, or forwarded port. Set the client builder's `host` or `addr` to
+connect elsewhere. When a separate development server such as `trunk serve`
+serves the page, let it forward the WebSocket to the state server; the showcase's
+`Trunk.toml` shows how.
+
 ## Network access
 
 By default the server listens only on `127.0.0.1`, so only clients on the same
@@ -67,7 +74,8 @@ opened elsewhere or a port published from a Docker container, pass the address
 `0.0.0.0` (or a specific interface) to `start`. Connections are unencrypted
 WebSockets, so the optional `token` and all state data travel in clear text;
 on an untrusted network, keep the server on loopback and reach it through an
-SSH tunnel.
+SSH tunnel. Native clients target `127.0.0.1` unless the client builder's `host`
+(a host name or IP address) or `addr` says otherwise.
 
 ## Lost connections
 

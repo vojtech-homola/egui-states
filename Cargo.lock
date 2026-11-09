@@ -1074,6 +1074,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "wasm-bindgen-futures",
+ "web-sys",
  "ws_stream_wasm",
 ]
 

@@ -1,5 +1,4 @@
 use futures_util::{SinkExt, StreamExt, stream::SplitSink, stream::SplitStream};
-use std::net::SocketAddrV4;
 use tokio::net::TcpStream;
 use tokio_tungstenite::connect_async_with_config;
 use tokio_tungstenite::tungstenite::{Message, protocol::WebSocketConfig};
@@ -8,14 +7,11 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use crate::client::messages::{MessagesParser, ServerMessage};
 use crate::serialization::{FastVec, WEBSOCKET_MAX_SIZE};
 
-pub(crate) async fn build_ws(
-    address: SocketAddrV4,
-) -> Result<(WsClientRead, WsClientSend), String> {
-    let address = format!("ws://{}/ws", address);
+pub(crate) async fn build_ws(address: &str) -> Result<(WsClientRead, WsClientSend), String> {
     let mut websocket_config = WebSocketConfig::default();
     websocket_config.max_message_size = Some(WEBSOCKET_MAX_SIZE);
     websocket_config.max_frame_size = Some(WEBSOCKET_MAX_SIZE);
-    let res = connect_async_with_config(&address, Some(websocket_config), false).await;
+    let res = connect_async_with_config(address, Some(websocket_config), false).await;
 
     let socket = match res {
         Ok(res) => res.0,
@@ -141,7 +137,7 @@ mod tests {
                 }
                 ws.close(None).await.unwrap();
             });
-            let (mut reader, _writer) = build_ws(addr).await.unwrap();
+            let (mut reader, _writer) = build_ws(&format!("ws://{addr}/ws")).await.unwrap();
             assert!(matches!(reader.read().await, Ok(ServerMessage::Update(dt)) if dt == 0.5));
             assert!(reader.read().await.is_err());
             peer.await.unwrap();

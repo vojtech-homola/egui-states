@@ -39,4 +39,5 @@ httparse = { version = "1.10", optional = true }
 tokio = { version = "1.52", features = ["sync", "macros"] }
 ws_stream_wasm = { version = "0.7" }
 wasm-bindgen-futures = { version = "0.4" }
+web-sys = { workspace = true, features = ["Window", "Location"] }
 log = { version = "0.4" }

@@ -1,16 +1,12 @@
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt, stream::SplitSink, stream::SplitStream};
-use std::net::SocketAddrV4;
 use ws_stream_wasm::{WsMessage, WsMeta, WsStream};
 
 use crate::client::messages::{MessagesParser, ServerMessage};
 use crate::serialization::FastVec;
 
-pub(crate) async fn build_ws(
-    address: SocketAddrV4,
-) -> Result<(WsClientRead, WsClientSend), String> {
-    let address = format!("ws://{}/ws", address);
-    let res = WsMeta::connect(&address, None).await;
+pub(crate) async fn build_ws(address: &str) -> Result<(WsClientRead, WsClientSend), String> {
+    let res = WsMeta::connect(address, None).await;
 
     let socket = match res {
         Ok(res) => res.1,

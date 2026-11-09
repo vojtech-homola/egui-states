@@ -42,7 +42,9 @@ trunk serve
 ```
 
 Open [localhost:8090](http://localhost:8090) and click **Connect** while either
-showcase server is running.
+showcase server is running. The page connects to its own origin, and Trunk
+forwards that WebSocket to the server on 8091 (see the repository's
+`Trunk.toml`).
 
 To serve the page from the showcase server on its single port instead, build it
 and pass the output directory to either server, still from the repository root:
