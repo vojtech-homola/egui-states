@@ -17,5 +17,5 @@ pub(crate) mod values_core;
 pub(crate) mod vec_core;
 pub(crate) mod web;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "client"))]
 pub(crate) use core::MAX_PENDING_CONNECTIONS;
