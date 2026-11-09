@@ -79,8 +79,10 @@ def test_server_start_while_running_requires_the_active_settings():
 
         server.start(0, (127, 0, 0, 1), "token")
         server.start(port, (127, 0, 0, 1), "token")
+        # No address means loopback, which is the address in use.
+        server.start(port, None, "token")
         with pytest.raises(RuntimeError, match="already running on 127.0.0.1"):
-            server.start(port, None, "token")
+            server.start(port, (0, 0, 0, 0), "token")
         with pytest.raises(RuntimeError, match="different token"):
             server.start(port, (127, 0, 0, 1), "other")
         assert server.address() == address

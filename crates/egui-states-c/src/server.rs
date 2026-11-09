@@ -324,8 +324,8 @@ pub unsafe extern "C" fn egui_states_server_set_heartbeat(
 
 /// Starts listening on `port`.
 ///
-/// `ipv4` is a dotted address such as `"127.0.0.1"`; null listens on every
-/// IPv4 interface. A non-null `token` requires clients to present it. Starting
+/// `ipv4` is a dotted address such as `"0.0.0.0"`; null listens only on the
+/// loopback address `127.0.0.1`. A non-null `token` requires clients to present it. Starting
 /// a running server with the same settings succeeds without effect; a
 /// different address or token fails with `INVALID_STATE` until the server is
 /// stopped. Port 0 lets the system pick a port and also matches that port

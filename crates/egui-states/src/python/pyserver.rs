@@ -300,7 +300,7 @@ impl StateServerCore {
             Some(addr) => {
                 SocketAddrV4::new(Ipv4Addr::new(addr[0], addr[1], addr[2], addr[3]), port)
             }
-            None => SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port),
+            None => SocketAddrV4::new(Ipv4Addr::LOCALHOST, port),
         };
         self.server
             .write()

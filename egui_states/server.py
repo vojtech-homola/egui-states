@@ -163,7 +163,9 @@ class StateServerBase[T: StatesBase]:
         Args:
             port (int): TCP port on which the WebSocket server listens.
             ip_addr (tuple[int, int, int, int] | None, optional): IPv4 address
-                to bind, or ``None`` to bind all interfaces.
+                to bind, or ``None`` to bind only the loopback address
+                ``127.0.0.1``. Pass ``(0, 0, 0, 0)`` to accept clients from
+                other machines.
             token (str | None, optional): Authentication token required from
                 the client.
 

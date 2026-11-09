@@ -177,8 +177,9 @@ impl StateServer {
 
     /// Starts listening and launches callback workers.
     ///
-    /// `ip_addr` selects a specific IPv4 interface; `None` binds all IPv4
-    /// interfaces. `token` optionally requires clients to authenticate during
+    /// `ip_addr` selects the IPv4 interface; `None` binds only the loopback
+    /// address `127.0.0.1`, so pass [`Ipv4Addr::UNSPECIFIED`] to accept clients
+    /// from other machines. `token` optionally requires clients to authenticate during
     /// the handshake. Calling this while the server is running with the same
     /// settings succeeds without effect; port 0 also matches the port it was
     /// assigned (see [`Self::address`]). To change the address or token, call
@@ -194,7 +195,7 @@ impl StateServer {
     /// with a different address or token, the socket cannot be bound or
     /// configured, or its runtime/thread cannot be started.
     pub fn start(&self, port: u16, ip_addr: Option<Ipv4Addr>, token: Option<String>) -> Result<()> {
-        let addr = SocketAddrV4::new(ip_addr.unwrap_or(Ipv4Addr::UNSPECIFIED), port);
+        let addr = SocketAddrV4::new(ip_addr.unwrap_or(Ipv4Addr::LOCALHOST), port);
         self.inner
             .server
             .write()
@@ -855,8 +856,10 @@ mod tests {
             .start(other_port, localhost, token.clone())
             .unwrap_err();
         assert!(error.message().contains("already running on"), "{error}");
+        // No address means loopback, which is the address in use.
+        server.start(address.port(), None, token.clone()).unwrap();
         let error = server
-            .start(address.port(), None, token.clone())
+            .start(address.port(), Some(Ipv4Addr::UNSPECIFIED), token.clone())
             .unwrap_err();
         assert!(error.message().contains("already running on"), "{error}");
         for other_token in [None, Some("other-token".to_string())] {
@@ -871,8 +874,8 @@ mod tests {
         server.stop();
         assert!(!server.is_running());
         assert_eq!(server.address(), None);
-        server.start(0, localhost, None).unwrap();
-        assert!(server.address().is_some());
+        server.start(0, None, None).unwrap();
+        assert_eq!(*server.address().unwrap().ip(), Ipv4Addr::LOCALHOST);
         server.stop();
     }
 

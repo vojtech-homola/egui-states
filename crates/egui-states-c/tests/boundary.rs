@@ -685,8 +685,15 @@ fn start_while_running_and_address() {
             localhost,
             c"token".as_ptr(),
         ));
+        // A null address means loopback, which is the address in use.
+        ok(egui_states_server_start(
+            server.0,
+            assigned,
+            null(),
+            c"token".as_ptr(),
+        ));
         fails(
-            egui_states_server_start(server.0, assigned, null(), c"token".as_ptr()),
+            egui_states_server_start(server.0, assigned, c"0.0.0.0".as_ptr(), c"token".as_ptr()),
             EGUI_STATES_ERROR_INVALID_STATE,
             "already running on 127.0.0.1",
         );

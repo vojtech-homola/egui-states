@@ -429,7 +429,7 @@ impl CServer {
         Ok(())
     }
 
-    /// Starts listening on `port`, on all IPv4 interfaces unless `ip` is given.
+    /// Starts listening on `port`, on the loopback address unless `ip` is given.
     ///
     /// `token` requires clients to present the same token. Starting a running
     /// server with the same settings succeeds without effect; a different
@@ -437,7 +437,7 @@ impl CServer {
     /// stopped.
     pub fn start(&self, port: u16, ip: Option<Ipv4Addr>, token: Option<String>) -> Result<()> {
         self.states()?;
-        let address = SocketAddrV4::new(ip.unwrap_or(Ipv4Addr::UNSPECIFIED), port);
+        let address = SocketAddrV4::new(ip.unwrap_or(Ipv4Addr::LOCALHOST), port);
         self.core
             .write()
             .start(address, token)

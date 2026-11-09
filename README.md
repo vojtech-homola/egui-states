@@ -57,6 +57,16 @@ then served on the WebSocket port, so a single port must be reachable.
 `serve_web` and `stop_web` can be called before or after `start` and do not
 affect the connected client.
 
+## Network access
+
+By default the server listens only on `127.0.0.1`, so only clients on the same
+machine can connect. To accept clients from other machines, including a browser
+opened elsewhere or a port published from a Docker container, pass the address
+`0.0.0.0` (or a specific interface) to `start`. Connections are unencrypted
+WebSockets, so the optional `token` and all state data travel in clear text;
+on an untrusted network, keep the server on loopback and reach it through an
+SSH tunnel.
+
 ## Lost connections
 
 The server pings the connected client every 5 s and disconnects it after 20 s
