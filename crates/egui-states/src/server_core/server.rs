@@ -1,5 +1,5 @@
 use std::net::SocketAddrV4;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -215,6 +215,7 @@ pub(crate) struct Server {
     states_server: Option<ServerStatesList>,
     signals: SignalsManager,
     version: Option<u64>,
+    web_path: Option<PathBuf>,
     web: WebSlot,
     heartbeat: Option<Heartbeat>,
 
@@ -235,6 +236,7 @@ impl Server {
             states_server: None,
             signals,
             version,
+            web_path: None,
             web: WebSlot::default(),
             heartbeat: Some(Heartbeat::default()),
             runner_state: RunnerState::Stopped(rx),
@@ -244,6 +246,21 @@ impl Server {
     /// Sets the heartbeat used from the next [`Self::start`]; `None` disables it.
     pub(crate) fn set_heartbeat(&mut self, heartbeat: Option<Heartbeat>) {
         self.heartbeat = heartbeat;
+    }
+
+    /// Sets the web page directory that `start_web` loads and serves.
+    ///
+    /// A relative path is resolved against the current directory now, so a
+    /// later change of the current directory does not move the page. The
+    /// directory itself is not read here.
+    pub(crate) fn set_web_path(&mut self, path: Option<&Path>) -> Result<(), String> {
+        self.web_path = path
+            .map(|path| {
+                std::path::absolute(path)
+                    .map_err(|e| format!("invalid web page path {}: {e}", path.display()))
+            })
+            .transpose()?;
+        Ok(())
     }
 
     pub(crate) fn finalize(&mut self) -> Option<StatesList> {
@@ -464,11 +481,14 @@ impl Server {
         *self.web.write() = site.map(Arc::new);
     }
 
+    /// Returns whether a web page is being served.
+    pub(crate) fn is_web_running(&self) -> bool {
+        self.web.read().is_some()
+    }
+
+    /// Returns the configured absolute web page directory, served or not.
     pub(crate) fn web_path(&self) -> Option<PathBuf> {
-        self.web
-            .read()
-            .as_ref()
-            .map(|site| site.root().to_path_buf())
+        self.web_path.clone()
     }
 
     pub(crate) fn update(&self, duration: Option<f32>) -> Result<(), ()> {

@@ -14,9 +14,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             _ => return Err("Usage: showcase-server [--port PORT] [--web DIR]".into()),
         }
     }
-    let demo = showcase_server::setup_server()?;
-    if let Some(web) = web {
-        demo.server.serve_web(web)?;
+    let mut options = egui_states::server::ServerOptions::new();
+    options.web_path = web.map(std::path::PathBuf::from);
+    let demo = showcase_server::setup_server_with_options(options)?;
+    if demo.server.web_path().is_some() {
+        demo.server.start_web()?;
     }
     demo.server
         .start(port, Some(std::net::Ipv4Addr::LOCALHOST), None)?;

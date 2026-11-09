@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -42,15 +42,12 @@ struct WebFile {
 
 /// In-memory snapshot of a static web page directory.
 pub(crate) struct WebSite {
-    root: PathBuf,
     files: HashMap<String, WebFile>,
 }
 
 impl WebSite {
     /// Loads every file below `root`, which must contain `index.html`.
     pub(crate) fn load(root: &Path) -> Result<Self, String> {
-        let root = std::path::absolute(root)
-            .map_err(|e| format!("invalid web page path {}: {e}", root.display()))?;
         if !root.is_dir() {
             return Err(format!(
                 "web page path {} is not a directory",
@@ -59,7 +56,7 @@ impl WebSite {
         }
 
         let mut files = HashMap::new();
-        load_directory(&root, "", 0, &mut files)?;
+        load_directory(root, "", 0, &mut files)?;
         if !files.contains_key("index.html") {
             return Err(format!(
                 "web page directory {} does not contain index.html",
@@ -67,11 +64,7 @@ impl WebSite {
             ));
         }
 
-        Ok(Self { root, files })
-    }
-
-    pub(crate) fn root(&self) -> &Path {
-        &self.root
+        Ok(Self { files })
     }
 
     fn get(&self, path: &str) -> Option<&WebFile> {

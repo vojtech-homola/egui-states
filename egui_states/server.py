@@ -88,6 +88,7 @@ class StateServerBase[T: StatesBase]:
         version: int | None = None,
         heartbeat_interval: float = 5.0,
         heartbeat_timeout: float | None = 20.0,
+        web_path: str | PathLike[str] | None = None,
     ) -> None:
         """Initialize the state server.
 
@@ -109,12 +110,19 @@ class StateServerBase[T: StatesBase]:
                 connection. Keep it above the time the largest transfer takes
                 over the slowest expected network. ``None`` disables the
                 heartbeat.
+            web_path (str | PathLike[str] | None, optional): Directory of a
+                static web page, such as a built WASM client, that
+                :meth:`start_web` serves on the server port. A relative path
+                is resolved against the current directory now; the directory
+                is read only by :meth:`start_web`. ``None`` means no page can
+                be served.
 
         Raises:
-            ValueError: If ``heartbeat_interval`` is not positive, or
-                ``heartbeat_timeout`` is not greater than it.
+            ValueError: If ``heartbeat_interval`` is not positive,
+                ``heartbeat_timeout`` is not greater than it, or ``web_path``
+                cannot be made absolute (for example because it is empty).
         """
-        self._server = StateServerCore(version, heartbeat_interval, heartbeat_timeout)
+        self._server = StateServerCore(version, heartbeat_interval, heartbeat_timeout, web_path)
         self._signals_manager = SignalsManager(self._server, signals_workers, error_handler)
         self._states: T = state_class(self)
 
@@ -211,45 +219,61 @@ class StateServerBase[T: StatesBase]:
         """
         return self._server.address()
 
-    def serve_web(self, path: str | PathLike[str]) -> None:
-        """Serve a static web page on the state server port.
+    def start_web(self) -> None:
+        """Start serving the static web page on the state server port.
 
+        The page is read from the ``web_path`` the server was created with.
         This lets a browser load a WASM client from the same port it then
         connects to. WebSocket upgrade requests reach the state server as
         before; other HTTP ``GET`` and ``HEAD`` requests are answered from the
         page, with ``/`` and paths ending in ``/`` mapped to ``index.html``.
 
-        Every file below ``path`` is read into memory during this call, so
-        later changes on disk are not served until it is called again. Calling
-        it again replaces the previous page, also with a different directory.
-        The page may be set before :meth:`start`, applies to connections
-        accepted afterwards, and stays configured across :meth:`stop` and
-        restarts.
-
-        Args:
-            path (str | PathLike[str]): Directory containing ``index.html``.
+        Every file below the directory is read into memory during this call,
+        so later changes on disk are not served until it is called again;
+        calling it while the page is served reloads it. Serving may be started
+        before :meth:`start`, applies to connections accepted afterwards, and
+        stays on across :meth:`stop` and restarts until :meth:`stop_web`. A
+        page load that overlaps a reload may combine files of both versions;
+        reloading the page in the browser resolves it.
 
         Raises:
-            ValueError: If ``path`` is not a directory, a file cannot be read,
-                or the directory does not contain ``index.html``. The
-                previously served page, if any, is kept.
+            RuntimeError: If the server was created without ``web_path``.
+            ValueError: If the path is not a directory, a file cannot be read,
+                or the directory does not contain ``index.html``. A page
+                already being served is kept.
         """
-        self._server.serve_web(path)
+        self._server.start_web()
 
     def stop_web(self) -> None:
         """Stop serving the static web page.
 
-        Requests already being answered complete; the connected client is not
-        affected.
+        The port then accepts only WebSocket connections, as if
+        :meth:`start_web` had never been called. Requests already being
+        answered complete; the connected client is not affected. Calling it
+        while no page is served has no effect.
         """
         self._server.stop_web()
 
-    def web_path(self) -> Path | None:
-        """Return the absolute directory of the served web page.
+    def is_web_running(self) -> bool:
+        """Return whether the static web page is being served.
+
+        This is true from a successful :meth:`start_web` until
+        :meth:`stop_web`, also while the server itself is stopped; browsers
+        reach the page only while :meth:`is_running`.
 
         Returns:
-            Path | None: Served page directory, or ``None`` when no page is
-            served.
+            bool: True while web serving is on.
+        """
+        return self._server.is_web_running()
+
+    def web_path(self) -> Path | None:
+        """Return the absolute directory of the configured web page.
+
+        The path is returned whether or not the page is being served.
+
+        Returns:
+            Path | None: Page directory, or ``None`` when the server was
+            created without ``web_path``.
         """
         path = self._server.web_path()
         return None if path is None else Path(path)

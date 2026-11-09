@@ -92,35 +92,52 @@ def test_server_start_while_running_requires_the_active_settings():
 
 
 def test_server_serves_web_page_on_its_port(tmp_path):
-    """Serve web pages on the server port and replace or stop them at runtime."""
+    """Serve the configured web page on the server port and reload or stop it."""
     import urllib.request
     import pytest
     from egui_states_test_bindings import StatesServer  # ty: ignore[import-not-found]
     from tests.python_test_helpers.network import free_port
 
-    first, second = tmp_path / "first", tmp_path / "second"
-    for directory in (first, second):
-        directory.mkdir()
-        (directory / "index.html").write_text(directory.name)
+    without_page = StatesServer(signals_workers=1)
+    assert without_page.web_path() is None
+    with pytest.raises(RuntimeError, match="web_path"):
+        without_page.start_web()
+    assert not without_page.is_web_running()
 
+    page = tmp_path / "page"
+    page.mkdir()
+    index = page / "index.html"
+    index.write_text("first")
     port = free_port()
-    server = StatesServer(signals_workers=1)
-    try:
-        assert server.web_path() is None
-        server.serve_web(first)
-        server.start(port, (127, 0, 0, 1))
-        assert server.web_path() == first.absolute()
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=5) as response:
+
+    def read(path: str) -> bytes:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}", timeout=5) as response:
             assert response.status == 200
-            assert response.read() == b"first"
+            return response.read()
 
+    server = StatesServer(signals_workers=1, web_path=page)
+    try:
+        assert server.web_path() == page.absolute()
+        assert not server.is_web_running()
+        server.start_web()
+        assert server.is_web_running()
+        server.start(port, (127, 0, 0, 1))
+        assert read("/") == b"first"
+
+        index.write_text("second")
+        server.start_web()
+        assert read("/index.html") == b"second"
+
+        index.unlink()
         with pytest.raises(ValueError, match="index.html"):
-            server.serve_web(tmp_path)
-        server.serve_web(str(second))
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}/index.html", timeout=5) as response:
-            assert response.read() == b"second"
+            server.start_web()
+        assert read("/") == b"second"
 
+        index.write_text("third")
         server.stop_web()
-        assert server.web_path() is None
+        assert not server.is_web_running()
+        assert server.web_path() == page.absolute()
+        server.start_web()
+        assert read("/") == b"third"
     finally:
         server.stop()

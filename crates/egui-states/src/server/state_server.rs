@@ -2,7 +2,7 @@
 
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{
     Arc, Weak,
     atomic::{AtomicBool, Ordering},
@@ -127,18 +127,22 @@ impl StateServer {
         Self::with_options(ServerOptions::new())
     }
 
-    /// Creates a server with explicit application, worker, and heartbeat
-    /// options.
+    /// Creates a server with explicit application, worker, heartbeat, and web
+    /// page options.
     ///
     /// # Errors
     ///
-    /// Returns an error if the heartbeat interval is zero or the heartbeat
-    /// timeout is not greater than the interval.
+    /// Returns an error if the heartbeat interval is zero, the heartbeat
+    /// timeout is not greater than the interval, or the web page path cannot
+    /// be made absolute (for example because it is empty).
     pub fn with_options(options: ServerOptions) -> Result<Self> {
         let heartbeat = Heartbeat::new(options.heartbeat_interval, options.heartbeat_timeout)
             .map_err(ServerError::new)?;
         let mut server = CoreServer::new(options.version);
         server.set_heartbeat(heartbeat);
+        server
+            .set_web_path(options.web_path.as_deref())
+            .map_err(ServerError::new)?;
         let signals = server.get_signals_manager();
         signals.set_to_queue(LOGGING_ID);
         signals.set_to_queue(ON_CONNECT_ID);
@@ -233,42 +237,60 @@ impl StateServer {
         self.inner.server.read().address()
     }
 
-    /// Serves the static web page in directory `path` on the server port.
+    /// Starts serving the static web page from [`ServerOptions::web_path`] on
+    /// the server port.
     ///
     /// This lets a browser load a WASM client from the same port it then
     /// connects to. WebSocket upgrade requests reach the state server as before;
     /// other HTTP `GET` and `HEAD` requests are answered from the page, with
     /// `/` and paths ending in `/` mapped to `index.html`.
     ///
-    /// Every file below `path` is read into memory during this call, so later
-    /// changes on disk are not served until it is called again. Calling it
-    /// again replaces the previous page, also with a different directory. The
-    /// page may be set before [`Self::start`], applies to connections accepted
-    /// afterwards, and stays configured across [`Self::stop`] and restarts. A
-    /// page load that overlaps a replacement may combine files of both pages;
-    /// reloading the page resolves it.
+    /// Every file below the directory is read into memory during this call, so
+    /// later changes on disk are not served until it is called again; calling
+    /// it while the page is served reloads it. Serving may be started before
+    /// [`Self::start`], applies to connections accepted afterwards, and stays
+    /// on across [`Self::stop`] and restarts until [`Self::stop_web`]. A page
+    /// load that overlaps a reload may combine files of both versions;
+    /// reloading the page in the browser resolves it.
     ///
     /// # Errors
     ///
-    /// Returns an error if `path` is not a directory, a file cannot be read,
-    /// or the directory does not contain `index.html`. The previously served
-    /// page, if any, is kept in that case.
-    pub fn serve_web(&self, path: impl AsRef<Path>) -> Result<()> {
-        let site = WebSite::load(path.as_ref()).map_err(ServerError::new)?;
+    /// Returns an error if the server was created without a web page path,
+    /// the path is not a directory, a file cannot be read, or the directory
+    /// does not contain `index.html`. A page already being served is kept in
+    /// that case.
+    pub fn start_web(&self) -> Result<()> {
+        // Read the files without holding the server lock.
+        let path = self.inner.server.read().web_path().ok_or_else(|| {
+            ServerError::new("no web page path configured; set ServerOptions::web_path")
+        })?;
+        let site = WebSite::load(&path).map_err(ServerError::new)?;
         self.inner.server.read().set_web(Some(site));
         Ok(())
     }
 
     /// Stops serving the static web page.
     ///
-    /// Without a page, the port accepts only WebSocket connections, as if
-    /// [`Self::serve_web`] had never been called. Requests already being
-    /// answered complete; the connected client is not affected.
+    /// The port then accepts only WebSocket connections, as if
+    /// [`Self::start_web`] had never been called. Requests already being
+    /// answered complete; the connected client is not affected. Calling it
+    /// while no page is served has no effect.
     pub fn stop_web(&self) {
         self.inner.server.read().set_web(None);
     }
 
-    /// Returns the absolute directory of the served web page, if any.
+    /// Returns whether the static web page is being served.
+    ///
+    /// This is `true` from a successful [`Self::start_web`] until
+    /// [`Self::stop_web`], also while the server itself is stopped; browsers
+    /// reach the page only while [`Self::is_running`].
+    pub fn is_web_running(&self) -> bool {
+        self.inner.server.read().is_web_running()
+    }
+
+    /// Returns the absolute directory of the web page, if one was configured.
+    ///
+    /// The path is returned whether or not the page is being served.
     pub fn web_path(&self) -> Option<PathBuf> {
         self.inner.server.read().web_path()
     }
@@ -2630,6 +2652,12 @@ mod connection_tests {
         }
     }
 
+    fn web_options(page: &WebDir) -> ServerOptions {
+        let mut options = ServerOptions::new();
+        options.web_path = Some(page.0.clone());
+        options
+    }
+
     /// Sends raw request bytes, possibly in pieces, and reads until the server closes.
     fn http(port: u16, parts: &[&[u8]]) -> String {
         use std::io::{Read, Write};
@@ -2656,21 +2684,48 @@ mod connection_tests {
     }
 
     #[test]
+    fn web_path_is_resolved_at_creation_and_read_by_start_web() {
+        let server = StateServer::new().unwrap();
+        assert_eq!(server.web_path(), None);
+        let error = server.start_web().unwrap_err();
+        assert!(error.message().contains("web_path"), "{error}");
+        assert!(!server.is_web_running());
+
+        // A relative path is made absolute; the directory need not exist yet.
+        let mut options = ServerOptions::new();
+        options.web_path = Some("not-built-yet".into());
+        let server = StateServer::with_options(options).unwrap();
+        let expected = std::env::current_dir().unwrap().join("not-built-yet");
+        assert_eq!(server.web_path(), Some(expected));
+        let error = server.start_web().unwrap_err();
+        assert!(error.message().contains("not a directory"), "{error}");
+        assert!(!server.is_web_running());
+
+        let mut options = ServerOptions::new();
+        options.web_path = Some(PathBuf::new());
+        assert!(StateServer::with_options(options).is_err());
+    }
+
+    #[test]
     fn web_page_and_client_share_the_port_and_switch_at_runtime() {
         if crate::test_support::isolated() {
             return;
         }
-        let first = WebDir::new("first");
-        let second = WebDir::new("second");
-        let (server, value, port) = server(ServerOptions::new(), None);
-        assert_eq!(server.web_path(), None);
+        let dir = WebDir::new("first");
+        let index = dir.0.join("index.html");
+        let (server, value, port) = server(web_options(&dir), None);
+        assert_eq!(server.web_path().as_deref(), Some(dir.0.as_path()));
+        assert!(!server.is_web_running());
 
         let mut peer = Peer::connect(port, None);
         peer.wait_for_value(731);
 
-        // Enabled while running and while a client is connected.
-        server.serve_web(&first.0).unwrap();
-        assert_eq!(server.web_path().as_deref(), Some(first.0.as_path()));
+        // Configured but not started: HTTP requests fail the WebSocket handshake.
+        assert!(!get(port, "/").starts_with("HTTP/1.1 200"));
+
+        // Started while running and while a client is connected.
+        server.start_web().unwrap();
+        assert!(server.is_web_running());
         let page = get(port, "/");
         assert!(page.starts_with("HTTP/1.1 200 OK\r\n"), "{page}");
         assert!(page.ends_with("\r\n\r\nfirst"), "{page}");
@@ -2690,17 +2745,29 @@ mod connection_tests {
         let garbage = http(port, &[b"\x00\x01 not http\r\n\r\n"]);
         assert!(garbage.starts_with("HTTP/1.1 400"), "{garbage}");
 
-        // A failed reload keeps the current page.
-        assert!(server.serve_web(first.0.join("missing")).is_err());
+        // Changes on disk are served once start_web reloads the page.
+        std::fs::write(&index, "second").unwrap();
         assert!(get(port, "/").ends_with("first"));
-
-        server.serve_web(&second.0).unwrap();
+        server.start_web().unwrap();
         assert!(get(port, "/").ends_with("second"));
 
-        // Without a page, HTTP requests fail the WebSocket handshake as before.
+        // A failed reload keeps the current page.
+        std::fs::remove_file(&index).unwrap();
+        assert!(server.start_web().is_err());
+        assert!(server.is_web_running());
+        assert!(get(port, "/").ends_with("second"));
+
+        // Stopped, HTTP requests fail the WebSocket handshake as before; the
+        // path stays configured.
+        std::fs::write(&index, "third").unwrap();
         server.stop_web();
-        assert_eq!(server.web_path(), None);
+        assert!(!server.is_web_running());
+        assert_eq!(server.web_path().as_deref(), Some(dir.0.as_path()));
         assert!(!get(port, "/").starts_with("HTTP/1.1 200"));
+
+        // Serving can be started again.
+        server.start_web().unwrap();
+        assert!(get(port, "/").ends_with("third"));
 
         // None of the above disturbed the connected client.
         value.set(5, false).unwrap();
@@ -2716,9 +2783,9 @@ mod connection_tests {
         }
         let page = WebDir::new("page");
         for serve_page in [false, true] {
-            let (server, _value, port) = server(ServerOptions::new(), None);
+            let (server, _value, port) = server(web_options(&page), None);
             if serve_page {
-                server.serve_web(&page.0).unwrap();
+                server.start_web().unwrap();
             }
             // Like a browser's speculative connection that never sends a request.
             let _idle = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
@@ -2740,8 +2807,8 @@ mod connection_tests {
             return;
         }
         let page = WebDir::new("page");
-        let (server, _value, port) = server(ServerOptions::new(), None);
-        server.serve_web(&page.0).unwrap();
+        let (server, _value, port) = server(web_options(&page), None);
+        server.start_web().unwrap();
 
         let response = http(port, &[b"GET / HTTP/1.1\r\nHo", b"st: localhost\r\n\r\n"]);
         assert!(
@@ -2757,15 +2824,16 @@ mod connection_tests {
             return;
         }
         let page = WebDir::new("page");
-        let server = StateServer::new().unwrap();
+        let server = StateServer::with_options(web_options(&page)).unwrap();
         server.finalize().unwrap();
-        server.serve_web(&page.0).unwrap();
+        server.start_web().unwrap();
 
         for _ in 0..2 {
             let port = free_port();
             server.start(port, Some(Ipv4Addr::LOCALHOST), None).unwrap();
             assert!(get(port, "/").ends_with("page"));
             server.stop();
+            assert!(server.is_web_running());
         }
         assert_eq!(server.web_path().as_deref(), Some(page.0.as_path()));
     }

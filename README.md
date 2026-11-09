@@ -51,11 +51,13 @@ Server setters can request an egui repaint with their `update` flag.
 ## Browser clients
 
 A browser (WASM) client is usually loaded from the machine that runs the
-server. Instead of running a separate web server, pass the directory of the
-built page (for example Trunk's output) to the server's `serve_web`. The page is
-then served on the WebSocket port, so a single port must be reachable.
-`serve_web` and `stop_web` can be called before or after `start` and do not
-affect the connected client.
+server. Instead of running a separate web server, create the server with the
+directory of the built page (for example Trunk's output) as its `web_path`
+option and call `start_web`. The page is then served on the WebSocket port, so
+a single port must be reachable. `start_web` and `stop_web` switch serving on
+and off at any time, before or after `start`, without affecting the connected
+client; `start_web` reads the directory each time it is called, so calling it
+again after a rebuild serves the new page.
 
 ## Network access
 

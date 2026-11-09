@@ -154,16 +154,21 @@ impl StateServerCore {
         version=None,
         heartbeat_interval=heartbeat::DEFAULT_INTERVAL.as_secs_f64(),
         heartbeat_timeout=Some(heartbeat::DEFAULT_TIMEOUT.as_secs_f64()),
+        web_path=None,
     ))]
     fn new(
         version: Option<u64>,
         heartbeat_interval: f64,
         heartbeat_timeout: Option<f64>,
+        web_path: Option<PathBuf>,
     ) -> PyResult<Self> {
         let heartbeat = Heartbeat::from_secs(heartbeat_interval, heartbeat_timeout)
             .map_err(PyValueError::new_err)?;
         let mut server = Server::new(version);
         server.set_heartbeat(heartbeat);
+        server
+            .set_web_path(web_path.as_deref())
+            .map_err(PyValueError::new_err)?;
         let signals = server.get_signals_manager();
 
         let mut types = NoHashMap::default();
@@ -332,7 +337,12 @@ impl StateServerCore {
         self.server.write().disconnect_client();
     }
 
-    fn serve_web(&self, py: Python, path: PathBuf) -> PyResult<()> {
+    fn start_web(&self, py: Python) -> PyResult<()> {
+        // Read the files without holding the server lock or the GIL.
+        let path =
+            self.server.read().web_path().ok_or_else(|| {
+                PyRuntimeError::new_err("The server was created without web_path.")
+            })?;
         let site = py
             .detach(|| WebSite::load(&path))
             .map_err(PyValueError::new_err)?;
@@ -342,6 +352,10 @@ impl StateServerCore {
 
     fn stop_web(&self) {
         self.server.read().set_web(None);
+    }
+
+    fn is_web_running(&self) -> bool {
+        self.server.read().is_web_running()
     }
 
     fn web_path(&self) -> Option<PathBuf> {

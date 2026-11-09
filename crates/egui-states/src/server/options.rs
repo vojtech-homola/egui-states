@@ -1,5 +1,6 @@
 //! Native server configuration and asynchronous error handling.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -45,14 +46,22 @@ pub struct ServerOptions {
     /// over the slowest expected network. Must be greater than
     /// [`Self::heartbeat_interval`]. `None` disables the heartbeat.
     pub heartbeat_timeout: Option<Duration>,
+    /// Directory of a static web page, such as a built WASM client, that
+    /// [`StateServer::start_web`](super::StateServer::start_web) serves on the
+    /// server port. `None` (the default) means no page can be served.
+    ///
+    /// A relative path is resolved against the current directory when the
+    /// server is created. The directory is read only by `start_web`, so it
+    /// need not exist before then.
+    pub web_path: Option<PathBuf>,
 }
 
 impl ServerOptions {
     /// Returns default server options.
     ///
     /// The server uses three signal workers, does not require an application
-    /// version, and pings the client every 5 s, disconnecting it after 20 s
-    /// without any response.
+    /// version, pings the client every 5 s, disconnecting it after 20 s
+    /// without any response, and has no web page.
     pub fn new() -> Self {
         Self::default()
     }
@@ -67,6 +76,7 @@ impl Default for ServerOptions {
             error_handler: None,
             heartbeat_interval: heartbeat::DEFAULT_INTERVAL,
             heartbeat_timeout: Some(heartbeat::DEFAULT_TIMEOUT),
+            web_path: None,
         }
     }
 }
