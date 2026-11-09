@@ -8,25 +8,19 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use crate::client::messages::{MessagesParser, ServerMessage};
 use crate::serialization::{FastVec, WEBSOCKET_MAX_SIZE};
 
-pub(crate) async fn build_ws(address: SocketAddrV4) -> Result<(WsClientRead, WsClientSend), ()> {
+pub(crate) async fn build_ws(
+    address: SocketAddrV4,
+) -> Result<(WsClientRead, WsClientSend), String> {
     let address = format!("ws://{}/ws", address);
     let mut websocket_config = WebSocketConfig::default();
     websocket_config.max_message_size = Some(WEBSOCKET_MAX_SIZE);
     websocket_config.max_frame_size = Some(WEBSOCKET_MAX_SIZE);
     let res = connect_async_with_config(&address, Some(websocket_config), false).await;
 
-    if res.is_err() {
-        #[cfg(debug_assertions)]
-        println!(
-            "connecting to server at {:?} failed: {:?}",
-            address,
-            res.err()
-        );
-        return Err(());
-    }
-
-    // get the socket
-    let socket = res.unwrap().0;
+    let socket = match res {
+        Ok(res) => res.0,
+        Err(e) => return Err(format!("Connecting to server at {} failed: {}", address, e)),
+    };
 
     // split the socket
     let (socket_write, socket_read) = socket.split();

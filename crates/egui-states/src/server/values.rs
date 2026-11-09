@@ -9,13 +9,13 @@ use crate::Typed;
 use crate::server_core::values_core::{SignalCore, ValueCore, ValueStaticCore, ValueTakeCore};
 
 use super::callbacks::CallbackHandle;
-use super::state_server::{StateServer, deserialize_bytes, serialize_bytes};
+use super::state_server::{StateServer, WeakServer, deserialize_bytes, serialize_bytes};
 use super::{Result, ServerError};
 
 #[derive(Clone)]
 /// Server-side handle for a bidirectional synchronized value.
 pub struct Value<T> {
-    server: StateServer,
+    server: WeakServer,
     id: u64,
     inner: Arc<ValueCore>,
     _type: PhantomData<T>,
@@ -37,7 +37,7 @@ where
     ) -> Result<Self> {
         let (id, inner) = server.add_value(name.into(), initial_value, queue)?;
         Ok(Self {
-            server: server.clone(),
+            server: server.downgrade(),
             id,
             inner,
             _type: PhantomData,
@@ -197,7 +197,7 @@ where
 /// the server, [`Self::set`] emits directly to those local callbacks; it does
 /// not send an event to the client.
 pub struct Signal<T> {
-    server: StateServer,
+    server: WeakServer,
     id: u64,
     inner: Arc<SignalCore>,
     _type: PhantomData<T>,
@@ -211,7 +211,7 @@ where
     pub fn new(server: &StateServer, name: impl Into<String>, queue: bool) -> Result<Self> {
         let (id, inner) = server.add_signal::<T>(name.into(), queue)?;
         Ok(Self {
-            server: server.clone(),
+            server: server.downgrade(),
             id,
             inner,
             _type: PhantomData,

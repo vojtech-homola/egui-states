@@ -3,7 +3,7 @@
 use crate::server_core::signals::LOGGING_ID;
 
 use super::callbacks::CallbackHandle;
-use super::state_server::{StateServer, deserialize_bytes};
+use super::state_server::{StateServer, WeakServer, deserialize_bytes};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 /// Severity attached to a log message sent by the client.
@@ -35,7 +35,7 @@ impl LogLevel {
 #[derive(Clone)]
 /// Dispatcher for log messages emitted by the connected client.
 pub struct LoggingSignal {
-    server: StateServer,
+    server: WeakServer,
 }
 
 impl LoggingSignal {
@@ -43,7 +43,7 @@ impl LoggingSignal {
     pub fn new(server: &StateServer) -> Self {
         server.set_signal_to_queue(LOGGING_ID);
         Self {
-            server: server.clone(),
+            server: server.downgrade(),
         }
     }
 

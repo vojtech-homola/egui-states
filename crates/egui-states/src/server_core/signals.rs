@@ -35,8 +35,15 @@ enum Signal {
 }
 
 struct ChangedInner {
-    values: NoHashMap<u64, Signal>,   // stored signals
-    indexes: Vec<u64>,                // scheduling order; may contain stale duplicate IDs
+    values: NoHashMap<u64, Signal>, // stored signals
+    /// Scheduling order: one entry per pending delivery, so a single-mode id appears
+    /// once however often it changes, and a queued id once per queued change.
+    ///
+    /// Invariant: an id has at least as many entries as pending deliveries (a
+    /// `Single` counts as one). `set` relies on it to skip pushing for a coalesced
+    /// change. Entries beyond that are stale (left behind by `set_to_single` or by a
+    /// drained queue); `get` drops them when it reaches them.
+    indexes: Vec<u64>,
     blocked_list: NoHashSet<u64>,     // ids blocked by some thread
     registered: NoHashMap<u64, bool>, // ids registered to be signaled -> wants previous value
 }
@@ -63,10 +70,10 @@ impl ChangedInner {
             return;
         }
 
-        self.indexes.push(id);
         match self.values.entry(id) {
             Entry::Vacant(e) => {
                 e.insert(Signal::Single(Change { value, previous }));
+                self.indexes.push(id);
             }
             Entry::Occupied(mut e) => match e.get_mut() {
                 Signal::Single(v) => {
@@ -77,8 +84,14 @@ impl ChangedInner {
                     // own view. Reporting b would name a value it never received.
                     let previous = v.previous.take().or(previous);
                     *v = Change { value, previous };
+                    // Already scheduled (see `indexes`), and it keeps its place, so
+                    // nothing is pushed. While a callback holds the id, a stream of
+                    // changes would otherwise pile up entries every `get` walks past.
                 }
-                Signal::Queue(v) => v.push_back(Change { value, previous }),
+                Signal::Queue(v) => {
+                    v.push_back(Change { value, previous });
+                    self.indexes.push(id);
+                }
             },
         }
 
@@ -663,6 +676,54 @@ mod tests {
             last = Some(id);
         }
         assert_eq!(claimed, [LOGGING_ID, ON_DISCONNECT_ID]);
+    }
+
+    /// A client streaming changes to a value whose callback is still running (a
+    /// slider drag) must not grow the schedule: the changes coalesce into one
+    /// pending delivery, so they hold one slot, or every `get` by every worker
+    /// would walk past the backlog.
+    #[test]
+    fn coalesced_changes_hold_one_scheduling_slot() {
+        let manager = SignalsManager::new();
+        manager.set_register(23, true, false);
+
+        manager.set(23, b("first"));
+        assert_eq!(claim(&manager, None).0, 23);
+        for i in 0..100 {
+            manager.set(23, b(&i.to_string()));
+        }
+        assert_eq!(manager.values.lock().indexes, [23]);
+
+        let (id, value, _) = claim(&manager, Some(23));
+        assert_eq!((id, value), (23, b("99")));
+        assert!(manager.values.lock().indexes.is_empty());
+    }
+
+    /// Pins the delivery order across ids: oldest pending change first, every
+    /// queued change in its own arrival slot, and a coalesced change in the slot
+    /// of its first unconsumed set.
+    #[test]
+    fn changes_are_delivered_in_arrival_order_across_ids() {
+        let manager = SignalsManager::new();
+        for id in [24, 25, 26] {
+            manager.set_register(id, true, false);
+        }
+        manager.set_to_queue(24);
+        manager.set_to_queue(26);
+
+        manager.set(24, b("a1"));
+        manager.set(25, b("s1"));
+        manager.set(24, b("a2"));
+        manager.set(26, b("c1"));
+        manager.set(25, b("s2"));
+
+        let mut delivered = Vec::new();
+        let mut last = None;
+        while let Some((id, value, _)) = manager.values.lock().get(last) {
+            delivered.push(value);
+            last = Some(id);
+        }
+        assert_eq!(delivered, [b("a1"), b("s2"), b("a2"), b("c1")]);
     }
 
     #[cfg(feature = "c_abi")]

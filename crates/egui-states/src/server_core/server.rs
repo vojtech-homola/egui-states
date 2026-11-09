@@ -18,6 +18,7 @@ use crate::serialization::{ServerHeader, check_value_size, serialize};
 use crate::server_core::core;
 use crate::server_core::data_core::{Data, DataMulti};
 use crate::server_core::data_take_core::{DataMultiTake, DataTake};
+use crate::server_core::heartbeat::Heartbeat;
 use crate::server_core::image_core::Image;
 use crate::server_core::image_multi_core::ImageMulti;
 use crate::server_core::map_core::ValueMap;
@@ -167,6 +168,7 @@ pub(crate) struct Server {
     signals: SignalsManager,
     version: Option<u64>,
     web: WebSlot,
+    heartbeat: Option<Heartbeat>,
 
     runner_state: RunnerState,
 }
@@ -186,8 +188,14 @@ impl Server {
             signals,
             version,
             web: WebSlot::default(),
+            heartbeat: Some(Heartbeat::default()),
             runner_state: RunnerState::Stopped(rx),
         }
+    }
+
+    /// Sets the heartbeat used from the next [`Self::start`]; `None` disables it.
+    pub(crate) fn set_heartbeat(&mut self, heartbeat: Option<Heartbeat>) {
+        self.heartbeat = heartbeat;
     }
 
     pub(crate) fn finalize(&mut self) -> Option<StatesList> {
@@ -273,6 +281,7 @@ impl Server {
                 let values = states_server.clone();
                 let signals = self.signals.clone();
                 let web = self.web.clone();
+                let heartbeat = self.heartbeat;
 
                 let handshake = core::Handshake {
                     version: self.version,
@@ -285,7 +294,7 @@ impl Server {
                     runtime.block_on(async move {
                         core::run(
                             listener, sender, rx, connected, stop_event, values, signals,
-                            handshake, web,
+                            handshake, web, heartbeat,
                         )
                         .await
                     })

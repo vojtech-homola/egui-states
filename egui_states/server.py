@@ -86,6 +86,8 @@ class StateServerBase[T: StatesBase]:
         signals_workers: int = 3,
         error_handler: Callable[[Exception], None] | None = None,
         version: int | None = None,
+        heartbeat_interval: float = 5.0,
+        heartbeat_timeout: float | None = 20.0,
     ) -> None:
         """Initialize the state server.
 
@@ -97,8 +99,22 @@ class StateServerBase[T: StatesBase]:
                 Handler for exceptions raised while processing callbacks.
             version (int | None, optional): Application version required from
                 the client.
+            heartbeat_interval (float, optional): Seconds between the pings the
+                server sends to the connected client. Ignored when the
+                heartbeat is disabled.
+            heartbeat_timeout (float | None, optional): Seconds the client may
+                send nothing before the server treats the connection as lost
+                and disconnects it. Clients answer pings automatically, so
+                this detects clients that disappeared without closing the
+                connection. Keep it above the time the largest transfer takes
+                over the slowest expected network. ``None`` disables the
+                heartbeat.
+
+        Raises:
+            ValueError: If ``heartbeat_interval`` is not positive, or
+                ``heartbeat_timeout`` is not greater than it.
         """
-        self._server = StateServerCore(version)
+        self._server = StateServerCore(version, heartbeat_interval, heartbeat_timeout)
         self._signals_manager = SignalsManager(self._server, signals_workers, error_handler)
         self._states: T = state_class(self)
 

@@ -57,7 +57,10 @@ Signals and signaled `Value` changes use one of two server-side modes:
 
 Callbacks for different states may run concurrently when the server has more
 than one signal worker. A callback handle owns its registration; dropping the
-handle disconnects it.
+handle disconnects it. In the native Rust server, neither state handles nor
+callback handles keep the server alive, so callbacks may capture state handles
+without forming a cycle; the server stops when its last `StateServer` is
+dropped.
 
 `connect_previous` receives the value last delivered to that callback. In
 single mode this is not necessarily the immediately preceding network update:
@@ -79,6 +82,17 @@ controls do not cancel preceding chunks. A disconnect invalidates pending work
 with a transfer generation, and reconnect synchronization resets the client
 collection before sending the server's current keys. Each synchronized image
 must be acknowledged before subsequently queued work is released.
+
+Waiting for acknowledgements slows the server down to the client's pace. A
+client that disappears without closing the connection would make it wait
+forever, so the server pings the client every heartbeat interval and treats a
+client that sent no frame (an acknowledgement, a value, or the automatic pong)
+for the heartbeat timeout as disconnected. The connection is then closed, also
+when a send is waiting for socket buffer space, and pending work is released as
+for any disconnect. Native clients answer pings on their network task and
+browsers answer them outside the page, so a busy UI does not count as silence.
+A client receiving a large message sends nothing until it arrives, so the
+timeout must exceed the longest transfer over the slowest expected network.
 
 For one-shot transfers, `blocking = true` prevents a later send from overtaking
 the pending transfer. Calling the client handle's `take` method consumes the

@@ -12,6 +12,13 @@ pub const EGUI_STATES_ABI_VERSION: u32 = 1;
 /// Timeout of `egui_states_server_wait_event` that waits without limit.
 pub const EGUI_STATES_WAIT_INFINITE: u64 = u64::MAX;
 
+/// Value of `egui_states_server_set_heartbeat` that selects the default
+/// interval (5000 ms) or timeout (20000 ms).
+pub const EGUI_STATES_HEARTBEAT_DEFAULT: u64 = 0;
+
+/// Timeout of `egui_states_server_set_heartbeat` that disables the heartbeat.
+pub const EGUI_STATES_HEARTBEAT_DISABLED: u64 = u64::MAX;
+
 /// String length meaning that the string is NUL-terminated.
 pub const EGUI_STATES_NUL_TERMINATED: usize = usize::MAX;
 

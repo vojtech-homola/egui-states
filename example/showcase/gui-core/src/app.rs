@@ -82,8 +82,15 @@ impl eframe::App for MainApp {
                         ConnectionState::Disconnected => {
                             egui::Button::new("Reconnect").fill(egui::Color32::LIGHT_RED)
                         }
+                        // `Failed` and any state added in the future.
+                        _ => egui::Button::new("Retry").fill(egui::Color32::LIGHT_RED),
                     };
-                    if ui.add(button).clicked() {
+                    let response = ui.add(button);
+                    let response = match self.client.last_error() {
+                        Some(error) => response.on_hover_text(error),
+                        None => response,
+                    };
+                    if response.clicked() {
                         self.client.connect();
                     }
                 });
