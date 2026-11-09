@@ -66,6 +66,13 @@
 // Timeout of `egui_states_server_wait_event` that waits without limit.
 #define EGUI_STATES_WAIT_INFINITE UINT64_MAX
 
+// Value of `egui_states_server_set_heartbeat` that selects the default
+// interval (5000 ms) or timeout (20000 ms).
+#define EGUI_STATES_HEARTBEAT_DEFAULT 0
+
+// Timeout of `egui_states_server_set_heartbeat` that disables the heartbeat.
+#define EGUI_STATES_HEARTBEAT_DISABLED UINT64_MAX
+
 // Flag: ask the client to repaint after the change.
 #define EGUI_STATES_UPDATE (1 << 0)
 
@@ -979,6 +986,20 @@ egui_states_status_t egui_states_server_add_data_multi_take(const egui_states_se
 // Ends registration. Every other operation needs a finalized server; calling
 // it again succeeds without effect.
 egui_states_status_t egui_states_server_finalize(const egui_states_server_t *server);
+
+// Sets how the server detects a client that disappeared without closing the
+// connection. It applies from the next `egui_states_server_start`.
+//
+// The server pings the client every `interval_ms` milliseconds and
+// disconnects it after `timeout_ms` milliseconds without any frame from it.
+// Clients answer pings automatically. `EGUI_STATES_HEARTBEAT_DEFAULT` selects
+// the default of either value (5000 and 20000), and a `timeout_ms` of
+// `EGUI_STATES_HEARTBEAT_DISABLED` disables the heartbeat. The timeout must
+// be greater than the interval. A server pings with the defaults unless this
+// is called.
+egui_states_status_t egui_states_server_set_heartbeat(const egui_states_server_t *server,
+                                                      uint64_t interval_ms,
+                                                      uint64_t timeout_ms);
 
 // Starts listening on `port`.
 //

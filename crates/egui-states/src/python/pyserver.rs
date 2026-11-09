@@ -21,6 +21,7 @@ use crate::python::{
 };
 use crate::server_core::data_core::{Data, DataHolder, DataMulti};
 use crate::server_core::data_take_core::{DataMultiTake, DataTake};
+use crate::server_core::heartbeat::{self, Heartbeat};
 use crate::server_core::server::Server;
 use crate::server_core::signals::{self, SignalsManager};
 use crate::server_core::value_parsing::{ValueCreator, ValueParser};
@@ -149,9 +150,20 @@ impl StateServerCore {
 #[pymethods]
 impl StateServerCore {
     #[new]
-    #[pyo3(signature = (version=None))]
-    fn new(version: Option<u64>) -> PyResult<Self> {
-        let server = Server::new(version);
+    #[pyo3(signature = (
+        version=None,
+        heartbeat_interval=heartbeat::DEFAULT_INTERVAL.as_secs_f64(),
+        heartbeat_timeout=Some(heartbeat::DEFAULT_TIMEOUT.as_secs_f64()),
+    ))]
+    fn new(
+        version: Option<u64>,
+        heartbeat_interval: f64,
+        heartbeat_timeout: Option<f64>,
+    ) -> PyResult<Self> {
+        let heartbeat = Heartbeat::from_secs(heartbeat_interval, heartbeat_timeout)
+            .map_err(PyValueError::new_err)?;
+        let mut server = Server::new(version);
+        server.set_heartbeat(heartbeat);
         let signals = server.get_signals_manager();
 
         let mut types = NoHashMap::default();

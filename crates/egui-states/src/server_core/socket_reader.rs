@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use bytes::Bytes;
 use futures_util::{StreamExt, stream::SplitStream};
 use tokio::net::TcpStream;
@@ -5,6 +7,7 @@ use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::serialization::ClientHeader;
+use crate::server_core::heartbeat::Activity;
 
 const COPY_SIZE: usize = 1024; // 1 KB
 
@@ -19,6 +22,7 @@ pub(crate) enum ClientMessage {
 pub(crate) struct SocketReader {
     socket: SplitStream<WebSocketStream<TcpStream>>,
     previous: Option<(Bytes, usize, bool)>,
+    activity: Arc<Activity>,
 }
 
 impl SocketReader {
@@ -26,14 +30,26 @@ impl SocketReader {
         Self {
             socket,
             previous: None,
+            activity: Activity::new(),
         }
+    }
+
+    /// Returns the record of when the client last sent any frame.
+    pub(crate) fn activity(&self) -> Arc<Activity> {
+        self.activity.clone()
     }
 
     pub(crate) async fn next(&mut self) -> Result<ClientMessage, Option<String>> {
         let (data, pointer, slice) = match self.previous.take() {
             Some(prev) => prev,
             None => loop {
-                match self.socket.next().await {
+                let frame = self.socket.next().await;
+                // Every frame, including the pongs answering heartbeat pings,
+                // shows that the client is still there.
+                if let Some(Ok(_)) = frame {
+                    self.activity.touch();
+                }
+                match frame {
                     Some(Ok(Message::Binary(msg))) => {
                         // Payloads of large frames are referenced, small ones copied.
                         let slice = msg.len() > COPY_SIZE;

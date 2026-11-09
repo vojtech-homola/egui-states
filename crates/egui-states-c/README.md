@@ -114,7 +114,9 @@ every waiter before shutdown.
 Server functions are thread-safe, except `egui_states_server_free`. While a
 client is connected, `Data`, `DataMulti`, `Image`, `ImageMulti`, and take
 operations may block until the state's previous transfer is acknowledged or
-the client disconnects.
+the client disconnects. A client that stops responding without closing the
+connection is disconnected after the heartbeat timeout, 20 s unless changed
+with `egui_states_server_set_heartbeat`.
 
 ## Development
 

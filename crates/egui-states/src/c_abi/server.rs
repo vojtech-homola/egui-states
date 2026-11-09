@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::{Arc, OnceLock};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use parking_lot::{Mutex, RwLock};
@@ -12,6 +12,7 @@ use crate::hashing::{NoHashMap, generate_value_id};
 use crate::serialization::check_value_size;
 use crate::server_core::data_core::{Data, DataMulti};
 use crate::server_core::data_take_core::{DataMultiTake, DataTake};
+use crate::server_core::heartbeat::Heartbeat;
 use crate::server_core::image_core::Image;
 use crate::server_core::image_core_common::checked_image_size;
 use crate::server_core::image_multi_core::ImageMulti;
@@ -415,6 +416,18 @@ impl CServer {
     }
 
     // lifecycle -------------------------------------------------------------
+
+    /// Sets the heartbeat used from the next [`Self::start`].
+    ///
+    /// The server pings the client every `interval` and disconnects it after
+    /// `timeout` without any frame from it. A `None` timeout disables the
+    /// heartbeat. The interval must be greater than zero and the timeout
+    /// greater than the interval.
+    pub fn set_heartbeat(&self, interval: Duration, timeout: Option<Duration>) -> Result<()> {
+        let heartbeat = Heartbeat::new(interval, timeout).map_err(Error::invalid_argument)?;
+        self.core.write().set_heartbeat(heartbeat);
+        Ok(())
+    }
 
     /// Starts listening on `port`, on all IPv4 interfaces unless `ip` is given.
     ///

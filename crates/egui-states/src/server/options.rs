@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::ServerError;
+use crate::server_core::heartbeat;
 
 /// Thread-safe callback used for asynchronous server errors.
 ///
@@ -29,13 +30,29 @@ pub struct ServerOptions {
     pub shutdown_timeout: Duration,
     /// Handler for asynchronous errors, or `None` to print them to stderr.
     pub error_handler: Option<ErrorHandler>,
+    /// How often the server pings the connected client. Default 5 s.
+    ///
+    /// Must be greater than zero. Ignored when the heartbeat is disabled.
+    pub heartbeat_interval: Duration,
+    /// How long the connected client may send nothing before the server
+    /// treats the connection as lost and disconnects it. Default 20 s.
+    ///
+    /// Clients answer pings automatically, so this detects clients that
+    /// disappeared without closing the connection (sleeping laptop, lost
+    /// network), which would otherwise leave blocking operations waiting for
+    /// their acknowledgements. A client stays silent while it receives a large
+    /// transfer, so keep the timeout above the time the largest message takes
+    /// over the slowest expected network. Must be greater than
+    /// [`Self::heartbeat_interval`]. `None` disables the heartbeat.
+    pub heartbeat_timeout: Option<Duration>,
 }
 
 impl ServerOptions {
     /// Returns default server options.
     ///
-    /// The server uses three signal workers and does not require an application
-    /// version.
+    /// The server uses three signal workers, does not require an application
+    /// version, and pings the client every 5 s, disconnecting it after 20 s
+    /// without any response.
     pub fn new() -> Self {
         Self::default()
     }
@@ -48,6 +65,8 @@ impl Default for ServerOptions {
             signal_workers: 3,
             shutdown_timeout: Duration::from_secs(2),
             error_handler: None,
+            heartbeat_interval: heartbeat::DEFAULT_INTERVAL,
+            heartbeat_timeout: Some(heartbeat::DEFAULT_TIMEOUT),
         }
     }
 }
