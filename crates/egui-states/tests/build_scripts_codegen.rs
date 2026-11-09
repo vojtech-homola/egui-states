@@ -347,7 +347,7 @@ fn client_and_generated_layout_hashes_match_for_every_state_kind() {
     let rust = std::fs::read_to_string(dir.join("mod.rs")).unwrap();
     let python = std::fs::read_to_string(dir.join("python/__init__.py")).unwrap();
 
-    let client = ClientBuilder::<AllKinds>::new().get_version_hash();
+    let client = ClientBuilder::<AllKinds>::new(egui::Context::default(), 0).get_version_hash();
     assert_eq!(
         generated_hash(&rust, "pub const VERSION_HASH: u64 = "),
         client
@@ -372,7 +372,10 @@ impl State for Golden {
 #[test]
 fn layout_hash_of_a_fixed_schema_is_stable() {
     const GOLDEN: u64 = 15207089630600656803;
-    assert_eq!(ClientBuilder::<Golden>::new().get_version_hash(), GOLDEN);
+    assert_eq!(
+        ClientBuilder::<Golden>::new(egui::Context::default(), 0).get_version_hash(),
+        GOLDEN
+    );
 }
 
 struct NamedLikeServer;

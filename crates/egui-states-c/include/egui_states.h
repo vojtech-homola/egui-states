@@ -1003,10 +1003,12 @@ egui_states_status_t egui_states_server_set_heartbeat(const egui_states_server_t
 
 // Starts listening on `port`.
 //
-// `ipv4` is a dotted address such as `"127.0.0.1"`; null listens on every
-// IPv4 interface. A non-null `token` requires clients to present it. Starting
-// a running server succeeds without changing its settings; a stopped server
-// can be started again with other settings.
+// `ipv4` is a dotted address such as `"0.0.0.0"`; null listens only on the
+// loopback address `127.0.0.1`. A non-null `token` requires clients to present it. Starting
+// a running server with the same settings succeeds without effect; a
+// different address or token fails with `INVALID_STATE` until the server is
+// stopped. Port 0 lets the system pick a port and also matches that port
+// later; `egui_states_server_address` reports it.
 egui_states_status_t egui_states_server_start(const egui_states_server_t *server,
                                               uint16_t port,
                                               const char *ipv4,
@@ -1021,6 +1023,20 @@ egui_states_status_t egui_states_server_disconnect_client(const egui_states_serv
 // Reports whether the server is listening.
 egui_states_status_t egui_states_server_is_running(const egui_states_server_t *server,
                                                    bool *out_running);
+
+// Copies the address the server listens on, as dotted IPv4 text such as
+// `"127.0.0.1"`, NUL-terminated, into `buffer` of `capacity` bytes, and
+// writes its port to `out_port`.
+//
+// `out_port` and `out_len` (the text length without the NUL) are written
+// even when the buffer is too small; 16 bytes always suffice. A null buffer
+// with zero capacity asks only for the length and the port. A stopped server
+// fails with `INVALID_STATE`.
+egui_states_status_t egui_states_server_address(const egui_states_server_t *server,
+                                                char *buffer,
+                                                size_t capacity,
+                                                size_t *out_len,
+                                                uint16_t *out_port);
 
 // Reports whether a client is connected.
 egui_states_status_t egui_states_server_is_connected(const egui_states_server_t *server,

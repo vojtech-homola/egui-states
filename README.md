@@ -23,7 +23,9 @@ pub struct CounterState {
 }
 ```
 
-- `Value<T>` stores a value that either side can change.
+- `Value<T>` stores a value that either side can change. If both change it at
+  the same time, the server's change wins; see
+  [concurrent writes](docs/architecture.md#concurrent-value-writes).
 - `Static<T>` stores a value the server controls and the client reads.
 - `Signal<T>` sends a client event to server callbacks without retaining a value.
 
@@ -33,7 +35,8 @@ numeric buffers, images, custom types, and one-shot transfers are covered in the
 
 Generate matching server bindings from the same state definition with
 `generate_python` or `generate_rust`. Construct the UI state with
-`ClientBuilder`, start the server, and call `client.connect()` to synchronize.
+`ClientBuilder::new`, which takes the app's egui context for repaints and the
+server port, start the server, and call `client.connect()` to synchronize.
 Rebuild bindings after changing the state definition; generated files should
 not be edited.
 
@@ -53,6 +56,16 @@ built page (for example Trunk's output) to the server's `serve_web`. The page is
 then served on the WebSocket port, so a single port must be reachable.
 `serve_web` and `stop_web` can be called before or after `start` and do not
 affect the connected client.
+
+## Network access
+
+By default the server listens only on `127.0.0.1`, so only clients on the same
+machine can connect. To accept clients from other machines, including a browser
+opened elsewhere or a port published from a Docker container, pass the address
+`0.0.0.0` (or a specific interface) to `start`. Connections are unencrypted
+WebSockets, so the optional `token` and all state data travel in clear text;
+on an untrusted network, keep the server on loopback and reach it through an
+SSH tunnel.
 
 ## Lost connections
 

@@ -300,12 +300,20 @@ impl StateServerCore {
             Some(addr) => {
                 SocketAddrV4::new(Ipv4Addr::new(addr[0], addr[1], addr[2], addr[3]), port)
             }
-            None => SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port),
+            None => SocketAddrV4::new(Ipv4Addr::LOCALHOST, port),
         };
         self.server
             .write()
             .start(addr, token)
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))
+    }
+
+    fn address(&self) -> Option<((u8, u8, u8, u8), u16)> {
+        // A tuple, not `[u8; 4]`, which PyO3 would convert to `bytes`.
+        self.server.read().address().map(|addr| {
+            let [a, b, c, d] = addr.ip().octets();
+            ((a, b, c, d), addr.port())
+        })
     }
 
     fn stop(&self) {

@@ -144,6 +144,13 @@ impl GetQueueType for Queue {
 /// `Q` controls how server-side callbacks process changes produced by
 /// [`Self::set_signal`] or [`Self::write_signal`].
 ///
+/// The server wins concurrent writes. A client write that reaches the server
+/// before the client has acknowledged the server's latest write to this value
+/// is discarded without running server callbacks, and the local copy is
+/// replaced when that server value arrives. A value the server sets
+/// continuously therefore cannot be changed reliably from the client; use a
+/// [`Static`] for it and send change requests as a [`Signal`].
+///
 /// An oversized [`Self::set`] is rejected before changing the local copy. An
 /// oversized in-place [`Self::write`] keeps the local edit but cannot send it,
 /// so the peers remain out of sync until a later successful write or server
@@ -297,6 +304,8 @@ impl<T, Q: GetQueueType> Clone for Value<T, Q> {
 /// Built-in implementations cover integers, `bool`, `f32`, `f64`, `(f32,
 /// f32)`, and `[f32; 2]`. Custom [`Atomic`] implementations must preserve the
 /// synchronization and size guarantees documented by that unsafe trait.
+///
+/// Concurrent writes follow the same rule as [`Value`]: the server wins.
 pub struct ValueAtomic<T: Atomic, Q: GetQueueType = NoQueue> {
     name: String,
     id: u64,

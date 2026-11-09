@@ -5,8 +5,8 @@ import threading
 
 import numpy as np
 import pytest
-from egui_states_test_bindings.enums import TestEnum as Choice, TestEnum2 as Secondary  # ty: ignore[unresolved-import]
-from egui_states_test_bindings.structs import TestStruct as Point, TestStruct2 as Summary  # ty: ignore[unresolved-import]
+from egui_states_test_bindings.enums import TestEnum as Choice, TestEnum2 as Secondary  # ty: ignore[import-not-found]
+from egui_states_test_bindings.structs import TestStruct as Point, TestStruct2 as Summary  # ty: ignore[import-not-found]
 
 
 @pytest.mark.parametrize(

@@ -40,6 +40,16 @@ pub(crate) struct Handshake {
 /// complete the WebSocket and protocol handshakes.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Bounds the connections that are handshaking or receiving the web page at
+/// once. Further connections wait in the operating system's accept queue until
+/// one finishes, which caps the memory and file descriptors that unauthenticated
+/// peers can hold. Browsers open about six connections per host.
+pub(crate) const MAX_PENDING_CONNECTIONS: usize = 32;
+
+/// Pause after a failed accept. Errors such as running out of file descriptors
+/// repeat until a connection closes, so retrying at once would spin.
+const ACCEPT_ERROR_DELAY: Duration = Duration::from_millis(100);
+
 /// A connection that passed the protocol handshake and may replace the
 /// current client.
 struct ClientReady {
@@ -64,7 +74,8 @@ pub(crate) async fn run(
     let mut holder = ChannelHolder::Rx(rx);
     // Connections still handshaking or receiving the web page. They run
     // concurrently so an idle connection cannot hold up the others; dropping
-    // the set on shutdown aborts them.
+    // the set on shutdown aborts them. At most `MAX_PENDING_CONNECTIONS` run at
+    // once.
     let mut pending: JoinSet<Option<ClientReady>> = JoinSet::new();
 
     loop {
@@ -86,7 +97,7 @@ pub(crate) async fn run(
                     }
                 }
             }
-            s = listener.accept() => {
+            s = listener.accept(), if pending.len() < MAX_PENDING_CONNECTIONS => {
                 match s {
                     Ok((stream, _)) => {
                         if let Err(e) = stream.set_nodelay(true) {
@@ -103,6 +114,7 @@ pub(crate) async fn run(
                     }
                     Err(e) => {
                         signals.error(format!("accepting connection failed: {:?}", e));
+                        tokio::time::sleep(ACCEPT_ERROR_DELAY).await;
                     }
                 }
                 continue;
@@ -320,7 +332,7 @@ fn check_handshake(
     if let Some(server_token) = &server_handshake.token {
         match token {
             Some(client_token) => {
-                if client_token != *server_token {
+                if !tokens_match(&client_token, server_token) {
                     return Err("attempted to connect with wrong token".to_string());
                 }
             }
@@ -329,6 +341,20 @@ fn check_handshake(
     }
 
     Ok(())
+}
+
+/// Compares tokens in constant time, so the time taken does not reveal how
+/// much of a wrong token matched. Only a length mismatch returns early.
+fn tokens_match(client_token: &str, server_token: &str) -> bool {
+    let (client, server) = (client_token.as_bytes(), server_token.as_bytes());
+    if client.len() != server.len() {
+        return false;
+    }
+    let difference = client
+        .iter()
+        .zip(server)
+        .fold(0u8, |acc, (a, b)| acc | (a ^ b));
+    std::hint::black_box(difference) == 0
 }
 
 async fn reader(
@@ -1112,6 +1138,9 @@ mod handshake_tests {
             (PROTOCOL_VERSION, Some(18), Some("secret"), "wrong version"),
             (PROTOCOL_VERSION, Some(17), None, "token missing"),
             (PROTOCOL_VERSION, Some(17), Some("wrong"), "wrong token"),
+            (PROTOCOL_VERSION, Some(17), Some("secre"), "wrong token"),
+            (PROTOCOL_VERSION, Some(17), Some("secrets"), "wrong token"),
+            (PROTOCOL_VERSION, Some(17), Some(""), "wrong token"),
         ] {
             let error = check_handshake(&settings, protocol, version, token.map(str::to_owned))
                 .unwrap_err();

@@ -39,9 +39,8 @@ fn main() -> eframe::Result {
             ..Default::default()
         },
         Box::new(|cc| {
-            let (state, client) = ClientBuilder::<CounterState>::new()
-                .context(cc.egui_ctx.clone())
-                .build(8092);
+            let (state, client) =
+                ClientBuilder::<CounterState>::new(cc.egui_ctx.clone(), 8092).build();
             Ok(Box::new(CounterApp { state, client }))
         }),
     )

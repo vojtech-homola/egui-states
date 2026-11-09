@@ -1,15 +1,15 @@
 name: Release
 
-# Run from the Actions tab once the release commit (version bump and
-# regenerated CHANGELOG.md) is on `main`. The version comes from
-# `workspace.package.version` in Cargo.toml; the workflow creates the tag.
+# Pushing a version tag (for example `0.17.0`) on `main` publishes that
+# release: wheels and sdist to PyPI, then a GitHub release for the tag. Prepare
+# the release commit with the Prepare release workflow first. Only admins can
+# create tags (repository ruleset), so a release always starts with a tag they
+# pushed. A manual run from the Actions tab is a dry run on any branch: it
+# builds and tests the wheels without publishing anything.
 on:
+  push:
+    tags: ["[0-9]+.[0-9]+.[0-9]+"]
   workflow_dispatch:
-    inputs:
-      dry-run:
-        description: Build and test the wheels without publishing or tagging
-        type: boolean
-        default: false
 
 concurrency:
   group: release
@@ -21,6 +21,7 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   PYTHONS: 3.12 3.13 3.14 3.14t 3.15 3.15t
+  GIT_CLIFF_VERSION: 2.14.2
 
 jobs:
   prepare:
@@ -30,39 +31,57 @@ jobs:
       version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          # The main and changelog checks need the history and the tags.
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v10.3.3
       - name: Read version
         id: version
         run: |
           version=$(python3 -c "import tomllib; print(tomllib.load(open('Cargo.toml', 'rb'))['workspace']['package']['version'])")
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "Releasing $version"
-      - name: Check branch and tag
+      - name: Check the tag
+        if: github.event_name == 'push'
         env:
           VERSION: ${{ steps.version.outputs.version }}
-          DRY_RUN: ${{ inputs.dry-run }}
+          TAG: ${{ github.ref_name }}
         run: |
-          if [[ "$DRY_RUN" != true && "$GITHUB_REF" != refs/heads/main ]]; then
-            echo "::error::Releases are published from main, not $GITHUB_REF."
+          if [[ "$TAG" != "$VERSION" ]]; then
+            echo "::error::Tag $TAG does not match version $VERSION in Cargo.toml."
             exit 1
           fi
-          if git ls-remote --exit-code --tags origin "refs/tags/$VERSION" > /dev/null; then
-            echo "::error::Tag $VERSION already exists; bump the version in Cargo.toml."
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::Tag $TAG points at $GITHUB_SHA, which is not on main."
             exit 1
           fi
       - name: Extract release notes from CHANGELOG.md
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          awk -v heading="## [$VERSION]" '
-            index($0, heading) == 1 { found = 1; next }
-            found && /^## \[/ { exit }
-            found { print }
-          ' CHANGELOG.md > release-notes.md
+          extract() {
+            awk -v heading="## [$VERSION]" '
+              index($0, heading) == 1 { found = 1; next }
+              found && /^## \[/ { exit }
+              found { print }
+            ' "$1"
+          }
+          extract CHANGELOG.md > release-notes.md
           if [[ ! -s release-notes.md ]]; then
-            echo "::error::CHANGELOG.md has no section for $VERSION; regenerate it with git-cliff."
+            echo "::error::CHANGELOG.md has no section for $VERSION; run the Prepare release workflow."
             exit 1
           fi
           cat release-notes.md
+          # The section must list every commit up to the tag. It goes stale
+          # when something is merged after the release was prepared.
+          if [[ "$GITHUB_EVENT_NAME" == push ]]; then
+            uvx "git-cliff@$GIT_CLIFF_VERSION" --output "$RUNNER_TEMP/generated.md"
+            extract "$RUNNER_TEMP/generated.md" > "$RUNNER_TEMP/generated-notes.md"
+            if ! diff -u release-notes.md "$RUNNER_TEMP/generated-notes.md"; then
+              echo "::error::CHANGELOG.md misses commits up to $VERSION. Delete the tag, run Prepare release again, and tag the new release commit."
+              exit 1
+            fi
+          fi
       - uses: actions/upload-artifact@v7
         with:
           name: release-notes
@@ -204,7 +223,7 @@ jobs:
   publish-pypi:
     name: Publish to PyPI
     needs: [prepare, smoke-test]
-    if: ${{ !inputs.dry-run }}
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     environment:
       name: pypi
@@ -219,7 +238,7 @@ jobs:
       - uses: pypa/gh-action-pypi-publish@release/v1
 
   github-release:
-    name: Tag and GitHub release
+    name: GitHub release
     needs: [prepare, publish-pypi]
     runs-on: ubuntu-latest
     permissions:
@@ -234,8 +253,7 @@ jobs:
           name: release-notes
       - uses: softprops/action-gh-release@v3
         with:
-          tag_name: ${{ needs.prepare.outputs.version }}
-          target_commitish: ${{ github.sha }}
+          tag_name: ${{ github.ref_name }}
           name: ${{ needs.prepare.outputs.version }}
           body_path: release-notes.md
           files: dist/*

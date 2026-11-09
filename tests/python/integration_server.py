@@ -2,7 +2,7 @@
 """Python server implementation for the shared native-client scenarios."""
 
 import numpy as np
-from egui_states_test_bindings import StatesServer  # ty: ignore[unresolved-import]
+from egui_states_test_bindings import StatesServer  # ty: ignore[import-not-found]
 from tests.preparation import run
 from tests.python_test_helpers.network import free_port
 from tests.python_test_helpers.waiting import wait_until
@@ -10,8 +10,8 @@ from tests.python_test_helpers.waiting import wait_until
 
 def set_wire_values(states):
     """Command 30: non-default values of every shape for the client to check."""
-    from egui_states_test_bindings.enums import TestEnum, TestEnum2  # ty: ignore[unresolved-import]
-    from egui_states_test_bindings.structs import TestStruct, TestStruct2  # ty: ignore[unresolved-import]
+    from egui_states_test_bindings.enums import TestEnum, TestEnum2  # ty: ignore[import-not-found]
+    from egui_states_test_bindings.structs import TestStruct, TestStruct2  # ty: ignore[import-not-found]
 
     v, c, st, w = states.values, states.custom_values, states.statics, states.wire_types
     v.bool_value.set(True)
@@ -46,8 +46,8 @@ def set_wire_values(states):
 
 def check_client_values(states, signals):
     """Command 31: the values and signals the client sent after command 30."""
-    from egui_states_test_bindings.enums import TestEnum, TestEnum2  # ty: ignore[unresolved-import]
-    from egui_states_test_bindings.structs import TestStruct  # ty: ignore[unresolved-import]
+    from egui_states_test_bindings.enums import TestEnum, TestEnum2  # ty: ignore[import-not-found]
+    from egui_states_test_bindings.structs import TestStruct  # ty: ignore[import-not-found]
 
     v, c, w = states.values, states.custom_values, states.wire_types
     expected = [
@@ -117,7 +117,7 @@ def edit_numeric(states):
         ("f32", np.float32),
         ("f64", np.float64),
     ]:
-        info = np.iinfo(dtype) if np.issubdtype(dtype, np.integer) else np.finfo(dtype)  # ty: ignore[no-matching-overload]
+        info = np.iinfo(dtype) if np.issubdtype(dtype, np.integer) else np.finfo(dtype)
         getattr(states.numeric, f"{name}_data").set(np.array([info.min, 0, info.max], dtype=dtype))
     m = states.multi_data
     m.bytes[1].set(np.array([1, 2], dtype=np.uint8))
@@ -143,8 +143,8 @@ def edit_images(states):
 def configure(states):  # noqa: PLR0915
     """Configure the test protocol; callback results are visible to the probe."""
     st = states.integration
-    from egui_states_test_bindings.structs import WirePacket, TestStruct2  # ty: ignore[unresolved-import]
-    from egui_states_test_bindings.enums import TestEnum2  # ty: ignore[unresolved-import]
+    from egui_states_test_bindings.structs import WirePacket, TestStruct2  # ty: ignore[import-not-found]
+    from egui_states_test_bindings.enums import TestEnum2  # ty: ignore[import-not-found]
 
     signals = []
     states.signals.empty_signal.connect(lambda: signals.append("empty"))

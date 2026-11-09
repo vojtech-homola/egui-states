@@ -17,7 +17,7 @@ c_abi = ["server"]
 build_scripts = ["client"]
 
 [dependencies]
-egui = { version = ">= 0.34", features = ["rayon"], optional = true }
+egui = { workspace = true, optional = true }
 pyo3 = { workspace = true, optional = true }
 
 postcard = { version = "1.1", features = ["use-std"] }

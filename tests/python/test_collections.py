@@ -13,7 +13,7 @@ def test_vector_mutation(local_bundle):
     assert values.get() == [10, -3, 27]
     values.add_item(32, update=True)
     assert values.get() == [10, -3, 27, 32]
-    values.remove_item(3, update=True)
+    assert values.remove_item(3, update=True) == 32
     assert values.get() == [10, -3, 27]
     values.set([], update=True)
     assert values.get() == []
@@ -27,7 +27,7 @@ def test_map_mutation(local_bundle):
     assert values.get() == {1: 100, 2: 200, 5: 500}
     values.set_item(6, 600, update=True)
     assert values.get() == {1: 100, 2: 200, 5: 500, 6: 600}
-    values.remove_item(1, update=True)
+    assert values.remove_item(1, update=True) == 100
     assert values.get() == {2: 200, 5: 500, 6: 600}
     values.set({}, update=True)
     assert values.get() == {}
@@ -66,11 +66,9 @@ def test_collection_operation_sequences_match_reference_models(local_bundle):
         elif step % 3 == 0:
             if expected_vector:
                 index = randomizer.randrange(len(expected_vector))
-                expected_vector.pop(index)
-                vector.remove_item(index)
+                assert vector.remove_item(index) == expected_vector.pop(index)
             if key in expected_map:
-                del expected_map[key]
-                mapping.remove_item(key)
+                assert mapping.remove_item(key) == expected_map.pop(key)
             else:
                 with pytest.raises(ValueError, match="Key not found"):
                     mapping.remove_item(key)

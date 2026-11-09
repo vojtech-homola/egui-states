@@ -88,7 +88,14 @@ class _SignalBase(_StaticBase):
 
 
 class Value[T](_SignalBase):
-    """Bidirectional value stored by both the server and egui client."""
+    """Bidirectional value stored by both the server and egui client.
+
+    The server wins concurrent writes. Each `set` stays pending until the
+    client acknowledges it, and a client write that arrives in the meantime is
+    discarded without running callbacks; the client then takes the server's
+    value. A value set continuously therefore cannot be changed reliably from
+    the client.
+    """
 
     def __init__(self, obj_id: int, initial_value: T, queue: bool = False) -> None:
         self._initial_value = initial_value
@@ -326,6 +333,11 @@ class Image(_StaticBase):
 
     Each dimension is at most 65,536 pixels, inclusive. Oversized images raise
     ``ValueError``. Client renderer and memory limits may be smaller.
+
+    Methods that take a buffer read it until they return, while other Python
+    threads keep running. Do not modify the buffer from another thread during
+    the call, or the client may receive a mix of old and new contents; pass a
+    copy if another thread may write to it.
     """
 
     def _initialize(self, name: str, types: list[PyObjectType]) -> None:
@@ -407,6 +419,11 @@ class SingleImage:
 
     Each dimension is at most 65,536 pixels, inclusive. Oversized images raise
     ``ValueError``. Client renderer and memory limits may be smaller.
+
+    Methods that take a buffer read it until they return, while other Python
+    threads keep running. Do not modify the buffer from another thread during
+    the call, or the client may receive a mix of old and new contents; pass a
+    copy if another thread may write to it.
     """
 
     def __init__(self, server: StateServerCore, value_id: int, index: int) -> None:
@@ -593,15 +610,18 @@ class Map[K, V](_StaticBase):
         """
         return self._server.map_get_item(self._value_id, key)
 
-    def remove_item(self, key: K, update: bool = False) -> None:
-        """Remove the item from the UI dict.
+    def remove_item(self, key: K, update: bool = False) -> V:
+        """Remove the item from the UI dict and return it.
 
         Args:
             key (K): The key of the item.
             update (bool, optional): Whether to request a client repaint.
                 Defaults to False.
+
+        Returns:
+            V: The removed value.
         """
-        self._server.map_del_item(self._value_id, key, update)
+        return self._server.map_del_item(self._value_id, key, update)
 
     def __getitem__(self, key: K) -> V:
         """Get the item in the UI dict."""
@@ -666,15 +686,18 @@ class Vec[T](_StaticBase):
         """
         return self._server.list_get_item(self._value_id, idx)
 
-    def remove_item(self, idx: int, update: bool = False) -> None:
-        """Remove the item from the UI list.
+    def remove_item(self, idx: int, update: bool = False) -> T:
+        """Remove the item from the UI list and return it.
 
         Args:
             idx (int): The index of the item.
             update (bool, optional): Whether to request a client repaint.
                 Defaults to False.
+
+        Returns:
+            T: The removed item.
         """
-        self._server.list_del_item(self._value_id, idx, update)
+        return self._server.list_del_item(self._value_id, idx, update)
 
     def add_item(self, value: T, update: bool = False) -> None:
         """Add the item to the UI list.
@@ -718,6 +741,11 @@ def _get_dtype_id(dtype: type[np.generic]) -> int:
 
 class Data[T: np.generic](_StaticBase):
     """Contiguous NumPy-compatible numeric buffer mirrored to the client.
+
+    Methods that take a buffer read it until they return, while other Python
+    threads keep running. Do not modify the buffer from another thread during
+    the call, or the client may receive a mix of old and new contents; pass a
+    copy if another thread may write to it.
 
     Args:
         dtype (type[T]): One of ``numpy.uint8`` through ``numpy.uint64``,
@@ -801,6 +829,11 @@ class Data[T: np.generic](_StaticBase):
 class DataTake[T: np.generic](_StaticBase):
     """One-shot numeric buffer sent to and consumed by the client.
 
+    Methods that take a buffer read it until they return, while other Python
+    threads keep running. Do not modify the buffer from another thread during
+    the call, or the client may receive a mix of old and new contents; pass a
+    copy if another thread may write to it.
+
     Args:
         dtype (type[T]): One of the integer or floating-point NumPy scalar
             types supported by :class:`Data`.
@@ -843,6 +876,11 @@ class SingleData[T: np.generic]:
 
     Instances are returned by :meth:`DataMulti.get` or indexed access; users
     do not normally construct them directly.
+
+    Methods that take a buffer read it until they return, while other Python
+    threads keep running. Do not modify the buffer from another thread during
+    the call, or the client may receive a mix of old and new contents; pass a
+    copy if another thread may write to it.
     """
 
     def __init__(self, dtype: type[T], server: StateServerCore, value_id: int, index: int) -> None:
@@ -973,6 +1011,11 @@ class SingleDataTake[T: np.generic]:
 
     Instances are returned by :meth:`DataMultiTake.get` or indexed access;
     users do not normally construct them directly.
+
+    Methods that take a buffer read it until they return, while other Python
+    threads keep running. Do not modify the buffer from another thread during
+    the call, or the client may receive a mix of old and new contents; pass a
+    copy if another thread may write to it.
     """
 
     def __init__(self, dtype: type[T], server: StateServerCore, value_id: int, index: int) -> None:

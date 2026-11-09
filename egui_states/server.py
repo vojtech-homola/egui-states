@@ -155,16 +155,23 @@ class StateServerBase[T: StatesBase]:
     ) -> None:
         """Start the state server.
 
-        After :meth:`stop`, the server can be started again with different
-        connection settings. Calling this method while the server is already
-        running succeeds without changing its active settings.
+        Calling this method while the server is running with the same settings
+        succeeds without effect; port 0 also matches the port it was assigned
+        (see :meth:`address`). To change the address or token, call
+        :meth:`stop` first.
 
         Args:
             port (int): TCP port on which the WebSocket server listens.
             ip_addr (tuple[int, int, int, int] | None, optional): IPv4 address
-                to bind, or ``None`` to bind all interfaces.
+                to bind, or ``None`` to bind only the loopback address
+                ``127.0.0.1``. Pass ``(0, 0, 0, 0)`` to accept clients from
+                other machines.
             token (str | None, optional): Authentication token required from
                 the client.
+
+        Raises:
+            RuntimeError: If the server is already running with a different
+                address or token, or the socket cannot be bound.
         """
         self._server.start(port, ip_addr, token)
         self._signals_manager.start_manager()
@@ -192,6 +199,17 @@ class StateServerBase[T: StatesBase]:
             bool: Whether a client is connected.
         """
         return self._server.is_connected()
+
+    def address(self) -> tuple[tuple[int, int, int, int], int] | None:
+        """Return the address the server listens on.
+
+        After starting on port 0, this reports the port the system assigned.
+
+        Returns:
+            tuple[tuple[int, int, int, int], int] | None: IPv4 address and
+            port, or ``None`` when the server is not running.
+        """
+        return self._server.address()
 
     def serve_web(self, path: str | PathLike[str]) -> None:
         """Serve a static web page on the state server port.

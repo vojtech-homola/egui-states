@@ -52,12 +52,12 @@ impl MainApp {
         cc: &CreationContext,
         port: u16,
     ) -> Result<Box<dyn App>, Box<dyn Error + Send + Sync>> {
-        let builder = ClientBuilder::<ShowcaseState>::new().context(cc.egui_ctx.clone());
-        let (state, client) = builder.build(port);
+        let (state, client) =
+            ClientBuilder::<ShowcaseState>::new(cc.egui_ctx.clone(), port).build();
 
-        let image = ColorImage::filled([256, 256], Color32::BLACK);
-        state.image.image.initialize(&cc.egui_ctx, image)?;
-        state.image.images.initialize(&cc.egui_ctx);
+        // Shown until the server sends its image; ignored if it already has.
+        let placeholder = ColorImage::filled([256, 256], Color32::BLACK);
+        state.image.image.initialize(placeholder)?;
 
         Ok(Box::new(Self {
             state: ViewState::new(state),

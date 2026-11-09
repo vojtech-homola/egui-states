@@ -20,7 +20,6 @@ dev = ["pytest", "ipython", "matplotlib", "maturin>=1.14", "git-cliff"]
 bindings = "pyo3"
 python-packages = ["egui_states"]
 module-name = "egui_states._core"
-include = ["egui_states/version.py"]
 manifest-path = "crates/egui-states-python/Cargo.toml"
 
 [tool.ruff]

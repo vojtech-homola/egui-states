@@ -1,7 +1,7 @@
 use bytes::Bytes;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, error, unbounded_channel};
 
-use crate::client::client::Client;
+use crate::client::client::ClientCore;
 use crate::client::data::{DataMessage, DataMultiMessage};
 use crate::client::data_take::{DataMultiTakeMessage, DataTakeMessage};
 use crate::client::image::{ImageMessage, ImageMultiMessage, ImageSetMessage};
@@ -444,7 +444,7 @@ impl MessagesParser {
 pub(crate) async fn handle_message(
     message: ServerMessage,
     vals: &ValuesList,
-    client: &Client,
+    client: &ClientCore,
 ) -> Result<(), String> {
     let update = match message {
         ServerMessage::Update(t) => {
@@ -612,7 +612,7 @@ pub(crate) async fn handle_message(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::client::client::Client;
+    use crate::client::client::ClientCore;
     use crate::client::states_creator::StatesCreatorClient;
     use crate::data_transport::{DataType, TransportType};
     use crate::image_transport::ImageType;
@@ -620,9 +620,10 @@ mod tests {
 
     fn dispatch_missing(message: ServerMessage) -> UnboundedReceiver<Option<ChannelMessage>> {
         let (sender, receiver) = MessageSender::new();
-        let creator = StatesCreatorClient::new(sender.clone(), "root".to_string());
+        let context = egui::Context::default();
+        let creator = StatesCreatorClient::new(sender.clone(), context.clone(), "root".to_string());
         let values = creator.get_values();
-        let client = Client::new(None, sender);
+        let client = ClientCore::new(context, sender);
         let runtime = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap();
@@ -922,12 +923,13 @@ mod malformed_tests {
     #[test]
     fn invalid_value_type_and_payload_ack_preserve_state_and_allow_recovery() {
         let (sender, mut receiver) = MessageSender::new();
-        let mut creator = StatesCreatorClient::new(sender.clone(), "root".into());
+        let context = egui::Context::default();
+        let mut creator = StatesCreatorClient::new(sender.clone(), context.clone(), "root".into());
         let value: crate::Value<i32> = creator.value("number", 37);
         let values = creator.get_values();
         let id = *values.values.keys().next().unwrap();
         let type_id = <i32 as Typed>::get_type().get_hash();
-        let client = Client::new(None, sender);
+        let client = ClientCore::new(context, sender);
         let runtime = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap();

@@ -61,73 +61,102 @@ impl ImageMessage {
 /// Each dimension is limited to 65,536 pixels, inclusive; renderer and memory
 /// limits may be smaller.
 ///
-/// Call [`Self::initialize`] once with an egui context before expecting server
-/// image updates to become visible. Updates received before initialization are
-/// validated and acknowledged but cannot be applied to a texture.
+/// The texture is created in the client's egui context when the first complete
+/// image arrives from the server, or earlier with a placeholder from
+/// [`Self::initialize`]; until then the getters return `None`. It uses
+/// nearest-neighbor filtering and clamps sampling at its edges.
 pub struct Image {
     name: Arc<String>,
     id: u64,
-    inner: Arc<(RwLock<Option<Texture>>, MessageSender)>,
+    context: egui::Context,
+    sender: MessageSender,
+    texture: Arc<RwLock<Option<Texture>>>,
     buffer: Arc<Mutex<Option<(ColorImage, usize)>>>,
 }
 
 impl Image {
-    pub(crate) fn new(name: String, id: u64, sender: MessageSender) -> Self {
+    pub(crate) fn new(
+        name: String,
+        id: u64,
+        sender: MessageSender,
+        context: egui::Context,
+    ) -> Self {
         Self {
             name: Arc::new(name),
             id,
-            inner: Arc::new((RwLock::new(None), sender)),
+            context,
+            sender,
+            texture: Arc::new(RwLock::new(None)),
             buffer: Arc::new(Mutex::new(None)),
         }
     }
 
-    /// Returns the texture identifier and `[width, height]`, if initialized.
+    /// Returns the texture identifier and `[width, height]`, if the texture
+    /// exists.
     pub fn get(&self) -> Option<(egui::TextureId, [usize; 2])> {
-        self.inner
-            .0
+        self.texture
             .read()
             .as_ref()
             .map(|(texture_handle, size)| (texture_handle.id(), *size))
     }
 
-    /// Returns the texture identifier, if initialized.
+    /// Returns the texture identifier, if the texture exists.
     pub fn get_id(&self) -> Option<egui::TextureId> {
-        self.inner
-            .0
+        self.texture
             .read()
             .as_ref()
             .map(|(texture_handle, _)| texture_handle.id())
     }
 
-    /// Returns the texture size as `[width, height]`, if initialized.
+    /// Returns the texture size as `[width, height]`, if the texture exists.
     pub fn get_size(&self) -> Option<[usize; 2]> {
-        self.inner.0.read().as_ref().map(|(_, size)| *size)
+        self.texture.read().as_ref().map(|(_, size)| *size)
     }
 
-    /// Creates the egui texture with an initial image.
+    /// Shows `image` as a placeholder until the server sends an image.
     ///
-    /// Call this from the UI before connecting when the server may send an image
-    /// immediately. Subsequent valid calls are ignored after initialization, even
-    /// if they use a different context or image. The texture uses nearest-neighbor
-    /// filtering and clamps sampling at its edges.
+    /// Does nothing once the texture exists, so it never replaces an image
+    /// from the server, whether it is called before or after connecting. The
+    /// first image from the server replaces the placeholder. The getters then
+    /// return `Some` even though the server has not sent an image yet.
     ///
     /// # Errors
     ///
-    /// Returns an error if either image dimension exceeds 65,536 pixels or its
-    /// RGBA byte count overflows. The renderer may impose a smaller size limit.
-    pub fn initialize(&self, ctx: &egui::Context, image: ColorImage) -> Result<(), String> {
-        checked_image_bytes(image.size, 4)?;
-        let mut w = self.inner.0.write();
-        if w.is_some() {
-            return Ok(());
+    /// Returns an error if either image dimension is zero or exceeds 65,536
+    /// pixels, or its RGBA byte count overflows. The renderer may impose a
+    /// smaller size limit.
+    pub fn initialize(&self, image: ColorImage) -> Result<(), String> {
+        // Renderers such as wgpu panic on zero-sized textures.
+        if image.size[0] == 0 || image.size[1] == 0 {
+            return Err(format!(
+                "Placeholder for image {} has zero dimensions",
+                self.name
+            ));
         }
-        let image_data = ImageData::Color(Arc::new(image));
-        let name = format!("image_{}", self.id);
-        let texture_handle = ctx.load_texture(name, image_data, TEXTURE_OPTIONS);
-
-        let size = texture_handle.size();
-        *w = Some((texture_handle, size));
+        checked_image_bytes(image.size, 4)?;
+        let mut texture = self.texture.write();
+        if texture.is_none() {
+            *texture = Some(self.create_texture(image));
+        }
         Ok(())
+    }
+
+    /// Shows a complete image, creating the texture for the first one.
+    fn set_texture(&self, image: ColorImage) {
+        let mut texture = self.texture.write();
+        match texture.as_mut() {
+            Some((texture_handle, saved_size)) => {
+                *saved_size = image.size;
+                texture_handle.set(image, TEXTURE_OPTIONS);
+            }
+            None => *texture = Some(self.create_texture(image)),
+        }
+    }
+
+    fn create_texture(&self, image: ColorImage) -> Texture {
+        let size = image.size;
+        let name = format!("image_{}", self.id);
+        (load_texture(&self.context, name, image), size)
     }
 
     pub(crate) fn set_image(
@@ -138,13 +167,10 @@ impl Image {
     ) -> Result<(), String> {
         match message {
             ImageSetMessage::All(size) => {
-                self.inner.1.send(ChannelMessage::Ack(self.id));
+                self.sender.send(ChannelMessage::Ack(self.id));
                 let image_size = [size[0] as usize, size[1] as usize];
                 let c_image = self.create_c_image(image_size, image_type, data)?;
-                if let Some((ref mut texture_handle, ref mut save_size)) = *self.inner.0.write() {
-                    texture_handle.set(c_image, TEXTURE_OPTIONS);
-                    *save_size = image_size;
-                }
+                self.set_texture(c_image);
             }
             ImageSetMessage::Start(size, pixels) => {
                 let pixels = pixels as usize;
@@ -170,7 +196,7 @@ impl Image {
                 }
             }
             ImageSetMessage::End(pixels) => {
-                self.inner.1.send(ChannelMessage::Ack(self.id));
+                self.sender.send(ChannelMessage::Ack(self.id));
                 let pixels = pixels as usize;
                 if let Some((mut c_image, actual_pixel)) = self.buffer.lock().take() {
                     if actual_pixel + pixels != c_image.pixels.len() {
@@ -183,13 +209,7 @@ impl Image {
                     }
 
                     self.update_c_image(&mut c_image, actual_pixel, pixels, data, image_type)?;
-
-                    if let Some((ref mut texture_handle, ref mut save_size)) = *self.inner.0.write()
-                    {
-                        let size = [c_image.width(), c_image.height()];
-                        texture_handle.set(c_image, TEXTURE_OPTIONS);
-                        *save_size = size;
-                    }
+                    self.set_texture(c_image);
                 } else {
                     return Err(format!("No image buffer found for image: {}", self.name));
                 }
@@ -206,29 +226,32 @@ impl Image {
         data: &[u8],
     ) -> Result<(), String> {
         // TODO: not sure if this is the best place to send ack
-        self.inner.1.send(ChannelMessage::Ack(self.id));
+        self.sender.send(ChannelMessage::Ack(self.id));
 
         let image_size = [rect[2] as usize, rect[3] as usize];
         let origin = [rect[0] as usize, rect[1] as usize];
 
         checked_image_bounds(origin, image_size)?;
-        let mut w = self.inner.0.write();
-        if let Some((_, save_size)) = w.as_ref()
-            && (origin[0] + image_size[0] > save_size[0]
-                || origin[1] + image_size[1] > save_size[1])
-        {
+        let mut texture = self.texture.write();
+        // A connection always starts with a complete image, so an update
+        // without a texture is a protocol error.
+        let Some((texture_handle, saved_size)) = texture.as_mut() else {
+            return Err(format!(
+                "Image {} received a partial update before a complete image",
+                self.name
+            ));
+        };
+        if origin[0] + image_size[0] > saved_size[0] || origin[1] + image_size[1] > saved_size[1] {
             return Err(format!(
                 "Image is larger than the texture for image: {}",
                 self.name
             ));
         }
         let c_image = self.create_c_image(image_size, image_type, data)?;
-        if let Some((ref mut texture_handle, ref mut save_size)) = *w {
-            if *save_size == image_size && origin == [0, 0] {
-                texture_handle.set(c_image, TEXTURE_OPTIONS);
-            } else {
-                texture_handle.set_partial(origin, c_image, TEXTURE_OPTIONS);
-            }
+        if *saved_size == image_size && origin == [0, 0] {
+            texture_handle.set(c_image, TEXTURE_OPTIONS);
+        } else {
+            texture_handle.set_partial(origin, c_image, TEXTURE_OPTIONS);
         }
 
         Ok(())
@@ -240,7 +263,7 @@ impl Image {
         rgba: [u8; 4],
         data: &[u8],
     ) -> Result<(), String> {
-        self.inner.1.send_ack(self.id);
+        self.sender.send_ack(self.id);
         if !data.is_empty() {
             return Err(format!(
                 "Fill message for image {} contains unexpected pixel data",
@@ -259,11 +282,7 @@ impl Image {
 
         let [red, green, blue, alpha] = rgba;
         let pixel = egui::Color32::from_rgba_premultiplied(red, green, blue, alpha);
-        let c_image = ColorImage::filled(image_size, pixel);
-        if let Some((ref mut texture_handle, ref mut save_size)) = *self.inner.0.write() {
-            texture_handle.set(c_image, TEXTURE_OPTIONS);
-            *save_size = image_size;
-        }
+        self.set_texture(ColorImage::filled(image_size, pixel));
 
         Ok(())
     }
@@ -312,15 +331,12 @@ impl Clone for Image {
         Self {
             name: self.name.clone(),
             id: self.id,
-            inner: self.inner.clone(),
+            context: self.context.clone(),
+            sender: self.sender.clone(),
+            texture: self.texture.clone(),
             buffer: self.buffer.clone(),
         }
     }
-}
-
-struct ImageMultiInner {
-    context: Option<egui::Context>,
-    images: NoHashMap<u32, Texture>,
 }
 
 /// A server-controlled sparse collection of RGBA textures indexed by `u32` keys.
@@ -328,51 +344,40 @@ struct ImageMultiInner {
 /// Each image dimension is limited to 65,536 pixels, inclusive; renderer and
 /// memory limits may be smaller.
 ///
-/// Call [`Self::initialize`] once with an egui context before expecting server
-/// images to become visible. Complete images received for absent keys create
-/// their textures automatically. Images received before initialization are
-/// validated and acknowledged but cannot be applied to a texture.
+/// A complete image received for an absent key creates its texture in the
+/// client's egui context. Textures use nearest-neighbor filtering and clamp
+/// sampling at their edges.
 pub struct ImageMulti {
     name: Arc<String>,
     id: u64,
-    inner: Arc<RwLock<ImageMultiInner>>,
+    context: egui::Context,
+    images: Arc<RwLock<NoHashMap<u32, Texture>>>,
     buffers: Arc<Mutex<NoHashMap<u32, (ColorImage, usize)>>>,
     sender: MessageSender,
 }
 
 impl ImageMulti {
-    pub(crate) fn new(name: String, id: u64, sender: MessageSender) -> Self {
+    pub(crate) fn new(
+        name: String,
+        id: u64,
+        sender: MessageSender,
+        context: egui::Context,
+    ) -> Self {
         Self {
             name: Arc::new(name),
             id,
-            inner: Arc::new(RwLock::new(ImageMultiInner {
-                context: None,
-                images: NoHashMap::default(),
-            })),
+            context,
+            images: Arc::new(RwLock::new(NoHashMap::default())),
             buffers: Arc::new(Mutex::new(NoHashMap::default())),
             sender,
-        }
-    }
-
-    /// Stores the egui context used to create textures for newly populated keys.
-    ///
-    /// Call this from the UI before connecting when the server may send images
-    /// immediately. Subsequent calls are ignored after initialization, even if
-    /// they use a different context. Newly created textures use nearest-neighbor
-    /// filtering and clamp sampling at their edges.
-    pub fn initialize(&self, ctx: &egui::Context) {
-        let mut inner = self.inner.write();
-        if inner.context.is_none() {
-            inner.context = Some(ctx.clone());
         }
     }
 
     /// Returns the texture identifier and `[width, height]` for `index`, if
     /// populated.
     pub fn get(&self, index: u32) -> Option<(egui::TextureId, [usize; 2])> {
-        self.inner
+        self.images
             .read()
-            .images
             .get(&index)
             .map(|(texture, size)| (texture.id(), *size))
     }
@@ -389,22 +394,22 @@ impl ImageMulti {
 
     /// Returns the number of populated keys, not the highest index plus one.
     pub fn len(&self) -> usize {
-        self.inner.read().images.len()
+        self.images.read().len()
     }
 
     /// Returns whether the collection contains no images.
     pub fn is_empty(&self) -> bool {
-        self.inner.read().images.is_empty()
+        self.images.read().is_empty()
     }
 
     /// Returns whether `index` currently has an image.
     pub fn contains(&self, index: u32) -> bool {
-        self.inner.read().images.contains_key(&index)
+        self.images.read().contains_key(&index)
     }
 
     /// Returns a snapshot of the populated indices in ascending order.
     pub fn indices(&self) -> Vec<u32> {
-        let mut indices = self.inner.read().images.keys().copied().collect::<Vec<_>>();
+        let mut indices = self.images.read().keys().copied().collect::<Vec<_>>();
         indices.sort_unstable();
         indices
     }
@@ -495,8 +500,8 @@ impl ImageMulti {
         let origin = [rect[0] as usize, rect[1] as usize];
         checked_image_bounds(origin, image_size)?;
 
-        let mut inner = self.inner.write();
-        let (texture, saved_size) = inner.images.get_mut(&index).ok_or_else(|| {
+        let mut images = self.images.write();
+        let (texture, saved_size) = images.get_mut(&index).ok_or_else(|| {
             format!(
                 "Image index {} not found in collection: {}",
                 index, self.name
@@ -546,34 +551,27 @@ impl ImageMulti {
 
     fn set_texture(&self, index: u32, image: ColorImage) -> Result<(), String> {
         checked_image_bytes(image.size, 4)?;
-        let mut inner = self.inner.write();
+        let mut images = self.images.write();
         let size = image.size;
-        if let Some((texture, saved_size)) = inner.images.get_mut(&index) {
+        if let Some((texture, saved_size)) = images.get_mut(&index) {
             texture.set(image, TEXTURE_OPTIONS);
             *saved_size = size;
             return Ok(());
         }
 
-        let context = inner.context.clone().ok_or_else(|| {
-            format!(
-                "ImageMulti must be initialized before receiving image: {}",
-                self.name
-            )
-        })?;
         let name = format!("image_multi_{}_{}", self.id, index);
-        let texture =
-            context.load_texture(name, ImageData::Color(Arc::new(image)), TEXTURE_OPTIONS);
-        inner.images.insert(index, (texture, size));
+        let texture = load_texture(&self.context, name, image);
+        images.insert(index, (texture, size));
         Ok(())
     }
 
     pub(crate) fn remove(&self, index: u32) {
-        self.inner.write().images.remove(&index);
+        self.images.write().remove(&index);
         self.buffers.lock().remove(&index);
     }
 
     pub(crate) fn reset(&self) {
-        self.inner.write().images.clear();
+        self.images.write().clear();
         self.buffers.lock().clear();
     }
 }
@@ -583,11 +581,27 @@ impl Clone for ImageMulti {
         Self {
             name: self.name.clone(),
             id: self.id,
-            inner: self.inner.clone(),
+            context: self.context.clone(),
+            images: self.images.clone(),
             buffers: self.buffers.clone(),
             sender: self.sender.clone(),
         }
     }
+}
+
+/// Creates a texture for `image` in `context`.
+///
+/// This is [`egui::Context::load_texture`] without its debug assertion against
+/// `max_texture_side`. Images arrive on the receive thread, possibly before the
+/// first frame has reported the renderer's limit (egui assumes 2048 until
+/// then), so the assertion could reject images the renderer accepts. Replacing
+/// the image of an existing texture has no such assertion either.
+fn load_texture(context: &egui::Context, name: String, image: ColorImage) -> TextureHandle {
+    let manager = context.tex_manager();
+    let id = manager
+        .write()
+        .alloc(name, ImageData::Color(Arc::new(image)), TEXTURE_OPTIONS);
+    TextureHandle::new(manager, id)
 }
 
 fn update_color_image(
@@ -715,17 +729,15 @@ mod tests {
 
     #[test]
     fn oversized_wire_images_preserve_textures_buffers_and_ack_behavior() {
-        for initialized in [false, true] {
+        for received in [false, true] {
             let context = egui::Context::default();
             let (sender, mut receiver) = MessageSender::new();
-            let image = Image::new("image".into(), 1, sender);
+            let image = Image::new("image".into(), 1, sender, context.clone());
             let (sender, mut multi_receiver) = MessageSender::new();
-            let images = ImageMulti::new("images".into(), 2, sender);
-            if initialized {
-                image
-                    .initialize(&context, ColorImage::filled([1, 1], egui::Color32::BLACK))
-                    .unwrap();
-                images.initialize(&context);
+            let images = ImageMulti::new("images".into(), 2, sender, context.clone());
+            if received {
+                image.fill_image([1, 1], [0; 4], &[]).unwrap();
+                assert_single_ack(&mut receiver, 1);
                 images.fill_image(7, [1, 1], [0; 4], &[]).unwrap();
                 assert_single_ack(&mut multi_receiver, 2);
             }
@@ -784,39 +796,16 @@ mod tests {
     }
 
     #[test]
-    fn initialization_and_received_images_accept_the_inclusive_limit() {
+    fn received_images_accept_the_inclusive_limit() {
         for size in [[65_536, 1], [1, 65_536]] {
+            // The first image creates the texture before any frame has
+            // reported the renderer's limit; egui assumes 2048 until then.
             let context = egui::Context::default();
-            context.input_mut(|input| input.max_texture_side = 65_536);
-            crate::test_support::texture_updates(&context);
             let (sender, mut receiver) = MessageSender::new();
-            let image = Image::new("image".into(), 1, sender);
+            let image = Image::new("image".into(), 1, sender, context.clone());
             let (sender, mut multi_receiver) = MessageSender::new();
-            let images = ImageMulti::new("images".into(), 2, sender);
+            let images = ImageMulti::new("images".into(), 2, sender, context.clone());
 
-            let mut oversized = ColorImage::filled([1, 1], egui::Color32::BLACK);
-            oversized.size = [size[0] + 1, size[1] + 1];
-            assert!(
-                image
-                    .initialize(&context, oversized)
-                    .unwrap_err()
-                    .contains("65536")
-            );
-            assert!(image.get().is_none());
-            assert!(crate::test_support::texture_updates(&context).is_empty());
-
-            image
-                .initialize(&context, ColorImage::filled(size, egui::Color32::BLACK))
-                .unwrap();
-            let initial = image.get();
-            image
-                .initialize(
-                    &egui::Context::default(),
-                    ColorImage::filled([1, 1], egui::Color32::WHITE),
-                )
-                .unwrap();
-            assert_eq!(image.get(), initial);
-            images.initialize(&context);
             let wire_size = [size[0] as u32, size[1] as u32];
             let data = vec![7; 65_536];
             image
@@ -885,13 +874,9 @@ mod tests {
         };
         let context = egui::Context::default();
         let (sender, mut receiver) = MessageSender::new();
-        let image = Image::new("image".into(), 1, sender);
-        image
-            .initialize(&context, ColorImage::filled([1, 1], egui::Color32::BLACK))
-            .unwrap();
+        let image = Image::new("image".into(), 1, sender, context.clone());
         let (sender, mut multi_receiver) = MessageSender::new();
-        let images = ImageMulti::new("images".into(), 2, sender);
-        images.initialize(&context);
+        let images = ImageMulti::new("images".into(), 2, sender, context);
 
         for (message, data) in chunks() {
             image.set_image(message, ImageType::Gray, data).unwrap();
@@ -909,7 +894,7 @@ mod tests {
     fn invalid_fill_messages_still_ack() {
         let id = 51;
         let (sender, mut receiver) = MessageSender::new();
-        let image = Image::new("image".to_string(), id, sender);
+        let image = Image::new("image".to_string(), id, sender, egui::Context::default());
 
         assert!(image.fill_image([1, 1], [0, 0, 0, 0], &[1]).is_err());
         assert_single_ack(&mut receiver, id);
@@ -922,33 +907,118 @@ mod tests {
     fn valid_fill_keeps_its_existing_single_ack() {
         let id = 52;
         let (sender, mut receiver) = MessageSender::new();
-        let image = Image::new("image".to_string(), id, sender);
+        let image = Image::new("image".to_string(), id, sender, egui::Context::default());
 
         image.fill_image([1, 1], [0, 0, 0, 0], &[]).unwrap();
         assert_single_ack(&mut receiver, id);
+    }
+
+    /// The first complete image creates the texture, whichever message carries
+    /// it, and later images reuse that texture.
+    #[test]
+    fn the_first_complete_image_creates_the_texture() {
+        let deliveries: [fn(&Image); 3] = [
+            |image| {
+                image
+                    .set_image(ImageSetMessage::All([2, 1]), ImageType::Gray, &[1, 2])
+                    .unwrap()
+            },
+            |image| {
+                image
+                    .set_image(ImageSetMessage::Start([2, 1], 1), ImageType::Gray, &[1])
+                    .unwrap();
+                image
+                    .set_image(ImageSetMessage::End(1), ImageType::Gray, &[2])
+                    .unwrap();
+            },
+            |image| image.fill_image([2, 1], [1, 2, 3, 255], &[]).unwrap(),
+        ];
+        for deliver in deliveries {
+            let context = egui::Context::default();
+            let (sender, mut receiver) = MessageSender::new();
+            let image = Image::new("image".into(), 1, sender, context.clone());
+            crate::test_support::texture_updates(&context);
+            assert!(image.get().is_none());
+
+            let error = image
+                .update_image([0, 0, 1, 1], ImageType::Gray, &[9])
+                .unwrap_err();
+            assert!(error.contains("before a complete image"), "{error}");
+            assert_single_ack(&mut receiver, 1);
+            assert!(image.get().is_none());
+
+            deliver(&image);
+            assert_single_ack(&mut receiver, 1);
+            let (id, size) = image.get().unwrap();
+            assert_eq!(size, [2, 1]);
+            let delta = crate::test_support::texture_updates(&context);
+            assert_eq!(delta.len(), 1);
+            assert_eq!(delta[&id].len(), 1);
+            assert_eq!(delta[&id][0].image.size(), [2, 1]);
+
+            image.fill_image([3, 2], [0; 4], &[]).unwrap();
+            assert_single_ack(&mut receiver, 1);
+            assert_eq!(image.get(), Some((id, [3, 2])));
+        }
+    }
+
+    /// `initialize` shows a placeholder only while no texture exists, so it
+    /// never replaces an image from the server, whichever arrives first.
+    #[test]
+    fn initialize_sets_a_placeholder_only_without_a_texture() {
+        let placeholder = |size| ColorImage::filled(size, egui::Color32::BLACK);
+        let server_image = |image: &Image| {
+            image
+                .set_image(ImageSetMessage::All([3, 1]), ImageType::Gray, &[1, 2, 3])
+                .unwrap()
+        };
+
+        // An empty or oversized placeholder creates nothing.
+        let context = egui::Context::default();
+        let (sender, mut receiver) = MessageSender::new();
+        let image = Image::new("image".into(), 1, sender, context.clone());
+        crate::test_support::texture_updates(&context);
+        for size in [[0, 0], [0, 1], [1, 0]] {
+            let error = image.initialize(placeholder(size)).unwrap_err();
+            assert!(error.contains("zero dimensions"), "{error}");
+        }
+        let mut oversized = placeholder([1, 1]);
+        oversized.size = [65_537, 1];
+        assert!(image.initialize(oversized).unwrap_err().contains("65536"));
+        assert!(image.get().is_none());
+        assert!(crate::test_support::texture_updates(&context).is_empty());
+
+        // Placeholder first: later calls keep it, the server's image replaces
+        // it in the same texture.
+        image.initialize(placeholder([2, 2])).unwrap();
+        let (id, size) = image.get().unwrap();
+        assert_eq!(size, [2, 2]);
+        image.initialize(placeholder([4, 4])).unwrap();
+        assert_eq!(image.get(), Some((id, [2, 2])));
+        server_image(&image);
+        assert_single_ack(&mut receiver, 1);
+        assert_eq!(image.get(), Some((id, [3, 1])));
+
+        // Server image first: the placeholder is ignored.
+        let context = egui::Context::default();
+        let (sender, mut receiver) = MessageSender::new();
+        let image = Image::new("image".into(), 1, sender, context.clone());
+        server_image(&image);
+        assert_single_ack(&mut receiver, 1);
+        let received = image.get();
+        crate::test_support::texture_updates(&context);
+        image.initialize(placeholder([2, 2])).unwrap();
+        assert_eq!(image.get(), received);
+        assert!(crate::test_support::texture_updates(&context).is_empty());
     }
 
     #[test]
     fn image_multi_creates_replaces_and_clears_sparse_textures() {
         let id = 53;
         let (sender, mut receiver) = MessageSender::new();
-        let images = ImageMulti::new("images".to_string(), id, sender);
+        let images = ImageMulti::new("images".to_string(), id, sender, egui::Context::default());
 
-        assert!(
-            images
-                .set_image(
-                    7,
-                    ImageSetMessage::All([1, 1]),
-                    ImageType::ColorAlpha,
-                    &[1, 2, 3, 4],
-                )
-                .is_err()
-        );
-        assert_single_ack(&mut receiver, id);
-        assert!(images.is_empty());
-
-        images.initialize(&egui::Context::default());
-        images.initialize(&egui::Context::default());
+        // The first image for a key creates its texture without any setup.
         images
             .set_image(7, ImageSetMessage::All([2, 1]), ImageType::Gray, &[10, 20])
             .unwrap();
@@ -984,9 +1054,8 @@ mod tests {
     fn image_multi_batch_buffers_are_independent_and_cleaned_up() {
         let id = 54;
         let (sender, mut receiver) = MessageSender::new();
-        let images = ImageMulti::new("images".to_string(), id, sender);
         let context = egui::Context::default();
-        images.initialize(&context);
+        let images = ImageMulti::new("images".to_string(), id, sender, context.clone());
         crate::test_support::texture_updates(&context);
 
         for index in [2, 7] {

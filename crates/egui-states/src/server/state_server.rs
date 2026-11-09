@@ -177,11 +177,13 @@ impl StateServer {
 
     /// Starts listening and launches callback workers.
     ///
-    /// `ip_addr` selects a specific IPv4 interface; `None` binds all IPv4
-    /// interfaces. `token` optionally requires clients to authenticate during
-    /// the handshake. After [`Self::stop`], the server may be started again
-    /// with different connection settings. Calling this while the server is
-    /// already running succeeds without changing its active settings.
+    /// `ip_addr` selects the IPv4 interface; `None` binds only the loopback
+    /// address `127.0.0.1`, so pass [`Ipv4Addr::UNSPECIFIED`] to accept clients
+    /// from other machines. `token` optionally requires clients to authenticate during
+    /// the handshake. Calling this while the server is running with the same
+    /// settings succeeds without effect; port 0 also matches the port it was
+    /// assigned (see [`Self::address`]). To change the address or token, call
+    /// [`Self::stop`] first.
     ///
     /// The native server owns a dedicated thread and Tokio runtime; call this
     /// from synchronous application code rather than from code that requires
@@ -189,15 +191,16 @@ impl StateServer {
     ///
     /// # Errors
     ///
-    /// Returns an error if the server was not finalized, the socket cannot be
-    /// bound or configured, or its runtime/thread cannot be started.
+    /// Returns an error if the server was not finalized, is already running
+    /// with a different address or token, the socket cannot be bound or
+    /// configured, or its runtime/thread cannot be started.
     pub fn start(&self, port: u16, ip_addr: Option<Ipv4Addr>, token: Option<String>) -> Result<()> {
-        let addr = SocketAddrV4::new(ip_addr.unwrap_or(Ipv4Addr::UNSPECIFIED), port);
+        let addr = SocketAddrV4::new(ip_addr.unwrap_or(Ipv4Addr::LOCALHOST), port);
         self.inner
             .server
             .write()
             .start(addr, token)
-            .map_err(ServerError::new)?;
+            .map_err(|error| ServerError::new(error.to_string()))?;
         self.start_signal_workers();
         Ok(())
     }
@@ -220,6 +223,14 @@ impl StateServer {
     /// Returns whether a client is connected.
     pub fn is_connected(&self) -> bool {
         self.inner.server.read().is_connected()
+    }
+
+    /// Returns the address the server listens on, or `None` when it is not
+    /// running.
+    ///
+    /// After starting on port 0, this reports the port the system assigned.
+    pub fn address(&self) -> Option<SocketAddrV4> {
+        self.inner.server.read().address()
     }
 
     /// Serves the static web page in directory `path` on the server port.
@@ -822,6 +833,53 @@ mod tests {
     }
 
     #[test]
+    fn start_while_running_accepts_only_the_active_settings() {
+        let server = StateServer::new().unwrap();
+        server.finalize().unwrap();
+        assert_eq!(server.address(), None);
+
+        let token = Some("secret-token".to_string());
+        let localhost = Some(Ipv4Addr::LOCALHOST);
+        server.start(0, localhost, token.clone()).unwrap();
+        let address = server.address().unwrap();
+        assert_eq!(*address.ip(), Ipv4Addr::LOCALHOST);
+        assert_ne!(address.port(), 0);
+
+        // The requested port 0 and the assigned port both match.
+        server.start(0, localhost, token.clone()).unwrap();
+        server
+            .start(address.port(), localhost, token.clone())
+            .unwrap();
+
+        let other_port = address.port().wrapping_add(1).max(1);
+        let error = server
+            .start(other_port, localhost, token.clone())
+            .unwrap_err();
+        assert!(error.message().contains("already running on"), "{error}");
+        // No address means loopback, which is the address in use.
+        server.start(address.port(), None, token.clone()).unwrap();
+        let error = server
+            .start(address.port(), Some(Ipv4Addr::UNSPECIFIED), token.clone())
+            .unwrap_err();
+        assert!(error.message().contains("already running on"), "{error}");
+        for other_token in [None, Some("other-token".to_string())] {
+            let error = server.start(0, localhost, other_token).unwrap_err();
+            assert!(error.message().contains("different token"), "{error}");
+            assert!(!error.message().contains("secret-token"), "{error}");
+            assert!(!error.message().contains("other-token"), "{error}");
+        }
+        assert!(server.is_running());
+        assert_eq!(server.address(), Some(address));
+
+        server.stop();
+        assert!(!server.is_running());
+        assert_eq!(server.address(), None);
+        server.start(0, None, None).unwrap();
+        assert_eq!(*server.address().unwrap().ip(), Ipv4Addr::LOCALHOST);
+        server.stop();
+    }
+
+    #[test]
     fn invalid_heartbeat_options_are_rejected() {
         let second = Duration::from_secs(1);
         for (interval, timeout) in [
@@ -1034,27 +1092,6 @@ mod tests {
             .expect("dropping the last server handle must release its listener");
     }
 
-    #[test]
-    fn start_is_idempotent_while_server_is_running() {
-        let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-        let port = listener.local_addr().unwrap().port();
-        drop(listener);
-
-        let server = StateServer::new().unwrap();
-        server.finalize().unwrap();
-        server.start(port, Some(Ipv4Addr::LOCALHOST), None).unwrap();
-
-        server
-            .start(
-                port,
-                Some(Ipv4Addr::LOCALHOST),
-                Some("ignored-token".to_string()),
-            )
-            .unwrap();
-        assert!(server.is_running());
-        server.stop();
-    }
-
     #[cfg(feature = "client")]
     #[test]
     fn rust_client_and_server_exchange_values() {
@@ -1070,7 +1107,8 @@ mod tests {
         server.finalize().unwrap();
         server.start(port, Some(Ipv4Addr::LOCALHOST), None).unwrap();
 
-        let (client_state, client) = crate::ClientBuilder::<ClientTestState>::new().build(port);
+        let (client_state, client) =
+            crate::ClientBuilder::<ClientTestState>::new(egui::Context::default(), port).build();
         let mut connected = false;
         for _ in 0..200 {
             client.connect();
@@ -1102,6 +1140,65 @@ mod tests {
         server.stop();
     }
 
+    #[cfg(all(feature = "client", target_os = "linux"))]
+    #[test]
+    fn dropping_the_last_client_handle_stops_the_client() {
+        use crate::test_support::client_thread_count;
+
+        if crate::test_support::isolated() {
+            return;
+        }
+        fn wait(label: &str, mut condition: impl FnMut() -> bool) {
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while !condition() {
+                assert!(std::time::Instant::now() < deadline, "timed out: {label}");
+                thread::sleep(Duration::from_millis(5));
+            }
+        }
+
+        let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        let server = StateServer::new().unwrap();
+        let server_value = crate::server::Value::new(&server, "root.value", 0_i32, false).unwrap();
+        server.finalize().unwrap();
+        server.start(port, Some(Ipv4Addr::LOCALHOST), None).unwrap();
+        assert_eq!(client_thread_count(), 0);
+
+        // A client that never connected stops as well.
+        let (_, idle) =
+            crate::ClientBuilder::<ClientTestState>::new(egui::Context::default(), port).build();
+        wait("idle client threads", || client_thread_count() == 3);
+        drop(idle);
+        wait("idle client shutdown", || client_thread_count() == 0);
+
+        let (client_state, client) =
+            crate::ClientBuilder::<ClientTestState>::new(egui::Context::default(), port).build();
+        let clone = client.clone();
+        wait("connection", || {
+            client.connect();
+            server.is_connected()
+        });
+        server_value.set(5, false).unwrap();
+        wait("synchronization", || client_state.value.get() == 5);
+
+        // Another clone keeps the client running.
+        drop(client);
+        server_value.set(6, false).unwrap();
+        wait("synchronization after dropping a clone", || {
+            client_state.value.get() == 6
+        });
+        assert!(server.is_connected());
+
+        drop(clone);
+        wait("server sees the disconnect", || !server.is_connected());
+        wait("client shutdown", || client_thread_count() == 0);
+        // The state tree outlives the client and keeps its last value.
+        assert_eq!(client_state.value.get(), 6);
+        server.stop();
+    }
+
     #[cfg(feature = "client")]
     #[test]
     fn stopped_server_restarts_with_new_port_and_token() {
@@ -1128,10 +1225,11 @@ mod tests {
                 Some("first-token".to_string()),
             )
             .unwrap();
-        let (first_state, first_client) = crate::ClientBuilder::<ClientTestState>::new()
-            .version(17)
-            .token("first-token".to_string())
-            .build(first_port);
+        let (first_state, first_client) =
+            crate::ClientBuilder::<ClientTestState>::new(egui::Context::default(), first_port)
+                .version(17)
+                .token("first-token".to_string())
+                .build();
         for _ in 0..200 {
             first_client.connect();
             if server.is_connected() {
@@ -1153,10 +1251,11 @@ mod tests {
                 Some("second-token".to_string()),
             )
             .unwrap();
-        let (second_state, second_client) = crate::ClientBuilder::<ClientTestState>::new()
-            .version(17)
-            .token("second-token".to_string())
-            .build(second_port);
+        let (second_state, second_client) =
+            crate::ClientBuilder::<ClientTestState>::new(egui::Context::default(), second_port)
+                .version(17)
+                .token("second-token".to_string())
+                .build();
         for _ in 0..200 {
             second_client.connect();
             if server.is_connected() {
@@ -1628,15 +1727,19 @@ mod wire_tests {
                 peer(port, bad, false).await;
                 peer(port, good(), true).await;
             }
-            // A repeated start cannot change the original address or token.
+            // A repeated start with other settings fails and keeps the original
+            // address and token.
             let occupied = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
             server
                 .start(
                     occupied.local_addr().unwrap().port(),
                     Some(Ipv4Addr::LOCALHOST),
-                    Some("ignored".into()),
+                    Some("first".into()),
                 )
-                .unwrap();
+                .unwrap_err();
+            server
+                .start(port, Some(Ipv4Addr::LOCALHOST), Some("ignored".into()))
+                .unwrap_err();
             peer(
                 port,
                 ClientHeader::Handshake(crate::PROTOCOL_VERSION, Some(17), Some("ignored".into())),
@@ -2032,6 +2135,39 @@ mod connection_tests {
         server.stop();
     }
 
+    #[test]
+    fn connections_beyond_the_pending_limit_wait_for_a_free_slot() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let (server, _value, port) = server(ServerOptions::new(), None);
+
+        // Idle peers that never send a request fill every handshake slot.
+        let idle: Vec<_> = (0..crate::server_core::MAX_PENDING_CONNECTIONS)
+            .map(|_| TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap())
+            .collect();
+
+        let (connected, client) = mpsc::channel();
+        let peer = thread::spawn(move || {
+            let peer = Peer::connect(port, None);
+            let _ = connected.send(());
+            peer
+        });
+        thread::sleep(Duration::from_millis(300));
+        assert!(
+            client.try_recv().is_err(),
+            "a connection beyond the limit was handled while every slot was busy"
+        );
+        assert!(!server.is_connected());
+
+        // Closing the idle peers ends their handshakes and frees the slots.
+        drop(idle);
+        client.recv_timeout(Duration::from_secs(5)).unwrap();
+        wait("client connected", || server.is_connected());
+        drop(peer.join().unwrap());
+        server.stop();
+    }
+
     /// A disconnect resets pending signals while a worker may still be running a
     /// callback; the next connection must not start the same state's callback on
     /// a second worker before that one returns.
@@ -2122,7 +2258,8 @@ mod connection_tests {
             thread::sleep(Duration::from_secs(1));
         });
 
-        let (_state, client) = ClientBuilder::<ClientTestState>::new().build(port);
+        let (_state, client) =
+            ClientBuilder::<ClientTestState>::new(egui::Context::default(), port).build();
         let mut connected = false;
         // Repeat the request until the handshake arrives, then keep watching.
         let mut deadline = Instant::now() + Duration::from_secs(5);
@@ -2154,7 +2291,8 @@ mod connection_tests {
         if crate::test_support::isolated() {
             return;
         }
-        let (_state, client) = ClientBuilder::<ClientTestState>::new().build(free_port());
+        let (_state, client) =
+            ClientBuilder::<ClientTestState>::new(egui::Context::default(), free_port()).build();
         assert_eq!(client.last_error(), None);
         client.connect();
         wait("unreachable server", || {
@@ -2164,9 +2302,10 @@ mod connection_tests {
         assert!(error.contains("Connecting to server"), "{error}");
 
         let (server, _value, port) = server(ServerOptions::new(), Some("secret"));
-        let (_state, client) = ClientBuilder::<ClientTestState>::new()
-            .token("wrong".to_string())
-            .build(port);
+        let (_state, client) =
+            ClientBuilder::<ClientTestState>::new(egui::Context::default(), port)
+                .token("wrong".to_string())
+                .build();
         client.connect();
         wait("refused handshake", || {
             client.get_state() == ConnectionState::Failed
@@ -2236,7 +2375,8 @@ mod connection_tests {
             return;
         }
         let (server, value, port) = server(ServerOptions::new(), None);
-        let (state, client) = ClientBuilder::<PanicTestState>::new().build(port);
+        let (state, client) =
+            ClientBuilder::<PanicTestState>::new(egui::Context::default(), port).build();
         client.connect();
         wait("first connection", || state.value.get().0 == 731);
 
@@ -2271,7 +2411,8 @@ mod connection_tests {
             return;
         }
         let (server, value, port) = server(ServerOptions::new(), None);
-        let (state, client) = ClientBuilder::<ClientTestState>::new().build(port);
+        let (state, client) =
+            ClientBuilder::<ClientTestState>::new(egui::Context::default(), port).build();
         client.connect();
         wait("first connection", || state.value.get() == 731);
 
@@ -2306,9 +2447,8 @@ mod connection_tests {
             return;
         }
         let (server, value, port) = server(ServerOptions::new(), None);
-        let (state, client) = ClientBuilder::<ClientTestState>::new()
-            .context(egui::Context::default())
-            .build(port);
+        let (state, client) =
+            ClientBuilder::<ClientTestState>::new(egui::Context::default(), port).build();
         client.connect();
         wait("first connection", || state.value.get() == 731);
 
@@ -2329,7 +2469,8 @@ mod connection_tests {
             return;
         }
         let (server, _value, port) = server(ServerOptions::new(), None);
-        let (state, client) = ClientBuilder::<ClientTestState>::new().build(port);
+        let (state, client) =
+            ClientBuilder::<ClientTestState>::new(egui::Context::default(), port).build();
         client.connect();
         let deadline = Instant::now() + Duration::from_secs(5);
         while state.value.get() != 731 && Instant::now() < deadline {
@@ -2361,7 +2502,8 @@ mod connection_tests {
         });
         server.start(port, Some(Ipv4Addr::LOCALHOST), None).unwrap();
 
-        let (state, client) = ClientBuilder::<ClientTestState>::new().build(port);
+        let (state, client) =
+            ClientBuilder::<ClientTestState>::new(egui::Context::default(), port).build();
         wait("first connection", || {
             client.connect();
             server.is_connected() && state.value.get() == 7
@@ -2400,7 +2542,8 @@ mod connection_tests {
         server.finalize().unwrap();
         server.start(port, Some(Ipv4Addr::LOCALHOST), None).unwrap();
 
-        let (state, client) = ClientBuilder::<CollectionTestState>::new().build(port);
+        let (state, client) =
+            ClientBuilder::<CollectionTestState>::new(egui::Context::default(), port).build();
         wait("connection", || {
             client.connect();
             server.is_connected()
@@ -2443,7 +2586,8 @@ mod connection_tests {
             .unwrap();
         server.start(port, Some(Ipv4Addr::LOCALHOST), None).unwrap();
 
-        let (state, client) = ClientBuilder::<CollectionTestState>::new().build(port);
+        let (state, client) =
+            ClientBuilder::<CollectionTestState>::new(egui::Context::default(), port).build();
         wait("connection", || {
             client.connect();
             server.is_connected()
