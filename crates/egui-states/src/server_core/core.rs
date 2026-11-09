@@ -320,7 +320,7 @@ fn check_handshake(
     if let Some(server_token) = &server_handshake.token {
         match token {
             Some(client_token) => {
-                if client_token != *server_token {
+                if !tokens_match(&client_token, server_token) {
                     return Err("attempted to connect with wrong token".to_string());
                 }
             }
@@ -329,6 +329,20 @@ fn check_handshake(
     }
 
     Ok(())
+}
+
+/// Compares tokens in constant time, so the time taken does not reveal how
+/// much of a wrong token matched. Only a length mismatch returns early.
+fn tokens_match(client_token: &str, server_token: &str) -> bool {
+    let (client, server) = (client_token.as_bytes(), server_token.as_bytes());
+    if client.len() != server.len() {
+        return false;
+    }
+    let difference = client
+        .iter()
+        .zip(server)
+        .fold(0u8, |acc, (a, b)| acc | (a ^ b));
+    std::hint::black_box(difference) == 0
 }
 
 async fn reader(
@@ -1112,6 +1126,9 @@ mod handshake_tests {
             (PROTOCOL_VERSION, Some(18), Some("secret"), "wrong version"),
             (PROTOCOL_VERSION, Some(17), None, "token missing"),
             (PROTOCOL_VERSION, Some(17), Some("wrong"), "wrong token"),
+            (PROTOCOL_VERSION, Some(17), Some("secre"), "wrong token"),
+            (PROTOCOL_VERSION, Some(17), Some("secrets"), "wrong token"),
+            (PROTOCOL_VERSION, Some(17), Some(""), "wrong token"),
         ] {
             let error = check_handshake(&settings, protocol, version, token.map(str::to_owned))
                 .unwrap_err();
