@@ -14,7 +14,7 @@ def test_disposal_releases_workers(tmp_path):
 def test_heartbeat_settings_are_validated():
     """Accept valid or disabled heartbeat settings and reject invalid ones."""
     import pytest
-    from egui_states_test_bindings import StatesServer  # ty: ignore[unresolved-import]
+    from egui_states_test_bindings import StatesServer  # ty: ignore[import-not-found]
 
     StatesServer(signals_workers=1, heartbeat_interval=0.5, heartbeat_timeout=2.0)
     # A disabled heartbeat ignores its interval.
