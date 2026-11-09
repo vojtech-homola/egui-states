@@ -610,15 +610,18 @@ class Map[K, V](_StaticBase):
         """
         return self._server.map_get_item(self._value_id, key)
 
-    def remove_item(self, key: K, update: bool = False) -> None:
-        """Remove the item from the UI dict.
+    def remove_item(self, key: K, update: bool = False) -> V:
+        """Remove the item from the UI dict and return it.
 
         Args:
             key (K): The key of the item.
             update (bool, optional): Whether to request a client repaint.
                 Defaults to False.
+
+        Returns:
+            V: The removed value.
         """
-        self._server.map_del_item(self._value_id, key, update)
+        return self._server.map_del_item(self._value_id, key, update)
 
     def __getitem__(self, key: K) -> V:
         """Get the item in the UI dict."""
@@ -683,15 +686,18 @@ class Vec[T](_StaticBase):
         """
         return self._server.list_get_item(self._value_id, idx)
 
-    def remove_item(self, idx: int, update: bool = False) -> None:
-        """Remove the item from the UI list.
+    def remove_item(self, idx: int, update: bool = False) -> T:
+        """Remove the item from the UI list and return it.
 
         Args:
             idx (int): The index of the item.
             update (bool, optional): Whether to request a client repaint.
                 Defaults to False.
+
+        Returns:
+            T: The removed item.
         """
-        self._server.list_del_item(self._value_id, idx, update)
+        return self._server.list_del_item(self._value_id, idx, update)
 
     def add_item(self, value: T, update: bool = False) -> None:
         """Add the item to the UI list.
