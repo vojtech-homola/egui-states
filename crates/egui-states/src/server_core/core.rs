@@ -40,6 +40,16 @@ pub(crate) struct Handshake {
 /// complete the WebSocket and protocol handshakes.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Bounds the connections that are handshaking or receiving the web page at
+/// once. Further connections wait in the operating system's accept queue until
+/// one finishes, which caps the memory and file descriptors that unauthenticated
+/// peers can hold. Browsers open about six connections per host.
+pub(crate) const MAX_PENDING_CONNECTIONS: usize = 32;
+
+/// Pause after a failed accept. Errors such as running out of file descriptors
+/// repeat until a connection closes, so retrying at once would spin.
+const ACCEPT_ERROR_DELAY: Duration = Duration::from_millis(100);
+
 /// A connection that passed the protocol handshake and may replace the
 /// current client.
 struct ClientReady {
@@ -64,7 +74,8 @@ pub(crate) async fn run(
     let mut holder = ChannelHolder::Rx(rx);
     // Connections still handshaking or receiving the web page. They run
     // concurrently so an idle connection cannot hold up the others; dropping
-    // the set on shutdown aborts them.
+    // the set on shutdown aborts them. At most `MAX_PENDING_CONNECTIONS` run at
+    // once.
     let mut pending: JoinSet<Option<ClientReady>> = JoinSet::new();
 
     loop {
@@ -86,7 +97,7 @@ pub(crate) async fn run(
                     }
                 }
             }
-            s = listener.accept() => {
+            s = listener.accept(), if pending.len() < MAX_PENDING_CONNECTIONS => {
                 match s {
                     Ok((stream, _)) => {
                         if let Err(e) = stream.set_nodelay(true) {
@@ -103,6 +114,7 @@ pub(crate) async fn run(
                     }
                     Err(e) => {
                         signals.error(format!("accepting connection failed: {:?}", e));
+                        tokio::time::sleep(ACCEPT_ERROR_DELAY).await;
                     }
                 }
                 continue;

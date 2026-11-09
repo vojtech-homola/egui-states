@@ -2135,6 +2135,39 @@ mod connection_tests {
         server.stop();
     }
 
+    #[test]
+    fn connections_beyond_the_pending_limit_wait_for_a_free_slot() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let (server, _value, port) = server(ServerOptions::new(), None);
+
+        // Idle peers that never send a request fill every handshake slot.
+        let idle: Vec<_> = (0..crate::server_core::MAX_PENDING_CONNECTIONS)
+            .map(|_| TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap())
+            .collect();
+
+        let (connected, client) = mpsc::channel();
+        let peer = thread::spawn(move || {
+            let peer = Peer::connect(port, None);
+            let _ = connected.send(());
+            peer
+        });
+        thread::sleep(Duration::from_millis(300));
+        assert!(
+            client.try_recv().is_err(),
+            "a connection beyond the limit was handled while every slot was busy"
+        );
+        assert!(!server.is_connected());
+
+        // Closing the idle peers ends their handshakes and frees the slots.
+        drop(idle);
+        client.recv_timeout(Duration::from_secs(5)).unwrap();
+        wait("client connected", || server.is_connected());
+        drop(peer.join().unwrap());
+        server.stop();
+    }
+
     /// A disconnect resets pending signals while a worker may still be running a
     /// callback; the next connection must not start the same state's callback on
     /// a second worker before that one returns.
