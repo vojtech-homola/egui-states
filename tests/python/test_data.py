@@ -9,6 +9,7 @@ from egui_states_test_bindings import (  # ty: ignore[import-not-found]
     State,
     StatesServer,
 )
+from egui_states_test_bindings.structs import HeaderMeta  # ty: ignore[import-not-found]
 
 
 def test_data_array_methods(local_bundle: tuple[StatesServer, State, list[Exception]]) -> None:
@@ -148,3 +149,42 @@ def test_huge_data_indexes_raise_value_error(local_bundle, operation):
         }[operation]()
     assert_array(data.get(), np.array([1, 2, 3], dtype=np.uint8))
     assert_array(multi[4].get(), np.array([1, 2, 3], dtype=np.uint8))
+
+
+def test_data_headers_are_stored_with_their_buffer(local_bundle):
+    _, states, _ = local_bundle
+    series = states.headers.series
+    assert series.get_header() is None
+    series.set(np.array([1.0], dtype=np.float32), header=HeaderMeta(1.5, "a", [1]))
+    series.add(np.array([2.0], dtype=np.float32))
+    assert series.get_header() == HeaderMeta(1.5, "a", [1])
+    series.clear(header=HeaderMeta(2.0, "b", []))
+    series.set_header(HeaderMeta(3.0, "c", [2, 3]))
+    assert_array(series.get(), np.array([], dtype=np.float32))
+    assert series.get_header() == HeaderMeta(3.0, "c", [2, 3])
+
+    keyed = states.headers.keyed
+    keyed[1].set(np.array([7], dtype=np.uint16))
+    assert keyed[1].get_header() is None
+    keyed[1].replace(np.array([8], dtype=np.uint16), 0, header=HeaderMeta(4.0, "d", []))
+    assert keyed[1].get_header() == HeaderMeta(4.0, "d", [])
+    with pytest.raises(ValueError, match="does not exist"):
+        keyed[2].set_header(HeaderMeta(5.0, "e", []))
+    with pytest.raises(ValueError, match="index not found"):
+        keyed[2].get_header()
+    keyed.remove_index(1)
+    with pytest.raises(ValueError, match="index not found"):
+        keyed[1].get_header()
+
+    states.headers.take.set(np.array([1], dtype=np.uint8), header=HeaderMeta(6.0, "f", []))
+    states.headers.keyed_take[3].set(np.array([1], dtype=np.uint8))
+
+
+def test_a_header_of_the_wrong_type_changes_nothing(local_bundle):
+    _, states, _ = local_bundle
+    series = states.headers.series
+    series.set(np.array([1.0], dtype=np.float32))
+    with pytest.raises((TypeError, ValueError)):
+        series.set(np.array([2.0, 3.0], dtype=np.float32), header="not a header")
+    assert_array(series.get(), np.array([1.0], dtype=np.float32))
+    assert series.get_header() is None

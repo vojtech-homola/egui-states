@@ -1,6 +1,6 @@
 //! Deterministic server setup for the integration-only fixture schema.
 use crate::bindings::enums::{TestEnum, TestEnum2};
-use crate::bindings::structs::{TestStruct, TestStruct2};
+use crate::bindings::structs::{HeaderMeta, TestStruct, TestStruct2};
 use crate::bindings::{State, StatesServer};
 use egui_states::server::{self as s, CallbackHandle};
 use std::collections::HashMap;
@@ -15,6 +15,45 @@ pub struct Fixture {
 }
 
 type Signals = Arc<Mutex<Vec<String>>>;
+
+fn meta(scale: f32, label: &str, shape: &[u32]) -> HeaderMeta {
+    HeaderMeta {
+        scale,
+        label: label.into(),
+        shape: shape.to_vec(),
+    }
+}
+
+/// Commands 35 and 36: typed Data headers.
+fn edit_headers(all: &State, command: u32) -> s::Result<()> {
+    let h = &all.headers;
+    if command == 35 {
+        h.series
+            .set_with_header(&[1.0, 2.0], &meta(1.5, "series", &[3]), false)?;
+        h.series.add(&[3.0], false)?;
+        h.keyed.set(1, &[7], false)?;
+        h.keyed
+            .set_with_header(2, &[8], &meta(2.0, "keyed", &[1]), false)?;
+        h.keyed.set_header(2, &meta(3.0, "renamed", &[]), false)?;
+        h.take
+            .set_with_header(&[5], &meta(0.5, "take", &[1]), false, false, true)?;
+        h.keyed_take.set(4, &[6], false, false, false)?;
+        return Ok(());
+    }
+    h.series.clear(false)?;
+    h.series.set_header(&meta(4.0, "cleared", &[0]), false)?;
+    h.keyed.remove_index(1, false)?;
+    let expected = (
+        Some(meta(4.0, "cleared", &[0])),
+        None,
+        Some(meta(3.0, "renamed", &[])),
+    );
+    let stored = (h.series.header()?, h.keyed.header(1)?, h.keyed.header(2)?);
+    if stored != expected {
+        return Err(s::ServerError::new(format!("stored headers: {stored:?}")));
+    }
+    Ok(())
+}
 
 /// Command 30: non-default values of every shape for the client to check.
 fn set_wire_values(all: &State) -> s::Result<()> {
@@ -418,6 +457,10 @@ impl Fixture {
                     34 => {
                         edit_images(&all)?;
                         st.phase.set(34, true)?;
+                    }
+                    35 | 36 => {
+                        edit_headers(&all, command)?;
+                        st.phase.set(command, true)?;
                     }
                     99 => st.phase.set(99, true)?,
                     _ => panic!("unknown fixture command"),

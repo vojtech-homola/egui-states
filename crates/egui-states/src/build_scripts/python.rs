@@ -98,6 +98,28 @@ fn type_to_pytype(type_info: &ObjectType) -> String {
     }
 }
 
+/// The attribute of a Data state of kind `kind`; with a header, the
+/// `WithHeader` class of the kind.
+fn data_state(
+    attr: &str,
+    kind: &str,
+    data_type: &DataType,
+    header: Option<&ObjectType>,
+    object_types: &[ObjectType],
+) -> String {
+    let data_type = data_type_to_dtype(data_type);
+    match header {
+        None => format!("        self.{attr}: s.{kind}[{data_type}] = s.{kind}({data_type})\n"),
+        Some(header) => {
+            let index = object_type_index(object_types, header);
+            let py_type = type_info_to_python_type(header, false, PythonTypeContext::States);
+            format!(
+                "        self.{attr}: s.{kind}WithHeader[{data_type}, {py_type}] = s.{kind}WithHeader({data_type}, {index})\n"
+            )
+        }
+    }
+}
+
 fn collect_object_types(values: &[StateType]) -> Vec<ObjectType> {
     let mut type_list = Vec::new();
 
@@ -120,6 +142,10 @@ fn collect_object_types(values: &[StateType]) -> Vec<ObjectType> {
                 push_type(key);
                 push_type(value);
             }
+            StateType::Data(_, _, Some(header))
+            | StateType::DataTake(_, _, Some(header))
+            | StateType::DataMulti(_, _, Some(header))
+            | StateType::DataMultiTake(_, _, Some(header)) => push_type(header),
             StateType::SubState(_, _, _)
             | StateType::Image(_)
             | StateType::ImageMulti(_)
@@ -382,24 +408,22 @@ fn state_to_line(state: &StateType, object_types: &[ObjectType]) -> String {
                 "        self.{attr}: s.Map[{key_type}, {value_type}] = s.Map[{key_type}, {value_type}]({key}, {value})\n"
             )
         }
-        StateType::Data(_, data_type, _) => {
-            let data_type = data_type_to_dtype(data_type);
-            format!("        self.{attr}: s.Data[{data_type}] = s.Data({data_type})\n")
+        StateType::Data(_, data_type, header) => {
+            data_state(&attr, "Data", data_type, header.as_ref(), object_types)
         }
-        StateType::DataMulti(_, data_type, _) => {
-            let data_type = data_type_to_dtype(data_type);
-            format!("        self.{attr}: s.DataMulti[{data_type}] = s.DataMulti({data_type})\n")
+        StateType::DataMulti(_, data_type, header) => {
+            data_state(&attr, "DataMulti", data_type, header.as_ref(), object_types)
         }
-        StateType::DataTake(_, data_type, _) => {
-            let data_type = data_type_to_dtype(data_type);
-            format!("        self.{attr}: s.DataTake[{data_type}] = s.DataTake({data_type})\n")
+        StateType::DataTake(_, data_type, header) => {
+            data_state(&attr, "DataTake", data_type, header.as_ref(), object_types)
         }
-        StateType::DataMultiTake(_, data_type, _) => {
-            let data_type = data_type_to_dtype(data_type);
-            format!(
-                "        self.{attr}: s.DataMultiTake[{data_type}] = s.DataMultiTake({data_type})\n"
-            )
-        }
+        StateType::DataMultiTake(_, data_type, header) => data_state(
+            &attr,
+            "DataMultiTake",
+            data_type,
+            header.as_ref(),
+            object_types,
+        ),
         StateType::Image(_) => format!("        self.{attr}: s.Image = s.Image()\n"),
         StateType::ImageMulti(_) => {
             format!("        self.{attr}: s.ImageMulti = s.ImageMulti()\n")
@@ -658,7 +682,6 @@ class StatesServer(StateServerBase[{root_name}]):
 /// conflicts with a generated symbol such as `StatesServer`, `enums`,
 /// `structs`, or `s`.
 pub fn generate_python<S: State>(directory: impl AsRef<Path>) -> Result<(), String> {
-    scripts::reject_data_headers(&scripts::parse_states::<S>().0, "Python")?;
     let (states, enums, structs) = render_python::<S>();
     scripts::write_generated_files(
         directory.as_ref(),

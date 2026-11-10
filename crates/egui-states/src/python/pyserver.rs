@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::OnceLock;
 
+use bytes::Bytes;
 use pyo3::buffer::PyBuffer;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -25,7 +26,7 @@ use crate::server_core::http::web::{LoadError, WebSite};
 use crate::server_core::net::heartbeat::{self, Heartbeat};
 use crate::server_core::server::{Server, ServerConfig, StateRef};
 use crate::server_core::signals::{self, Claim, SignalsManager};
-use crate::server_core::states::data::{Data, DataMulti};
+use crate::server_core::states::data::{Data, DataMulti, DataSlice, header_type_id};
 use crate::server_core::states::data_take::{DataMultiTake, DataTake};
 use crate::server_core::states::image::{multi::ImageMulti, single::Image};
 use crate::server_core::states::value::{SignalCore, ValueCore, ValueStaticCore, ValueTakeCore};
@@ -41,10 +42,11 @@ enum PyState {
     Vec(Arc<ValueList>, PyObjectType),
     Image(Arc<Image>),
     ImageMulti(Arc<ImageMulti>),
-    Data(Arc<Data>),
-    DataTake(Arc<DataTake>),
-    DataMulti(Arc<DataMulti>),
-    DataMultiTake(Arc<DataMultiTake>),
+    /// The Data kinds keep their header type, `None` without one.
+    Data(Arc<Data>, Option<PyObjectType>),
+    DataTake(Arc<DataTake>, Option<PyObjectType>),
+    DataMulti(Arc<DataMulti>, Option<PyObjectType>),
+    DataMultiTake(Arc<DataMultiTake>, Option<PyObjectType>),
 }
 
 impl PyState {
@@ -58,10 +60,10 @@ impl PyState {
             Self::Vec(state, _) => &state.name,
             Self::Image(state) => &state.name,
             Self::ImageMulti(state) => &state.name,
-            Self::Data(state) => &state.name,
-            Self::DataTake(state) => &state.name,
-            Self::DataMulti(state) => &state.name,
-            Self::DataMultiTake(state) => &state.name,
+            Self::Data(state, _) => &state.name,
+            Self::DataTake(state, _) => &state.name,
+            Self::DataMulti(state, _) => &state.name,
+            Self::DataMultiTake(state, _) => &state.name,
         }
     }
 }
@@ -141,24 +143,87 @@ impl StateServerCore {
         lookup!(self, value_id, PyState::ImageMulti(images) => images, "ImageMulti with ID not found.")
     }
 
-    #[inline]
-    fn inner_data(&self, value_id: u64) -> PyResult<&Arc<Data>> {
-        lookup!(self, value_id, PyState::Data(data) => data, "Data with ID not found.")
+    /// Keeps a Data state's header type until the registry is finalized.
+    fn keep_header_type(&self, value_id: u64, header: Option<PyObjectType>) {
+        if let (Some(header), Some(types)) = (header, self.temps.write().as_mut()) {
+            types.insert(value_id, header);
+        }
     }
 
     #[inline]
-    fn inner_data_multi(&self, value_id: u64) -> PyResult<&Arc<DataMulti>> {
-        lookup!(self, value_id, PyState::DataMulti(data) => data, "DataMulti with ID not found.")
+    fn inner_data(&self, value_id: u64) -> PyResult<(&Arc<Data>, &Option<PyObjectType>)> {
+        lookup!(self, value_id, PyState::Data(data, header) => (data, header), "Data with ID not found.")
     }
 
     #[inline]
-    fn inner_data_take(&self, value_id: u64) -> PyResult<&Arc<DataTake>> {
-        lookup!(self, value_id, PyState::DataTake(data) => data, "DataTake with ID not found.")
+    fn inner_data_multi(
+        &self,
+        value_id: u64,
+    ) -> PyResult<(&Arc<DataMulti>, &Option<PyObjectType>)> {
+        lookup!(self, value_id, PyState::DataMulti(data, header) => (data, header), "DataMulti with ID not found.")
     }
 
     #[inline]
-    fn inner_data_multi_take(&self, value_id: u64) -> PyResult<&Arc<DataMultiTake>> {
-        lookup!(self, value_id, PyState::DataMultiTake(data) => data, "DataMultiTake with ID not found.")
+    fn inner_data_take(&self, value_id: u64) -> PyResult<(&Arc<DataTake>, &Option<PyObjectType>)> {
+        lookup!(self, value_id, PyState::DataTake(data, header) => (data, header), "DataTake with ID not found.")
+    }
+
+    #[inline]
+    fn inner_data_multi_take(
+        &self,
+        value_id: u64,
+    ) -> PyResult<(&Arc<DataMultiTake>, &Option<PyObjectType>)> {
+        lookup!(self, value_id, PyState::DataMultiTake(data, header) => (data, header), "DataMultiTake with ID not found.")
+    }
+}
+
+/// The header type id of a Data state with header type `header`.
+fn header_type(py: Python, header: Option<&PyObjectType>) -> PyResult<Option<u32>> {
+    match header {
+        None => Ok(None),
+        Some(header) => Ok(header_type_id(&header.get_core_type(py)?)),
+    }
+}
+
+/// Encodes the header a Python call passed as `(header,)`, `None` for none.
+///
+/// A state without a header type gets empty bytes, which its core rejects
+/// with its error for a header on such a state.
+fn encode_header(
+    header: Option<(Bound<PyAny>,)>,
+    header_type: &Option<PyObjectType>,
+) -> PyResult<Option<Bytes>> {
+    let Some((header,)) = header else {
+        return Ok(None);
+    };
+    let Some(object_type) = header_type else {
+        return Ok(Some(Bytes::new()));
+    };
+    let mut creator = ValueCreator::new();
+    pyparsing::serialize_py(&header, object_type, &mut creator)?;
+    Ok(Some(creator.finalize()))
+}
+
+/// Encodes a header passed alone, as [`encode_header`] does.
+fn encode_single_header(
+    header: &Bound<PyAny>,
+    header_type: &Option<PyObjectType>,
+) -> PyResult<Bytes> {
+    Ok(encode_header(Some((header.clone(),)), header_type)?.unwrap_or_default())
+}
+
+/// Decodes a stored header, `None` when none was set.
+fn decode_header<'py>(
+    py: Python<'py>,
+    header: Option<&[u8]>,
+    header_type: &Option<PyObjectType>,
+) -> PyResult<Option<Bound<'py, PyAny>>> {
+    match (header, header_type) {
+        (Some(header), Some(object_type)) => {
+            let mut parser = ValueParser::new(Bytes::copy_from_slice(header));
+            pyparsing::deserialize_py(py, &mut parser, object_type).map(Some)
+        }
+        _ => Ok(None),
     }
 }
 
@@ -258,10 +323,10 @@ impl StateServerCore {
                 }
                 StateRef::Image(state) => PyState::Image(state),
                 StateRef::ImageMulti(state) => PyState::ImageMulti(state),
-                StateRef::Data(state) => PyState::Data(state),
-                StateRef::DataTake(state) => PyState::DataTake(state),
-                StateRef::DataMulti(state) => PyState::DataMulti(state),
-                StateRef::DataMultiTake(state) => PyState::DataMultiTake(state),
+                StateRef::Data(state) => PyState::Data(state, types.remove(&id)),
+                StateRef::DataTake(state) => PyState::DataTake(state, types.remove(&id)),
+                StateRef::DataMulti(state) => PyState::DataMulti(state, types.remove(&id)),
+                StateRef::DataMultiTake(state) => PyState::DataMultiTake(state, types.remove(&id)),
             };
             states.insert(id, state);
         }
@@ -906,10 +971,22 @@ impl StateServerCore {
     }
 
     // data -------------------------------------------------------------
+    // A Data method takes its new header as `(header,)`, or `None` to keep
+    // the current one; the header is encoded before the GIL is released.
     fn data_get<'py>(&self, py: Python<'py>, value_id: u64) -> PyResult<Bound<'py, PyByteArray>> {
         Ok(self
             .inner_data(value_id)?
+            .0
             .get(|data| PyByteArray::new(py, data)))
+    }
+
+    fn data_get_header<'py>(
+        &self,
+        py: Python<'py>,
+        value_id: u64,
+    ) -> PyResult<Option<Bound<'py, PyAny>>> {
+        let (data, header_type) = self.inner_data(value_id)?;
+        data.header(|header| decode_header(py, header, header_type))
     }
 
     fn data_set(
@@ -918,10 +995,15 @@ impl StateServerCore {
         value_id: u64,
         data: &Bound<PyAny>,
         update: bool,
+        header: Option<(Bound<PyAny>,)>,
     ) -> PyResult<()> {
         let buffer = data_buffer(data)?;
-        let data_value = self.inner_data(value_id)?;
-        let elements = data_slice(&buffer, data_value.data_type)?;
+        let (data_value, header_type) = self.inner_data(value_id)?;
+        let header = encode_header(header, header_type)?;
+        let elements = DataSlice {
+            header: header.as_deref(),
+            ..data_slice(&buffer, data_value.data_type)?
+        };
 
         py.detach(|| {
             data_value
@@ -936,10 +1018,15 @@ impl StateServerCore {
         value_id: u64,
         data: &Bound<PyAny>,
         update: bool,
+        header: Option<(Bound<PyAny>,)>,
     ) -> PyResult<()> {
         let buffer = data_buffer(data)?;
-        let data_value = self.inner_data(value_id)?;
-        let elements = data_slice(&buffer, data_value.data_type)?;
+        let (data_value, header_type) = self.inner_data(value_id)?;
+        let header = encode_header(header, header_type)?;
+        let elements = DataSlice {
+            header: header.as_deref(),
+            ..data_slice(&buffer, data_value.data_type)?
+        };
 
         py.detach(|| {
             data_value
@@ -948,6 +1035,7 @@ impl StateServerCore {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn data_replace(
         &self,
         py: Python,
@@ -955,10 +1043,15 @@ impl StateServerCore {
         data: &Bound<PyAny>,
         index: usize,
         update: bool,
+        header: Option<(Bound<PyAny>,)>,
     ) -> PyResult<()> {
         let buffer = data_buffer(data)?;
-        let data_value = self.inner_data(value_id)?;
-        let elements = data_slice(&buffer, data_value.data_type)?;
+        let (data_value, header_type) = self.inner_data(value_id)?;
+        let header = encode_header(header, header_type)?;
+        let elements = DataSlice {
+            header: header.as_deref(),
+            ..data_slice(&buffer, data_value.data_type)?
+        };
 
         py.detach(|| {
             data_value
@@ -974,23 +1067,51 @@ impl StateServerCore {
         index: usize,
         count: usize,
         update: bool,
+        header: Option<(Bound<PyAny>,)>,
     ) -> PyResult<()> {
+        let (data_value, header_type) = self.inner_data(value_id)?;
+        let header = encode_header(header, header_type)?;
         py.detach(|| {
-            self.inner_data(value_id)?
-                .remove(index, count, None, update)
+            data_value
+                .remove(index, count, header.as_deref(), update)
                 .map_err(PyValueError::new_err)
         })
     }
 
-    fn data_clear(&self, py: Python, value_id: u64, update: bool) -> PyResult<()> {
+    fn data_clear(
+        &self,
+        py: Python,
+        value_id: u64,
+        update: bool,
+        header: Option<(Bound<PyAny>,)>,
+    ) -> PyResult<()> {
+        let (data_value, header_type) = self.inner_data(value_id)?;
+        let header = encode_header(header, header_type)?;
         py.detach(|| {
-            self.inner_data(value_id)?
-                .clear(None, update)
+            data_value
+                .clear(header.as_deref(), update)
+                .map_err(PyValueError::new_err)
+        })
+    }
+
+    fn data_set_header(
+        &self,
+        py: Python,
+        value_id: u64,
+        header: &Bound<PyAny>,
+        update: bool,
+    ) -> PyResult<()> {
+        let (data_value, header_type) = self.inner_data(value_id)?;
+        let header = encode_single_header(header, header_type)?;
+        py.detach(|| {
+            data_value
+                .set_header(&header, update)
                 .map_err(PyValueError::new_err)
         })
     }
 
     // data take -------------------------------------------------------
+    #[allow(clippy::too_many_arguments)]
     fn data_take_set(
         &self,
         py: Python,
@@ -999,10 +1120,15 @@ impl StateServerCore {
         blocking: bool,
         update: bool,
         cache: bool,
+        header: Option<(Bound<PyAny>,)>,
     ) -> PyResult<()> {
         let buffer = data_buffer(data)?;
-        let data_value = self.inner_data_take(value_id)?;
-        let elements = data_slice(&buffer, data_value.data_type)?;
+        let (data_value, header_type) = self.inner_data_take(value_id)?;
+        let header = encode_header(header, header_type)?;
+        let elements = DataSlice {
+            header: header.as_deref(),
+            ..data_slice(&buffer, data_value.data_type)?
+        };
 
         py.detach(|| {
             data_value
@@ -1018,13 +1144,27 @@ impl StateServerCore {
         value_id: u64,
         index: u32,
     ) -> PyResult<Bound<'py, PyByteArray>> {
-        let data_multi = self.inner_data_multi(value_id)?;
+        let (data_multi, _) = self.inner_data_multi(value_id)?;
         data_multi.get(index, |data| match data {
             Some(data) => Ok(PyByteArray::new(py, data)),
             None => Err(PyValueError::new_err("DataMulti index not found.")),
         })
     }
 
+    fn data_multi_get_header<'py>(
+        &self,
+        py: Python<'py>,
+        value_id: u64,
+        index: u32,
+    ) -> PyResult<Option<Bound<'py, PyAny>>> {
+        let (data_multi, header_type) = self.inner_data_multi(value_id)?;
+        data_multi.header(index, |header| match header {
+            Some(header) => decode_header(py, header, header_type),
+            None => Err(PyValueError::new_err("DataMulti index not found.")),
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn data_multi_set(
         &self,
         py: Python,
@@ -1032,10 +1172,15 @@ impl StateServerCore {
         index: u32,
         data: &Bound<PyAny>,
         update: bool,
+        header: Option<(Bound<PyAny>,)>,
     ) -> PyResult<()> {
         let buffer = data_buffer(data)?;
-        let data_value = self.inner_data_multi(value_id)?;
-        let elements = data_slice(&buffer, data_value.data_type)?;
+        let (data_value, header_type) = self.inner_data_multi(value_id)?;
+        let header = encode_header(header, header_type)?;
+        let elements = DataSlice {
+            header: header.as_deref(),
+            ..data_slice(&buffer, data_value.data_type)?
+        };
 
         py.detach(|| {
             data_value
@@ -1044,6 +1189,7 @@ impl StateServerCore {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn data_multi_add(
         &self,
         py: Python,
@@ -1051,10 +1197,15 @@ impl StateServerCore {
         index: u32,
         data: &Bound<PyAny>,
         update: bool,
+        header: Option<(Bound<PyAny>,)>,
     ) -> PyResult<()> {
         let buffer = data_buffer(data)?;
-        let data_value = self.inner_data_multi(value_id)?;
-        let elements = data_slice(&buffer, data_value.data_type)?;
+        let (data_value, header_type) = self.inner_data_multi(value_id)?;
+        let header = encode_header(header, header_type)?;
+        let elements = DataSlice {
+            header: header.as_deref(),
+            ..data_slice(&buffer, data_value.data_type)?
+        };
 
         py.detach(|| {
             data_value
@@ -1063,6 +1214,7 @@ impl StateServerCore {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn data_multi_replace(
         &self,
         py: Python,
@@ -1071,10 +1223,15 @@ impl StateServerCore {
         data: &Bound<PyAny>,
         data_index: usize,
         update: bool,
+        header: Option<(Bound<PyAny>,)>,
     ) -> PyResult<()> {
         let buffer = data_buffer(data)?;
-        let data_value = self.inner_data_multi(value_id)?;
-        let elements = data_slice(&buffer, data_value.data_type)?;
+        let (data_value, header_type) = self.inner_data_multi(value_id)?;
+        let header = encode_header(header, header_type)?;
+        let elements = DataSlice {
+            header: header.as_deref(),
+            ..data_slice(&buffer, data_value.data_type)?
+        };
 
         py.detach(|| {
             data_value
@@ -1083,6 +1240,7 @@ impl StateServerCore {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn data_multi_remove(
         &self,
         py: Python,
@@ -1091,10 +1249,13 @@ impl StateServerCore {
         data_index: usize,
         count: usize,
         update: bool,
+        header: Option<(Bound<PyAny>,)>,
     ) -> PyResult<()> {
+        let (data_value, header_type) = self.inner_data_multi(value_id)?;
+        let header = encode_header(header, header_type)?;
         py.detach(|| {
-            self.inner_data_multi(value_id)?
-                .remove(index, data_index, count, None, update)
+            data_value
+                .remove(index, data_index, count, header.as_deref(), update)
                 .map_err(PyValueError::new_err)
         })
     }
@@ -1105,10 +1266,30 @@ impl StateServerCore {
         value_id: u64,
         index: u32,
         update: bool,
+        header: Option<(Bound<PyAny>,)>,
     ) -> PyResult<()> {
+        let (data_value, header_type) = self.inner_data_multi(value_id)?;
+        let header = encode_header(header, header_type)?;
         py.detach(|| {
-            self.inner_data_multi(value_id)?
-                .clear(index, None, update)
+            data_value
+                .clear(index, header.as_deref(), update)
+                .map_err(PyValueError::new_err)
+        })
+    }
+
+    fn data_multi_set_header(
+        &self,
+        py: Python,
+        value_id: u64,
+        index: u32,
+        header: &Bound<PyAny>,
+        update: bool,
+    ) -> PyResult<()> {
+        let (data_value, header_type) = self.inner_data_multi(value_id)?;
+        let header = encode_single_header(header, header_type)?;
+        py.detach(|| {
+            data_value
+                .set_header(index, &header, update)
                 .map_err(PyValueError::new_err)
         })
     }
@@ -1122,6 +1303,7 @@ impl StateServerCore {
     ) -> PyResult<()> {
         py.detach(|| {
             self.inner_data_multi(value_id)?
+                .0
                 .remove_index(index, update)
                 .map_err(PyValueError::new_err)
         })
@@ -1130,6 +1312,7 @@ impl StateServerCore {
     fn data_multi_reset(&self, py: Python, value_id: u64, update: bool) -> PyResult<()> {
         py.detach(|| {
             self.inner_data_multi(value_id)?
+                .0
                 .reset(update)
                 .map_err(PyValueError::new_err)
         })
@@ -1146,10 +1329,15 @@ impl StateServerCore {
         blocking: bool,
         update: bool,
         cache: bool,
+        header: Option<(Bound<PyAny>,)>,
     ) -> PyResult<()> {
         let buffer = data_buffer(data)?;
-        let data_value = self.inner_data_multi_take(value_id)?;
-        let elements = data_slice(&buffer, data_value.data_type)?;
+        let (data_value, header_type) = self.inner_data_multi_take(value_id)?;
+        let header = encode_header(header, header_type)?;
+        let elements = DataSlice {
+            header: header.as_deref(),
+            ..data_slice(&buffer, data_value.data_type)?
+        };
 
         py.detach(|| {
             data_value
@@ -1167,6 +1355,7 @@ impl StateServerCore {
     ) -> PyResult<()> {
         py.detach(|| {
             self.inner_data_multi_take(value_id)?
+                .0
                 .remove_index(index, update)
                 .map_err(PyValueError::new_err)
         })
@@ -1175,6 +1364,7 @@ impl StateServerCore {
     fn data_multi_take_reset(&self, py: Python, value_id: u64, update: bool) -> PyResult<()> {
         py.detach(|| {
             self.inner_data_multi_take(value_id)?
+                .0
                 .reset(update)
                 .map_err(PyValueError::new_err)
         })
@@ -1349,39 +1539,75 @@ impl StateServerCore {
         Ok(value_id)
     }
 
-    fn add_data(&self, name: String, data_type: u8) -> PyResult<u64> {
+    fn add_data(
+        &self,
+        py: Python,
+        name: String,
+        data_type: u8,
+        header: Option<&Bound<PyObjectClass>>,
+    ) -> PyResult<u64> {
+        let header = header.map(|header| header.borrow().object_type.clone_py(py));
+        let header_type = header_type(py, header.as_ref())?;
         let value_id = self
             .server
             .write()
-            .add_data(&name, data_type, None)
+            .add_data(&name, data_type, header_type)
             .map_err(|e| PyValueError::new_err(format!("Failed to add Data: {}", e)))?;
+        self.keep_header_type(value_id, header);
         Ok(value_id)
     }
 
-    fn add_data_multi(&self, name: String, data_type: u8) -> PyResult<u64> {
+    fn add_data_multi(
+        &self,
+        py: Python,
+        name: String,
+        data_type: u8,
+        header: Option<&Bound<PyObjectClass>>,
+    ) -> PyResult<u64> {
+        let header = header.map(|header| header.borrow().object_type.clone_py(py));
+        let header_type = header_type(py, header.as_ref())?;
         let value_id = self
             .server
             .write()
-            .add_data_multi(&name, data_type, None)
+            .add_data_multi(&name, data_type, header_type)
             .map_err(|e| PyValueError::new_err(format!("Failed to add DataMulti: {}", e)))?;
+        self.keep_header_type(value_id, header);
         Ok(value_id)
     }
 
-    fn add_data_take(&self, name: String, data_type: u8) -> PyResult<u64> {
+    fn add_data_take(
+        &self,
+        py: Python,
+        name: String,
+        data_type: u8,
+        header: Option<&Bound<PyObjectClass>>,
+    ) -> PyResult<u64> {
+        let header = header.map(|header| header.borrow().object_type.clone_py(py));
+        let header_type = header_type(py, header.as_ref())?;
         let value_id = self
             .server
             .write()
-            .add_data_take(&name, data_type, None)
+            .add_data_take(&name, data_type, header_type)
             .map_err(|e| PyValueError::new_err(format!("Failed to add DataTake: {}", e)))?;
+        self.keep_header_type(value_id, header);
         Ok(value_id)
     }
 
-    fn add_data_multi_take(&self, name: String, data_type: u8) -> PyResult<u64> {
+    fn add_data_multi_take(
+        &self,
+        py: Python,
+        name: String,
+        data_type: u8,
+        header: Option<&Bound<PyObjectClass>>,
+    ) -> PyResult<u64> {
+        let header = header.map(|header| header.borrow().object_type.clone_py(py));
+        let header_type = header_type(py, header.as_ref())?;
         let value_id = self
             .server
             .write()
-            .add_data_multi_take(&name, data_type, None)
+            .add_data_multi_take(&name, data_type, header_type)
             .map_err(|e| PyValueError::new_err(format!("Failed to add DataMultiTake: {}", e)))?;
+        self.keep_header_type(value_id, header);
         Ok(value_id)
     }
 }
@@ -1428,7 +1654,9 @@ mod tests {
             .port();
         let id = Python::attach(|py| {
             let server = core.borrow(py);
-            let id = server.add_data_multi("root.data".to_string(), 0).unwrap();
+            let id = server
+                .add_data_multi(py, "root.data".to_string(), 0, None)
+                .unwrap();
             server.finalize(py).unwrap();
             server.start(py, port, Some([127, 0, 0, 1]), None).unwrap();
             id
@@ -1452,7 +1680,7 @@ mod tests {
         type Control = fn(&StateServerCore, Python, u64) -> PyResult<()>;
         let controls: [(&str, Control); 3] = [
             ("clear", |server, py, id| {
-                server.data_multi_clear(py, id, 0, false)
+                server.data_multi_clear(py, id, 0, false, None)
             }),
             ("remove_index", |server, py, id| {
                 server.data_multi_remove_index(py, id, 0, false)
@@ -1471,8 +1699,8 @@ mod tests {
                     Python::attach(|py| {
                         let server = core.borrow(py);
                         let data = PyBytes::new(py, &[1, 2, 3]);
-                        server.data_multi_set(py, id, 0, data.as_any(), false)?;
-                        server.data_multi_set(py, id, 0, data.as_any(), false)
+                        server.data_multi_set(py, id, 0, data.as_any(), false, None)?;
+                        server.data_multi_set(py, id, 0, data.as_any(), false, None)
                     })
                 })
             };

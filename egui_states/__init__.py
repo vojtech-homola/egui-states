@@ -8,10 +8,15 @@ images, and logging levels that can be controlled from Python.
 from egui_states import version
 from egui_states.logging import LogLevel
 from egui_states.structures import (
+    UNSET,
     Data,
     DataMulti,
     DataMultiTake,
+    DataMultiTakeWithHeader,
+    DataMultiWithHeader,
     DataTake,
+    DataTakeWithHeader,
+    DataWithHeader,
     Image,
     ImageColor,
     ImageMulti,
@@ -40,5 +45,10 @@ __all__ = [
     "DataTake",
     "DataMulti",
     "DataMultiTake",
+    "DataWithHeader",
+    "DataTakeWithHeader",
+    "DataMultiWithHeader",
+    "DataMultiTakeWithHeader",
+    "UNSET",
     "LogLevel",
 ]

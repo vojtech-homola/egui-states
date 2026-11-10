@@ -26,7 +26,6 @@ pub(crate) struct DataSlice<'a> {
 
 /// The header type id of a Data state whose header type is `object_type`:
 /// `None` for [`ObjectType::Empty`], the type's hash otherwise.
-#[cfg(any(feature = "server", feature = "c_abi"))]
 pub(crate) fn header_type_id(object_type: &crate::typed::ObjectType) -> Option<u32> {
     match object_type {
         crate::typed::ObjectType::Empty => None,

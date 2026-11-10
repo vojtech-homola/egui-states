@@ -223,6 +223,7 @@ pub(crate) fn states_into_values_list(state: &StateType, list: &mut Vec<StateTyp
 
 /// Fails for a state tree with a Data header, which the `generator`
 /// generator does not produce yet.
+#[cfg(feature = "c_abi")]
 pub(crate) fn reject_data_headers(state: &StateType, generator: &str) -> Result<(), String> {
     match state {
         StateType::Data(name, _, Some(_))

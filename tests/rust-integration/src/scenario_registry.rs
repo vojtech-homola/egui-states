@@ -23,6 +23,7 @@ macro_rules! for_each_scenario {
             images_wire => "images-wire",
             takeover => "takeover",
             rejected_client => "rejected-client",
+            data_headers => "data-headers",
         }
     };
 }

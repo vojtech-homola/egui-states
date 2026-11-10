@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Buffer, Callable
-from typing import Any
+from typing import Any, Final
 
 import numpy as np
 import numpy.typing as npt
@@ -739,6 +739,23 @@ def _get_dtype_id(dtype: type[np.generic]) -> int:
     return t
 
 
+class _Unset:
+    """Type of :data:`UNSET`, the absent-header default."""
+
+    def __repr__(self) -> str:
+        return "UNSET"
+
+
+#: Default of the ``header`` arguments: no header is given, so the current one
+#: is kept. ``None`` is not used for that, so an optional header type can still
+#: send ``None``.
+UNSET: Final = _Unset()
+
+
+def _header(header: object) -> tuple[object] | None:
+    return None if header is UNSET else (header,)
+
+
 class Data[T: np.generic](_StaticBase):
     """Contiguous NumPy-compatible numeric buffer mirrored to the client.
 
@@ -753,11 +770,16 @@ class Data[T: np.generic](_StaticBase):
             ``numpy.float64``.
     """
 
+    _header_id: int | None = None
+
     def __init__(self, dtype: type[T]) -> None:
         self._dtype = dtype
 
+    def _header_type(self, types: list[PyObjectType]) -> PyObjectType | None:
+        return None if self._header_id is None else types[self._header_id]
+
     def _initialize(self, name: str, types: list[PyObjectType]) -> None:
-        self._value_id = self._server.add_data(name, _get_dtype_id(self._dtype))
+        self._value_id = self._server.add_data(name, _get_dtype_id(self._dtype), self._header_type(types))
 
     def get(self) -> npt.NDArray[T]:
         """Return a locally mutable snapshot of the current server buffer.
@@ -780,7 +802,7 @@ class Data[T: np.generic](_StaticBase):
             update (bool, optional): Whether to request a client repaint.
                 Defaults to False.
         """
-        self._server.data_set(self._value_id, data, update)
+        self._server.data_set(self._value_id, data, update, None)
 
     def add(self, data: Buffer, update: bool = False) -> None:
         """Add the data to the UI data.
@@ -791,7 +813,7 @@ class Data[T: np.generic](_StaticBase):
             update (bool, optional): Whether to request a client repaint.
                 Defaults to False.
         """
-        self._server.data_add(self._value_id, data, update)
+        self._server.data_add(self._value_id, data, update, None)
 
     def replace(self, data: Buffer, index: int, update: bool = False) -> None:
         """Replace the data in the UI data.
@@ -803,7 +825,7 @@ class Data[T: np.generic](_StaticBase):
             update (bool, optional): Whether to request a client repaint.
                 Defaults to False.
         """
-        self._server.data_replace(self._value_id, data, index, update)
+        self._server.data_replace(self._value_id, data, index, update, None)
 
     def remove(self, index: int, count: int, update: bool = False) -> None:
         """Remove the data from the UI data.
@@ -814,7 +836,7 @@ class Data[T: np.generic](_StaticBase):
             update (bool, optional): Whether to request a client repaint.
                 Defaults to False.
         """
-        self._server.data_remove(self._value_id, index, count, update)
+        self._server.data_remove(self._value_id, index, count, update, None)
 
     def clear(self, update: bool = False) -> None:
         """Clear the data in the UI data.
@@ -823,7 +845,110 @@ class Data[T: np.generic](_StaticBase):
             update (bool, optional): Whether to request a client repaint.
                 Defaults to False.
         """
-        self._server.data_clear(self._value_id, update)
+        self._server.data_clear(self._value_id, update, None)
+
+
+class DataWithHeader[T: np.generic, H](Data[T]):
+    """:class:`Data` with a typed header ``H`` published together with the buffer.
+
+    Every change can carry a new header; a change without one keeps the current
+    header. The client receives the header with the buffer it belongs to, so it
+    never shows a new header with an old buffer. Until a header is set,
+    :meth:`get_header` returns ``None`` while the client shows the header type's
+    default; once set, a header cannot return to "never set".
+
+    Args:
+        dtype (type[T]): One of the NumPy scalar types supported by
+            :class:`Data`.
+        header_id (int): Index of the header's protocol type in the generated
+            type list.
+    """
+
+    def __init__(self, dtype: type[T], header_id: int) -> None:
+        super().__init__(dtype)
+        self._header_id = header_id
+
+    def get_header(self) -> H | None:
+        """Return the current header.
+
+        Returns:
+            H | None: The header, or ``None`` until one is set.
+        """
+        return self._server.data_get_header(self._value_id)
+
+    def set(self, data: Buffer, update: bool = False, header: H | _Unset = UNSET) -> None:
+        """Set the data and optionally the header.
+
+        Args:
+            data (Buffer): Data to set.
+            update (bool, optional): Whether to request a client repaint.
+                Defaults to False.
+            header (H | _Unset, optional): New header; :data:`UNSET` keeps the
+                current one. Defaults to :data:`UNSET`.
+        """
+        self._server.data_set(self._value_id, data, update, _header(header))
+
+    def add(self, data: Buffer, update: bool = False, header: H | _Unset = UNSET) -> None:
+        """Append data and optionally replace the header.
+
+        Args:
+            data (Buffer): Data to append.
+            update (bool, optional): Whether to request a client repaint.
+                Defaults to False.
+            header (H | _Unset, optional): New header; :data:`UNSET` keeps the
+                current one. Defaults to :data:`UNSET`.
+        """
+        self._server.data_add(self._value_id, data, update, _header(header))
+
+    def replace(self, data: Buffer, index: int, update: bool = False, header: H | _Unset = UNSET) -> None:
+        """Replace data from ``index`` and optionally the header.
+
+        Args:
+            data (Buffer): Replacement data.
+            index (int): Index at which replacement starts.
+            update (bool, optional): Whether to request a client repaint.
+                Defaults to False.
+            header (H | _Unset, optional): New header; :data:`UNSET` keeps the
+                current one. Defaults to :data:`UNSET`.
+        """
+        self._server.data_replace(self._value_id, data, index, update, _header(header))
+
+    def remove(self, index: int, count: int, update: bool = False, header: H | _Unset = UNSET) -> None:
+        """Remove data and optionally replace the header.
+
+        Args:
+            index (int): Index at which removal starts.
+            count (int): Number of items to remove.
+            update (bool, optional): Whether to request a client repaint.
+                Defaults to False.
+            header (H | _Unset, optional): New header; :data:`UNSET` keeps the
+                current one. Defaults to :data:`UNSET`.
+        """
+        self._server.data_remove(self._value_id, index, count, update, _header(header))
+
+    def clear(self, update: bool = False, header: H | _Unset = UNSET) -> None:
+        """Clear the data; the header stays unless a new one is given.
+
+        Args:
+            update (bool, optional): Whether to request a client repaint.
+                Defaults to False.
+            header (H | _Unset, optional): New header; :data:`UNSET` keeps the
+                current one. Defaults to :data:`UNSET`.
+        """
+        self._server.data_clear(self._value_id, update, _header(header))
+
+    def set_header(self, header: H, update: bool = False) -> None:
+        """Replace the header alone.
+
+        The client does not acknowledge a header, so this never waits for it:
+        headers set faster than the client reads them queue up, as values do.
+
+        Args:
+            header (H): New header.
+            update (bool, optional): Whether to request a client repaint.
+                Defaults to False.
+        """
+        self._server.data_set_header(self._value_id, header, update)
 
 
 class DataTake[T: np.generic](_StaticBase):
@@ -839,11 +964,14 @@ class DataTake[T: np.generic](_StaticBase):
             types supported by :class:`Data`.
     """
 
+    _header_id: int | None = None
+
     def __init__(self, dtype: type[T]) -> None:
         self._dtype = dtype
 
     def _initialize(self, name: str, types: list[PyObjectType]) -> None:
-        self._value_id = self._server.add_data_take(name, _get_dtype_id(self._dtype))
+        header = None if self._header_id is None else types[self._header_id]
+        self._value_id = self._server.add_data_take(name, _get_dtype_id(self._dtype), header)
 
     def set(
         self,
@@ -868,7 +996,48 @@ class DataTake[T: np.generic](_StaticBase):
             cache (bool, optional): Whether to cache the last sent data so a
                 newly initialized client receives it. Defaults to False.
         """
-        self._server.data_take_set(self._value_id, data, blocking, update, cache)
+        self._server.data_take_set(self._value_id, data, blocking, update, cache, None)
+
+
+class DataTakeWithHeader[T: np.generic, H](DataTake[T]):
+    """:class:`DataTake` whose transfers carry a typed header ``H``.
+
+    A transfer sent without a header reaches the client with the header type's
+    default.
+
+    Args:
+        dtype (type[T]): One of the NumPy scalar types supported by
+            :class:`Data`.
+        header_id (int): Index of the header's protocol type in the generated
+            type list.
+    """
+
+    def __init__(self, dtype: type[T], header_id: int) -> None:
+        super().__init__(dtype)
+        self._header_id = header_id
+
+    def set(
+        self,
+        data: Buffer,
+        blocking: bool = False,
+        update: bool = False,
+        cache: bool = False,
+        header: H | _Unset = UNSET,
+    ) -> None:
+        """Send data with an optional header.
+
+        Args:
+            data (Buffer): Data to send.
+            blocking (bool, optional): Whether the next send waits until the
+                client consumes this data. Defaults to False.
+            update (bool, optional): Whether to request a client repaint.
+                Defaults to False.
+            cache (bool, optional): Whether to cache the last sent data and
+                header for a newly initialized client. Defaults to False.
+            header (H | _Unset, optional): Header sent with the data;
+                :data:`UNSET` sends the default. Defaults to :data:`UNSET`.
+        """
+        self._server.data_take_set(self._value_id, data, blocking, update, cache, _header(header))
 
 
 class SingleData[T: np.generic]:
@@ -910,7 +1079,7 @@ class SingleData[T: np.generic]:
             update (bool, optional): Whether to request a client repaint.
                 Defaults to False.
         """
-        self._server.data_multi_set(self._value_id, self._index, data, update)
+        self._server.data_multi_set(self._value_id, self._index, data, update, None)
 
     def add(self, data: Buffer, update: bool = False) -> None:
         """Add the data to the UI data at this index.
@@ -921,7 +1090,7 @@ class SingleData[T: np.generic]:
             update (bool, optional): Whether to request a client repaint.
                 Defaults to False.
         """
-        self._server.data_multi_add(self._value_id, self._index, data, update)
+        self._server.data_multi_add(self._value_id, self._index, data, update, None)
 
     def replace(self, data: Buffer, index: int, update: bool = False) -> None:
         """Replace the data in the UI data at this index.
@@ -933,7 +1102,7 @@ class SingleData[T: np.generic]:
             update (bool, optional): Whether to request a client repaint.
                 Defaults to False.
         """
-        self._server.data_multi_replace(self._value_id, self._index, data, index, update)
+        self._server.data_multi_replace(self._value_id, self._index, data, index, update, None)
 
     def remove(self, index: int, count: int, update: bool = False) -> None:
         """Remove the data from the UI data at this index.
@@ -944,7 +1113,7 @@ class SingleData[T: np.generic]:
             update (bool, optional): Whether to request a client repaint.
                 Defaults to False.
         """
-        self._server.data_multi_remove(self._value_id, self._index, index, count, update)
+        self._server.data_multi_remove(self._value_id, self._index, index, count, update, None)
 
     def clear(self, update: bool = False) -> None:
         """Clear the data in the UI data at this index.
@@ -953,7 +1122,99 @@ class SingleData[T: np.generic]:
             update (bool, optional): Whether to request a client repaint.
                 Defaults to False.
         """
-        self._server.data_multi_clear(self._value_id, self._index, update)
+        self._server.data_multi_clear(self._value_id, self._index, update, None)
+
+
+class SingleDataWithHeader[T: np.generic, H](SingleData[T]):
+    """:class:`SingleData` of a :class:`DataMultiWithHeader`, with its header.
+
+    A new index set without a header gets the header type's default.
+    """
+
+    def get_header(self) -> H | None:
+        """Return the header at this index.
+
+        Returns:
+            H | None: The header, or ``None`` until one is set for the index.
+
+        Raises:
+            ValueError: If the index does not exist.
+        """
+        return self._server.data_multi_get_header(self._value_id, self._index)
+
+    def set(self, data: Buffer, update: bool = False, header: H | _Unset = UNSET) -> None:
+        """Set the data at this index and optionally its header.
+
+        Args:
+            data (Buffer): Data to set.
+            update (bool, optional): Whether to request a client repaint.
+                Defaults to False.
+            header (H | _Unset, optional): New header; :data:`UNSET` keeps the
+                current one. Defaults to :data:`UNSET`.
+        """
+        self._server.data_multi_set(self._value_id, self._index, data, update, _header(header))
+
+    def add(self, data: Buffer, update: bool = False, header: H | _Unset = UNSET) -> None:
+        """Append data at this index and optionally replace its header.
+
+        Args:
+            data (Buffer): Data to append.
+            update (bool, optional): Whether to request a client repaint.
+                Defaults to False.
+            header (H | _Unset, optional): New header; :data:`UNSET` keeps the
+                current one. Defaults to :data:`UNSET`.
+        """
+        self._server.data_multi_add(self._value_id, self._index, data, update, _header(header))
+
+    def replace(self, data: Buffer, index: int, update: bool = False, header: H | _Unset = UNSET) -> None:
+        """Replace data from ``index`` and optionally the header.
+
+        Args:
+            data (Buffer): Replacement data.
+            index (int): Index at which replacement starts within this buffer.
+            update (bool, optional): Whether to request a client repaint.
+                Defaults to False.
+            header (H | _Unset, optional): New header; :data:`UNSET` keeps the
+                current one. Defaults to :data:`UNSET`.
+        """
+        self._server.data_multi_replace(self._value_id, self._index, data, index, update, _header(header))
+
+    def remove(self, index: int, count: int, update: bool = False, header: H | _Unset = UNSET) -> None:
+        """Remove data at this index and optionally replace its header.
+
+        Args:
+            index (int): Index at which removal starts within this buffer.
+            count (int): Number of items to remove.
+            update (bool, optional): Whether to request a client repaint.
+                Defaults to False.
+            header (H | _Unset, optional): New header; :data:`UNSET` keeps the
+                current one. Defaults to :data:`UNSET`.
+        """
+        self._server.data_multi_remove(self._value_id, self._index, index, count, update, _header(header))
+
+    def clear(self, update: bool = False, header: H | _Unset = UNSET) -> None:
+        """Clear the data at this index; its header stays unless a new one is given.
+
+        Args:
+            update (bool, optional): Whether to request a client repaint.
+                Defaults to False.
+            header (H | _Unset, optional): New header; :data:`UNSET` keeps the
+                current one. Defaults to :data:`UNSET`.
+        """
+        self._server.data_multi_clear(self._value_id, self._index, update, _header(header))
+
+    def set_header(self, header: H, update: bool = False) -> None:
+        """Replace the header at this index alone; it never waits for the client.
+
+        Args:
+            header (H): New header.
+            update (bool, optional): Whether to request a client repaint.
+                Defaults to False.
+
+        Raises:
+            ValueError: If the index does not exist.
+        """
+        self._server.data_multi_set_header(self._value_id, self._index, header, update)
 
 
 class DataMulti[T: np.generic](_StaticBase):
@@ -964,11 +1225,14 @@ class DataMulti[T: np.generic](_StaticBase):
             types supported by :class:`Data`.
     """
 
+    _header_id: int | None = None
+
     def __init__(self, dtype: type[T]) -> None:
         self._dtype = dtype
 
     def _initialize(self, name: str, types: list[PyObjectType]) -> None:
-        self._value_id = self._server.add_data_multi(name, _get_dtype_id(self._dtype))
+        header = None if self._header_id is None else types[self._header_id]
+        self._value_id = self._server.add_data_multi(name, _get_dtype_id(self._dtype), header)
 
     def get(self, index: int) -> SingleData[T]:
         """Get the SingleData object for the given index.
@@ -982,7 +1246,7 @@ class DataMulti[T: np.generic](_StaticBase):
         return SingleData(self._dtype, self._server, self._value_id, index)
 
     def remove_index(self, index: int, update: bool = False) -> None:
-        """Remove the given index from the DataMulti.
+        """Remove the given index and its header from the DataMulti.
 
         Args:
             index (int): The index to remove.
@@ -992,7 +1256,7 @@ class DataMulti[T: np.generic](_StaticBase):
         self._server.data_multi_remove_index(self._value_id, index, update)
 
     def reset(self, update: bool = False) -> None:
-        """Reset (clear all indices) in the DataMulti.
+        """Reset (clear all indices and headers) in the DataMulti.
 
         Args:
             update (bool, optional): Whether to request a client repaint.
@@ -1001,6 +1265,37 @@ class DataMulti[T: np.generic](_StaticBase):
         self._server.data_multi_reset(self._value_id, update)
 
     def __getitem__(self, index: int) -> SingleData[T]:
+        if isinstance(index, int):
+            return self.get(index)
+        raise TypeError("index must be an integer")
+
+
+class DataMultiWithHeader[T: np.generic, H](DataMulti[T]):
+    """:class:`DataMulti` whose buffers each carry a typed header ``H``.
+
+    Args:
+        dtype (type[T]): One of the NumPy scalar types supported by
+            :class:`Data`.
+        header_id (int): Index of the header's protocol type in the generated
+            type list.
+    """
+
+    def __init__(self, dtype: type[T], header_id: int) -> None:
+        super().__init__(dtype)
+        self._header_id = header_id
+
+    def get(self, index: int) -> SingleDataWithHeader[T, H]:
+        """Get the SingleDataWithHeader object for the given index.
+
+        Args:
+            index (int): The index of the ``SingleDataWithHeader`` object.
+
+        Returns:
+            SingleDataWithHeader[T, H]: The handle for the given index.
+        """
+        return SingleDataWithHeader(self._dtype, self._server, self._value_id, index)
+
+    def __getitem__(self, index: int) -> SingleDataWithHeader[T, H]:
         if isinstance(index, int):
             return self.get(index)
         raise TypeError("index must be an integer")
@@ -1044,6 +1339,42 @@ class SingleDataTake[T: np.generic]:
             blocking,
             update,
             cache,
+            None,
+        )
+
+
+class SingleDataTakeWithHeader[T: np.generic, H](SingleDataTake[T]):
+    """:class:`SingleDataTake` of a :class:`DataMultiTakeWithHeader`."""
+
+    def set(
+        self,
+        data: Buffer,
+        blocking: bool = False,
+        update: bool = False,
+        cache: bool = False,
+        header: H | _Unset = UNSET,
+    ) -> None:
+        """Send data at this index with an optional header.
+
+        Args:
+            data (Buffer): Data to send.
+            blocking (bool, optional): Whether the next send waits until the
+                client consumes this data. Defaults to False.
+            update (bool, optional): Whether to request a client repaint.
+                Defaults to False.
+            cache (bool, optional): Whether to cache the last sent data and
+                header for a newly initialized client. Defaults to False.
+            header (H | _Unset, optional): Header sent with the data;
+                :data:`UNSET` sends the default. Defaults to :data:`UNSET`.
+        """
+        self._server.data_multi_take_set(
+            self._value_id,
+            self._index,
+            data,
+            blocking,
+            update,
+            cache,
+            _header(header),
         )
 
 
@@ -1055,13 +1386,17 @@ class DataMultiTake[T: np.generic](_StaticBase):
             types supported by :class:`Data`.
     """
 
+    _header_id: int | None = None
+
     def __init__(self, dtype: type[T]) -> None:
         self._dtype = dtype
 
     def _initialize(self, name: str, types: list[PyObjectType]) -> None:
+        header = None if self._header_id is None else types[self._header_id]
         self._value_id = self._server.add_data_multi_take(
             name,
             _get_dtype_id(self._dtype),
+            header,
         )
 
     def get(self, index: int) -> SingleDataTake[T]:
@@ -1101,6 +1436,37 @@ class DataMultiTake[T: np.generic](_StaticBase):
         raise TypeError("index must be an integer")
 
 
+class DataMultiTakeWithHeader[T: np.generic, H](DataMultiTake[T]):
+    """:class:`DataMultiTake` whose transfers carry a typed header ``H``.
+
+    Args:
+        dtype (type[T]): One of the NumPy scalar types supported by
+            :class:`Data`.
+        header_id (int): Index of the header's protocol type in the generated
+            type list.
+    """
+
+    def __init__(self, dtype: type[T], header_id: int) -> None:
+        super().__init__(dtype)
+        self._header_id = header_id
+
+    def get(self, index: int) -> SingleDataTakeWithHeader[T, H]:
+        """Get the SingleDataTakeWithHeader object for the given index.
+
+        Args:
+            index (int): The index of the ``SingleDataTakeWithHeader`` object.
+
+        Returns:
+            SingleDataTakeWithHeader[T, H]: The handle for the given index.
+        """
+        return SingleDataTakeWithHeader(self._dtype, self._server, self._value_id, index)
+
+    def __getitem__(self, index: int) -> SingleDataTakeWithHeader[T, H]:
+        if isinstance(index, int):
+            return self.get(index)
+        raise TypeError("index must be an integer")
+
+
 __all__ = [
     "i8",
     "i16",
@@ -1125,4 +1491,5 @@ __all__ = [
     "ImageColor",
     "_CustomStruct",
     "PyObjectType",
+    "UNSET",
 ]

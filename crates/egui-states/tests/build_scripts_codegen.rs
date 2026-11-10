@@ -373,9 +373,10 @@ impl State for WithHeaders {
 }
 
 #[test]
-fn rust_bindings_carry_data_header_types() {
+fn bindings_carry_data_header_types() {
     let dir = output_dir("with_headers", 0);
     generate_rust::<WithHeaders>(&dir).unwrap();
+    generate_python::<WithHeaders>(dir.join("python")).unwrap();
     let rust = std::fs::read_to_string(dir.join("mod.rs")).unwrap();
     let structs = std::fs::read_to_string(dir.join("structs.rs")).unwrap();
     let enums = std::fs::read_to_string(dir.join("enums.rs")).unwrap();
@@ -393,11 +394,23 @@ fn rust_bindings_carry_data_header_types() {
     assert!(structs.contains("pub struct GeneratedInner"));
     assert!(enums.contains("pub enum GeneratedEnum"));
 
+    let python = std::fs::read_to_string(dir.join("python/__init__.py")).unwrap();
+    for expected in [
+        "s.DataWithHeader[np.float32, structs.GeneratedOuter] = s.DataWithHeader(np.float32, ",
+        "s.DataMultiWithHeader[np.uint8, enums.GeneratedEnum] = s.DataMultiWithHeader(np.uint8, ",
+        "s.DataTakeWithHeader[np.uint16, tuple[int, str]] = s.DataTakeWithHeader(np.uint16, ",
+        "s.DataMultiTakeWithHeader[np.int64, list[int]] = s.DataMultiTakeWithHeader(np.int64, ",
+        "s.Data[np.uint8] = s.Data(np.uint8)",
+    ] {
+        assert!(python.contains(expected), "missing {expected} in\n{python}");
+    }
+
     let client = ClientBuilder::<WithHeaders>::new(egui::Context::default(), 0).get_version_hash();
     assert_eq!(
         generated_hash(&rust, "pub const VERSION_HASH: u64 = "),
         client
     );
+    assert_eq!(generated_hash(&python, "VERSION_HASH: int = "), client);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
