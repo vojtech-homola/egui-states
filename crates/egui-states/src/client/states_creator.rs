@@ -387,7 +387,7 @@ impl StatesCreator for StatesCreatorClient {
         let type_id = T::get_type().get_hash();
         hash_id_type(&mut self.version_hasher, id, type_id, STATIC_HASH_ID);
 
-        let value = Static::new(name, id, type_id, value);
+        let value = Static::new(name, id, type_id, value, self.sender.clone());
 
         self.val.static_values.insert(id, Arc::new(value.clone()));
         value
@@ -410,7 +410,7 @@ impl StatesCreator for StatesCreatorClient {
         let type_id = T::get_type().get_hash();
         hash_id_type(&mut self.version_hasher, id, type_id, STATIC_ATOMIC_HASH_ID);
 
-        let value = StaticAtomic::new(name, id, type_id, value);
+        let value = StaticAtomic::new(name, id, type_id, value, self.sender.clone());
 
         self.val.static_values.insert(id, Arc::new(value.clone()));
         value
