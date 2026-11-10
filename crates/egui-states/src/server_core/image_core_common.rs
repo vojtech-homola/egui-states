@@ -1,8 +1,10 @@
 use std::collections::VecDeque;
 
+use std::mem::MaybeUninit;
+
 use crate::image_transport::{
     ImageHeader, ImageSetHeader, ImageType, checked_image_bounds, checked_image_bytes,
-    checked_image_shape,
+    checked_image_shape, to_rgba,
 };
 use crate::serialization::FastVec;
 use crate::server_core::transfer::{Chunk, Messages, chunk_rows, chunk_transfer};
@@ -138,6 +140,22 @@ pub(crate) fn checked_fill_size(size: [usize; 2]) -> Result<([u32; 2], usize), S
     Ok((wire_size, rgba_size))
 }
 
+/// Views `len` bytes at `data` as uninitialized output.
+///
+/// # Safety
+///
+/// `data` must point to `len` writable bytes that nothing else accesses.
+unsafe fn output<'a>(data: *mut u8, len: usize) -> &'a mut [MaybeUninit<u8>] {
+    unsafe { std::slice::from_raw_parts_mut(data.cast::<MaybeUninit<u8>>(), len) }
+}
+
+/// Converts `pixel_count` packed source pixels at `data` to RGBA at
+/// `new_data`.
+///
+/// # Safety
+///
+/// `data` must point to `pixel_count` readable source pixels and `new_data`
+/// to `pixel_count * 4` writable bytes, not overlapping them.
 #[inline]
 pub(crate) unsafe fn write_all_new(
     data: *const u8,
@@ -145,40 +163,19 @@ pub(crate) unsafe fn write_all_new(
     pixel_count: usize,
     image_type: ImageType,
 ) {
-    match image_type {
-        ImageType::ColorAlpha => unsafe {
-            std::ptr::copy_nonoverlapping(data, new_data, pixel_count * 4);
-        },
-        ImageType::Color => unsafe {
-            for i in 0..pixel_count {
-                *new_data.add(i * 4) = *data.add(i * 3);
-                *new_data.add(i * 4 + 1) = *data.add(i * 3 + 1);
-                *new_data.add(i * 4 + 2) = *data.add(i * 3 + 2);
-                *new_data.add(i * 4 + 3) = 255;
-            }
-        },
-        ImageType::Gray => unsafe {
-            for i in 0..pixel_count {
-                let p = *data.add(i);
-                *new_data.add(i * 4) = p;
-                *new_data.add(i * 4 + 1) = p;
-                *new_data.add(i * 4 + 2) = p;
-                *new_data.add(i * 4 + 3) = 255;
-            }
-        },
-
-        ImageType::GrayAlpha => unsafe {
-            for i in 0..pixel_count {
-                let p = *data.add(i * 2);
-                *new_data.add(i * 4) = p;
-                *new_data.add(i * 4 + 1) = p;
-                *new_data.add(i * 4 + 2) = p;
-                *new_data.add(i * 4 + 3) = *data.add(i * 2 + 1);
-            }
-        },
-    }
+    let source =
+        unsafe { std::slice::from_raw_parts(data, pixel_count * image_type.bytes_per_pixel()) };
+    to_rgba(image_type, source, unsafe {
+        output(new_data, pixel_count * 4)
+    });
 }
 
+/// Like [`write_all_new`] for source rows `stride` bytes apart.
+///
+/// # Safety
+///
+/// As for [`write_all_new`], with `size[0]` source rows of `size[1]` pixels
+/// starting `stride` bytes apart.
 #[inline]
 pub(super) unsafe fn write_all_new_stride(
     data: *const u8,
@@ -187,126 +184,38 @@ pub(super) unsafe fn write_all_new_stride(
     size: &[usize; 2],
     image_type: ImageType,
 ) {
-    match image_type {
-        ImageType::ColorAlpha => unsafe {
-            for i in 0..size[0] {
-                let buffer = data.add(i * stride);
-                let data_buffer = new_data.add(i * size[1] * 4);
-                std::ptr::copy_nonoverlapping(buffer, data_buffer, size[1] * 4);
-            }
-        },
-        ImageType::Color => unsafe {
-            for i in 0..size[0] {
-                let buffer = data.add(i * stride);
-                let data_buffer = new_data.add(i * size[1] * 4);
-                for j in 0..size[1] {
-                    *data_buffer.add(j * 4) = *buffer.add(j * 3);
-                    *data_buffer.add(j * 4 + 1) = *buffer.add(j * 3 + 1);
-                    *data_buffer.add(j * 4 + 2) = *buffer.add(j * 3 + 2);
-                    *data_buffer.add(j * 4 + 3) = 255;
-                }
-            }
-        },
-        ImageType::Gray => unsafe {
-            for i in 0..size[0] {
-                let buffer = data.add(i * stride);
-                let data_buffer = new_data.add(i * size[1] * 4);
-                for j in 0..size[1] {
-                    let p = *buffer.add(j);
-                    *data_buffer.add(j * 4) = p;
-                    *data_buffer.add(j * 4 + 1) = p;
-                    *data_buffer.add(j * 4 + 2) = p;
-                    *data_buffer.add(j * 4 + 3) = 255;
-                }
-            }
-        },
-        ImageType::GrayAlpha => unsafe {
-            for i in 0..size[0] {
-                let buffer = data.add(i * stride);
-                let data_buffer = new_data.add(i * size[1] * 4);
-                for j in 0..size[1] {
-                    let p = *buffer.add(j * 2);
-                    *data_buffer.add(j * 4) = p;
-                    *data_buffer.add(j * 4 + 1) = p;
-                    *data_buffer.add(j * 4 + 2) = p;
-                    *data_buffer.add(j * 4 + 3) = *buffer.add(j * 2 + 1);
-                }
-            }
-        },
+    let row = size[1] * image_type.bytes_per_pixel();
+    for i in 0..size[0] {
+        let source = unsafe { std::slice::from_raw_parts(data.add(i * stride), row) };
+        let target = unsafe { output(new_data.add(i * size[1] * 4), size[1] * 4) };
+        to_rgba(image_type, source, target);
     }
 }
 
+/// Converts source rows `stride` bytes apart (`0` for packed rows) into the
+/// rectangle at `origin` of an RGBA image `old_stride` pixels wide.
+///
+/// # Safety
+///
+/// `data` must hold the source rows, and the rectangle must lie inside the
+/// RGBA image at `old_data`, which nothing else accesses.
 #[inline]
 pub(super) unsafe fn write_rectangle(
     data: *const u8,
-    mut stride: usize,
+    stride: usize,
     old_data: *mut u8,
     old_stride: usize,
     origin: &[usize; 2],
     size: &[usize; 2],
     image_type: ImageType,
 ) {
-    let top = origin[0];
-    let left = origin[1];
-
-    match image_type {
-        ImageType::ColorAlpha => unsafe {
-            if stride == 0 {
-                stride = size[1] * 4;
-            }
-            let x = size[1] * 4;
-            for i in 0..size[0] {
-                let index = (top + i) * old_stride + left;
-                let buffer = data.add(i * stride);
-                let data_buffer = old_data.add(index * 4);
-                std::ptr::copy_nonoverlapping(buffer, data_buffer, x);
-            }
-        },
-        ImageType::Color => unsafe {
-            if stride == 0 {
-                stride = size[1] * 3;
-            }
-            for i in 0..size[0] {
-                for j in 0..size[1] {
-                    let index = (top + i) * old_stride + left + j;
-                    let d_index = i * stride + j * 3;
-                    *old_data.add(index * 4) = *data.add(d_index);
-                    *old_data.add(index * 4 + 1) = *data.add(d_index + 1);
-                    *old_data.add(index * 4 + 2) = *data.add(d_index + 2);
-                    *old_data.add(index * 4 + 3) = 255;
-                }
-            }
-        },
-        ImageType::Gray => unsafe {
-            if stride == 0 {
-                stride = size[1];
-            }
-            for i in 0..size[0] {
-                for j in 0..size[1] {
-                    let index = (top + i) * old_stride + left + j;
-                    let p = *data.add(i * stride + j);
-                    *old_data.add(index * 4) = p;
-                    *old_data.add(index * 4 + 1) = p;
-                    *old_data.add(index * 4 + 2) = p;
-                    *old_data.add(index * 4 + 3) = 255;
-                }
-            }
-        },
-        ImageType::GrayAlpha => unsafe {
-            if stride == 0 {
-                stride = size[1] * 2;
-            }
-            for i in 0..size[0] {
-                for j in 0..size[1] {
-                    let index = (top + i) * old_stride + left + j;
-                    let d_index = i * stride + j * 2;
-                    let p = *data.add(d_index);
-                    *old_data.add(index * 4) = p;
-                    *old_data.add(index * 4 + 1) = p;
-                    *old_data.add(index * 4 + 2) = p;
-                    *old_data.add(index * 4 + 3) = *data.add(d_index + 1);
-                }
-            }
-        },
+    let [top, left] = *origin;
+    let row = size[1] * image_type.bytes_per_pixel();
+    let stride = if stride == 0 { row } else { stride };
+    for i in 0..size[0] {
+        let source = unsafe { std::slice::from_raw_parts(data.add(i * stride), row) };
+        let pixel = (top + i) * old_stride + left;
+        let target = unsafe { output(old_data.add(pixel * 4), size[1] * 4) };
+        to_rgba(image_type, source, target);
     }
 }

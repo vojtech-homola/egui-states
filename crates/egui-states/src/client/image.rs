@@ -1,14 +1,13 @@
 //! Client image state backed by an egui texture.
 
 use parking_lot::{Mutex, RwLock};
-use std::ptr::copy_nonoverlapping;
 use std::sync::Arc;
 
 use egui::{ColorImage, ImageData, TextureHandle};
 
 use crate::client::messages::{ChannelMessage, MessageSender};
 use crate::hashing::NoHashMap;
-use crate::image_transport::{ImageType, checked_image_bounds, checked_image_bytes};
+use crate::image_transport::{ImageType, checked_image_bounds, checked_image_bytes, to_rgba};
 
 /// A texture and its `[width, height]` size.
 type Texture = (TextureHandle, [usize; 2]);
@@ -672,50 +671,15 @@ unsafe fn fill_c_image(
     image_ptr: *mut u8,
     pixel_count: usize,
 ) {
-    match image_type {
-        ImageType::Color => {
-            for i in 0..pixel_count {
-                let idx = i * 3;
-                let im_idx = i * 4;
-                unsafe {
-                    *image_ptr.add(im_idx) = *data_ptr.add(idx);
-                    *image_ptr.add(im_idx + 1) = *data_ptr.add(idx + 1);
-                    *image_ptr.add(im_idx + 2) = *data_ptr.add(idx + 2);
-                    *image_ptr.add(im_idx + 3) = 255;
-                }
-            }
-        }
-
-        ImageType::ColorAlpha => unsafe {
-            copy_nonoverlapping(data_ptr, image_ptr, pixel_count * 4);
-        },
-
-        ImageType::Gray => {
-            for i in 0..pixel_count {
-                let im_idx = i * 4;
-                unsafe {
-                    let pixel = *data_ptr.add(i);
-                    *image_ptr.add(im_idx) = pixel;
-                    *image_ptr.add(im_idx + 1) = pixel;
-                    *image_ptr.add(im_idx + 2) = pixel;
-                    *image_ptr.add(im_idx + 3) = 255;
-                }
-            }
-        }
-
-        ImageType::GrayAlpha => {
-            for i in 0..pixel_count {
-                let im_idx = i * 4;
-                unsafe {
-                    let pixel = *data_ptr.add(i * 2);
-                    *image_ptr.add(im_idx) = pixel;
-                    *image_ptr.add(im_idx + 1) = pixel;
-                    *image_ptr.add(im_idx + 2) = pixel;
-                    *image_ptr.add(im_idx + 3) = *data_ptr.add(i * 2 + 1);
-                }
-            }
-        }
-    }
+    let source =
+        unsafe { std::slice::from_raw_parts(data_ptr, pixel_count * image_type.bytes_per_pixel()) };
+    let target = unsafe {
+        std::slice::from_raw_parts_mut(
+            image_ptr.cast::<std::mem::MaybeUninit<u8>>(),
+            pixel_count * 4,
+        )
+    };
+    to_rgba(image_type, source, target);
 }
 
 #[cfg(test)]

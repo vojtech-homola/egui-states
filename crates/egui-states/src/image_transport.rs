@@ -63,6 +63,46 @@ impl ImageType {
     }
 }
 
+/// Converts `source` pixels in `image_type` to RGBA, four bytes per pixel,
+/// into `target`, which holds exactly that many bytes.
+///
+/// Bytes are copied as they are: gray becomes `(g, g, g, 255)`, gray-alpha
+/// `(g, g, g, a)` and color gets an opaque alpha. `target` may be
+/// uninitialized; every byte of it is written.
+pub(crate) fn to_rgba(
+    image_type: ImageType,
+    source: &[u8],
+    target: &mut [std::mem::MaybeUninit<u8>],
+) {
+    let pixels = source.len() / image_type.bytes_per_pixel();
+    assert_eq!(target.len(), pixels * 4, "RGBA target size");
+    let out = target.as_mut_ptr().cast::<[u8; 4]>();
+    // SAFETY (all arms): `target` holds `pixels` four-byte slots that do not
+    // overlap `source`; unaligned writes need no alignment.
+    match image_type {
+        ImageType::ColorAlpha => unsafe {
+            std::ptr::copy_nonoverlapping(source.as_ptr(), out.cast::<u8>(), source.len())
+        },
+        ImageType::Color => {
+            for (i, pixel) in source.as_chunks::<3>().0.iter().enumerate() {
+                let quad = [pixel[0], pixel[1], pixel[2], 255];
+                unsafe { out.add(i).write_unaligned(quad) };
+            }
+        }
+        ImageType::Gray => {
+            for (i, &gray) in source.iter().enumerate() {
+                unsafe { out.add(i).write_unaligned([gray, gray, gray, 255]) };
+            }
+        }
+        ImageType::GrayAlpha => {
+            for (i, pixel) in source.as_chunks::<2>().0.iter().enumerate() {
+                let quad = [pixel[0], pixel[0], pixel[0], pixel[1]];
+                unsafe { out.add(i).write_unaligned(quad) };
+            }
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 pub(crate) enum ImageSetHeader {
     All([u32; 2], bool),  // [x, y], update
@@ -129,6 +169,29 @@ pub(crate) enum ImageHeader {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Pins the byte semantics every peer relies on.
+    #[test]
+    fn pixels_convert_to_rgba_bytes_as_they_are() {
+        let convert = |image_type, source: &[u8]| {
+            let mut target = vec![
+                std::mem::MaybeUninit::uninit();
+                source.len() / ImageType::bytes_per_pixel(&image_type) * 4
+            ];
+            to_rgba(image_type, source, &mut target);
+            target
+                .into_iter()
+                .map(|byte| unsafe { byte.assume_init() })
+                .collect::<Vec<u8>>()
+        };
+        assert_eq!(
+            convert(ImageType::Gray, &[7, 9]),
+            [7, 7, 7, 255, 9, 9, 9, 255]
+        );
+        assert_eq!(convert(ImageType::GrayAlpha, &[7, 3]), [7, 7, 7, 3]);
+        assert_eq!(convert(ImageType::Color, &[1, 2, 3]), [1, 2, 3, 255]);
+        assert_eq!(convert(ImageType::ColorAlpha, &[1, 2, 3, 4]), [1, 2, 3, 4]);
+    }
 
     #[test]
     fn image_shape_limit_is_inclusive_and_independent_of_allocation() {
