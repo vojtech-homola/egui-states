@@ -595,6 +595,10 @@ fn report_silent(signals: &SignalsManager, heartbeat: Heartbeat) {
 }
 
 // A helper struct to receive from MessageReceiver and create micro-batches
+/// Messages larger than this are not merged with others into one frame:
+/// appending would copy them again, and they fill a frame on their own.
+const MERGE_LIMIT: usize = 64 * 1024;
+
 struct DataReceiver {
     rx: MessageReceiver,
     send_next: Option<(SenderData, bool)>,
@@ -620,7 +624,7 @@ impl DataReceiver {
             },
         };
 
-        if send_now {
+        if send_now || msg.len() > MERGE_LIMIT {
             return Some(msg);
         }
 
@@ -636,10 +640,11 @@ impl DataReceiver {
                     return Some(msg);
                 }
                 Ok(Some((next_msg, false))) => {
-                    if msg
-                        .len()
-                        .checked_add(next_msg.len())
-                        .is_none_or(|size| size > MSG_SIZE_THRESHOLD)
+                    if next_msg.len() > MERGE_LIMIT
+                        || msg
+                            .len()
+                            .checked_add(next_msg.len())
+                            .is_none_or(|size| size > MSG_SIZE_THRESHOLD)
                     {
                         self.send_next = Some((next_msg, false));
                         return Some(msg);
@@ -665,72 +670,63 @@ impl DataReceiver {
 mod tests {
     use tokio::sync::mpsc::unbounded_channel;
 
-    use super::DataReceiver;
+    use super::{DataReceiver, MERGE_LIMIT};
     use crate::serialization::{FastVec, MAX_MSG_COUNT, MSG_SIZE_THRESHOLD};
 
     fn data(size: usize) -> FastVec<32> {
         FastVec::Heap((0..size).map(|i| (i % 251) as u8).collect())
     }
 
+    async fn frames(messages: Vec<(FastVec<32>, bool)>) -> Vec<Vec<u8>> {
+        let (tx, rx) = unbounded_channel();
+        for message in messages {
+            tx.send(Some(message)).unwrap();
+        }
+        drop(tx);
+        let mut receiver = DataReceiver::new(rx);
+        let mut frames = Vec::new();
+        while let Some(frame) = receiver.next().await {
+            frames.push(frame.into_bytes().to_vec());
+        }
+        frames
+    }
+
+    fn bytes(size: usize) -> Vec<u8> {
+        data(size).into_bytes().to_vec()
+    }
+
+    fn joined(sizes: &[usize]) -> Vec<u8> {
+        sizes.iter().flat_map(|size| bytes(*size)).collect()
+    }
+
+    #[tokio::test]
+    async fn data_receiver_batches_messages_up_to_the_merge_limit() {
+        let frames = frames(vec![(data(MERGE_LIMIT), false), (data(10), false)]).await;
+        assert_eq!(frames, [joined(&[MERGE_LIMIT, 10])]);
+    }
+
+    /// A message above the merge limit is never copied into another frame,
+    /// before or after the messages around it.
+    #[tokio::test]
+    async fn data_receiver_sends_large_messages_alone() {
+        let frames = frames(vec![
+            (data(5), false),
+            (data(MERGE_LIMIT + 1), false),
+            (data(6), false),
+            (data(7), false),
+        ])
+        .await;
+        assert_eq!(frames, [bytes(5), bytes(MERGE_LIMIT + 1), joined(&[6, 7])]);
+    }
+
     #[tokio::test]
     async fn data_receiver_does_not_batch_past_size_threshold() {
-        let (tx, rx) = unbounded_channel();
-        tx.send(Some((data(MSG_SIZE_THRESHOLD - 10), false)))
-            .unwrap();
-        tx.send(Some((data(11), false))).unwrap();
-        drop(tx);
-
-        let mut receiver = DataReceiver::new(rx);
-        assert_eq!(
-            receiver.next().await.unwrap().into_bytes(),
-            data(MSG_SIZE_THRESHOLD - 10).into_bytes()
-        );
-        assert_eq!(
-            receiver.next().await.unwrap().into_bytes(),
-            data(11).into_bytes()
-        );
-        assert!(receiver.next().await.is_none());
-    }
-
-    #[tokio::test]
-    async fn data_receiver_batches_up_to_size_threshold() {
-        let (tx, rx) = unbounded_channel();
-        tx.send(Some((data(MSG_SIZE_THRESHOLD - 10), false)))
-            .unwrap();
-        tx.send(Some((data(10), false))).unwrap();
-        drop(tx);
-
-        let mut receiver = DataReceiver::new(rx);
-        let mut expected = data(MSG_SIZE_THRESHOLD - 10).into_bytes().to_vec();
-        expected.extend_from_slice(&data(10).into_bytes());
-        assert_eq!(
-            receiver.next().await.unwrap().into_bytes().as_ref(),
-            expected
-        );
-        assert!(receiver.next().await.is_none());
-    }
-
-    #[tokio::test]
-    async fn data_receiver_batches_deferred_non_immediate_message() {
-        let (tx, rx) = unbounded_channel();
-        tx.send(Some((data(MSG_SIZE_THRESHOLD - 10), false)))
-            .unwrap();
-        tx.send(Some((data(11), false))).unwrap();
-        tx.send(Some((data(5), false))).unwrap();
-        drop(tx);
-
-        let mut receiver = DataReceiver::new(rx);
-        assert_eq!(
-            receiver.next().await.unwrap().into_bytes(),
-            data(MSG_SIZE_THRESHOLD - 10).into_bytes()
-        );
-        let mut expected = data(11).into_bytes().to_vec();
-        expected.extend_from_slice(&data(5).into_bytes());
-        assert_eq!(
-            receiver.next().await.unwrap().into_bytes().as_ref(),
-            expected
-        );
-        assert!(receiver.next().await.is_none());
+        let frames = frames(vec![
+            (data(MSG_SIZE_THRESHOLD - 10), false),
+            (data(11), false),
+        ])
+        .await;
+        assert_eq!(frames, [bytes(MSG_SIZE_THRESHOLD - 10), bytes(11)]);
     }
 
     #[tokio::test]
