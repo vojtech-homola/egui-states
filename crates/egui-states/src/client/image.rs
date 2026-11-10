@@ -211,24 +211,24 @@ impl Image {
         let origin = [rect[0] as usize, rect[1] as usize];
 
         checked_image_bounds(origin, image_size)?;
-        let mut texture = self.texture.write();
-        // A connection always starts with a complete image, so an update
-        // without a texture is a protocol error.
-        let Some((texture_handle, saved_size)) = texture.as_mut() else {
-            return Err(format!(
+        let no_texture = || {
+            format!(
                 "Image {} received a partial update before a complete image",
                 self.name
-            ));
+            )
         };
-        apply_update(
-            texture_handle,
-            *saved_size,
-            &self.name,
-            origin,
-            image_size,
-            image_type,
-            data,
-        )
+        // A connection always starts with a complete image, so an update
+        // without a texture is a protocol error. Only this receive task
+        // changes the texture, so it stays as checked while the pixels are
+        // converted outside the lock, which UI reads would wait for.
+        let texture_size = self.get_size().ok_or_else(no_texture)?;
+        check_update(texture_size, &self.name, origin, image_size)?;
+        let image = create_color_image(&self.name, image_size, image_type, data)?;
+
+        let mut texture = self.texture.write();
+        let (texture_handle, saved_size) = texture.as_mut().ok_or_else(no_texture)?;
+        put_update(texture_handle, *saved_size, origin, image);
+        Ok(())
     }
 
     pub(crate) fn fill_image(
@@ -402,22 +402,22 @@ impl ImageMulti {
         let origin = [rect[0] as usize, rect[1] as usize];
         checked_image_bounds(origin, image_size)?;
 
-        let mut images = self.images.write();
-        let (texture, saved_size) = images.get_mut(&index).ok_or_else(|| {
+        let not_found = || {
             format!(
                 "Image index {} not found in collection: {}",
                 index, self.name
             )
-        })?;
-        apply_update(
-            texture,
-            *saved_size,
-            &self.label(index),
-            origin,
-            image_size,
-            image_type,
-            data,
-        )
+        };
+        // Convert outside the map lock, which UI reads of every key wait for.
+        let label = self.label(index);
+        let texture_size = self.get_size(index).ok_or_else(not_found)?;
+        check_update(texture_size, &label, origin, image_size)?;
+        let image = create_color_image(&label, image_size, image_type, data)?;
+
+        let mut images = self.images.write();
+        let (texture, saved_size) = images.get_mut(&index).ok_or_else(not_found)?;
+        put_update(texture, *saved_size, origin, image);
+        Ok(())
     }
 
     /// Names one image of the collection in errors.
@@ -519,11 +519,11 @@ fn load_texture(context: &egui::Context, name: String, image: ColorImage) -> Tex
     TextureHandle::new(manager, id)
 }
 
-/// An image set being assembled from its chunks, with the number of pixels
+/// An image set being assembled from its chunks; `pixels` holds the pixels
 /// received so far. `label` names the image in errors.
 struct PartialImage {
-    image: ColorImage,
-    received: usize,
+    size: [usize; 2],
+    pixels: Vec<egui::Color32>,
 }
 
 impl PartialImage {
@@ -534,15 +534,18 @@ impl PartialImage {
         image_type: ImageType,
         data: &[u8],
     ) -> Result<Self, String> {
-        let pixels = pixels as usize;
         let size = [size[0] as usize, size[1] as usize];
         checked_image_bytes(size, 4)?;
-        let mut image = ColorImage::filled(size, egui::Color32::WHITE);
-        update_color_image(label, &mut image, 0, pixels, data, image_type)?;
-        Ok(Self {
-            image,
-            received: pixels,
-        })
+        let mut image = Self {
+            size,
+            pixels: Vec::with_capacity(size[0] * size[1]),
+        };
+        image.append(label, pixels, image_type, data)?;
+        Ok(image)
+    }
+
+    fn total(&self) -> usize {
+        self.size[0] * self.size[1]
     }
 
     fn append(
@@ -553,19 +556,10 @@ impl PartialImage {
         data: &[u8],
     ) -> Result<(), String> {
         let pixels = pixels as usize;
-        if self.received + pixels > self.image.pixels.len() {
+        if self.pixels.len() + pixels > self.total() {
             return Err(format!("Pixels exceed image size in {label}"));
         }
-        update_color_image(
-            label,
-            &mut self.image,
-            self.received,
-            pixels,
-            data,
-            image_type,
-        )?;
-        self.received += pixels;
-        Ok(())
+        convert_pixels(label, &mut self.pixels, pixels, image_type, data)
     }
 
     fn finish(
@@ -575,70 +569,74 @@ impl PartialImage {
         image_type: ImageType,
         data: &[u8],
     ) -> Result<ColorImage, String> {
-        let pixels = pixels as usize;
-        let total = self.received + pixels;
-        if total != self.image.pixels.len() {
+        let received = self.pixels.len() + pixels as usize;
+        if received != self.total() {
             return Err(format!(
-                "Pixels do not match expected size in {label}: {total} vs {}",
-                self.image.pixels.len()
+                "Pixels do not match expected size in {label}: {received} vs {}",
+                self.total()
             ));
         }
-        update_color_image(
-            label,
-            &mut self.image,
-            self.received,
-            pixels,
-            data,
-            image_type,
-        )?;
-        Ok(self.image)
+        convert_pixels(label, &mut self.pixels, pixels as usize, image_type, data)?;
+        Ok(ColorImage::new(self.size, self.pixels))
     }
 }
 
-/// Applies an image update at `origin` to a texture of `texture_size`; an
-/// update of the whole texture replaces it.
-fn apply_update(
-    texture: &mut TextureHandle,
+/// Validates an update at `origin` against a texture of `texture_size`.
+fn check_update(
     texture_size: [usize; 2],
     label: &str,
     origin: [usize; 2],
     size: [usize; 2],
-    image_type: ImageType,
-    data: &[u8],
 ) -> Result<(), String> {
     if origin[0] + size[0] > texture_size[0] || origin[1] + size[1] > texture_size[1] {
         return Err(format!(
             "Image is larger than the texture for image: {label}"
         ));
     }
-    let image = create_color_image(label, size, image_type, data)?;
-    if texture_size == size && origin == [0, 0] {
+    Ok(())
+}
+
+/// Applies a converted, checked update at `origin`; an update of the whole
+/// texture replaces it.
+fn put_update(
+    texture: &mut TextureHandle,
+    texture_size: [usize; 2],
+    origin: [usize; 2],
+    image: ColorImage,
+) {
+    if texture_size == image.size && origin == [0, 0] {
         texture.set(image, TEXTURE_OPTIONS);
     } else {
         texture.set_partial(origin, image, TEXTURE_OPTIONS);
     }
-    Ok(())
 }
 
-fn update_color_image(
-    name: &str,
-    image: &mut ColorImage,
-    actual_pixel: usize,
-    pixels: usize,
-    data: &[u8],
+/// Converts `count` source pixels from `data` and appends them to `pixels`.
+fn convert_pixels(
+    label: &str,
+    pixels: &mut Vec<egui::Color32>,
+    count: usize,
     image_type: ImageType,
+    data: &[u8],
 ) -> Result<(), String> {
-    if actual_pixel + pixels > image.pixels.len() {
-        return Err(format!("Pixels exceed image size in {name}"));
-    }
-    if image_type.bytes_per_pixel() * pixels != data.len() {
+    if image_type.bytes_per_pixel() * count != data.len() {
         return Err(format!(
-            "Data length does not match expected size in {name}"
+            "Data length does not match expected size in {label}"
         ));
     }
-    let data_ptr = data.as_ptr();
-    let image_ptr = unsafe { image.pixels.as_mut_ptr().add(actual_pixel) as *mut u8 };
-    unsafe { fill_c_image(image_type, data_ptr, image_ptr, pixels) }
+    pixels.reserve(count);
+    // SAFETY: `data` holds `count` source pixels, `reserve` made room for
+    // `count` four-byte `Color32` values, and the regions cannot overlap;
+    // `fill_c_image` writes every one of them.
+    unsafe {
+        fill_c_image(
+            image_type,
+            data.as_ptr(),
+            pixels.as_mut_ptr().add(pixels.len()).cast::<u8>(),
+            count,
+        );
+        pixels.set_len(pixels.len() + count);
+    }
     Ok(())
 }
 
@@ -655,16 +653,10 @@ pub(crate) fn create_color_image(
             "Data length does not match expected size in {name}"
         ));
     }
-    let mut image = ColorImage::filled(image_size, egui::Color32::TRANSPARENT);
-    unsafe {
-        fill_c_image(
-            image_type,
-            data.as_ptr(),
-            image.pixels.as_mut_ptr() as *mut u8,
-            image_size[0] * image_size[1],
-        )
-    }
-    Ok(image)
+    let count = image_size[0] * image_size[1];
+    let mut pixels = Vec::with_capacity(count);
+    convert_pixels(name, &mut pixels, count, image_type, data)?;
+    Ok(ColorImage::new(image_size, pixels))
 }
 
 /// Converts `pixel_count` source pixels into egui's four-byte pixel storage.
