@@ -306,11 +306,21 @@ where
                     }
                     let count_add = data.len() / self.element_size;
 
-                    if buffer.len() + count_add != count as usize {
+                    // The copy below writes into the buffer's spare capacity,
+                    // which the batch start sized; the End count comes from the
+                    // network and alone must not decide how much is written.
+                    let total = buffer.len() + count_add;
+                    if total > buffer.capacity() {
+                        return Err(format!(
+                            "Batch end data size {} exceeds total data size {}",
+                            total,
+                            buffer.capacity()
+                        ));
+                    }
+                    if total as u64 != count {
                         return Err(format!(
                             "Batch end data size {} does not match total data size {}",
-                            buffer.len() + count_add,
-                            count
+                            total, count
                         ));
                     }
 
@@ -596,11 +606,21 @@ where
                     }
                     let count_add = data.len() / self.element_size;
 
-                    if buffer.len() + count_add != count as usize {
+                    // The copy below writes into the buffer's spare capacity,
+                    // which the batch start sized; the End count comes from the
+                    // network and alone must not decide how much is written.
+                    let total = buffer.len() + count_add;
+                    if total > buffer.capacity() {
+                        return Err(format!(
+                            "Batch end data size {} exceeds total data size {}",
+                            total,
+                            buffer.capacity()
+                        ));
+                    }
+                    if total as u64 != count {
                         return Err(format!(
                             "Batch end data size {} does not match total data size {}",
-                            buffer.len() + count_add,
-                            count
+                            total, count
                         ));
                     }
 
@@ -757,6 +777,40 @@ mod tests {
             assert!(take.update(end(), false).is_err());
             multi.update(4, start(), false).unwrap();
             assert!(multi.update(4, end(), false).is_err());
+        }
+        assert_eq!(take.take(), None);
+        assert_eq!(multi.take(4), None);
+    }
+
+    /// An End count larger than the Start count must not let the final chunk
+    /// be copied past the buffer the start allocated (D2).
+    #[test]
+    fn a_batch_end_larger_than_its_start_is_rejected() {
+        let id = 66;
+        let (sender, mut receiver) = MessageSender::new();
+        let take = DataTake::<u16>::new("take".to_string(), id, sender.clone());
+        let multi = DataMultiTake::<u16>::new("takes".to_string(), id, sender);
+        let tail = Bytes::from(vec![7; 200]);
+        for blocking in [false, true] {
+            let start = || DataTakeMessage::BatchStart(2, Bytes::from_static(&[1, 0]));
+            let end = || DataTakeMessage::BatchEnd(DataType::U16, 101, tail.clone());
+
+            let acked_once = |receiver: &mut UnboundedReceiver<Option<ChannelMessage>>| {
+                if blocking {
+                    assert_single_ack(receiver, id);
+                } else {
+                    assert_no_message(receiver);
+                }
+            };
+
+            take.update(start(), blocking).unwrap();
+            let error = take.update(end(), blocking).unwrap_err();
+            assert!(error.contains("exceeds total data size 2"), "{error}");
+            acked_once(&mut receiver);
+            multi.update(4, start(), blocking).unwrap();
+            let error = multi.update(4, end(), blocking).unwrap_err();
+            assert!(error.contains("exceeds total data size 2"), "{error}");
+            acked_once(&mut receiver);
         }
         assert_eq!(take.take(), None);
         assert_eq!(multi.take(4), None);
