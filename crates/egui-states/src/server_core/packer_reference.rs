@@ -574,7 +574,7 @@ mod tests {
         pack_data_multi_take_chunked, pack_data_take_chunked,
     };
     use crate::server_core::image_core::{self, ImageData};
-    use crate::server_core::image_multi_core::{self, ImageMultiData};
+    use crate::server_core::image_multi_core;
 
     type Messages = Vec<(Vec<u8>, bool)>;
 
@@ -738,7 +738,7 @@ mod tests {
 
     /// Calls `check` with the live and the reference descriptor of the same
     /// contiguous or strided pixel buffer.
-    fn for_each_image(mut check: impl FnMut(&str, &ImageData, &ImageMultiData, &ReferenceImage)) {
+    fn for_each_image(mut check: impl FnMut(&str, &ImageData, &ImageData, &ReferenceImage)) {
         for image_type in IMAGE_TYPES {
             for size in IMAGE_SIZES {
                 for strided in [false, true] {
@@ -753,7 +753,7 @@ mod tests {
                         image_type,
                         data: pixels.as_ptr(),
                     };
-                    let live_multi = ImageMultiData {
+                    let live_multi = ImageData {
                         size,
                         stride,
                         contiguous,

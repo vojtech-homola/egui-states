@@ -70,7 +70,7 @@ mod tests {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone, Copy)]
 pub(crate) enum TransportType {
     Set(u64),          // element count of data
     Add(u64),          // element count of data

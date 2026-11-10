@@ -4,7 +4,6 @@ use crate::image_transport::ImageType;
 use crate::server_core::data_core::DataHolder;
 use crate::server_core::image_core::ImageData;
 use crate::server_core::image_core_common::checked_image_size;
-use crate::server_core::image_multi_core::ImageMultiData;
 
 use super::error::{Error, Result};
 use super::kinds::DataKind;
@@ -63,16 +62,9 @@ pub struct ImageInput<'a> {
     pub format: ImageFormat,
 }
 
-struct CheckedImage {
-    size: [usize; 2],
-    stride: usize,
-    contiguous: bool,
-    image_type: ImageType,
-    data: *const u8,
-}
-
 impl ImageInput<'_> {
-    fn check(&self) -> Result<CheckedImage> {
+    /// Checks the input and views it as an image of the server core.
+    pub(crate) fn image_data(&self) -> Result<ImageData> {
         let size = [self.height, self.width];
         checked_image_size(size).map_err(Error::out_of_range)?;
         let image_type = self.format.image_type();
@@ -100,34 +92,12 @@ impl ImageInput<'_> {
                 self.data.len()
             )));
         }
-        Ok(CheckedImage {
+        Ok(ImageData {
             size,
             stride,
             contiguous: stride == packed,
             image_type,
             data: self.data.as_ptr(),
-        })
-    }
-
-    pub(crate) fn image_data(&self) -> Result<ImageData> {
-        let checked = self.check()?;
-        Ok(ImageData {
-            size: checked.size,
-            stride: checked.stride,
-            contiguous: checked.contiguous,
-            image_type: checked.image_type,
-            data: checked.data,
-        })
-    }
-
-    pub(crate) fn image_multi_data(&self) -> Result<ImageMultiData> {
-        let checked = self.check()?;
-        Ok(ImageMultiData {
-            size: checked.size,
-            stride: checked.stride,
-            contiguous: checked.contiguous,
-            image_type: checked.image_type,
-            data: checked.data,
         })
     }
 }

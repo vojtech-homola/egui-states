@@ -878,7 +878,7 @@ impl StateServerCore {
     ) -> PyResult<()> {
         py.detach(|| {
             let images = self.inner_image_multi(value_id)?;
-            let image_data = pyimage::image_multi_data(&image)?;
+            let image_data = pyimage::image_data(&image)?;
             images
                 .set_image(index, image_data, update)
                 .map_err(PyValueError::new_err)
@@ -917,7 +917,7 @@ impl StateServerCore {
     ) -> PyResult<()> {
         py.detach(|| {
             let images = self.inner_image_multi(value_id)?;
-            let image_data = pyimage::image_multi_data(&image)?;
+            let image_data = pyimage::image_data(&image)?;
             images
                 .update_image(
                     index,

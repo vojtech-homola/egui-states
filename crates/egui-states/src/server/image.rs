@@ -5,7 +5,7 @@ use std::sync::Arc;
 use crate::image_transport::{ImageType, checked_image_bytes};
 use crate::server_core::image_core::{Image as CoreImage, ImageData};
 use crate::server_core::image_core_common::checked_fill_size;
-use crate::server_core::image_multi_core::{ImageMulti as CoreImageMulti, ImageMultiData};
+use crate::server_core::image_multi_core::ImageMulti as CoreImageMulti;
 
 use super::state_server::StateServer;
 use super::{Result, ServerError};
@@ -250,7 +250,7 @@ impl ImageMulti {
         self.inner
             .set_image(
                 index,
-                ImageMultiData {
+                ImageData {
                     size,
                     stride,
                     contiguous: true,
@@ -296,7 +296,7 @@ impl ImageMulti {
             .update_image(
                 index,
                 &origin,
-                ImageMultiData {
+                ImageData {
                     size,
                     stride,
                     contiguous: true,

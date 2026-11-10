@@ -7,24 +7,16 @@ use parking_lot::{Mutex, MutexGuard, RwLock};
 use crate::event::Event;
 use crate::hashing::NoHashMap;
 use crate::image_transport::{
-    ImageHeader, ImageMultiHeader, ImageSetHeader, ImageType, checked_image_bytes,
-    checked_image_shape, serialize_image_multi_header,
+    ImageHeader, ImageMultiHeader, ImageType, checked_image_bytes, checked_image_shape,
+    serialize_image_multi_header,
 };
 use crate::serialization::{FastVec, MSG_SIZE_THRESHOLD, TRANSFER_CHUNK_SIZE};
 use crate::server_core::image_core_common::{
-    checked_fill_size, checked_image_rect, checked_image_size, write_all_new, write_all_new_stride,
-    write_rectangle,
+    ImageData, checked_fill_size, checked_image_rect, checked_image_size, pack_image_set,
+    pack_image_update, write_all_new, write_all_new_stride, write_rectangle,
 };
 use crate::server_core::sender::MessageSender;
 use crate::server_core::server::{Acknowledge, SyncTrait};
-
-pub(crate) struct ImageMultiData {
-    pub size: [usize; 2],
-    pub stride: usize,
-    pub contiguous: bool,
-    pub image_type: ImageType,
-    pub data: *const u8,
-}
 
 enum Buffer {
     Set(Vec<(FastVec<32>, bool)>),
@@ -346,7 +338,7 @@ impl ImageMulti {
     pub(crate) fn set_image(
         &self,
         index: u32,
-        image: ImageMultiData,
+        image: ImageData,
         update: bool,
     ) -> Result<(), String> {
         let (_, rgba_size) = checked_fill_size(image.size)?;
@@ -456,7 +448,7 @@ impl ImageMulti {
         &self,
         index: u32,
         origin: &[usize; 2],
-        image: ImageMultiData,
+        image: ImageData,
         update: bool,
         force: bool,
     ) -> Result<(), String> {
@@ -582,7 +574,7 @@ impl SyncTrait for ImageMulti {
         let mut messages = Vec::new();
         for index in indices {
             let image = inner.images.get(&index).ok_or(())?;
-            let image_data = ImageMultiData {
+            let image_data = ImageData {
                 size: image.size,
                 stride: 0,
                 contiguous: true,
@@ -616,7 +608,7 @@ fn pack_fill_data(
 fn pack_set_data(
     id: u64,
     index: u32,
-    image: &ImageMultiData,
+    image: &ImageData,
     update: bool,
 ) -> Result<Vec<(FastVec<32>, bool)>, String> {
     pack_set_data_chunked(id, index, image, update, TRANSFER_CHUNK_SIZE)
@@ -625,101 +617,22 @@ fn pack_set_data(
 pub(super) fn pack_set_data_chunked(
     id: u64,
     index: u32,
-    image: &ImageMultiData,
+    image: &ImageData,
     update: bool,
     chunk_limit: usize,
 ) -> Result<Vec<(FastVec<32>, bool)>, String> {
     let size = checked_image_size(image.size)?;
     checked_image_bytes(image.size, 4)?;
-    let bytes_line_size = image.size[1] * image.image_type.bytes_per_pixel();
-    let bytes_size = image.size[0] * bytes_line_size;
-
-    let append_data = |message: &mut FastVec<32>, start: usize, size: usize| {
-        if image.contiguous {
-            let data = unsafe { std::slice::from_raw_parts(image.data.add(start), size) };
-            message.extend_from_slice(data);
-        } else {
-            let mut processed = 0;
-            while processed < size {
-                let offset = start + processed;
-                let line = offset / bytes_line_size;
-                let line_offset = offset % bytes_line_size;
-                let copy_size = (bytes_line_size - line_offset).min(size - processed);
-                let data = unsafe {
-                    std::slice::from_raw_parts(
-                        image.data.add(line * image.stride + line_offset),
-                        copy_size,
-                    )
-                };
-                message.extend_from_slice(data);
-                processed += copy_size;
-            }
-        }
-    };
-
-    if bytes_size <= chunk_limit {
-        let header = ImageSetHeader::All(size, update);
-        let mut message = header
-            .serialize_multi(id, index, image.image_type, bytes_size as u32)
-            .map_err(|_| format!("Failed to serialize header for image {}", id))?;
-
-        message.reserve_exact(bytes_size);
-        append_data(&mut message, 0, bytes_size);
-        Ok(vec![(message, true)])
-    } else {
-        let mut messages = Vec::new();
-        let pixel_size = image.image_type.bytes_per_pixel();
-        let pixel_count = image.size[0] * image.size[1];
-        let chunk_pixels = chunk_limit / pixel_size;
-        let chunk_size = chunk_pixels * pixel_size;
-        let mut processed_pixels = 0;
-        let mut processed = 0;
-
-        let first_pixels = chunk_pixels.min(pixel_count);
-        let first_size = first_pixels * pixel_size;
-        let header = ImageSetHeader::Start(size, first_pixels as u32);
-        let mut message = header
-            .serialize_multi(id, index, image.image_type, first_size as u32)
-            .map_err(|_| format!("Failed to serialize header for image {}", id))?;
-        message.reserve_exact(first_size);
-        append_data(&mut message, 0, first_size);
-        messages.push((message, true));
-        processed_pixels += first_pixels;
-        processed += first_size;
-
-        while processed_pixels < pixel_count {
-            let remaining_pixels = pixel_count - processed_pixels;
-            if remaining_pixels <= chunk_pixels {
-                let remaining_size = remaining_pixels * pixel_size;
-                let header = ImageSetHeader::End(remaining_pixels as u32, update);
-                let mut message = header
-                    .serialize_multi(id, index, image.image_type, remaining_size as u32)
-                    .map_err(|_| format!("Failed to serialize header for image {}", id))?;
-                append_data(&mut message, processed, remaining_size);
-                messages.push((message, false));
-                break;
-            }
-
-            let header = ImageSetHeader::Batch(chunk_pixels as u32);
-            let mut message = header
-                .serialize_multi(id, index, image.image_type, chunk_size as u32)
-                .map_err(|_| format!("Failed to serialize header for image {}", id))?;
-            message.reserve_exact(chunk_size);
-            append_data(&mut message, processed, chunk_size);
-            messages.push((message, true));
-            processed_pixels += chunk_pixels;
-            processed += chunk_size;
-        }
-
-        Ok(messages)
-    }
+    pack_image_set(id, image, size, update, chunk_limit, |header, len| {
+        header.serialize_multi(id, index, image.image_type, len)
+    })
 }
 
 fn pack_update_data(
     id: u64,
     index: u32,
     origin: &[usize; 2],
-    image: &ImageMultiData,
+    image: &ImageData,
     update: bool,
 ) -> Result<VecDeque<(FastVec<32>, bool)>, String> {
     pack_update_data_chunked(id, index, origin, image, update, MSG_SIZE_THRESHOLD)
@@ -729,79 +642,15 @@ pub(super) fn pack_update_data_chunked(
     id: u64,
     index: u32,
     origin: &[usize; 2],
-    image: &ImageMultiData,
+    image: &ImageData,
     update: bool,
     chunk_limit: usize,
 ) -> Result<VecDeque<(FastVec<32>, bool)>, String> {
     let wire_rect = checked_image_rect(origin, image.size)?;
     checked_image_bytes(image.size, 4)?;
-    let bytes_line_size = image.size[1] * image.image_type.bytes_per_pixel();
-    let bytes_size = image.size[0] * bytes_line_size;
-
-    let append_lines = |message: &mut FastVec<32>, start_line: usize, lines: usize| {
-        if image.contiguous {
-            let offset = start_line * bytes_line_size;
-            let size = lines * bytes_line_size;
-            let data = unsafe { std::slice::from_raw_parts(image.data.add(offset), size) };
-            message.extend_from_slice(data);
-        } else {
-            for line in start_line..start_line + lines {
-                let data = unsafe {
-                    std::slice::from_raw_parts(image.data.add(line * image.stride), bytes_line_size)
-                };
-                message.extend_from_slice(data);
-            }
-        }
-    };
-
-    if bytes_size <= chunk_limit {
-        let mut message = serialize_image_multi_header(
-            id,
-            index,
-            ImageHeader::Update(wire_rect, image.image_type, update),
-            bytes_size as u32,
-        )
-        .map_err(|_| format!("Failed to serialize update header for image {}", id))?;
-
-        message.reserve_exact(bytes_size);
-        append_lines(&mut message, 0, image.size[0]);
-        let mut result = VecDeque::with_capacity(1);
-        result.push_back((message, update));
-        Ok(result)
-    } else {
-        let mut messages = VecDeque::new();
-        let chunk_lines = (chunk_limit / bytes_line_size).max(1);
-        let mut processed_lines = 0;
-
-        while processed_lines < image.size[0] {
-            let remaining_lines = image.size[0] - processed_lines;
-            let lines = remaining_lines.min(chunk_lines);
-            let data_size = lines * bytes_line_size;
-            let is_last = lines == remaining_lines;
-            let wire_processed_lines = u32::try_from(processed_lines)
-                .map_err(|_| "Image coordinates exceed protocol limits".to_string())?;
-            let rect = [
-                wire_rect[0],
-                wire_rect[1] + wire_processed_lines,
-                wire_rect[2],
-                u32::try_from(lines)
-                    .map_err(|_| "Image dimensions exceed protocol limits".to_string())?,
-            ];
-            let mut message = serialize_image_multi_header(
-                id,
-                index,
-                ImageHeader::Update(rect, image.image_type, is_last && update),
-                data_size as u32,
-            )
-            .map_err(|_| format!("Failed to serialize update header for image {}", id))?;
-            message.reserve_exact(data_size);
-            append_lines(&mut message, processed_lines, lines);
-            messages.push_back((message, !is_last));
-            processed_lines += lines;
-        }
-
-        Ok(messages)
-    }
+    pack_image_update(id, image, wire_rect, update, chunk_limit, |header, len| {
+        serialize_image_multi_header(id, index, header, len)
+    })
 }
 
 #[cfg(test)]
@@ -824,8 +673,8 @@ mod tests {
         (images, connected, receiver)
     }
 
-    fn image_data(data: &[u8], size: [usize; 2], image_type: ImageType) -> ImageMultiData {
-        ImageMultiData {
+    fn image_data(data: &[u8], size: [usize; 2], image_type: ImageType) -> ImageData {
+        ImageData {
             size,
             stride: size[1] * image_type.bytes_per_pixel(),
             contiguous: true,

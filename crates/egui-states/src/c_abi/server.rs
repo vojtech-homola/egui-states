@@ -799,7 +799,7 @@ impl CServer {
         update: bool,
     ) -> Result<()> {
         let (_, core) = lookup!(self.states()?, id, ImageMulti(core));
-        core.set_image(index, image.image_multi_data()?, update)
+        core.set_image(index, image.image_data()?, update)
             .map_err(Error::out_of_range)
     }
 
@@ -832,7 +832,7 @@ impl CServer {
         if !core.contains(index) {
             return Err(missing_index(name, index));
         }
-        core.update_image(index, &origin, image.image_multi_data()?, update, force)
+        core.update_image(index, &origin, image.image_data()?, update, force)
             .map_err(Error::out_of_range)
     }
 

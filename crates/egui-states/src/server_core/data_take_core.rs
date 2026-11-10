@@ -10,6 +10,7 @@ use crate::serialization::{FastVec, TRANSFER_CHUNK_SIZE};
 use crate::server_core::data_core::{DataHolder, SyncState, check_data_type};
 use crate::server_core::sender::MessageSender;
 use crate::server_core::server::{Acknowledge, SyncTrait};
+use crate::server_core::transfer::{Chunk, chunk_transfer};
 
 // DataTake --------------------------------------------------
 struct TakeState {
@@ -359,6 +360,35 @@ fn pack_data_take(
     )
 }
 
+/// Packs a one-shot transfer; `wrap` serializes its header for the state.
+fn pack_take(
+    data: &[u8],
+    data_count: u64,
+    data_type: DataType,
+    update: bool,
+    chunk_limit: usize,
+    wrap: impl Fn(DataTakeHeader) -> Result<FastVec<32>, String>,
+) -> Result<Vec<(FastVec<32>, bool)>, String> {
+    chunk_transfer(
+        data.len(),
+        data_type.item_size(),
+        chunk_limit,
+        |chunk, range| {
+            let len = range.len() as u32;
+            let header = match chunk {
+                Chunk::All => DataTakeHeader::All(data_type, data_count, update, len),
+                Chunk::Start => DataTakeHeader::StartBatch(data_count, len),
+                Chunk::Batch => DataTakeHeader::Batch(len),
+                Chunk::End => DataTakeHeader::End(data_type, data_count, update, len),
+            };
+            let mut message = wrap(header)?;
+            message.reserve_exact(range.len());
+            message.extend_from_slice(&data[range]);
+            Ok(message)
+        },
+    )
+}
+
 pub(super) fn pack_data_take_chunked(
     id: u64,
     data: &[u8],
@@ -368,64 +398,11 @@ pub(super) fn pack_data_take_chunked(
     update: bool,
     chunk_limit: usize,
 ) -> Result<Vec<(FastVec<32>, bool)>, String> {
-    let mut messages = Vec::with_capacity(1);
-
-    if data.len() <= chunk_limit {
-        let header = crate::data_transport::DataTakeHeader::All(
-            data_type,
-            data_count,
-            update,
-            data.len() as u32,
-        );
-        let mut message = header
+    pack_take(data, data_count, data_type, update, chunk_limit, |header| {
+        header
             .serialize(id, blocking, true)
-            .map_err(|_| "Failed to serialize DataTake header".to_string())?;
-        message.reserve_exact(data.len());
-        message.extend_from_slice(data);
-        messages.push((message, true));
-    } else {
-        let element_size = data_type.item_size();
-        let chunk_size = chunk_limit / element_size * element_size;
-        let mut processed = 0;
-        let header =
-            crate::data_transport::DataTakeHeader::StartBatch(data_count, chunk_size as u32);
-        let mut message = header
-            .serialize(id, blocking, true)
-            .map_err(|_| "Failed to serialize DataTake header".to_string())?;
-        message.reserve_exact(chunk_size);
-        message.extend_from_slice(&data[..chunk_size]);
-        messages.push((message, true));
-        processed += chunk_size;
-
-        while processed < data.len() {
-            let remaining = data.len() - processed;
-            if remaining <= chunk_size {
-                let header = crate::data_transport::DataTakeHeader::End(
-                    data_type,
-                    data_count,
-                    update,
-                    remaining as u32,
-                );
-                let mut message = header
-                    .serialize(id, blocking, true)
-                    .map_err(|_| "Failed to serialize DataTake header".to_string())?;
-                message.extend_from_slice(&data[processed..]);
-                messages.push((message, false));
-                break;
-            }
-
-            let header = crate::data_transport::DataTakeHeader::Batch(chunk_size as u32);
-            let mut message = header
-                .serialize(id, blocking, true)
-                .map_err(|_| "Failed to serialize DataTake header".to_string())?;
-            message.reserve_exact(chunk_size);
-            message.extend_from_slice(&data[processed..processed + chunk_size]);
-            messages.push((message, true));
-            processed += chunk_size;
-        }
-    }
-
-    Ok(messages)
+            .map_err(|_| "Failed to serialize DataTake header".to_string())
+    })
 }
 
 fn pack_data_multi_take(
@@ -460,50 +437,10 @@ pub(super) fn pack_data_multi_take_chunked(
     update: bool,
     chunk_limit: usize,
 ) -> Result<Vec<(FastVec<32>, bool)>, String> {
-    let mut messages = Vec::with_capacity(1);
-
-    if data.len() <= chunk_limit {
-        let header = DataTakeHeader::All(data_type, data_count, update, data.len() as u32);
-        let mut message = DataMultiTakeHeader::serialize_modify(id, index, header, blocking)
-            .map_err(|_| "Failed to serialize DataMultiTake header".to_string())?;
-        message.reserve_exact(data.len());
-        message.extend_from_slice(data);
-        messages.push((message, true));
-    } else {
-        let element_size = data_type.item_size();
-        let chunk_size = chunk_limit / element_size * element_size;
-        let mut processed = 0;
-        let header = DataTakeHeader::StartBatch(data_count, chunk_size as u32);
-        let mut message = DataMultiTakeHeader::serialize_modify(id, index, header, blocking)
-            .map_err(|_| "Failed to serialize DataMultiTake header".to_string())?;
-        message.reserve_exact(chunk_size);
-        message.extend_from_slice(&data[..chunk_size]);
-        messages.push((message, true));
-        processed += chunk_size;
-
-        while processed < data.len() {
-            let remaining = data.len() - processed;
-            if remaining <= chunk_size {
-                let header = DataTakeHeader::End(data_type, data_count, update, remaining as u32);
-                let mut message =
-                    DataMultiTakeHeader::serialize_modify(id, index, header, blocking)
-                        .map_err(|_| "Failed to serialize DataMultiTake header".to_string())?;
-                message.extend_from_slice(&data[processed..]);
-                messages.push((message, false));
-                break;
-            }
-
-            let header = DataTakeHeader::Batch(chunk_size as u32);
-            let mut message = DataMultiTakeHeader::serialize_modify(id, index, header, blocking)
-                .map_err(|_| "Failed to serialize DataMultiTake header".to_string())?;
-            message.reserve_exact(chunk_size);
-            message.extend_from_slice(&data[processed..processed + chunk_size]);
-            messages.push((message, true));
-            processed += chunk_size;
-        }
-    }
-
-    Ok(messages)
+    pack_take(data, data_count, data_type, update, chunk_limit, |header| {
+        DataMultiTakeHeader::serialize_modify(id, index, header, blocking)
+            .map_err(|_| "Failed to serialize DataMultiTake header".to_string())
+    })
 }
 
 #[cfg(test)]

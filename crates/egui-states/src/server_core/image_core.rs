@@ -6,13 +6,14 @@ use parking_lot::{Mutex, MutexGuard, RwLock, RwLockWriteGuard};
 
 use crate::event::Event;
 use crate::image_transport::{
-    ImageHeader, ImageSetHeader, ImageType, checked_image_bounds, checked_image_bytes,
-    checked_image_shape,
+    ImageHeader, ImageType, checked_image_bounds, checked_image_bytes, checked_image_shape,
 };
 use crate::serialization::ServerHeader;
 use crate::serialization::{FastVec, MSG_SIZE_THRESHOLD, TRANSFER_CHUNK_SIZE};
+pub(crate) use crate::server_core::image_core_common::ImageData;
 use crate::server_core::image_core_common::{
-    checked_fill_size, write_all_new, write_all_new_stride, write_rectangle,
+    checked_fill_size, pack_image_set, pack_image_update, write_all_new, write_all_new_stride,
+    write_rectangle,
 };
 use crate::server_core::sender::MessageSender;
 use crate::server_core::server::{Acknowledge, SyncTrait};
@@ -28,14 +29,6 @@ struct ImageDataInner {
     buffer: Buffer,
     sync_required: bool,
     sync_generation: u64,
-}
-
-pub(crate) struct ImageData {
-    pub size: [usize; 2],
-    pub stride: usize,
-    pub contiguous: bool,
-    pub image_type: ImageType,
-    pub data: *const u8,
 }
 
 pub(crate) struct Image {
@@ -482,90 +475,15 @@ pub(super) fn pack_set_data_chunked(
     chunk_limit: usize,
 ) -> Result<Vec<(FastVec<32>, bool)>, String> {
     let [height, width] = checked_image_shape(image.size)?;
-    let size = [width, height]; // reverse for egui
     checked_image_bytes(image.size, 4)?;
-    let bytes_line_size = image.size[1] * image.image_type.bytes_per_pixel();
-    let bytes_size = image.size[0] * bytes_line_size;
-
-    let append_data = |message: &mut FastVec<32>, start: usize, size: usize| {
-        if image.contiguous {
-            let data = unsafe { std::slice::from_raw_parts(image.data.add(start), size) };
-            message.extend_from_slice(data);
-        } else {
-            let mut processed = 0;
-            while processed < size {
-                let offset = start + processed;
-                let line = offset / bytes_line_size;
-                let line_offset = offset % bytes_line_size;
-                let copy_size = (bytes_line_size - line_offset).min(size - processed);
-                let data = unsafe {
-                    std::slice::from_raw_parts(
-                        image.data.add(line * image.stride + line_offset),
-                        copy_size,
-                    )
-                };
-                message.extend_from_slice(data);
-                processed += copy_size;
-            }
-        }
-    };
-
-    if bytes_size <= chunk_limit {
-        let header = ImageSetHeader::All(size, update);
-        let mut message = header
-            .serialize(id, image.image_type, bytes_size as u32)
-            .map_err(|_| format!("Failed to serialize header for image {}", id))?;
-
-        message.reserve_exact(bytes_size);
-        append_data(&mut message, 0, bytes_size);
-        Ok(vec![(message, true)])
-    } else {
-        let mut messages = Vec::new();
-        let pixel_size = image.image_type.bytes_per_pixel();
-        let pixel_count = image.size[0] * image.size[1];
-        let chunk_pixels = chunk_limit / pixel_size;
-        let chunk_size = chunk_pixels * pixel_size;
-        let mut processed_pixels = 0;
-        let mut processed = 0;
-
-        let first_pixels = chunk_pixels.min(pixel_count);
-        let first_size = first_pixels * pixel_size;
-        let header = ImageSetHeader::Start(size, first_pixels as u32);
-        let mut message = header
-            .serialize(id, image.image_type, first_size as u32)
-            .map_err(|_| format!("Failed to serialize header for image {}", id))?;
-        message.reserve_exact(first_size);
-        append_data(&mut message, 0, first_size);
-        messages.push((message, true));
-        processed_pixels += first_pixels;
-        processed += first_size;
-
-        while processed_pixels < pixel_count {
-            let remaining_pixels = pixel_count - processed_pixels;
-            if remaining_pixels <= chunk_pixels {
-                let remaining_size = remaining_pixels * pixel_size;
-                let header = ImageSetHeader::End(remaining_pixels as u32, update);
-                let mut message = header
-                    .serialize(id, image.image_type, remaining_size as u32)
-                    .map_err(|_| format!("Failed to serialize header for image {}", id))?;
-                append_data(&mut message, processed, remaining_size);
-                messages.push((message, false));
-                break;
-            }
-
-            let header = ImageSetHeader::Batch(chunk_pixels as u32);
-            let mut message = header
-                .serialize(id, image.image_type, chunk_size as u32)
-                .map_err(|_| format!("Failed to serialize header for image {}", id))?;
-            message.reserve_exact(chunk_size);
-            append_data(&mut message, processed, chunk_size);
-            messages.push((message, true));
-            processed_pixels += chunk_pixels;
-            processed += chunk_size;
-        }
-
-        Ok(messages)
-    }
+    pack_image_set(
+        id,
+        image,
+        [width, height],
+        update,
+        chunk_limit,
+        |header, len| header.serialize(id, image.image_type, len),
+    )
 }
 
 fn pack_update_data(
@@ -588,67 +506,14 @@ pub(super) fn pack_update_data_chunked(
     checked_image_bytes(image.size, 4)?;
     let [height, width] = checked_image_shape(image.size)?;
     let [y, x] = checked_image_shape(*origin)?;
-    let bytes_line_size = image.size[1] * image.image_type.bytes_per_pixel();
-    let bytes_size = image.size[0] * bytes_line_size;
-
-    let append_lines = |message: &mut FastVec<32>, start_line: usize, lines: usize| {
-        if image.contiguous {
-            let offset = start_line * bytes_line_size;
-            let size = lines * bytes_line_size;
-            let data = unsafe { std::slice::from_raw_parts(image.data.add(offset), size) };
-            message.extend_from_slice(data);
-        } else {
-            for line in start_line..start_line + lines {
-                let data = unsafe {
-                    std::slice::from_raw_parts(image.data.add(line * image.stride), bytes_line_size)
-                };
-                message.extend_from_slice(data);
-            }
-        }
-    };
-
-    if bytes_size <= chunk_limit {
-        // swap for egui
-        let rect = [x, y, width, height];
-        let header = ServerHeader::Image(
-            id,
-            ImageHeader::Update(rect, image.image_type, update),
-            bytes_size as u32,
-        );
-        let mut message: FastVec<32> = crate::serialization::serialize_heap(&header)
-            .map_err(|_| format!("Failed to serialize update header for image {}", id))?;
-
-        message.reserve_exact(bytes_size);
-        append_lines(&mut message, 0, image.size[0]);
-        let mut result = VecDeque::with_capacity(1);
-        result.push_back((message, update));
-        Ok(result)
-    } else {
-        let mut messages = VecDeque::new();
-        let chunk_lines = (chunk_limit / bytes_line_size).max(1);
-        let mut processed_lines = 0;
-
-        while processed_lines < image.size[0] {
-            let remaining_lines = image.size[0] - processed_lines;
-            let lines = remaining_lines.min(chunk_lines);
-            let data_size = lines * bytes_line_size;
-            let is_last = lines == remaining_lines;
-            let rect = [x, y + processed_lines as u32, width, lines as u32];
-            let header = ServerHeader::Image(
-                id,
-                ImageHeader::Update(rect, image.image_type, is_last && update),
-                data_size as u32,
-            );
-            let mut message: FastVec<32> = crate::serialization::serialize_heap(&header)
-                .map_err(|_| format!("Failed to serialize update header for image {}", id))?;
-            message.reserve_exact(data_size);
-            append_lines(&mut message, processed_lines, lines);
-            messages.push_back((message, !is_last));
-            processed_lines += lines;
-        }
-
-        Ok(messages)
-    }
+    pack_image_update(
+        id,
+        image,
+        [x, y, width, height],
+        update,
+        chunk_limit,
+        |header, len| crate::serialization::serialize_heap(&ServerHeader::Image(id, header, len)),
+    )
 }
 
 #[cfg(test)]
@@ -833,7 +698,10 @@ mod tests {
         match sync_header {
             ServerHeader::Image(
                 1,
-                ImageHeader::Set(ImageSetHeader::All([3, 2], false), ImageType::ColorAlpha),
+                ImageHeader::Set(
+                    crate::image_transport::ImageSetHeader::All([3, 2], false),
+                    ImageType::ColorAlpha,
+                ),
                 24,
             ) => {}
             _ => panic!("unexpected connection-sync header"),

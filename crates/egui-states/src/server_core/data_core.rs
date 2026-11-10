@@ -9,6 +9,7 @@ use crate::hashing::NoHashMap;
 use crate::serialization::{FastVec, TRANSFER_CHUNK_SIZE};
 use crate::server_core::sender::MessageSender;
 use crate::server_core::server::{Acknowledge, SyncTrait};
+use crate::server_core::transfer::{Chunk, chunk_transfer};
 
 pub(crate) struct DataHolder {
     pub data: *const u8,
@@ -755,61 +756,28 @@ pub(super) fn pack_data_chunked(
     update: bool,
     chunk_limit: usize,
 ) -> Result<Vec<(FastVec<32>, bool)>, String> {
-    let mut messages = Vec::with_capacity(1);
-
-    if data.len() <= chunk_limit {
-        let header = DataHeader::All(data_type, transport_type, update, data.len() as u32);
-        let mut message = match multi_data {
-            None => header.serialize(id, true),
-            Some(index) => MultiDataHeader::serialize_modify(id, index, header),
-        }
-        .map_err(|_| "Failed to serialize header".to_string())?;
-        message.reserve_exact(data.len());
-        message.extend_from_slice(data);
-        messages.push((message, true));
-    } else {
-        let element_size = data_type.item_size();
-        let chunk_size = chunk_limit / element_size * element_size;
-        let mut processed = 0;
-        let header = DataHeader::StartBatch(data_count, chunk_size as u32);
-        let mut message = match multi_data {
-            None => header.serialize(id, true),
-            Some(index) => MultiDataHeader::serialize_modify(id, index, header),
-        }
-        .map_err(|_| "Failed to serialize header".to_string())?;
-        message.reserve_exact(chunk_size);
-        message.extend_from_slice(&data[..chunk_size]);
-        messages.push((message, true));
-        processed += chunk_size;
-
-        while processed < data.len() {
-            let remaining = data.len() - processed;
-            if remaining <= chunk_size {
-                let header = DataHeader::End(data_type, transport_type, update, remaining as u32);
-                let mut message = match multi_data {
-                    None => header.serialize(id, true),
-                    Some(index) => MultiDataHeader::serialize_modify(id, index, header),
-                }
-                .map_err(|_| "Failed to serialize header".to_string())?;
-                message.extend_from_slice(&data[processed..]);
-                messages.push((message, false));
-                break;
-            }
-
-            let header = DataHeader::Batch(chunk_size as u32);
+    chunk_transfer(
+        data.len(),
+        data_type.item_size(),
+        chunk_limit,
+        |chunk, range| {
+            let len = range.len() as u32;
+            let header = match chunk {
+                Chunk::All => DataHeader::All(data_type, transport_type, update, len),
+                Chunk::Start => DataHeader::StartBatch(data_count, len),
+                Chunk::Batch => DataHeader::Batch(len),
+                Chunk::End => DataHeader::End(data_type, transport_type, update, len),
+            };
             let mut message = match multi_data {
                 None => header.serialize(id, true),
                 Some(index) => MultiDataHeader::serialize_modify(id, index, header),
             }
             .map_err(|_| "Failed to serialize header".to_string())?;
-            message.reserve_exact(chunk_size);
-            message.extend_from_slice(&data[processed..processed + chunk_size]);
-            messages.push((message, true));
-            processed += chunk_size;
-        }
-    }
-
-    Ok(messages)
+            message.reserve_exact(range.len());
+            message.extend_from_slice(&data[range]);
+            Ok(message)
+        },
+    )
 }
 
 #[cfg(all(test, feature = "server"))]
