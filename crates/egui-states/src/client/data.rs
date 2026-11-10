@@ -1,6 +1,5 @@
 //! Read-only client handles for server-controlled numeric buffers.
 
-use std::collections::hash_map::Entry;
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -109,6 +108,61 @@ fn element_count<T>(data: &[u8], what: &str) -> Result<usize, String> {
     Ok(data.len() / size)
 }
 
+/// Overwrites `target` with the elements encoded in `data`, which holds
+/// exactly as many.
+fn copy_from_bytes<T: private::GetDataType>(target: &mut [T], data: &[u8]) {
+    assert_eq!(size_of_val(target), data.len());
+    // SAFETY: as in `extend_from_bytes`; the lengths were checked.
+    unsafe {
+        std::ptr::copy_nonoverlapping(data.as_ptr(), target.as_mut_ptr().cast::<u8>(), data.len());
+    }
+}
+
+/// The elements of a complete transfer: the bytes of a single message, which
+/// hold a whole number of elements, or the buffer a batch assembled.
+///
+/// A single message is copied straight into the stored buffer for `Add` and
+/// `Replace`, without an intermediate vector.
+enum Payload<'a, T> {
+    Bytes(&'a [u8]),
+    Buffer(Vec<T>),
+}
+
+impl<T: private::GetDataType> Payload<'_, T> {
+    fn len(&self) -> usize {
+        match self {
+            Self::Bytes(data) => data.len() / size_of::<T>(),
+            Self::Buffer(buffer) => buffer.len(),
+        }
+    }
+
+    fn into_vec(self) -> Vec<T> {
+        match self {
+            Self::Bytes(data) => {
+                let mut buffer = Vec::new();
+                extend_from_bytes(&mut buffer, data);
+                buffer
+            }
+            Self::Buffer(buffer) => buffer,
+        }
+    }
+
+    fn append_to(self, target: &mut Vec<T>) {
+        match self {
+            Self::Bytes(data) => extend_from_bytes(target, data),
+            Self::Buffer(buffer) => target.extend_from_slice(&buffer),
+        }
+    }
+
+    /// Overwrites `target`, which has the payload's length.
+    fn write_to(self, target: &mut [T]) {
+        match self {
+            Self::Bytes(data) => copy_from_bytes(target, data),
+            Self::Buffer(buffer) => target.copy_from_slice(&buffer),
+        }
+    }
+}
+
 /// Copies the payload of a single-message transfer into a new buffer.
 pub(crate) fn elements<T: private::GetDataType>(data: &[u8]) -> Result<Vec<T>, String> {
     element_count::<T>(data, "Data")?;
@@ -191,6 +245,22 @@ impl<T: private::GetDataType> BatchBuffer<T> {
     }
 }
 
+/// Checks the element count a transport type announced against its payload.
+fn check_count<T: private::GetDataType>(
+    data: &Payload<'_, T>,
+    count: u64,
+    transport: &str,
+) -> Result<(), String> {
+    if data.len() as u64 != count {
+        return Err(format!(
+            "Data size {} does not match expected count {} for {transport} transport type",
+            data.len(),
+            count
+        ));
+    }
+    Ok(())
+}
+
 /// Converts a range received from the network to indexes into a buffer of
 /// `len` elements, or `None` if it overflows or ends past the buffer.
 fn checked_range(start: u64, count: u64, len: usize) -> Option<std::ops::Range<usize>> {
@@ -262,8 +332,8 @@ where
 
     fn set_all(&self, data: &[u8], transport_type: TransportType) -> Result<(), String> {
         self.sender.send(ChannelMessage::Ack(self.id));
-        let buffer = elements(data)?;
-        self.save_data(buffer, transport_type)
+        element_count::<T>(data, "Data")?;
+        self.save_data(Payload::Bytes(data), transport_type)
     }
 
     fn batch_start(&self, data: &[u8], elements_count: u64) -> Result<(), String> {
@@ -286,7 +356,7 @@ where
         self.sender.send(ChannelMessage::Ack(self.id));
 
         match self.buffer.lock().take() {
-            Some(buffer) => self.save_data(buffer.finish(data)?, transport_type),
+            Some(buffer) => self.save_data(Payload::Buffer(buffer.finish(data)?), transport_type),
             None => Err(format!(
                 "No header found for Data: {} when updating batch end",
                 self.name
@@ -311,37 +381,20 @@ where
         Ok(())
     }
 
-    fn save_data(&self, data: Vec<T>, transport_type: TransportType) -> Result<(), String> {
+    fn save_data(&self, data: Payload<'_, T>, transport_type: TransportType) -> Result<(), String> {
         match transport_type {
             TransportType::Set(count) => {
-                if data.len() as u64 != count {
-                    return Err(format!(
-                        "Data size {} does not match expected count {} for Set transport type",
-                        data.len(),
-                        count
-                    ));
-                }
-                *self.inner.write() = data;
+                check_count(&data, count, "Set")?;
+                let data = data.into_vec();
+                // The replaced buffer is freed after the lock is released.
+                let _previous = std::mem::replace(&mut *self.inner.write(), data);
             }
             TransportType::Add(count) => {
-                if data.len() as u64 != count {
-                    return Err(format!(
-                        "Data size {} does not match expected count {} for Add transport type",
-                        data.len(),
-                        count
-                    ));
-                }
-                let mut w = self.inner.write();
-                w.extend(data);
+                check_count(&data, count, "Add")?;
+                data.append_to(&mut self.inner.write());
             }
             TransportType::Replace(start, count) => {
-                if data.len() as u64 != count {
-                    return Err(format!(
-                        "Data size {} does not match expected count {} for Replace transport type",
-                        data.len(),
-                        count
-                    ));
-                }
+                check_count(&data, count, "Replace")?;
                 let mut w = self.inner.write();
                 let Some(range) = checked_range(start, count, w.len()) else {
                     return Err(format!(
@@ -351,7 +404,7 @@ where
                         w.len()
                     ));
                 };
-                w.splice(range, data);
+                data.write_to(&mut w[range]);
             }
         }
         Ok(())
@@ -485,8 +538,8 @@ where
 
     fn set_all(&self, key: u32, data: &[u8], transport_type: TransportType) -> Result<(), String> {
         self.sender.send(ChannelMessage::Ack(self.id));
-        let buffer = elements(data)?;
-        self.save_data(key, buffer, transport_type)
+        element_count::<T>(data, "Data")?;
+        self.save_data(key, Payload::Bytes(data), transport_type)
     }
 
     fn batch_start(&self, key: u32, data: &[u8], elements_count: u64) -> Result<(), String> {
@@ -514,7 +567,9 @@ where
         self.sender.send(ChannelMessage::Ack(self.id));
 
         match self.buffers.lock().remove(&key) {
-            Some(buffer) => self.save_data(key, buffer.finish(data)?, transport_type),
+            Some(buffer) => {
+                self.save_data(key, Payload::Buffer(buffer.finish(data)?), transport_type)
+            }
             None => Err(format!(
                 "No header found for Data: {} when updating batch end",
                 self.name
@@ -547,70 +602,47 @@ where
     fn save_data(
         &self,
         key: u32,
-        data: Vec<T>,
+        data: Payload<'_, T>,
         transport_type: TransportType,
     ) -> Result<(), String> {
         match transport_type {
             TransportType::Set(count) => {
-                if data.len() as u64 != count {
-                    return Err(format!(
-                        "Data size {} does not match expected count {} for Set transport type",
-                        data.len(),
-                        count
-                    ));
-                }
-                self.inner.write().insert(key, data);
+                check_count(&data, count, "Set")?;
+                let data = data.into_vec();
+                // The replaced buffer is freed after the lock is released.
+                let _previous = self.inner.write().insert(key, data);
             }
             TransportType::Add(count) => {
-                if data.len() as u64 != count {
+                check_count(&data, count, "Add")?;
+                let mut w = self.inner.write();
+                let Some(target) = w.get_mut(&key) else {
                     return Err(format!(
-                        "Data size {} does not match expected count {} for Add transport type",
-                        data.len(),
-                        count
+                        "Key {} does not exist for Add transport type in MultiData: {}",
+                        key, self.name
                     ));
-                }
-                match self.inner.write().entry(key) {
-                    Entry::Occupied(mut entry) => {
-                        entry.get_mut().extend(data);
-                    }
-                    Entry::Vacant(_) => {
-                        return Err(format!(
-                            "Key {} does not exist for Add transport type in MultiData: {}",
-                            key, self.name
-                        ));
-                    }
-                }
+                };
+                data.append_to(target);
             }
             TransportType::Replace(start, count) => {
-                if data.len() as u64 != count {
+                check_count(&data, count, "Replace")?;
+                let mut w = self.inner.write();
+                let Some(target) = w.get_mut(&key) else {
                     return Err(format!(
-                        "Data size {} does not match expected count {} for Replace transport type",
-                        data.len(),
-                        count
+                        "Key {} does not exist for Replace transport type in MultiData: {}",
+                        key, self.name
                     ));
-                }
-                match self.inner.write().entry(key) {
-                    Entry::Occupied(mut entry) => {
-                        let w = entry.get_mut();
-                        let Some(range) = checked_range(start, count, w.len()) else {
-                            return Err(format!(
-                                "Replace range ({} to {}) exceeds current data size {} for key {} in MultiData: {}",
-                                start,
-                                start.saturating_add(count),
-                                w.len(),
-                                key,
-                                self.name
-                            ));
-                        };
-                        w.splice(range, data);
-                    }
-                    Entry::Vacant(_) => {
-                        return Err(format!(
-                            "Key {} does not exist for Replace transport type in MultiData: {}",
-                            key, self.name
-                        ));
-                    }
-                }
+                };
+                let Some(range) = checked_range(start, count, target.len()) else {
+                    return Err(format!(
+                        "Replace range ({} to {}) exceeds current data size {} for key {} in MultiData: {}",
+                        start,
+                        start.saturating_add(count),
+                        target.len(),
+                        key,
+                        self.name
+                    ));
+                };
+                data.write_to(&mut target[range]);
             }
         }
         Ok(())
