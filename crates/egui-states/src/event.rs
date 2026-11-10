@@ -2,7 +2,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
-#[cfg(feature = "c_abi")]
+#[cfg(any(feature = "server", feature = "python"))]
 use std::time::Instant;
 
 use event_listener::Event as ListenerEvent;
@@ -50,120 +50,47 @@ impl Event {
         self.0.flag.store(false, Ordering::Release);
     }
 
-    #[cfg(any(feature = "server", feature = "python"))]
-    pub(crate) fn wait(&self) {
-        loop {
-            if self.0.flag.load(Ordering::Acquire) {
-                return;
-            }
-
-            let listener = self.0.notify.listen();
-
-            if self.0.flag.load(Ordering::Acquire) {
-                return;
-            }
-
-            listener.wait();
+    /// Checks the flag; with `consume`, also clears it if it was set.
+    #[inline]
+    fn take(&self, consume: bool) -> bool {
+        if consume {
+            self.0
+                .flag
+                .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+        } else {
+            self.0.flag.load(Ordering::Acquire)
         }
     }
 
-    #[cfg(any(feature = "server", feature = "python"))]
-    pub(crate) fn wait_clear(&self) {
-        loop {
-            if self
-                .0
-                .flag
-                .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
-                .is_ok()
-            {
-                return;
-            }
-
-            let listener = self.0.notify.listen();
-
-            if self
-                .0
-                .flag
-                .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
-                .is_ok()
-            {
-                return;
-            }
-
-            listener.wait();
-        }
-    }
-
-    #[cfg(any(feature = "server", feature = "python"))]
-    pub(crate) fn wait_clear_until(&self, stop: &AtomicBool) -> bool {
-        loop {
-            if stop.load(Ordering::Acquire) {
-                return false;
-            }
-
-            if self
-                .0
-                .flag
-                .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
-                .is_ok()
-            {
-                return true;
-            }
-
-            let listener = self.0.notify.listen();
-
-            if stop.load(Ordering::Acquire) {
-                return false;
-            }
-
-            if self
-                .0
-                .flag
-                .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
-                .is_ok()
-            {
-                return true;
-            }
-
-            listener.wait();
-        }
-    }
-
-    /// Like [`Self::wait_clear_until`], but gives up at `deadline`.
+    /// The blocking wait every variant below uses.
     ///
-    /// `None` waits without a deadline.
-    #[cfg(feature = "c_abi")]
-    pub(crate) fn wait_clear_deadline(
+    /// Returns once the flag is set (clearing it with `consume`), once `stop`
+    /// is raised, or at `deadline`. The flag and `stop` are checked again
+    /// after the listener is registered, so a `set` that lands between the
+    /// first check and the registration is not missed.
+    #[cfg(any(feature = "server", feature = "python"))]
+    fn wait_for(
         &self,
-        stop: &AtomicBool,
+        consume: bool,
+        stop: Option<&AtomicBool>,
         deadline: Option<Instant>,
     ) -> WaitOutcome {
+        let stopped = || stop.is_some_and(|stop| stop.load(Ordering::Acquire));
         loop {
-            if stop.load(Ordering::Acquire) {
+            if stopped() {
                 return WaitOutcome::Stopped;
             }
-
-            if self
-                .0
-                .flag
-                .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
-                .is_ok()
-            {
+            if self.take(consume) {
                 return WaitOutcome::Set;
             }
 
             let listener = self.0.notify.listen();
 
-            if stop.load(Ordering::Acquire) {
+            if stopped() {
                 return WaitOutcome::Stopped;
             }
-
-            if self
-                .0
-                .flag
-                .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
-                .is_ok()
-            {
+            if self.take(consume) {
                 return WaitOutcome::Set;
             }
 
@@ -178,25 +105,16 @@ impl Event {
         }
     }
 
-    pub(crate) async fn wait_clear_async(&self) {
+    /// The async twin of [`Self::wait_for`], without stop flag or deadline.
+    async fn wait_for_async(&self, consume: bool) {
         loop {
-            if self
-                .0
-                .flag
-                .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
-                .is_ok()
-            {
+            if self.take(consume) {
                 return;
             }
 
             let listener = self.0.notify.listen();
 
-            if self
-                .0
-                .flag
-                .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
-                .is_ok()
-            {
+            if self.take(consume) {
                 return;
             }
 
@@ -205,26 +123,48 @@ impl Event {
     }
 
     /// Waits until the event is set, leaving it set.
+    #[cfg(any(feature = "server", feature = "python"))]
+    pub(crate) fn wait(&self) {
+        self.wait_for(false, None, None);
+    }
+
+    /// Waits until the event is set and clears it.
+    #[cfg(any(feature = "server", feature = "python"))]
+    pub(crate) fn wait_clear(&self) {
+        self.wait_for(true, None, None);
+    }
+
+    /// Like [`Self::wait_clear`], but returns `false` once `stop` is raised.
+    #[cfg(any(feature = "server", feature = "python"))]
+    pub(crate) fn wait_clear_until(&self, stop: &AtomicBool) -> bool {
+        self.wait_for(true, Some(stop), None) == WaitOutcome::Set
+    }
+
+    /// Like [`Self::wait_clear_until`], but gives up at `deadline`.
+    ///
+    /// `None` waits without a deadline.
+    #[cfg(feature = "c_abi")]
+    pub(crate) fn wait_clear_deadline(
+        &self,
+        stop: &AtomicBool,
+        deadline: Option<Instant>,
+    ) -> WaitOutcome {
+        self.wait_for(true, Some(stop), deadline)
+    }
+
+    pub(crate) async fn wait_clear_async(&self) {
+        self.wait_for_async(true).await
+    }
+
+    /// Waits until the event is set, leaving it set.
     #[cfg(feature = "client")]
     pub(crate) async fn wait_async(&self) {
-        loop {
-            if self.0.flag.load(Ordering::Acquire) {
-                return;
-            }
-
-            let listener = self.0.notify.listen();
-
-            if self.0.flag.load(Ordering::Acquire) {
-                return;
-            }
-
-            listener.await;
-        }
+        self.wait_for_async(false).await
     }
 }
 
-/// Result of [`Event::wait_clear_deadline`].
-#[cfg(feature = "c_abi")]
+/// Result of a blocking wait.
+#[cfg(any(feature = "server", feature = "python"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum WaitOutcome {
     /// The event was set and has been cleared by this waiter.
