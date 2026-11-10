@@ -96,9 +96,20 @@ if `a -> b -> c` coalesces to `c`, the callback receives `(c, a)`.
 
 ## Transfers and acknowledgements
 
-Large numeric buffers and images are split into batches for transport and are
-published to a client handle only after the complete batch is assembled.
-Acknowledgements provide backpressure and release pending server work.
+Large numeric buffers, image sets and collection replacements are split into
+chunks of 512 KiB and published to a client handle only after the last chunk
+arrives. Small messages queued together are merged into one frame of up to
+10 MB, but a chunk is never merged: the WebSocket library moves the unsent rest
+of a message after every partial socket write, so large frames cost time
+quadratic in their size. Acknowledgements provide backpressure and release
+pending server work.
+
+When a client connects, every state is synchronized from the server's current
+contents; a change made while the client was away is not replayed. A
+`DataMulti` or `ImageMulti` is reset first and then receives its keys one by
+one, so for a moment a reconnected client shows the collection empty or with
+only some keys, until the last key has arrived. A partial transfer from a lost
+connection is dropped on both sides.
 
 A whole-collection replacement of a `VecState` or `MapState` larger than one
 message is split at item boundaries and applied on the client only after its
@@ -127,6 +138,33 @@ the pending transfer. Calling the client handle's `take` method consumes the
 value and sends the acknowledgement. For numeric takes, `cache = true` also
 retains the last transfer for synchronization with a newly connected client.
 
+## Data headers
+
+A `Data`, `DataMulti`, `DataTake` or `DataMultiTake` can carry a typed header
+next to its buffer: any `Typed` value up to the size of a value (1 MB), for
+example the shape, the axis scale or the units of the numbers. The header type
+is part of the state type, `Data<f32, Meta>`; `Data<f32>` has no header.
+
+A change can carry a new header, which the client publishes together with the
+buffer, also when the transfer is split into chunks: readers never see a new
+header with an old buffer. A change without a header keeps the current one.
+Clearing a buffer keeps its header unless a new one is given; removing a
+`DataMulti` key or resetting the collection drops the headers with the keys,
+and a new key gets the header type's default. A header can also be sent alone.
+Unlike a buffer change, the client does not acknowledge it, so sending
+headers alone never waits for the client, as with values.
+
+A header that was never set reads as missing on the server (`None` in Rust and
+Python, `NOT_FOUND` in C), while the client shows the header type's default. A
+`Data` header that was set cannot return to "never set". A take sent without
+a header reaches the client with the default one.
+
+A header that the client cannot accept, because it has the wrong type, is too
+large or does not decode, fails its message like invalid data does: the client
+acknowledges it, reports the error and keeps its buffer and header. For an
+`Add` or `Replace`, the dropped change leaves the client behind until the next
+complete set or reconnect.
+
 ## Repaints and runtimes
 
 Synchronization and repainting are separate. Server methods with an `update`
@@ -140,7 +178,8 @@ WASM clients run their synchronization future on the browser executor.
 ## Numeric and image data
 
 `Data` transports contiguous primitive numeric buffers (`u8` through `u64`,
-`i8` through `i64`, `f32`, and `f64`) in native-endian representation. This is
+`i8` through `i64`, `f32`, and `f64`) in native-endian representation, with an
+optional typed header (see [Data headers](#data-headers)). This is
 an efficient same-architecture transport; callers should not treat its raw byte
 form as a portable file format.
 

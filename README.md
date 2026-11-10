@@ -31,7 +31,9 @@ pub struct CounterState {
 
 Nest structs deriving `State` to organize larger state trees. Collections,
 numeric buffers, images, custom types, and one-shot transfers are covered in the
-[showcase](example/showcase/README.md).
+[showcase](example/showcase/README.md). A numeric buffer can carry a typed
+header that describes it, `Data<f32, Meta>`, which the client publishes
+together with the buffer; see [Data headers](docs/architecture.md#data-headers).
 
 Generate matching server bindings from the same state definition with
 `generate_python` or `generate_rust`. Construct the UI state with

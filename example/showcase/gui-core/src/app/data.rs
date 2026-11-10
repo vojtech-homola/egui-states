@@ -59,6 +59,28 @@ pub(super) fn show_data(ui: &mut egui::Ui, state: &mut ViewState) {
 
         ui.separator();
 
+        // The header and the buffer are read together, so they always match.
+        let (summary, measurement_preview) =
+            state
+                .schema
+                .data
+                .measurement
+                .read_with_header(|data, header| {
+                    let summary = format!(
+                        "{}: {} samples at {} Hz in {}",
+                        header.label,
+                        data.len(),
+                        header.sample_rate,
+                        header.unit
+                    );
+                    (summary, preview_f32_slice(data))
+                });
+        ui.label("Data<f32, Measurement>: root.data.measurement");
+        ui.label(summary);
+        ui.label(format!("preview = {measurement_preview}"));
+
+        ui.separator();
+
         let (buffer_len, buffer_preview) = state
             .schema
             .data

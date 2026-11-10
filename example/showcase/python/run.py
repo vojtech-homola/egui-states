@@ -8,7 +8,7 @@ import threading
 import numpy as np
 from showcase_bindings import ShowcaseState, StatesServer
 from showcase_bindings.enums import PrimaryChoice, SecondaryChoice
-from showcase_bindings.structs import Point, Summary
+from showcase_bindings.structs import Measurement, Point, Summary
 from egui_states import LogLevel
 
 PORT = 8091
@@ -143,6 +143,12 @@ def populate_initial_data(states: ShowcaseState) -> None:  # noqa: PLR0915
 
     states.data.bytes.set(np.arange(32, dtype=np.uint8), update=True)
     states.data.samples.set(np.linspace(0.0, 1.0, 1024 * 20, dtype=np.float32), update=True)
+    temperatures = 20.0 + np.sin(np.arange(50, dtype=np.float32) / 8.0)
+    states.data.measurement.set(
+        temperatures.astype(np.float32),
+        update=True,
+        header=Measurement("temperature", "°C", 10.0),
+    )
     states.data.nested.buffer.set(np.arange(8, dtype=np.uint16), update=True)
 
     states.multi_data.bytes[0].set(np.arange(12, dtype=np.uint8), update=True)
