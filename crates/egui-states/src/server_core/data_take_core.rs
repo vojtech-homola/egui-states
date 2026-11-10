@@ -6,7 +6,7 @@ use parking_lot::{Mutex, RwLock};
 use crate::data_transport::{DataMultiTakeHeader, DataTakeHeader, DataType};
 use crate::event::Event;
 use crate::hashing::NoHashMap;
-use crate::serialization::{FastVec, MSG_SIZE_THRESHOLD};
+use crate::serialization::{FastVec, TRANSFER_CHUNK_SIZE};
 use crate::server_core::data_core::{DataHolder, SyncState, check_data_type};
 use crate::server_core::sender::MessageSender;
 use crate::server_core::server::{Acknowledge, SyncTrait};
@@ -333,7 +333,7 @@ fn pack_data_take(
         data_type,
         blocking,
         update,
-        MSG_SIZE_THRESHOLD,
+        TRANSFER_CHUNK_SIZE,
     )
 }
 
@@ -423,7 +423,7 @@ fn pack_data_multi_take(
         data_type,
         blocking,
         update,
-        MSG_SIZE_THRESHOLD,
+        TRANSFER_CHUNK_SIZE,
     )
 }
 
@@ -619,10 +619,10 @@ mod transfer_tests {
     #[test]
     fn real_take_chunks_publish_once_and_ack_only_after_consumption() {
         for size in [
-            MSG_SIZE_THRESHOLD - 1,
-            MSG_SIZE_THRESHOLD,
-            MSG_SIZE_THRESHOLD + 1,
-            2 * MSG_SIZE_THRESHOLD + 17,
+            TRANSFER_CHUNK_SIZE - 1,
+            TRANSFER_CHUNK_SIZE,
+            TRANSFER_CHUNK_SIZE + 1,
+            2 * TRANSFER_CHUNK_SIZE + 17,
         ] {
             let expected: Vec<u8> = (0..size).map(|i| (i % 251) as u8).collect();
             for key in [None, Some(113)] {
@@ -652,7 +652,7 @@ mod transfer_tests {
                         }
                         .unwrap();
                         let total = messages.len();
-                        assert_eq!(total, size.div_ceil(MSG_SIZE_THRESHOLD));
+                        assert_eq!(total, size.div_ceil(TRANSFER_CHUNK_SIZE));
                         for (n, (message, _)) in messages.into_iter().enumerate() {
                             let (mut parser, message) =
                                 MessagesParser::from_bytes(message.into_bytes()).unwrap();

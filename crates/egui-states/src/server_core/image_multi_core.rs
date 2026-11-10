@@ -10,7 +10,7 @@ use crate::image_transport::{
     ImageHeader, ImageMultiHeader, ImageSetHeader, ImageType, checked_image_bytes,
     checked_image_shape, serialize_image_multi_header,
 };
-use crate::serialization::{FastVec, MSG_SIZE_THRESHOLD};
+use crate::serialization::{FastVec, MSG_SIZE_THRESHOLD, TRANSFER_CHUNK_SIZE};
 use crate::server_core::image_core_common::{
     checked_fill_size, checked_image_rect, checked_image_size, write_all_new, write_all_new_stride,
     write_rectangle,
@@ -619,7 +619,7 @@ fn pack_set_data(
     image: &ImageMultiData,
     update: bool,
 ) -> Result<Vec<(FastVec<32>, bool)>, String> {
-    pack_set_data_chunked(id, index, image, update, MSG_SIZE_THRESHOLD)
+    pack_set_data_chunked(id, index, image, update, TRANSFER_CHUNK_SIZE)
 }
 
 pub(super) fn pack_set_data_chunked(

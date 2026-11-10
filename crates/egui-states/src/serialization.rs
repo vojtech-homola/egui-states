@@ -8,6 +8,13 @@ use crate::image_transport::{ImageHeader, ImageMultiHeader};
 // TODO: make these constants configurable
 pub(crate) const VALUE_MAX_SIZE: usize = 1024 * 1024; // 1 MB
 pub(crate) const MSG_SIZE_THRESHOLD: usize = 1024 * 1024 * 10; // 10 MB
+/// Chunk size of bulk transfers: Data, takes, image sets and collection
+/// replacements. Much smaller than `MSG_SIZE_THRESHOLD`, the cap for merging
+/// small messages into one frame, because the WebSocket library moves the
+/// unsent rest of a message after every partial socket write, which costs
+/// time quadratic in the message size.
+#[cfg(any(feature = "server", feature = "python"))]
+pub(crate) const TRANSFER_CHUNK_SIZE: usize = 512 * 1024;
 #[cfg(any(
     all(feature = "client", not(target_arch = "wasm32")),
     feature = "server",

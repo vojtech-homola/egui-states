@@ -60,16 +60,18 @@ impl MapHeader {
 }
 
 /// Splits items of the given serialized sizes into messages of at most
-/// `MSG_SIZE_THRESHOLD` bytes, returning `(part, item count, bytes)` per message.
+/// `TRANSFER_CHUNK_SIZE` bytes, returning `(part, item count, bytes)` per
+/// message.
 ///
-/// Items are limited to `VALUE_MAX_SIZE`, far below the threshold, so every
-/// message fits in one websocket frame. There is always at least one message.
+/// An item larger than the chunk size travels alone. Items are limited to
+/// `VALUE_MAX_SIZE`, so every message fits in one websocket frame. There is
+/// always at least one message.
 #[cfg(any(feature = "server", feature = "python"))]
 pub(crate) fn split_collection(sizes: impl IntoIterator<Item = usize>) -> Vec<(Part, u64, usize)> {
     let mut chunks = vec![(Part::All, 0u64, 0usize)];
     for size in sizes {
         let (_, count, bytes) = chunks.last_mut().expect("at least one chunk");
-        if *count > 0 && *bytes + size > crate::serialization::MSG_SIZE_THRESHOLD {
+        if *count > 0 && *bytes + size > crate::serialization::TRANSFER_CHUNK_SIZE {
             chunks.push((Part::Chunk, 1, size));
         } else {
             *count += 1;
@@ -87,33 +89,46 @@ pub(crate) fn split_collection(sizes: impl IntoIterator<Item = usize>) -> Vec<(P
 #[cfg(all(test, any(feature = "server", feature = "python")))]
 mod tests {
     use super::*;
-    use crate::serialization::{MSG_SIZE_THRESHOLD, VALUE_MAX_SIZE};
+    use crate::serialization::{TRANSFER_CHUNK_SIZE, VALUE_MAX_SIZE};
 
     #[test]
-    fn a_collection_within_the_threshold_is_one_message() {
+    fn a_collection_within_the_chunk_size_is_one_message() {
         assert_eq!(split_collection([]), vec![(Part::All, 0, 0)]);
         assert_eq!(
-            split_collection([MSG_SIZE_THRESHOLD - 1, 1]),
-            vec![(Part::All, 2, MSG_SIZE_THRESHOLD)]
+            split_collection([TRANSFER_CHUNK_SIZE - 1, 1]),
+            vec![(Part::All, 2, TRANSFER_CHUNK_SIZE)]
         );
     }
 
     #[test]
     fn a_larger_collection_is_split_at_item_boundaries() {
         assert_eq!(
-            split_collection([MSG_SIZE_THRESHOLD, 1]),
-            vec![(Part::Begin, 1, MSG_SIZE_THRESHOLD), (Part::End, 1, 1)]
+            split_collection([TRANSFER_CHUNK_SIZE, 1]),
+            vec![(Part::Begin, 1, TRANSFER_CHUNK_SIZE), (Part::End, 1, 1)]
         );
 
-        let items = [VALUE_MAX_SIZE; 25];
-        let chunks = split_collection(items.iter().copied());
+        let item = TRANSFER_CHUNK_SIZE / 10;
+        let chunks = split_collection([item; 25]);
         let parts: Vec<Part> = chunks.iter().map(|(part, ..)| *part).collect();
         assert_eq!(parts, [Part::Begin, Part::Chunk, Part::End]);
         assert_eq!(chunks.iter().map(|(_, count, _)| count).sum::<u64>(), 25);
         assert!(
             chunks
                 .iter()
-                .all(|(.., bytes)| *bytes <= MSG_SIZE_THRESHOLD)
+                .all(|(.., bytes)| *bytes <= TRANSFER_CHUNK_SIZE)
+        );
+    }
+
+    #[test]
+    fn an_item_larger_than_the_chunk_size_travels_alone() {
+        let chunks = split_collection([1, VALUE_MAX_SIZE, 1]);
+        assert_eq!(
+            chunks,
+            vec![
+                (Part::Begin, 1, 1),
+                (Part::Chunk, 1, VALUE_MAX_SIZE),
+                (Part::End, 1, 1),
+            ]
         );
     }
 }

@@ -6,7 +6,7 @@ use parking_lot::{Mutex, RwLock};
 use crate::data_transport::{DataHeader, DataType, MultiDataHeader, TransportType};
 use crate::event::Event;
 use crate::hashing::NoHashMap;
-use crate::serialization::{FastVec, MSG_SIZE_THRESHOLD};
+use crate::serialization::{FastVec, TRANSFER_CHUNK_SIZE};
 use crate::server_core::sender::MessageSender;
 use crate::server_core::server::{Acknowledge, SyncTrait};
 
@@ -719,7 +719,7 @@ pub(crate) fn pack_data(
         data_type,
         multi_data,
         update,
-        MSG_SIZE_THRESHOLD,
+        TRANSFER_CHUNK_SIZE,
     )
 }
 
@@ -1125,10 +1125,10 @@ mod transfer_tests {
     #[test]
     fn real_numeric_chunks_publish_complete_single_and_sparse_data() {
         for count in [
-            MSG_SIZE_THRESHOLD / 2 - 1,
-            MSG_SIZE_THRESHOLD / 2,
-            MSG_SIZE_THRESHOLD / 2 + 1,
-            MSG_SIZE_THRESHOLD + 17,
+            TRANSFER_CHUNK_SIZE / 2 - 1,
+            TRANSFER_CHUNK_SIZE / 2,
+            TRANSFER_CHUNK_SIZE / 2 + 1,
+            TRANSFER_CHUNK_SIZE + 17,
         ] {
             let expected: Vec<u16> = (0..count)
                 .map(|i| (i.wrapping_mul(37) % 65521) as u16)
@@ -1153,7 +1153,7 @@ mod transfer_tests {
                     )
                     .unwrap();
                     let total = messages.len();
-                    assert_eq!(total, bytes.len().div_ceil(MSG_SIZE_THRESHOLD));
+                    assert_eq!(total, bytes.len().div_ceil(TRANSFER_CHUNK_SIZE));
                     for (n, (message, _)) in messages.into_iter().enumerate() {
                         let (mut parser, message) =
                             MessagesParser::from_bytes(message.into_bytes()).unwrap();
@@ -1436,7 +1436,7 @@ mod transfer_tests {
     /// data only after their final chunk, like a chunked `Set`.
     #[test]
     fn real_numeric_chunks_apply_add_and_replace() {
-        let count = MSG_SIZE_THRESHOLD / 2 + 1;
+        let count = TRANSFER_CHUNK_SIZE / 2 + 1;
         let large: Vec<u16> = (0..count).map(|i| (i % 65521) as u16).collect();
         let patch: Vec<u16> = large.iter().map(|v| v.wrapping_mul(3)).collect();
         for key in [None, Some(79)] {

@@ -10,7 +10,7 @@ use crate::image_transport::{
     checked_image_shape,
 };
 use crate::serialization::ServerHeader;
-use crate::serialization::{FastVec, MSG_SIZE_THRESHOLD};
+use crate::serialization::{FastVec, MSG_SIZE_THRESHOLD, TRANSFER_CHUNK_SIZE};
 use crate::server_core::image_core_common::{
     checked_fill_size, write_all_new, write_all_new_stride, write_rectangle,
 };
@@ -472,7 +472,7 @@ pub(crate) fn pack_set_data(
     image: &ImageData,
     update: bool,
 ) -> Result<Vec<(FastVec<32>, bool)>, String> {
-    pack_set_data_chunked(id, image, update, MSG_SIZE_THRESHOLD)
+    pack_set_data_chunked(id, image, update, TRANSFER_CHUNK_SIZE)
 }
 
 pub(super) fn pack_set_data_chunked(
@@ -1070,7 +1070,7 @@ mod packing_tests {
             };
             let packed = pack_set_data(71, &image(&expected), true).unwrap();
             let total = packed.len();
-            assert_eq!(total, expected.len().div_ceil(MSG_SIZE_THRESHOLD));
+            assert_eq!(total, expected.len().div_ceil(TRANSFER_CHUNK_SIZE));
             for (n, (message, _)) in packed.into_iter().enumerate() {
                 let (mut parser, message) =
                     MessagesParser::from_bytes(message.into_bytes()).unwrap();

@@ -179,7 +179,7 @@ impl SyncTrait for ValueList {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::serialization::{MSG_SIZE_THRESHOLD, VALUE_MAX_SIZE, deserialize_value};
+    use crate::serialization::{TRANSFER_CHUNK_SIZE, deserialize_value};
 
     /// Returns `(header kind, item count, update, payload bytes)` per sent message.
     fn sent(
@@ -225,18 +225,21 @@ mod tests {
         list.set(vec![Bytes::from(vec![1u8; 4]); 2], true).unwrap();
         assert_eq!(kinds(&sent(&mut receiver)), [("all", 2, true)]);
 
-        list.set(vec![Bytes::from(vec![0u8; VALUE_MAX_SIZE]); 25], true)
-            .unwrap();
+        list.set(
+            vec![Bytes::from(vec![0u8; TRANSFER_CHUNK_SIZE / 10]); 25],
+            true,
+        )
+        .unwrap();
         let messages = sent(&mut receiver);
         assert_eq!(
             kinds(&messages),
             [("begin", 10, false), ("chunk", 10, false), ("end", 5, true)]
         );
-        // Headers are a few bytes, so every message fits in one websocket frame.
+        // Headers are a few bytes on top of the chunk size.
         assert!(
             messages
                 .iter()
-                .all(|(.., len)| *len < MSG_SIZE_THRESHOLD + 64)
+                .all(|(.., len)| *len < TRANSFER_CHUNK_SIZE + 64)
         );
     }
 }
