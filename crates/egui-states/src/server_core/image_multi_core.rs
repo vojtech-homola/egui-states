@@ -595,6 +595,16 @@ fn pack_set_data(
     image: &ImageMultiData,
     update: bool,
 ) -> Result<Vec<(FastVec<32>, bool)>, String> {
+    pack_set_data_chunked(id, index, image, update, MSG_SIZE_THRESHOLD)
+}
+
+pub(super) fn pack_set_data_chunked(
+    id: u64,
+    index: u32,
+    image: &ImageMultiData,
+    update: bool,
+    chunk_limit: usize,
+) -> Result<Vec<(FastVec<32>, bool)>, String> {
     let size = checked_image_size(image.size)?;
     checked_image_bytes(image.size, 4)?;
     let bytes_line_size = image.size[1] * image.image_type.bytes_per_pixel();
@@ -623,7 +633,7 @@ fn pack_set_data(
         }
     };
 
-    if bytes_size <= MSG_SIZE_THRESHOLD {
+    if bytes_size <= chunk_limit {
         let header = ImageSetHeader::All(size, update);
         let mut message = header
             .serialize_multi(id, index, image.image_type, bytes_size as u32)
@@ -636,7 +646,7 @@ fn pack_set_data(
         let mut messages = Vec::new();
         let pixel_size = image.image_type.bytes_per_pixel();
         let pixel_count = image.size[0] * image.size[1];
-        let chunk_pixels = MSG_SIZE_THRESHOLD / pixel_size;
+        let chunk_pixels = chunk_limit / pixel_size;
         let chunk_size = chunk_pixels * pixel_size;
         let mut processed_pixels = 0;
         let mut processed = 0;
@@ -688,6 +698,17 @@ fn pack_update_data(
     image: &ImageMultiData,
     update: bool,
 ) -> Result<VecDeque<(FastVec<32>, bool)>, String> {
+    pack_update_data_chunked(id, index, origin, image, update, MSG_SIZE_THRESHOLD)
+}
+
+pub(super) fn pack_update_data_chunked(
+    id: u64,
+    index: u32,
+    origin: &[usize; 2],
+    image: &ImageMultiData,
+    update: bool,
+    chunk_limit: usize,
+) -> Result<VecDeque<(FastVec<32>, bool)>, String> {
     let wire_rect = checked_image_rect(origin, image.size)?;
     checked_image_bytes(image.size, 4)?;
     let bytes_line_size = image.size[1] * image.image_type.bytes_per_pixel();
@@ -709,7 +730,7 @@ fn pack_update_data(
         }
     };
 
-    if bytes_size <= MSG_SIZE_THRESHOLD {
+    if bytes_size <= chunk_limit {
         let mut message = serialize_image_multi_header(
             id,
             index,
@@ -725,7 +746,7 @@ fn pack_update_data(
         Ok(result)
     } else {
         let mut messages = VecDeque::new();
-        let chunk_lines = (MSG_SIZE_THRESHOLD / bytes_line_size).max(1);
+        let chunk_lines = (chunk_limit / bytes_line_size).max(1);
         let mut processed_lines = 0;
 
         while processed_lines < image.size[0] {

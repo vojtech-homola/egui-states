@@ -647,9 +647,32 @@ pub(crate) fn pack_data(
     multi_data: Option<u32>,
     update: bool,
 ) -> Result<Vec<(FastVec<32>, bool)>, String> {
+    pack_data_chunked(
+        id,
+        data,
+        transport_type,
+        data_count,
+        data_type,
+        multi_data,
+        update,
+        MSG_SIZE_THRESHOLD,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn pack_data_chunked(
+    id: u64,
+    data: &[u8],
+    transport_type: TransportType,
+    data_count: u64,
+    data_type: DataType,
+    multi_data: Option<u32>,
+    update: bool,
+    chunk_limit: usize,
+) -> Result<Vec<(FastVec<32>, bool)>, String> {
     let mut messages = Vec::with_capacity(1);
 
-    if data.len() <= MSG_SIZE_THRESHOLD {
+    if data.len() <= chunk_limit {
         let header = DataHeader::All(data_type, transport_type, update, data.len() as u32);
         let mut message = match multi_data {
             None => header.serialize(id, true),
@@ -661,7 +684,7 @@ pub(crate) fn pack_data(
         messages.push((message, true));
     } else {
         let element_size = data_type.item_size();
-        let chunk_size = MSG_SIZE_THRESHOLD / element_size * element_size;
+        let chunk_size = chunk_limit / element_size * element_size;
         let mut processed = 0;
         let header = DataHeader::StartBatch(data_count, chunk_size as u32);
         let mut message = match multi_data {

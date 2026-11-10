@@ -287,9 +287,29 @@ fn pack_data_take(
     blocking: bool,
     update: bool,
 ) -> Result<Vec<(FastVec<32>, bool)>, String> {
+    pack_data_take_chunked(
+        id,
+        data,
+        data_count,
+        data_type,
+        blocking,
+        update,
+        MSG_SIZE_THRESHOLD,
+    )
+}
+
+pub(super) fn pack_data_take_chunked(
+    id: u64,
+    data: &[u8],
+    data_count: u64,
+    data_type: DataType,
+    blocking: bool,
+    update: bool,
+    chunk_limit: usize,
+) -> Result<Vec<(FastVec<32>, bool)>, String> {
     let mut messages = Vec::with_capacity(1);
 
-    if data.len() <= MSG_SIZE_THRESHOLD {
+    if data.len() <= chunk_limit {
         let header = crate::data_transport::DataTakeHeader::All(
             data_type,
             data_count,
@@ -304,7 +324,7 @@ fn pack_data_take(
         messages.push((message, true));
     } else {
         let element_size = data_type.item_size();
-        let chunk_size = MSG_SIZE_THRESHOLD / element_size * element_size;
+        let chunk_size = chunk_limit / element_size * element_size;
         let mut processed = 0;
         let header =
             crate::data_transport::DataTakeHeader::StartBatch(data_count, chunk_size as u32);
@@ -356,9 +376,32 @@ fn pack_data_multi_take(
     blocking: bool,
     update: bool,
 ) -> Result<Vec<(FastVec<32>, bool)>, String> {
+    pack_data_multi_take_chunked(
+        id,
+        index,
+        data,
+        data_count,
+        data_type,
+        blocking,
+        update,
+        MSG_SIZE_THRESHOLD,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn pack_data_multi_take_chunked(
+    id: u64,
+    index: u32,
+    data: &[u8],
+    data_count: u64,
+    data_type: DataType,
+    blocking: bool,
+    update: bool,
+    chunk_limit: usize,
+) -> Result<Vec<(FastVec<32>, bool)>, String> {
     let mut messages = Vec::with_capacity(1);
 
-    if data.len() <= MSG_SIZE_THRESHOLD {
+    if data.len() <= chunk_limit {
         let header = DataTakeHeader::All(data_type, data_count, update, data.len() as u32);
         let mut message = DataMultiTakeHeader::serialize_modify(id, index, header, blocking)
             .map_err(|_| "Failed to serialize DataMultiTake header".to_string())?;
@@ -367,7 +410,7 @@ fn pack_data_multi_take(
         messages.push((message, true));
     } else {
         let element_size = data_type.item_size();
-        let chunk_size = MSG_SIZE_THRESHOLD / element_size * element_size;
+        let chunk_size = chunk_limit / element_size * element_size;
         let mut processed = 0;
         let header = DataTakeHeader::StartBatch(data_count, chunk_size as u32);
         let mut message = DataMultiTakeHeader::serialize_modify(id, index, header, blocking)
