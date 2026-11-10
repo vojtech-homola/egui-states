@@ -5,7 +5,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 use parking_lot::{Mutex, RwLock};
 
-use crate::client::data::{private, start_batch_buffer};
+use crate::client::data::{BatchBuffer, elements, private};
 use crate::client::messages::{ChannelMessage, MessageSender};
 use crate::data_transport::DataType;
 use crate::hashing::NoHashMap;
@@ -46,7 +46,7 @@ enum TakeBatch<T> {
     #[default]
     Empty,
     Receiving {
-        buffer: Vec<T>,
+        buffer: BatchBuffer<T>,
         blocking: bool,
     },
     Failed {
@@ -154,16 +154,7 @@ where
                             self.name
                         ));
                     }
-                    let mut buffer = Vec::with_capacity(count as usize);
-                    unsafe {
-                        std::ptr::copy_nonoverlapping(
-                            data.as_ptr(),
-                            buffer.as_mut_ptr() as *mut u8,
-                            data.len(),
-                        );
-                        buffer.set_len(count as usize);
-                    }
-                    Ok(buffer)
+                    elements(&data)
                 })();
 
                 match result {
@@ -180,7 +171,7 @@ where
                 }
             }
             DataTakeMessage::BatchStart(count, data) => {
-                let result = start_batch_buffer(&data, count, self.element_size);
+                let result = BatchBuffer::start(&data, count);
 
                 *self.batch.lock() = match result {
                     Ok(buffer) => TakeBatch::Receiving { buffer, blocking },
@@ -200,31 +191,8 @@ where
                                 "Blocking flag changed within a batch for DataTake: {}",
                                 self.name
                             ))
-                        } else if data.len() % self.element_size != 0 {
-                            Some(format!(
-                                "Batch data size {} is not a multiple of element size {}",
-                                data.len(),
-                                self.element_size
-                            ))
                         } else {
-                            let count = data.len() / self.element_size;
-                            if buffer.len() + count > buffer.capacity() {
-                                Some(format!(
-                                    "Batch data size {} exceeds total data size {}",
-                                    buffer.len() + count,
-                                    buffer.capacity()
-                                ))
-                            } else {
-                                unsafe {
-                                    std::ptr::copy_nonoverlapping(
-                                        data.as_ptr(),
-                                        buffer.as_mut_ptr().add(buffer.len()) as *mut u8,
-                                        data.len(),
-                                    );
-                                    buffer.set_len(buffer.len() + count);
-                                }
-                                None
-                            }
+                            buffer.append(&data).err()
                         }
                     }
                     TakeBatch::Failed {
@@ -261,7 +229,7 @@ where
             }
             DataTakeMessage::BatchEnd(data_type, count, data) => {
                 let batch = std::mem::take(&mut *self.batch.lock());
-                let (mut buffer, batch_blocking) = match batch {
+                let (buffer, batch_blocking) = match batch {
                     TakeBatch::Receiving { buffer, blocking } => (buffer, blocking),
                     TakeBatch::Failed {
                         error,
@@ -297,46 +265,21 @@ where
                             data_type, self.data_type, self.name
                         ));
                     }
-                    if data.len() % self.element_size != 0 {
-                        return Err(format!(
-                            "Batch data size {} is not a multiple of element size {}",
-                            data.len(),
-                            self.element_size
-                        ));
-                    }
-                    let count_add = data.len() / self.element_size;
-
-                    // The copy below writes into the buffer's spare capacity,
-                    // which the batch start sized; the End count comes from the
-                    // network and alone must not decide how much is written.
-                    let total = buffer.len() + count_add;
-                    if total > buffer.capacity() {
-                        return Err(format!(
-                            "Batch end data size {} exceeds total data size {}",
-                            total,
-                            buffer.capacity()
-                        ));
-                    }
-                    if total as u64 != count {
+                    // The batch start's count bounds the copy; the End count
+                    // must agree with it as well.
+                    let buffer = buffer.finish(&data)?;
+                    if buffer.len() as u64 != count {
                         return Err(format!(
                             "Batch end data size {} does not match total data size {}",
-                            total, count
+                            buffer.len(),
+                            count
                         ));
                     }
-
-                    unsafe {
-                        std::ptr::copy_nonoverlapping(
-                            data.as_ptr(),
-                            buffer.as_mut_ptr().add(buffer.len()) as *mut u8,
-                            data.len(),
-                        );
-                        buffer.set_len(buffer.len() + count_add);
-                    }
-                    Ok(())
+                    Ok(buffer)
                 })();
 
                 match result {
-                    Ok(()) => {
+                    Ok(buffer) => {
                         *self.inner.write() = Some((buffer, blocking));
                         Ok(())
                     }
@@ -459,16 +402,7 @@ where
                             self.name
                         ));
                     }
-                    let mut buffer = Vec::with_capacity(count as usize);
-                    unsafe {
-                        std::ptr::copy_nonoverlapping(
-                            data.as_ptr(),
-                            buffer.as_mut_ptr() as *mut u8,
-                            data.len(),
-                        );
-                        buffer.set_len(count as usize);
-                    }
-                    Ok(buffer)
+                    elements(&data)
                 })();
 
                 match result {
@@ -485,7 +419,7 @@ where
                 }
             }
             DataTakeMessage::BatchStart(count, data) => {
-                let result = start_batch_buffer(&data, count, self.element_size);
+                let result = BatchBuffer::start(&data, count);
 
                 let batch = match result {
                     Ok(buffer) => TakeBatch::Receiving { buffer, blocking },
@@ -508,31 +442,8 @@ where
                                 "Blocking flag changed within a batch for DataMultiTake: {} key {}",
                                 self.name, key
                             ))
-                        } else if data.len() % self.element_size != 0 {
-                            Some(format!(
-                                "Batch data size {} is not a multiple of element size {}",
-                                data.len(),
-                                self.element_size
-                            ))
                         } else {
-                            let count = data.len() / self.element_size;
-                            if buffer.len() + count > buffer.capacity() {
-                                Some(format!(
-                                    "Batch data size {} exceeds total data size {}",
-                                    buffer.len() + count,
-                                    buffer.capacity()
-                                ))
-                            } else {
-                                unsafe {
-                                    std::ptr::copy_nonoverlapping(
-                                        data.as_ptr(),
-                                        buffer.as_mut_ptr().add(buffer.len()) as *mut u8,
-                                        data.len(),
-                                    );
-                                    buffer.set_len(buffer.len() + count);
-                                }
-                                None
-                            }
+                            buffer.append(&data).err()
                         }
                     }
                     Some(TakeBatch::Failed {
@@ -561,7 +472,7 @@ where
             }
             DataTakeMessage::BatchEnd(data_type, count, data) => {
                 let batch = self.batches.lock().remove(&key).unwrap_or_default();
-                let (mut buffer, batch_blocking) = match batch {
+                let (buffer, batch_blocking) = match batch {
                     TakeBatch::Receiving { buffer, blocking } => (buffer, blocking),
                     TakeBatch::Failed {
                         error,
@@ -597,46 +508,21 @@ where
                             data_type, self.data_type, self.name
                         ));
                     }
-                    if data.len() % self.element_size != 0 {
-                        return Err(format!(
-                            "Batch data size {} is not a multiple of element size {}",
-                            data.len(),
-                            self.element_size
-                        ));
-                    }
-                    let count_add = data.len() / self.element_size;
-
-                    // The copy below writes into the buffer's spare capacity,
-                    // which the batch start sized; the End count comes from the
-                    // network and alone must not decide how much is written.
-                    let total = buffer.len() + count_add;
-                    if total > buffer.capacity() {
-                        return Err(format!(
-                            "Batch end data size {} exceeds total data size {}",
-                            total,
-                            buffer.capacity()
-                        ));
-                    }
-                    if total as u64 != count {
+                    // The batch start's count bounds the copy; the End count
+                    // must agree with it as well.
+                    let buffer = buffer.finish(&data)?;
+                    if buffer.len() as u64 != count {
                         return Err(format!(
                             "Batch end data size {} does not match total data size {}",
-                            total, count
+                            buffer.len(),
+                            count
                         ));
                     }
-
-                    unsafe {
-                        std::ptr::copy_nonoverlapping(
-                            data.as_ptr(),
-                            buffer.as_mut_ptr().add(buffer.len()) as *mut u8,
-                            data.len(),
-                        );
-                        buffer.set_len(buffer.len() + count_add);
-                    }
-                    Ok(())
+                    Ok(buffer)
                 })();
 
                 match result {
-                    Ok(()) => {
+                    Ok(buffer) => {
                         self.inner.write().insert(key, (buffer, blocking));
                         Ok(())
                     }

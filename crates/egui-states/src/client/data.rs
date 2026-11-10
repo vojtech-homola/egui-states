@@ -78,45 +78,117 @@ pub(crate) mod private {
     impl_get_data_type!(f64, DataType::F64);
 }
 
-/// Allocates the buffer of a chunked transfer of `count` elements and copies
-/// the first chunk into it. Batches rely on the capacity being exactly `count`.
-///
-/// `count` comes from the network, so a size that overflows or cannot be
-/// allocated is an error rather than a panic or a short buffer.
-pub(crate) fn start_batch_buffer<T>(
-    data: &[u8],
-    count: u64,
-    element_size: usize,
-) -> Result<Vec<T>, String> {
-    debug_assert_eq!(element_size, size_of::<T>());
-    let all_data_size = count
-        .checked_mul(element_size as u64)
-        .ok_or_else(|| format!("Batch start count {count} overflows the data size"))?;
-    if data.len() as u64 > all_data_size {
-        return Err(format!(
-            "Batch start data size {} exceeds total data size {}",
+/// Appends the elements encoded in `data`, which holds a whole number of them.
+fn extend_from_bytes<T: private::GetDataType>(target: &mut Vec<T>, data: &[u8]) {
+    debug_assert!(data.len().is_multiple_of(size_of::<T>()));
+    let count = data.len() / size_of::<T>();
+    target.reserve(count);
+    // SAFETY: a `GetDataType` type is plain old data of `size_of::<T>()`
+    // bytes and valid for any bit pattern; `reserve` made room for `count`
+    // more elements, and a received payload cannot overlap the vector.
+    unsafe {
+        std::ptr::copy_nonoverlapping(
+            data.as_ptr(),
+            target.as_mut_ptr().add(target.len()).cast::<u8>(),
             data.len(),
-            all_data_size
+        );
+        target.set_len(target.len() + count);
+    }
+}
+
+/// The number of whole elements in `data`; `what` names the payload in the
+/// error.
+fn element_count<T>(data: &[u8], what: &str) -> Result<usize, String> {
+    let size = size_of::<T>();
+    if !data.len().is_multiple_of(size) {
+        return Err(format!(
+            "{what} size {} is not a multiple of element size {size}",
+            data.len()
         ));
     }
-    if !data.len().is_multiple_of(element_size) {
-        return Err(format!(
-            "Batch start data size {} is not a multiple of element size {}",
-            data.len(),
-            element_size
-        ));
+    Ok(data.len() / size)
+}
+
+/// Copies the payload of a single-message transfer into a new buffer.
+pub(crate) fn elements<T: private::GetDataType>(data: &[u8]) -> Result<Vec<T>, String> {
+    element_count::<T>(data, "Data")?;
+    let mut buffer = Vec::new();
+    extend_from_bytes(&mut buffer, data);
+    Ok(buffer)
+}
+
+/// A numeric buffer being assembled from the chunks of one transfer.
+///
+/// The element count the batch start announced bounds every later chunk, so
+/// no chunk is accepted past the transfer's size, whatever capacity the
+/// allocator handed out.
+pub(crate) struct BatchBuffer<T> {
+    data: Vec<T>,
+    total: usize,
+}
+
+impl<T: private::GetDataType> BatchBuffer<T> {
+    /// Allocates a transfer of `count` elements and appends its first chunk.
+    ///
+    /// `count` comes from the network, so a size that overflows or cannot be
+    /// allocated is an error rather than a panic.
+    pub(crate) fn start(data: &[u8], count: u64) -> Result<Self, String> {
+        let all_data_size = count
+            .checked_mul(size_of::<T>() as u64)
+            .ok_or_else(|| format!("Batch start count {count} overflows the data size"))?;
+        if data.len() as u64 > all_data_size {
+            return Err(format!(
+                "Batch start data size {} exceeds total data size {}",
+                data.len(),
+                all_data_size
+            ));
+        }
+        element_count::<T>(data, "Batch start data")?;
+
+        let cannot_allocate = || format!("Cannot allocate a batch buffer for {count} elements");
+        let total = usize::try_from(count).map_err(|_| cannot_allocate())?;
+        let mut buffer = Vec::new();
+        buffer
+            .try_reserve_exact(total)
+            .map_err(|_| cannot_allocate())?;
+        extend_from_bytes(&mut buffer, data);
+        Ok(Self {
+            data: buffer,
+            total,
+        })
     }
 
-    let mut buffer = Vec::new();
-    usize::try_from(count)
-        .ok()
-        .and_then(|count| buffer.try_reserve_exact(count).ok())
-        .ok_or_else(|| format!("Cannot allocate a batch buffer for {count} elements"))?;
-    unsafe {
-        std::ptr::copy_nonoverlapping(data.as_ptr(), buffer.as_mut_ptr() as *mut u8, data.len());
-        buffer.set_len(data.len() / element_size);
+    /// Appends a chunk between the first and the last.
+    pub(crate) fn append(&mut self, data: &[u8]) -> Result<(), String> {
+        let len = self.data.len() + element_count::<T>(data, "Batch data")?;
+        if len > self.total {
+            return Err(format!(
+                "Batch data size {} exceeds total data size {}",
+                len, self.total
+            ));
+        }
+        extend_from_bytes(&mut self.data, data);
+        Ok(())
     }
-    Ok(buffer)
+
+    /// Appends the last chunk and returns the complete buffer.
+    pub(crate) fn finish(mut self, data: &[u8]) -> Result<Vec<T>, String> {
+        let len = self.data.len() + element_count::<T>(data, "Batch data")?;
+        if len > self.total {
+            return Err(format!(
+                "Batch end data size {} exceeds total data size {}",
+                len, self.total
+            ));
+        }
+        if len != self.total {
+            return Err(format!(
+                "Batch end data size {} does not match total data size {}",
+                len, self.total
+            ));
+        }
+        extend_from_bytes(&mut self.data, data);
+        Ok(self.data)
+    }
 }
 
 /// Converts a range received from the network to indexes into a buffer of
@@ -149,7 +221,7 @@ pub struct Data<T> {
     data_type: DataType,
     element_size: usize,
     inner: Arc<RwLock<Vec<T>>>,
-    buffer: Arc<Mutex<Option<Vec<T>>>>,
+    buffer: Arc<Mutex<Option<BatchBuffer<T>>>>,
     sender: MessageSender,
 }
 
@@ -190,65 +262,19 @@ where
 
     fn set_all(&self, data: &[u8], transport_type: TransportType) -> Result<(), String> {
         self.sender.send(ChannelMessage::Ack(self.id));
-
-        if !data.len().is_multiple_of(self.element_size) {
-            return Err(format!(
-                "Data size {} is not a multiple of element size {}",
-                data.len(),
-                self.element_size
-            ));
-        }
-
-        let count = data.len() / self.element_size;
-        let mut buffer = Vec::with_capacity(count);
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                data.as_ptr(),
-                buffer.as_mut_ptr() as *mut u8,
-                data.len(),
-            );
-            buffer.set_len(count);
-        }
+        let buffer = elements(data)?;
         self.save_data(buffer, transport_type)
     }
 
     fn batch_start(&self, data: &[u8], elements_count: u64) -> Result<(), String> {
-        let buffer = start_batch_buffer(data, elements_count, self.element_size)?;
+        let buffer = BatchBuffer::start(data, elements_count)?;
         self.buffer.lock().replace(buffer);
         Ok(())
     }
 
     fn batch(&self, data: &[u8]) -> Result<(), String> {
         match *self.buffer.lock() {
-            Some(ref mut buffer) => {
-                if !data.len().is_multiple_of(self.element_size) {
-                    return Err(format!(
-                        "Batch data size {} is not a multiple of element size {}",
-                        data.len(),
-                        self.element_size
-                    ));
-                }
-                let count = data.len() / self.element_size;
-
-                if buffer.len() + count > buffer.capacity() {
-                    return Err(format!(
-                        "Batch data size {} exceeds total data size {}",
-                        buffer.len() + count,
-                        buffer.capacity()
-                    ));
-                }
-
-                unsafe {
-                    std::ptr::copy_nonoverlapping(
-                        data.as_ptr(),
-                        buffer.as_mut_ptr().add(buffer.len()) as *mut u8,
-                        data.len(),
-                    );
-                    buffer.set_len(buffer.len() + count);
-                }
-
-                Ok(())
-            }
+            Some(ref mut buffer) => buffer.append(data),
             None => Err(format!(
                 "No header found for Data: {} when updating batch",
                 self.name
@@ -260,35 +286,7 @@ where
         self.sender.send(ChannelMessage::Ack(self.id));
 
         match self.buffer.lock().take() {
-            Some(mut buffer) => {
-                if !data.len().is_multiple_of(self.element_size) {
-                    return Err(format!(
-                        "Batch data size {} is not a multiple of element size {}",
-                        data.len(),
-                        self.element_size
-                    ));
-                }
-                let count = data.len() / self.element_size;
-
-                if buffer.len() + count != buffer.capacity() {
-                    return Err(format!(
-                        "Batch end data size {} does not match total data size {}",
-                        buffer.len() + count,
-                        buffer.capacity()
-                    ));
-                }
-
-                unsafe {
-                    std::ptr::copy_nonoverlapping(
-                        data.as_ptr(),
-                        buffer.as_mut_ptr().add(buffer.len()) as *mut u8,
-                        data.len(),
-                    );
-                    buffer.set_len(buffer.len() + count);
-                }
-
-                self.save_data(buffer, transport_type)
-            }
+            Some(buffer) => self.save_data(buffer.finish(data)?, transport_type),
             None => Err(format!(
                 "No header found for Data: {} when updating batch end",
                 self.name
@@ -430,7 +428,7 @@ pub struct DataMulti<T> {
     data_type: DataType,
     element_size: usize,
     inner: Arc<RwLock<NoHashMap<u32, Vec<T>>>>,
-    buffers: Arc<Mutex<NoHashMap<u32, Vec<T>>>>,
+    buffers: Arc<Mutex<NoHashMap<u32, BatchBuffer<T>>>>,
     sender: MessageSender,
 }
 
@@ -487,65 +485,19 @@ where
 
     fn set_all(&self, key: u32, data: &[u8], transport_type: TransportType) -> Result<(), String> {
         self.sender.send(ChannelMessage::Ack(self.id));
-
-        if !data.len().is_multiple_of(self.element_size) {
-            return Err(format!(
-                "Data size {} is not a multiple of element size {}",
-                data.len(),
-                self.element_size
-            ));
-        }
-
-        let count = data.len() / self.element_size;
-        let mut buffer = Vec::with_capacity(count);
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                data.as_ptr(),
-                buffer.as_mut_ptr() as *mut u8,
-                data.len(),
-            );
-            buffer.set_len(count);
-        }
+        let buffer = elements(data)?;
         self.save_data(key, buffer, transport_type)
     }
 
     fn batch_start(&self, key: u32, data: &[u8], elements_count: u64) -> Result<(), String> {
-        let buffer = start_batch_buffer(data, elements_count, self.element_size)?;
+        let buffer = BatchBuffer::start(data, elements_count)?;
         self.buffers.lock().insert(key, buffer);
         Ok(())
     }
 
     fn batch(&self, key: u32, data: &[u8]) -> Result<(), String> {
         match self.buffers.lock().get_mut(&key) {
-            Some(ref mut buffer) => {
-                if !data.len().is_multiple_of(self.element_size) {
-                    return Err(format!(
-                        "Batch data size {} is not a multiple of element size {}",
-                        data.len(),
-                        self.element_size
-                    ));
-                }
-                let count = data.len() / self.element_size;
-
-                if buffer.len() + count > buffer.capacity() {
-                    return Err(format!(
-                        "Batch data size {} exceeds total data size {}",
-                        buffer.len() + count,
-                        buffer.capacity()
-                    ));
-                }
-
-                unsafe {
-                    std::ptr::copy_nonoverlapping(
-                        data.as_ptr(),
-                        buffer.as_mut_ptr().add(buffer.len()) as *mut u8,
-                        data.len(),
-                    );
-                    buffer.set_len(buffer.len() + count);
-                }
-
-                Ok(())
-            }
+            Some(buffer) => buffer.append(data),
             None => Err(format!(
                 "No header found for Data: {} when updating batch",
                 self.name
@@ -562,35 +514,7 @@ where
         self.sender.send(ChannelMessage::Ack(self.id));
 
         match self.buffers.lock().remove(&key) {
-            Some(mut buffer) => {
-                if !data.len().is_multiple_of(self.element_size) {
-                    return Err(format!(
-                        "Batch data size {} is not a multiple of element size {}",
-                        data.len(),
-                        self.element_size
-                    ));
-                }
-                let count = data.len() / self.element_size;
-
-                if buffer.len() + count != buffer.capacity() {
-                    return Err(format!(
-                        "Batch end data size {} does not match total data size {}",
-                        buffer.len() + count,
-                        buffer.capacity()
-                    ));
-                }
-
-                unsafe {
-                    std::ptr::copy_nonoverlapping(
-                        data.as_ptr(),
-                        buffer.as_mut_ptr().add(buffer.len()) as *mut u8,
-                        data.len(),
-                    );
-                    buffer.set_len(buffer.len() + count);
-                }
-
-                self.save_data(key, buffer, transport_type)
-            }
+            Some(buffer) => self.save_data(key, buffer.finish(data)?, transport_type),
             None => Err(format!(
                 "No header found for Data: {} when updating batch end",
                 self.name
