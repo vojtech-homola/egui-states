@@ -472,7 +472,7 @@ where
     ///
     /// The synchronization read lock remains held for the full iteration.
     #[inline]
-    pub fn for_each<F>(&self, f: impl Fn(u32, &[T])) {
+    pub fn for_each(&self, mut f: impl FnMut(u32, &[T])) {
         self.inner.read().iter().for_each(|(k, v)| f(*k, v));
     }
 
@@ -770,6 +770,28 @@ mod tests {
             _ => panic!("expected an ACK for {expected_id}"),
         }
         assert!(matches!(receiver.try_recv(), Err(TryRecvError::Empty)));
+    }
+
+    /// `for_each` is callable with a plain closure, without a turbofish.
+    #[test]
+    fn data_multi_for_each_visits_every_key() {
+        let (sender, _receiver) = MessageSender::new();
+        let data = DataMulti::<u8>::new("data".to_string(), 40, sender);
+        for key in [3, 5] {
+            data.update(
+                key,
+                DataMessage::All(
+                    DataType::U8,
+                    TransportType::Set(2),
+                    Bytes::from(vec![key as u8; 2]),
+                ),
+            )
+            .unwrap();
+        }
+        let mut seen = Vec::new();
+        data.for_each(|key, values| seen.push((key, values.to_vec())));
+        seen.sort();
+        assert_eq!(seen, [(3, vec![3, 3]), (5, vec![5, 5])]);
     }
 
     #[test]
