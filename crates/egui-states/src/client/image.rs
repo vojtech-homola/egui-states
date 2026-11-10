@@ -71,7 +71,7 @@ pub struct Image {
     context: egui::Context,
     sender: MessageSender,
     texture: Arc<RwLock<Option<Texture>>>,
-    buffer: Arc<Mutex<Option<(ColorImage, usize)>>>,
+    buffer: Arc<Mutex<Option<PartialImage>>>,
 }
 
 impl Image {
@@ -174,50 +174,24 @@ impl Image {
             ImageSetMessage::All(size) => {
                 self.sender.send(ChannelMessage::Ack(self.id));
                 let image_size = [size[0] as usize, size[1] as usize];
-                let c_image = self.create_c_image(image_size, image_type, data)?;
+                let c_image = create_color_image(&self.name, image_size, image_type, data)?;
                 self.set_texture(c_image);
             }
             ImageSetMessage::Start(size, pixels) => {
-                let pixels = pixels as usize;
-                let size = [size[0] as usize, size[1] as usize];
-                checked_image_bytes(size, 4)?;
-                let mut c_image = ColorImage::filled(size, egui::Color32::WHITE);
-                self.update_c_image(&mut c_image, 0, pixels, data, image_type)?;
-                *self.buffer.lock() = Some((c_image, pixels))
+                let partial = PartialImage::start(&self.name, size, pixels, image_type, data)?;
+                *self.buffer.lock() = Some(partial)
             }
-            ImageSetMessage::Batch(pixels) => {
-                let pixels = pixels as usize;
-                if let Some((ref mut c_image, ref mut actual_pixel)) = *self.buffer.lock() {
-                    let actual = *actual_pixel;
-
-                    if actual + pixels > c_image.pixels.len() {
-                        return Err(format!("Pixels exceed image size in {}", self.name));
-                    }
-
-                    self.update_c_image(c_image, actual, pixels, data, image_type)?;
-                    *actual_pixel += pixels;
-                } else {
-                    return Err(format!("No image buffer found for image: {}", self.name));
-                }
-            }
+            ImageSetMessage::Batch(pixels) => match *self.buffer.lock() {
+                Some(ref mut partial) => partial.append(&self.name, pixels, image_type, data)?,
+                None => return Err(format!("No image buffer found for image: {}", self.name)),
+            },
             ImageSetMessage::End(pixels) => {
                 self.sender.send(ChannelMessage::Ack(self.id));
-                let pixels = pixels as usize;
-                if let Some((mut c_image, actual_pixel)) = self.buffer.lock().take() {
-                    if actual_pixel + pixels != c_image.pixels.len() {
-                        return Err(format!(
-                            "Pixels do not match expected size in {}: {} vs {}",
-                            self.name,
-                            actual_pixel + pixels,
-                            c_image.pixels.len()
-                        ));
-                    }
-
-                    self.update_c_image(&mut c_image, actual_pixel, pixels, data, image_type)?;
-                    self.set_texture(c_image);
-                } else {
+                let Some(partial) = self.buffer.lock().take() else {
                     return Err(format!("No image buffer found for image: {}", self.name));
-                }
+                };
+                let c_image = partial.finish(&self.name, pixels, image_type, data)?;
+                self.set_texture(c_image);
             }
         }
 
@@ -246,20 +220,15 @@ impl Image {
                 self.name
             ));
         };
-        if origin[0] + image_size[0] > saved_size[0] || origin[1] + image_size[1] > saved_size[1] {
-            return Err(format!(
-                "Image is larger than the texture for image: {}",
-                self.name
-            ));
-        }
-        let c_image = self.create_c_image(image_size, image_type, data)?;
-        if *saved_size == image_size && origin == [0, 0] {
-            texture_handle.set(c_image, TEXTURE_OPTIONS);
-        } else {
-            texture_handle.set_partial(origin, c_image, TEXTURE_OPTIONS);
-        }
-
-        Ok(())
+        apply_update(
+            texture_handle,
+            *saved_size,
+            &self.name,
+            origin,
+            image_size,
+            image_type,
+            data,
+        )
     }
 
     pub(crate) fn fill_image(
@@ -291,44 +260,6 @@ impl Image {
 
         Ok(())
     }
-
-    fn update_c_image(
-        &self,
-        image: &mut ColorImage,
-        actual_pixel: usize,
-        pixels: usize,
-        data: &[u8],
-        image_type: ImageType,
-    ) -> Result<(), String> {
-        if actual_pixel + pixels > image.pixels.len() {
-            return Err(format!("Pixels exceed image size in {}", self.name));
-        }
-
-        if image_type.bytes_per_pixel() * pixels != data.len() {
-            return Err(format!(
-                "Data length does not match expected size in {}",
-                self.name
-            ));
-        }
-
-        let data_ptr = data.as_ptr();
-        let image_ptr = unsafe { image.pixels.as_mut_ptr().add(actual_pixel) as *mut u8 };
-
-        unsafe {
-            fill_c_image(image_type, data_ptr, image_ptr, pixels);
-        }
-
-        Ok(())
-    }
-
-    fn create_c_image(
-        &self,
-        image_size: [usize; 2],
-        image_type: ImageType,
-        data: &[u8],
-    ) -> Result<ColorImage, String> {
-        create_color_image(&self.name, image_size, image_type, data)
-    }
 }
 
 impl Clone for Image {
@@ -357,7 +288,7 @@ pub struct ImageMulti {
     id: u64,
     context: egui::Context,
     images: Arc<RwLock<NoHashMap<u32, Texture>>>,
-    buffers: Arc<Mutex<NoHashMap<u32, (ColorImage, usize)>>>,
+    buffers: Arc<Mutex<NoHashMap<u32, PartialImage>>>,
     sender: MessageSender,
 }
 
@@ -434,60 +365,26 @@ impl ImageMulti {
                 self.set_texture(index, image)
             }
             ImageSetMessage::Start(size, pixels) => {
-                let pixels = pixels as usize;
-                let size = [size[0] as usize, size[1] as usize];
-                checked_image_bytes(size, 4)?;
-                let mut image = ColorImage::filled(size, egui::Color32::WHITE);
-                update_color_image(&self.name, &mut image, 0, pixels, data, image_type)?;
-                self.buffers.lock().insert(index, (image, pixels));
+                let label = self.label(index);
+                let partial = PartialImage::start(&label, size, pixels, image_type, data)?;
+                self.buffers.lock().insert(index, partial);
                 Ok(())
             }
             ImageSetMessage::Batch(pixels) => {
-                let pixels = pixels as usize;
                 let mut buffers = self.buffers.lock();
-                let (image, actual_pixel) = buffers.get_mut(&index).ok_or_else(|| {
-                    format!(
-                        "No image buffer found for image collection: {} index {}",
-                        self.name, index
-                    )
-                })?;
-                if *actual_pixel + pixels > image.pixels.len() {
-                    return Err(format!(
-                        "Pixels exceed image size in {} index {}",
-                        self.name, index
-                    ));
-                }
-                update_color_image(&self.name, image, *actual_pixel, pixels, data, image_type)?;
-                *actual_pixel += pixels;
-                Ok(())
+                let partial = buffers
+                    .get_mut(&index)
+                    .ok_or_else(|| self.no_buffer(index))?;
+                partial.append(&self.label(index), pixels, image_type, data)
             }
             ImageSetMessage::End(pixels) => {
                 self.sender.send_ack(self.id);
-                let pixels = pixels as usize;
-                let (mut image, actual_pixel) =
-                    self.buffers.lock().remove(&index).ok_or_else(|| {
-                        format!(
-                            "No image buffer found for image collection: {} index {}",
-                            self.name, index
-                        )
-                    })?;
-                if actual_pixel + pixels != image.pixels.len() {
-                    return Err(format!(
-                        "Pixels do not match expected size in {} index {}: {} vs {}",
-                        self.name,
-                        index,
-                        actual_pixel + pixels,
-                        image.pixels.len()
-                    ));
-                }
-                update_color_image(
-                    &self.name,
-                    &mut image,
-                    actual_pixel,
-                    pixels,
-                    data,
-                    image_type,
-                )?;
+                let partial = self
+                    .buffers
+                    .lock()
+                    .remove(&index)
+                    .ok_or_else(|| self.no_buffer(index))?;
+                let image = partial.finish(&self.label(index), pixels, image_type, data)?;
                 self.set_texture(index, image)
             }
         }
@@ -512,19 +409,27 @@ impl ImageMulti {
                 index, self.name
             )
         })?;
-        if origin[0] + image_size[0] > saved_size[0] || origin[1] + image_size[1] > saved_size[1] {
-            return Err(format!(
-                "Image is larger than the texture for image: {} index {}",
-                self.name, index
-            ));
-        }
-        let image = create_color_image(&self.name, image_size, image_type, data)?;
-        if *saved_size == image_size && origin == [0, 0] {
-            texture.set(image, TEXTURE_OPTIONS);
-        } else {
-            texture.set_partial(origin, image, TEXTURE_OPTIONS);
-        }
-        Ok(())
+        apply_update(
+            texture,
+            *saved_size,
+            &self.label(index),
+            origin,
+            image_size,
+            image_type,
+            data,
+        )
+    }
+
+    /// Names one image of the collection in errors.
+    fn label(&self, index: u32) -> String {
+        format!("{} index {}", self.name, index)
+    }
+
+    fn no_buffer(&self, index: u32) -> String {
+        format!(
+            "No image buffer found for image collection: {} index {}",
+            self.name, index
+        )
     }
 
     pub(crate) fn fill_image(
@@ -612,6 +517,107 @@ fn load_texture(context: &egui::Context, name: String, image: ColorImage) -> Tex
         .write()
         .alloc(name, ImageData::Color(Arc::new(image)), TEXTURE_OPTIONS);
     TextureHandle::new(manager, id)
+}
+
+/// An image set being assembled from its chunks, with the number of pixels
+/// received so far. `label` names the image in errors.
+struct PartialImage {
+    image: ColorImage,
+    received: usize,
+}
+
+impl PartialImage {
+    fn start(
+        label: &str,
+        size: [u32; 2],
+        pixels: u32,
+        image_type: ImageType,
+        data: &[u8],
+    ) -> Result<Self, String> {
+        let pixels = pixels as usize;
+        let size = [size[0] as usize, size[1] as usize];
+        checked_image_bytes(size, 4)?;
+        let mut image = ColorImage::filled(size, egui::Color32::WHITE);
+        update_color_image(label, &mut image, 0, pixels, data, image_type)?;
+        Ok(Self {
+            image,
+            received: pixels,
+        })
+    }
+
+    fn append(
+        &mut self,
+        label: &str,
+        pixels: u32,
+        image_type: ImageType,
+        data: &[u8],
+    ) -> Result<(), String> {
+        let pixels = pixels as usize;
+        if self.received + pixels > self.image.pixels.len() {
+            return Err(format!("Pixels exceed image size in {label}"));
+        }
+        update_color_image(
+            label,
+            &mut self.image,
+            self.received,
+            pixels,
+            data,
+            image_type,
+        )?;
+        self.received += pixels;
+        Ok(())
+    }
+
+    fn finish(
+        mut self,
+        label: &str,
+        pixels: u32,
+        image_type: ImageType,
+        data: &[u8],
+    ) -> Result<ColorImage, String> {
+        let pixels = pixels as usize;
+        let total = self.received + pixels;
+        if total != self.image.pixels.len() {
+            return Err(format!(
+                "Pixels do not match expected size in {label}: {total} vs {}",
+                self.image.pixels.len()
+            ));
+        }
+        update_color_image(
+            label,
+            &mut self.image,
+            self.received,
+            pixels,
+            data,
+            image_type,
+        )?;
+        Ok(self.image)
+    }
+}
+
+/// Applies an image update at `origin` to a texture of `texture_size`; an
+/// update of the whole texture replaces it.
+fn apply_update(
+    texture: &mut TextureHandle,
+    texture_size: [usize; 2],
+    label: &str,
+    origin: [usize; 2],
+    size: [usize; 2],
+    image_type: ImageType,
+    data: &[u8],
+) -> Result<(), String> {
+    if origin[0] + size[0] > texture_size[0] || origin[1] + size[1] > texture_size[1] {
+        return Err(format!(
+            "Image is larger than the texture for image: {label}"
+        ));
+    }
+    let image = create_color_image(label, size, image_type, data)?;
+    if texture_size == size && origin == [0, 0] {
+        texture.set(image, TEXTURE_OPTIONS);
+    } else {
+        texture.set_partial(origin, image, TEXTURE_OPTIONS);
+    }
+    Ok(())
 }
 
 fn update_color_image(
