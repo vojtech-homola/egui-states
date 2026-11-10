@@ -1,6 +1,6 @@
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
-use crate::serialization::FastVec;
+use crate::protocol::FastVec;
 
 pub(crate) type SenderData = FastVec<32>;
 pub(crate) type MessageReceiver = UnboundedReceiver<Option<(SenderData, bool)>>;

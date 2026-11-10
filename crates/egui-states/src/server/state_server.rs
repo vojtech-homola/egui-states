@@ -11,7 +11,7 @@ use bytes::Bytes;
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 
-use crate::serialization::{deserialize_value, serialize};
+use crate::protocol::{deserialize_value, serialize};
 use crate::server_core::data_core::{Data as CoreData, DataMulti as CoreDataMulti};
 use crate::server_core::data_take_core::{
     DataMultiTake as CoreDataMultiTake, DataTake as CoreDataTake,
@@ -1608,7 +1608,7 @@ mod tests {
 #[cfg(all(test, feature = "client"))]
 mod wire_tests {
     use super::*;
-    use crate::serialization::{ClientHeader, ServerHeader};
+    use crate::protocol::{ClientHeader, ServerHeader};
     use futures_util::{SinkExt, StreamExt};
     use tokio_tungstenite::tungstenite::Message;
 
@@ -1804,7 +1804,7 @@ mod connection_tests {
     use std::time::{Duration, Instant};
 
     use super::*;
-    use crate::serialization::{ClientHeader, ServerHeader, VALUE_MAX_SIZE};
+    use crate::protocol::{ClientHeader, ServerHeader, VALUE_MAX_SIZE};
     use crate::{ClientBuilder, ConnectionState};
     use tokio_tungstenite::tungstenite::{self, Message};
 

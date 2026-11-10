@@ -2,11 +2,11 @@ use std::collections::VecDeque;
 
 use std::mem::MaybeUninit;
 
-use crate::image_transport::{
+use crate::protocol::FastVec;
+use crate::protocol::image::{
     ImageHeader, ImageSetHeader, ImageType, checked_image_bounds, checked_image_bytes,
     checked_image_shape, to_rgba,
 };
-use crate::serialization::FastVec;
 use crate::server_core::transfer::{Chunk, Messages, chunk_rows, chunk_transfer};
 
 /// A borrowed source image in one of the accepted pixel formats.

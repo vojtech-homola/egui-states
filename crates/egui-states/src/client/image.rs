@@ -7,7 +7,7 @@ use egui::{ColorImage, ImageData, TextureHandle};
 
 use crate::client::messages::{ChannelMessage, MessageSender};
 use crate::hashing::NoHashMap;
-use crate::image_transport::{
+use crate::protocol::image::{
     ImageSetHeader, ImageType, checked_image_bounds, checked_image_bytes, to_rgba,
 };
 

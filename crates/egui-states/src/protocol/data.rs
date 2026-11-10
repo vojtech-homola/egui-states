@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 #[cfg(any(feature = "server", feature = "python"))]
-use crate::serialization::{FastVec, ServerHeader, serialize, serialize_heap};
+use crate::protocol::{FastVec, ServerHeader, serialize, serialize_heap};
 
 /// Element type of a numeric buffer.
 ///

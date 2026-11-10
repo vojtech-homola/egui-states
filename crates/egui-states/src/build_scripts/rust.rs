@@ -6,7 +6,7 @@ use crate::InitValue;
 use crate::State;
 use crate::build_scripts::scripts;
 use crate::build_scripts::states_creator_build::StateType;
-use crate::data_transport::DataType;
+use crate::protocol::data::DataType;
 use crate::typed::ObjectType;
 
 fn data_type_to_rust_type(data_type: &DataType) -> &'static str {

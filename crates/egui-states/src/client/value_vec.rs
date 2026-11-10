@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use serde::Deserialize;
 
-use crate::collections::{Part, Replacement, VecHeader};
-use crate::serialization::{Deserializer, deserialize};
+use crate::protocol::collections::{Part, Replacement, VecHeader};
+use crate::protocol::{Deserializer, deserialize};
 use crate::typed::Typed;
 
 pub(crate) trait UpdateList: Sync + Send {

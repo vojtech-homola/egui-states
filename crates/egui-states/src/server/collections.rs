@@ -255,7 +255,7 @@ mod tests {
         assert!(values.remove_item(2, false).is_err());
         assert_eq!(values.get().unwrap(), vec![1, 2]);
 
-        let too_large = "a".repeat(crate::serialization::VALUE_MAX_SIZE + 1);
+        let too_large = "a".repeat(crate::protocol::VALUE_MAX_SIZE + 1);
         map.set(HashMap::from([(1, String::from("one"))]), false)
             .unwrap();
         assert!(map.set_item(2, too_large.clone(), false).is_err());

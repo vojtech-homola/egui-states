@@ -2,7 +2,7 @@ use pyo3::buffer::{Element, PyUntypedBuffer};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
-use crate::data_transport::DataType;
+use crate::protocol::data::DataType;
 use crate::server_core::data_core::DataSlice;
 
 /// Gets the buffer of a Data argument.

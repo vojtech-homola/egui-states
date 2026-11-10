@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 
-use crate::serialization::ClientHeader;
+use crate::protocol::ClientHeader;
 use crate::server_core::heartbeat::Activity;
 use crate::server_core::transport::{FrameSource, Incoming};
 

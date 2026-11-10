@@ -3,9 +3,9 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, error, unbounded_cha
 
 use crate::client::client::ClientCore;
 use crate::client::states_creator::ValuesList;
-use crate::data_transport::{DataMultiTakeHeader, MultiDataHeader};
-use crate::image_transport::{ImageHeader, ImageMultiHeader};
-use crate::serialization::{
+use crate::protocol::data::{DataMultiTakeHeader, MultiDataHeader};
+use crate::protocol::image::{ImageHeader, ImageMultiHeader};
+use crate::protocol::{
     ClientHeader, FastVec, MAX_MSG_COUNT, MSG_SIZE_THRESHOLD, MessageData, ServerHeader, serialize,
     serialize_to_data,
 };
@@ -364,11 +364,11 @@ mod tests {
     use super::*;
     use crate::client::client::ClientCore;
     use crate::client::states_creator::StatesCreatorClient;
-    use crate::collections::VecHeader;
-    use crate::data_transport::{DataHeader, DataTakeHeader};
-    use crate::data_transport::{DataType, TransportType};
-    use crate::image_transport::ImageSetHeader;
-    use crate::image_transport::ImageType;
+    use crate::protocol::collections::VecHeader;
+    use crate::protocol::data::{DataHeader, DataTakeHeader};
+    use crate::protocol::data::{DataType, TransportType};
+    use crate::protocol::image::ImageSetHeader;
+    use crate::protocol::image::ImageType;
     use tokio::sync::mpsc::{UnboundedReceiver, error::TryRecvError};
 
     /// Frames that were queued in advance.
@@ -383,7 +383,7 @@ mod tests {
     #[test]
     fn server_reader_reads_every_message_of_every_frame() {
         let update = |dt| {
-            crate::serialization::serialize::<_, 32>(&ServerHeader::Update(dt))
+            crate::protocol::serialize::<_, 32>(&ServerHeader::Update(dt))
                 .unwrap()
                 .into_bytes()
         };
@@ -774,7 +774,7 @@ mod malformed_tests {
 #[cfg(test)]
 mod serializer_tests {
     use super::*;
-    use crate::serialization::{VALUE_MAX_SIZE, WEBSOCKET_MAX_SIZE};
+    use crate::protocol::{VALUE_MAX_SIZE, WEBSOCKET_MAX_SIZE};
 
     /// Splits one outgoing frame into its client messages.
     fn headers(frame: &FastVec<64>) -> Vec<ClientHeader> {

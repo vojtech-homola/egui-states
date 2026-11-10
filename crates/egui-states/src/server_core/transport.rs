@@ -16,7 +16,7 @@ use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, 
 use tokio_tungstenite::tungstenite::http::StatusCode;
 use tokio_tungstenite::tungstenite::{Message, protocol::WebSocketConfig};
 
-use crate::serialization::WEBSOCKET_MAX_SIZE;
+use crate::protocol::WEBSOCKET_MAX_SIZE;
 use crate::server_core::origin::OriginPolicy;
 use crate::server_core::signals::SignalsManager;
 use crate::server_core::web::{self, Dispatch, WebSite};

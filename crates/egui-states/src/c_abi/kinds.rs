@@ -1,6 +1,6 @@
 //! Numeric enumerations shared with the C header.
 
-use crate::data_transport::DataType;
+use crate::protocol::data::DataType;
 
 /// Element type of numeric primitives, `Data` states, and array reads and writes.
 ///

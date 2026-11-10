@@ -7,8 +7,8 @@ use bytes::Bytes;
 
 use crate::client::data::{Data, UpdateData};
 use crate::client::messages::MessageSender;
-use crate::data_transport::{DataHeader, DataType, TransportType};
-use crate::image_transport::ImageType;
+use crate::protocol::data::{DataHeader, DataType, TransportType};
+use crate::protocol::image::ImageType;
 use crate::server_core::data_core::pack_data;
 use crate::server_core::image_core::{ImageData, pack_set_data};
 

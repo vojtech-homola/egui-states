@@ -8,7 +8,7 @@ use std::sync::Arc;
 use crate::client::atomics::{Atomic, AtomicLock, AtomicLockStatic, AtomicStatic};
 use crate::client::client::print_error;
 use crate::client::messages::{ChannelMessage, MessageSender};
-use crate::serialization::{check_value_size, deserialize, to_message};
+use crate::protocol::{check_value_size, deserialize, to_message};
 
 /// Report a value that cannot be sent, locally and to the server.
 #[cold]
@@ -643,7 +643,7 @@ impl<T> Clone for ValueTake<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::serialization::VALUE_MAX_SIZE;
+    use crate::protocol::VALUE_MAX_SIZE;
 
     #[test]
     fn diff_and_atomic_diff_emit_only_changes_in_call_order() {

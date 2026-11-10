@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use serde::Deserialize;
 
-use crate::serialization::deserialize_value;
+use crate::protocol::deserialize_value;
 use crate::typed::ObjectType;
 
 use super::error::{Error, Result};

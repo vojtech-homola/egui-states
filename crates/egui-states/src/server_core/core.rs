@@ -10,7 +10,7 @@ use tokio::time::{Instant, Interval, MissedTickBehavior, interval_at, timeout_at
 
 use crate::PROTOCOL_VERSION;
 use crate::event::Event;
-use crate::serialization::{MAX_MSG_COUNT, MSG_SIZE_THRESHOLD, ServerHeader, serialize};
+use crate::protocol::{MAX_MSG_COUNT, MSG_SIZE_THRESHOLD, ServerHeader, serialize};
 use crate::server_core::heartbeat::{Activity, Heartbeat};
 use crate::server_core::origin::OriginPolicy;
 use crate::server_core::sender::{MessageReceiver, MessageSender, SenderData};
@@ -603,7 +603,7 @@ mod tests {
     use tokio::sync::mpsc::unbounded_channel;
 
     use super::{DataReceiver, MERGE_LIMIT};
-    use crate::serialization::{FastVec, MAX_MSG_COUNT, MSG_SIZE_THRESHOLD};
+    use crate::protocol::{FastVec, MAX_MSG_COUNT, MSG_SIZE_THRESHOLD};
 
     fn data(size: usize) -> FastVec<32> {
         FastVec::Heap((0..size).map(|i| (i % 251) as u8).collect())
@@ -712,13 +712,12 @@ mod run_tests {
     use std::net::{Ipv4Addr, SocketAddr};
     use std::sync::atomic::AtomicUsize;
 
-    use bytes::Bytes;
     use futures_util::SinkExt;
     use parking_lot::RwLock;
     use tokio_tungstenite::tungstenite::Message;
 
     use super::*;
-    use crate::serialization::{ClientHeader, FastVec};
+    use crate::protocol::{ClientHeader, FastVec};
     use crate::server_core::server::{Acknowledge, SyncTrait};
     use crate::server_core::transport::Incoming;
     use crate::server_core::transport::memory::{self, MemoryClient, MemoryConnector};
@@ -933,6 +932,8 @@ mod run_tests {
     #[cfg(feature = "server")]
     #[test]
     fn heartbeat_disconnect_drops_pending_client_changes() {
+        use bytes::Bytes;
+
         block_on(async {
             const STATE_ID: u64 = 100;
             let signals = SignalsManager::new();

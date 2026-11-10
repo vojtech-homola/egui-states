@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use bytes::Bytes;
 
 use crate::event::Event;
-use crate::serialization::{ServerHeader, check_value_size};
+use crate::protocol::{ServerHeader, check_value_size};
 use crate::server_core::sender::MessageSender;
 use crate::server_core::server::{Acknowledge, SyncTrait};
 use crate::server_core::signals::SignalsManager;
@@ -295,7 +295,7 @@ impl SignalCore {
 #[cfg(all(test, feature = "server"))]
 mod tests {
     use super::*;
-    use crate::serialization::VALUE_MAX_SIZE;
+    use crate::protocol::VALUE_MAX_SIZE;
     use crate::server_core::sender::MessageReceiver;
 
     const ID: u64 = 40;

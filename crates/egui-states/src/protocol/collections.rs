@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 #[cfg(any(feature = "server", feature = "python"))]
-use crate::serialization::{FastVec, ServerHeader, serialize};
+use crate::protocol::{FastVec, ServerHeader, serialize};
 
 // A whole-collection replacement larger than `TRANSFER_CHUNK_SIZE` is split at
 // item boundaries into `Begin`, any number of `Chunk`, and `End`; each carries the
@@ -73,7 +73,7 @@ pub(crate) fn split_collection(sizes: impl IntoIterator<Item = usize>) -> Vec<(P
     let mut chunks = vec![(Part::All, 0u64, 0usize)];
     for size in sizes {
         let (_, count, bytes) = chunks.last_mut().expect("at least one chunk");
-        if *count > 0 && *bytes + size > crate::serialization::TRANSFER_CHUNK_SIZE {
+        if *count > 0 && *bytes + size > crate::protocol::TRANSFER_CHUNK_SIZE {
             chunks.push((Part::Chunk, 1, size));
         } else {
             *count += 1;
@@ -186,7 +186,7 @@ impl<C: Default> Replacement<C> {
 #[cfg(all(test, any(feature = "server", feature = "python")))]
 mod tests {
     use super::*;
-    use crate::serialization::{TRANSFER_CHUNK_SIZE, VALUE_MAX_SIZE};
+    use crate::protocol::{TRANSFER_CHUNK_SIZE, VALUE_MAX_SIZE};
 
     #[test]
     fn a_collection_within_the_chunk_size_is_one_message() {

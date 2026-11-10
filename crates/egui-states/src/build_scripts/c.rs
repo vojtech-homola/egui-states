@@ -6,8 +6,8 @@ use crate::InitValue;
 use crate::State;
 use crate::build_scripts::scripts;
 use crate::build_scripts::states_creator_build::StateType;
-use crate::data_transport::DataType;
 use crate::hashing::generate_value_id;
+use crate::protocol::data::DataType;
 use crate::typed::{ObjectType, type_definition, type_expression};
 
 /// Converts a Rust type name such as `CounterState` or `HTTPServer` to

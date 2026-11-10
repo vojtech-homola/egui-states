@@ -5,8 +5,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use bytes::Bytes;
 
-use crate::collections::{MapHeader, serialize_replacement};
-use crate::serialization::{ServerHeader, check_value_size, serialize};
+use crate::protocol::collections::{MapHeader, serialize_replacement};
+use crate::protocol::{ServerHeader, check_value_size, serialize};
 use crate::server_core::sender::{MessageSender, SenderData};
 use crate::server_core::server::SyncTrait;
 

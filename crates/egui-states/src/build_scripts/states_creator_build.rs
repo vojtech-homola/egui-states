@@ -19,8 +19,8 @@ use crate::client::value_vec::VecState;
 use crate::client::values::{
     GetQueueType, Signal, Static, StaticAtomic, Value, ValueAtomic, ValueTake,
 };
-use crate::data_transport::DataType;
 use crate::hashing::StableHasher;
+use crate::protocol::data::DataType;
 use crate::typed::{ObjectType, RustDerive, Typed};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

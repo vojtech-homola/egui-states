@@ -7,7 +7,7 @@ use crate::InitValue;
 use crate::State;
 use crate::build_scripts::scripts;
 use crate::build_scripts::states_creator_build::StateType;
-use crate::data_transport::DataType;
+use crate::protocol::data::DataType;
 use crate::typed::ObjectType;
 
 /// Python's hard keywords. Soft keywords (`match`, `case`, `type`, `_`) are valid

@@ -1,7 +1,7 @@
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
-use crate::serialization::{FastVec, deserialize_value, serialize_to_data};
+use crate::protocol::{FastVec, deserialize_value, serialize_to_data};
 
 pub(crate) struct ValueParser {
     value: Bytes,

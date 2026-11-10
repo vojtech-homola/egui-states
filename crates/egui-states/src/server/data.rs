@@ -3,7 +3,7 @@
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use crate::data_transport::DataType;
+use crate::protocol::data::DataType;
 use crate::server_core::data_core::{Data as CoreData, DataMulti as CoreDataMulti, DataSlice};
 use crate::server_core::data_take_core::{
     DataMultiTake as CoreDataMultiTake, DataTake as CoreDataTake,

@@ -7,14 +7,14 @@
 
 use std::collections::VecDeque;
 
-use crate::data_transport::{
+use crate::protocol::data::{
     DataHeader, DataMultiTakeHeader, DataTakeHeader, DataType, MultiDataHeader, TransportType,
 };
-use crate::image_transport::{
+use crate::protocol::image::{
     ImageHeader, ImageSetHeader, ImageType, checked_image_bounds, checked_image_bytes,
     checked_image_shape, serialize_image_multi_header,
 };
-use crate::serialization::{FastVec, ServerHeader};
+use crate::protocol::{FastVec, ServerHeader};
 use crate::server_core::image_core_common::{checked_image_rect, checked_image_size};
 
 /// The image descriptor the frozen packers read, independent of the live one.
@@ -108,7 +108,7 @@ pub(super) fn reference_data_take(
     let mut messages = Vec::with_capacity(1);
 
     if data.len() <= chunk_limit {
-        let header = crate::data_transport::DataTakeHeader::All(
+        let header = crate::protocol::data::DataTakeHeader::All(
             data_type,
             data_count,
             update,
@@ -125,7 +125,7 @@ pub(super) fn reference_data_take(
         let chunk_size = chunk_limit / element_size * element_size;
         let mut processed = 0;
         let header =
-            crate::data_transport::DataTakeHeader::StartBatch(data_count, chunk_size as u32);
+            crate::protocol::data::DataTakeHeader::StartBatch(data_count, chunk_size as u32);
         let mut message = header
             .serialize(id, blocking, true)
             .map_err(|_| "Failed to serialize DataTake header".to_string())?;
@@ -137,7 +137,7 @@ pub(super) fn reference_data_take(
         while processed < data.len() {
             let remaining = data.len() - processed;
             if remaining <= chunk_size {
-                let header = crate::data_transport::DataTakeHeader::End(
+                let header = crate::protocol::data::DataTakeHeader::End(
                     data_type,
                     data_count,
                     update,
@@ -151,7 +151,7 @@ pub(super) fn reference_data_take(
                 break;
             }
 
-            let header = crate::data_transport::DataTakeHeader::Batch(chunk_size as u32);
+            let header = crate::protocol::data::DataTakeHeader::Batch(chunk_size as u32);
             let mut message = header
                 .serialize(id, blocking, true)
                 .map_err(|_| "Failed to serialize DataTake header".to_string())?;
@@ -356,7 +356,7 @@ pub(super) fn reference_image_update(
             ImageHeader::Update(rect, image.image_type, update),
             bytes_size as u32,
         );
-        let mut message: FastVec<32> = crate::serialization::serialize_heap(&header)
+        let mut message: FastVec<32> = crate::protocol::serialize_heap(&header)
             .map_err(|_| format!("Failed to serialize update header for image {}", id))?;
 
         message.reserve_exact(bytes_size);
@@ -380,7 +380,7 @@ pub(super) fn reference_image_update(
                 ImageHeader::Update(rect, image.image_type, is_last && update),
                 data_size as u32,
             );
-            let mut message: FastVec<32> = crate::serialization::serialize_heap(&header)
+            let mut message: FastVec<32> = crate::protocol::serialize_heap(&header)
                 .map_err(|_| format!("Failed to serialize update header for image {}", id))?;
             message.reserve_exact(data_size);
             append_lines(&mut message, processed_lines, lines);

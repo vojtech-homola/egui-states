@@ -5,11 +5,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use parking_lot::{Mutex, MutexGuard, RwLock, RwLockWriteGuard};
 
 use crate::event::Event;
-use crate::image_transport::{
+use crate::protocol::ServerHeader;
+use crate::protocol::image::{
     ImageHeader, ImageType, checked_image_bounds, checked_image_bytes, checked_image_shape,
 };
-use crate::serialization::ServerHeader;
-use crate::serialization::{FastVec, MSG_SIZE_THRESHOLD, TRANSFER_CHUNK_SIZE};
+use crate::protocol::{FastVec, MSG_SIZE_THRESHOLD, TRANSFER_CHUNK_SIZE};
 pub(crate) use crate::server_core::image_core_common::ImageData;
 use crate::server_core::image_core_common::{
     checked_fill_size, pack_image_set, pack_image_update, store_rgba, write_rectangle,
@@ -408,7 +408,7 @@ fn pack_fill_data(
 ) -> Result<Vec<(FastVec<32>, bool)>, String> {
     checked_image_shape([size[0] as usize, size[1] as usize])?;
     let header = ServerHeader::Image(id, ImageHeader::Fill(size, rgba, update), 0);
-    let message = crate::serialization::serialize_heap(&header)
+    let message = crate::protocol::serialize_heap(&header)
         .map_err(|_| format!("Failed to serialize fill header for image {}", id))?;
     Ok(vec![(message, false)])
 }
@@ -465,7 +465,7 @@ pub(super) fn pack_update_data_chunked(
         [x, y, width, height],
         update,
         chunk_limit,
-        |header, len| crate::serialization::serialize_heap(&ServerHeader::Image(id, header, len)),
+        |header, len| crate::protocol::serialize_heap(&ServerHeader::Image(id, header, len)),
     )
 }
 
@@ -646,7 +646,7 @@ mod tests {
             ServerHeader::Image(
                 1,
                 ImageHeader::Set(
-                    crate::image_transport::ImageSetHeader::All([3, 2], false),
+                    crate::protocol::image::ImageSetHeader::All([3, 2], false),
                     ImageType::ColorAlpha,
                 ),
                 24,

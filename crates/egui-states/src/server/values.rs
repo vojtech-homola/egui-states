@@ -278,7 +278,7 @@ impl Signal<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::serialization::VALUE_MAX_SIZE;
+    use crate::protocol::VALUE_MAX_SIZE;
 
     #[test]
     fn values_round_trip_without_a_client() {

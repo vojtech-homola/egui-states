@@ -57,12 +57,9 @@ extern crate self as egui_states;
 #[cfg(test)]
 mod test_support;
 
-mod collections;
-mod data_transport;
 mod event;
 mod hashing;
-mod image_transport;
-mod serialization;
+mod protocol;
 mod typed;
 
 /// Internal entry points for the benchmarks; not a public API.

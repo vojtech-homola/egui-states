@@ -3,10 +3,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use parking_lot::{Mutex, RwLock};
 
-use crate::data_transport::{DataHeader, DataType, MultiDataHeader, TransportType};
 use crate::event::Event;
 use crate::hashing::NoHashMap;
-use crate::serialization::{FastVec, TRANSFER_CHUNK_SIZE};
+use crate::protocol::data::{DataHeader, DataType, MultiDataHeader, TransportType};
+use crate::protocol::{FastVec, TRANSFER_CHUNK_SIZE};
 use crate::server_core::error::CoreError;
 use crate::server_core::sender::MessageSender;
 use crate::server_core::server::{Acknowledge, SyncTrait};
@@ -1113,7 +1113,7 @@ mod transfer_tests {
         Data as ClientData, DataMulti as ClientMulti, UpdateData, UpdateMultiData,
     };
     use crate::client::messages::{MessageSender as ClientSender, MessagesParser};
-    use crate::serialization::{ClientHeader, ServerHeader};
+    use crate::protocol::{ClientHeader, ServerHeader};
     use crate::server_core::core::{Handshake, Session, run};
     use crate::server_core::server::ServerStatesList;
     use crate::server_core::signals::SignalsManager;

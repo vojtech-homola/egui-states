@@ -12,10 +12,10 @@ use parking_lot::Mutex;
 use tokio::net::TcpListener;
 use tokio::runtime::Builder;
 
-use crate::data_transport::DataType;
 use crate::event::Event;
 use crate::hashing::{MAX_RESERVED_ID, NoHashMap, generate_value_id};
-use crate::serialization::{ServerHeader, check_value_size, serialize};
+use crate::protocol::data::DataType;
+use crate::protocol::{ServerHeader, check_value_size, serialize};
 use crate::server_core::core;
 use crate::server_core::data_core::{Data, DataMulti};
 use crate::server_core::data_take_core::{DataMultiTake, DataTake};

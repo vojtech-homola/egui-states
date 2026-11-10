@@ -7,8 +7,8 @@ use std::sync::Arc;
 
 use serde::Deserialize;
 
-use crate::collections::{MapHeader, Part, Replacement};
-use crate::serialization::{Deserializer, deserialize};
+use crate::protocol::collections::{MapHeader, Part, Replacement};
+use crate::protocol::{Deserializer, deserialize};
 use crate::typed::Typed;
 
 pub(crate) trait UpdateMap: Sync + Send {

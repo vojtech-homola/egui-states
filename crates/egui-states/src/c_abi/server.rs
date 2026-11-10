@@ -9,7 +9,7 @@ use bytes::Bytes;
 use parking_lot::{Mutex, RwLock};
 
 use crate::hashing::{NoHashMap, generate_value_id};
-use crate::serialization::check_value_size;
+use crate::protocol::check_value_size;
 use crate::server_core::data_core::{Data, DataMulti};
 use crate::server_core::data_take_core::{DataMultiTake, DataTake};
 use crate::server_core::error::{CoreError, ErrorKind};

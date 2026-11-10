@@ -7,8 +7,8 @@ use parking_lot::{Mutex, RwLock};
 
 use crate::client::data::{BatchBuffer, elements, private};
 use crate::client::messages::{ChannelMessage, MessageSender};
-use crate::data_transport::{DataTakeHeader, DataType};
 use crate::hashing::NoHashMap;
+use crate::protocol::data::{DataTakeHeader, DataType};
 
 /// A completed transfer and whether taking it must acknowledge it.
 type Completed<T> = (Vec<T>, bool);

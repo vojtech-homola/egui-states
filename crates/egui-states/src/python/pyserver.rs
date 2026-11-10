@@ -1398,7 +1398,7 @@ mod tests {
     use tokio_tungstenite::tungstenite::{self, Message};
 
     use super::*;
-    use crate::serialization::ClientHeader;
+    use crate::protocol::ClientHeader;
 
     /// A raw client that completes the handshake and never acknowledges.
     fn silent_client(port: u16) -> tungstenite::WebSocket<TcpStream> {

@@ -2,7 +2,7 @@ use pyo3::buffer::PyBuffer;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
-use crate::image_transport::{ImageType, checked_image_bytes};
+use crate::protocol::image::{ImageType, checked_image_bytes};
 use crate::server_core::image_core::ImageData;
 
 fn check_image_type(shape: &[usize], strides: &[isize]) -> PyResult<ImageType> {

@@ -3,7 +3,7 @@ use futures_util::{SinkExt, StreamExt, stream::SplitSink, stream::SplitStream};
 use ws_stream_wasm::{WsMessage, WsMeta, WsStream};
 
 use crate::client::messages::{ServerFrames, ServerReader};
-use crate::serialization::FastVec;
+use crate::protocol::FastVec;
 
 pub(crate) async fn build_ws(address: &str) -> Result<(WsClientRead, WsClientSend), String> {
     let res = WsMeta::connect(address, None).await;

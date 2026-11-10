@@ -6,7 +6,7 @@ use tokio_tungstenite::tungstenite::{Message, protocol::WebSocketConfig};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 use crate::client::messages::{ServerFrames, ServerReader};
-use crate::serialization::{FastVec, WEBSOCKET_MAX_SIZE};
+use crate::protocol::{FastVec, WEBSOCKET_MAX_SIZE};
 
 pub(crate) async fn build_ws(address: &str) -> Result<(WsClientRead, WsClientSend), String> {
     let mut websocket_config = WebSocketConfig::default();
@@ -94,7 +94,7 @@ impl WsClientSend {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::serialization::{ServerHeader, serialize};
+    use crate::protocol::{ServerHeader, serialize};
 
     #[test]
     fn client_reader_skips_keep_alive_frames() {

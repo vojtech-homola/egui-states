@@ -6,11 +6,11 @@ use parking_lot::{Mutex, MutexGuard, RwLock};
 
 use crate::event::Event;
 use crate::hashing::NoHashMap;
-use crate::image_transport::{
+use crate::protocol::image::{
     ImageHeader, ImageMultiHeader, ImageType, checked_image_bytes, checked_image_shape,
     serialize_image_multi_header,
 };
-use crate::serialization::{FastVec, MSG_SIZE_THRESHOLD, TRANSFER_CHUNK_SIZE};
+use crate::protocol::{FastVec, MSG_SIZE_THRESHOLD, TRANSFER_CHUNK_SIZE};
 use crate::server_core::error::CoreError;
 use crate::server_core::image_core_common::{
     ImageData, checked_fill_size, checked_image_rect, checked_image_size, pack_image_set,
@@ -621,9 +621,9 @@ mod tests {
 
     use super::*;
     #[cfg(feature = "client")]
-    use crate::image_transport::{ImageHeader, ImageSetHeader};
+    use crate::protocol::ServerHeader;
     #[cfg(feature = "client")]
-    use crate::serialization::ServerHeader;
+    use crate::protocol::image::{ImageHeader, ImageSetHeader};
     use crate::server_core::sender::MessageReceiver;
 
     fn new_image_multi(is_connected: bool) -> (Arc<ImageMulti>, Arc<AtomicBool>, MessageReceiver) {

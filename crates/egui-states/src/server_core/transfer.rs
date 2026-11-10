@@ -7,7 +7,7 @@
 use std::collections::VecDeque;
 use std::ops::Range;
 
-use crate::serialization::FastVec;
+use crate::protocol::FastVec;
 
 /// Messages of one transfer, each with whether it must go out in a frame of
 /// its own (`true`) or may be merged with the messages queued after it.

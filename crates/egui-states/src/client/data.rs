@@ -6,8 +6,8 @@ use bytes::Bytes;
 use parking_lot::{Mutex, RwLock};
 
 use crate::client::messages::{ChannelMessage, MessageSender};
-use crate::data_transport::{DataHeader, DataType, TransportType};
 use crate::hashing::NoHashMap;
+use crate::protocol::data::{DataHeader, DataType, TransportType};
 
 /// A Data message: its wire header and the payload that followed it.
 pub(crate) type DataMessage = (DataHeader, Bytes);

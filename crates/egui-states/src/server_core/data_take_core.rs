@@ -3,10 +3,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use parking_lot::{Mutex, RwLock};
 
-use crate::data_transport::{DataMultiTakeHeader, DataTakeHeader, DataType};
 use crate::event::Event;
 use crate::hashing::NoHashMap;
-use crate::serialization::{FastVec, TRANSFER_CHUNK_SIZE};
+use crate::protocol::data::{DataMultiTakeHeader, DataTakeHeader, DataType};
+use crate::protocol::{FastVec, TRANSFER_CHUNK_SIZE};
 use crate::server_core::data_core::{DataSlice, SyncState, check_data_type};
 use crate::server_core::sender::MessageSender;
 use crate::server_core::server::{Acknowledge, SyncTrait};
@@ -569,7 +569,7 @@ mod transfer_tests {
         DataMultiTake as ClientMulti, DataTake as ClientTake, UpdateDataMultiTake, UpdateDataTake,
     };
     use crate::client::messages::{MessageSender as ClientSender, MessagesParser};
-    use crate::serialization::ServerHeader;
+    use crate::protocol::ServerHeader;
 
     #[test]
     fn real_take_chunks_publish_once_and_ack_only_after_consumption() {

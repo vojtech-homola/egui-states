@@ -4,8 +4,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use bytes::Bytes;
 
-use crate::collections::{VecHeader, serialize_replacement};
-use crate::serialization::{ServerHeader, check_value_size, serialize};
+use crate::protocol::collections::{VecHeader, serialize_replacement};
+use crate::protocol::{ServerHeader, check_value_size, serialize};
 use crate::server_core::sender::{MessageSender, SenderData};
 use crate::server_core::server::SyncTrait;
 
@@ -174,7 +174,7 @@ impl SyncTrait for ValueList {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::serialization::{TRANSFER_CHUNK_SIZE, deserialize_value};
+    use crate::protocol::{TRANSFER_CHUNK_SIZE, deserialize_value};
 
     /// Returns `(header kind, item count, update, payload bytes)` per sent message.
     fn sent(

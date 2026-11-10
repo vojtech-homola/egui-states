@@ -1,6 +1,6 @@
 //! Validation of image and numeric buffers passed to the server.
 
-use crate::image_transport::ImageType;
+use crate::protocol::image::ImageType;
 use crate::server_core::data_core::DataSlice;
 use crate::server_core::image_core::ImageData;
 use crate::server_core::image_core_common::checked_image_size;
