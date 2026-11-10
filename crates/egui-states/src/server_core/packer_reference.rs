@@ -749,17 +749,10 @@ mod tests {
                     let live = ImageData {
                         size,
                         stride,
-                        contiguous,
                         image_type,
-                        data: pixels.as_ptr(),
+                        data: &pixels,
                     };
-                    let live_multi = ImageData {
-                        size,
-                        stride,
-                        contiguous,
-                        image_type,
-                        data: pixels.as_ptr(),
-                    };
+                    let live_multi = live;
                     let reference = ReferenceImage {
                         size,
                         stride,

@@ -12,8 +12,7 @@ use crate::serialization::ServerHeader;
 use crate::serialization::{FastVec, MSG_SIZE_THRESHOLD, TRANSFER_CHUNK_SIZE};
 pub(crate) use crate::server_core::image_core_common::ImageData;
 use crate::server_core::image_core_common::{
-    checked_fill_size, pack_image_set, pack_image_update, write_all_new, write_all_new_stride,
-    write_rectangle,
+    checked_fill_size, pack_image_set, pack_image_update, store_rgba, write_rectangle,
 };
 use crate::server_core::sender::MessageSender;
 use crate::server_core::server::{Acknowledge, SyncTrait};
@@ -79,7 +78,7 @@ impl Image {
     }
 
     pub(crate) fn set_image(&self, image: ImageData, update: bool) -> Result<(), String> {
-        let (_, rgba_size) = checked_fill_size(image.size)?;
+        checked_fill_size(image.size)?;
         // Prepare data to send if connected before locking
         let to_send = if self.connected.load(Ordering::Acquire) {
             Some(pack_set_data(self.id, &image, update)?)
@@ -87,44 +86,14 @@ impl Image {
             None
         };
 
-        let pixels_count = rgba_size / 4;
-
         // this is main lock for set and update operation
         let lock = self.lock.lock();
         let mut w = self.image.write();
 
-        // only allocate new data if size has changed
-        let size_changed = image.size != w.size;
-        if size_changed {
-            w.size = image.size;
-            w.data = Vec::with_capacity(rgba_size);
-        }
-
-        if image.contiguous {
-            unsafe {
-                write_all_new(
-                    image.data,
-                    w.data.as_mut_ptr(),
-                    pixels_count,
-                    image.image_type,
-                )
-            };
-        } else {
-            unsafe {
-                write_all_new_stride(
-                    image.data,
-                    w.data.as_mut_ptr(),
-                    image.stride,
-                    &image.size,
-                    image.image_type,
-                )
-            };
-        }
-
-        if size_changed {
-            // The pixel writers initialized every byte in the allocation.
-            unsafe { w.data.set_len(rgba_size) };
-        }
+        // Only allocate new data if the size has changed.
+        let resized = image.size != w.size;
+        w.size = image.size;
+        store_rgba(&mut w.data, &image, resized);
 
         // A connection sync sends the latest complete image. Do not enqueue a
         // separate mutation until that initial sync has completed.
@@ -278,18 +247,8 @@ impl Image {
         }
 
         // update local image data
-        let data_ptr = w.data.as_mut_ptr();
-        unsafe {
-            write_rectangle(
-                image.data,
-                image.stride,
-                data_ptr,
-                w.size[1],
-                origin,
-                &image.size,
-                image.image_type,
-            );
-        }
+        let width = w.size[1];
+        write_rectangle(&image, &mut w.data, width, origin);
 
         // A connection sync sends the latest complete image. Do not enqueue a
         // separate mutation until that initial sync has completed.
@@ -427,13 +386,7 @@ impl SyncTrait for Image {
             return Ok(());
         }
 
-        let image_data = ImageData {
-            size: w.size,
-            stride: 0,
-            contiguous: true,
-            image_type: ImageType::ColorAlpha,
-            data: w.data.as_ptr(),
-        };
+        let image_data = ImageData::packed(&w.data, w.size, ImageType::ColorAlpha);
 
         let data = pack_set_data(self.id, &image_data, false).map_err(|_| ())?;
 
@@ -532,14 +485,8 @@ mod tests {
         (image, connected, receiver)
     }
 
-    fn image_data(data: &[u8], size: [usize; 2], image_type: ImageType) -> ImageData {
-        ImageData {
-            size,
-            stride: size[1] * image_type.bytes_per_pixel(),
-            contiguous: true,
-            image_type,
-            data: data.as_ptr(),
-        }
+    fn image_data(data: &[u8], size: [usize; 2], image_type: ImageType) -> ImageData<'_> {
+        ImageData::packed(data, size, image_type)
     }
 
     fn assert_message(receiver: &mut MessageReceiver) {
@@ -929,14 +876,9 @@ mod packing_tests {
             let mut expected: Vec<u8> = (0..height * width * 4)
                 .map(|i| (i * 31 % 251) as u8)
                 .collect();
-            let image = |data: &[u8]| ImageData {
-                size: [height, width],
-                stride: width * 4,
-                contiguous: true,
-                image_type: ImageType::ColorAlpha,
-                data: data.as_ptr(),
-            };
-            let packed = pack_set_data(71, &image(&expected), true).unwrap();
+            let shape = [height, width];
+            let image = ImageData::packed(&expected, shape, ImageType::ColorAlpha);
+            let packed = pack_set_data(71, &image, true).unwrap();
             let total = packed.len();
             assert_eq!(total, expected.len().div_ceil(TRANSFER_CHUNK_SIZE));
             for (n, (message, _)) in packed.into_iter().enumerate() {
@@ -978,7 +920,8 @@ mod packing_tests {
             // Update messages publish complete row strips individually. The last
             // strip requests repaint; every strip is acknowledged.
             expected.iter_mut().for_each(|v| *v = 255 - *v);
-            let packed = pack_update_data(71, &[0, 0], &image(&expected), true).unwrap();
+            let image = ImageData::packed(&expected, shape, ImageType::ColorAlpha);
+            let packed = pack_update_data(71, &[0, 0], &image, true).unwrap();
             let total = packed.len();
             let mut reconstructed = vec![0; expected.len()];
             let mut next_row = 0;

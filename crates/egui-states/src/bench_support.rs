@@ -66,13 +66,7 @@ pub fn pack_image_set(pixels: &[u8], size: [usize; 2], format: PixelFormat) -> u
         pixels.len(),
         size[0] * size[1] * image_type.bytes_per_pixel()
     );
-    let image = ImageData {
-        size,
-        stride: size[1] * image_type.bytes_per_pixel(),
-        contiguous: true,
-        image_type,
-        data: pixels.as_ptr(),
-    };
+    let image = ImageData::packed(pixels, size, image_type);
     pack_set_data(1, &image, false)
         .expect("pack image")
         .iter()
@@ -80,20 +74,14 @@ pub fn pack_image_set(pixels: &[u8], size: [usize; 2], format: PixelFormat) -> u
         .sum()
 }
 
-/// Converts `pixels` to the server's RGBA storage, as an image set does.
-pub fn server_to_rgba(pixels: &[u8], format: PixelFormat, rgba: &mut [u8]) {
+/// Converts `pixels` to the server's RGBA storage, as an image set of an
+/// unchanged size does.
+pub fn server_to_rgba(pixels: &[u8], format: PixelFormat, rgba: &mut Vec<u8>) {
     let image_type = format.image_type();
     let count = pixels.len() / image_type.bytes_per_pixel();
     assert_eq!(rgba.len(), count * 4);
-    // SAFETY: the lengths were checked above for `count` pixels.
-    unsafe {
-        crate::server_core::image_core_common::write_all_new(
-            pixels.as_ptr(),
-            rgba.as_mut_ptr(),
-            count,
-            image_type,
-        )
-    }
+    let image = ImageData::packed(pixels, [1, count], image_type);
+    crate::server_core::image_core_common::store_rgba(rgba, &image, false);
 }
 
 /// Builds the client texture image for `pixels`, as a complete image set does.

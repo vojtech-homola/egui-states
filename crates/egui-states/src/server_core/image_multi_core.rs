@@ -14,7 +14,7 @@ use crate::serialization::{FastVec, MSG_SIZE_THRESHOLD, TRANSFER_CHUNK_SIZE};
 use crate::server_core::error::CoreError;
 use crate::server_core::image_core_common::{
     ImageData, checked_fill_size, checked_image_rect, checked_image_size, pack_image_set,
-    pack_image_update, write_all_new, write_all_new_stride, write_rectangle,
+    pack_image_update, store_rgba, write_rectangle,
 };
 use crate::server_core::sender::MessageSender;
 use crate::server_core::server::{Acknowledge, SyncTrait};
@@ -342,48 +342,21 @@ impl ImageMulti {
         image: ImageData,
         update: bool,
     ) -> Result<(), String> {
-        let (_, rgba_size) = checked_fill_size(image.size)?;
+        checked_fill_size(image.size)?;
         let to_send = if self.transfer.is_connected() {
             Some(pack_set_data(self.transfer.id, index, &image, update)?)
         } else {
             None
         };
-        let pixels = rgba_size / 4;
         let lock = self.transfer.lock.lock();
         let mut inner = self.inner.write();
         let stored = inner.images.entry(index).or_insert_with(|| StoredImage {
             data: Vec::new(),
             size: image.size,
         });
-        let data_reallocated = stored.size != image.size || stored.data.len() != rgba_size;
-        if data_reallocated {
-            stored.size = image.size;
-            stored.data = Vec::with_capacity(rgba_size);
-        }
-        if image.contiguous {
-            unsafe {
-                write_all_new(
-                    image.data,
-                    stored.data.as_mut_ptr(),
-                    pixels,
-                    image.image_type,
-                )
-            };
-        } else {
-            unsafe {
-                write_all_new_stride(
-                    image.data,
-                    stored.data.as_mut_ptr(),
-                    image.stride,
-                    &image.size,
-                    image.image_type,
-                )
-            };
-        }
-        if data_reallocated {
-            // The pixel writers initialized every byte in the allocation.
-            unsafe { stored.data.set_len(rgba_size) };
-        }
+        let resized = stored.size != image.size;
+        stored.size = image.size;
+        store_rgba(&mut stored.data, &image, resized);
         if inner.sync_required || !self.transfer.is_connected() {
             return Ok(());
         }
@@ -480,17 +453,8 @@ impl ImageMulti {
         {
             return Err(format!("ImageMulti index {} update exceeds bounds", index).into());
         }
-        unsafe {
-            write_rectangle(
-                image.data,
-                image.stride,
-                stored.data.as_mut_ptr(),
-                stored.size[1],
-                origin,
-                &image.size,
-                image.image_type,
-            );
-        }
+        let width = stored.size[1];
+        write_rectangle(&image, &mut stored.data, width, origin);
         if sync_required || !self.transfer.is_connected() {
             return Ok(());
         }
@@ -576,13 +540,7 @@ impl SyncTrait for ImageMulti {
         let mut messages = Vec::new();
         for index in indices {
             let image = inner.images.get(&index).ok_or(())?;
-            let image_data = ImageData {
-                size: image.size,
-                stride: 0,
-                contiguous: true,
-                image_type: ImageType::ColorAlpha,
-                data: image.data.as_ptr(),
-            };
+            let image_data = ImageData::packed(&image.data, image.size, ImageType::ColorAlpha);
             messages.extend(
                 pack_set_data(self.transfer.id, index, &image_data, false).map_err(|_| ())?,
             );
@@ -675,14 +633,8 @@ mod tests {
         (images, connected, receiver)
     }
 
-    fn image_data(data: &[u8], size: [usize; 2], image_type: ImageType) -> ImageData {
-        ImageData {
-            size,
-            stride: size[1] * image_type.bytes_per_pixel(),
-            contiguous: true,
-            image_type,
-            data: data.as_ptr(),
-        }
+    fn image_data(data: &[u8], size: [usize; 2], image_type: ImageType) -> ImageData<'_> {
+        ImageData::packed(data, size, image_type)
     }
 
     fn assert_message(receiver: &mut MessageReceiver) {

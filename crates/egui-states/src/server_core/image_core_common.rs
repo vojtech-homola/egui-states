@@ -11,27 +11,45 @@ use crate::server_core::transfer::{Chunk, Messages, chunk_rows, chunk_transfer};
 
 /// A borrowed source image in one of the accepted pixel formats.
 ///
-/// `size` is `[height, width]`. Rows are `stride` bytes apart; the stride is
-/// read only when the rows are not `contiguous`.
-pub(crate) struct ImageData {
+/// `size` is `[height, width]`. Row `i` starts `i * stride` bytes into
+/// `data`, which reaches at least to the end of the last row.
+#[derive(Clone, Copy)]
+pub(crate) struct ImageData<'a> {
     pub size: [usize; 2],
     pub stride: usize,
-    pub contiguous: bool,
     pub image_type: ImageType,
-    pub data: *const u8,
+    pub data: &'a [u8],
 }
 
-impl ImageData {
+impl<'a> ImageData<'a> {
+    /// An image whose rows follow each other without gaps.
+    pub(crate) fn packed(data: &'a [u8], size: [usize; 2], image_type: ImageType) -> Self {
+        Self {
+            size,
+            stride: size[1] * image_type.bytes_per_pixel(),
+            image_type,
+            data,
+        }
+    }
+
     fn row_bytes(&self) -> usize {
         self.size[1] * self.image_type.bytes_per_pixel()
+    }
+
+    pub(crate) fn contiguous(&self) -> bool {
+        self.stride == self.row_bytes()
+    }
+
+    fn row(&self, row: usize) -> &'a [u8] {
+        let start = row * self.stride;
+        &self.data[start..start + self.row_bytes()]
     }
 
     /// Appends `len` pixel bytes starting `start` bytes into the image, as if
     /// its rows were contiguous.
     fn append(&self, message: &mut FastVec<32>, start: usize, len: usize) {
-        if self.contiguous {
-            let data = unsafe { std::slice::from_raw_parts(self.data.add(start), len) };
-            message.extend_from_slice(data);
+        if self.contiguous() {
+            message.extend_from_slice(&self.data[start..start + len]);
             return;
         }
 
@@ -39,13 +57,10 @@ impl ImageData {
         let mut processed = 0;
         while processed < len {
             let offset = start + processed;
-            let row = offset / row_bytes;
             let row_offset = offset % row_bytes;
             let copy = (row_bytes - row_offset).min(len - processed);
-            let data = unsafe {
-                std::slice::from_raw_parts(self.data.add(row * self.stride + row_offset), copy)
-            };
-            message.extend_from_slice(data);
+            let row = self.row(offset / row_bytes);
+            message.extend_from_slice(&row[row_offset..row_offset + copy]);
             processed += copy;
         }
     }
@@ -140,82 +155,99 @@ pub(crate) fn checked_fill_size(size: [usize; 2]) -> Result<([u32; 2], usize), S
     Ok((wire_size, rgba_size))
 }
 
-/// Views `len` bytes at `data` as uninitialized output.
-///
-/// # Safety
-///
-/// `data` must point to `len` writable bytes that nothing else accesses.
-unsafe fn output<'a>(data: *mut u8, len: usize) -> &'a mut [MaybeUninit<u8>] {
-    unsafe { std::slice::from_raw_parts_mut(data.cast::<MaybeUninit<u8>>(), len) }
-}
+/// Converts `image` to RGBA into `target`, four bytes per pixel.
+fn write_rgba(image: &ImageData, target: &mut [MaybeUninit<u8>]) {
+    if image.contiguous() {
+        let len = image.size[0] * image.row_bytes();
+        to_rgba(image.image_type, &image.data[..len], target);
+        return;
+    }
 
-/// Converts `pixel_count` packed source pixels at `data` to RGBA at
-/// `new_data`.
-///
-/// # Safety
-///
-/// `data` must point to `pixel_count` readable source pixels and `new_data`
-/// to `pixel_count * 4` writable bytes, not overlapping them.
-#[inline]
-pub(crate) unsafe fn write_all_new(
-    data: *const u8,
-    new_data: *mut u8,
-    pixel_count: usize,
-    image_type: ImageType,
-) {
-    let source =
-        unsafe { std::slice::from_raw_parts(data, pixel_count * image_type.bytes_per_pixel()) };
-    to_rgba(image_type, source, unsafe {
-        output(new_data, pixel_count * 4)
-    });
-}
-
-/// Like [`write_all_new`] for source rows `stride` bytes apart.
-///
-/// # Safety
-///
-/// As for [`write_all_new`], with `size[0]` source rows of `size[1]` pixels
-/// starting `stride` bytes apart.
-#[inline]
-pub(super) unsafe fn write_all_new_stride(
-    data: *const u8,
-    new_data: *mut u8,
-    stride: usize,
-    size: &[usize; 2],
-    image_type: ImageType,
-) {
-    let row = size[1] * image_type.bytes_per_pixel();
-    for i in 0..size[0] {
-        let source = unsafe { std::slice::from_raw_parts(data.add(i * stride), row) };
-        let target = unsafe { output(new_data.add(i * size[1] * 4), size[1] * 4) };
-        to_rgba(image_type, source, target);
+    let row = image.size[1] * 4;
+    for (i, target) in target.chunks_exact_mut(row).enumerate() {
+        to_rgba(image.image_type, image.row(i), target);
     }
 }
 
-/// Converts source rows `stride` bytes apart (`0` for packed rows) into the
-/// rectangle at `origin` of an RGBA image `old_stride` pixels wide.
-///
-/// # Safety
-///
-/// `data` must hold the source rows, and the rectangle must lie inside the
-/// RGBA image at `old_data`, which nothing else accesses.
-#[inline]
-pub(super) unsafe fn write_rectangle(
-    data: *const u8,
-    stride: usize,
-    old_data: *mut u8,
-    old_stride: usize,
+/// Stores the validated `image` as RGBA in `target`. The allocation is
+/// reused unless the image was `resized`, so a smaller image frees memory.
+pub(crate) fn store_rgba(target: &mut Vec<u8>, image: &ImageData, resized: bool) {
+    let len = image.size[0] * image.size[1] * 4;
+    if resized {
+        *target = Vec::with_capacity(len);
+    } else {
+        target.clear();
+        target.reserve_exact(len);
+    }
+    write_rgba(image, &mut target.spare_capacity_mut()[..len]);
+    // SAFETY: `write_rgba` initialized the first `len` bytes.
+    unsafe { target.set_len(len) };
+}
+
+/// Converts the validated `image` to RGBA into the rectangle at `origin`
+/// (`[y, x]`) of the RGBA image `target`, which is `width` pixels wide and
+/// contains the rectangle.
+pub(crate) fn write_rectangle(
+    image: &ImageData,
+    target: &mut [u8],
+    width: usize,
     origin: &[usize; 2],
-    size: &[usize; 2],
-    image_type: ImageType,
 ) {
     let [top, left] = *origin;
-    let row = size[1] * image_type.bytes_per_pixel();
-    let stride = if stride == 0 { row } else { stride };
-    for i in 0..size[0] {
-        let source = unsafe { std::slice::from_raw_parts(data.add(i * stride), row) };
-        let pixel = (top + i) * old_stride + left;
-        let target = unsafe { output(old_data.add(pixel * 4), size[1] * 4) };
-        to_rgba(image_type, source, target);
+    let row = image.size[1] * 4;
+    for i in 0..image.size[0] {
+        let start = ((top + i) * width + left) * 4;
+        let target = &mut target[start..start + row];
+        // SAFETY: `MaybeUninit<u8>` has the layout of `u8`, and `to_rgba`
+        // writes only initialized bytes.
+        let target = unsafe { &mut *(target as *mut [u8] as *mut [MaybeUninit<u8>]) };
+        to_rgba(image.image_type, image.row(i), target);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Two gray rows of two pixels, 3 bytes apart, with no bytes after the
+    /// last row.
+    fn strided() -> ImageData<'static> {
+        ImageData {
+            size: [2, 2],
+            stride: 3,
+            image_type: ImageType::Gray,
+            data: &[1, 2, 0, 3, 4],
+        }
+    }
+
+    #[test]
+    fn strided_rows_end_at_the_last_pixel() {
+        let image = strided();
+        assert!(!image.contiguous());
+
+        let mut message = FastVec::<32>::new();
+        image.append(&mut message, 1, 3);
+        assert_eq!(message.into_bytes().as_ref(), [2, 3, 4]);
+
+        let mut rgba = Vec::new();
+        store_rgba(&mut rgba, &image, true);
+        let pixel = |gray| [gray, gray, gray, 255];
+        assert_eq!(rgba, [pixel(1), pixel(2), pixel(3), pixel(4)].concat());
+
+        let mut target = vec![0; 3 * 2 * 4];
+        write_rectangle(&image, &mut target, 2, &[1, 0]);
+        assert_eq!(&target[..8], [0; 8]);
+        assert_eq!(&target[8..], rgba);
+    }
+
+    #[test]
+    fn same_size_reuses_the_allocation() {
+        let image = ImageData::packed(&[7; 6], [2, 3], ImageType::Gray);
+        let mut rgba = Vec::new();
+        store_rgba(&mut rgba, &image, true);
+        let allocation = rgba.as_ptr();
+        store_rgba(&mut rgba, &image, false);
+        assert_eq!(rgba.as_ptr(), allocation);
+        assert_eq!(rgba.len(), 24);
     }
 }

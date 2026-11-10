@@ -4,7 +4,7 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use crate::data_transport::DataType;
-use crate::server_core::data_core::{Data as CoreData, DataHolder, DataMulti as CoreDataMulti};
+use crate::server_core::data_core::{Data as CoreData, DataMulti as CoreDataMulti, DataSlice};
 use crate::server_core::data_take_core::{
     DataMultiTake as CoreDataMultiTake, DataTake as CoreDataTake,
 };
@@ -54,11 +54,13 @@ fn data_type<T: DataElement>() -> DataType {
     DataType::from_id(T::TYPE_ID).expect("DataElement type id must be valid")
 }
 
-fn data_holder<T: DataElement>(data: &[T]) -> DataHolder {
-    DataHolder {
-        data: data.as_ptr() as *const u8,
-        count: data.len(),
-        data_size: std::mem::size_of_val(data),
+fn data_slice<T: DataElement>(data: &[T]) -> DataSlice<'_> {
+    // SAFETY: `DataElement` types have no padding, so their values are plain bytes.
+    let bytes = unsafe {
+        std::slice::from_raw_parts(data.as_ptr().cast::<u8>(), std::mem::size_of_val(data))
+    };
+    DataSlice {
+        bytes,
         data_type: data_type::<T>(),
     }
 }
@@ -117,14 +119,14 @@ where
     /// Replaces the complete buffer and optionally requests a client repaint.
     pub fn set(&self, data: &[T], update: bool) -> Result<()> {
         self.inner
-            .set(data_holder(data), update)
+            .set(data_slice(data), update)
             .map_err(ServerError::new)
     }
 
     /// Appends elements and optionally requests a client repaint.
     pub fn add(&self, data: &[T], update: bool) -> Result<()> {
         self.inner
-            .add(data_holder(data), update)
+            .add(data_slice(data), update)
             .map_err(ServerError::new)
     }
 
@@ -136,7 +138,7 @@ where
     /// the update cannot be serialized or queued.
     pub fn replace(&self, data: &[T], index: usize, update: bool) -> Result<()> {
         self.inner
-            .replace(data_holder(data), index, update)
+            .replace(data_slice(data), index, update)
             .map_err(ServerError::new)
     }
 
@@ -185,7 +187,7 @@ where
     /// client, and `update` requests a repaint.
     pub fn set(&self, data: &[T], blocking: bool, update: bool, cache: bool) -> Result<()> {
         self.inner
-            .set(data_holder(data), blocking, update, cache)
+            .set(data_slice(data), blocking, update, cache)
             .map_err(ServerError::new)
     }
 }
@@ -221,21 +223,21 @@ where
     /// Replaces the buffer at `index`.
     pub fn set(&self, index: u32, data: &[T], update: bool) -> Result<()> {
         self.inner
-            .set(index, data_holder(data), update)
+            .set(index, data_slice(data), update)
             .map_err(ServerError::new)
     }
 
     /// Appends elements to the buffer at `index`.
     pub fn add(&self, index: u32, data: &[T], update: bool) -> Result<()> {
         self.inner
-            .add(index, data_holder(data), update)
+            .add(index, data_slice(data), update)
             .map_err(ServerError::new)
     }
 
     /// Replaces elements starting at `data_index` in the buffer at `index`.
     pub fn replace(&self, index: u32, data_index: usize, data: &[T], update: bool) -> Result<()> {
         self.inner
-            .replace(index, data_index, data_holder(data), update)
+            .replace(index, data_index, data_slice(data), update)
             .map_err(ServerError::new)
     }
 
@@ -294,7 +296,7 @@ where
         cache: bool,
     ) -> Result<()> {
         self.inner
-            .set(index, data_holder(data), blocking, update, cache)
+            .set(index, data_slice(data), blocking, update, cache)
             .map_err(ServerError::new)
     }
 

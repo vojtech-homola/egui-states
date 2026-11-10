@@ -29,7 +29,7 @@ use crate::typed::{ObjectType, type_expression};
 use super::error::{Error, ErrorCode, Result};
 use super::events::ChangeEvent;
 use super::kinds::{DataKind, StateKind};
-use super::media::{ImageInput, data_holder};
+use super::media::{ImageInput, data_slice};
 use super::reader::Reader;
 use super::tree::{Node, TypeRef};
 use super::types::TypeRegistry;
@@ -890,7 +890,7 @@ impl CServer {
     pub fn data_set(&self, id: u64, kind: DataKind, data: &[u8], update: bool) -> Result<()> {
         let (name, core, registered) = lookup!(self.states()?, id, Data(core, kind));
         check_kind(name, *registered, kind)?;
-        core.set(data_holder(kind, data)?, update)
+        core.set(data_slice(kind, data)?, update)
             .map_err(Error::internal)
     }
 
@@ -898,7 +898,7 @@ impl CServer {
     pub fn data_add(&self, id: u64, kind: DataKind, data: &[u8], update: bool) -> Result<()> {
         let (name, core, registered) = lookup!(self.states()?, id, Data(core, kind));
         check_kind(name, *registered, kind)?;
-        core.add(data_holder(kind, data)?, update)
+        core.add(data_slice(kind, data)?, update)
             .map_err(Error::internal)
     }
 
@@ -913,7 +913,7 @@ impl CServer {
     ) -> Result<()> {
         let (name, core, registered) = lookup!(self.states()?, id, Data(core, kind));
         check_kind(name, *registered, kind)?;
-        core.replace(data_holder(kind, data)?, index, update)
+        core.replace(data_slice(kind, data)?, index, update)
             .map_err(Error::out_of_range)
     }
 
@@ -943,7 +943,7 @@ impl CServer {
     ) -> Result<()> {
         let (name, core, registered) = lookup!(self.states()?, id, DataTake(core, kind));
         check_kind(name, *registered, kind)?;
-        core.set(data_holder(kind, data)?, blocking, update, cache)
+        core.set(data_slice(kind, data)?, blocking, update, cache)
             .map_err(Error::internal)
     }
 
@@ -974,7 +974,7 @@ impl CServer {
     ) -> Result<()> {
         let (name, core, registered) = lookup!(self.states()?, id, DataMulti(core, kind));
         check_kind(name, *registered, kind)?;
-        core.set(index, data_holder(kind, data)?, update)
+        core.set(index, data_slice(kind, data)?, update)
             .map_err(Error::internal)
     }
 
@@ -989,7 +989,7 @@ impl CServer {
     ) -> Result<()> {
         let (name, core, registered) = lookup!(self.states()?, id, DataMulti(core, kind));
         check_kind(name, *registered, kind)?;
-        core.add(index, data_holder(kind, data)?, update)
+        core.add(index, data_slice(kind, data)?, update)
             .map_err(keyed(name, index, Error::out_of_range))
     }
 
@@ -1005,7 +1005,7 @@ impl CServer {
     ) -> Result<()> {
         let (name, core, registered) = lookup!(self.states()?, id, DataMulti(core, kind));
         check_kind(name, *registered, kind)?;
-        core.replace(index, data_index, data_holder(kind, data)?, update)
+        core.replace(index, data_index, data_slice(kind, data)?, update)
             .map_err(keyed(name, index, Error::out_of_range))
     }
 
@@ -1060,7 +1060,7 @@ impl CServer {
     ) -> Result<()> {
         let (name, core, registered) = lookup!(self.states()?, id, DataMultiTake(core, kind));
         check_kind(name, *registered, kind)?;
-        core.set(index, data_holder(kind, data)?, blocking, update, cache)
+        core.set(index, data_slice(kind, data)?, blocking, update, cache)
             .map_err(Error::internal)
     }
 

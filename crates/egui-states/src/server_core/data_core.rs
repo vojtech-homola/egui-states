@@ -12,15 +12,13 @@ use crate::server_core::sender::MessageSender;
 use crate::server_core::server::{Acknowledge, SyncTrait};
 use crate::server_core::transfer::{Chunk, chunk_transfer};
 
-pub(crate) struct DataHolder {
-    pub data: *const u8,
-    pub count: usize,
-    pub data_size: usize,
+/// Borrowed native-endian elements of a Data operation, as the front-ends
+/// hand them to the cores, which copy what they keep.
+#[derive(Clone, Copy)]
+pub(crate) struct DataSlice<'a> {
+    pub bytes: &'a [u8],
     pub data_type: DataType,
 }
-
-unsafe impl Send for DataHolder {}
-unsafe impl Sync for DataHolder {}
 
 /// Connection bookkeeping a state keeps under its storage lock.
 ///
@@ -113,23 +111,23 @@ impl Data {
         })
     }
 
-    pub(crate) fn set(&self, data: DataHolder, update: bool) -> Result<(), String> {
-        check_data_type(&data, self.data_type, self.item_size)?;
-        let slice = unsafe { std::slice::from_raw_parts(data.data, data.data_size) };
+    pub(crate) fn set(&self, data: DataSlice, update: bool) -> Result<(), String> {
+        let elements = check_data_type(&data, self.data_type, self.item_size)?;
+        let slice = data.bytes;
 
         let _producer = self.producer.lock();
         let generation = {
             let mut w = self.storage.write();
             w.bytes.clear();
             w.bytes.extend_from_slice(slice);
-            w.count = data.count;
+            w.count = elements;
             w.sync.sendable(&self.connected)
         };
         let Some(generation) = generation else {
             return Ok(());
         };
 
-        let count = data.count as u64;
+        let count = elements as u64;
         let messages = pack_data(
             self.id,
             slice,
@@ -143,22 +141,22 @@ impl Data {
         Ok(())
     }
 
-    pub(crate) fn add(&self, data: DataHolder, update: bool) -> Result<(), String> {
-        check_data_type(&data, self.data_type, self.item_size)?;
-        let slice = unsafe { std::slice::from_raw_parts(data.data, data.data_size) };
+    pub(crate) fn add(&self, data: DataSlice, update: bool) -> Result<(), String> {
+        let elements = check_data_type(&data, self.data_type, self.item_size)?;
+        let slice = data.bytes;
 
         let _producer = self.producer.lock();
         let generation = {
             let mut w = self.storage.write();
             w.bytes.extend_from_slice(slice);
-            w.count += data.count;
+            w.count += elements;
             w.sync.sendable(&self.connected)
         };
         let Some(generation) = generation else {
             return Ok(());
         };
 
-        let count = data.count as u64;
+        let count = elements as u64;
         let messages = pack_data(
             self.id,
             slice,
@@ -174,34 +172,31 @@ impl Data {
 
     pub(crate) fn replace(
         &self,
-        data: DataHolder,
+        data: DataSlice,
         index: usize,
         update: bool,
     ) -> Result<(), String> {
-        check_data_type(&data, self.data_type, self.item_size)?;
-        let slice = unsafe { std::slice::from_raw_parts(data.data, data.data_size) };
+        let elements = check_data_type(&data, self.data_type, self.item_size)?;
+        let slice = data.bytes;
 
         let _producer = self.producer.lock();
         let generation = {
             let mut w = self.storage.write();
-            if index
-                .checked_add(data.count)
-                .is_none_or(|end| end > w.count)
-            {
+            if index.checked_add(elements).is_none_or(|end| end > w.count) {
                 return Err(format!(
                     "Replace range out of bounds: index {} + data count {} exceeds current size {}",
-                    index, data.count, w.count
+                    index, elements, w.count
                 ));
             }
             let byte_index = index * self.item_size;
-            w.bytes[byte_index..byte_index + data.data_size].copy_from_slice(slice);
+            w.bytes[byte_index..byte_index + slice.len()].copy_from_slice(slice);
             w.sync.sendable(&self.connected)
         };
         let Some(generation) = generation else {
             return Ok(());
         };
 
-        let count = data.count as u64;
+        let count = elements as u64;
         let messages = pack_data(
             self.id,
             slice,
@@ -412,9 +407,9 @@ impl DataMulti {
         Ok(())
     }
 
-    pub(crate) fn set(&self, index: u32, data: DataHolder, update: bool) -> Result<(), String> {
-        check_data_type(&data, self.data_type, self.item_size)?;
-        let slice = unsafe { std::slice::from_raw_parts(data.data, data.data_size) };
+    pub(crate) fn set(&self, index: u32, data: DataSlice, update: bool) -> Result<(), String> {
+        let elements = check_data_type(&data, self.data_type, self.item_size)?;
+        let slice = data.bytes;
 
         let _producer = self.producer.lock();
         let generation = {
@@ -423,10 +418,10 @@ impl DataMulti {
                 Some((vec, size)) => {
                     vec.clear();
                     vec.extend_from_slice(slice);
-                    *size = data.count;
+                    *size = elements;
                 }
                 None => {
-                    w.values.insert(index, (slice.to_vec(), data.count));
+                    w.values.insert(index, (slice.to_vec(), elements));
                 }
             }
             w.sync.sendable(&self.connected)
@@ -435,7 +430,7 @@ impl DataMulti {
             return Ok(());
         };
 
-        let count = data.count as u64;
+        let count = elements as u64;
         let messages = pack_data(
             self.id,
             slice,
@@ -449,9 +444,9 @@ impl DataMulti {
         Ok(())
     }
 
-    pub(crate) fn add(&self, index: u32, data: DataHolder, update: bool) -> Result<(), CoreError> {
-        check_data_type(&data, self.data_type, self.item_size)?;
-        let slice = unsafe { std::slice::from_raw_parts(data.data, data.data_size) };
+    pub(crate) fn add(&self, index: u32, data: DataSlice, update: bool) -> Result<(), CoreError> {
+        let elements = check_data_type(&data, self.data_type, self.item_size)?;
+        let slice = data.bytes;
 
         let _producer = self.producer.lock();
         let generation = {
@@ -460,14 +455,14 @@ impl DataMulti {
                 CoreError::not_found(format!("DataMulti index {} does not exist", index))
             })?;
             entry.0.extend_from_slice(slice);
-            entry.1 += data.count;
+            entry.1 += elements;
             w.sync.sendable(&self.connected)
         };
         let Some(generation) = generation else {
             return Ok(());
         };
 
-        let count = data.count as u64;
+        let count = elements as u64;
         let messages = pack_data(
             self.id,
             slice,
@@ -485,11 +480,11 @@ impl DataMulti {
         &self,
         index: u32,
         data_index: usize,
-        data: DataHolder,
+        data: DataSlice,
         update: bool,
     ) -> Result<(), CoreError> {
-        check_data_type(&data, self.data_type, self.item_size)?;
-        let slice = unsafe { std::slice::from_raw_parts(data.data, data.data_size) };
+        let elements = check_data_type(&data, self.data_type, self.item_size)?;
+        let slice = data.bytes;
 
         let _producer = self.producer.lock();
         let generation = {
@@ -498,23 +493,23 @@ impl DataMulti {
                 CoreError::not_found(format!("DataMulti index {} does not exist", index))
             })?;
             if data_index
-                .checked_add(data.count)
+                .checked_add(elements)
                 .is_none_or(|end| end > value.1)
             {
                 return Err(format!(
                     "Replace range out of bounds for DataMulti index {}: data_index {} + data count {} exceeds current size {}",
-                    index, data_index, data.count, value.1
+                    index, data_index, elements, value.1
                 ).into());
             }
             let byte_index = data_index * self.item_size;
-            value.0[byte_index..byte_index + data.data_size].copy_from_slice(slice);
+            value.0[byte_index..byte_index + slice.len()].copy_from_slice(slice);
             w.sync.sendable(&self.connected)
         };
         let Some(generation) = generation else {
             return Ok(());
         };
 
-        let count = data.count as u64;
+        let count = elements as u64;
         let messages = pack_data(
             self.id,
             slice,
@@ -700,11 +695,13 @@ fn send_after_ack<S>(
     }
 }
 
+/// Checks `data` against a state's element type and returns its element
+/// count.
 pub(crate) fn check_data_type(
-    data: &DataHolder,
+    data: &DataSlice,
     data_type: DataType,
     item_size: usize,
-) -> Result<(), String> {
+) -> Result<usize, String> {
     if data.data_type != data_type {
         return Err(format!(
             "Data type mismatch: expected {:?}, got {:?}",
@@ -712,14 +709,27 @@ pub(crate) fn check_data_type(
         ));
     }
 
-    if !data.data_size.is_multiple_of(item_size) {
+    if !data.bytes.len().is_multiple_of(item_size) {
         return Err(format!(
             "Data size must be a multiple of element size: expected multiple of {}, got {}",
-            item_size, data.data_size
+            item_size,
+            data.bytes.len()
         ));
     }
 
-    Ok(())
+    Ok(data.bytes.len() / item_size)
+}
+
+/// Views native-endian `u16` values as a Data operation.
+#[cfg(test)]
+pub(crate) fn u16_slice(values: &[u16]) -> DataSlice<'_> {
+    // SAFETY: `u16` has no padding, so its values are plain bytes.
+    let bytes =
+        unsafe { std::slice::from_raw_parts(values.as_ptr().cast::<u8>(), size_of_val(values)) };
+    DataSlice {
+        bytes,
+        data_type: DataType::U16,
+    }
 }
 
 pub(crate) fn pack_data(
@@ -784,13 +794,8 @@ mod tests {
 
     use super::*;
 
-    fn holder(data: &[u16]) -> DataHolder {
-        DataHolder {
-            data: data.as_ptr() as *const u8,
-            count: data.len(),
-            data_size: size_of_val(data),
-            data_type: DataType::U16,
-        }
+    fn holder(values: &[u16]) -> DataSlice<'_> {
+        u16_slice(values)
     }
 
     fn contents(message: &FastVec<32>) -> Vec<u8> {
@@ -1211,13 +1216,8 @@ mod transfer_tests {
         }
     }
 
-    fn holder(values: &[u16]) -> DataHolder {
-        DataHolder {
-            data: values.as_ptr() as *const u8,
-            count: values.len(),
-            data_size: size_of_val(values),
-            data_type: DataType::U16,
-        }
+    fn holder(values: &[u16]) -> DataSlice<'_> {
+        u16_slice(values)
     }
 
     /// One random operation on the shared Data and DataMulti; failures such

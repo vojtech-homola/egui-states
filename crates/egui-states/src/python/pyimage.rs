@@ -60,11 +60,10 @@ fn check_direct(image: &PyBuffer<u8>) -> PyResult<()> {
     Ok(())
 }
 
-pub(crate) fn image_data(image: &PyBuffer<u8>) -> PyResult<ImageData> {
+pub(crate) fn image_data(image: &PyBuffer<u8>) -> PyResult<ImageData<'_>> {
     check_direct(image)?;
     let shape = image.shape();
     let strides = image.strides();
-    let contiguous = image.is_c_contiguous();
     let image_type = check_image_type(shape, strides)?;
     let size = [shape[0], shape[1]];
     checked_image_bytes(size, 4).map_err(PyValueError::new_err)?;
@@ -72,22 +71,27 @@ pub(crate) fn image_data(image: &PyBuffer<u8>) -> PyResult<ImageData> {
         return Err(PyValueError::new_err("Image dimensions cannot be zero"));
     }
 
-    // get data stride
-    let stride = if contiguous {
-        0 // do not use strides
+    let row_bytes = size[1] * image_type.bytes_per_pixel();
+    let stride = if image.is_c_contiguous() {
+        row_bytes
     } else {
         if strides[0] <= 0 {
             return Err(PyValueError::new_err("Invalid strides"));
         }
         strides[0] as usize
     };
-
-    let data = image.buf_ptr() as *const u8;
+    let span = (size[0] - 1)
+        .checked_mul(stride)
+        .and_then(|rows| rows.checked_add(row_bytes))
+        .ok_or_else(|| PyValueError::new_err("Invalid strides"))?;
+    // SAFETY: a direct buffer with this shape and these strides holds `span`
+    // readable bytes from `buf_ptr()`, and `image` keeps them alive while the
+    // view is borrowed.
+    let data = unsafe { std::slice::from_raw_parts(image.buf_ptr().cast::<u8>(), span) };
 
     Ok(ImageData {
         size,
         stride,
-        contiguous,
         image_type,
         data,
     })

@@ -7,7 +7,7 @@ use crate::data_transport::{DataMultiTakeHeader, DataTakeHeader, DataType};
 use crate::event::Event;
 use crate::hashing::NoHashMap;
 use crate::serialization::{FastVec, TRANSFER_CHUNK_SIZE};
-use crate::server_core::data_core::{DataHolder, SyncState, check_data_type};
+use crate::server_core::data_core::{DataSlice, SyncState, check_data_type};
 use crate::server_core::sender::MessageSender;
 use crate::server_core::server::{Acknowledge, SyncTrait};
 use crate::server_core::transfer::{Chunk, chunk_transfer};
@@ -63,21 +63,20 @@ impl DataTake {
 
     pub(crate) fn set(
         &self,
-        data: DataHolder,
+        data: DataSlice,
         blocking: bool,
         update: bool,
         cache: bool,
     ) -> Result<(), String> {
-        check_data_type(&data, self.data_type, self.item_size)?;
-
-        let slice = unsafe { std::slice::from_raw_parts(data.data, data.data_size) };
+        let elements = check_data_type(&data, self.data_type, self.item_size)?;
+        let slice = data.bytes;
         let generation = self.state.lock().sync.generation();
 
         let messages = if self.connected.load(Ordering::Acquire) {
             let messages = pack_data_take(
                 self.id,
                 slice,
-                data.count as u64,
+                elements as u64,
                 self.data_type,
                 blocking,
                 update,
@@ -89,7 +88,7 @@ impl DataTake {
         };
 
         let mut state = self.state.lock();
-        state.cache = cache.then(|| (slice.to_vec(), data.count));
+        state.cache = cache.then(|| (slice.to_vec(), elements));
         if let Some(messages) = messages {
             send_if_current(
                 &state.sync,
@@ -183,14 +182,13 @@ impl DataMultiTake {
     pub(crate) fn set(
         &self,
         index: u32,
-        data: DataHolder,
+        data: DataSlice,
         blocking: bool,
         update: bool,
         cache: bool,
     ) -> Result<(), String> {
-        check_data_type(&data, self.data_type, self.item_size)?;
-
-        let slice = unsafe { std::slice::from_raw_parts(data.data, data.data_size) };
+        let elements = check_data_type(&data, self.data_type, self.item_size)?;
+        let slice = data.bytes;
         let generation = self.state.read().sync.generation();
 
         let messages = if self.connected.load(Ordering::Acquire) {
@@ -198,7 +196,7 @@ impl DataMultiTake {
                 self.id,
                 index,
                 slice,
-                data.count as u64,
+                elements as u64,
                 self.data_type,
                 blocking,
                 update,
@@ -213,7 +211,7 @@ impl DataMultiTake {
         // transfers cannot interleave their chunks on the wire.
         let mut w = self.state.write();
         if cache {
-            w.values.insert(index, (slice.to_vec(), data.count));
+            w.values.insert(index, (slice.to_vec(), elements));
         } else {
             w.values.remove(&index);
         }
@@ -449,11 +447,9 @@ mod tests {
 
     use super::*;
 
-    fn holder(data: &[u8]) -> DataHolder {
-        DataHolder {
-            data: data.as_ptr(),
-            count: data.len(),
-            data_size: data.len(),
+    fn holder(data: &[u8]) -> DataSlice<'_> {
+        DataSlice {
+            bytes: data,
             data_type: DataType::U8,
         }
     }

@@ -17,7 +17,7 @@ use crate::hashing::NoHashMap;
 type SignalEvent<'py> = (u64, Bound<'py, PyAny>, bool, Option<Bound<'py, PyAny>>);
 use crate::python::value_parsing::{ValueCreator, ValueParser};
 use crate::python::{
-    pydata::{data_buffer, data_holder},
+    pydata::{data_buffer, data_slice},
     pyimage, pyparsing,
     pytypes::{PyObjectClass, PyObjectType},
 };
@@ -919,11 +919,11 @@ impl StateServerCore {
     ) -> PyResult<()> {
         let buffer = data_buffer(data)?;
         let data_value = self.inner_data(value_id)?;
-        let data_holder = data_holder(&buffer, data_value.data_type)?;
+        let elements = data_slice(&buffer, data_value.data_type)?;
 
         py.detach(|| {
             data_value
-                .set(data_holder, update)
+                .set(elements, update)
                 .map_err(PyValueError::new_err)
         })
     }
@@ -937,11 +937,11 @@ impl StateServerCore {
     ) -> PyResult<()> {
         let buffer = data_buffer(data)?;
         let data_value = self.inner_data(value_id)?;
-        let data_holder = data_holder(&buffer, data_value.data_type)?;
+        let elements = data_slice(&buffer, data_value.data_type)?;
 
         py.detach(|| {
             data_value
-                .add(data_holder, update)
+                .add(elements, update)
                 .map_err(PyValueError::new_err)
         })
     }
@@ -956,11 +956,11 @@ impl StateServerCore {
     ) -> PyResult<()> {
         let buffer = data_buffer(data)?;
         let data_value = self.inner_data(value_id)?;
-        let data_holder = data_holder(&buffer, data_value.data_type)?;
+        let elements = data_slice(&buffer, data_value.data_type)?;
 
         py.detach(|| {
             data_value
-                .replace(data_holder, index, update)
+                .replace(elements, index, update)
                 .map_err(PyValueError::new_err)
         })
     }
@@ -1000,11 +1000,11 @@ impl StateServerCore {
     ) -> PyResult<()> {
         let buffer = data_buffer(data)?;
         let data_value = self.inner_data_take(value_id)?;
-        let data_holder = data_holder(&buffer, data_value.data_type)?;
+        let elements = data_slice(&buffer, data_value.data_type)?;
 
         py.detach(|| {
             data_value
-                .set(data_holder, blocking, update, cache)
+                .set(elements, blocking, update, cache)
                 .map_err(PyValueError::new_err)
         })
     }
@@ -1033,11 +1033,11 @@ impl StateServerCore {
     ) -> PyResult<()> {
         let buffer = data_buffer(data)?;
         let data_value = self.inner_data_multi(value_id)?;
-        let data_holder = data_holder(&buffer, data_value.data_type)?;
+        let elements = data_slice(&buffer, data_value.data_type)?;
 
         py.detach(|| {
             data_value
-                .set(index, data_holder, update)
+                .set(index, elements, update)
                 .map_err(PyValueError::new_err)
         })
     }
@@ -1052,11 +1052,11 @@ impl StateServerCore {
     ) -> PyResult<()> {
         let buffer = data_buffer(data)?;
         let data_value = self.inner_data_multi(value_id)?;
-        let data_holder = data_holder(&buffer, data_value.data_type)?;
+        let elements = data_slice(&buffer, data_value.data_type)?;
 
         py.detach(|| {
             data_value
-                .add(index, data_holder, update)
+                .add(index, elements, update)
                 .map_err(PyValueError::new_err)
         })
     }
@@ -1072,11 +1072,11 @@ impl StateServerCore {
     ) -> PyResult<()> {
         let buffer = data_buffer(data)?;
         let data_value = self.inner_data_multi(value_id)?;
-        let data_holder = data_holder(&buffer, data_value.data_type)?;
+        let elements = data_slice(&buffer, data_value.data_type)?;
 
         py.detach(|| {
             data_value
-                .replace(index, data_index, data_holder, update)
+                .replace(index, data_index, elements, update)
                 .map_err(PyValueError::new_err)
         })
     }
@@ -1147,11 +1147,11 @@ impl StateServerCore {
     ) -> PyResult<()> {
         let buffer = data_buffer(data)?;
         let data_value = self.inner_data_multi_take(value_id)?;
-        let data_holder = data_holder(&buffer, data_value.data_type)?;
+        let elements = data_slice(&buffer, data_value.data_type)?;
 
         py.detach(|| {
             data_value
-                .set(index, data_holder, blocking, update, cache)
+                .set(index, elements, blocking, update, cache)
                 .map_err(PyValueError::new_err)
         })
     }

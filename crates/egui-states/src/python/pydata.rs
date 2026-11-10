@@ -3,7 +3,7 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 use crate::data_transport::DataType;
-use crate::server_core::data_core::DataHolder;
+use crate::server_core::data_core::DataSlice;
 
 /// Gets the buffer of a Data argument.
 pub(crate) fn data_buffer(data: &Bound<PyAny>) -> PyResult<PyUntypedBuffer> {
@@ -11,17 +11,14 @@ pub(crate) fn data_buffer(data: &Bound<PyAny>) -> PyResult<PyUntypedBuffer> {
         .map_err(|_| PyValueError::new_err("Data must be a bytes-like object."))
 }
 
-/// Checks `buffer` against a Data state's element type and views it.
-///
-/// The holder points into `buffer`, which must outlive every use of it.
-pub(crate) fn data_holder(buffer: &PyUntypedBuffer, data_type: DataType) -> PyResult<DataHolder> {
+/// Checks `buffer` against a Data state's element type and views its bytes.
+pub(crate) fn data_slice(buffer: &PyUntypedBuffer, data_type: DataType) -> PyResult<DataSlice<'_>> {
     check_data_type(buffer, data_type).map_err(PyValueError::new_err)?;
-    Ok(DataHolder {
-        data: buffer.buf_ptr() as *const u8,
-        count: buffer.item_count(),
-        data_size: buffer.len_bytes(),
-        data_type,
-    })
+    // SAFETY: a C-contiguous buffer holds `len_bytes()` bytes from
+    // `buf_ptr()`, and `buffer` keeps them alive while the view is borrowed.
+    let bytes =
+        unsafe { std::slice::from_raw_parts(buffer.buf_ptr().cast::<u8>(), buffer.len_bytes()) };
+    Ok(DataSlice { bytes, data_type })
 }
 
 fn check_data_type(buffer: &PyUntypedBuffer, data_type: DataType) -> Result<(), String> {
