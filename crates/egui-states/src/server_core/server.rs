@@ -41,99 +41,133 @@ pub(crate) trait Acknowledge: Sync + Send {
     }
 }
 
+/// A registered state of any kind.
+#[derive(Clone)]
+pub(crate) enum StateRef {
+    Value(Arc<ValueCore>),
+    ValueTake(Arc<ValueTakeCore>),
+    Static(Arc<ValueStaticCore>),
+    Signal(Arc<SignalCore>),
+    Vec(Arc<ValueList>),
+    Map(Arc<ValueMap>),
+    Image(Arc<Image>),
+    ImageMulti(Arc<ImageMulti>),
+    Data(Arc<Data>),
+    DataMulti(Arc<DataMulti>),
+    DataTake(Arc<DataTake>),
+    DataMultiTake(Arc<DataMultiTake>),
+}
+
+impl StateRef {
+    /// Where the kind is synchronized with a newly connected client; kinds
+    /// go in this order, images before data. Signals are not synchronized.
+    fn sync_rank(&self) -> Option<u8> {
+        Some(match self {
+            Self::ValueTake(_) => 0,
+            Self::Value(_) => 1,
+            Self::Static(_) => 2,
+            Self::Image(_) => 3,
+            Self::ImageMulti(_) => 4,
+            Self::Map(_) => 5,
+            Self::Vec(_) => 6,
+            Self::Data(_) => 7,
+            Self::DataMulti(_) => 8,
+            Self::DataTake(_) => 9,
+            Self::DataMultiTake(_) => 10,
+            Self::Signal(_) => return None,
+        })
+    }
+
+    fn sync(&self) -> Option<Arc<dyn SyncTrait>> {
+        Some(match self {
+            Self::Value(state) => state.clone(),
+            Self::ValueTake(state) => state.clone(),
+            Self::Static(state) => state.clone(),
+            Self::Vec(state) => state.clone(),
+            Self::Map(state) => state.clone(),
+            Self::Image(state) => state.clone(),
+            Self::ImageMulti(state) => state.clone(),
+            Self::Data(state) => state.clone(),
+            Self::DataMulti(state) => state.clone(),
+            Self::DataTake(state) => state.clone(),
+            Self::DataMultiTake(state) => state.clone(),
+            Self::Signal(_) => return None,
+        })
+    }
+
+    /// The kinds the client acknowledges.
+    fn ack(&self) -> Option<Arc<dyn Acknowledge>> {
+        Some(match self {
+            Self::Value(state) => state.clone(),
+            Self::ValueTake(state) => state.clone(),
+            Self::Image(state) => state.clone(),
+            Self::ImageMulti(state) => state.clone(),
+            Self::Data(state) => state.clone(),
+            Self::DataMulti(state) => state.clone(),
+            Self::DataTake(state) => state.clone(),
+            Self::DataMultiTake(state) => state.clone(),
+            Self::Static(_) | Self::Vec(_) | Self::Map(_) | Self::Signal(_) => return None,
+        })
+    }
+}
+
+/// Every registered state, by id. An id belongs to one state of one kind.
 #[derive(Clone, Default)]
 pub(crate) struct StatesList {
-    pub(crate) values: NoHashMap<u64, Arc<ValueCore>>,
-    pub(crate) values_take: NoHashMap<u64, Arc<ValueTakeCore>>,
-    pub(crate) static_values: NoHashMap<u64, Arc<ValueStaticCore>>,
-    pub(crate) signals: NoHashMap<u64, Arc<SignalCore>>,
-    pub(crate) images: NoHashMap<u64, Arc<Image>>,
-    pub(crate) image_multi: NoHashMap<u64, Arc<ImageMulti>>,
-    pub(crate) maps: NoHashMap<u64, Arc<ValueMap>>,
-    pub(crate) lists: NoHashMap<u64, Arc<ValueList>>,
-    pub(crate) data: NoHashMap<u64, Arc<Data>>,
-    pub(crate) data_take: NoHashMap<u64, Arc<DataTake>>,
-    pub(crate) data_multi: NoHashMap<u64, Arc<DataMulti>>,
-    pub(crate) data_multi_take: NoHashMap<u64, Arc<DataMultiTake>>,
+    pub(crate) states: NoHashMap<u64, StateRef>,
 }
 
 impl StatesList {
     fn contains_id(&self, id: u64) -> bool {
-        id <= MAX_RESERVED_ID
-            || self.values.contains_key(&id)
-            || self.values_take.contains_key(&id)
-            || self.static_values.contains_key(&id)
-            || self.signals.contains_key(&id)
-            || self.images.contains_key(&id)
-            || self.image_multi.contains_key(&id)
-            || self.maps.contains_key(&id)
-            || self.lists.contains_key(&id)
-            || self.data.contains_key(&id)
-            || self.data_take.contains_key(&id)
-            || self.data_multi.contains_key(&id)
-            || self.data_multi_take.contains_key(&id)
+        id <= MAX_RESERVED_ID || self.states.contains_key(&id)
     }
 
     fn get_server_list(&self) -> ServerStatesList {
         let mut server_list = ServerStatesList::default();
-
-        server_list.values.extend(self.values.clone());
-        server_list.signals.extend(self.signals.clone());
-
-        for (id, value_take) in self.values_take.iter() {
-            server_list.sync.push(value_take.clone());
-            server_list.ack.insert(*id, value_take.clone());
+        let mut sync = Vec::new();
+        for (id, state) in self.states.iter() {
+            match state {
+                StateRef::Value(value) => {
+                    server_list.values.insert(*id, value.clone());
+                }
+                StateRef::Signal(signal) => {
+                    server_list.signals.insert(*id, signal.clone());
+                }
+                _ => {}
+            }
+            if let Some(ack) = state.ack() {
+                server_list.ack.insert(*id, ack);
+            }
+            if let (Some(rank), Some(state)) = (state.sync_rank(), state.sync()) {
+                sync.push((rank, state));
+            }
         }
-
-        for (id, value) in self.values.iter() {
-            server_list.sync.push(value.clone());
-            server_list.ack.insert(*id, value.clone());
-        }
-
-        for value in self.static_values.values() {
-            server_list.sync.push(value.clone());
-        }
-
-        for (id, image) in self.images.iter() {
-            server_list.sync.push(image.clone());
-            server_list.ack.insert(*id, image.clone());
-        }
-
-        for (id, images) in self.image_multi.iter() {
-            server_list.sync.push(images.clone());
-            server_list.ack.insert(*id, images.clone());
-        }
-
-        for map in self.maps.values() {
-            server_list.sync.push(map.clone());
-        }
-
-        for list in self.lists.values() {
-            server_list.sync.push(list.clone());
-        }
-
-        for (id, data) in self.data.iter() {
-            server_list.sync.push(data.clone());
-            server_list.ack.insert(*id, data.clone());
-        }
-
-        for (id, data_multi) in self.data_multi.iter() {
-            server_list.sync.push(data_multi.clone());
-            server_list.ack.insert(*id, data_multi.clone());
-        }
-
-        for (id, data_take) in self.data_take.iter() {
-            server_list.sync.push(data_take.clone());
-            server_list.ack.insert(*id, data_take.clone());
-        }
-
-        for (id, data_multi_take) in self.data_multi_take.iter() {
-            server_list.sync.push(data_multi_take.clone());
-            server_list.ack.insert(*id, data_multi_take.clone());
-        }
-
+        // Stable, so the states of one kind keep the map's order.
+        sync.sort_by_key(|(rank, _)| *rank);
+        server_list.sync = sync.into_iter().map(|(_, state)| state).collect();
         server_list
     }
+}
+
+/// Typed lookups of registered states; a state of another kind is reported
+/// like a missing one.
+#[cfg(feature = "server")]
+macro_rules! getters {
+    ($($name:ident: $variant:ident($ty:ty)),* $(,)?) => {
+        $(
+            pub(crate) fn $name(&self, id: u64) -> Option<Arc<$ty>> {
+                match self.states.states.get(&id) {
+                    Some(StateRef::$variant(state)) => Some(state.clone()),
+                    _ => None,
+                }
+            }
+        )*
+    };
+}
+
+/// The data type for a protocol type id.
+fn data_type(type_id: u8) -> Result<DataType, String> {
+    DataType::from_id(type_id).map_err(|_| "Invalid data type id".to_string())
 }
 
 #[derive(Clone, Default)]
@@ -509,12 +543,13 @@ impl Server {
         Ok(())
     }
 
-    pub(crate) fn add_value(
+    /// Registers the state `make` builds for `name`'s id; `kind` names the
+    /// state in the duplicate error.
+    fn register(
         &mut self,
         name: &str,
-        type_id: u32,
-        value: Bytes,
-        queue: bool,
+        kind: &str,
+        make: impl FnOnce(u64) -> Result<StateRef, String>,
     ) -> Result<u64, String> {
         if self.states_server.is_some() {
             return Err("Cannot add new values after server has been finalized".to_string());
@@ -522,50 +557,59 @@ impl Server {
 
         let id = generate_value_id(name);
         if self.states.contains_id(id) {
-            return Err(format!("Value with id {} already exists", id));
+            return Err(format!("{kind} with id {id} already exists"));
         }
-        check_value_size(name, value.len())?;
+        let state = make(id)?;
+        self.states.states.insert(id, state);
+        Ok(id)
+    }
 
-        let val = ValueCore::new(
-            name.to_string(),
-            id,
-            type_id,
-            value,
+    /// What a new state needs to send and to raise signals.
+    fn channels(&self) -> (MessageSender, Arc<AtomicBool>, SignalsManager) {
+        (
             self.sender.clone(),
             self.connected.clone(),
             self.signals.clone(),
-        );
+        )
+    }
 
-        self.states.values.insert(id, val);
-
+    pub(crate) fn add_value(
+        &mut self,
+        name: &str,
+        type_id: u32,
+        value: Bytes,
+        queue: bool,
+    ) -> Result<u64, String> {
+        let (sender, connected, signals) = self.channels();
+        let id = self.register(name, "Value", |id| {
+            check_value_size(name, value.len())?;
+            Ok(StateRef::Value(ValueCore::new(
+                name.to_string(),
+                id,
+                type_id,
+                value,
+                sender,
+                connected,
+                signals,
+            )))
+        })?;
         if queue {
             self.signals.set_to_queue(id);
         }
-
         Ok(id)
     }
 
     pub(crate) fn add_value_take(&mut self, name: &str, type_id: u32) -> Result<u64, String> {
-        if self.states_server.is_some() {
-            return Err("Cannot add new values after server has been finalized".to_string());
-        }
-
-        let id = generate_value_id(name);
-        if self.states.contains_id(id) {
-            return Err(format!("ValueTake with id {} already exists", id));
-        }
-
-        let val = ValueTakeCore::new(
-            name.to_string(),
-            id,
-            type_id,
-            self.sender.clone(),
-            self.connected.clone(),
-        );
-
-        self.states.values_take.insert(id, val);
-
-        Ok(id)
+        let (sender, connected, _) = self.channels();
+        self.register(name, "ValueTake", |id| {
+            Ok(StateRef::ValueTake(ValueTakeCore::new(
+                name.to_string(),
+                id,
+                type_id,
+                sender,
+                connected,
+            )))
+        })
     }
 
     pub(crate) fn add_static(
@@ -574,27 +618,18 @@ impl Server {
         type_id: u32,
         value: Bytes,
     ) -> Result<u64, String> {
-        if self.states_server.is_some() {
-            return Err("Cannot add new values after server has been finalized".to_string());
-        }
-
-        let id = generate_value_id(name);
-        if self.states.contains_id(id) {
-            return Err(format!("Static value with id {} already exists", id));
-        }
-        check_value_size(name, value.len())?;
-
-        let val = ValueStaticCore::new(
-            name.to_string(),
-            id,
-            type_id,
-            value,
-            self.sender.clone(),
-            self.connected.clone(),
-        );
-
-        self.states.static_values.insert(id, val);
-        Ok(id)
+        let (sender, connected, _) = self.channels();
+        self.register(name, "Static value", |id| {
+            check_value_size(name, value.len())?;
+            Ok(StateRef::Static(ValueStaticCore::new(
+                name.to_string(),
+                id,
+                type_id,
+                value,
+                sender,
+                connected,
+            )))
+        })
     }
 
     pub(crate) fn add_signal(
@@ -603,266 +638,137 @@ impl Server {
         type_id: u32,
         queue: bool,
     ) -> Result<u64, String> {
-        if self.states_server.is_some() {
-            return Err("Cannot add new values after server has been finalized".to_string());
-        }
-
-        let id = generate_value_id(name);
-        if self.states.contains_id(id) {
-            return Err(format!("Signal with id {} already exists", id));
-        }
-
-        let val = SignalCore::new(name.to_string(), id, type_id, self.signals.clone());
-
-        self.states.signals.insert(id, val);
-
+        let (_, _, signals) = self.channels();
+        let id = self.register(name, "Signal", |id| {
+            Ok(StateRef::Signal(SignalCore::new(
+                name.to_string(),
+                id,
+                type_id,
+                signals,
+            )))
+        })?;
         if queue {
             self.signals.set_to_queue(id);
         }
-
         Ok(id)
     }
 
     pub(crate) fn add_vec(&mut self, name: &str, type_id: u32) -> Result<u64, String> {
-        if self.states_server.is_some() {
-            return Err("Cannot add new values after server has been finalized".to_string());
-        }
-
-        let id = generate_value_id(name);
-        if self.states.contains_id(id) {
-            return Err(format!("Vec with id {} already exists", id));
-        }
-
-        let val = ValueList::new(
-            name.to_string(),
-            id,
-            type_id,
-            self.sender.clone(),
-            self.connected.clone(),
-        );
-
-        self.states.lists.insert(id, val);
-        Ok(id)
+        let (sender, connected, _) = self.channels();
+        self.register(name, "Vec", |id| {
+            Ok(StateRef::Vec(ValueList::new(
+                name.to_string(),
+                id,
+                type_id,
+                sender,
+                connected,
+            )))
+        })
     }
 
     pub(crate) fn add_map(&mut self, name: &str, type_id: u32) -> Result<u64, String> {
-        if self.states_server.is_some() {
-            return Err("Cannot add new values after server has been finalized".to_string());
-        }
-
-        let id = generate_value_id(name);
-        if self.states.contains_id(id) {
-            return Err(format!("Map with id {} already exists", id));
-        }
-
-        let val = ValueMap::new(
-            name.to_string(),
-            id,
-            type_id,
-            self.sender.clone(),
-            self.connected.clone(),
-        );
-
-        self.states.maps.insert(id, val);
-
-        Ok(id)
+        let (sender, connected, _) = self.channels();
+        self.register(name, "Map", |id| {
+            Ok(StateRef::Map(ValueMap::new(
+                name.to_string(),
+                id,
+                type_id,
+                sender,
+                connected,
+            )))
+        })
     }
 
     pub(crate) fn add_image(&mut self, name: &str) -> Result<u64, String> {
-        if self.states_server.is_some() {
-            return Err("Cannot add new values after server has been finalized".to_string());
-        }
-
-        let id = generate_value_id(name);
-        if self.states.contains_id(id) {
-            return Err(format!("Image with id {} already exists", id));
-        }
-
-        let val = Image::new(
-            name.to_string(),
-            id,
-            self.sender.clone(),
-            self.connected.clone(),
-        );
-
-        self.states.images.insert(id, val);
-        Ok(id)
+        let (sender, connected, _) = self.channels();
+        self.register(name, "Image", |id| {
+            Ok(StateRef::Image(Image::new(
+                name.to_string(),
+                id,
+                sender,
+                connected,
+            )))
+        })
     }
 
     pub(crate) fn add_image_multi(&mut self, name: &str) -> Result<u64, String> {
-        if self.states_server.is_some() {
-            return Err("Cannot add new values after server has been finalized".to_string());
-        }
-
-        let id = generate_value_id(name);
-        if self.states.contains_id(id) {
-            return Err(format!("ImageMulti with id {} already exists", id));
-        }
-
-        let value = ImageMulti::new(
-            name.to_string(),
-            id,
-            self.sender.clone(),
-            self.connected.clone(),
-        );
-        self.states.image_multi.insert(id, value);
-        Ok(id)
+        let (sender, connected, _) = self.channels();
+        self.register(name, "ImageMulti", |id| {
+            Ok(StateRef::ImageMulti(ImageMulti::new(
+                name.to_string(),
+                id,
+                sender,
+                connected,
+            )))
+        })
     }
 
     pub(crate) fn add_data(&mut self, name: &str, type_id: u8) -> Result<u64, String> {
-        if self.states_server.is_some() {
-            return Err("Cannot add new values after server has been finalized".to_string());
-        }
-
-        let id = generate_value_id(name);
-        if self.states.contains_id(id) {
-            return Err(format!("Data with id {} already exists", id));
-        }
-
-        let data_type =
-            DataType::from_id(type_id).map_err(|_| "Invalid data type id".to_string())?;
-        let val = Data::new(
-            name.to_string(),
-            id,
-            data_type,
-            self.sender.clone(),
-            self.connected.clone(),
-        );
-
-        self.states.data.insert(id, val);
-        Ok(id)
+        let (sender, connected, _) = self.channels();
+        self.register(name, "Data", |id| {
+            Ok(StateRef::Data(Data::new(
+                name.to_string(),
+                id,
+                data_type(type_id)?,
+                sender,
+                connected,
+            )))
+        })
     }
 
     pub(crate) fn add_data_multi(&mut self, name: &str, type_id: u8) -> Result<u64, String> {
-        if self.states_server.is_some() {
-            return Err("Cannot add new values after server has been finalized".to_string());
-        }
-
-        let id = generate_value_id(name);
-        if self.states.contains_id(id) {
-            return Err(format!("DataMulti with id {} already exists", id));
-        }
-
-        let data_type =
-            DataType::from_id(type_id).map_err(|_| "Invalid data type id".to_string())?;
-        let val = DataMulti::new(
-            name.to_string(),
-            id,
-            data_type,
-            self.sender.clone(),
-            self.connected.clone(),
-        );
-
-        self.states.data_multi.insert(id, val);
-        Ok(id)
+        let (sender, connected, _) = self.channels();
+        self.register(name, "DataMulti", |id| {
+            Ok(StateRef::DataMulti(DataMulti::new(
+                name.to_string(),
+                id,
+                data_type(type_id)?,
+                sender,
+                connected,
+            )))
+        })
     }
 
     pub(crate) fn add_data_take(&mut self, name: &str, type_id: u8) -> Result<u64, String> {
-        if self.states_server.is_some() {
-            return Err("Cannot add new values after server has been finalized".to_string());
-        }
-
-        let id = generate_value_id(name);
-        if self.states.contains_id(id) {
-            return Err(format!("DataTake with id {} already exists", id));
-        }
-
-        let data_type =
-            DataType::from_id(type_id).map_err(|_| "Invalid data type id".to_string())?;
-        let val = DataTake::new(
-            name.to_string(),
-            id,
-            data_type,
-            self.sender.clone(),
-            self.connected.clone(),
-        );
-
-        self.states.data_take.insert(id, val);
-        Ok(id)
+        let (sender, connected, _) = self.channels();
+        self.register(name, "DataTake", |id| {
+            Ok(StateRef::DataTake(DataTake::new(
+                name.to_string(),
+                id,
+                data_type(type_id)?,
+                sender,
+                connected,
+            )))
+        })
     }
 
     pub(crate) fn add_data_multi_take(&mut self, name: &str, type_id: u8) -> Result<u64, String> {
-        if self.states_server.is_some() {
-            return Err("Cannot add new values after server has been finalized".to_string());
-        }
-
-        let id = generate_value_id(name);
-        if self.states.contains_id(id) {
-            return Err(format!("DataMultiTake with id {} already exists", id));
-        }
-
-        let data_type =
-            DataType::from_id(type_id).map_err(|_| "Invalid data type id".to_string())?;
-        let val = DataMultiTake::new(
-            name.to_string(),
-            id,
-            data_type,
-            self.sender.clone(),
-            self.connected.clone(),
-        );
-
-        self.states.data_multi_take.insert(id, val);
-        Ok(id)
+        let (sender, connected, _) = self.channels();
+        self.register(name, "DataMultiTake", |id| {
+            Ok(StateRef::DataMultiTake(DataMultiTake::new(
+                name.to_string(),
+                id,
+                data_type(type_id)?,
+                sender,
+                connected,
+            )))
+        })
     }
 
     #[cfg(feature = "server")]
-    pub(crate) fn get_value(&self, id: u64) -> Option<Arc<ValueCore>> {
-        self.states.values.get(&id).cloned()
-    }
-
-    #[cfg(feature = "server")]
-    pub(crate) fn get_value_take(&self, id: u64) -> Option<Arc<ValueTakeCore>> {
-        self.states.values_take.get(&id).cloned()
-    }
-
-    #[cfg(feature = "server")]
-    pub(crate) fn get_static(&self, id: u64) -> Option<Arc<ValueStaticCore>> {
-        self.states.static_values.get(&id).cloned()
-    }
-
-    #[cfg(feature = "server")]
-    pub(crate) fn get_signal(&self, id: u64) -> Option<Arc<SignalCore>> {
-        self.states.signals.get(&id).cloned()
-    }
-
-    #[cfg(feature = "server")]
-    pub(crate) fn get_vec(&self, id: u64) -> Option<Arc<ValueList>> {
-        self.states.lists.get(&id).cloned()
-    }
-
-    #[cfg(feature = "server")]
-    pub(crate) fn get_map(&self, id: u64) -> Option<Arc<ValueMap>> {
-        self.states.maps.get(&id).cloned()
-    }
-
-    #[cfg(feature = "server")]
-    pub(crate) fn get_image(&self, id: u64) -> Option<Arc<Image>> {
-        self.states.images.get(&id).cloned()
-    }
-
-    #[cfg(feature = "server")]
-    pub(crate) fn get_image_multi(&self, id: u64) -> Option<Arc<ImageMulti>> {
-        self.states.image_multi.get(&id).cloned()
-    }
-
-    #[cfg(feature = "server")]
-    pub(crate) fn get_data(&self, id: u64) -> Option<Arc<Data>> {
-        self.states.data.get(&id).cloned()
-    }
-
-    #[cfg(feature = "server")]
-    pub(crate) fn get_data_take(&self, id: u64) -> Option<Arc<DataTake>> {
-        self.states.data_take.get(&id).cloned()
-    }
-
-    #[cfg(feature = "server")]
-    pub(crate) fn get_data_multi(&self, id: u64) -> Option<Arc<DataMulti>> {
-        self.states.data_multi.get(&id).cloned()
-    }
-
-    #[cfg(feature = "server")]
-    pub(crate) fn get_data_multi_take(&self, id: u64) -> Option<Arc<DataMultiTake>> {
-        self.states.data_multi_take.get(&id).cloned()
+    getters! {
+        get_value: Value(ValueCore),
+        get_value_take: ValueTake(ValueTakeCore),
+        get_static: Static(ValueStaticCore),
+        get_signal: Signal(SignalCore),
+        get_vec: Vec(ValueList),
+        get_map: Map(ValueMap),
+        get_image: Image(Image),
+        get_image_multi: ImageMulti(ImageMulti),
+        get_data: Data(Data),
+        get_data_take: DataTake(DataTake),
+        get_data_multi: DataMulti(DataMulti),
+        get_data_multi_take: DataMultiTake(DataMultiTake),
     }
 }
 

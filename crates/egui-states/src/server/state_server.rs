@@ -461,13 +461,11 @@ impl StateServer {
     {
         let data = serialize_bytes(&initial_value)?;
         let type_id = T::get_type().get_hash();
-        let id = self
-            .inner
-            .server
-            .write()
+        let mut server = self.inner.server.write();
+        let id = server
             .add_value(&name, type_id, data, queue)
             .map_err(ServerError::new)?;
-        let value = self.inner.server.read().get_value(id).ok_or_else(|| {
+        let value = server.get_value(id).ok_or_else(|| {
             ServerError::new(format!("value not found after registration: {name}"))
         })?;
         Ok((id, value))
@@ -478,13 +476,11 @@ impl StateServer {
         T: Typed,
     {
         let type_id = T::get_type().get_hash();
-        let id = self
-            .inner
-            .server
-            .write()
+        let mut server = self.inner.server.write();
+        let id = server
             .add_value_take(&name, type_id)
             .map_err(ServerError::new)?;
-        let value = self.inner.server.read().get_value_take(id).ok_or_else(|| {
+        let value = server.get_value_take(id).ok_or_else(|| {
             ServerError::new(format!("value_take not found after registration: {name}"))
         })?;
         Ok((id, value))
@@ -500,13 +496,11 @@ impl StateServer {
     {
         let data = serialize_bytes(&initial_value)?;
         let type_id = T::get_type().get_hash();
-        let id = self
-            .inner
-            .server
-            .write()
+        let mut server = self.inner.server.write();
+        let id = server
             .add_static(&name, type_id, data)
             .map_err(ServerError::new)?;
-        let value = self.inner.server.read().get_static(id).ok_or_else(|| {
+        let value = server.get_static(id).ok_or_else(|| {
             ServerError::new(format!("static not found after registration: {name}"))
         })?;
         Ok((id, value))
@@ -517,13 +511,11 @@ impl StateServer {
         T: Typed,
     {
         let type_id = T::get_type().get_hash();
-        let id = self
-            .inner
-            .server
-            .write()
+        let mut server = self.inner.server.write();
+        let id = server
             .add_signal(&name, type_id, queue)
             .map_err(ServerError::new)?;
-        let value = self.inner.server.read().get_signal(id).ok_or_else(|| {
+        let value = server.get_signal(id).ok_or_else(|| {
             ServerError::new(format!("signal not found after registration: {name}"))
         })?;
         Ok((id, value))
@@ -534,16 +526,11 @@ impl StateServer {
         T: Typed,
     {
         let type_id = T::get_type().get_hash();
-        let id = self
-            .inner
-            .server
-            .write()
-            .add_vec(&name, type_id)
-            .map_err(ServerError::new)?;
-        let value =
-            self.inner.server.read().get_vec(id).ok_or_else(|| {
-                ServerError::new(format!("vec not found after registration: {name}"))
-            })?;
+        let mut server = self.inner.server.write();
+        let id = server.add_vec(&name, type_id).map_err(ServerError::new)?;
+        let value = server
+            .get_vec(id)
+            .ok_or_else(|| ServerError::new(format!("vec not found after registration: {name}")))?;
         Ok((id, value))
     }
 
@@ -553,47 +540,29 @@ impl StateServer {
         V: Typed,
     {
         let type_id = ObjectType::map_hash(&K::get_type(), &V::get_type());
-        let id = self
-            .inner
-            .server
-            .write()
-            .add_map(&name, type_id)
-            .map_err(ServerError::new)?;
-        let value =
-            self.inner.server.read().get_map(id).ok_or_else(|| {
-                ServerError::new(format!("map not found after registration: {name}"))
-            })?;
+        let mut server = self.inner.server.write();
+        let id = server.add_map(&name, type_id).map_err(ServerError::new)?;
+        let value = server
+            .get_map(id)
+            .ok_or_else(|| ServerError::new(format!("map not found after registration: {name}")))?;
         Ok((id, value))
     }
 
     pub(super) fn add_image(&self, name: String) -> Result<(u64, Arc<CoreImage>)> {
-        let id = self
-            .inner
-            .server
-            .write()
-            .add_image(&name)
-            .map_err(ServerError::new)?;
-        let value = self.inner.server.read().get_image(id).ok_or_else(|| {
+        let mut server = self.inner.server.write();
+        let id = server.add_image(&name).map_err(ServerError::new)?;
+        let value = server.get_image(id).ok_or_else(|| {
             ServerError::new(format!("image not found after registration: {name}"))
         })?;
         Ok((id, value))
     }
 
     pub(super) fn add_image_multi(&self, name: String) -> Result<(u64, Arc<CoreImageMulti>)> {
-        let id = self
-            .inner
-            .server
-            .write()
-            .add_image_multi(&name)
-            .map_err(ServerError::new)?;
-        let value = self
-            .inner
-            .server
-            .read()
-            .get_image_multi(id)
-            .ok_or_else(|| {
-                ServerError::new(format!("image_multi not found after registration: {name}"))
-            })?;
+        let mut server = self.inner.server.write();
+        let id = server.add_image_multi(&name).map_err(ServerError::new)?;
+        let value = server.get_image_multi(id).ok_or_else(|| {
+            ServerError::new(format!("image_multi not found after registration: {name}"))
+        })?;
         Ok((id, value))
     }
 
@@ -601,13 +570,11 @@ impl StateServer {
     where
         T: DataElement,
     {
-        let id = self
-            .inner
-            .server
-            .write()
+        let mut server = self.inner.server.write();
+        let id = server
             .add_data(&name, T::TYPE_ID)
             .map_err(ServerError::new)?;
-        let value = self.inner.server.read().get_data(id).ok_or_else(|| {
+        let value = server.get_data(id).ok_or_else(|| {
             ServerError::new(format!("data not found after registration: {name}"))
         })?;
         Ok((id, value))
@@ -617,13 +584,11 @@ impl StateServer {
     where
         T: DataElement,
     {
-        let id = self
-            .inner
-            .server
-            .write()
+        let mut server = self.inner.server.write();
+        let id = server
             .add_data_take(&name, T::TYPE_ID)
             .map_err(ServerError::new)?;
-        let value = self.inner.server.read().get_data_take(id).ok_or_else(|| {
+        let value = server.get_data_take(id).ok_or_else(|| {
             ServerError::new(format!("data_take not found after registration: {name}"))
         })?;
         Ok((id, value))
@@ -633,13 +598,11 @@ impl StateServer {
     where
         T: DataElement,
     {
-        let id = self
-            .inner
-            .server
-            .write()
+        let mut server = self.inner.server.write();
+        let id = server
             .add_data_multi(&name, T::TYPE_ID)
             .map_err(ServerError::new)?;
-        let value = self.inner.server.read().get_data_multi(id).ok_or_else(|| {
+        let value = server.get_data_multi(id).ok_or_else(|| {
             ServerError::new(format!("data_multi not found after registration: {name}"))
         })?;
         Ok((id, value))
@@ -652,22 +615,15 @@ impl StateServer {
     where
         T: DataElement,
     {
-        let id = self
-            .inner
-            .server
-            .write()
+        let mut server = self.inner.server.write();
+        let id = server
             .add_data_multi_take(&name, T::TYPE_ID)
             .map_err(ServerError::new)?;
-        let value = self
-            .inner
-            .server
-            .read()
-            .get_data_multi_take(id)
-            .ok_or_else(|| {
-                ServerError::new(format!(
-                    "data_multi_take not found after registration: {name}"
-                ))
-            })?;
+        let value = server.get_data_multi_take(id).ok_or_else(|| {
+            ServerError::new(format!(
+                "data_multi_take not found after registration: {name}"
+            ))
+        })?;
         Ok((id, value))
     }
 

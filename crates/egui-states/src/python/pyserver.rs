@@ -24,7 +24,7 @@ use crate::python::{
 use crate::server_core::data_core::{Data, DataMulti};
 use crate::server_core::data_take_core::{DataMultiTake, DataTake};
 use crate::server_core::heartbeat::{self, Heartbeat};
-use crate::server_core::server::Server;
+use crate::server_core::server::{Server, StateRef};
 use crate::server_core::signals::{self, SignalsManager};
 use crate::server_core::values_core::{SignalCore, ValueCore, ValueStaticCore, ValueTakeCore};
 use crate::server_core::web::{LoadError, WebSite};
@@ -32,20 +32,57 @@ use crate::server_core::{
     image_core::Image, image_multi_core::ImageMulti, map_core::ValueMap, vec_core::ValueList,
 };
 
+/// A registered state and, where Python converts its values, their type.
+enum PyState {
+    Value(Arc<ValueCore>, PyObjectType),
+    ValueTake(Arc<ValueTakeCore>, PyObjectType),
+    Static(Arc<ValueStaticCore>, PyObjectType),
+    Signal(Arc<SignalCore>, PyObjectType),
+    Map(Arc<ValueMap>, PyObjectType),
+    Vec(Arc<ValueList>, PyObjectType),
+    Image(Arc<Image>),
+    ImageMulti(Arc<ImageMulti>),
+    Data(Arc<Data>),
+    DataTake(Arc<DataTake>),
+    DataMulti(Arc<DataMulti>),
+    DataMultiTake(Arc<DataMultiTake>),
+}
+
+impl PyState {
+    fn name(&self) -> &str {
+        match self {
+            Self::Value(state, _) => &state.name,
+            Self::ValueTake(state, _) => &state.name,
+            Self::Static(state, _) => &state.name,
+            Self::Signal(state, _) => &state.name,
+            Self::Map(state, _) => &state.name,
+            Self::Vec(state, _) => &state.name,
+            Self::Image(state) => &state.name,
+            Self::ImageMulti(state) => &state.name,
+            Self::Data(state) => &state.name,
+            Self::DataTake(state) => &state.name,
+            Self::DataMulti(state) => &state.name,
+            Self::DataMultiTake(state) => &state.name,
+        }
+    }
+}
+
 struct ValuesInner {
-    values: NoHashMap<u64, (Arc<ValueCore>, PyObjectType)>,
-    values_take: NoHashMap<u64, (Arc<ValueTakeCore>, PyObjectType)>,
-    static_values: NoHashMap<u64, (Arc<ValueStaticCore>, PyObjectType)>,
-    signals: NoHashMap<u64, (Arc<SignalCore>, PyObjectType)>,
+    states: NoHashMap<u64, PyState>,
+    /// Types of what reaches signal callbacks: values, signals and the
+    /// reserved server events.
     signals_types: NoHashMap<u64, PyObjectType>,
-    maps: NoHashMap<u64, (Arc<ValueMap>, PyObjectType)>,
-    lists: NoHashMap<u64, (Arc<ValueList>, PyObjectType)>,
-    images: NoHashMap<u64, Arc<Image>>,
-    image_multi: NoHashMap<u64, Arc<ImageMulti>>,
-    data: NoHashMap<u64, Arc<Data>>,
-    data_take: NoHashMap<u64, Arc<DataTake>>,
-    data_multi: NoHashMap<u64, Arc<DataMulti>>,
-    data_multi_take: NoHashMap<u64, Arc<DataMultiTake>>,
+}
+
+/// Looks up a state of one kind; a state of another kind is reported like a
+/// missing one.
+macro_rules! lookup {
+    ($self:ident, $id:expr, $pattern:pat => $found:expr, $error:expr) => {
+        match $self.get_values()?.states.get(&$id) {
+            Some($pattern) => Ok($found),
+            _ => Err(PyValueError::new_err($error)),
+        }
+    };
 }
 
 #[pyclass]
@@ -67,84 +104,62 @@ impl StateServerCore {
 
     #[inline]
     fn inner_values(&self, value_id: u64) -> PyResult<(&Arc<ValueCore>, &PyObjectType)> {
-        match self.get_values()?.values.get(&value_id) {
-            Some((value, object_type)) => Ok((value, object_type)),
-            _ => Err(PyValueError::new_err("Value with ID not found.")),
-        }
+        lookup!(self, value_id, PyState::Value(value, object_type) => (value, object_type), "Value with ID not found.")
+    }
+
+    #[inline]
+    fn inner_value_take(&self, value_id: u64) -> PyResult<(&Arc<ValueTakeCore>, &PyObjectType)> {
+        lookup!(self, value_id, PyState::ValueTake(value, object_type) => (value, object_type), "ValueTake with ID not found.")
     }
 
     #[inline]
     fn inner_static(&self, value_id: u64) -> PyResult<(&Arc<ValueStaticCore>, &PyObjectType)> {
-        match self.get_values()?.static_values.get(&value_id) {
-            Some((value, object_type)) => Ok((value, object_type)),
-            _ => Err(PyValueError::new_err("Static value with ID not found.")),
-        }
+        lookup!(self, value_id, PyState::Static(value, object_type) => (value, object_type), "Static value with ID not found.")
     }
 
     #[inline]
     fn inner_vec(&self, value_id: u64) -> PyResult<(&Arc<ValueList>, &PyObjectType)> {
-        match self.get_values()?.lists.get(&value_id) {
-            Some((list, value_type)) => Ok((list, value_type)),
-            _ => Err(PyValueError::new_err("Vec with ID not found.")),
-        }
+        lookup!(self, value_id, PyState::Vec(list, value_type) => (list, value_type), "Vec with ID not found.")
     }
 
     #[inline]
     fn inner_map(&self, value_id: u64) -> PyResult<(&Arc<ValueMap>, &PyObjectType, &PyObjectType)> {
-        match self.get_values()?.maps.get(&value_id) {
-            Some((map, PyObjectType::Map(key_type, value_type))) => Ok((map, key_type, value_type)),
-            _ => Err(PyValueError::new_err(
-                "Map with ID not found or type mismatch.",
-            )),
-        }
+        lookup!(
+            self,
+            value_id,
+            PyState::Map(map, PyObjectType::Map(key_type, value_type)) => (map, &**key_type, &**value_type),
+            "Map with ID not found or type mismatch."
+        )
     }
 
     #[inline]
     fn inner_image(&self, value_id: u64) -> PyResult<&Arc<Image>> {
-        match self.get_values()?.images.get(&value_id) {
-            Some(image) => Ok(image),
-            _ => Err(PyValueError::new_err("Image with ID not found.")),
-        }
+        lookup!(self, value_id, PyState::Image(image) => image, "Image with ID not found.")
     }
 
     #[inline]
     fn inner_image_multi(&self, value_id: u64) -> PyResult<&Arc<ImageMulti>> {
-        match self.get_values()?.image_multi.get(&value_id) {
-            Some(images) => Ok(images),
-            _ => Err(PyValueError::new_err("ImageMulti with ID not found.")),
-        }
+        lookup!(self, value_id, PyState::ImageMulti(images) => images, "ImageMulti with ID not found.")
     }
 
     #[inline]
     fn inner_data(&self, value_id: u64) -> PyResult<&Arc<Data>> {
-        match self.get_values()?.data.get(&value_id) {
-            Some(data) => Ok(data),
-            _ => Err(PyValueError::new_err("Data with ID not found.")),
-        }
+        lookup!(self, value_id, PyState::Data(data) => data, "Data with ID not found.")
     }
 
     #[inline]
     fn inner_data_multi(&self, value_id: u64) -> PyResult<&Arc<DataMulti>> {
-        match self.get_values()?.data_multi.get(&value_id) {
-            Some(data_multi) => Ok(data_multi),
-            _ => Err(PyValueError::new_err("DataMulti with ID not found.")),
-        }
+        lookup!(self, value_id, PyState::DataMulti(data) => data, "DataMulti with ID not found.")
     }
 
     #[inline]
     fn inner_data_take(&self, value_id: u64) -> PyResult<&Arc<DataTake>> {
-        match self.get_values()?.data_take.get(&value_id) {
-            Some(data_take) => Ok(data_take),
-            _ => Err(PyValueError::new_err("DataTake with ID not found.")),
-        }
+        lookup!(self, value_id, PyState::DataTake(data) => data, "DataTake with ID not found.")
     }
 
     #[inline]
     fn inner_data_multi_take(&self, value_id: u64) -> PyResult<&Arc<DataMultiTake>> {
-        match self.get_values()?.data_multi_take.get(&value_id) {
-            Some(data_multi_take) => Ok(data_multi_take),
-            _ => Err(PyValueError::new_err("DataMultiTake with ID not found.")),
-        }
+        lookup!(self, value_id, PyState::DataMultiTake(data) => data, "DataMultiTake with ID not found.")
     }
 }
 
@@ -195,114 +210,76 @@ impl StateServerCore {
     }
 
     fn finalize(&self, py: Python) -> PyResult<()> {
-        match (self.server.write().finalize(), self.temps.write().take()) {
-            (Some(states), Some(mut types)) => {
-                let mut values = NoHashMap::default();
-                for (id, state) in states.values {
-                    if let Some(object_type) = types.get(&id) {
-                        values.insert(id, (state, object_type.clone_py(py)));
-                    } else {
-                        return Err(PyValueError::new_err(format!(
-                            "Missing type information for value ID {}",
-                            id
-                        )));
-                    }
+        let (core_states, mut types) =
+            match (self.server.write().finalize(), self.temps.write().take()) {
+                (Some(core_states), Some(types)) => (core_states, types),
+                (None, None) => return Ok(()),
+                _ => {
+                    return Err(PyValueError::new_err(
+                        "Inconsistent state during finalization.",
+                    ));
                 }
+            };
 
-                let mut values_take = NoHashMap::default();
-                for (id, state) in states.values_take {
-                    if let Some(object_type) = types.get(&id) {
-                        values_take.insert(id, (state, object_type.clone_py(py)));
-                    } else {
-                        return Err(PyValueError::new_err(format!(
-                            "Missing type information for value take ID {}",
-                            id
-                        )));
-                    }
+        let missing = |kind: &str, id: u64| {
+            PyValueError::new_err(format!("Missing type information for {kind} ID {id}"))
+        };
+        let mut states = NoHashMap::default();
+        for (id, state) in core_states.states {
+            // Values, value takes and signals keep their types for signal
+            // callbacks; the other kinds take theirs.
+            let state = match state {
+                StateRef::Value(state) => PyState::Value(
+                    state,
+                    types
+                        .get(&id)
+                        .ok_or_else(|| missing("value", id))?
+                        .clone_py(py),
+                ),
+                StateRef::ValueTake(state) => PyState::ValueTake(
+                    state,
+                    types
+                        .get(&id)
+                        .ok_or_else(|| missing("value take", id))?
+                        .clone_py(py),
+                ),
+                StateRef::Signal(state) => PyState::Signal(
+                    state,
+                    types
+                        .get(&id)
+                        .ok_or_else(|| missing("signal", id))?
+                        .clone_py(py),
+                ),
+                StateRef::Static(state) => PyState::Static(
+                    state,
+                    types
+                        .remove(&id)
+                        .ok_or_else(|| missing("static value", id))?,
+                ),
+                StateRef::Map(state) => {
+                    PyState::Map(state, types.remove(&id).ok_or_else(|| missing("map", id))?)
                 }
-
-                let mut static_values = NoHashMap::default();
-                for (id, state) in states.static_values {
-                    if let Some(object_type) = types.remove(&id) {
-                        static_values.insert(id, (state, object_type));
-                    } else {
-                        return Err(PyValueError::new_err(format!(
-                            "Missing type information for static value ID {}",
-                            id
-                        )));
-                    }
+                StateRef::Vec(state) => {
+                    PyState::Vec(state, types.remove(&id).ok_or_else(|| missing("list", id))?)
                 }
-
-                let mut signals = NoHashMap::default();
-                for (id, signal) in states.signals {
-                    if let Some(object_type) = types.get(&id) {
-                        signals.insert(id, (signal, object_type.clone_py(py)));
-                    } else {
-                        return Err(PyValueError::new_err(format!(
-                            "Missing type information for signal ID {}",
-                            id
-                        )));
-                    }
-                }
-
-                let mut maps = NoHashMap::default();
-                for (id, map) in states.maps {
-                    if let Some(object_type) = types.remove(&id) {
-                        maps.insert(id, (map, object_type));
-                    } else {
-                        return Err(PyValueError::new_err(format!(
-                            "Missing type information for map ID {}",
-                            id
-                        )));
-                    }
-                }
-
-                let mut lists = NoHashMap::default();
-                for (id, list) in states.lists {
-                    if let Some(object_type) = types.remove(&id) {
-                        lists.insert(id, (list, object_type));
-                    } else {
-                        return Err(PyValueError::new_err(format!(
-                            "Missing type information for list ID {}",
-                            id
-                        )));
-                    }
-                }
-
-                let images = states.images;
-                let image_multi = states.image_multi;
-                let data = states.data;
-                let data_take = states.data_take;
-                let data_multi = states.data_multi;
-                let data_multi_take = states.data_multi_take;
-
-                let inner = ValuesInner {
-                    values,
-                    values_take,
-                    static_values,
-                    signals,
-                    signals_types: types,
-                    maps,
-                    lists,
-                    images,
-                    image_multi,
-                    data,
-                    data_take,
-                    data_multi,
-                    data_multi_take,
-                };
-
-                if self.inner.set(inner).is_err() {
-                    return Err(PyValueError::new_err("Server has already been finalized."));
-                }
-
-                Ok(())
-            }
-            (None, None) => Ok(()),
-            _ => Err(PyValueError::new_err(
-                "Inconsistent state during finalization.",
-            )),
+                StateRef::Image(state) => PyState::Image(state),
+                StateRef::ImageMulti(state) => PyState::ImageMulti(state),
+                StateRef::Data(state) => PyState::Data(state),
+                StateRef::DataTake(state) => PyState::DataTake(state),
+                StateRef::DataMulti(state) => PyState::DataMulti(state),
+                StateRef::DataMultiTake(state) => PyState::DataMultiTake(state),
+            };
+            states.insert(id, state);
         }
+
+        let inner = ValuesInner {
+            states,
+            signals_types: types,
+        };
+        if self.inner.set(inner).is_err() {
+            return Err(PyValueError::new_err("Server has already been finalized."));
+        }
+        Ok(())
     }
 
     #[pyo3(signature = (port, ip_addr=None, token=None))]
@@ -378,45 +355,10 @@ impl StateServerCore {
     }
 
     fn id_to_name(&self, value_id: u64) -> PyResult<String> {
-        let values = self.get_values()?;
-        if let Some((value, _)) = values.values.get(&value_id) {
-            return Ok(value.name.clone());
+        match self.get_values()?.states.get(&value_id) {
+            Some(state) => Ok(state.name().to_string()),
+            None => Err(PyRuntimeError::new_err("Value not found.")),
         }
-        if let Some((value, _)) = values.values_take.get(&value_id) {
-            return Ok(value.name.clone());
-        }
-        if let Some((value, _)) = values.static_values.get(&value_id) {
-            return Ok(value.name.clone());
-        }
-        if let Some((signal, _)) = values.signals.get(&value_id) {
-            return Ok(signal.name.clone());
-        }
-        if let Some((map, _)) = values.maps.get(&value_id) {
-            return Ok(map.name.clone());
-        }
-        if let Some((list, _)) = values.lists.get(&value_id) {
-            return Ok(list.name.clone());
-        }
-        if let Some(image) = values.images.get(&value_id) {
-            return Ok(image.name.clone());
-        }
-        if let Some(images) = values.image_multi.get(&value_id) {
-            return Ok(images.name.clone());
-        }
-        if let Some(data) = values.data.get(&value_id) {
-            return Ok(data.name.clone());
-        }
-        if let Some(data_multi) = values.data_multi.get(&value_id) {
-            return Ok(data_multi.name.clone());
-        }
-        if let Some(data_take) = values.data_take.get(&value_id) {
-            return Ok(data_take.name.clone());
-        }
-        if let Some(data_multi_take) = values.data_multi_take.get(&value_id) {
-            return Ok(data_multi_take.name.clone());
-        }
-
-        Err(PyRuntimeError::new_err("Value not found."))
     }
 
     // values -----------------------------------------------------------
@@ -450,10 +392,7 @@ impl StateServerCore {
         blocking: bool,
         update: bool,
     ) -> PyResult<()> {
-        let (val, object_type) = match self.get_values()?.values_take.get(&value_id) {
-            Some((value, object_type)) => Ok((value, object_type)),
-            _ => Err(PyValueError::new_err("ValueTake with ID not found.")),
-        }?;
+        let (val, object_type) = self.inner_value_take(value_id)?;
         let mut creator = ValueCreator::new();
         pyparsing::serialize_py(value, object_type, &mut creator)?;
         let data = creator.finalize();
@@ -480,8 +419,8 @@ impl StateServerCore {
 
     // signals ----------------------------------------------------------
     fn signal_set(&self, value_id: u64, value: &Bound<PyAny>) -> PyResult<()> {
-        match self.get_values()?.signals.get(&value_id) {
-            Some((val, object_type)) => {
+        match self.get_values()?.states.get(&value_id) {
+            Some(PyState::Signal(val, object_type)) => {
                 let mut creator = ValueCreator::new();
                 pyparsing::serialize_py(value, object_type, &mut creator)?;
                 let data = creator.finalize();
@@ -653,8 +592,8 @@ impl StateServerCore {
     }
 
     fn list_len(&self, value_id: u64) -> PyResult<usize> {
-        match self.get_values()?.lists.get(&value_id) {
-            Some((list, _)) => Ok(list.len()),
+        match self.get_values()?.states.get(&value_id) {
+            Some(PyState::Vec(list, _)) => Ok(list.len()),
             _ => Err(pyo3::exceptions::PyValueError::new_err(
                 "List with ID not found.",
             )),
@@ -761,8 +700,8 @@ impl StateServerCore {
     }
 
     fn map_len(&self, value_id: u64) -> PyResult<usize> {
-        match self.get_values()?.maps.get(&value_id) {
-            Some((map, _)) => Ok(map.len()),
+        match self.get_values()?.states.get(&value_id) {
+            Some(PyState::Map(map, _)) => Ok(map.len()),
             _ => Err(pyo3::exceptions::PyValueError::new_err(
                 "Map with ID not found.",
             )),
