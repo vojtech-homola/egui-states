@@ -116,7 +116,10 @@ client is connected, `Data`, `DataMulti`, `Image`, `ImageMulti`, and take
 operations may block until the state's previous transfer is acknowledged or
 the client disconnects. A client that stops responding without closing the
 connection is disconnected after the heartbeat timeout, 20 s unless changed
-with `egui_states_server_set_heartbeat`.
+with `egui_states_server_set_heartbeat`. Browser pages may connect only when
+the server serves them on an IP address or local network name, unless
+`egui_states_server_set_allowed_origins` allows their origins; see the main
+README's browser section.
 
 ## Development
 

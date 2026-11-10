@@ -22,7 +22,12 @@ impl Drop for ShowcaseServer {
 }
 
 pub fn setup_server() -> s::Result<ShowcaseServer> {
-    let server = StatesServer::new()?;
+    setup_server_with_options(s::ServerOptions::new())
+}
+
+/// Like [`setup_server`], with explicit options such as a web page directory.
+pub fn setup_server_with_options(options: s::ServerOptions) -> s::Result<ShowcaseServer> {
+    let server = StatesServer::with_options(options)?;
     let callbacks = register_callbacks(&server);
     populate_initial_data(&server.states)?;
     Ok(ShowcaseServer {

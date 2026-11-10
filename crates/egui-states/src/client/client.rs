@@ -2,7 +2,7 @@
 
 use std::any::Any;
 use std::future::Future;
-use std::net::{Ipv4Addr, SocketAddrV4};
+use std::net::{Ipv4Addr, Ipv6Addr};
 use std::panic::AssertUnwindSafe;
 use std::pin::pin;
 use std::sync::Arc;
@@ -30,7 +30,7 @@ use crate::client::websocket_wasm::{WsClientRead, WsClientSend, build_ws};
 type MessageReceiver = UnboundedReceiver<Option<ChannelMessage>>;
 
 async fn start_gui_client(
-    addr: SocketAddrV4,
+    url: String,
     vals: ValuesList,
     mut rx: MessageReceiver,
     sender: MessageSender,
@@ -53,7 +53,7 @@ async fn start_gui_client(
         client.set_state(ConnectionState::NotConnected);
 
         // try to connect to the server
-        let Some(socket) = client.until_shutdown(build_ws(addr)).await else {
+        let Some(socket) = client.until_shutdown(build_ws(&url)).await else {
             return;
         };
         let (socket_read, mut socket_send) = match socket {
@@ -483,7 +483,7 @@ pub struct ClientBuilder<T> {
     states: T,
     sender: MessageSender,
     rx: UnboundedReceiver<Option<ChannelMessage>>,
-    addr: Ipv4Addr,
+    host: Option<String>,
     port: u16,
     context: Context,
     version: Option<u64>,
@@ -494,7 +494,14 @@ impl<T> ClientBuilder<T>
 where
     T: State,
 {
-    /// Creates the state tree and a builder targeting `127.0.0.1:port`.
+    /// Creates the state tree and a builder targeting the server on `port`.
+    ///
+    /// Without [`Self::host`] or [`Self::addr`], a native client connects to
+    /// `127.0.0.1:port`. A WASM client connects back to the host and port its
+    /// page was loaded from, so a page served by the state server reaches it
+    /// through any address, tunnel, or forwarded port; `port` is then used
+    /// only when the page has no host, such as a page opened from a file.
+    /// WASM clients use `wss` when the page was loaded over HTTPS.
     ///
     /// The client requests repaints of `context` when the connection state
     /// changes or the server asks for an update. No application version or
@@ -506,14 +513,13 @@ where
         let mut creator =
             StatesCreatorClient::new(sender.clone(), context.clone(), "root".to_string());
         let states = T::new(&mut creator);
-        let addr = Ipv4Addr::new(127, 0, 0, 1);
 
         Self {
             creator,
             states,
             sender,
             rx,
-            addr,
+            host: None,
             port,
             context,
             version: None,
@@ -522,8 +528,22 @@ where
     }
 
     /// Sets the server IPv4 address.
+    ///
+    /// Equivalent to [`Self::host`] with the address.
     pub fn addr(self, addr: Ipv4Addr) -> Self {
-        Self { addr, ..self }
+        self.host(addr.to_string())
+    }
+
+    /// Sets the server host: a host name such as `myserver.local`, or an IPv4
+    /// or IPv6 address, without scheme or port.
+    ///
+    /// The client connects to this host on the builder's port, also on WASM,
+    /// where it replaces the default of the page's own host and port.
+    pub fn host(self, host: impl Into<String>) -> Self {
+        Self {
+            host: Some(host.into()),
+            ..self
+        }
     }
 
     /// Requires the server to accept this application version.
@@ -566,14 +586,14 @@ where
             states,
             sender,
             rx,
-            addr,
+            host,
             port,
             context,
             version,
             token,
         } = self;
 
-        let addr = SocketAddrV4::new(addr, port);
+        let url = server_url(host.as_deref(), port);
         let values = creator.get_values();
         let client = ClientCore::new(context, sender.clone());
         let client_out = Client::new(client.clone());
@@ -595,7 +615,7 @@ where
 
             let _ = thread.spawn(move || {
                 runtime.block_on(start_gui_client(
-                    addr, values, rx, sender, client, version, token,
+                    url, values, rx, sender, client, version, token,
                 ))
             });
         }
@@ -603,7 +623,7 @@ where
         #[cfg(target_arch = "wasm32")]
         {
             wasm_bindgen_futures::spawn_local(async move {
-                start_gui_client(addr, values, rx, sender, client, version, token).await;
+                start_gui_client(url, values, rx, sender, client, version, token).await;
             });
         }
 
@@ -611,9 +631,61 @@ where
     }
 }
 
+/// Formats `host` for a URL, bracketing an IPv6 address.
+fn url_host(host: &str) -> String {
+    match host.parse::<Ipv6Addr>() {
+        Ok(_) => format!("[{host}]"),
+        Err(_) => host.to_string(),
+    }
+}
+
+/// Returns the WebSocket URL of the server.
+#[cfg(not(target_arch = "wasm32"))]
+fn server_url(host: Option<&str>, port: u16) -> String {
+    format!("ws://{}:{port}/ws", url_host(host.unwrap_or("127.0.0.1")))
+}
+
+/// Returns the WebSocket URL of the server.
+///
+/// Without an explicit host this is the page's own host and port, read once
+/// when the client is built.
+#[cfg(target_arch = "wasm32")]
+fn server_url(host: Option<&str>, port: u16) -> String {
+    let location = web_sys::window().map(|window| window.location());
+    let secure = location
+        .as_ref()
+        .and_then(|location| location.protocol().ok())
+        .is_some_and(|protocol| protocol == "https:");
+    let scheme = if secure { "wss" } else { "ws" };
+    let page_host = || {
+        location
+            .as_ref()
+            .and_then(|location| location.host().ok())
+            .filter(|host| !host.is_empty())
+    };
+    match host {
+        Some(host) => format!("{scheme}://{}:{port}/ws", url_host(host)),
+        None => match page_host() {
+            Some(page_host) => format!("{scheme}://{page_host}/ws"),
+            None => format!("{scheme}://127.0.0.1:{port}/ws"),
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn server_urls_default_to_loopback_and_accept_host_names() {
+        assert_eq!(server_url(None, 8091), "ws://127.0.0.1:8091/ws");
+        assert_eq!(
+            server_url(Some("myserver.local"), 8091),
+            "ws://myserver.local:8091/ws"
+        );
+        assert_eq!(server_url(Some("10.0.0.2"), 80), "ws://10.0.0.2:80/ws");
+        assert_eq!(server_url(Some("::1"), 8091), "ws://[::1]:8091/ws");
+    }
 
     /// Returns the repaint requests made by `Client::update(delay)`.
     fn repaint_requests(delay: f32) -> Vec<Duration> {

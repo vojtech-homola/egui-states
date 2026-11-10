@@ -186,17 +186,23 @@ def populate_initial_data(states: ShowcaseState) -> None:  # noqa: PLR0915
     states.image.images[7].update(image_patch, origin=(96, 96), update=True)
 
 
-def setup_server(*, error_handler: Callable[[Exception], None] | None = None) -> StatesServer:
+def setup_server(
+    *,
+    error_handler: Callable[[Exception], None] | None = None,
+    web_path: str | None = None,
+) -> StatesServer:
     """Create and configure a server without opening a listening socket.
 
     Args:
         error_handler (Callable[[Exception], None] | None, optional): Handler
             for asynchronous callback errors; None uses the default handler.
+        web_path (str | None, optional): Directory of a built browser GUI that
+            start_web serves on the server port; None serves no page.
 
     Returns:
         StatesServer: Configured server; call start to listen for a client.
     """
-    server = StatesServer(error_handler=error_handler)
+    server = StatesServer(error_handler=error_handler, web_path=web_path)
     register_callbacks(server)
     populate_initial_data(server.states)
     return server
@@ -211,9 +217,9 @@ def main() -> None:
     stopped = threading.Event()
     signal.signal(signal.SIGINT, lambda *_: stopped.set())
     signal.signal(signal.SIGTERM, lambda *_: stopped.set())
-    server = setup_server()
+    server = setup_server(web_path=args.web)
     if args.web is not None:
-        server.serve_web(args.web)
+        server.start_web()
     try:
         server.start(args.port, (127, 0, 0, 1))
         print(f"Showcase server listening on {args.port}", flush=True)

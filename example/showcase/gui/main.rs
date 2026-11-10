@@ -39,6 +39,8 @@ fn main() {
             .dyn_into::<web_sys::HtmlCanvasElement>()
             .expect("the_canvas_id was not a HtmlCanvasElement");
 
+        // Used only when the page has no host; otherwise the client connects
+        // back to the host and port the page was loaded from.
         let port = 8091;
 
         eframe::WebRunner::new()

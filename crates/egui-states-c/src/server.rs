@@ -10,7 +10,7 @@ use egui_states::c_abi::{
 
 use crate::codec::egui_states_writer_t;
 use crate::ffi::{
-    c_str, check_flags, copy_text, data_kind, egui_states_status_t, ffi, free, optional,
+    c_str, check_flags, copy_text, data_kind, egui_states_status_t, elements, ffi, free, optional,
     optional_c_str, output, reference, write, write_optional,
 };
 use crate::meta::{
@@ -319,6 +319,52 @@ pub unsafe extern "C" fn egui_states_server_set_heartbeat(
             ms => Some(Duration::from_millis(ms)),
         };
         server_ref(server)?.set_heartbeat(interval, timeout)
+    })
+}
+
+/// Sets which browser pages may connect. It applies from the next
+/// `egui_states_server_start`.
+///
+/// Browsers let any web page open a WebSocket to the server but state the
+/// page's origin, which the page cannot change. By default only pages the
+/// server serves itself, directly or through a proxy that sets
+/// `X-Forwarded-Host`, on an IP address or a local network name (no dot, or
+/// ending in `.local`, `.home.arpa`, `.internal`, or `.localhost`) may
+/// connect. Native clients send no origin and are not affected.
+///
+/// `origins` points to `count` UTF-8 strings, each a `scheme://host[:port]`
+/// pattern where `*` matches any scheme, part of the host, or port, such as
+/// `"http://localhost:3000"` or `"http://myserver.corp.example:*"`. An entry
+/// of just `"*"` lets every page connect, including local files. A `count` of
+/// 0 restores the default; `origins` may then be null. The strings are copied.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn egui_states_server_set_allowed_origins(
+    server: *const egui_states_server_t,
+    origins: *const *const c_char,
+    count: usize,
+) -> egui_states_status_t {
+    ffi(|| {
+        let server = server_ref(server)?;
+        let size = std::mem::size_of::<*const c_char>();
+        unsafe { elements(origins.cast(), count, size, "origins") }?;
+        if count > 0 && !origins.is_aligned() {
+            return Err(Error::new(
+                ErrorCode::InvalidArgument,
+                "`origins` is not aligned",
+            ));
+        }
+        let pointers = match count {
+            0 => &[][..],
+            _ => unsafe { std::slice::from_raw_parts(origins, count) },
+        };
+        let origins = pointers
+            .iter()
+            .enumerate()
+            .map(|(index, &pointer)| {
+                unsafe { c_str(pointer, &format!("origins[{index}]")) }.map(str::to_owned)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        server.set_allowed_origins(&origins)
     })
 }
 

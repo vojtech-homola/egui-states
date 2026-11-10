@@ -91,36 +91,99 @@ def test_server_start_while_running_requires_the_active_settings():
     assert server.address() is None
 
 
+def test_browser_pages_from_other_origins_cannot_connect():
+    """Refuse WebSocket upgrades from foreign pages and validate the allow lists."""
+    import socket
+    import pytest
+    from egui_states_test_bindings import StatesServer  # ty: ignore[import-not-found]
+    from tests.python_test_helpers.network import free_port
+
+    with pytest.raises(ValueError, match="allowed origin"):
+        StatesServer(signals_workers=1, allowed_origins=["localhost:8090"])
+
+    def upgrade_status(origin: str) -> str:
+        request = (
+            f"GET /ws HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nUpgrade: websocket\r\n"
+            "Connection: Upgrade\r\nSec-WebSocket-Version: 13\r\n"
+            f"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nOrigin: {origin}\r\n\r\n"
+        )
+        with socket.create_connection(("127.0.0.1", port), timeout=5) as connection:
+            connection.sendall(request.encode())
+            response = b""
+            while b"\r\n" not in response:
+                chunk = connection.recv(1024)
+                if not chunk:
+                    break
+                response += chunk
+        return response.split(b"\r\n", 1)[0].decode()
+
+    port = free_port()
+    server = StatesServer(signals_workers=1, allowed_origins=("http://localhost:*",))
+    try:
+        server.start(port, (127, 0, 0, 1))
+        assert upgrade_status("https://news.example").startswith("HTTP/1.1 403")
+        assert upgrade_status(f"http://127.0.0.1:{port}").startswith("HTTP/1.1 101")
+        assert upgrade_status("http://localhost:8090").startswith("HTTP/1.1 101")
+    finally:
+        server.stop()
+
+
 def test_server_serves_web_page_on_its_port(tmp_path):
-    """Serve web pages on the server port and replace or stop them at runtime."""
+    """Serve the configured web page on the server port and reload or stop it."""
     import urllib.request
     import pytest
     from egui_states_test_bindings import StatesServer  # ty: ignore[import-not-found]
     from tests.python_test_helpers.network import free_port
 
-    first, second = tmp_path / "first", tmp_path / "second"
-    for directory in (first, second):
-        directory.mkdir()
-        (directory / "index.html").write_text(directory.name)
+    without_page = StatesServer(signals_workers=1)
+    assert without_page.web_path() is None
+    with pytest.raises(RuntimeError, match="web_path"):
+        without_page.start_web()
+    assert not without_page.is_web_running()
 
+    # File system failures raise OSError subclasses; unservable pages ValueError.
+    missing = StatesServer(signals_workers=1, web_path=tmp_path / "missing")
+    with pytest.raises(FileNotFoundError, match="missing"):
+        missing.start_web()
+    not_directory = tmp_path / "file.txt"
+    not_directory.write_text("x")
+    with pytest.raises(ValueError, match="not a directory"):
+        StatesServer(signals_workers=1, web_path=not_directory).start_web()
+
+    page = tmp_path / "page"
+    page.mkdir()
+    index = page / "index.html"
+    index.write_text("first")
     port = free_port()
-    server = StatesServer(signals_workers=1)
-    try:
-        assert server.web_path() is None
-        server.serve_web(first)
-        server.start(port, (127, 0, 0, 1))
-        assert server.web_path() == first.absolute()
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=5) as response:
+
+    def read(path: str) -> bytes:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}", timeout=5) as response:
             assert response.status == 200
-            assert response.read() == b"first"
+            return response.read()
 
+    server = StatesServer(signals_workers=1, web_path=page)
+    try:
+        assert server.web_path() == page.absolute()
+        assert not server.is_web_running()
+        server.start_web()
+        assert server.is_web_running()
+        server.start(port, (127, 0, 0, 1))
+        assert read("/") == b"first"
+
+        index.write_text("second")
+        server.start_web()
+        assert read("/index.html") == b"second"
+
+        index.unlink()
         with pytest.raises(ValueError, match="index.html"):
-            server.serve_web(tmp_path)
-        server.serve_web(str(second))
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}/index.html", timeout=5) as response:
-            assert response.read() == b"second"
+            server.start_web()
+        assert read("/") == b"second"
 
+        index.write_text("third")
         server.stop_web()
-        assert server.web_path() is None
+        assert not server.is_web_running()
+        assert server.web_path() == page.absolute()
+        server.start_web()
+        assert read("/") == b"third"
     finally:
         server.stop()

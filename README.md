@@ -51,11 +51,39 @@ Server setters can request an egui repaint with their `update` flag.
 ## Browser clients
 
 A browser (WASM) client is usually loaded from the machine that runs the
-server. Instead of running a separate web server, pass the directory of the
-built page (for example Trunk's output) to the server's `serve_web`. The page is
-then served on the WebSocket port, so a single port must be reachable.
-`serve_web` and `stop_web` can be called before or after `start` and do not
-affect the connected client.
+server. Instead of running a separate web server, create the server with the
+directory of the built page (for example Trunk's output) as its `web_path`
+option and call `start_web`. The page is then served on the WebSocket port, so
+a single port must be reachable. `start_web` and `stop_web` switch serving on
+and off at any time, before or after `start`, without affecting the connected
+client; `start_web` reads the directory each time it is called, so calling it
+again after a rebuild serves the new page.
+
+A WASM client connects back to the host and port its page was loaded from (using
+`wss` for HTTPS pages), so a page served this way reaches the server through any
+address, tunnel, or forwarded port. Set the client builder's `host` or `addr` to
+connect elsewhere. When a separate development server such as `trunk serve`
+serves the page, let it forward the WebSocket to the state server; the showcase's
+`Trunk.toml` shows how.
+
+Browsers let any web page open a WebSocket to any address, including a server on
+your own machine, so the server checks the page's origin (`scheme://host:port`),
+which browsers state in every WebSocket request and pages cannot change. A page
+may connect when the server served it, directly or through a proxy that sets
+`X-Forwarded-Host` such as `trunk serve`, on an IP address or a name that only
+exists on your network: one without a dot (`localhost`, `pc-a`) or ending in
+`.local`, `.home.arpa`, `.internal`, or `.localhost`. Other pages are refused
+before the handshake, so a site open in your browser cannot take over the
+connection. To let other pages connect, list their origins in the
+`allowed_origins` option, where `*` matches any scheme, part of the host, or
+port: `http://myserver.corp.example:*` allows the page opened by a company
+domain name, `http://localhost:3000` a page from another local server. Native clients send no
+origin and are not affected; the `token` guards against other programs. An
+entry of just `*` turns the check off and lets every page connect, including
+local files; any site open in your browser can then connect too, so set a
+`token` with it. The option is `allowed_origins` in the Rust `ServerOptions`
+and the Python server's constructor, and `egui_states_server_set_allowed_origins`
+in C.
 
 ## Network access
 
@@ -65,7 +93,8 @@ opened elsewhere or a port published from a Docker container, pass the address
 `0.0.0.0` (or a specific interface) to `start`. Connections are unencrypted
 WebSockets, so the optional `token` and all state data travel in clear text;
 on an untrusted network, keep the server on loopback and reach it through an
-SSH tunnel.
+SSH tunnel. Native clients target `127.0.0.1` unless the client builder's `host`
+(a host name or IP address) or `addr` says otherwise.
 
 ## Lost connections
 

@@ -429,6 +429,20 @@ impl CServer {
         Ok(())
     }
 
+    /// Sets which browser pages may connect from the next [`Self::start`],
+    /// besides pages the server serves itself on an IP address or local
+    /// network name.
+    ///
+    /// Each entry is a `scheme://host[:port]` pattern, where `*` matches any
+    /// scheme, part of the host, or port; `*` alone allows every page. An
+    /// empty list restores the default.
+    pub fn set_allowed_origins(&self, origins: &[String]) -> Result<()> {
+        self.core
+            .write()
+            .set_allowed_origins(origins)
+            .map_err(Error::invalid_argument)
+    }
+
     /// Starts listening on `port`, on the loopback address unless `ip` is given.
     ///
     /// `token` requires clients to present the same token. Starting a running

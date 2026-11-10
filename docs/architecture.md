@@ -20,7 +20,9 @@ and synchronization bookkeeping.
    runtime.
 4. The peers always compare the wire-protocol version during the WebSocket
    handshake. They can also compare an application version and token when those
-   checks are configured.
+   checks are configured. Before that, the server refuses the WebSocket upgrade
+   of a browser page whose `Origin` it does not allow; native clients send no
+   `Origin`.
 
 Generated bindings should not be edited. Their contents and layout hash are
 derived from the shared Rust state definition. The layout hash is not enforced by

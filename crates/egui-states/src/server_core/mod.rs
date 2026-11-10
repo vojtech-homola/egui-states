@@ -9,6 +9,7 @@ pub(crate) mod image_core;
 pub(crate) mod image_core_common;
 pub(crate) mod image_multi_core;
 pub(crate) mod map_core;
+pub(crate) mod origin;
 pub(crate) mod server;
 pub(crate) mod signals;
 #[cfg(feature = "python")]

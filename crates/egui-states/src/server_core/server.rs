@@ -1,5 +1,5 @@
 use std::net::SocketAddrV4;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -22,6 +22,7 @@ use crate::server_core::heartbeat::Heartbeat;
 use crate::server_core::image_core::Image;
 use crate::server_core::image_multi_core::ImageMulti;
 use crate::server_core::map_core::ValueMap;
+use crate::server_core::origin::OriginPolicy;
 use crate::server_core::sender::{MessageReceiver, MessageSender};
 use crate::server_core::signals::{CLIENT_MESSAGE_ID, SignalsManager};
 use crate::server_core::values_core::{SignalCore, ValueCore, ValueStaticCore, ValueTakeCore};
@@ -215,7 +216,9 @@ pub(crate) struct Server {
     states_server: Option<ServerStatesList>,
     signals: SignalsManager,
     version: Option<u64>,
+    web_path: Option<PathBuf>,
     web: WebSlot,
+    origins: Arc<OriginPolicy>,
     heartbeat: Option<Heartbeat>,
 
     runner_state: RunnerState,
@@ -235,7 +238,9 @@ impl Server {
             states_server: None,
             signals,
             version,
+            web_path: None,
             web: WebSlot::default(),
+            origins: Arc::default(),
             heartbeat: Some(Heartbeat::default()),
             runner_state: RunnerState::Stopped(rx),
         }
@@ -244,6 +249,31 @@ impl Server {
     /// Sets the heartbeat used from the next [`Self::start`]; `None` disables it.
     pub(crate) fn set_heartbeat(&mut self, heartbeat: Option<Heartbeat>) {
         self.heartbeat = heartbeat;
+    }
+
+    /// Sets the web page directory that `start_web` loads and serves.
+    ///
+    /// A relative path is resolved against the current directory now, so a
+    /// later change of the current directory does not move the page. The
+    /// directory itself is not read here.
+    pub(crate) fn set_web_path(&mut self, path: Option<&Path>) -> Result<(), String> {
+        self.web_path = path
+            .map(|path| {
+                std::path::absolute(path)
+                    .map_err(|e| format!("invalid web page path {}: {e}", path.display()))
+            })
+            .transpose()?;
+        Ok(())
+    }
+
+    /// Sets which browser pages may connect, besides pages served by the
+    /// server itself on an IP address or local network name.
+    ///
+    /// `origins` are `scheme://host[:port]` patterns, where `*` matches any
+    /// scheme, part of the host, or port. Applies from the next start.
+    pub(crate) fn set_allowed_origins(&mut self, origins: &[String]) -> Result<(), String> {
+        self.origins = Arc::new(OriginPolicy::new(origins)?);
+        Ok(())
     }
 
     pub(crate) fn finalize(&mut self) -> Option<StatesList> {
@@ -360,6 +390,7 @@ impl Server {
                 let handshake = core::Handshake {
                     version: self.version,
                     token,
+                    origins: self.origins.clone(),
                 };
 
                 let server_thread = thread::Builder::new().name("StatesServer".to_string());
@@ -464,11 +495,14 @@ impl Server {
         *self.web.write() = site.map(Arc::new);
     }
 
+    /// Returns whether a web page is being served.
+    pub(crate) fn is_web_running(&self) -> bool {
+        self.web.read().is_some()
+    }
+
+    /// Returns the configured absolute web page directory, served or not.
     pub(crate) fn web_path(&self) -> Option<PathBuf> {
-        self.web
-            .read()
-            .as_ref()
-            .map(|site| site.root().to_path_buf())
+        self.web_path.clone()
     }
 
     pub(crate) fn update(&self, duration: Option<f32>) -> Result<(), ()> {

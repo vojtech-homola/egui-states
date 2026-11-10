@@ -713,6 +713,40 @@ fn start_while_running_and_address() {
 }
 
 #[test]
+fn allowed_origins_are_validated() {
+    let server = Server::new();
+    let origins = [c"http://localhost:3000".as_ptr(), c"*".as_ptr()];
+    ok(unsafe { egui_states_server_set_allowed_origins(server.0, origins.as_ptr(), 2) });
+    ok(unsafe { egui_states_server_set_allowed_origins(server.0, null(), 0) });
+
+    let malformed = [
+        c"http://localhost:3000".as_ptr(),
+        c"localhost:8090".as_ptr(),
+    ];
+    fails(
+        unsafe { egui_states_server_set_allowed_origins(server.0, malformed.as_ptr(), 2) },
+        EGUI_STATES_ERROR_INVALID_ARGUMENT,
+        "invalid allowed origin \"localhost:8090\"",
+    );
+    let missing = [c"*".as_ptr(), null()];
+    fails(
+        unsafe { egui_states_server_set_allowed_origins(server.0, missing.as_ptr(), 2) },
+        EGUI_STATES_ERROR_INVALID_ARGUMENT,
+        "origins[1]",
+    );
+    fails(
+        unsafe { egui_states_server_set_allowed_origins(server.0, null(), 1) },
+        EGUI_STATES_ERROR_INVALID_ARGUMENT,
+        "origins",
+    );
+    fails(
+        unsafe { egui_states_server_set_allowed_origins(null(), origins.as_ptr(), 2) },
+        EGUI_STATES_ERROR_INVALID_ARGUMENT,
+        "server",
+    );
+}
+
+#[test]
 fn heartbeat_settings_are_validated() {
     let server = Server::new();
     ok(unsafe { egui_states_server_set_heartbeat(server.0, 100, 400) });

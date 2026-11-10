@@ -11,6 +11,8 @@ use tokio::sync::mpsc::error::TryRecvError;
 use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::{Instant, Interval, MissedTickBehavior, interval_at, timeout_at};
 use tokio_tungstenite::WebSocketStream;
+use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
+use tokio_tungstenite::tungstenite::http::StatusCode;
 use tokio_tungstenite::tungstenite::{Message, protocol::WebSocketConfig};
 
 use crate::PROTOCOL_VERSION;
@@ -19,6 +21,7 @@ use crate::serialization::{
     MAX_MSG_COUNT, MSG_SIZE_THRESHOLD, ServerHeader, WEBSOCKET_MAX_SIZE, serialize,
 };
 use crate::server_core::heartbeat::{Activity, Heartbeat};
+use crate::server_core::origin::OriginPolicy;
 use crate::server_core::sender::{MessageReceiver, MessageSender, SenderData};
 use crate::server_core::server::ServerStatesList;
 use crate::server_core::signals::SignalsManager;
@@ -34,6 +37,8 @@ enum ChannelHolder {
 pub(crate) struct Handshake {
     pub version: Option<u64>,
     pub token: Option<String>,
+    /// Browser pages allowed to open the WebSocket.
+    pub origins: Arc<OriginPolicy>,
 }
 
 /// Bounds how long a new connection may take to send its request head and
@@ -209,7 +214,7 @@ pub(crate) async fn run(
 
 /// Takes a new connection up to a passed protocol handshake.
 ///
-/// With a web page configured, plain HTTP requests are answered here and
+/// While the web page is served, plain HTTP requests are answered here and
 /// yield `None`. Failures never touch the current client's connection.
 async fn accept_client(
     stream: TcpStream,
@@ -259,14 +264,41 @@ async fn handshake_client(
     let mut websocket_config = WebSocketConfig::default();
     websocket_config.max_message_size = Some(WEBSOCKET_MAX_SIZE);
     websocket_config.max_frame_size = Some(WEBSOCKET_MAX_SIZE);
-    let websocket =
-        match tokio_tungstenite::accept_async_with_config(stream, Some(websocket_config)).await {
-            Ok(ws) => ws,
-            Err(e) => {
-                signals.error(format!("websocket handshake failed: {:?}", e));
-                return None;
+    // Refuse the upgrade of a page that may not connect before the protocol
+    // handshake, so it never reaches the token check or the current client.
+    let mut rejection = None;
+    // tungstenite fixes the callback's error type.
+    #[allow(clippy::result_large_err)]
+    let check_origin = |request: &Request, response: Response| {
+        handshake
+            .origins
+            .check(request.headers())
+            .map(|()| response)
+            .map_err(|reason| {
+                rejection = Some(reason);
+                let mut forbidden = ErrorResponse::new(Some(
+                    "This page may not connect to the state server.\n".to_string(),
+                ));
+                *forbidden.status_mut() = StatusCode::FORBIDDEN;
+                forbidden
+            })
+    };
+    let accepted = tokio_tungstenite::accept_hdr_async_with_config(
+        stream,
+        check_origin,
+        Some(websocket_config),
+    )
+    .await;
+    let websocket = match accepted {
+        Ok(ws) => ws,
+        Err(e) => {
+            match rejection {
+                Some(reason) => signals.warning(format!("rejected connection: {reason}")),
+                None => signals.error(format!("websocket handshake failed: {:?}", e)),
             }
-        };
+            return None;
+        }
+    };
 
     let peer_addr = websocket
         .get_ref()
@@ -822,6 +854,7 @@ mod run_tests {
                 Handshake {
                     version: None,
                     token: None,
+                    origins: Default::default(),
                 },
                 Arc::new(RwLock::new(None)),
                 None,
@@ -917,6 +950,7 @@ mod run_tests {
                 Handshake {
                     version: None,
                     token: None,
+                    origins: Default::default(),
                 },
                 Arc::new(RwLock::new(None)),
                 heartbeat,
@@ -1125,6 +1159,7 @@ mod handshake_tests {
         let settings = Handshake {
             version: Some(17),
             token: Some("secret".into()),
+            origins: Default::default(),
         };
         for (protocol, version, token, diagnostic) in [
             (0, Some(17), Some("secret"), "protocol version"),
