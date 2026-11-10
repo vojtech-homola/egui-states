@@ -45,7 +45,24 @@ fn check_image_type(shape: &[usize], strides: &[isize]) -> PyResult<ImageType> {
     }
 }
 
+/// Whether a buffer is indirect: a sub-offset of zero or more means the
+/// values along that dimension are pointers, so `buf_ptr()` does not point at
+/// pixel rows.
+fn is_indirect(suboffsets: Option<&[isize]>) -> bool {
+    suboffsets.is_some_and(|offsets| offsets.iter().any(|&offset| offset >= 0))
+}
+
+fn check_direct(image: &PyBuffer<u8>) -> PyResult<()> {
+    if is_indirect(image.suboffsets()) {
+        return Err(PyValueError::new_err(
+            "Indirect buffers with sub-offsets are not supported",
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn image_data(image: &PyBuffer<u8>) -> PyResult<ImageData> {
+    check_direct(image)?;
     let shape = image.shape();
     let strides = image.strides();
     let contiguous = image.is_c_contiguous();
@@ -78,6 +95,7 @@ pub(crate) fn image_data(image: &PyBuffer<u8>) -> PyResult<ImageData> {
 }
 
 pub(crate) fn image_multi_data(image: &PyBuffer<u8>) -> PyResult<ImageMultiData> {
+    check_direct(image)?;
     let shape = image.shape();
     let strides = image.strides();
     let contiguous = image.is_c_contiguous();
@@ -123,4 +141,17 @@ pub(crate) fn image_color(color: &Bound<'_, PyAny>) -> PyResult<[u8; 4]> {
     Err(PyValueError::new_err(
         "color must be an integer or a tuple of 2, 3, or 4 integers in the range 0..=255",
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_non_negative_sub_offsets_make_a_buffer_indirect() {
+        assert!(!is_indirect(None));
+        assert!(!is_indirect(Some(&[-1, -1, -1])));
+        assert!(is_indirect(Some(&[0, -1])));
+        assert!(is_indirect(Some(&[-1, 16])));
+    }
 }
