@@ -11,14 +11,16 @@ use crate::client::image::{Image, ImageMulti};
 use crate::client::initial_value::{InitValue, InitialValue};
 
 use crate::client::messages::MessageSender;
-use crate::client::states_creator::{self, StatesCreator, hash_id, hash_id_kind, hash_id_type};
+use crate::client::states_creator::{
+    self, StatesCreator, hash_id, hash_id_kind, hash_id_type, state_path,
+};
 use crate::client::value_map::MapState;
 use crate::client::value_vec::VecState;
 use crate::client::values::{
     GetQueueType, Signal, Static, StaticAtomic, Value, ValueAtomic, ValueTake,
 };
 use crate::data_transport::DataType;
-use crate::hashing::{StableHasher, generate_value_id};
+use crate::hashing::StableHasher;
 use crate::typed::{ObjectType, RustDerive, Typed};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -217,8 +219,7 @@ impl StatesCreator for StatesCreatorBuild {
         Q: GetQueueType,
     {
         self.collect_rust_derives::<T>();
-        let full_name = format!("{}.{}", self.parent, name);
-        let id = generate_value_id(&full_name);
+        let (full_name, id) = state_path(&self.parent, name);
         let type_id = T::get_type().get_hash();
         hash_id_type(
             &mut self.version_hasher,
@@ -245,8 +246,7 @@ impl StatesCreator for StatesCreatorBuild {
         T: for<'a> Deserialize<'a> + Serialize + Typed + Send + Sync + 'static,
     {
         self.collect_rust_derives::<T>();
-        let full_name = format!("{}.{}", self.parent, name);
-        let id = generate_value_id(&full_name);
+        let (full_name, id) = state_path(&self.parent, name);
         let type_id = T::get_type().get_hash();
         hash_id_type(
             &mut self.version_hasher,
@@ -269,8 +269,7 @@ impl StatesCreator for StatesCreatorBuild {
         Q: GetQueueType,
     {
         self.collect_rust_derives::<T>();
-        let full_name = format!("{}.{}", self.parent, name);
-        let id = generate_value_id(&full_name);
+        let (full_name, id) = state_path(&self.parent, name);
         let type_id = T::get_type().get_hash();
         hash_id_type(
             &mut self.version_hasher,
@@ -297,8 +296,7 @@ impl StatesCreator for StatesCreatorBuild {
         T: for<'a> Deserialize<'a> + Serialize + Clone + Typed + InitialValue,
     {
         self.collect_rust_derives::<T>();
-        let full_name = format!("{}.{}", self.parent, name);
-        let id = generate_value_id(&full_name);
+        let (full_name, id) = state_path(&self.parent, name);
         let type_id = T::get_type().get_hash();
         hash_id_type(
             &mut self.version_hasher,
@@ -328,8 +326,7 @@ impl StatesCreator for StatesCreatorBuild {
             + 'static,
     {
         self.collect_rust_derives::<T>();
-        let full_name = format!("{}.{}", self.parent, name);
-        let id = generate_value_id(&full_name);
+        let (full_name, id) = state_path(&self.parent, name);
         let type_id = T::get_type().get_hash();
         hash_id_type(
             &mut self.version_hasher,
@@ -347,8 +344,7 @@ impl StatesCreator for StatesCreatorBuild {
     }
 
     fn image(&mut self, name: &str) -> Image {
-        let full_name = format!("{}.{}", self.parent, name);
-        let id = generate_value_id(&full_name);
+        let (full_name, id) = state_path(&self.parent, name);
         hash_id(&mut self.version_hasher, id);
 
         // Codegen only walks the layout, so the handle needs no real context.
@@ -360,8 +356,7 @@ impl StatesCreator for StatesCreatorBuild {
     }
 
     fn image_multi(&mut self, name: &str) -> ImageMulti {
-        let full_name = format!("{}.{}", self.parent, name);
-        let id = generate_value_id(&full_name);
+        let (full_name, id) = state_path(&self.parent, name);
         hash_id_kind(
             &mut self.version_hasher,
             id,
@@ -379,8 +374,7 @@ impl StatesCreator for StatesCreatorBuild {
         Q: GetQueueType,
     {
         self.collect_rust_derives::<T>();
-        let full_name = format!("{}.{}", self.parent, name);
-        let id = generate_value_id(&full_name);
+        let (_, id) = state_path(&self.parent, name);
         let type_id = T::get_type().get_hash();
         hash_id_type(
             &mut self.version_hasher,
@@ -407,8 +401,7 @@ impl StatesCreator for StatesCreatorBuild {
     {
         self.collect_rust_derives::<K>();
         self.collect_rust_derives::<V>();
-        let full_name = format!("{}.{}", self.parent, name);
-        let id = generate_value_id(&full_name);
+        let (full_name, id) = state_path(&self.parent, name);
         let type_id = ObjectType::map_hash(&K::get_type(), &V::get_type());
         hash_id_type(
             &mut self.version_hasher,
@@ -432,8 +425,7 @@ impl StatesCreator for StatesCreatorBuild {
         T: Clone + for<'a> Deserialize<'a> + Typed,
     {
         self.collect_rust_derives::<T>();
-        let full_name = format!("{}.{}", self.parent, name);
-        let id = generate_value_id(&full_name);
+        let (full_name, id) = state_path(&self.parent, name);
         let type_id = T::get_type().get_hash();
         hash_id_type(
             &mut self.version_hasher,
@@ -454,8 +446,7 @@ impl StatesCreator for StatesCreatorBuild {
     where
         T: GetDataType + Send + Sync + 'static,
     {
-        let full_name = format!("{}.{}", self.parent, name);
-        let id = generate_value_id(&full_name);
+        let (full_name, id) = state_path(&self.parent, name);
         hash_id_type(
             &mut self.version_hasher,
             id,
@@ -474,8 +465,7 @@ impl StatesCreator for StatesCreatorBuild {
     where
         T: GetDataType + Send + Sync + 'static,
     {
-        let full_name = format!("{}.{}", self.parent, name);
-        let id = generate_value_id(&full_name);
+        let (full_name, id) = state_path(&self.parent, name);
         hash_id_type(
             &mut self.version_hasher,
             id,
@@ -494,8 +484,7 @@ impl StatesCreator for StatesCreatorBuild {
     where
         T: GetDataType + Send + Sync + 'static,
     {
-        let full_name = format!("{}.{}", self.parent, name);
-        let id = generate_value_id(&full_name);
+        let (full_name, id) = state_path(&self.parent, name);
         hash_id_type(
             &mut self.version_hasher,
             id,
@@ -514,8 +503,7 @@ impl StatesCreator for StatesCreatorBuild {
     where
         T: GetDataType + Send + Sync + 'static,
     {
-        let full_name = format!("{}.{}", self.parent, name);
-        let id = generate_value_id(&full_name);
+        let (full_name, id) = state_path(&self.parent, name);
         hash_id_type(
             &mut self.version_hasher,
             id,

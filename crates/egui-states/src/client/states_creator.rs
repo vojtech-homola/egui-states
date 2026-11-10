@@ -155,83 +155,91 @@ pub trait StatesCreator {
         T: GetDataType + Send + Sync + 'static;
 }
 
+/// A client state the receive task updates.
+#[derive(Clone)]
+pub(crate) enum ClientState {
+    Value(Arc<dyn UpdateValue>),
+    ValueTake(Arc<dyn UpdateValueTake>),
+    Static(Arc<dyn UpdateValue>),
+    Data(Arc<dyn UpdateData>),
+    DataTake(Arc<dyn UpdateDataTake>),
+    DataMulti(Arc<dyn UpdateMultiData>),
+    DataMultiTake(Arc<dyn UpdateDataMultiTake>),
+    Image(Image),
+    ImageMulti(ImageMulti),
+    Map(Arc<dyn UpdateMap>),
+    Vec(Arc<dyn UpdateList>),
+}
+
+/// Typed lookups; a state of another kind is reported like a missing one.
+macro_rules! lookups {
+    ($($name:ident: $variant:ident => $ty:ty),* $(,)?) => {
+        $(
+            pub(crate) fn $name(&self, id: u64) -> Option<&$ty> {
+                match self.states.get(&id) {
+                    Some(ClientState::$variant(state)) => Some(state),
+                    _ => None,
+                }
+            }
+        )*
+    };
+}
+
+/// Every client state, by id.
+///
+/// A hand-written `State` that registers one path under two kinds keeps only
+/// the last; a generated server refuses such a layout anyway.
 #[derive(Clone)]
 pub(crate) struct ValuesList {
-    pub(crate) values: NoHashMap<u64, Arc<dyn UpdateValue>>,
-    pub(crate) values_take: NoHashMap<u64, Arc<dyn UpdateValueTake>>,
-    pub(crate) static_values: NoHashMap<u64, Arc<dyn UpdateValue>>,
-    pub(crate) data: NoHashMap<u64, Arc<dyn UpdateData>>,
-    pub(crate) data_take: NoHashMap<u64, Arc<dyn UpdateDataTake>>,
-    pub(crate) multi_data: NoHashMap<u64, Arc<dyn UpdateMultiData>>,
-    pub(crate) data_multi_take: NoHashMap<u64, Arc<dyn UpdateDataMultiTake>>,
-    pub(crate) images: NoHashMap<u64, Image>,
-    pub(crate) image_multi: NoHashMap<u64, ImageMulti>,
-    pub(crate) maps: NoHashMap<u64, Arc<dyn UpdateMap>>,
-    pub(crate) vecs: NoHashMap<u64, Arc<dyn UpdateList>>,
+    pub(crate) states: NoHashMap<u64, ClientState>,
 }
 
 impl ValuesList {
     fn new() -> Self {
         Self {
-            values: NoHashMap::default(),
-            values_take: NoHashMap::default(),
-            static_values: NoHashMap::default(),
-            data: NoHashMap::default(),
-            data_take: NoHashMap::default(),
-            multi_data: NoHashMap::default(),
-            data_multi_take: NoHashMap::default(),
-            images: NoHashMap::default(),
-            image_multi: NoHashMap::default(),
-            maps: NoHashMap::default(),
-            vecs: NoHashMap::default(),
+            states: NoHashMap::default(),
         }
+    }
+
+    lookups! {
+        value: Value => Arc<dyn UpdateValue>,
+        value_take: ValueTake => Arc<dyn UpdateValueTake>,
+        static_value: Static => Arc<dyn UpdateValue>,
+        data: Data => Arc<dyn UpdateData>,
+        data_take: DataTake => Arc<dyn UpdateDataTake>,
+        data_multi: DataMulti => Arc<dyn UpdateMultiData>,
+        data_multi_take: DataMultiTake => Arc<dyn UpdateDataMultiTake>,
+        image: Image => Image,
+        image_multi: ImageMulti => ImageMulti,
+        map: Map => Arc<dyn UpdateMap>,
+        vec: Vec => Arc<dyn UpdateList>,
     }
 
     /// Drops acknowledgement duties and partial transfers left over from a
     /// closed connection.
     pub(crate) fn disconnected(&self) {
-        for value in self.values_take.values() {
-            value.disconnected();
-        }
-        for data in self.data.values() {
-            data.disconnected();
-        }
-        for data in self.multi_data.values() {
-            data.disconnected();
-        }
-        for image in self.images.values() {
-            image.disconnected();
-        }
-        for images in self.image_multi.values() {
-            images.disconnected();
-        }
-        for data in self.data_take.values() {
-            data.disconnected();
-        }
-        for data in self.data_multi_take.values() {
-            data.disconnected();
-        }
-        for map in self.maps.values() {
-            map.disconnected();
-        }
-        for vec in self.vecs.values() {
-            vec.disconnected();
+        for state in self.states.values() {
+            match state {
+                ClientState::ValueTake(state) => state.disconnected(),
+                ClientState::Data(state) => state.disconnected(),
+                ClientState::DataMulti(state) => state.disconnected(),
+                ClientState::DataTake(state) => state.disconnected(),
+                ClientState::DataMultiTake(state) => state.disconnected(),
+                ClientState::Image(state) => state.disconnected(),
+                ClientState::ImageMulti(state) => state.disconnected(),
+                ClientState::Map(state) => state.disconnected(),
+                ClientState::Vec(state) => state.disconnected(),
+                ClientState::Value(_) | ClientState::Static(_) => {}
+            }
         }
     }
+}
 
-    fn shrink(&mut self) {
-        self.values.shrink_to_fit();
-        self.values_take.shrink_to_fit();
-        self.static_values.shrink_to_fit();
-        self.data.shrink_to_fit();
-        self.data_take.shrink_to_fit();
-        self.multi_data.shrink_to_fit();
-        self.data_multi_take.shrink_to_fit();
-        self.images.shrink_to_fit();
-        self.image_multi.shrink_to_fit();
-        self.maps.shrink_to_fit();
-        self.vecs.shrink_to_fit();
-    }
+/// The full path and id of the state `name` below `parent`.
+pub(crate) fn state_path(parent: &str, name: &str) -> (String, u64) {
+    let path = format!("{parent}.{name}");
+    let id = generate_value_id(&path);
+    (path, id)
 }
 
 // Stable tags mixed into the layout hash to distinguish state kinds. These
@@ -278,7 +286,7 @@ impl StatesCreatorClient {
 
     pub(crate) fn get_values(self) -> ValuesList {
         let mut val = self.val;
-        val.shrink();
+        val.states.shrink_to_fit();
         val
     }
 }
@@ -294,17 +302,7 @@ impl StatesCreator for StatesCreatorClient {
             .finish()
             .hash(&mut self.version_hasher);
 
-        self.val.values.extend(creator.val.values);
-        self.val.values_take.extend(creator.val.values_take);
-        self.val.static_values.extend(creator.val.static_values);
-        self.val.data.extend(creator.val.data);
-        self.val.data_take.extend(creator.val.data_take);
-        self.val.multi_data.extend(creator.val.multi_data);
-        self.val.data_multi_take.extend(creator.val.data_multi_take);
-        self.val.images.extend(creator.val.images);
-        self.val.image_multi.extend(creator.val.image_multi);
-        self.val.maps.extend(creator.val.maps);
-        self.val.vecs.extend(creator.val.vecs);
+        self.val.states.extend(creator.val.states);
 
         substate
     }
@@ -321,14 +319,15 @@ impl StatesCreator for StatesCreatorClient {
             + 'static,
         Q: GetQueueType,
     {
-        let name = format!("{}.{}", self.parent, name);
-        let id = generate_value_id(&name);
+        let (name, id) = state_path(&self.parent, name);
         let type_id = T::get_type().get_hash();
         hash_id_type(&mut self.version_hasher, id, type_id, VALUE_HASH_ID);
 
         let value = Value::new(name, id, type_id, value, self.sender.clone());
 
-        self.val.values.insert(id, Arc::new(value.clone()));
+        self.val
+            .states
+            .insert(id, ClientState::Value(Arc::new(value.clone())));
         value
     }
 
@@ -336,14 +335,15 @@ impl StatesCreator for StatesCreatorClient {
     where
         T: for<'a> Deserialize<'a> + Serialize + Typed + Send + Sync + 'static,
     {
-        let name = format!("{}.{}", self.parent, name);
-        let id = generate_value_id(&name);
+        let (name, id) = state_path(&self.parent, name);
         let type_id = T::get_type().get_hash();
         hash_id_type(&mut self.version_hasher, id, type_id, VALUE_TAKE_HASH_ID);
 
         let value = ValueTake::new(name, id, type_id, self.sender.clone());
 
-        self.val.values_take.insert(id, Arc::new(value.clone()));
+        self.val
+            .states
+            .insert(id, ClientState::ValueTake(Arc::new(value.clone())));
         value
     }
 
@@ -360,14 +360,15 @@ impl StatesCreator for StatesCreatorClient {
             + 'static,
         Q: GetQueueType,
     {
-        let name = format!("{}.{}", self.parent, name);
-        let id = generate_value_id(&name);
+        let (name, id) = state_path(&self.parent, name);
         let type_id = T::get_type().get_hash();
         hash_id_type(&mut self.version_hasher, id, type_id, ATOMIC_HASH_ID);
 
         let value = ValueAtomic::new(name, id, type_id, value, self.sender.clone());
 
-        self.val.values.insert(id, Arc::new(value.clone()));
+        self.val
+            .states
+            .insert(id, ClientState::Value(Arc::new(value.clone())));
         value
     }
 
@@ -382,14 +383,15 @@ impl StatesCreator for StatesCreatorClient {
             + Sync
             + 'static,
     {
-        let name = format!("{}.{}", self.parent, name);
-        let id = generate_value_id(&name);
+        let (name, id) = state_path(&self.parent, name);
         let type_id = T::get_type().get_hash();
         hash_id_type(&mut self.version_hasher, id, type_id, STATIC_HASH_ID);
 
         let value = Static::new(name, id, type_id, value, self.sender.clone());
 
-        self.val.static_values.insert(id, Arc::new(value.clone()));
+        self.val
+            .states
+            .insert(id, ClientState::Static(Arc::new(value.clone())));
         value
     }
 
@@ -405,35 +407,38 @@ impl StatesCreator for StatesCreatorClient {
             + AtomicStatic
             + 'static,
     {
-        let name = format!("{}.{}", self.parent, name);
-        let id = generate_value_id(&name);
+        let (name, id) = state_path(&self.parent, name);
         let type_id = T::get_type().get_hash();
         hash_id_type(&mut self.version_hasher, id, type_id, STATIC_ATOMIC_HASH_ID);
 
         let value = StaticAtomic::new(name, id, type_id, value, self.sender.clone());
 
-        self.val.static_values.insert(id, Arc::new(value.clone()));
+        self.val
+            .states
+            .insert(id, ClientState::Static(Arc::new(value.clone())));
         value
     }
 
     fn image(&mut self, name: &str) -> Image {
-        let name = format!("{}.{}", self.parent, name);
-        let id = generate_value_id(&name);
+        let (name, id) = state_path(&self.parent, name);
         hash_id(&mut self.version_hasher, id);
 
         let value = Image::new(name, id, self.sender.clone(), self.context.clone());
 
-        self.val.images.insert(id, value.clone());
+        self.val
+            .states
+            .insert(id, ClientState::Image(value.clone()));
         value
     }
 
     fn image_multi(&mut self, name: &str) -> ImageMulti {
-        let name = format!("{}.{}", self.parent, name);
-        let id = generate_value_id(&name);
+        let (name, id) = state_path(&self.parent, name);
         hash_id_kind(&mut self.version_hasher, id, IMAGE_MULTI_HASH_ID);
 
         let value = ImageMulti::new(name, id, self.sender.clone(), self.context.clone());
-        self.val.image_multi.insert(id, value.clone());
+        self.val
+            .states
+            .insert(id, ClientState::ImageMulti(value.clone()));
         value
     }
 
@@ -442,8 +447,7 @@ impl StatesCreator for StatesCreatorClient {
         T: Serialize + Typed + Clone + Send + Sync + 'static,
         Q: GetQueueType,
     {
-        let name = format!("{}.{}", self.parent, name);
-        let id = generate_value_id(&name);
+        let (name, id) = state_path(&self.parent, name);
         let type_id = T::get_type().get_hash();
         hash_id_type(&mut self.version_hasher, id, type_id, SIGNAL_HASH_ID);
 
@@ -455,13 +459,14 @@ impl StatesCreator for StatesCreatorClient {
         K: Hash + Eq + Clone + for<'a> Deserialize<'a> + Send + Sync + Typed + 'static,
         V: Clone + for<'a> Deserialize<'a> + Send + Sync + Typed + 'static,
     {
-        let name = format!("{}.{}", self.parent, name);
-        let id = generate_value_id(&name);
+        let (name, id) = state_path(&self.parent, name);
         let type_id = ObjectType::map_hash(&K::get_type(), &V::get_type());
         hash_id_type(&mut self.version_hasher, id, type_id, MAP_HASH_ID);
 
         let value = MapState::new(name, type_id);
-        self.val.maps.insert(id, Arc::new(value.clone()));
+        self.val
+            .states
+            .insert(id, ClientState::Map(Arc::new(value.clone())));
         value
     }
 
@@ -469,14 +474,15 @@ impl StatesCreator for StatesCreatorClient {
     where
         T: Clone + for<'a> Deserialize<'a> + Send + Sync + Typed + 'static,
     {
-        let name = format!("{}.{}", self.parent, name);
-        let id = generate_value_id(&name);
+        let (name, id) = state_path(&self.parent, name);
         let type_id = T::get_type().get_hash();
         hash_id_type(&mut self.version_hasher, id, type_id, VEC_HASH_ID);
 
         let value = VecState::new(name, type_id);
 
-        self.val.vecs.insert(id, Arc::new(value.clone()));
+        self.val
+            .states
+            .insert(id, ClientState::Vec(Arc::new(value.clone())));
         value
     }
 
@@ -484,13 +490,14 @@ impl StatesCreator for StatesCreatorClient {
     where
         T: GetDataType + Send + Sync + 'static,
     {
-        let name = format!("{}.{}", self.parent, name);
-        let id = generate_value_id(&name);
+        let (name, id) = state_path(&self.parent, name);
         hash_id_type(&mut self.version_hasher, id, T::get_type_id(), DATA_HASH_ID);
 
         let data = Data::new(name, id, self.sender.clone());
 
-        self.val.data.insert(id, Arc::new(data.clone()));
+        self.val
+            .states
+            .insert(id, ClientState::Data(Arc::new(data.clone())));
         data
     }
 
@@ -498,8 +505,7 @@ impl StatesCreator for StatesCreatorClient {
     where
         T: GetDataType + Send + Sync + 'static,
     {
-        let name = format!("{}.{}", self.parent, name);
-        let id = generate_value_id(&name);
+        let (name, id) = state_path(&self.parent, name);
         hash_id_type(
             &mut self.version_hasher,
             id,
@@ -509,7 +515,9 @@ impl StatesCreator for StatesCreatorClient {
 
         let multi_data = DataMulti::new(name, id, self.sender.clone());
 
-        self.val.multi_data.insert(id, Arc::new(multi_data.clone()));
+        self.val
+            .states
+            .insert(id, ClientState::DataMulti(Arc::new(multi_data.clone())));
         multi_data
     }
 
@@ -517,8 +525,7 @@ impl StatesCreator for StatesCreatorClient {
     where
         T: GetDataType + Send + Sync + 'static,
     {
-        let name = format!("{}.{}", self.parent, name);
-        let id = generate_value_id(&name);
+        let (name, id) = state_path(&self.parent, name);
         hash_id_type(
             &mut self.version_hasher,
             id,
@@ -528,7 +535,9 @@ impl StatesCreator for StatesCreatorClient {
 
         let data_take = DataTake::new(name, id, self.sender.clone());
 
-        self.val.data_take.insert(id, Arc::new(data_take.clone()));
+        self.val
+            .states
+            .insert(id, ClientState::DataTake(Arc::new(data_take.clone())));
         data_take
     }
 
@@ -536,8 +545,7 @@ impl StatesCreator for StatesCreatorClient {
     where
         T: GetDataType + Send + Sync + 'static,
     {
-        let name = format!("{}.{}", self.parent, name);
-        let id = generate_value_id(&name);
+        let (name, id) = state_path(&self.parent, name);
         hash_id_type(
             &mut self.version_hasher,
             id,
@@ -547,9 +555,10 @@ impl StatesCreator for StatesCreatorClient {
 
         let data_multi_take = DataMultiTake::new(name, id, self.sender.clone());
 
-        self.val
-            .data_multi_take
-            .insert(id, Arc::new(data_multi_take.clone()));
+        self.val.states.insert(
+            id,
+            ClientState::DataMultiTake(Arc::new(data_multi_take.clone())),
+        );
         data_multi_take
     }
 }

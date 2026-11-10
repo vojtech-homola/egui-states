@@ -204,18 +204,18 @@ pub(crate) async fn handle_message(
             client.update(t);
             return Ok(());
         }
-        ServerHeader::Value(id, type_id, ..) => match vals.values.get(&id) {
+        ServerHeader::Value(id, type_id, ..) => match vals.value(id) {
             Some(value) => value.update_value(type_id, &payload)?,
             None => {
                 client.send_ack(id);
                 return Err(format!("Value with id {} not found", id));
             }
         },
-        ServerHeader::Static(id, type_id, ..) => match vals.static_values.get(&id) {
+        ServerHeader::Static(id, type_id, ..) => match vals.static_value(id) {
             Some(value) => value.update_value(type_id, &payload)?,
             None => return Err(format!("Static with id {} not found", id)),
         },
-        ServerHeader::ValueTake(id, type_id, blocking, ..) => match vals.values_take.get(&id) {
+        ServerHeader::ValueTake(id, type_id, blocking, ..) => match vals.value_take(id) {
             Some(value) => value.update_take(type_id, &payload, blocking)?,
             None => {
                 if blocking {
@@ -224,7 +224,7 @@ pub(crate) async fn handle_message(
                 return Err(format!("ValueTake with id {} not found", id));
             }
         },
-        ServerHeader::Image(id, header, _) => match vals.images.get(&id) {
+        ServerHeader::Image(id, header, _) => match vals.image(id) {
             Some(image) => match header {
                 ImageHeader::Set(set, image_type) => image.set_image(set, image_type, &payload)?,
                 ImageHeader::Update(rect, image_type, _) => {
@@ -239,15 +239,15 @@ pub(crate) async fn handle_message(
                 return Err(format!("Image with id {} not found", id));
             }
         },
-        ServerHeader::ValueVec(id, type_id, _, list_header, _) => match vals.vecs.get(&id) {
+        ServerHeader::ValueVec(id, type_id, _, list_header, _) => match vals.vec(id) {
             Some(value) => value.update_list(type_id, list_header, &payload)?,
             None => return Err(format!("List with id {} not found", id)),
         },
-        ServerHeader::ValueMap(id, type_id, _, map_header, _) => match vals.maps.get(&id) {
+        ServerHeader::ValueMap(id, type_id, _, map_header, _) => match vals.map(id) {
             Some(value) => value.update_map(type_id, map_header, &payload)?,
             None => return Err(format!("Map with id {} not found", id)),
         },
-        ServerHeader::Data(id, header) => match vals.data.get(&id) {
+        ServerHeader::Data(id, header) => match vals.data(id) {
             Some(data) => data.update_data((header, payload))?,
             None => {
                 if header.requires_ack() {
@@ -256,7 +256,7 @@ pub(crate) async fn handle_message(
                 return Err(format!("Data with id {} not found", id));
             }
         },
-        ServerHeader::DataTake(id, header, blocking) => match vals.data_take.get(&id) {
+        ServerHeader::DataTake(id, header, blocking) => match vals.data_take(id) {
             Some(data_take) => data_take.update((header, payload), blocking)?,
             None => {
                 if blocking && header.is_terminal() {
@@ -265,7 +265,7 @@ pub(crate) async fn handle_message(
                 return Err(format!("DataTake with id {} not found", id));
             }
         },
-        ServerHeader::MultiData(id, header) => match vals.multi_data.get(&id) {
+        ServerHeader::MultiData(id, header) => match vals.data_multi(id) {
             Some(multi_data) => match header {
                 MultiDataHeader::Remove(key, _) => multi_data.remove(key),
                 MultiDataHeader::Reset(_) => multi_data.reset(),
@@ -280,7 +280,7 @@ pub(crate) async fn handle_message(
                 return Err(format!("MultiData with id {} not found", id));
             }
         },
-        ServerHeader::DataMultiTake(id, header) => match vals.data_multi_take.get(&id) {
+        ServerHeader::DataMultiTake(id, header) => match vals.data_multi_take(id) {
             Some(data_multi_take) => match header {
                 DataMultiTakeHeader::Remove(key, _) => data_multi_take.remove(key),
                 DataMultiTakeHeader::Reset(_) => data_multi_take.reset(),
@@ -295,7 +295,7 @@ pub(crate) async fn handle_message(
                 return Err(format!("DataMultiTake with id {} not found", id));
             }
         },
-        ServerHeader::ImageMulti(id, header) => match vals.image_multi.get(&id) {
+        ServerHeader::ImageMulti(id, header) => match vals.image_multi(id) {
             Some(images) => match header {
                 ImageMultiHeader::Remove(index, _) => images.remove(index),
                 ImageMultiHeader::Reset(_) => images.reset(),
@@ -665,7 +665,7 @@ mod malformed_tests {
         let mut creator = StatesCreatorClient::new(sender.clone(), context.clone(), "root".into());
         let value: crate::Value<i32> = creator.value("number", 37);
         let values = creator.get_values();
-        let id = *values.values.keys().next().unwrap();
+        let id = *values.states.keys().next().unwrap();
         let type_id = <i32 as Typed>::get_type().get_hash();
         let client = ClientCore::new(context, sender);
         let runtime = tokio::runtime::Builder::new_current_thread()
