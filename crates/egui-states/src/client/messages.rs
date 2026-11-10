@@ -149,7 +149,24 @@ pub(crate) struct MessagesParser {
     is_empty: bool,
 }
 
+/// The end of a `len`-byte payload that starts at `pointer`, if it lies
+/// within a frame of `total` bytes. The sizes come from the network, so the
+/// sum must not overflow, which a 32-bit `usize` (wasm32) otherwise allows.
+fn checked_end(pointer: usize, len: u32, total: usize) -> Option<usize> {
+    let end = pointer.checked_add(usize::try_from(len).ok()?)?;
+    (end <= total).then_some(end)
+}
+
 impl MessagesParser {
+    /// Takes the next `len` payload bytes of the frame, or fails with `error`
+    /// when the frame is shorter.
+    fn take_payload(&mut self, len: u32, error: &'static str) -> Result<Bytes, &'static str> {
+        let end = checked_end(self.pointer, len, self.data.len()).ok_or(error)?;
+        let data = self.data.slice(self.pointer..end);
+        self.pointer = end;
+        Ok(data)
+    }
+
     pub(crate) fn empty() -> Self {
         Self {
             data: Bytes::new(),
@@ -189,48 +206,23 @@ impl MessagesParser {
 
         let message_data = match header {
             ServerHeader::Value(id, type_id, update, size) => {
-                let size = size as usize;
-                if size + self.pointer > self.data.len() {
-                    return Err("Incomplete data for Value message");
-                }
-                let data = self.data.slice(self.pointer..self.pointer + size);
-                self.pointer += size;
+                let data = self.take_payload(size, "Incomplete data for Value message")?;
                 ServerMessage::Value(id, type_id, update, data)
             }
             ServerHeader::Static(id, type_id, update, size) => {
-                let size = size as usize;
-                if size + self.pointer > self.data.len() {
-                    return Err("Incomplete data for Static message");
-                }
-                let data = self.data.slice(self.pointer..self.pointer + size);
-                self.pointer += size;
+                let data = self.take_payload(size, "Incomplete data for Static message")?;
                 ServerMessage::Static(id, type_id, update, data)
             }
             ServerHeader::ValueTake(id, type_id, blocking, update, size) => {
-                let size = size as usize;
-                if size + self.pointer > self.data.len() {
-                    return Err("Incomplete data for ValueTake message");
-                }
-                let data = self.data.slice(self.pointer..self.pointer + size);
-                self.pointer += size;
+                let data = self.take_payload(size, "Incomplete data for ValueTake message")?;
                 ServerMessage::ValueTake(id, type_id, blocking, update, data)
             }
             ServerHeader::ValueVec(id, type_id, update, header, size) => {
-                let size = size as usize;
-                if size + self.pointer > self.data.len() {
-                    return Err("Incomplete data for ValueVec message");
-                }
-                let data = self.data.slice(self.pointer..self.pointer + size);
-                self.pointer += size;
+                let data = self.take_payload(size, "Incomplete data for ValueVec message")?;
                 ServerMessage::ValueVec(id, type_id, update, header, data)
             }
             ServerHeader::ValueMap(id, type_id, update, header, size) => {
-                let size = size as usize;
-                if size + self.pointer > self.data.len() {
-                    return Err("Incomplete data for Map message");
-                }
-                let data = self.data.slice(self.pointer..self.pointer + size);
-                self.pointer += size;
+                let data = self.take_payload(size, "Incomplete data for Map message")?;
                 ServerMessage::ValueMap(id, type_id, update, header, data)
             }
             ServerHeader::Update(dt) => ServerMessage::Update(dt),
@@ -309,12 +301,7 @@ impl MessagesParser {
         header: ImageHeader,
         size: u32,
     ) -> Result<(ImageMessage, bool, Bytes), &'static str> {
-        let size = size as usize;
-        if self.pointer + size > self.data.len() {
-            return Err("Incomplete data for Image message");
-        }
-        let data = self.data.slice(self.pointer..self.pointer + size);
-        self.pointer += size;
+        let data = self.take_payload(size, "Incomplete data for Image message")?;
 
         let (message, update) = match header {
             ImageHeader::Set(set_header, image_type) => {
@@ -347,41 +334,23 @@ impl MessagesParser {
     ) -> Result<(DataMessage, bool), &'static str> {
         let res = match data_header {
             DataHeader::All(data_type, transport_type, update, data_size) => {
-                let data_size = data_size as usize;
-                if self.pointer + data_size > self.data.len() {
-                    return Err("Incomplete data for Data/DataStatic message");
-                }
-
-                let dat = self.data.slice(self.pointer..self.pointer + data_size);
-                self.pointer += data_size;
+                let dat =
+                    self.take_payload(data_size, "Incomplete data for Data/DataStatic message")?;
                 (DataMessage::All(data_type, transport_type, dat), update)
             }
             DataHeader::StartBatch(count, data_size) => {
-                let data_size = data_size as usize;
-                if self.pointer + data_size > self.data.len() {
-                    return Err("Incomplete data for Data/DataStatic message");
-                }
-
-                let dat = self.data.slice(self.pointer..self.pointer + data_size);
-                self.pointer += data_size;
+                let dat =
+                    self.take_payload(data_size, "Incomplete data for Data/DataStatic message")?;
                 (DataMessage::BatchStart(count, dat), false)
             }
             DataHeader::Batch(data_size) => {
-                let data_size = data_size as usize;
-                if self.pointer + data_size > self.data.len() {
-                    return Err("Incomplete data for Data/DataStatic message");
-                }
-                let dat = self.data.slice(self.pointer..self.pointer + data_size);
-                self.pointer += data_size;
+                let dat =
+                    self.take_payload(data_size, "Incomplete data for Data/DataStatic message")?;
                 (DataMessage::Batch(dat), false)
             }
             DataHeader::End(data_type, transport_type, update, data_size) => {
-                let data_size = data_size as usize;
-                if self.pointer + data_size > self.data.len() {
-                    return Err("Incomplete data for Data/DataStatic message");
-                }
-                let dat = self.data.slice(self.pointer..self.pointer + data_size);
-                self.pointer += data_size;
+                let dat =
+                    self.take_payload(data_size, "Incomplete data for Data/DataStatic message")?;
                 (
                     DataMessage::BatchEnd(data_type, transport_type, dat),
                     update,
@@ -399,41 +368,19 @@ impl MessagesParser {
     ) -> Result<(DataTakeMessage, bool), &'static str> {
         let res = match data_header {
             DataTakeHeader::All(data_type, count, update, data_size) => {
-                let data_size = data_size as usize;
-                if self.pointer + data_size > self.data.len() {
-                    return Err("Incomplete data for DataTake message");
-                }
-
-                let dat = self.data.slice(self.pointer..self.pointer + data_size);
-                self.pointer += data_size;
+                let dat = self.take_payload(data_size, "Incomplete data for DataTake message")?;
                 (DataTakeMessage::All(data_type, count, dat), update)
             }
             DataTakeHeader::StartBatch(count, data_size) => {
-                let data_size = data_size as usize;
-                if self.pointer + data_size > self.data.len() {
-                    return Err("Incomplete data for DataTake message");
-                }
-
-                let dat = self.data.slice(self.pointer..self.pointer + data_size);
-                self.pointer += data_size;
+                let dat = self.take_payload(data_size, "Incomplete data for DataTake message")?;
                 (DataTakeMessage::BatchStart(count, dat), false)
             }
             DataTakeHeader::Batch(data_size) => {
-                let data_size = data_size as usize;
-                if self.pointer + data_size > self.data.len() {
-                    return Err("Incomplete data for DataTake message");
-                }
-                let dat = self.data.slice(self.pointer..self.pointer + data_size);
-                self.pointer += data_size;
+                let dat = self.take_payload(data_size, "Incomplete data for DataTake message")?;
                 (DataTakeMessage::Batch(dat), false)
             }
             DataTakeHeader::End(data_type, count, update, data_size) => {
-                let data_size = data_size as usize;
-                if self.pointer + data_size > self.data.len() {
-                    return Err("Incomplete data for DataTake message");
-                }
-                let dat = self.data.slice(self.pointer..self.pointer + data_size);
-                self.pointer += data_size;
+                let dat = self.take_payload(data_size, "Incomplete data for DataTake message")?;
                 (DataTakeMessage::BatchEnd(data_type, count, dat), update)
             }
         };
@@ -617,6 +564,38 @@ mod tests {
     use crate::data_transport::{DataType, TransportType};
     use crate::image_transport::ImageType;
     use tokio::sync::mpsc::{UnboundedReceiver, error::TryRecvError};
+
+    /// Payload sizes come from the network, so their end is computed without
+    /// overflow, also for a pointer near the top of the address space (D7).
+    #[test]
+    fn payload_bounds_do_not_overflow() {
+        assert_eq!(checked_end(2, 3, 5), Some(5));
+        assert_eq!(checked_end(2, 4, 5), None);
+        assert_eq!(checked_end(0, u32::MAX, 10), None);
+        assert_eq!(checked_end(usize::MAX - 1, 2, usize::MAX), None);
+        assert_eq!(checked_end(usize::MAX, u32::MAX, usize::MAX), None);
+    }
+
+    /// A frame that declares a payload far beyond its own length is a parse
+    /// error, not a panic.
+    #[test]
+    fn oversized_payload_sizes_are_parse_errors() {
+        let headers = [
+            ServerHeader::Value(1, 0, false, u32::MAX),
+            ServerHeader::ValueVec(1, 0, false, VecHeader::Add, u32::MAX),
+            ServerHeader::Image(1, ImageHeader::Fill([1, 1], [0; 4], false), u32::MAX),
+            ServerHeader::Data(
+                1,
+                DataHeader::All(DataType::U8, TransportType::Set(1), false, u32::MAX),
+            ),
+            ServerHeader::MultiData(1, MultiDataHeader::Modify(2, DataHeader::Batch(u32::MAX))),
+            ServerHeader::DataTake(1, DataTakeHeader::Batch(u32::MAX), false),
+        ];
+        for header in headers {
+            let bytes = postcard::to_stdvec(&header).unwrap();
+            assert!(MessagesParser::from_bytes(Bytes::from(bytes)).is_err());
+        }
+    }
 
     fn dispatch_missing(message: ServerMessage) -> UnboundedReceiver<Option<ChannelMessage>> {
         let (sender, receiver) = MessageSender::new();
