@@ -13,7 +13,7 @@ use tokio::runtime::Builder;
 
 use crate::data_transport::DataType;
 use crate::event::Event;
-use crate::hashing::{NoHashMap, generate_value_id};
+use crate::hashing::{MAX_RESERVED_ID, NoHashMap, generate_value_id};
 use crate::serialization::{ServerHeader, check_value_size, serialize};
 use crate::server_core::core;
 use crate::server_core::data_core::{Data, DataMulti};
@@ -24,7 +24,7 @@ use crate::server_core::image_multi_core::ImageMulti;
 use crate::server_core::map_core::ValueMap;
 use crate::server_core::origin::OriginPolicy;
 use crate::server_core::sender::{MessageReceiver, MessageSender};
-use crate::server_core::signals::{CLIENT_MESSAGE_ID, SignalsManager};
+use crate::server_core::signals::SignalsManager;
 use crate::server_core::values_core::{SignalCore, ValueCore, ValueStaticCore, ValueTakeCore};
 use crate::server_core::vec_core::ValueList;
 use crate::server_core::web::{WebSite, WebSlot};
@@ -59,7 +59,7 @@ pub(crate) struct StatesList {
 
 impl StatesList {
     fn contains_id(&self, id: u64) -> bool {
-        id <= CLIENT_MESSAGE_ID
+        id <= MAX_RESERVED_ID
             || self.values.contains_key(&id)
             || self.values_take.contains_key(&id)
             || self.static_values.contains_key(&id)
@@ -224,6 +224,44 @@ pub(crate) struct Server {
     runner_state: RunnerState,
 }
 
+/// Binds `addr` and builds the runtime whose thread will serve it.
+///
+/// Returns the runtime, the listener registered with it and the bound address.
+fn listen(
+    addr: SocketAddrV4,
+) -> Result<(tokio::runtime::Runtime, TcpListener, SocketAddrV4), StartError> {
+    let listener = std::net::TcpListener::bind(addr)
+        .map_err(|error| StartError::Io(format!("binding failed: {error:?}")))?;
+    let bound = match listener.local_addr() {
+        Ok(std::net::SocketAddr::V4(bound)) => bound,
+        // Binding an IPv4 address always reports an IPv4 one.
+        Ok(std::net::SocketAddr::V6(_)) => addr,
+        Err(error) => {
+            return Err(StartError::Io(format!(
+                "failed to read the listener address: {error:?}"
+            )));
+        }
+    };
+    listener
+        .set_nonblocking(true)
+        .map_err(|error| StartError::Io(format!("failed to configure listener: {error:?}")))?;
+
+    let runtime = Builder::new_multi_thread()
+        .thread_name("ServerRuntime")
+        .enable_io()
+        .enable_time()
+        .worker_threads(2)
+        .thread_keep_alive(Duration::from_hours(1))
+        .build()
+        .map_err(|_| StartError::Io("Failed to create server runtime".to_string()))?;
+    let listener = {
+        let _guard = runtime.enter();
+        TcpListener::from_std(listener)
+    }
+    .map_err(|error| StartError::Io(format!("failed to initialize listener: {error:?}")))?;
+    Ok((runtime, listener, bound))
+}
+
 impl Server {
     pub(crate) fn new(version: Option<u64>) -> Self {
         let connected = Arc::new(AtomicBool::new(false));
@@ -319,58 +357,11 @@ impl Server {
                 checked
             }
             (RunnerState::Stopped(rx), Some(states_server)) => {
-                let listener = match std::net::TcpListener::bind(addr) {
-                    Ok(listener) => listener,
+                let (runtime, listener, bound) = match listen(addr) {
+                    Ok(listening) => listening,
                     Err(error) => {
                         self.runner_state = RunnerState::Stopped(rx);
-                        return Err(StartError::Io(format!("binding failed: {error:?}")));
-                    }
-                };
-                let bound = match listener.local_addr() {
-                    Ok(std::net::SocketAddr::V4(bound)) => bound,
-                    // Binding an IPv4 address always reports an IPv4 one.
-                    Ok(std::net::SocketAddr::V6(_)) => addr,
-                    Err(error) => {
-                        self.runner_state = RunnerState::Stopped(rx);
-                        return Err(StartError::Io(format!(
-                            "failed to read the listener address: {error:?}"
-                        )));
-                    }
-                };
-                if let Err(error) = listener.set_nonblocking(true) {
-                    self.runner_state = RunnerState::Stopped(rx);
-                    return Err(StartError::Io(format!(
-                        "failed to configure listener: {error:?}"
-                    )));
-                }
-
-                let runtime = match Builder::new_multi_thread()
-                    .thread_name("ServerRuntime")
-                    .enable_io()
-                    .enable_time()
-                    .worker_threads(2)
-                    .thread_keep_alive(Duration::from_hours(1))
-                    .build()
-                {
-                    Ok(runtime) => runtime,
-                    Err(_) => {
-                        self.runner_state = RunnerState::Stopped(rx);
-                        return Err(StartError::Io(
-                            "Failed to create server runtime".to_string(),
-                        ));
-                    }
-                };
-                let registered = {
-                    let _guard = runtime.enter();
-                    TcpListener::from_std(listener)
-                };
-                let listener = match registered {
-                    Ok(listener) => listener,
-                    Err(error) => {
-                        self.runner_state = RunnerState::Stopped(rx);
-                        return Err(StartError::Io(format!(
-                            "failed to initialize listener: {error:?}"
-                        )));
+                        return Err(error);
                     }
                 };
 
@@ -397,11 +388,14 @@ impl Server {
                 stop_event.clear();
                 let thread_handle_res = server_thread.spawn(move || {
                     runtime.block_on(async move {
-                        core::run(
-                            listener, sender, rx, connected, stop_event, values, signals,
-                            handshake, web, heartbeat,
-                        )
-                        .await
+                        let session = core::Session {
+                            sender,
+                            connected,
+                            values,
+                            signals,
+                            heartbeat,
+                        };
+                        core::run(listener, rx, stop_event, handshake, web, session).await
                     })
                 });
 

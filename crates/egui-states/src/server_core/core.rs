@@ -63,19 +63,31 @@ struct ClientReady {
     peer_addr: String,
 }
 
-#[allow(clippy::too_many_arguments)]
+/// What the run loop shares with the tasks of each connection.
+#[derive(Clone)]
+pub(crate) struct Session {
+    pub(crate) sender: MessageSender,
+    pub(crate) connected: Arc<AtomicBool>,
+    pub(crate) values: ServerStatesList,
+    pub(crate) signals: SignalsManager,
+    pub(crate) heartbeat: Option<Heartbeat>,
+}
+
 pub(crate) async fn run(
     listener: TcpListener,
-    sender: MessageSender,
     rx: MessageReceiver,
-    connected: Arc<AtomicBool>,
     stop_event: Event,
-    values: ServerStatesList,
-    signals: SignalsManager,
     handshake: Handshake,
     web: WebSlot,
-    heartbeat: Option<Heartbeat>,
+    session: Session,
 ) -> MessageReceiver {
+    let Session {
+        sender,
+        connected,
+        values,
+        signals,
+        ..
+    } = session.clone();
     let mut holder = ChannelHolder::Rx(rx);
     // Connections still handshaking or receiving the web page. They run
     // concurrently so an idle connection cannot hold up the others; dropping
@@ -149,7 +161,6 @@ pub(crate) async fn run(
             let _ = rx.recv().await;
         }
 
-        // std::thread::sleep(std::time::Duration::from_millis(100));
         connected.store(true, Ordering::Release);
         let failure = if values.sync.iter().any(|v| v.sync().is_err()) {
             Some("failed to sync value after handshake")
@@ -178,22 +189,13 @@ pub(crate) async fn run(
         signals.on_connect(peer_addr);
 
         let activity = socket_reader.activity();
-        let reader_handler = tokio::spawn(reader(
-            socket_reader,
-            connected.clone(),
-            signals.clone(),
-            values.clone(),
-            sender.clone(),
-        ));
+        let reader_handler = tokio::spawn(reader(socket_reader, session.clone()));
         let handler = tokio::spawn(writer(
             rx,
-            connected.clone(),
             socket_tx,
-            signals.clone(),
-            values.clone(),
             reader_handler,
-            heartbeat,
             activity,
+            session.clone(),
         ));
 
         holder = ChannelHolder::Transfer(handler);
@@ -389,13 +391,14 @@ fn tokens_match(client_token: &str, server_token: &str) -> bool {
     std::hint::black_box(difference) == 0
 }
 
-async fn reader(
-    mut socket_rx: SocketReader,
-    connected: Arc<AtomicBool>,
-    signals: SignalsManager,
-    values: ServerStatesList,
-    sender: MessageSender,
-) {
+async fn reader(mut socket_rx: SocketReader, session: Session) {
+    let Session {
+        sender,
+        connected,
+        values,
+        signals,
+        ..
+    } = session;
     loop {
         // read the message
         let result_message = socket_rx.next().await;
@@ -459,17 +462,20 @@ async fn reader(
     sender.close();
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn writer(
     rx: MessageReceiver,
-    connected: Arc<AtomicBool>,
     mut websocket: SplitSink<WebSocketStream<TcpStream>, Message>,
-    signals: SignalsManager,
-    values: ServerStatesList,
     reader_handle: tokio::task::JoinHandle<()>,
-    heartbeat: Option<Heartbeat>,
     activity: Arc<Activity>,
+    session: Session,
 ) -> MessageReceiver {
+    let Session {
+        connected,
+        values,
+        signals,
+        heartbeat,
+        ..
+    } = session;
     enum Next {
         Message(Option<SenderData>),
         Ping,
@@ -845,19 +851,21 @@ mod run_tests {
                 .push(Arc::new(FailFirstSync(AtomicUsize::new(0))));
             let server = tokio::spawn(run(
                 listener,
-                sender.clone(),
                 rx,
-                connected.clone(),
                 stop_event.clone(),
-                values,
-                SignalsManager::new(),
                 Handshake {
                     version: None,
                     token: None,
                     origins: Default::default(),
                 },
                 Arc::new(RwLock::new(None)),
-                None,
+                Session {
+                    sender: sender.clone(),
+                    connected: connected.clone(),
+                    values,
+                    signals: SignalsManager::new(),
+                    heartbeat: None,
+                },
             ));
             let deadline = Duration::from_secs(5);
 
@@ -941,19 +949,21 @@ mod run_tests {
             values.ack.insert(1, probe.clone());
             let handle = tokio::spawn(run(
                 listener,
-                sender.clone(),
                 rx,
-                connected.clone(),
                 stop_event.clone(),
-                values,
-                signals,
                 Handshake {
                     version: None,
                     token: None,
                     origins: Default::default(),
                 },
                 Arc::new(RwLock::new(None)),
-                heartbeat,
+                Session {
+                    sender: sender.clone(),
+                    connected: connected.clone(),
+                    values,
+                    signals,
+                    heartbeat,
+                },
             ));
             Self {
                 addr,

@@ -2,7 +2,7 @@ use parking_lot::RwLock;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use tokio_tungstenite::tungstenite::Bytes;
+use bytes::Bytes;
 
 use crate::collections::{VecHeader, serialize_replacement};
 use crate::serialization::{ServerHeader, check_value_size, serialize};

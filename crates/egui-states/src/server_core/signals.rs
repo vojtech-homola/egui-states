@@ -13,7 +13,7 @@ use parking_lot::Mutex;
 use crate::event::Event;
 #[cfg(feature = "c_abi")]
 use crate::event::WaitOutcome;
-use crate::hashing::{NoHashMap, NoHashSet};
+use crate::hashing::{MAX_RESERVED_ID, NoHashMap, NoHashSet};
 use crate::serialization::{FastVec, serialize, serialize_to_data};
 
 pub(crate) const LOGGING_ID: u64 = 0;
@@ -59,8 +59,8 @@ impl ChangedInner {
     }
 
     fn clear(&mut self) {
-        self.values.retain(|id, _| *id <= 9);
-        self.indexes.retain(|id| *id <= 9);
+        self.values.retain(|id, _| *id <= MAX_RESERVED_ID);
+        self.indexes.retain(|id| *id <= MAX_RESERVED_ID);
         // Keep claimed ids blocked: their callbacks may still be running and are
         // released when the worker passes the id back.
     }
@@ -331,11 +331,6 @@ impl SignalsManager {
         }
         value
     }
-
-    // #[cfg(feature = "python")]
-    // pub(crate) fn wait_for_change(&self) {
-    //     self.event.wait_clear();
-    // }
 
     #[cfg(feature = "server")]
     pub(crate) fn wait_for_change_until(&self, stop: &AtomicBool) -> bool {

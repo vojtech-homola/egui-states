@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use tokio_tungstenite::tungstenite::Bytes;
+use bytes::Bytes;
 
 use crate::collections::{MapHeader, serialize_replacement};
 use crate::serialization::{ServerHeader, check_value_size, serialize};
