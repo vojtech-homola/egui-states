@@ -2,7 +2,7 @@ use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt, stream::SplitSink, stream::SplitStream};
 use ws_stream_wasm::{WsMessage, WsMeta, WsStream};
 
-use crate::client::messages::{MessagesParser, ServerMessage};
+use crate::client::messages::{ServerFrames, ServerReader};
 use crate::serialization::FastVec;
 
 pub(crate) async fn build_ws(address: &str) -> Result<(WsClientRead, WsClientSend), String> {
@@ -17,38 +17,24 @@ pub(crate) async fn build_ws(address: &str) -> Result<(WsClientRead, WsClientSen
     let (socket_write, socket_read) = socket.split();
 
     Ok((
-        WsClientRead {
-            stream: socket_read,
-            parser: MessagesParser::empty(),
-        },
+        ServerReader::new(WsFrames(socket_read)),
         WsClientSend { sink: socket_write },
     ))
 }
 
-pub(crate) struct WsClientRead {
-    stream: SplitStream<WsStream>,
-    parser: MessagesParser,
-}
+pub(crate) type WsClientRead = ServerReader<WsFrames>;
 
-impl WsClientRead {
-    pub(crate) async fn read(&mut self) -> Result<ServerMessage, &'static str> {
-        if let Some(message) = self.parser.next()? {
-            return Ok(message);
-        }
+pub(crate) struct WsFrames(SplitStream<WsStream>);
 
-        match self.stream.next().await {
-            Some(message) => match message {
-                WsMessage::Binary(data) => {
-                    let (parser, message) = MessagesParser::from_bytes(Bytes::from_owner(data))?;
-                    self.parser = parser;
-                    Ok(message)
-                }
-                _ => {
-                    #[cfg(debug_assertions)]
-                    log::error!("Unexpected message from server: {:?}", message);
-                    Err("Unexpected message from server")
-                }
-            },
+impl ServerFrames for WsFrames {
+    async fn next_frame(&mut self) -> Result<Bytes, &'static str> {
+        match self.0.next().await {
+            Some(WsMessage::Binary(data)) => Ok(Bytes::from_owner(data)),
+            Some(_message) => {
+                #[cfg(debug_assertions)]
+                log::error!("Unexpected message from server: {:?}", _message);
+                Err("Unexpected message from server")
+            }
             None => {
                 #[cfg(debug_assertions)]
                 log::info!("Connection closed by server");

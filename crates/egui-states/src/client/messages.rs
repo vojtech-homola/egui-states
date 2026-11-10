@@ -192,6 +192,40 @@ impl MessagesParser {
     }
 }
 
+/// The binary frames a server sends, apart from how they travel.
+pub(crate) trait ServerFrames {
+    /// Waits for the next frame of server messages. Frames without messages,
+    /// such as pings, are skipped.
+    async fn next_frame(&mut self) -> Result<Bytes, &'static str>;
+}
+
+/// Reads the server messages of the frames of `S`, one at a time.
+pub(crate) struct ServerReader<S> {
+    frames: S,
+    parser: MessagesParser,
+}
+
+impl<S: ServerFrames> ServerReader<S> {
+    pub(crate) fn new(frames: S) -> Self {
+        Self {
+            frames,
+            parser: MessagesParser::empty(),
+        }
+    }
+
+    /// Returns the next message, reading a frame when the current one is
+    /// used up. An error ends the connection.
+    pub(crate) async fn read(&mut self) -> Result<ServerMessage, &'static str> {
+        if let Some(message) = self.parser.next()? {
+            return Ok(message);
+        }
+        let frame = self.frames.next_frame().await?;
+        let (parser, message) = MessagesParser::from_bytes(frame)?;
+        self.parser = parser;
+        Ok(message)
+    }
+}
+
 pub(crate) async fn handle_message(
     message: ServerMessage,
     vals: &ValuesList,
@@ -336,6 +370,41 @@ mod tests {
     use crate::image_transport::ImageSetHeader;
     use crate::image_transport::ImageType;
     use tokio::sync::mpsc::{UnboundedReceiver, error::TryRecvError};
+
+    /// Frames that were queued in advance.
+    struct QueuedFrames(std::collections::VecDeque<Bytes>);
+
+    impl ServerFrames for QueuedFrames {
+        async fn next_frame(&mut self) -> Result<Bytes, &'static str> {
+            self.0.pop_front().ok_or("Connection closed by server")
+        }
+    }
+
+    #[test]
+    fn server_reader_reads_every_message_of_every_frame() {
+        let update = |dt| {
+            crate::serialization::serialize::<_, 32>(&ServerHeader::Update(dt))
+                .unwrap()
+                .into_bytes()
+        };
+        let both: Vec<u8> = [update(1.0), update(2.0)].concat();
+        let frames = QueuedFrames([Bytes::from(both), update(3.0)].into());
+        let mut reader = ServerReader::new(frames);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            for expected in [1.0, 2.0, 3.0] {
+                let (header, payload) = reader.read().await.unwrap();
+                assert!(matches!(header, ServerHeader::Update(dt) if dt == expected));
+                assert!(payload.is_empty());
+            }
+            assert!(matches!(
+                reader.read().await,
+                Err("Connection closed by server")
+            ));
+        });
+    }
 
     /// Payload sizes come from the network, so their end is computed without
     /// overflow, also for a pointer near the top of the address space (D7).

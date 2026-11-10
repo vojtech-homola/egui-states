@@ -1,10 +1,11 @@
+use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt, stream::SplitSink, stream::SplitStream};
 use tokio::net::TcpStream;
 use tokio_tungstenite::connect_async_with_config;
 use tokio_tungstenite::tungstenite::{Message, protocol::WebSocketConfig};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
-use crate::client::messages::{MessagesParser, ServerMessage};
+use crate::client::messages::{ServerFrames, ServerReader};
 use crate::serialization::{FastVec, WEBSOCKET_MAX_SIZE};
 
 pub(crate) async fn build_ws(address: &str) -> Result<(WsClientRead, WsClientSend), String> {
@@ -26,27 +27,19 @@ pub(crate) async fn build_ws(address: &str) -> Result<(WsClientRead, WsClientSen
     let (socket_write, socket_read) = socket.split();
 
     Ok((
-        WsClientRead {
-            stream: socket_read,
-            parser: MessagesParser::empty(),
-        },
+        ServerReader::new(WsFrames(socket_read)),
         WsClientSend { sink: socket_write },
     ))
 }
 
-pub(crate) struct WsClientRead {
-    stream: SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
-    parser: MessagesParser,
-}
+pub(crate) type WsClientRead = ServerReader<WsFrames>;
 
-impl WsClientRead {
-    pub(crate) async fn read(&mut self) -> Result<ServerMessage, &'static str> {
-        if let Some(message) = self.parser.next()? {
-            return Ok(message);
-        }
+pub(crate) struct WsFrames(SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>);
 
+impl ServerFrames for WsFrames {
+    async fn next_frame(&mut self) -> Result<Bytes, &'static str> {
         let message = loop {
-            match self.stream.next().await {
+            match self.0.next().await {
                 // Keep-alive frames carry no data; tungstenite answers pings itself.
                 Some(Ok(Message::Ping(_) | Message::Pong(_))) => continue,
                 message => break message,
@@ -54,27 +47,18 @@ impl WsClientRead {
         };
 
         match message {
-            Some(message) => match message {
-                Ok(message) => match message {
-                    Message::Binary(data) => {
-                        let (parser, message) = MessagesParser::from_bytes(data)?;
-                        self.parser = parser;
-                        Ok(message)
-                    }
-                    Message::Close(_) => Err("Connection closed by server"),
-                    _ => {
-                        #[cfg(debug_assertions)]
-                        println!("Unexpected message from server: {:?}", message);
-                        Err("Unexpected message from server")
-                    }
-                },
-                Err(e) => {
-                    #[cfg(debug_assertions)]
-                    println!("Reading message from server failed: {:?}", e);
-                    let _ = e;
-                    Err("Reading message from server failed")
-                }
-            },
+            Some(Ok(Message::Binary(data))) => Ok(data),
+            Some(Ok(Message::Close(_))) => Err("Connection closed by server"),
+            Some(Ok(_message)) => {
+                #[cfg(debug_assertions)]
+                println!("Unexpected message from server: {:?}", _message);
+                Err("Unexpected message from server")
+            }
+            Some(Err(_e)) => {
+                #[cfg(debug_assertions)]
+                println!("Reading message from server failed: {:?}", _e);
+                Err("Reading message from server failed")
+            }
             None => {
                 #[cfg(debug_assertions)]
                 println!("Connection closed by server");

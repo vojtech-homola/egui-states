@@ -1113,7 +1113,12 @@ mod transfer_tests {
         Data as ClientData, DataMulti as ClientMulti, UpdateData, UpdateMultiData,
     };
     use crate::client::messages::{MessageSender as ClientSender, MessagesParser};
-    use crate::serialization::ServerHeader;
+    use crate::serialization::{ClientHeader, ServerHeader};
+    use crate::server_core::core::{Handshake, Session, run};
+    use crate::server_core::server::ServerStatesList;
+    use crate::server_core::signals::SignalsManager;
+    use crate::server_core::transport::memory::{self, MemoryClient, MemoryConnector};
+    use crate::server_core::transport::{Incoming, Outgoing};
 
     #[test]
     fn real_numeric_chunks_publish_complete_single_and_sparse_data() {
@@ -1249,47 +1254,69 @@ mod transfer_tests {
         };
     }
 
-    /// The two peers of the model test, connected by their message queues.
+    /// The model test's client, connected to the server's real run loop
+    /// through in-memory connections.
     struct Harness {
-        data: Arc<Data>,
-        multi: Arc<DataMulti>,
         connected: Arc<AtomicBool>,
-        queue: crate::server_core::sender::MessageReceiver,
+        connector: MemoryConnector,
+        client: Option<MemoryClient>,
         single: ClientData<u16>,
         keyed: ClientMulti<u16>,
         acks: tokio::sync::mpsc::UnboundedReceiver<Option<crate::client::messages::ChannelMessage>>,
     }
 
     impl Harness {
-        /// The run loop: drop what was queued for the previous connection,
-        /// mark the connection, then synchronize the states in list order.
+        /// Connects and waits until the run loop has accepted the client.
         fn connect(&mut self) {
-            while let Ok(Some(_)) = self.queue.try_recv() {}
-            self.connected.store(true, Ordering::Release);
-            self.data.sync().unwrap();
-            self.multi.sync().unwrap();
+            let client = self.connector.connect().unwrap();
+            let handshake = ClientHeader::Handshake(crate::PROTOCOL_VERSION, None, None);
+            let handshake = postcard::to_stdvec(&handshake).unwrap();
+            client
+                .send
+                .send(Incoming::Binary(handshake.into()))
+                .unwrap();
+            self.client = Some(client);
+            self.wait_until(true);
         }
 
-        /// The writer's shutdown: acknowledgements in flight are lost.
+        /// Drops the connection as a lost socket would: acknowledgements in
+        /// flight are lost, and the client drops its partial transfers.
         fn disconnect(&mut self) {
-            self.connected.store(false, Ordering::Release);
-            Acknowledge::reset(&*self.data);
-            Acknowledge::reset(&*self.multi);
+            self.client = None;
+            self.wait_until(false);
+            self.single.disconnected();
+            self.keyed.disconnected();
             while let Ok(Some(_)) = self.acks.try_recv() {}
         }
 
-        /// Delivers one queued frame to the client and the client's
+        fn wait_until(&self, connected: bool) {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while self.connected.load(Ordering::Acquire) != connected {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the run loop did not reach connected = {connected}"
+                );
+                std::thread::yield_now();
+            }
+        }
+
+        /// Delivers one frame to the client and the client's
         /// acknowledgements to the server; returns whether anything moved.
         fn pump(&mut self) -> bool {
             use crate::client::messages::ChannelMessage;
 
+            let client = self.client.as_mut().unwrap();
             let mut moved = false;
-            if let Ok(Some((message, _))) = self.queue.try_recv() {
+            if let Ok(frame) = client.frames.try_recv() {
                 moved = true;
-                let (mut parser, first) = MessagesParser::from_bytes(message.into_bytes()).unwrap();
+                let Outgoing::Binary(frame) = frame else {
+                    panic!("unexpected ping without a heartbeat");
+                };
+                let (mut parser, first) = MessagesParser::from_bytes(frame).unwrap();
                 let mut next = Some(first);
                 while let Some((header, payload)) = next {
                     match header {
+                        ServerHeader::Update(_) => {}
                         ServerHeader::Data(51, header) => {
                             self.single.update_data((header, payload)).unwrap()
                         }
@@ -1310,20 +1337,18 @@ mod transfer_tests {
             while let Ok(Some(message)) = self.acks.try_recv() {
                 if let ChannelMessage::Ack(id) = message {
                     moved = true;
-                    match id {
-                        51 => self.data.acknowledge(),
-                        52 => self.multi.acknowledge(),
-                        _ => panic!("unexpected acknowledgement {id}"),
-                    }
+                    let ack = postcard::to_stdvec(&ClientHeader::Ack(id)).unwrap();
+                    // The connection may already be closing.
+                    let _ = client.send.send(Incoming::Binary(ack.into()));
                 }
             }
             moved
         }
     }
 
-    /// Producers race connects, acknowledgements and disconnects driven in the
-    /// run loop's order. At rest the real client handles must hold exactly the
-    /// server's data: a change sent both as a delta and inside a
+    /// Producers race connects, acknowledgements and disconnects through the
+    /// server's run loop. At rest the real client handles must hold exactly
+    /// the server's data: a change sent both as a delta and inside a
     /// synchronization (D8), or a key the synchronization left on the client
     /// (D9), shows up as a difference.
     #[test]
@@ -1333,18 +1358,58 @@ mod transfer_tests {
         }
         let (sender, queue) = MessageSender::new();
         let connected = Arc::new(AtomicBool::new(false));
+        let data = Data::new(
+            "data".into(),
+            51,
+            DataType::U16,
+            sender.clone(),
+            connected.clone(),
+        );
+        let multi = DataMulti::new(
+            "multi".into(),
+            52,
+            DataType::U16,
+            sender.clone(),
+            connected.clone(),
+        );
+        let mut values = ServerStatesList {
+            sync: vec![data.clone(), multi.clone()],
+            ..Default::default()
+        };
+        values.ack.insert(51, data.clone());
+        values.ack.insert(52, multi.clone());
+
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let (listener, connector) = memory::listener();
+        let stop_event = Event::new();
+        let run_loop = runtime.spawn(run(
+            listener,
+            queue,
+            stop_event.clone(),
+            Handshake {
+                version: None,
+                token: None,
+                origins: Default::default(),
+            },
+            Default::default(),
+            Session {
+                sender: sender.clone(),
+                connected: connected.clone(),
+                values,
+                signals: SignalsManager::new(),
+                heartbeat: None,
+            },
+        ));
+
         let (client_sender, acks) = ClientSender::new();
         let mut harness = Harness {
-            data: Data::new(
-                "data".into(),
-                51,
-                DataType::U16,
-                sender.clone(),
-                connected.clone(),
-            ),
-            multi: DataMulti::new("multi".into(), 52, DataType::U16, sender, connected.clone()),
-            connected,
-            queue,
+            connected: connected.clone(),
+            connector,
+            client: None,
             single: ClientData::new("data".into(), 51, client_sender.clone()),
             keyed: ClientMulti::new("multi".into(), 52, client_sender),
             acks,
@@ -1353,7 +1418,7 @@ mod transfer_tests {
         let stop = Arc::new(AtomicBool::new(false));
         let producers: Vec<_> = (0..3_u64)
             .map(|seed| {
-                let (data, multi) = (harness.data.clone(), harness.multi.clone());
+                let (data, multi) = (data.clone(), multi.clone());
                 let stop = stop.clone();
                 std::thread::spawn(move || {
                     let mut random = Random(0x9e37_79b9_7f4a_7c15 ^ (seed + 1));
@@ -1399,7 +1464,7 @@ mod transfer_tests {
             }
         }
 
-        let server = harness.data.get(|bytes| bytes.to_vec());
+        let server = data.get(|bytes| bytes.to_vec());
         let client: Vec<u8> = harness
             .single
             .get()
@@ -1408,7 +1473,7 @@ mod transfer_tests {
             .collect();
         assert_eq!(client, server, "Data diverged");
         for key in 0..4 {
-            let server = harness.multi.get(key, |bytes| bytes.map(<[u8]>::to_vec));
+            let server = multi.get(key, |bytes| bytes.map(<[u8]>::to_vec));
             let client = harness.keyed.get(key).map(|values| {
                 values
                     .iter()
@@ -1417,6 +1482,11 @@ mod transfer_tests {
             });
             assert_eq!(client, server, "DataMulti key {key} diverged");
         }
+
+        connected.store(false, Ordering::Release);
+        stop_event.set();
+        sender.close();
+        runtime.block_on(run_loop).unwrap();
     }
 
     /// Chunked `Add` and `Replace` transfers must extend and patch the existing

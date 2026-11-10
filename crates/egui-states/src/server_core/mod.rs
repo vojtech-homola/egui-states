@@ -1,4 +1,4 @@
-mod core;
+pub(crate) mod core;
 mod sender;
 mod socket_reader;
 
@@ -16,6 +16,7 @@ mod packer_reference;
 pub(crate) mod server;
 pub(crate) mod signals;
 pub(crate) mod transfer;
+pub(crate) mod transport;
 pub(crate) mod values_core;
 pub(crate) mod vec_core;
 pub(crate) mod web;
