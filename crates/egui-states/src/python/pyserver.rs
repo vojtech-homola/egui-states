@@ -25,7 +25,7 @@ use crate::server_core::data_core::{Data, DataMulti};
 use crate::server_core::data_take_core::{DataMultiTake, DataTake};
 use crate::server_core::heartbeat::{self, Heartbeat};
 use crate::server_core::server::{Server, StateRef};
-use crate::server_core::signals::{self, SignalsManager};
+use crate::server_core::signals::{self, Claim, SignalsManager};
 use crate::server_core::values_core::{SignalCore, ValueCore, ValueStaticCore, ValueTakeCore};
 use crate::server_core::web::{LoadError, WebSite};
 use crate::server_core::{
@@ -452,7 +452,7 @@ impl StateServerCore {
         py: Python<'py>,
         last_id: Option<u64>,
     ) -> PyResult<Option<SignalEvent<'py>>> {
-        let Some((id, data, previous)) = py.detach(|| self.signals.wait_changed_value(last_id))
+        let Claim::Ready(id, data, previous) = py.detach(|| self.signals.claim(last_id, None))
         else {
             return Ok(None);
         };

@@ -346,7 +346,7 @@ mod tests {
         value.update_value(TYPE_ID, true, b("client")).unwrap();
         assert_eq!(value.get(), b("server"));
         assert!(
-            signals.try_changed_value(None).is_none(),
+            signals.try_claim(None).is_none(),
             "an ignored client write must not signal callbacks"
         );
 
@@ -354,7 +354,7 @@ mod tests {
         value.update_value(TYPE_ID, true, b("client")).unwrap();
         assert_eq!(value.get(), b("client"));
         assert_eq!(
-            signals.try_changed_value(None),
+            signals.try_claim(None),
             Some((ID, b("client"), Some(b("server"))))
         );
     }
@@ -427,7 +427,7 @@ mod tests {
             .unwrap_err();
         assert!(error.contains("root.value"), "{error}");
         assert_eq!(value.get(), b("initial"));
-        assert!(signals.try_changed_value(None).is_none());
+        assert!(signals.try_claim(None).is_none());
     }
 
     fn value_take(connected: bool) -> (Arc<ValueTakeCore>, MessageReceiver) {

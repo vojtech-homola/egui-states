@@ -20,7 +20,7 @@ use crate::server_core::image_multi_core::ImageMulti;
 use crate::server_core::map_core::ValueMap;
 use crate::server_core::server::{Server, StartError};
 use crate::server_core::signals::{
-    CLIENT_MESSAGE_ID, ClaimResult, LOGGING_ID, ON_CONNECT_ID, ON_DISCONNECT_ID, SignalsManager,
+    CLIENT_MESSAGE_ID, Claim, LOGGING_ID, ON_CONNECT_ID, ON_DISCONNECT_ID, SignalsManager,
 };
 use crate::server_core::values_core::{SignalCore, ValueCore, ValueStaticCore, ValueTakeCore};
 use crate::server_core::vec_core::ValueList;
@@ -1109,8 +1109,8 @@ impl CServer {
     /// `deadline` (`None` waits indefinitely).
     pub fn wait_event(&self, deadline: Option<Instant>) -> Result<ChangeEvent> {
         let states = self.states()?;
-        match self.signals.claim_next(deadline) {
-            ClaimResult::Ready(id, value, previous) => {
+        match self.signals.claim(None, deadline) {
+            Claim::Ready(id, value, previous) => {
                 let Some(value_type) = states.entries.get(&id).and_then(Entry::event_type) else {
                     self.signals.release(id);
                     return Err(Error::internal(format!(
@@ -1125,11 +1125,11 @@ impl CServer {
                     value_type.clone(),
                 ))
             }
-            ClaimResult::TimedOut => Err(Error::new(
+            Claim::TimedOut => Err(Error::new(
                 ErrorCode::Timeout,
                 "no event arrived before the deadline",
             )),
-            ClaimResult::Closed => Err(Error::new(ErrorCode::Closed, "events are closed")),
+            Claim::Closed => Err(Error::new(ErrorCode::Closed, "events are closed")),
         }
     }
 

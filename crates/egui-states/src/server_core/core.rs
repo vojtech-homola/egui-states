@@ -1043,7 +1043,7 @@ mod run_tests {
             );
 
             assert!(
-                signals.try_changed_value(None).is_none(),
+                signals.try_claim(None).is_none(),
                 "a change from the expired connection is still pending"
             );
             server.stop().await;

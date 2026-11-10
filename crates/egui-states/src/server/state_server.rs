@@ -3,11 +3,7 @@
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
-use std::sync::{
-    Arc, Weak,
-    atomic::{AtomicBool, Ordering},
-    mpsc,
-};
+use std::sync::{Arc, Weak, mpsc};
 use std::thread;
 use std::time::Duration;
 
@@ -26,7 +22,7 @@ use crate::server_core::image_multi_core::ImageMulti as CoreImageMulti;
 use crate::server_core::map_core::ValueMap as CoreMap;
 use crate::server_core::server::Server as CoreServer;
 use crate::server_core::signals::{
-    CLIENT_MESSAGE_ID, ON_CONNECT_ID, ON_DISCONNECT_ID, SignalsManager as CoreSignalsManager,
+    CLIENT_MESSAGE_ID, Claim, ON_CONNECT_ID, ON_DISCONNECT_ID, SignalsManager as CoreSignalsManager,
 };
 use crate::server_core::values_core::{
     SignalCore as CoreSignal, ValueCore as CoreValue, ValueStaticCore as CoreStatic,
@@ -66,7 +62,6 @@ pub(super) struct ServerInner {
     /// all of them have returned. Used to bound teardown without `join`ing.
     worker_exit: Mutex<Option<mpsc::Receiver<()>>>,
     worker_count: usize,
-    worker_shutdown: Arc<AtomicBool>,
     shutdown_timeout: Duration,
     error_handler: RwLock<ErrorHandler>,
 }
@@ -80,14 +75,13 @@ impl ServerInner {
 
 impl Drop for ServerInner {
     fn drop(&mut self) {
-        self.worker_shutdown.store(true, Ordering::Release);
+        self.signals.close();
         // Before waiting on the workers, so a callback still running cannot
         // queue changes either.
         self.callbacks.clear(&self.signals);
-        self.signals.wake_waiters();
         self.server.get_mut().stop();
 
-        // A worker only observes `worker_shutdown` between callbacks, so one
+        // A worker only observes the closed signals between callbacks, so one
         // that is inside a blocking callback cannot be waited on unboundedly --
         // `Drop` must not hang. Wait for all of them to return, then detach
         // whatever is left. Detaching is safe: a worker holds only a `Weak` to
@@ -163,7 +157,6 @@ impl StateServer {
                 worker_exit: Mutex::new(None),
                 worker_count: options.signal_workers.max(1),
                 shutdown_timeout: options.shutdown_timeout,
-                worker_shutdown: Arc::new(AtomicBool::new(false)),
                 error_handler: RwLock::new(error_handler),
             }),
         })
@@ -424,7 +417,6 @@ impl StateServer {
         for index in 0..self.inner.worker_count {
             let inner = Arc::downgrade(&self.inner);
             let signals = self.inner.signals.clone();
-            let shutdown = self.inner.worker_shutdown.clone();
             let exit = exit_sender.clone();
             let worker = thread::Builder::new()
                 .name(format!("egui_states_signal_worker_{index}"))
@@ -432,7 +424,7 @@ impl StateServer {
                     // Dropped when the worker returns, which is how `Drop`
                     // learns that every worker has finished.
                     let _exit = exit;
-                    run_signal_worker(inner, signals, shutdown)
+                    run_signal_worker(inner, signals)
                 });
             match worker {
                 Ok(worker) => workers.push(worker),
@@ -711,26 +703,15 @@ impl WeakServer {
     }
 }
 
-fn run_signal_worker(
-    inner: Weak<ServerInner>,
-    signals: CoreSignalsManager,
-    shutdown: Arc<AtomicBool>,
-) {
+fn run_signal_worker(inner: Weak<ServerInner>, signals: CoreSignalsManager) {
     let mut last_id = None;
     loop {
-        if shutdown.load(Ordering::Acquire) {
-            return;
-        }
-
-        // `take` matters: the id is released exactly once, on the poll that
+        // `take` matters: the id is released exactly once, on the claim that
         // follows its dispatch. Retrying with it still set would release a
         // claim another worker may have taken in the meantime, letting two
         // workers run callbacks for the same value concurrently.
-        let Some((value_id, data, previous)) = signals.try_changed_value(last_id.take()) else {
-            if !signals.wait_for_change_until(&shutdown) {
-                return;
-            }
-            continue;
+        let Claim::Ready(value_id, data, previous) = signals.claim(last_id.take(), None) else {
+            return;
         };
         last_id = Some(value_id);
 
@@ -790,6 +771,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc;
     #[cfg(feature = "client")]
     use std::thread;
@@ -898,7 +880,7 @@ mod tests {
         assert!(server.inner.callbacks.get(id).is_empty());
 
         signal.set(serialize_bytes(&42_u32).unwrap());
-        assert!(server.inner.signals.try_changed_value(None).is_none());
+        assert!(server.inner.signals.try_claim(None).is_none());
     }
 
     /// The server owns its callbacks, and a callback routinely captures a state
@@ -1022,7 +1004,7 @@ mod tests {
             signal.set(index).unwrap();
         }
         assert!(
-            signals.try_changed_value(None).is_none(),
+            signals.try_claim(None).is_none(),
             "changes were queued for a server that is gone"
         );
         drop(handles);
@@ -1390,13 +1372,13 @@ mod tests {
         let plain = value.connect(|_: i32| {});
         let with_previous = value.connect_previous(|_: i32, _: i32| {});
         value.set_signal(2, false).unwrap();
-        let (id, _, previous) = server.inner.signals.try_changed_value(None).unwrap();
+        let (id, _, previous) = server.inner.signals.try_claim(None).unwrap();
         assert_eq!(previous, Some(serialize_bytes(&1_i32).unwrap()));
 
         drop(with_previous);
         value.set_signal(3, false).unwrap();
         // `id` has to come back as `last_id`, otherwise it stays blocked and is skipped.
-        let (_, _, previous) = server.inner.signals.try_changed_value(Some(id)).unwrap();
+        let (_, _, previous) = server.inner.signals.try_claim(Some(id)).unwrap();
         assert_eq!(
             previous, None,
             "the previous value must not be delivered once nobody asks for it"
@@ -1436,7 +1418,7 @@ mod tests {
             .recv_timeout(Duration::from_secs(2))
             .expect("callback should have been entered");
 
-        // The worker cannot observe the shutdown flag until its callback
+        // The worker cannot observe the closed signals until its callback
         // returns, so `drop` has to fall back to detaching it. Dropped on
         // another thread so a regression fails the test instead of hanging it.
         let (dropped_sender, dropped_receiver) = mpsc::channel::<()>();
@@ -1466,7 +1448,7 @@ mod tests {
         let server = StateServer::with_options(options).unwrap();
         server.start_signal_workers();
 
-        // Idle workers observe the shutdown flag immediately, so teardown must
+        // Idle workers observe the closed signals immediately, so teardown must
         // not wait out the timeout.
         let start = std::time::Instant::now();
         drop(server);
@@ -1817,6 +1799,7 @@ mod wire_tests {
 #[cfg(all(test, feature = "client"))]
 mod connection_tests {
     use std::net::TcpStream;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
 

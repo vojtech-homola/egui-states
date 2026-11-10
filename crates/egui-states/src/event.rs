@@ -134,16 +134,11 @@ impl Event {
         self.wait_for(true, None, None);
     }
 
-    /// Like [`Self::wait_clear`], but returns `false` once `stop` is raised.
-    #[cfg(any(feature = "server", feature = "python"))]
-    pub(crate) fn wait_clear_until(&self, stop: &AtomicBool) -> bool {
-        self.wait_for(true, Some(stop), None) == WaitOutcome::Set
-    }
-
-    /// Like [`Self::wait_clear_until`], but gives up at `deadline`.
+    /// Like [`Self::wait_clear`], but returns early once `stop` is raised or
+    /// at `deadline`.
     ///
     /// `None` waits without a deadline.
-    #[cfg(feature = "c_abi")]
+    #[cfg(any(feature = "server", feature = "python"))]
     pub(crate) fn wait_clear_deadline(
         &self,
         stop: &AtomicBool,
