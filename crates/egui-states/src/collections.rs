@@ -109,6 +109,7 @@ pub(crate) fn serialize_replacement<I: Iterator + Clone>(
     for (i, (part, count, bytes)) in chunks.into_iter().enumerate() {
         let header = header(part, count, bytes as u32, update && i == last);
         let mut message = serialize(&header).map_err(|_| "Failed to serialize header")?;
+        message.reserve_exact(bytes);
         items
             .by_ref()
             .take(count as usize)
