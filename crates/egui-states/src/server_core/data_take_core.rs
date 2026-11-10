@@ -81,10 +81,7 @@ impl DataTake {
                 blocking,
                 update,
             )?;
-            match blocking {
-                true => self.event.wait_clear(), // ← clear flag for next call to block
-                false => self.event.wait(),      // ← leave flag set, next call sends immediately
-            }
+            wait_for_slot(&self.event, blocking);
             Some(messages)
         } else {
             None
@@ -92,19 +89,16 @@ impl DataTake {
 
         let mut state = self.state.lock();
         state.cache = cache.then(|| (slice.to_vec(), data.count));
-        let Some(messages) = messages else {
-            return Ok(());
-        };
-        if state.sync.sendable(&self.connected) != Some(generation) {
-            // Not sent: return the slot a blocking wait consumed.
-            if blocking {
-                self.event.set();
-            }
-            return Ok(());
-        }
-
-        for (message, single) in messages {
-            self.sender.send_set(message, single);
+        if let Some(messages) = messages {
+            send_if_current(
+                &state.sync,
+                &self.event,
+                &self.connected,
+                &self.sender,
+                generation,
+                blocking,
+                messages,
+            );
         }
         Ok(())
     }
@@ -208,10 +202,7 @@ impl DataMultiTake {
                 blocking,
                 update,
             )?;
-            match blocking {
-                true => self.event.wait_clear(),
-                false => self.event.wait(),
-            }
+            wait_for_slot(&self.event, blocking);
             Some(messages)
         } else {
             None
@@ -225,19 +216,16 @@ impl DataMultiTake {
         } else {
             w.values.remove(&index);
         }
-        let Some(messages) = messages else {
-            return Ok(());
-        };
-        if w.sync.sendable(&self.connected) != Some(generation) {
-            // Not sent: return the slot a blocking wait consumed.
-            if blocking {
-                self.event.set();
-            }
-            return Ok(());
-        }
-
-        for (message, single) in messages {
-            self.sender.send_set(message, single);
+        if let Some(messages) = messages {
+            send_if_current(
+                &w.sync,
+                &self.event,
+                &self.connected,
+                &self.sender,
+                generation,
+                blocking,
+                messages,
+            );
         }
         Ok(())
     }
@@ -315,6 +303,40 @@ impl SyncTrait for DataMultiTake {
         }
 
         Ok(())
+    }
+}
+
+/// Waits until no blocking transfer is pending. A blocking send takes the
+/// slot, so the next send waits until the client took this one; a
+/// non-blocking send leaves it free.
+fn wait_for_slot(event: &Event, blocking: bool) {
+    match blocking {
+        true => event.wait_clear(),
+        false => event.wait(),
+    }
+}
+
+/// Queues `messages` if the state is still synchronized in the generation the
+/// producer started in, under the caller's state lock. Otherwise the
+/// synchronization delivers the cached value, and a blocking producer returns
+/// the slot its wait consumed.
+fn send_if_current(
+    sync: &SyncState,
+    event: &Event,
+    connected: &AtomicBool,
+    sender: &MessageSender,
+    generation: u64,
+    blocking: bool,
+    messages: Vec<(FastVec<32>, bool)>,
+) {
+    if sync.sendable(connected) != Some(generation) {
+        if blocking {
+            event.set();
+        }
+        return;
+    }
+    for (message, single) in messages {
+        sender.send_set(message, single);
     }
 }
 

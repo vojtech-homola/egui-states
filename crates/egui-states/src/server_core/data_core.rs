@@ -267,21 +267,16 @@ impl Data {
         f(&storage.bytes)
     }
 
-    /// Waits until the client acknowledged the previous transfer, then queues
-    /// `messages` unless the connection ended or was replaced meanwhile.
-    ///
-    /// The caller holds the producer mutex. The storage read guard is kept
-    /// through enqueueing, so a reset cannot change the generation between the
-    /// check and the send.
     fn send_after_ack(&self, generation: u64, messages: Vec<(FastVec<32>, bool)>) {
-        self.event.wait_clear();
-        let storage = self.storage.read();
-        if storage.sync.generation() != generation || !self.connected.load(Ordering::Acquire) {
-            return;
-        }
-        for (message, single) in messages {
-            self.sender.send_set(message, single);
-        }
+        send_after_ack(
+            &self.storage,
+            |storage| &storage.sync,
+            &self.event,
+            &self.connected,
+            &self.sender,
+            generation,
+            messages,
+        );
     }
 }
 
@@ -601,16 +596,16 @@ impl DataMulti {
         f(storage.values.get(&key).map(|(data, _)| data.as_slice()))
     }
 
-    /// See [`Data::send_after_ack`].
     fn send_after_ack(&self, generation: u64, messages: Vec<(FastVec<32>, bool)>) {
-        self.event.wait_clear();
-        let storage = self.storage.read();
-        if storage.sync.generation() != generation || !self.connected.load(Ordering::Acquire) {
-            return;
-        }
-        for (message, single) in messages {
-            self.sender.send_set(message, single);
-        }
+        send_after_ack(
+            &self.storage,
+            |storage| &storage.sync,
+            &self.event,
+            &self.connected,
+            &self.sender,
+            generation,
+            messages,
+        );
     }
 }
 
@@ -680,6 +675,32 @@ impl SyncTrait for DataMulti {
 }
 
 // functions ------------------------------------------------
+/// Waits until the client acknowledged the previous transfer, then queues
+/// `messages` unless the connection ended or was replaced meanwhile.
+///
+/// The caller holds its state's producer mutex and read `generation` under
+/// the storage lock together with its synchronization check. The storage read
+/// guard is kept through enqueueing, so a reset cannot change the generation
+/// between the check and the send.
+fn send_after_ack<S>(
+    storage: &RwLock<S>,
+    sync: impl FnOnce(&S) -> &SyncState,
+    event: &Event,
+    connected: &AtomicBool,
+    sender: &MessageSender,
+    generation: u64,
+    messages: Vec<(FastVec<32>, bool)>,
+) {
+    event.wait_clear();
+    let storage = storage.read();
+    if sync(&storage).generation() != generation || !connected.load(Ordering::Acquire) {
+        return;
+    }
+    for (message, single) in messages {
+        sender.send_set(message, single);
+    }
+}
+
 pub(crate) fn check_data_type(
     data: &DataHolder,
     data_type: DataType,
