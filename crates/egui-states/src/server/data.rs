@@ -62,6 +62,7 @@ fn data_slice<T: DataElement>(data: &[T]) -> DataSlice<'_> {
     DataSlice {
         bytes,
         data_type: data_type::<T>(),
+        header: None,
     }
 }
 
@@ -150,13 +151,13 @@ where
     /// the update cannot be queued.
     pub fn remove(&self, index: usize, count: usize, update: bool) -> Result<()> {
         self.inner
-            .remove(index, count, update)
+            .remove(index, count, None, update)
             .map_err(ServerError::new)
     }
 
     /// Removes all elements and optionally requests a client repaint.
     pub fn clear(&self, update: bool) -> Result<()> {
-        self.inner.clear(update).map_err(ServerError::new)
+        self.inner.clear(None, update).map_err(ServerError::new)
     }
 }
 
@@ -244,13 +245,15 @@ where
     /// Removes `count` elements from `data_index` in the selected buffer.
     pub fn remove(&self, index: u32, data_index: usize, count: usize, update: bool) -> Result<()> {
         self.inner
-            .remove(index, data_index, count, update)
+            .remove(index, data_index, count, None, update)
             .map_err(ServerError::new)
     }
 
     /// Clears the buffer at `index` without removing its key.
     pub fn clear(&self, index: u32, update: bool) -> Result<()> {
-        self.inner.clear(index, update).map_err(ServerError::new)
+        self.inner
+            .clear(index, None, update)
+            .map_err(ServerError::new)
     }
 
     /// Removes the buffer and key at `index`.

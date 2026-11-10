@@ -7,9 +7,9 @@ use bytes::Bytes;
 
 use crate::client::messages::MessageSender;
 use crate::client::states::data::{Data, UpdateData};
-use crate::protocol::data::{DataHeader, DataType, TransportType};
+use crate::protocol::data::{DataHeader, DataType, HeaderUpdate::Keep, TransportType};
 use crate::protocol::image::ImageType;
-use crate::server_core::states::data::pack_data;
+use crate::server_core::states::data::{WireHeader, pack_data};
 use crate::server_core::states::image::single::{ImageData, pack_set_data};
 
 /// A pixel layout accepted by the server and sent to the client.
@@ -52,6 +52,7 @@ pub fn pack_data_set(data: &[u8]) -> usize {
         DataType::U8,
         None,
         false,
+        WireHeader::KEEP,
     )
     .expect("pack data")
     .iter()
@@ -126,7 +127,7 @@ impl ClientData {
             [single] => self
                 .data
                 .update_data((
-                    DataHeader::All(DataType::U8, TransportType::Set(count), false, 0),
+                    DataHeader::All(DataType::U8, TransportType::Set(count), false, 0, Keep),
                     single.clone(),
                 ))
                 .expect("set"),
@@ -141,7 +142,7 @@ impl ClientData {
                 }
                 self.data
                     .update_data((
-                        DataHeader::End(DataType::U8, TransportType::Set(count), false, 0),
+                        DataHeader::End(DataType::U8, TransportType::Set(count), false, 0, Keep),
                         last.clone(),
                     ))
                     .expect("end");

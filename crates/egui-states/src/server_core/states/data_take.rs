@@ -5,16 +5,19 @@ use parking_lot::{Mutex, RwLock};
 
 use crate::event::Event;
 use crate::hashing::NoHashMap;
-use crate::protocol::data::{DataMultiTakeHeader, DataTakeHeader, DataType};
+use crate::protocol::data::{DataMultiTakeHeader, DataTakeHeader, DataType, HeaderBytes};
 use crate::protocol::{FastVec, TRANSFER_CHUNK_SIZE};
 use crate::server_core::net::sender::MessageSender;
 use crate::server_core::server::{Acknowledge, SyncTrait};
-use crate::server_core::states::data::{DataSlice, SyncState, check_data_type};
+use crate::server_core::states::data::{DataSlice, HeaderType, SyncState, check_data_type};
 use crate::server_core::transfer::{Chunk, chunk_transfer};
 
 // DataTake --------------------------------------------------
+/// A cached transfer: its elements, their count and its encoded header.
+type Cached = (Vec<u8>, usize, Option<Vec<u8>>);
+
 struct TakeState {
-    cache: Option<(Vec<u8>, usize)>,
+    cache: Option<Cached>,
     sync: SyncState,
 }
 
@@ -27,11 +30,11 @@ struct TakeState {
 /// wait spanned a reset, it only stores: the synchronization sends the cache,
 /// and sending as well would deliver the value twice.
 pub(crate) struct DataTake {
-    #[cfg_attr(not(feature = "python"), allow(dead_code))]
     pub(crate) name: String,
     id: u64,
     pub(crate) data_type: DataType,
     item_size: usize,
+    header_type: HeaderType,
     event: Event,
     state: Mutex<TakeState>,
     sender: MessageSender,
@@ -43,6 +46,7 @@ impl DataTake {
         name: String,
         id: u64,
         data_type: DataType,
+        header_type: Option<u32>,
         sender: MessageSender,
         connected: Arc<AtomicBool>,
     ) -> Arc<Self> {
@@ -51,6 +55,7 @@ impl DataTake {
             id,
             data_type,
             item_size: data_type.item_size(),
+            header_type: HeaderType::new(header_type),
             event: Event::new(),
             state: Mutex::new(TakeState {
                 cache: None,
@@ -69,6 +74,7 @@ impl DataTake {
         cache: bool,
     ) -> Result<(), String> {
         let elements = check_data_type(&data, self.data_type, self.item_size)?;
+        let header = self.header_type.check(&self.name, data.header)?;
         let slice = data.bytes;
         let generation = self.state.lock().sync.generation();
 
@@ -80,6 +86,7 @@ impl DataTake {
                 self.data_type,
                 blocking,
                 update,
+                self.take_header(header),
             )?;
             wait_for_slot(&self.event, blocking);
             Some(messages)
@@ -88,7 +95,7 @@ impl DataTake {
         };
 
         let mut state = self.state.lock();
-        state.cache = cache.then(|| (slice.to_vec(), elements));
+        state.cache = cache.then(|| (slice.to_vec(), elements, header.map(<[u8]>::to_vec)));
         if let Some(messages) = messages {
             send_if_current(
                 &state.sync,
@@ -101,6 +108,12 @@ impl DataTake {
             );
         }
         Ok(())
+    }
+}
+
+impl DataTake {
+    fn take_header<'a>(&self, header: Option<&'a [u8]>) -> TakeHeader<'a> {
+        take_header(&self.header_type, header)
     }
 }
 
@@ -119,10 +132,17 @@ impl SyncTrait for DataTake {
     fn sync(&self) -> Result<(), ()> {
         let mut state = self.state.lock();
 
-        if let Some((ref data, count)) = state.cache {
-            let messages =
-                pack_data_take(self.id, data, count as u64, self.data_type, false, false)
-                    .map_err(|_| ())?;
+        if let Some((ref data, count, ref header)) = state.cache {
+            let messages = pack_data_take(
+                self.id,
+                data,
+                count as u64,
+                self.data_type,
+                false,
+                false,
+                self.take_header(header.as_deref()),
+            )
+            .map_err(|_| ())?;
 
             for (message, single) in messages {
                 self.sender.send_set(message, single);
@@ -138,18 +158,18 @@ impl SyncTrait for DataTake {
 
 // DataMultiTake --------------------------------------------------
 struct MultiTakeState {
-    values: NoHashMap<u32, (Vec<u8>, usize)>,
+    values: NoHashMap<u32, Cached>,
     sync: SyncState,
 }
 
 /// One-shot numeric transfers indexed by key; see [`DataTake`] for the
 /// producer protocol. All keys share one acknowledgement stream.
 pub(crate) struct DataMultiTake {
-    #[cfg_attr(not(feature = "python"), allow(dead_code))]
     pub(crate) name: String,
     id: u64,
     pub(crate) data_type: DataType,
     item_size: usize,
+    header_type: HeaderType,
     state: RwLock<MultiTakeState>,
     sender: MessageSender,
     connected: Arc<AtomicBool>,
@@ -161,6 +181,7 @@ impl DataMultiTake {
         name: String,
         id: u64,
         data_type: DataType,
+        header_type: Option<u32>,
         sender: MessageSender,
         connected: Arc<AtomicBool>,
     ) -> Arc<Self> {
@@ -169,6 +190,7 @@ impl DataMultiTake {
             id,
             data_type,
             item_size: data_type.item_size(),
+            header_type: HeaderType::new(header_type),
             state: RwLock::new(MultiTakeState {
                 values: NoHashMap::default(),
                 sync: SyncState::new(),
@@ -188,6 +210,7 @@ impl DataMultiTake {
         cache: bool,
     ) -> Result<(), String> {
         let elements = check_data_type(&data, self.data_type, self.item_size)?;
+        let header = self.header_type.check(&self.name, data.header)?;
         let slice = data.bytes;
         let generation = self.state.read().sync.generation();
 
@@ -200,6 +223,7 @@ impl DataMultiTake {
                 self.data_type,
                 blocking,
                 update,
+                take_header(&self.header_type, header),
             )?;
             wait_for_slot(&self.event, blocking);
             Some(messages)
@@ -211,7 +235,8 @@ impl DataMultiTake {
         // transfers cannot interleave their chunks on the wire.
         let mut w = self.state.write();
         if cache {
-            w.values.insert(index, (slice.to_vec(), elements));
+            let cached = (slice.to_vec(), elements, header.map(<[u8]>::to_vec));
+            w.values.insert(index, cached);
         } else {
             w.values.remove(&index);
         }
@@ -278,7 +303,7 @@ impl SyncTrait for DataMultiTake {
             self.sender.send(message);
             self.event.set();
         } else {
-            for (index, (data, count)) in w.values.iter() {
+            for (index, (data, count, header)) in w.values.iter() {
                 let messages = pack_data_multi_take(
                     self.id,
                     *index,
@@ -287,6 +312,7 @@ impl SyncTrait for DataMultiTake {
                     self.data_type,
                     false,
                     false,
+                    take_header(&self.header_type, header.as_deref()),
                 )
                 .map_err(|_| ())?;
 
@@ -303,6 +329,15 @@ impl SyncTrait for DataMultiTake {
 
         Ok(())
     }
+}
+
+/// A transfer's header as it goes on the wire: its description and bytes,
+/// or `None` for the type's default.
+type TakeHeader<'a> = Option<(HeaderBytes, &'a [u8])>;
+
+fn take_header<'a>(header_type: &HeaderType, header: Option<&'a [u8]>) -> TakeHeader<'a> {
+    let header = header?;
+    Some((header_type.bytes(header)?, header))
 }
 
 /// Waits until no blocking transfer is pending. A blocking send takes the
@@ -339,6 +374,7 @@ fn send_if_current(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn pack_data_take(
     id: u64,
     data: &[u8],
@@ -346,6 +382,7 @@ fn pack_data_take(
     data_type: DataType,
     blocking: bool,
     update: bool,
+    header: TakeHeader,
 ) -> Result<Vec<(FastVec<32>, bool)>, String> {
     pack_data_take_chunked(
         id,
@@ -354,39 +391,55 @@ fn pack_data_take(
         data_type,
         blocking,
         update,
+        header,
         TRANSFER_CHUNK_SIZE,
     )
 }
 
 /// Packs a one-shot transfer; `wrap` serializes its header for the state.
+/// The typed header goes with the message that completes the transfer, in
+/// front of its elements.
 fn pack_take(
     data: &[u8],
     data_count: u64,
     data_type: DataType,
     update: bool,
+    header: TakeHeader,
     chunk_limit: usize,
     wrap: impl Fn(DataTakeHeader) -> Result<FastVec<32>, String>,
 ) -> Result<Vec<(FastVec<32>, bool)>, String> {
+    let (description, header_bytes) = match header {
+        Some((description, bytes)) => (Some(description), bytes),
+        None => (None, &[][..]),
+    };
     chunk_transfer(
         data.len(),
         data_type.item_size(),
         chunk_limit,
         |chunk, range| {
             let len = range.len() as u32;
-            let header = match chunk {
-                Chunk::All => DataTakeHeader::All(data_type, data_count, update, len),
-                Chunk::Start => DataTakeHeader::StartBatch(data_count, len),
-                Chunk::Batch => DataTakeHeader::Batch(len),
-                Chunk::End => DataTakeHeader::End(data_type, data_count, update, len),
+            let (message, header_bytes) = match chunk {
+                Chunk::All => (
+                    DataTakeHeader::All(data_type, data_count, update, len, description),
+                    header_bytes,
+                ),
+                Chunk::Start => (DataTakeHeader::StartBatch(data_count, len), &[][..]),
+                Chunk::Batch => (DataTakeHeader::Batch(len), &[][..]),
+                Chunk::End => (
+                    DataTakeHeader::End(data_type, data_count, update, len, description),
+                    header_bytes,
+                ),
             };
-            let mut message = wrap(header)?;
-            message.reserve_exact(range.len());
+            let mut message = wrap(message)?;
+            message.reserve_exact(header_bytes.len() + range.len());
+            message.extend_from_slice(header_bytes);
             message.extend_from_slice(&data[range]);
             Ok(message)
         },
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(in crate::server_core) fn pack_data_take_chunked(
     id: u64,
     data: &[u8],
@@ -394,15 +447,25 @@ pub(in crate::server_core) fn pack_data_take_chunked(
     data_type: DataType,
     blocking: bool,
     update: bool,
+    header: TakeHeader,
     chunk_limit: usize,
 ) -> Result<Vec<(FastVec<32>, bool)>, String> {
-    pack_take(data, data_count, data_type, update, chunk_limit, |header| {
-        header
-            .serialize(id, blocking, true)
-            .map_err(|_| "Failed to serialize DataTake header".to_string())
-    })
+    pack_take(
+        data,
+        data_count,
+        data_type,
+        update,
+        header,
+        chunk_limit,
+        |header| {
+            header
+                .serialize(id, blocking, true)
+                .map_err(|_| "Failed to serialize DataTake header".to_string())
+        },
+    )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn pack_data_multi_take(
     id: u64,
     index: u32,
@@ -411,6 +474,7 @@ fn pack_data_multi_take(
     data_type: DataType,
     blocking: bool,
     update: bool,
+    header: TakeHeader,
 ) -> Result<Vec<(FastVec<32>, bool)>, String> {
     pack_data_multi_take_chunked(
         id,
@@ -420,6 +484,7 @@ fn pack_data_multi_take(
         data_type,
         blocking,
         update,
+        header,
         TRANSFER_CHUNK_SIZE,
     )
 }
@@ -433,12 +498,21 @@ pub(in crate::server_core) fn pack_data_multi_take_chunked(
     data_type: DataType,
     blocking: bool,
     update: bool,
+    header: TakeHeader,
     chunk_limit: usize,
 ) -> Result<Vec<(FastVec<32>, bool)>, String> {
-    pack_take(data, data_count, data_type, update, chunk_limit, |header| {
-        DataMultiTakeHeader::serialize_modify(id, index, header, blocking)
-            .map_err(|_| "Failed to serialize DataMultiTake header".to_string())
-    })
+    pack_take(
+        data,
+        data_count,
+        data_type,
+        update,
+        header,
+        chunk_limit,
+        |header| {
+            DataMultiTakeHeader::serialize_modify(id, index, header, blocking)
+                .map_err(|_| "Failed to serialize DataMultiTake header".to_string())
+        },
+    )
 }
 
 #[cfg(test)]
@@ -451,6 +525,7 @@ mod tests {
         DataSlice {
             bytes: data,
             data_type: DataType::U8,
+            header: None,
         }
     }
 
@@ -483,6 +558,7 @@ mod tests {
             "root.take".into(),
             5,
             DataType::U8,
+            None,
             sender,
             connected.clone(),
         );
@@ -531,6 +607,7 @@ mod tests {
             "root.take".into(),
             5,
             DataType::U8,
+            None,
             sender,
             connected.clone(),
         );
@@ -594,6 +671,7 @@ mod transfer_tests {
                                 DataType::U8,
                                 blocking,
                                 true,
+                                None,
                             ),
                             Some(key) => pack_data_multi_take(
                                 61,
@@ -603,6 +681,7 @@ mod transfer_tests {
                                 DataType::U8,
                                 blocking,
                                 true,
+                                None,
                             ),
                         }
                         .unwrap();

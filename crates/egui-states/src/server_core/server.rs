@@ -739,52 +739,84 @@ impl Server {
         })
     }
 
-    pub(crate) fn add_data(&mut self, name: &str, type_id: u8) -> Result<u64, String> {
+    /// Registers a data state; `header_type` is the type id of
+    /// its header, `None` for a state without one.
+    pub(crate) fn add_data(
+        &mut self,
+        name: &str,
+        type_id: u8,
+        header_type: Option<u32>,
+    ) -> Result<u64, String> {
         let (sender, connected, _) = self.channels();
         self.register(name, "Data", |id| {
             Ok(StateRef::Data(Data::new(
                 name.to_string(),
                 id,
                 data_type(type_id)?,
+                header_type,
                 sender,
                 connected,
             )))
         })
     }
 
-    pub(crate) fn add_data_multi(&mut self, name: &str, type_id: u8) -> Result<u64, String> {
+    /// Registers a data multi state; `header_type` is the type id of
+    /// its header, `None` for a state without one.
+    pub(crate) fn add_data_multi(
+        &mut self,
+        name: &str,
+        type_id: u8,
+        header_type: Option<u32>,
+    ) -> Result<u64, String> {
         let (sender, connected, _) = self.channels();
         self.register(name, "DataMulti", |id| {
             Ok(StateRef::DataMulti(DataMulti::new(
                 name.to_string(),
                 id,
                 data_type(type_id)?,
+                header_type,
                 sender,
                 connected,
             )))
         })
     }
 
-    pub(crate) fn add_data_take(&mut self, name: &str, type_id: u8) -> Result<u64, String> {
+    /// Registers a data take state; `header_type` is the type id of
+    /// its header, `None` for a state without one.
+    pub(crate) fn add_data_take(
+        &mut self,
+        name: &str,
+        type_id: u8,
+        header_type: Option<u32>,
+    ) -> Result<u64, String> {
         let (sender, connected, _) = self.channels();
         self.register(name, "DataTake", |id| {
             Ok(StateRef::DataTake(DataTake::new(
                 name.to_string(),
                 id,
                 data_type(type_id)?,
+                header_type,
                 sender,
                 connected,
             )))
         })
     }
 
-    pub(crate) fn add_data_multi_take(&mut self, name: &str, type_id: u8) -> Result<u64, String> {
+    /// Registers a data multi take state; `header_type` is the type id of
+    /// its header, `None` for a state without one.
+    pub(crate) fn add_data_multi_take(
+        &mut self,
+        name: &str,
+        type_id: u8,
+        header_type: Option<u32>,
+    ) -> Result<u64, String> {
         let (sender, connected, _) = self.channels();
         self.register(name, "DataMultiTake", |id| {
             Ok(StateRef::DataMultiTake(DataMultiTake::new(
                 name.to_string(),
                 id,
                 data_type(type_id)?,
+                header_type,
                 sender,
                 connected,
             )))

@@ -9,7 +9,7 @@ use crate::State;
 use crate::client::messages::MessageSender;
 use crate::client::states::atomics::{Atomic, AtomicStatic};
 use crate::client::states::data::{
-    Data, DataMulti, UpdateData, UpdateMultiData, private::GetDataType,
+    Data, DataMulti, HeaderValue, UpdateData, UpdateMultiData, data_type_hash, private::GetDataType,
 };
 use crate::client::states::data_take::{
     DataMultiTake, DataTake, UpdateDataMultiTake, UpdateDataTake,
@@ -135,28 +135,32 @@ pub trait StatesCreator {
         T: Clone + for<'a> Deserialize<'a> + Send + Sync + Typed + 'static;
 
     #[allow(private_bounds)]
-    /// Creates a contiguous server-controlled numeric buffer.
-    fn data<T>(&mut self, name: &'static str) -> Data<T>
+    /// Creates a contiguous server-controlled numeric buffer, with the header type `H` (`()` for none).
+    fn data<T, H>(&mut self, name: &'static str) -> Data<T, H>
     where
-        T: GetDataType + Send + Sync + 'static;
+        T: GetDataType + Send + Sync + 'static,
+        H: HeaderValue;
 
     #[allow(private_bounds)]
-    /// Creates keyed server-controlled numeric buffers.
-    fn data_multi<T>(&mut self, name: &'static str) -> DataMulti<T>
+    /// Creates keyed server-controlled numeric buffers, with the header type `H` (`()` for none).
+    fn data_multi<T, H>(&mut self, name: &'static str) -> DataMulti<T, H>
     where
-        T: GetDataType + Send + Sync + 'static;
+        T: GetDataType + Send + Sync + 'static,
+        H: HeaderValue;
 
     #[allow(private_bounds)]
-    /// Creates a one-shot numeric buffer consumed by the client.
-    fn data_take<T>(&mut self, name: &'static str) -> DataTake<T>
+    /// Creates a one-shot numeric buffer consumed by the client, with the header type `H` (`()` for none).
+    fn data_take<T, H>(&mut self, name: &'static str) -> DataTake<T, H>
     where
-        T: GetDataType + Send + Sync + 'static;
+        T: GetDataType + Send + Sync + 'static,
+        H: HeaderValue;
 
     #[allow(private_bounds)]
-    /// Creates keyed one-shot numeric buffers consumed by the client.
-    fn data_multi_take<T>(&mut self, name: &'static str) -> DataMultiTake<T>
+    /// Creates keyed one-shot numeric buffers consumed by the client, with the header type `H` (`()` for none).
+    fn data_multi_take<T, H>(&mut self, name: &'static str) -> DataMultiTake<T, H>
     where
-        T: GetDataType + Send + Sync + 'static;
+        T: GetDataType + Send + Sync + 'static,
+        H: HeaderValue;
 }
 
 /// A client state the receive task updates.
@@ -490,12 +494,18 @@ impl StatesCreator for StatesCreatorClient {
         value
     }
 
-    fn data<T>(&mut self, name: &str) -> Data<T>
+    fn data<T, H>(&mut self, name: &str) -> Data<T, H>
     where
         T: GetDataType + Send + Sync + 'static,
+        H: HeaderValue,
     {
         let (name, id) = state_path(&self.parent, name);
-        hash_id_type(&mut self.version_hasher, id, T::get_type_id(), DATA_HASH_ID);
+        hash_id_type(
+            &mut self.version_hasher,
+            id,
+            data_type_hash::<T, H>(),
+            DATA_HASH_ID,
+        );
 
         let data = Data::new(name, id, self.sender.clone());
 
@@ -505,15 +515,16 @@ impl StatesCreator for StatesCreatorClient {
         data
     }
 
-    fn data_multi<T>(&mut self, name: &'static str) -> DataMulti<T>
+    fn data_multi<T, H>(&mut self, name: &'static str) -> DataMulti<T, H>
     where
         T: GetDataType + Send + Sync + 'static,
+        H: HeaderValue,
     {
         let (name, id) = state_path(&self.parent, name);
         hash_id_type(
             &mut self.version_hasher,
             id,
-            T::get_type_id(),
+            data_type_hash::<T, H>(),
             DATA_MULTI_HASH_ID,
         );
 
@@ -525,15 +536,16 @@ impl StatesCreator for StatesCreatorClient {
         multi_data
     }
 
-    fn data_take<T>(&mut self, name: &'static str) -> DataTake<T>
+    fn data_take<T, H>(&mut self, name: &'static str) -> DataTake<T, H>
     where
         T: GetDataType + Send + Sync + 'static,
+        H: HeaderValue,
     {
         let (name, id) = state_path(&self.parent, name);
         hash_id_type(
             &mut self.version_hasher,
             id,
-            T::get_type_id(),
+            data_type_hash::<T, H>(),
             DATA_TAKE_HASH_ID,
         );
 
@@ -545,15 +557,16 @@ impl StatesCreator for StatesCreatorClient {
         data_take
     }
 
-    fn data_multi_take<T>(&mut self, name: &'static str) -> DataMultiTake<T>
+    fn data_multi_take<T, H>(&mut self, name: &'static str) -> DataMultiTake<T, H>
     where
         T: GetDataType + Send + Sync + 'static,
+        H: HeaderValue,
     {
         let (name, id) = state_path(&self.parent, name);
         hash_id_type(
             &mut self.version_hasher,
             id,
-            T::get_type_id(),
+            data_type_hash::<T, H>(),
             DATA_MULTI_TAKE_HASH_ID,
         );
 

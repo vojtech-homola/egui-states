@@ -5,19 +5,126 @@ use parking_lot::{Mutex, RwLock};
 
 use crate::event::Event;
 use crate::hashing::NoHashMap;
-use crate::protocol::data::{DataHeader, DataType, MultiDataHeader, TransportType};
-use crate::protocol::{FastVec, TRANSFER_CHUNK_SIZE};
+use crate::protocol::data::{
+    DataHeader, DataType, HeaderBytes, HeaderUpdate, MultiDataHeader, TransportType,
+};
+use crate::protocol::{FastVec, TRANSFER_CHUNK_SIZE, check_value_size};
 use crate::server_core::error::CoreError;
 use crate::server_core::net::sender::MessageSender;
 use crate::server_core::server::{Acknowledge, SyncTrait};
 use crate::server_core::transfer::{Chunk, chunk_transfer};
 
-/// Borrowed native-endian elements of a Data operation, as the front-ends
-/// hand them to the cores, which copy what they keep.
+/// The input of a Data operation, as the front-ends hand it to the cores,
+/// which copy what they keep: native-endian elements and, optionally, a new
+/// encoded header.
 #[derive(Clone, Copy)]
 pub(crate) struct DataSlice<'a> {
     pub bytes: &'a [u8],
     pub data_type: DataType,
+    pub header: Option<&'a [u8]>,
+}
+
+/// The header type of a Data state, if it was registered with one, and the
+/// checks every header given to it passes.
+#[derive(Clone, Copy)]
+pub(crate) struct HeaderType(Option<u32>);
+
+impl HeaderType {
+    pub(crate) fn new(type_id: Option<u32>) -> Self {
+        Self(type_id)
+    }
+
+    /// Checks a header given to state `name`: the state must have a header
+    /// type and the header must fit the value size limit.
+    pub(crate) fn check<'a>(
+        &self,
+        name: &str,
+        header: Option<&'a [u8]>,
+    ) -> Result<Option<&'a [u8]>, String> {
+        let Some(header) = header else {
+            return Ok(None);
+        };
+        if self.0.is_none() {
+            return Err(format!("Data '{name}' was registered without a header"));
+        }
+        check_value_size(&format!("{name} header"), header.len())?;
+        Ok(Some(header))
+    }
+
+    /// The wire form of a checked header, `Keep` without one.
+    pub(crate) fn change<'a>(&self, header: Option<&'a [u8]>) -> WireHeader<'a> {
+        match (self.0, header) {
+            (Some(type_id), Some(bytes)) => WireHeader::set(type_id, bytes),
+            _ => WireHeader::KEEP,
+        }
+    }
+
+    /// The wire form of a stored header for a synchronization or a new key:
+    /// `Default` while none was set.
+    pub(crate) fn stored<'a>(&self, header: Option<&'a [u8]>) -> WireHeader<'a> {
+        match (self.0, header) {
+            (Some(type_id), Some(bytes)) => WireHeader::set(type_id, bytes),
+            _ => WireHeader::DEFAULT,
+        }
+    }
+
+    /// The wire description of a checked header.
+    pub(crate) fn bytes(&self, header: &[u8]) -> Option<HeaderBytes> {
+        self.0.map(|type_id| HeaderBytes {
+            type_id,
+            size: header.len() as u32,
+        })
+    }
+}
+
+/// A header change as it goes on the wire: the update and the bytes it puts
+/// in front of the elements.
+#[derive(Clone, Copy)]
+pub(crate) struct WireHeader<'a> {
+    pub(crate) update: HeaderUpdate,
+    pub(crate) bytes: &'a [u8],
+}
+
+impl<'a> WireHeader<'a> {
+    pub(crate) const KEEP: Self = Self {
+        update: HeaderUpdate::Keep,
+        bytes: &[],
+    };
+
+    pub(crate) const DEFAULT: Self = Self {
+        update: HeaderUpdate::Default,
+        bytes: &[],
+    };
+
+    fn set(type_id: u32, bytes: &'a [u8]) -> Self {
+        Self {
+            update: HeaderUpdate::Set(HeaderBytes {
+                type_id,
+                size: bytes.len() as u32,
+            }),
+            bytes,
+        }
+    }
+
+    /// Serializes `header`, which carries this update, followed by the
+    /// header bytes.
+    fn message(
+        &self,
+        header: impl FnOnce() -> Result<FastVec<32>, ()>,
+    ) -> Result<FastVec<32>, String> {
+        let mut message = header().map_err(|_| "Failed to serialize header".to_string())?;
+        message.extend_from_slice(self.bytes);
+        Ok(message)
+    }
+}
+
+/// Stores `header` in `stored` when one was given.
+fn store_header(stored: &mut Option<Vec<u8>>, header: Option<&[u8]>) {
+    if let Some(header) = header {
+        let stored = stored.get_or_insert_with(Vec::new);
+        stored.clear();
+        stored.extend_from_slice(header);
+    }
 }
 
 /// Connection bookkeeping a state keeps under its storage lock.
@@ -63,10 +170,12 @@ impl SyncState {
 struct DataStorage {
     bytes: Vec<u8>,
     count: usize,
+    /// `None` until a header is set.
+    header: Option<Vec<u8>>,
     sync: SyncState,
 }
 
-/// Server storage of one numeric buffer.
+/// Server storage of one numeric buffer and its header.
 ///
 /// Producers are serialized by `producer`, which they hold across the wait
 /// for the client's acknowledgement of the previous transfer, so the stored
@@ -74,11 +183,11 @@ struct DataStorage {
 /// lock is held only to change or read the bytes; nothing that waits holds
 /// it, because a disconnect reset takes it from the connection's writer.
 pub(crate) struct Data {
-    #[cfg_attr(not(feature = "python"), allow(dead_code))]
     pub(crate) name: String,
     id: u64,
     pub(crate) data_type: DataType,
     item_size: usize,
+    header_type: HeaderType,
     producer: Mutex<()>,
     storage: RwLock<DataStorage>,
     sender: MessageSender,
@@ -91,6 +200,7 @@ impl Data {
         name: String,
         id: u64,
         data_type: DataType,
+        header_type: Option<u32>,
         sender: MessageSender,
         connected: Arc<AtomicBool>,
     ) -> Arc<Self> {
@@ -99,10 +209,12 @@ impl Data {
             id,
             data_type,
             item_size: data_type.item_size(),
+            header_type: HeaderType::new(header_type),
             producer: Mutex::new(()),
             storage: RwLock::new(DataStorage {
                 bytes: Vec::new(),
                 count: 0,
+                header: None,
                 sync: SyncState::new(),
             }),
             sender,
@@ -113,6 +225,7 @@ impl Data {
 
     pub(crate) fn set(&self, data: DataSlice, update: bool) -> Result<(), String> {
         let elements = check_data_type(&data, self.data_type, self.item_size)?;
+        let header = self.header_type.check(&self.name, data.header)?;
         let slice = data.bytes;
 
         let _producer = self.producer.lock();
@@ -121,6 +234,7 @@ impl Data {
             w.bytes.clear();
             w.bytes.extend_from_slice(slice);
             w.count = elements;
+            store_header(&mut w.header, header);
             w.sync.sendable(&self.connected)
         };
         let Some(generation) = generation else {
@@ -136,6 +250,7 @@ impl Data {
             self.data_type,
             None,
             update,
+            self.header_type.change(header),
         )?;
         self.send_after_ack(generation, messages);
         Ok(())
@@ -143,6 +258,7 @@ impl Data {
 
     pub(crate) fn add(&self, data: DataSlice, update: bool) -> Result<(), String> {
         let elements = check_data_type(&data, self.data_type, self.item_size)?;
+        let header = self.header_type.check(&self.name, data.header)?;
         let slice = data.bytes;
 
         let _producer = self.producer.lock();
@@ -150,6 +266,7 @@ impl Data {
             let mut w = self.storage.write();
             w.bytes.extend_from_slice(slice);
             w.count += elements;
+            store_header(&mut w.header, header);
             w.sync.sendable(&self.connected)
         };
         let Some(generation) = generation else {
@@ -165,6 +282,7 @@ impl Data {
             self.data_type,
             None,
             update,
+            self.header_type.change(header),
         )?;
         self.send_after_ack(generation, messages);
         Ok(())
@@ -177,6 +295,7 @@ impl Data {
         update: bool,
     ) -> Result<(), String> {
         let elements = check_data_type(&data, self.data_type, self.item_size)?;
+        let header = self.header_type.check(&self.name, data.header)?;
         let slice = data.bytes;
 
         let _producer = self.producer.lock();
@@ -190,6 +309,7 @@ impl Data {
             }
             let byte_index = index * self.item_size;
             w.bytes[byte_index..byte_index + slice.len()].copy_from_slice(slice);
+            store_header(&mut w.header, header);
             w.sync.sendable(&self.connected)
         };
         let Some(generation) = generation else {
@@ -205,15 +325,23 @@ impl Data {
             self.data_type,
             None,
             update,
+            self.header_type.change(header),
         )?;
         self.send_after_ack(generation, messages);
         Ok(())
     }
 
-    pub(crate) fn remove(&self, index: usize, size: usize, update: bool) -> Result<(), String> {
+    pub(crate) fn remove(
+        &self,
+        index: usize,
+        size: usize,
+        header: Option<&[u8]>,
+        update: bool,
+    ) -> Result<(), String> {
         if size == 0 {
             return Err("Invalid remove size: size must be greater than 0".to_string());
         }
+        let header = self.header_type.check(&self.name, header)?;
 
         let _producer = self.producer.lock();
         let generation = {
@@ -228,31 +356,59 @@ impl Data {
             w.bytes
                 .drain(byte_index..byte_index + size * self.item_size);
             w.count -= size;
+            store_header(&mut w.header, header);
             w.sync.sendable(&self.connected)
         };
         let Some(generation) = generation else {
             return Ok(());
         };
 
-        let message = DataHeader::Drain(index as u64, size as u64, update)
-            .serialize(self.id, false)
-            .map_err(|_| "Failed to serialize header".to_string())?;
+        let change = self.header_type.change(header);
+        let message = change.message(|| {
+            DataHeader::Drain(index as u64, size as u64, update, change.update)
+                .serialize(self.id, false)
+        })?;
         self.send_after_ack(generation, vec![(message, false)]);
         Ok(())
     }
 
-    pub(crate) fn clear(&self, update: bool) -> Result<(), String> {
+    /// Empties the buffer; the header stays unless a new one is given.
+    pub(crate) fn clear(&self, header: Option<&[u8]>, update: bool) -> Result<(), String> {
+        let header = self.header_type.check(&self.name, header)?;
         let _producer = self.producer.lock();
         let mut w = self.storage.write();
         w.bytes.clear();
         w.count = 0;
+        store_header(&mut w.header, header);
 
         // The client does not acknowledge a clear, so it is queued at once,
         // under the storage lock so a reset cannot slip in before it.
         if w.sync.sendable(&self.connected).is_some() {
-            let message = DataHeader::Clear(update)
-                .serialize(self.id, false)
-                .map_err(|_| "Failed to serialize header".to_string())?;
+            let change = self.header_type.change(header);
+            let message = change
+                .message(|| DataHeader::Clear(update, change.update).serialize(self.id, false))?;
+            self.sender.send(message);
+        }
+
+        Ok(())
+    }
+
+    /// Replaces the header alone. Like a clear, the client does not
+    /// acknowledge it, so it is queued at once without waiting.
+    // The front-ends call this from the Rust server commit on.
+    #[allow(dead_code)]
+    pub(crate) fn set_header(&self, header: &[u8], update: bool) -> Result<(), String> {
+        self.header_type.check(&self.name, Some(header))?;
+        let _producer = self.producer.lock();
+        let mut w = self.storage.write();
+        store_header(&mut w.header, Some(header));
+
+        if w.sync.sendable(&self.connected).is_some()
+            && let Some(bytes) = self.header_type.bytes(header)
+        {
+            let change = WireHeader::set(bytes.type_id, header);
+            let message =
+                change.message(|| DataHeader::Header(update, bytes).serialize(self.id, false))?;
             self.sender.send(message);
         }
 
@@ -262,6 +418,14 @@ impl Data {
     pub(crate) fn get<R>(&self, f: impl FnOnce(&[u8]) -> R) -> R {
         let storage = self.storage.read();
         f(&storage.bytes)
+    }
+
+    /// Calls `f` with the encoded header, `None` until one is set.
+    // The front-ends call this from the Rust server commit on.
+    #[allow(dead_code)]
+    pub(crate) fn header<R>(&self, f: impl FnOnce(Option<&[u8]>) -> R) -> R {
+        let storage = self.storage.read();
+        f(storage.header.as_deref())
     }
 
     fn send_after_ack(&self, generation: u64, messages: Vec<(FastVec<32>, bool)>) {
@@ -300,9 +464,11 @@ impl SyncTrait for Data {
         let mut w = self.storage.write();
         w.sync.synchronized();
 
+        // A synchronization always says what the header is, never keeps it.
+        let header = self.header_type.stored(w.header.as_deref());
         if w.count == 0 {
-            let message = DataHeader::Clear(false)
-                .serialize(self.id, false)
+            let message = header
+                .message(|| DataHeader::Clear(false, header.update).serialize(self.id, false))
                 .map_err(|_| ())?;
             self.sender.send(message);
             self.event.set();
@@ -316,6 +482,7 @@ impl SyncTrait for Data {
                 self.data_type,
                 None,
                 false,
+                header,
             )
             .map_err(|_| ())?;
 
@@ -330,21 +497,33 @@ impl SyncTrait for Data {
 }
 
 // DataMulti --------------------------------------------------
+/// One key of a [`DataMulti`].
+struct KeyData {
+    bytes: Vec<u8>,
+    count: usize,
+    /// `None` until a header is set for the key.
+    header: Option<Vec<u8>>,
+}
+
 struct MultiStorage {
-    values: NoHashMap<u32, (Vec<u8>, usize)>,
+    values: NoHashMap<u32, KeyData>,
     sync: SyncState,
 }
 
-/// Server storage of numeric buffers indexed by key.
+fn missing_key(index: u32) -> CoreError {
+    CoreError::not_found(format!("DataMulti index {} does not exist", index))
+}
+
+/// Server storage of numeric buffers indexed by key, each with its header.
 ///
 /// Uses the same producer protocol as [`Data`]; all keys share one stream of
 /// acknowledgements.
 pub(crate) struct DataMulti {
-    #[cfg_attr(not(feature = "python"), allow(dead_code))]
     pub(crate) name: String,
     id: u64,
     pub(crate) data_type: DataType,
     item_size: usize,
+    header_type: HeaderType,
     producer: Mutex<()>,
     storage: RwLock<MultiStorage>,
     sync_counter: Mutex<usize>,
@@ -358,6 +537,7 @@ impl DataMulti {
         name: String,
         id: u64,
         data_type: DataType,
+        header_type: Option<u32>,
         sender: MessageSender,
         connected: Arc<AtomicBool>,
     ) -> Arc<Self> {
@@ -366,6 +546,7 @@ impl DataMulti {
             id,
             data_type,
             item_size: data_type.item_size(),
+            header_type: HeaderType::new(header_type),
             producer: Mutex::new(()),
             storage: RwLock::new(MultiStorage {
                 values: NoHashMap::default(),
@@ -378,6 +559,7 @@ impl DataMulti {
         })
     }
 
+    /// Removes `index` and its header.
     pub(crate) fn remove_index(&self, index: u32, update: bool) -> Result<(), String> {
         let _producer = self.producer.lock();
         let mut w = self.storage.write();
@@ -391,6 +573,7 @@ impl DataMulti {
         Ok(())
     }
 
+    /// Removes every key and header.
     pub(crate) fn reset(&self, update: bool) -> Result<(), String> {
         let _producer = self.producer.lock();
         let mut w = self.storage.write();
@@ -407,29 +590,44 @@ impl DataMulti {
         Ok(())
     }
 
+    /// Sets the buffer at `index`, creating the key. A new key without a
+    /// header gets the default one.
     pub(crate) fn set(&self, index: u32, data: DataSlice, update: bool) -> Result<(), String> {
         let elements = check_data_type(&data, self.data_type, self.item_size)?;
+        let header = self.header_type.check(&self.name, data.header)?;
         let slice = data.bytes;
 
         let _producer = self.producer.lock();
-        let generation = {
+        let (generation, created) = {
             let mut w = self.storage.write();
-            match w.values.get_mut(&index) {
-                Some((vec, size)) => {
-                    vec.clear();
-                    vec.extend_from_slice(slice);
-                    *size = elements;
+            let created = match w.values.get_mut(&index) {
+                Some(value) => {
+                    value.bytes.clear();
+                    value.bytes.extend_from_slice(slice);
+                    value.count = elements;
+                    store_header(&mut value.header, header);
+                    false
                 }
                 None => {
-                    w.values.insert(index, (slice.to_vec(), elements));
+                    let value = KeyData {
+                        bytes: slice.to_vec(),
+                        count: elements,
+                        header: header.map(<[u8]>::to_vec),
+                    };
+                    w.values.insert(index, value);
+                    true
                 }
-            }
-            w.sync.sendable(&self.connected)
+            };
+            (w.sync.sendable(&self.connected), created)
         };
         let Some(generation) = generation else {
             return Ok(());
         };
 
+        let change = match created {
+            true => self.header_type.stored(header),
+            false => self.header_type.change(header),
+        };
         let count = elements as u64;
         let messages = pack_data(
             self.id,
@@ -439,6 +637,7 @@ impl DataMulti {
             self.data_type,
             Some(index),
             update,
+            change,
         )?;
         self.send_after_ack(generation, messages);
         Ok(())
@@ -446,16 +645,16 @@ impl DataMulti {
 
     pub(crate) fn add(&self, index: u32, data: DataSlice, update: bool) -> Result<(), CoreError> {
         let elements = check_data_type(&data, self.data_type, self.item_size)?;
+        let header = self.header_type.check(&self.name, data.header)?;
         let slice = data.bytes;
 
         let _producer = self.producer.lock();
         let generation = {
             let mut w = self.storage.write();
-            let entry = w.values.get_mut(&index).ok_or_else(|| {
-                CoreError::not_found(format!("DataMulti index {} does not exist", index))
-            })?;
-            entry.0.extend_from_slice(slice);
-            entry.1 += elements;
+            let value = w.values.get_mut(&index).ok_or_else(|| missing_key(index))?;
+            value.bytes.extend_from_slice(slice);
+            value.count += elements;
+            store_header(&mut value.header, header);
             w.sync.sendable(&self.connected)
         };
         let Some(generation) = generation else {
@@ -471,6 +670,7 @@ impl DataMulti {
             self.data_type,
             Some(index),
             update,
+            self.header_type.change(header),
         )?;
         self.send_after_ack(generation, messages);
         Ok(())
@@ -484,25 +684,25 @@ impl DataMulti {
         update: bool,
     ) -> Result<(), CoreError> {
         let elements = check_data_type(&data, self.data_type, self.item_size)?;
+        let header = self.header_type.check(&self.name, data.header)?;
         let slice = data.bytes;
 
         let _producer = self.producer.lock();
         let generation = {
             let mut w = self.storage.write();
-            let value = w.values.get_mut(&index).ok_or_else(|| {
-                CoreError::not_found(format!("DataMulti index {} does not exist", index))
-            })?;
+            let value = w.values.get_mut(&index).ok_or_else(|| missing_key(index))?;
             if data_index
                 .checked_add(elements)
-                .is_none_or(|end| end > value.1)
+                .is_none_or(|end| end > value.count)
             {
                 return Err(format!(
                     "Replace range out of bounds for DataMulti index {}: data_index {} + data count {} exceeds current size {}",
-                    index, data_index, elements, value.1
+                    index, data_index, elements, value.count
                 ).into());
             }
             let byte_index = data_index * self.item_size;
-            value.0[byte_index..byte_index + slice.len()].copy_from_slice(slice);
+            value.bytes[byte_index..byte_index + slice.len()].copy_from_slice(slice);
+            store_header(&mut value.header, header);
             w.sync.sendable(&self.connected)
         };
         let Some(generation) = generation else {
@@ -518,6 +718,7 @@ impl DataMulti {
             self.data_type,
             Some(index),
             update,
+            self.header_type.change(header),
         )?;
         self.send_after_ack(generation, messages);
         Ok(())
@@ -528,57 +729,102 @@ impl DataMulti {
         index: u32,
         data_index: usize,
         size: usize,
+        header: Option<&[u8]>,
         update: bool,
     ) -> Result<(), CoreError> {
         if size == 0 {
             return Err("Invalid remove size: size must be greater than 0".into());
         }
+        let header = self.header_type.check(&self.name, header)?;
 
         let _producer = self.producer.lock();
         let generation = {
             let mut w = self.storage.write();
-            let value = w.values.get_mut(&index).ok_or_else(|| {
-                CoreError::not_found(format!("DataMulti index {} does not exist", index))
-            })?;
-            if data_index.checked_add(size).is_none_or(|end| end > value.1) {
+            let value = w.values.get_mut(&index).ok_or_else(|| missing_key(index))?;
+            if data_index
+                .checked_add(size)
+                .is_none_or(|end| end > value.count)
+            {
                 return Err(format!(
                     "Remove range out of bounds for DataMulti index {}: data_index {} + size {} exceeds current size {}",
-                    index, data_index, size, value.1
+                    index, data_index, size, value.count
                 ).into());
             }
             let byte_index = data_index * self.item_size;
             value
-                .0
+                .bytes
                 .drain(byte_index..byte_index + size * self.item_size);
-            value.1 -= size;
+            value.count -= size;
+            store_header(&mut value.header, header);
             w.sync.sendable(&self.connected)
         };
         let Some(generation) = generation else {
             return Ok(());
         };
 
-        let header = DataHeader::Drain(data_index as u64, size as u64, update);
-        let message = MultiDataHeader::serialize_modify(self.id, index, header)
-            .map_err(|_| "Failed to serialize header".to_string())?;
+        let change = self.header_type.change(header);
+        let message = change.message(|| {
+            let header = DataHeader::Drain(data_index as u64, size as u64, update, change.update);
+            MultiDataHeader::serialize_modify(self.id, index, header)
+        })?;
         self.send_after_ack(generation, vec![(message, false)]);
         Ok(())
     }
 
-    pub(crate) fn clear(&self, index: u32, update: bool) -> Result<(), CoreError> {
+    /// Empties the buffer at `index`; its header stays unless a new one is
+    /// given.
+    pub(crate) fn clear(
+        &self,
+        index: u32,
+        header: Option<&[u8]>,
+        update: bool,
+    ) -> Result<(), CoreError> {
+        let header = self.header_type.check(&self.name, header)?;
         let _producer = self.producer.lock();
         let mut w = self.storage.write();
         let value = w
             .values
             .get_mut(&index)
             .ok_or_else(|| CoreError::not_found("Index not found"))?;
-        value.0.clear();
-        value.1 = 0;
+        value.bytes.clear();
+        value.count = 0;
+        store_header(&mut value.header, header);
 
         // Not acknowledged by the client: queued at once, under the storage lock.
         if w.sync.sendable(&self.connected).is_some() {
-            let message = MultiDataHeader::Modify(index, DataHeader::Clear(update))
-                .serialize(self.id)
-                .map_err(|_| "Failed to serialize header".to_string())?;
+            let change = self.header_type.change(header);
+            let message = change.message(|| {
+                MultiDataHeader::Modify(index, DataHeader::Clear(update, change.update))
+                    .serialize(self.id)
+            })?;
+            self.sender.send(message);
+        }
+
+        Ok(())
+    }
+
+    /// Replaces the header of `index` alone; queued at once like a clear.
+    // The front-ends call this from the Rust server commit on.
+    #[allow(dead_code)]
+    pub(crate) fn set_header(
+        &self,
+        index: u32,
+        header: &[u8],
+        update: bool,
+    ) -> Result<(), CoreError> {
+        self.header_type.check(&self.name, Some(header))?;
+        let _producer = self.producer.lock();
+        let mut w = self.storage.write();
+        let value = w.values.get_mut(&index).ok_or_else(|| missing_key(index))?;
+        store_header(&mut value.header, Some(header));
+
+        if w.sync.sendable(&self.connected).is_some()
+            && let Some(bytes) = self.header_type.bytes(header)
+        {
+            let change = WireHeader::set(bytes.type_id, header);
+            let message = change.message(|| {
+                MultiDataHeader::Modify(index, DataHeader::Header(update, bytes)).serialize(self.id)
+            })?;
             self.sender.send(message);
         }
 
@@ -587,7 +833,19 @@ impl DataMulti {
 
     pub(crate) fn get<R>(&self, key: u32, f: impl FnOnce(Option<&[u8]>) -> R) -> R {
         let storage = self.storage.read();
-        f(storage.values.get(&key).map(|(data, _)| data.as_slice()))
+        f(storage.values.get(&key).map(|value| value.bytes.as_slice()))
+    }
+
+    /// Calls `f` with the encoded header of `key`: `None` for a missing key,
+    /// `Some(None)` until a header is set for it.
+    // The front-ends call this from the Rust server commit on.
+    #[allow(dead_code)]
+    pub(crate) fn header<R>(&self, key: u32, f: impl FnOnce(Option<Option<&[u8]>>) -> R) -> R {
+        let storage = self.storage.read();
+        f(storage
+            .values
+            .get(&key)
+            .map(|value| value.header.as_deref()))
     }
 
     fn send_after_ack(&self, generation: u64, messages: Vec<(FastVec<32>, bool)>) {
@@ -642,15 +900,16 @@ impl SyncTrait for DataMulti {
             self.event.clear();
             let mut counter = self.sync_counter.lock();
             *counter = w.values.len();
-            for (index, (data, count)) in w.values.iter() {
+            for (index, value) in w.values.iter() {
                 let messages = pack_data(
                     self.id,
-                    data,
-                    TransportType::Set(*count as u64),
-                    *count as u64,
+                    &value.bytes,
+                    TransportType::Set(value.count as u64),
+                    value.count as u64,
                     self.data_type,
                     Some(*index),
                     false,
+                    self.header_type.stored(value.header.as_deref()),
                 )
                 .map_err(|_| ())?;
 
@@ -720,7 +979,7 @@ pub(crate) fn check_data_type(
     Ok(data.bytes.len() / item_size)
 }
 
-/// Views native-endian `u16` values as a Data operation.
+/// Views native-endian `u16` values as a Data operation without a header.
 #[cfg(test)]
 pub(crate) fn u16_slice(values: &[u16]) -> DataSlice<'_> {
     // SAFETY: `u16` has no padding, so its values are plain bytes.
@@ -729,9 +988,11 @@ pub(crate) fn u16_slice(values: &[u16]) -> DataSlice<'_> {
     DataSlice {
         bytes,
         data_type: DataType::U16,
+        header: None,
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn pack_data(
     id: u64,
     data: &[u8],
@@ -740,6 +1001,7 @@ pub(crate) fn pack_data(
     data_type: DataType,
     multi_data: Option<u32>,
     update: bool,
+    header: WireHeader,
 ) -> Result<Vec<(FastVec<32>, bool)>, String> {
     pack_data_chunked(
         id,
@@ -749,10 +1011,13 @@ pub(crate) fn pack_data(
         data_type,
         multi_data,
         update,
+        header,
         TRANSFER_CHUNK_SIZE,
     )
 }
 
+/// Packs a transfer; the header goes with the message that completes it, in
+/// front of its elements.
 #[allow(clippy::too_many_arguments)]
 pub(in crate::server_core) fn pack_data_chunked(
     id: u64,
@@ -762,6 +1027,7 @@ pub(in crate::server_core) fn pack_data_chunked(
     data_type: DataType,
     multi_data: Option<u32>,
     update: bool,
+    header: WireHeader,
     chunk_limit: usize,
 ) -> Result<Vec<(FastVec<32>, bool)>, String> {
     chunk_transfer(
@@ -770,18 +1036,25 @@ pub(in crate::server_core) fn pack_data_chunked(
         chunk_limit,
         |chunk, range| {
             let len = range.len() as u32;
-            let header = match chunk {
-                Chunk::All => DataHeader::All(data_type, transport_type, update, len),
-                Chunk::Start => DataHeader::StartBatch(data_count, len),
-                Chunk::Batch => DataHeader::Batch(len),
-                Chunk::End => DataHeader::End(data_type, transport_type, update, len),
+            let (message, header_bytes) = match chunk {
+                Chunk::All => (
+                    DataHeader::All(data_type, transport_type, update, len, header.update),
+                    header.bytes,
+                ),
+                Chunk::Start => (DataHeader::StartBatch(data_count, len), &[][..]),
+                Chunk::Batch => (DataHeader::Batch(len), &[][..]),
+                Chunk::End => (
+                    DataHeader::End(data_type, transport_type, update, len, header.update),
+                    header.bytes,
+                ),
             };
             let mut message = match multi_data {
-                None => header.serialize(id, true),
-                Some(index) => MultiDataHeader::serialize_modify(id, index, header),
+                None => message.serialize(id, true),
+                Some(index) => MultiDataHeader::serialize_modify(id, index, message),
             }
             .map_err(|_| "Failed to serialize header".to_string())?;
-            message.reserve_exact(range.len());
+            message.reserve_exact(header_bytes.len() + range.len());
+            message.extend_from_slice(header_bytes);
             message.extend_from_slice(&data[range]);
             Ok(message)
         },
@@ -850,6 +1123,7 @@ mod tests {
             "root.data".into(),
             5,
             DataType::U16,
+            None,
             sender,
             connected.clone(),
         );
@@ -880,6 +1154,7 @@ mod tests {
             DataType::U16,
             None,
             false,
+            WireHeader::DEFAULT,
         );
         assert_eq!(queued(&mut receiver), packed(expected.unwrap()));
     }
@@ -895,6 +1170,7 @@ mod tests {
             "root.data".into(),
             5,
             DataType::U16,
+            None,
             sender,
             connected.clone(),
         );
@@ -924,6 +1200,7 @@ mod tests {
             DataType::U16,
             Some(1),
             false,
+            WireHeader::DEFAULT,
         );
         let reset = MultiDataHeader::Reset(false).serialize(5).unwrap();
         let mut expected = packed(expected.unwrap());
@@ -945,6 +1222,7 @@ mod tests {
             "root.data".into(),
             5,
             DataType::U16,
+            None,
             sender,
             connected.clone(),
         );
@@ -958,7 +1236,7 @@ mod tests {
         queued(&mut receiver);
         connected.store(true, Ordering::Release);
         data.add(holder(&[7]), false).unwrap();
-        data.remove(0, 1, false).unwrap();
+        data.remove(0, 1, None, false).unwrap();
         assert!(queued(&mut receiver).is_empty(), "a window change was sent");
 
         data.sync().unwrap();
@@ -970,6 +1248,7 @@ mod tests {
             DataType::U16,
             None,
             false,
+            WireHeader::DEFAULT,
         );
         assert_eq!(queued(&mut receiver), packed(expected.unwrap()));
 
@@ -984,6 +1263,7 @@ mod tests {
             DataType::U16,
             None,
             false,
+            WireHeader::KEEP,
         );
         assert_eq!(queued(&mut receiver), packed(expected.unwrap()));
     }
@@ -1001,6 +1281,7 @@ mod tests {
             "root.data".into(),
             5,
             DataType::U16,
+            None,
             sender,
             connected.clone(),
         );
@@ -1034,6 +1315,7 @@ mod tests {
             "root.data".into(),
             5,
             DataType::U16,
+            None,
             sender,
             connected.clone(),
         );
@@ -1052,6 +1334,7 @@ mod tests {
             DataType::U16,
             Some(1),
             false,
+            WireHeader::DEFAULT,
         );
         let mut expected = packed(key.unwrap());
         expected.insert(0, contents(&reset));
@@ -1069,6 +1352,7 @@ mod tests {
             "root.data".into(),
             5,
             DataType::U16,
+            None,
             sender,
             connected.clone(),
         );
@@ -1148,6 +1432,7 @@ mod transfer_tests {
                         DataType::U16,
                         key,
                         true,
+                        WireHeader::KEEP,
                     )
                     .unwrap();
                     let total = messages.len();
@@ -1238,17 +1523,17 @@ mod transfer_tests {
             0 => data.set(holder(&values), false),
             1 => data.add(holder(&values), false),
             2 => data.replace(holder(&values), start, false),
-            3 => data.remove(start, values.len().max(1), false),
-            4 => data.clear(false),
+            3 => data.remove(start, values.len().max(1), None, false),
+            4 => data.clear(None, false),
             5 => multi.set(key, holder(&values), false),
             6 => multi.add(key, holder(&values), false).map_err(String::from),
             7 => multi
                 .replace(key, key_start, holder(&values), false)
                 .map_err(String::from),
             8 => multi
-                .remove(key, key_start, values.len().max(1), false)
+                .remove(key, key_start, values.len().max(1), None, false)
                 .map_err(String::from),
-            9 => multi.clear(key, false).map_err(String::from),
+            9 => multi.clear(key, None, false).map_err(String::from),
             10 => multi.remove_index(key, false),
             _ => multi.reset(false),
         };
@@ -1362,6 +1647,7 @@ mod transfer_tests {
             "data".into(),
             51,
             DataType::U16,
+            None,
             sender.clone(),
             connected.clone(),
         );
@@ -1369,6 +1655,7 @@ mod transfer_tests {
             "multi".into(),
             52,
             DataType::U16,
+            None,
             sender.clone(),
             connected.clone(),
         );
@@ -1532,6 +1819,7 @@ mod transfer_tests {
                     DataType::U16,
                     key,
                     false,
+                    WireHeader::KEEP,
                 )
                 .unwrap();
                 let total = messages.len();
@@ -1556,5 +1844,310 @@ mod transfer_tests {
                 read(&expected);
             }
         }
+    }
+}
+
+/// Headers from the server cores to the real client handles.
+#[cfg(all(test, feature = "client"))]
+mod header_tests {
+    use super::*;
+    use crate::client::messages::{ChannelMessage, MessageSender as ClientSender, MessagesParser};
+    use crate::client::states::data::{
+        Data as ClientData, DataMulti as ClientMulti, UpdateData, UpdateMultiData,
+    };
+    use crate::client::states::data_take::{DataTake as ClientTake, UpdateDataTake};
+    use crate::protocol::{ServerHeader, VALUE_MAX_SIZE};
+    use crate::server_core::error::ErrorKind;
+    use crate::server_core::net::sender::MessageReceiver;
+    use crate::server_core::states::data_take::DataTake;
+    use crate::typed::Typed;
+
+    type Meta = (u32, String);
+
+    fn meta(n: u32) -> Meta {
+        (n, format!("m{n}"))
+    }
+
+    fn encoded(n: u32) -> Vec<u8> {
+        postcard::to_stdvec(&meta(n)).unwrap()
+    }
+
+    fn type_id() -> Option<u32> {
+        Some(<Meta as Typed>::get_type().get_hash())
+    }
+
+    fn with<'a>(values: &'a [u16], header: Option<&'a [u8]>) -> DataSlice<'a> {
+        DataSlice {
+            header,
+            ..u16_slice(values)
+        }
+    }
+
+    /// Feeds every queued message to the client handles and returns how many
+    /// acknowledgements they sent.
+    fn deliver(
+        receiver: &mut MessageReceiver,
+        acks: &mut tokio::sync::mpsc::UnboundedReceiver<Option<ChannelMessage>>,
+        single: Option<&ClientData<u16, Meta>>,
+        multi: Option<&ClientMulti<u16, Meta>>,
+    ) -> usize {
+        while let Ok(Some((message, _))) = receiver.try_recv() {
+            let (mut parser, first) = MessagesParser::from_bytes(message.into_bytes()).unwrap();
+            let mut next = Some(first);
+            while let Some((header, payload)) = next {
+                match header {
+                    ServerHeader::Data(_, header) => {
+                        single.unwrap().update_data((header, payload)).unwrap()
+                    }
+                    ServerHeader::MultiData(_, MultiDataHeader::Modify(key, header)) => {
+                        multi.unwrap().update(key, (header, payload)).unwrap()
+                    }
+                    ServerHeader::MultiData(_, MultiDataHeader::Remove(key, _)) => {
+                        multi.unwrap().remove(key)
+                    }
+                    ServerHeader::MultiData(_, MultiDataHeader::Reset(_)) => multi.unwrap().reset(),
+                    _ => panic!("unexpected server message"),
+                }
+                next = parser.next().unwrap();
+            }
+        }
+        let mut count = 0;
+        while let Ok(Some(ChannelMessage::Ack(_))) = acks.try_recv() {
+            count += 1;
+        }
+        count
+    }
+
+    #[test]
+    fn a_data_header_is_published_with_its_buffer() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let (sender, mut receiver) = MessageSender::new();
+        let connected = Arc::new(AtomicBool::new(true));
+        let data = Data::new(
+            "root.data".into(),
+            5,
+            DataType::U16,
+            type_id(),
+            sender,
+            connected,
+        );
+        let (client_sender, mut acks) = ClientSender::new();
+        let client = ClientData::<u16, Meta>::new("root.data".into(), 5, client_sender);
+        let mut deliver =
+            |single: &ClientData<u16, Meta>| deliver(&mut receiver, &mut acks, Some(single), None);
+
+        // A synchronization before any header was set sends the default.
+        data.sync().unwrap();
+        deliver(&client);
+        assert_eq!(client.header(), Meta::default());
+        data.header(|header| assert_eq!(header, None));
+
+        data.set(with(&[1, 2], Some(&encoded(1))), false).unwrap();
+        assert_eq!(deliver(&client), 1);
+        client.read_with_header(|values, header| {
+            assert_eq!((values, header), (&[1, 2][..], &meta(1)));
+        });
+        data.acknowledge();
+
+        // Without a header, a change keeps the current one.
+        data.add(with(&[3], None), false).unwrap();
+        deliver(&client);
+        data.acknowledge();
+        assert_eq!((client.get(), client.header()), (vec![1, 2, 3], meta(1)));
+
+        data.remove(0, 1, Some(&encoded(2)), false).unwrap();
+        deliver(&client);
+        data.acknowledge();
+        assert_eq!((client.get(), client.header()), (vec![2, 3], meta(2)));
+
+        // A header alone needs no acknowledgement.
+        data.set_header(&encoded(3), false).unwrap();
+        assert_eq!(deliver(&client), 0);
+        assert_eq!((client.get(), client.header()), (vec![2, 3], meta(3)));
+
+        data.clear(None, false).unwrap();
+        deliver(&client);
+        assert_eq!((client.get(), client.header()), (vec![], meta(3)));
+        data.clear(Some(&encoded(4)), false).unwrap();
+        deliver(&client);
+        assert_eq!(client.header(), meta(4));
+        data.header(|header| assert_eq!(header, Some(&encoded(4)[..])));
+
+        // A reconnecting client gets the stored header, with the empty buffer.
+        Acknowledge::reset(&*data);
+        let (client_sender, _acks) = ClientSender::new();
+        let fresh = ClientData::<u16, Meta>::new("root.data".into(), 5, client_sender);
+        data.sync().unwrap();
+        deliver(&fresh);
+        assert_eq!((fresh.get(), fresh.header()), (vec![], meta(4)));
+
+        data.set(with(&[9], None), false).unwrap();
+        deliver(&fresh);
+        data.acknowledge();
+        Acknowledge::reset(&*data);
+        let (client_sender, _acks) = ClientSender::new();
+        let fresh = ClientData::<u16, Meta>::new("root.data".into(), 5, client_sender);
+        data.sync().unwrap();
+        deliver(&fresh);
+        assert_eq!((fresh.get(), fresh.header()), (vec![9], meta(4)));
+    }
+
+    #[test]
+    fn headers_are_checked_before_anything_is_stored() {
+        let (sender, _receiver) = MessageSender::new();
+        let connected = Arc::new(AtomicBool::new(false));
+        let plain = Data::new(
+            "root.plain".into(),
+            5,
+            DataType::U16,
+            None,
+            sender.clone(),
+            connected.clone(),
+        );
+        let header = encoded(1);
+        for error in [
+            plain.set(with(&[1], Some(&header)), false).unwrap_err(),
+            plain.clear(Some(&header), false).unwrap_err(),
+            plain.set_header(&header, false).unwrap_err(),
+        ] {
+            assert!(error.contains("registered without a header"), "{error}");
+        }
+        plain.get(|bytes| assert!(bytes.is_empty()));
+
+        let data = Data::new(
+            "root.data".into(),
+            6,
+            DataType::U16,
+            type_id(),
+            sender,
+            connected,
+        );
+        let largest = vec![0; VALUE_MAX_SIZE];
+        data.set_header(&largest, false).unwrap();
+        let error = data
+            .set_header(&[0; VALUE_MAX_SIZE + 1], false)
+            .unwrap_err();
+        assert!(error.contains("root.data header"), "{error}");
+        assert!(error.contains("too large"), "{error}");
+        data.header(|header| assert_eq!(header.map(<[u8]>::len), Some(VALUE_MAX_SIZE)));
+    }
+
+    #[test]
+    fn every_key_has_its_own_header() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let (sender, mut receiver) = MessageSender::new();
+        let connected = Arc::new(AtomicBool::new(true));
+        let data = DataMulti::new(
+            "root.multi".into(),
+            5,
+            DataType::U16,
+            type_id(),
+            sender,
+            connected,
+        );
+        let (client_sender, mut acks) = ClientSender::new();
+        let client = ClientMulti::<u16, Meta>::new("root.multi".into(), 5, client_sender);
+        let mut deliver =
+            |multi: &ClientMulti<u16, Meta>| deliver(&mut receiver, &mut acks, None, Some(multi));
+        data.sync().unwrap();
+        deliver(&client);
+
+        // A new key without a header gets the default one.
+        data.set(1, with(&[1], None), false).unwrap();
+        deliver(&client);
+        data.acknowledge();
+        assert_eq!(client.header(1), Some(Meta::default()));
+        data.header(1, |header| assert_eq!(header, Some(None)));
+
+        data.set_header(1, &encoded(1), false).unwrap();
+        deliver(&client);
+        data.set(1, with(&[2, 3], None), false).unwrap();
+        deliver(&client);
+        data.acknowledge();
+        client.read_with_header(1, |entry| {
+            assert_eq!(entry, Some((&[2, 3][..], &meta(1))));
+        });
+
+        data.set(2, with(&[4], Some(&encoded(2))), false).unwrap();
+        deliver(&client);
+        data.acknowledge();
+        let mut seen = Vec::new();
+        client.for_each_with_header(|key, values, header| {
+            seen.push((key, values.to_vec(), header.clone()))
+        });
+        seen.sort();
+        assert_eq!(seen, [(1, vec![2, 3], meta(1)), (2, vec![4], meta(2))]);
+
+        let error = data.set_header(9, &encoded(9), false).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::NotFound);
+
+        // Removing a key drops its header on both sides.
+        data.remove_index(1, false).unwrap();
+        deliver(&client);
+        assert_eq!(client.header(1), None);
+        data.header(1, |header| assert_eq!(header, None));
+
+        // A reconnecting client gets every key with its stored header.
+        data.set(3, with(&[5], None), false).unwrap();
+        deliver(&client);
+        data.acknowledge();
+        Acknowledge::reset(&*data);
+        let (client_sender, _acks) = ClientSender::new();
+        let fresh = ClientMulti::<u16, Meta>::new("root.multi".into(), 5, client_sender);
+        data.sync().unwrap();
+        deliver(&fresh);
+        assert_eq!(fresh.header(2), Some(meta(2)));
+        assert_eq!(fresh.header(3), Some(Meta::default()));
+        assert_eq!(fresh.header(1), None);
+    }
+
+    #[test]
+    fn a_take_brings_its_header_also_from_the_cache() {
+        let (sender, mut receiver) = MessageSender::new();
+        let connected = Arc::new(AtomicBool::new(true));
+        let take = DataTake::new(
+            "root.take".into(),
+            5,
+            DataType::U16,
+            type_id(),
+            sender,
+            connected,
+        );
+        let (client_sender, _acks) = ClientSender::new();
+        let client = ClientTake::<u16, Meta>::new("root.take".into(), 5, client_sender);
+        let mut deliver = || {
+            while let Ok(Some((message, _))) = receiver.try_recv() {
+                let (_, (header, payload)) =
+                    MessagesParser::from_bytes(message.into_bytes()).unwrap();
+                let ServerHeader::DataTake(_, header, blocking) = header else {
+                    panic!("unexpected server message");
+                };
+                client.update((header, payload), blocking).unwrap();
+            }
+        };
+        take.sync().unwrap();
+
+        take.set(with(&[1, 2], Some(&encoded(1))), false, false, true)
+            .unwrap();
+        deliver();
+        assert_eq!(client.take_with_header(), Some((vec![1, 2], meta(1))));
+
+        take.set(with(&[3], None), false, false, true).unwrap();
+        deliver();
+        assert_eq!(client.take_with_header(), Some((vec![3], Meta::default())));
+
+        // A reconnect replays the cache with its header.
+        take.set(with(&[4], Some(&encoded(4))), false, false, true)
+            .unwrap();
+        deliver();
+        client.take();
+        Acknowledge::reset(&*take);
+        take.sync().unwrap();
+        deliver();
+        assert_eq!(client.take_with_header(), Some((vec![4], meta(4))));
     }
 }

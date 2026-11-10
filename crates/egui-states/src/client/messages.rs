@@ -142,13 +142,11 @@ fn checked_end(pointer: usize, len: u32, total: usize) -> Option<usize> {
 }
 
 impl MessagesParser {
-    /// Takes the next `len` payload bytes of the frame, or fails with `error`
-    /// when the frame is shorter.
-    fn take_payload(&mut self, len: u32, error: &'static str) -> Result<Bytes, &'static str> {
-        let end = checked_end(self.pointer, len, self.data.len()).ok_or(error)?;
-        let data = self.data.slice(self.pointer..end);
-        self.pointer = end;
-        Ok(data)
+    /// Moves past the next `len` payload bytes of the frame, or fails with
+    /// `error` when the frame is shorter.
+    fn skip(&mut self, len: u32, error: &'static str) -> Result<(), &'static str> {
+        self.pointer = checked_end(self.pointer, len, self.data.len()).ok_or(error)?;
+        Ok(())
     }
 
     pub(crate) fn empty() -> Self {
@@ -187,8 +185,12 @@ impl MessagesParser {
         let (header, size) = ServerHeader::deserialize(&self.data[self.pointer..])
             .map_err(|_| "Failed to deserialize message header")?;
         self.pointer += size;
-        let payload = self.take_payload(header.payload_len(), header.incomplete())?;
-        Ok((header, payload))
+        // A Data header's bytes come first; each part is checked on its own,
+        // so their sizes are never added.
+        let start = self.pointer;
+        self.skip(header.header_len(), header.incomplete())?;
+        self.skip(header.payload_len(), header.incomplete())?;
+        Ok((header, self.data.slice(start..self.pointer)))
     }
 }
 
@@ -427,7 +429,13 @@ mod tests {
             ServerHeader::Image(1, ImageHeader::Fill([1, 1], [0; 4], false), u32::MAX),
             ServerHeader::Data(
                 1,
-                DataHeader::All(DataType::U8, TransportType::Set(1), false, u32::MAX),
+                DataHeader::All(
+                    DataType::U8,
+                    TransportType::Set(1),
+                    false,
+                    u32::MAX,
+                    crate::protocol::data::HeaderUpdate::Keep,
+                ),
             ),
             ServerHeader::MultiData(1, MultiDataHeader::Modify(2, DataHeader::Batch(u32::MAX))),
             ServerHeader::DataTake(1, DataTakeHeader::Batch(u32::MAX), false),
@@ -631,7 +639,13 @@ mod tests {
             dispatch_missing((
                 ServerHeader::Data(
                     76,
-                    DataHeader::All(DataType::U8, TransportType::Set(1), false, 0),
+                    DataHeader::All(
+                        DataType::U8,
+                        TransportType::Set(1),
+                        false,
+                        0,
+                        crate::protocol::data::HeaderUpdate::Keep,
+                    ),
                 ),
                 Bytes::from_static(&[1]),
             )),
@@ -647,7 +661,13 @@ mod tests {
                     78,
                     MultiDataHeader::Modify(
                         3,
-                        DataHeader::All(DataType::U8, TransportType::Set(1), false, 0),
+                        DataHeader::All(
+                            DataType::U8,
+                            TransportType::Set(1),
+                            false,
+                            0,
+                            crate::protocol::data::HeaderUpdate::Keep,
+                        ),
                     ),
                 ),
                 Bytes::from_static(&[1]),
@@ -660,7 +680,11 @@ mod tests {
     fn missing_take_data_acks_only_blocking_terminal_operations() {
         assert_ack(
             dispatch_missing((
-                ServerHeader::DataTake(79, DataTakeHeader::All(DataType::U8, 1, false, 0), true),
+                ServerHeader::DataTake(
+                    79,
+                    DataTakeHeader::All(DataType::U8, 1, false, 0, None),
+                    true,
+                ),
                 Bytes::from_static(&[1]),
             )),
             79,
@@ -675,7 +699,7 @@ mod tests {
                     81,
                     DataMultiTakeHeader::Modify(
                         3,
-                        DataTakeHeader::All(DataType::U8, 1, false, 0),
+                        DataTakeHeader::All(DataType::U8, 1, false, 0, None),
                         true,
                     ),
                 ),
@@ -688,7 +712,7 @@ mod tests {
                 82,
                 DataMultiTakeHeader::Modify(
                     3,
-                    DataTakeHeader::All(DataType::U8, 1, false, 0),
+                    DataTakeHeader::All(DataType::U8, 1, false, 0, None),
                     false,
                 ),
             ),

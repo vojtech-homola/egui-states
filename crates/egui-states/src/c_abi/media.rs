@@ -113,6 +113,7 @@ pub(crate) fn data_slice(kind: DataKind, bytes: &[u8]) -> Result<DataSlice<'_>> 
     Ok(DataSlice {
         bytes,
         data_type: kind.data_type(),
+        header: None,
     })
 }
 

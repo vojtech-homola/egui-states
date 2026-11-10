@@ -77,14 +77,52 @@ pub(crate) enum TransportType {
     Replace(u64, u64), // start index and element count of data
 }
 
+/// A typed header sent with a Data message. Its `size` encoded bytes come
+/// first in the payload, before any elements.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+pub(crate) struct HeaderBytes {
+    /// The type hash of the header type.
+    pub(crate) type_id: u32,
+    pub(crate) size: u32,
+}
+
+/// What a Data message does to the state's header.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+pub(crate) enum HeaderUpdate {
+    /// The header stays as it is.
+    Keep,
+    /// The header returns to its type's default.
+    Default,
+    /// The header becomes the one encoded in the payload.
+    Set(HeaderBytes),
+}
+
+#[cfg(feature = "client")]
+impl HeaderUpdate {
+    /// The header bytes this update puts in front of the elements.
+    pub(crate) fn len(&self) -> u32 {
+        match self {
+            Self::Set(header) => header.size,
+            Self::Keep | Self::Default => 0,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 pub(crate) enum DataHeader {
-    All(DataType, TransportType, bool, u32), // data type, transport type, update flag, size of last batch
-    StartBatch(u64, u32),                    // total element count of data, size of first batch
-    Batch(u32),                              // size of batch
-    End(DataType, TransportType, bool, u32), // data type, transport type, update flag, size of last batch
-    Drain(u64, u64, bool), // start and element count of data to drain, update flag
-    Clear(bool),           // update flag
+    /// Data type, transport type, update flag, element bytes, header.
+    All(DataType, TransportType, bool, u32, HeaderUpdate),
+    StartBatch(u64, u32), // total element count of data, size of first batch
+    Batch(u32),           // size of batch
+    /// Data type, transport type, update flag, element bytes of the last
+    /// batch, header.
+    End(DataType, TransportType, bool, u32, HeaderUpdate),
+    /// Start and element count to drain, update flag, header.
+    Drain(u64, u64, bool, HeaderUpdate),
+    /// Update flag, header.
+    Clear(bool, HeaderUpdate),
+    /// A new header alone: update flag, header.
+    Header(bool, HeaderBytes),
 }
 
 #[cfg(any(feature = "server", feature = "python"))]
@@ -100,11 +138,22 @@ impl DataHeader {
 
 #[cfg(feature = "client")]
 impl DataHeader {
+    /// Bytes of elements in the payload, after the header bytes.
     pub(crate) fn payload_len(&self) -> u32 {
         match self {
-            Self::All(.., size) | Self::End(.., size) => *size,
+            Self::All(_, _, _, size, _) | Self::End(_, _, _, size, _) => *size,
             Self::StartBatch(_, size) | Self::Batch(size) => *size,
-            Self::Drain(..) | Self::Clear(_) => 0,
+            Self::Drain(..) | Self::Clear(..) | Self::Header(..) => 0,
+        }
+    }
+
+    /// Bytes of the header at the start of the payload.
+    pub(crate) fn header_len(&self) -> u32 {
+        match self {
+            Self::All(.., header) | Self::End(.., header) => header.len(),
+            Self::Drain(.., header) | Self::Clear(_, header) => header.len(),
+            Self::Header(_, header) => header.size,
+            Self::StartBatch(..) | Self::Batch(_) => 0,
         }
     }
 
@@ -112,8 +161,10 @@ impl DataHeader {
     /// a batch never do.
     pub(crate) fn update_flag(&self) -> bool {
         match self {
-            Self::All(_, _, update, _) | Self::End(_, _, update, _) => *update,
-            Self::Drain(_, _, update) | Self::Clear(update) => *update,
+            Self::All(_, _, update, ..) | Self::End(_, _, update, ..) => *update,
+            Self::Drain(_, _, update, _) | Self::Clear(update, _) | Self::Header(update, _) => {
+                *update
+            }
             Self::StartBatch(..) | Self::Batch(_) => false,
         }
     }
@@ -126,10 +177,14 @@ impl DataHeader {
 
 #[derive(Serialize, Deserialize)]
 pub(crate) enum DataTakeHeader {
-    All(DataType, u64, bool, u32), // data type, element count, update flag, data size
-    StartBatch(u64, u32),          // total element count, size of first batch
-    Batch(u32),                    // size of batch
-    End(DataType, u64, bool, u32), // data type, element count, update flag, size of last batch
+    /// Data type, element count, update flag, element bytes, header (`None`
+    /// for the type's default).
+    All(DataType, u64, bool, u32, Option<HeaderBytes>),
+    StartBatch(u64, u32), // total element count, size of first batch
+    Batch(u32),           // size of batch
+    /// Data type, element count, update flag, element bytes of the last
+    /// batch, header (`None` for the type's default).
+    End(DataType, u64, bool, u32, Option<HeaderBytes>),
 }
 
 #[cfg(any(feature = "server", feature = "python"))]
@@ -145,16 +200,25 @@ impl DataTakeHeader {
 
 #[cfg(feature = "client")]
 impl DataTakeHeader {
+    /// Bytes of elements in the payload, after the header bytes.
     pub(crate) fn payload_len(&self) -> u32 {
         match self {
-            Self::All(.., size) | Self::End(.., size) => *size,
+            Self::All(_, _, _, size, _) | Self::End(_, _, _, size, _) => *size,
             Self::StartBatch(_, size) | Self::Batch(size) => *size,
+        }
+    }
+
+    /// Bytes of the header at the start of the payload.
+    pub(crate) fn header_len(&self) -> u32 {
+        match self {
+            Self::All(.., header) | Self::End(.., header) => header.map_or(0, |h| h.size),
+            Self::StartBatch(..) | Self::Batch(_) => 0,
         }
     }
 
     pub(crate) fn update_flag(&self) -> bool {
         match self {
-            Self::All(_, _, update, _) | Self::End(_, _, update, _) => *update,
+            Self::All(_, _, update, ..) | Self::End(_, _, update, ..) => *update,
             Self::StartBatch(..) | Self::Batch(_) => false,
         }
     }

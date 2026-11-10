@@ -977,7 +977,7 @@ impl StateServerCore {
     ) -> PyResult<()> {
         py.detach(|| {
             self.inner_data(value_id)?
-                .remove(index, count, update)
+                .remove(index, count, None, update)
                 .map_err(PyValueError::new_err)
         })
     }
@@ -985,7 +985,7 @@ impl StateServerCore {
     fn data_clear(&self, py: Python, value_id: u64, update: bool) -> PyResult<()> {
         py.detach(|| {
             self.inner_data(value_id)?
-                .clear(update)
+                .clear(None, update)
                 .map_err(PyValueError::new_err)
         })
     }
@@ -1094,7 +1094,7 @@ impl StateServerCore {
     ) -> PyResult<()> {
         py.detach(|| {
             self.inner_data_multi(value_id)?
-                .remove(index, data_index, count, update)
+                .remove(index, data_index, count, None, update)
                 .map_err(PyValueError::new_err)
         })
     }
@@ -1108,7 +1108,7 @@ impl StateServerCore {
     ) -> PyResult<()> {
         py.detach(|| {
             self.inner_data_multi(value_id)?
-                .clear(index, update)
+                .clear(index, None, update)
                 .map_err(PyValueError::new_err)
         })
     }
@@ -1353,7 +1353,7 @@ impl StateServerCore {
         let value_id = self
             .server
             .write()
-            .add_data(&name, data_type)
+            .add_data(&name, data_type, None)
             .map_err(|e| PyValueError::new_err(format!("Failed to add Data: {}", e)))?;
         Ok(value_id)
     }
@@ -1362,7 +1362,7 @@ impl StateServerCore {
         let value_id = self
             .server
             .write()
-            .add_data_multi(&name, data_type)
+            .add_data_multi(&name, data_type, None)
             .map_err(|e| PyValueError::new_err(format!("Failed to add DataMulti: {}", e)))?;
         Ok(value_id)
     }
@@ -1371,7 +1371,7 @@ impl StateServerCore {
         let value_id = self
             .server
             .write()
-            .add_data_take(&name, data_type)
+            .add_data_take(&name, data_type, None)
             .map_err(|e| PyValueError::new_err(format!("Failed to add DataTake: {}", e)))?;
         Ok(value_id)
     }
@@ -1380,7 +1380,7 @@ impl StateServerCore {
         let value_id = self
             .server
             .write()
-            .add_data_multi_take(&name, data_type)
+            .add_data_multi_take(&name, data_type, None)
             .map_err(|e| PyValueError::new_err(format!("Failed to add DataMultiTake: {}", e)))?;
         Ok(value_id)
     }

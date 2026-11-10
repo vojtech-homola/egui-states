@@ -3,6 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::protocol::VALUE_MAX_SIZE;
 use crate::protocol::fastvec::{FastVec, serialize_to_data};
 use crate::protocol::header::{ClientHeader, ServerHeader};
 
@@ -12,6 +13,17 @@ use crate::protocol::header::{ClientHeader, ServerHeader};
 /// unsent rest of a message after every partial socket write, which costs
 /// time quadratic in the message size.
 pub(crate) const TRANSFER_CHUNK_SIZE: usize = 512 * 1024;
+
+/// The longest encoding of a Data message's server header; a test checks the
+/// worst case of every variant.
+pub(crate) const MAX_SERVER_HEADER_LEN: usize = 64;
+
+// The message that completes a transfer carries a chunk of elements and a
+// typed header of up to a value's size; it must fit one WebSocket frame.
+const _: () = assert!(
+    TRANSFER_CHUNK_SIZE + VALUE_MAX_SIZE + MAX_SERVER_HEADER_LEN
+        <= crate::protocol::WEBSOCKET_MAX_SIZE
+);
 
 impl ServerHeader {
     pub fn serialize_value<const N: usize>(
@@ -127,4 +139,60 @@ where
 {
     postcard::serialize_with_flavor::<T, FastVec<N>, FastVec<N>>(value, FastVec::new_heap())
         .map_err(|_| ())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::protocol::data::{
+        DataHeader, DataMultiTakeHeader, DataTakeHeader, DataType, HeaderBytes, HeaderUpdate,
+        MultiDataHeader, TransportType,
+    };
+    use crate::protocol::fastvec::serialize;
+
+    #[test]
+    fn every_data_header_fits_the_reserved_length() {
+        let header = HeaderBytes {
+            type_id: u32::MAX,
+            size: u32::MAX,
+        };
+        let set = HeaderUpdate::Set(header);
+        let transport = TransportType::Replace(u64::MAX, u64::MAX);
+        let data = || {
+            [
+                DataHeader::All(DataType::F64, transport, true, u32::MAX, set),
+                DataHeader::StartBatch(u64::MAX, u32::MAX),
+                DataHeader::Batch(u32::MAX),
+                DataHeader::End(DataType::F64, transport, true, u32::MAX, set),
+                DataHeader::Drain(u64::MAX, u64::MAX, true, set),
+                DataHeader::Clear(true, set),
+                DataHeader::Header(true, header),
+            ]
+        };
+        let take = || {
+            [
+                DataTakeHeader::All(DataType::F64, u64::MAX, true, u32::MAX, Some(header)),
+                DataTakeHeader::StartBatch(u64::MAX, u32::MAX),
+                DataTakeHeader::Batch(u32::MAX),
+                DataTakeHeader::End(DataType::F64, u64::MAX, true, u32::MAX, Some(header)),
+            ]
+        };
+        let mut messages = Vec::new();
+        messages.extend(data().map(|header| ServerHeader::Data(u64::MAX, header)));
+        messages.extend(data().map(|header| {
+            ServerHeader::MultiData(u64::MAX, MultiDataHeader::Modify(u32::MAX, header))
+        }));
+        messages.extend(take().map(|header| ServerHeader::DataTake(u64::MAX, header, true)));
+        messages.extend(take().map(|header| {
+            ServerHeader::DataMultiTake(
+                u64::MAX,
+                DataMultiTakeHeader::Modify(u32::MAX, header, true),
+            )
+        }));
+        assert_eq!(messages.len(), 22);
+        for message in &messages {
+            let len = serialize::<_, 128>(message).unwrap().len();
+            assert!(len <= MAX_SERVER_HEADER_LEN, "{len} bytes");
+        }
+    }
 }

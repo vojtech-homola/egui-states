@@ -365,7 +365,8 @@ impl CServer {
     /// Registers a `Data` buffer of `kind` elements.
     pub fn add_data(&self, name: &str, kind: DataKind) -> Result<u64> {
         self.register(name, |_, core, id| {
-            core.add_data(name, kind as u8).map_err(Error::internal)?;
+            core.add_data(name, kind as u8, None)
+                .map_err(Error::internal)?;
             let state = State::Data(registered(core.get_data(id))?, kind);
             Ok((state, Some(kind.name().to_owned())))
         })
@@ -374,7 +375,7 @@ impl CServer {
     /// Registers a `DataTake` buffer of `kind` elements.
     pub fn add_data_take(&self, name: &str, kind: DataKind) -> Result<u64> {
         self.register(name, |_, core, id| {
-            core.add_data_take(name, kind as u8)
+            core.add_data_take(name, kind as u8, None)
                 .map_err(Error::internal)?;
             let state = State::DataTake(registered(core.get_data_take(id))?, kind);
             Ok((state, Some(kind.name().to_owned())))
@@ -384,7 +385,7 @@ impl CServer {
     /// Registers a `DataMulti` collection of `kind` buffers.
     pub fn add_data_multi(&self, name: &str, kind: DataKind) -> Result<u64> {
         self.register(name, |_, core, id| {
-            core.add_data_multi(name, kind as u8)
+            core.add_data_multi(name, kind as u8, None)
                 .map_err(Error::internal)?;
             let state = State::DataMulti(registered(core.get_data_multi(id))?, kind);
             Ok((state, Some(kind.name().to_owned())))
@@ -394,7 +395,7 @@ impl CServer {
     /// Registers a `DataMultiTake` collection of `kind` buffers.
     pub fn add_data_multi_take(&self, name: &str, kind: DataKind) -> Result<u64> {
         self.register(name, |_, core, id| {
-            core.add_data_multi_take(name, kind as u8)
+            core.add_data_multi_take(name, kind as u8, None)
                 .map_err(Error::internal)?;
             let state = State::DataMultiTake(registered(core.get_data_multi_take(id))?, kind);
             Ok((state, Some(kind.name().to_owned())))
@@ -921,14 +922,14 @@ impl CServer {
     pub fn data_remove(&self, id: u64, index: usize, count: usize, update: bool) -> Result<()> {
         let (_, core, _) = lookup!(self.states()?, id, Data(core, kind));
         check_count(count)?;
-        core.remove(index, count, update)
+        core.remove(index, count, None, update)
             .map_err(Error::out_of_range)
     }
 
     /// Removes every element.
     pub fn data_clear(&self, id: u64, update: bool) -> Result<()> {
         let (_, core, _) = lookup!(self.states()?, id, Data(core, kind));
-        core.clear(update).map_err(Error::internal)
+        core.clear(None, update).map_err(Error::internal)
     }
 
     /// Sends a one-shot buffer; `cache` keeps it for clients that connect later.
@@ -1020,17 +1021,14 @@ impl CServer {
     ) -> Result<()> {
         let (name, core, _) = lookup!(self.states()?, id, DataMulti(core, kind));
         check_count(count)?;
-        core.remove(index, data_index, count, update).map_err(keyed(
-            name,
-            index,
-            Error::out_of_range,
-        ))
+        core.remove(index, data_index, count, None, update)
+            .map_err(keyed(name, index, Error::out_of_range))
     }
 
     /// Removes every element of the buffer at `index`, keeping the index.
     pub fn data_multi_clear(&self, id: u64, index: u32, update: bool) -> Result<()> {
         let (name, core, _) = lookup!(self.states()?, id, DataMulti(core, kind));
-        core.clear(index, update)
+        core.clear(index, None, update)
             .map_err(keyed(name, index, Error::out_of_range))
     }
 

@@ -90,7 +90,7 @@ pub use client::{
     client::{Client, ConnectionState},
     states::{
         atomics::{Atomic, AtomicLock, AtomicLockStatic, AtomicStatic, FallbackLock, UpdateLock},
-        data::{Data, DataMulti},
+        data::{Data, DataMulti, HeaderValue},
         data_take::{DataMultiTake, DataTake},
         image::{Image, ImageMulti},
         initial_value::{InitValue, InitialValue},

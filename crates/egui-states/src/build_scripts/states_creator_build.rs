@@ -5,7 +5,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::State;
 use crate::client::states::atomics::{Atomic, AtomicStatic};
-use crate::client::states::data::{Data, DataMulti, private::GetDataType};
+use crate::client::states::data::{
+    Data, DataMulti, HeaderValue, data_type_hash, private::GetDataType,
+};
 use crate::client::states::data_take::{DataMultiTake, DataTake};
 use crate::client::states::image::{Image, ImageMulti};
 use crate::client::states::initial_value::{InitValue, InitialValue};
@@ -131,10 +133,11 @@ pub(crate) enum StateType {
     ValueMap(String, ObjectType, ObjectType),
     ValueVec(String, ObjectType),
     Signal(String, ObjectType, bool),
-    Data(String, DataType),
-    DataTake(String, DataType),
-    DataMulti(String, DataType),
-    DataMultiTake(String, DataType),
+    /// Name, element type and header type (`None` for a state without one).
+    Data(String, DataType, Option<ObjectType>),
+    DataTake(String, DataType, Option<ObjectType>),
+    DataMulti(String, DataType, Option<ObjectType>),
+    DataMultiTake(String, DataType, Option<ObjectType>),
     SubState(String, &'static str, Vec<StateType>),
 }
 
@@ -190,6 +193,17 @@ impl StatesCreatorBuild {
     fn collect_rust_derives<T: Typed>(&mut self) {
         for derive in T::rust_derives() {
             self.rust_derives.insert(derive);
+        }
+    }
+
+    /// The header type of a Data state, collecting its Rust derives.
+    fn header_type<H: HeaderValue>(&mut self) -> Option<ObjectType> {
+        match H::get_type() {
+            ObjectType::Empty => None,
+            object_type => {
+                self.collect_rust_derives::<H>();
+                Some(object_type)
+            }
         }
     }
 }
@@ -442,79 +456,90 @@ impl StatesCreator for StatesCreatorBuild {
         value
     }
 
-    fn data<T>(&mut self, name: &str) -> Data<T>
+    fn data<T, H>(&mut self, name: &str) -> Data<T, H>
     where
         T: GetDataType + Send + Sync + 'static,
+        H: HeaderValue,
     {
         let (full_name, id) = state_path(&self.parent, name);
         hash_id_type(
             &mut self.version_hasher,
             id,
-            T::get_type_id(),
+            data_type_hash::<T, H>(),
             states_creator::DATA_HASH_ID,
         );
 
         let value = Data::new(full_name, id, self.sender.clone());
 
+        let header = self.header_type::<H>();
         self.states
-            .push(StateType::Data(name.to_owned(), T::get_type()));
+            .push(StateType::Data(name.to_owned(), T::get_type(), header));
         value
     }
 
-    fn data_multi<T>(&mut self, name: &str) -> DataMulti<T>
+    fn data_multi<T, H>(&mut self, name: &str) -> DataMulti<T, H>
     where
         T: GetDataType + Send + Sync + 'static,
+        H: HeaderValue,
     {
         let (full_name, id) = state_path(&self.parent, name);
         hash_id_type(
             &mut self.version_hasher,
             id,
-            T::get_type_id(),
+            data_type_hash::<T, H>(),
             states_creator::DATA_MULTI_HASH_ID,
         );
 
         let value = DataMulti::new(full_name, id, self.sender.clone());
 
+        let header = self.header_type::<H>();
         self.states
-            .push(StateType::DataMulti(name.to_owned(), T::get_type()));
+            .push(StateType::DataMulti(name.to_owned(), T::get_type(), header));
         value
     }
 
-    fn data_take<T>(&mut self, name: &str) -> DataTake<T>
+    fn data_take<T, H>(&mut self, name: &str) -> DataTake<T, H>
     where
         T: GetDataType + Send + Sync + 'static,
+        H: HeaderValue,
     {
         let (full_name, id) = state_path(&self.parent, name);
         hash_id_type(
             &mut self.version_hasher,
             id,
-            T::get_type_id(),
+            data_type_hash::<T, H>(),
             states_creator::DATA_TAKE_HASH_ID,
         );
 
         let value = DataTake::new(full_name, id, self.sender.clone());
 
+        let header = self.header_type::<H>();
         self.states
-            .push(StateType::DataTake(name.to_owned(), T::get_type()));
+            .push(StateType::DataTake(name.to_owned(), T::get_type(), header));
         value
     }
 
-    fn data_multi_take<T>(&mut self, name: &str) -> DataMultiTake<T>
+    fn data_multi_take<T, H>(&mut self, name: &str) -> DataMultiTake<T, H>
     where
         T: GetDataType + Send + Sync + 'static,
+        H: HeaderValue,
     {
         let (full_name, id) = state_path(&self.parent, name);
         hash_id_type(
             &mut self.version_hasher,
             id,
-            T::get_type_id(),
+            data_type_hash::<T, H>(),
             states_creator::DATA_MULTI_TAKE_HASH_ID,
         );
 
         let value = DataMultiTake::new(full_name, id, self.sender.clone());
 
-        self.states
-            .push(StateType::DataMultiTake(name.to_owned(), T::get_type()));
+        let header = self.header_type::<H>();
+        self.states.push(StateType::DataMultiTake(
+            name.to_owned(),
+            T::get_type(),
+            header,
+        ));
         value
     }
 }

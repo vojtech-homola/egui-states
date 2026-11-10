@@ -18,7 +18,11 @@ pub(crate) fn data_slice(buffer: &PyUntypedBuffer, data_type: DataType) -> PyRes
     // `buf_ptr()`, and `buffer` keeps them alive while the view is borrowed.
     let bytes =
         unsafe { std::slice::from_raw_parts(buffer.buf_ptr().cast::<u8>(), buffer.len_bytes()) };
-    Ok(DataSlice { bytes, data_type })
+    Ok(DataSlice {
+        bytes,
+        data_type,
+        header: None,
+    })
 }
 
 fn check_data_type(buffer: &PyUntypedBuffer, data_type: DataType) -> Result<(), String> {

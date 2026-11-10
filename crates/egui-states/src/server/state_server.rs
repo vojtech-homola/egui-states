@@ -564,7 +564,7 @@ impl StateServer {
     {
         let mut server = self.inner.server.write();
         let id = server
-            .add_data(&name, T::TYPE_ID)
+            .add_data(&name, T::TYPE_ID, None)
             .map_err(ServerError::new)?;
         let value = server.get_data(id).ok_or_else(|| {
             ServerError::new(format!("data not found after registration: {name}"))
@@ -578,7 +578,7 @@ impl StateServer {
     {
         let mut server = self.inner.server.write();
         let id = server
-            .add_data_take(&name, T::TYPE_ID)
+            .add_data_take(&name, T::TYPE_ID, None)
             .map_err(ServerError::new)?;
         let value = server.get_data_take(id).ok_or_else(|| {
             ServerError::new(format!("data_take not found after registration: {name}"))
@@ -592,7 +592,7 @@ impl StateServer {
     {
         let mut server = self.inner.server.write();
         let id = server
-            .add_data_multi(&name, T::TYPE_ID)
+            .add_data_multi(&name, T::TYPE_ID, None)
             .map_err(ServerError::new)?;
         let value = server.get_data_multi(id).ok_or_else(|| {
             ServerError::new(format!("data_multi not found after registration: {name}"))
@@ -609,7 +609,7 @@ impl StateServer {
     {
         let mut server = self.inner.server.write();
         let id = server
-            .add_data_multi_take(&name, T::TYPE_ID)
+            .add_data_multi_take(&name, T::TYPE_ID, None)
             .map_err(ServerError::new)?;
         let value = server.get_data_multi_take(id).ok_or_else(|| {
             ServerError::new(format!(

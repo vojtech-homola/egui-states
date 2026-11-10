@@ -69,7 +69,8 @@ mod tests {
     fn header_variant_indexes_are_stable() {
         use crate::protocol::collections::{MapHeader, VecHeader};
         use crate::protocol::data::{
-            DataHeader, DataMultiTakeHeader, DataTakeHeader, DataType, MultiDataHeader,
+            DataHeader, DataMultiTakeHeader, DataTakeHeader, DataType, HeaderUpdate,
+            MultiDataHeader,
         };
 
         let server = [
@@ -77,7 +78,7 @@ mod tests {
             ServerHeader::ValueTake(1, 2, false, false, 0),
             ServerHeader::Static(1, 2, false, 0),
             ServerHeader::Image(1, ImageHeader::Fill([1, 1], [0; 4], false), 0),
-            ServerHeader::Data(1, DataHeader::Clear(false)),
+            ServerHeader::Data(1, DataHeader::Clear(false, HeaderUpdate::Keep)),
             ServerHeader::DataTake(1, DataTakeHeader::Batch(0), false),
             ServerHeader::MultiData(1, MultiDataHeader::Reset(false)),
             ServerHeader::DataMultiTake(1, DataMultiTakeHeader::Reset(false)),
@@ -142,11 +143,23 @@ mod tests {
     fn nested_header_variant_indexes_are_stable() {
         use crate::protocol::collections::{MapHeader, VecHeader};
         use crate::protocol::data::{
-            DataHeader, DataMultiTakeHeader, DataTakeHeader, DataType, MultiDataHeader,
-            TransportType,
+            DataHeader, DataMultiTakeHeader, DataTakeHeader, DataType, HeaderBytes, HeaderUpdate,
+            MultiDataHeader, TransportType,
         };
         use crate::protocol::image::{ImageSetHeader, ImageType};
 
+        let header = HeaderBytes {
+            type_id: 0,
+            size: 0,
+        };
+        assert_tags(
+            "HeaderUpdate",
+            &[
+                HeaderUpdate::Keep,
+                HeaderUpdate::Default,
+                HeaderUpdate::Set(header),
+            ],
+        );
         assert_tags(
             "TransportType",
             &[
@@ -158,28 +171,41 @@ mod tests {
         assert_tags(
             "DataHeader",
             &[
-                DataHeader::All(DataType::U8, TransportType::Set(0), false, 0),
+                DataHeader::All(
+                    DataType::U8,
+                    TransportType::Set(0),
+                    false,
+                    0,
+                    HeaderUpdate::Keep,
+                ),
                 DataHeader::StartBatch(0, 0),
                 DataHeader::Batch(0),
-                DataHeader::End(DataType::U8, TransportType::Set(0), false, 0),
-                DataHeader::Drain(0, 0, false),
-                DataHeader::Clear(false),
+                DataHeader::End(
+                    DataType::U8,
+                    TransportType::Set(0),
+                    false,
+                    0,
+                    HeaderUpdate::Keep,
+                ),
+                DataHeader::Drain(0, 0, false, HeaderUpdate::Keep),
+                DataHeader::Clear(false, HeaderUpdate::Keep),
+                DataHeader::Header(false, header),
             ],
         );
         assert_tags(
             "DataTakeHeader",
             &[
-                DataTakeHeader::All(DataType::U8, 0, false, 0),
+                DataTakeHeader::All(DataType::U8, 0, false, 0, None),
                 DataTakeHeader::StartBatch(0, 0),
                 DataTakeHeader::Batch(0),
-                DataTakeHeader::End(DataType::U8, 0, false, 0),
+                DataTakeHeader::End(DataType::U8, 0, false, 0, None),
             ],
         );
         assert_tags(
             "MultiDataHeader",
             &[
                 MultiDataHeader::Remove(0, false),
-                MultiDataHeader::Modify(0, DataHeader::Clear(false)),
+                MultiDataHeader::Modify(0, DataHeader::Clear(false, HeaderUpdate::Keep)),
                 MultiDataHeader::Reset(false),
             ],
         );
@@ -256,8 +282,8 @@ mod tests {
     fn representative_header_bytes_are_stable() {
         use crate::protocol::collections::VecHeader;
         use crate::protocol::data::{
-            DataHeader, DataMultiTakeHeader, DataTakeHeader, DataType, MultiDataHeader,
-            TransportType,
+            DataHeader, DataMultiTakeHeader, DataTakeHeader, DataType, HeaderBytes, HeaderUpdate,
+            MultiDataHeader, TransportType,
         };
         use crate::protocol::image::{ImageSetHeader, ImageType};
 
@@ -275,35 +301,50 @@ mod tests {
         assert_eq!(
             bytes(&ServerHeader::Data(
                 5,
-                DataHeader::All(DataType::U16, TransportType::Set(3), true, 6)
+                DataHeader::All(
+                    DataType::U16,
+                    TransportType::Set(3),
+                    true,
+                    6,
+                    HeaderUpdate::Keep
+                )
             )),
-            [4, 5, 0, 1, 0, 3, 1, 6]
+            [4, 5, 0, 1, 0, 3, 1, 6, 0]
         );
         assert_eq!(
             bytes(&ServerHeader::Data(
                 5,
-                DataHeader::End(DataType::F64, TransportType::Replace(2, 4), false, 32)
+                DataHeader::End(
+                    DataType::F64,
+                    TransportType::Replace(2, 4),
+                    false,
+                    32,
+                    HeaderUpdate::Keep
+                )
             )),
-            [4, 5, 3, 9, 2, 2, 4, 0, 32]
+            [4, 5, 3, 9, 2, 2, 4, 0, 32, 0]
         );
         assert_eq!(
-            bytes(&ServerHeader::Data(5, DataHeader::Drain(1, 2, true))),
-            [4, 5, 4, 1, 2, 1]
+            bytes(&ServerHeader::Data(
+                5,
+                DataHeader::Drain(1, 2, true, HeaderUpdate::Keep)
+            )),
+            [4, 5, 4, 1, 2, 1, 0]
         );
         assert_eq!(
             bytes(&ServerHeader::DataTake(
                 5,
-                DataTakeHeader::All(DataType::U8, 4, true, 4),
+                DataTakeHeader::All(DataType::U8, 4, true, 4, None),
                 true
             )),
-            [5, 5, 0, 0, 4, 1, 4, 1]
+            [5, 5, 0, 0, 4, 1, 4, 0, 1]
         );
         assert_eq!(
             bytes(&ServerHeader::MultiData(
                 5,
-                MultiDataHeader::Modify(9, DataHeader::Clear(true))
+                MultiDataHeader::Modify(9, DataHeader::Clear(true, HeaderUpdate::Keep))
             )),
-            [6, 5, 1, 9, 5, 1]
+            [6, 5, 1, 9, 5, 1, 0]
         );
         assert_eq!(
             bytes(&ServerHeader::DataMultiTake(
@@ -311,6 +352,36 @@ mod tests {
                 DataMultiTakeHeader::Modify(9, DataTakeHeader::StartBatch(10, 4), false)
             )),
             [7, 5, 1, 9, 1, 10, 4, 0]
+        );
+        let header = HeaderBytes {
+            type_id: 300,
+            size: 2,
+        };
+        assert_eq!(
+            bytes(&ServerHeader::Data(5, DataHeader::Header(true, header))),
+            [4, 5, 6, 1, 0xac, 0x02, 2]
+        );
+        assert_eq!(
+            bytes(&ServerHeader::Data(
+                5,
+                DataHeader::Clear(false, HeaderUpdate::Set(header))
+            )),
+            [4, 5, 5, 0, 2, 0xac, 0x02, 2]
+        );
+        assert_eq!(
+            bytes(&ServerHeader::Data(
+                5,
+                DataHeader::Clear(false, HeaderUpdate::Default)
+            )),
+            [4, 5, 5, 0, 1]
+        );
+        assert_eq!(
+            bytes(&ServerHeader::DataTake(
+                5,
+                DataTakeHeader::End(DataType::U8, 4, false, 4, Some(header)),
+                false
+            )),
+            [5, 5, 3, 0, 4, 0, 4, 1, 0xac, 0x02, 2, 0]
         );
         assert_eq!(
             bytes(&ServerHeader::Image(

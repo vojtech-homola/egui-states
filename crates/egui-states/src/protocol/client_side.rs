@@ -30,6 +30,19 @@ impl ServerHeader {
         }
     }
 
+    /// Bytes of a Data header that precede the payload's elements.
+    pub(crate) fn header_len(&self) -> u32 {
+        match self {
+            Self::Data(_, header) => header.header_len(),
+            Self::DataTake(_, header, _) => header.header_len(),
+            Self::MultiData(_, MultiDataHeader::Modify(_, header)) => header.header_len(),
+            Self::DataMultiTake(_, DataMultiTakeHeader::Modify(_, header, _)) => {
+                header.header_len()
+            }
+            _ => 0,
+        }
+    }
+
     /// Whether the message asks the client to repaint once it is applied.
     pub(crate) fn update_flag(&self) -> bool {
         match self {

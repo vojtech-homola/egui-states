@@ -213,12 +213,12 @@ fn state_field_type(state: &StateType) -> String {
             type_to_rust_type(key, RustTypeContext::States),
             type_to_rust_type(value, RustTypeContext::States)
         ),
-        StateType::Data(_, typ) => format!("s::Data<{}>", data_type_to_rust_type(typ)),
-        StateType::DataTake(_, typ) => format!("s::DataTake<{}>", data_type_to_rust_type(typ)),
-        StateType::DataMulti(_, typ) => {
+        StateType::Data(_, typ, _) => format!("s::Data<{}>", data_type_to_rust_type(typ)),
+        StateType::DataTake(_, typ, _) => format!("s::DataTake<{}>", data_type_to_rust_type(typ)),
+        StateType::DataMulti(_, typ, _) => {
             format!("s::DataMulti<{}>", data_type_to_rust_type(typ))
         }
-        StateType::DataMultiTake(_, typ) => {
+        StateType::DataMultiTake(_, typ, _) => {
             format!("s::DataMultiTake<{}>", data_type_to_rust_type(typ))
         }
         StateType::Image(_) => "s::Image".to_string(),
@@ -280,22 +280,22 @@ fn state_initializer(state: &StateType) -> String {
             type_to_rust_type(value, RustTypeContext::States),
             name
         ),
-        StateType::Data(name, typ) => format!(
+        StateType::Data(name, typ, _) => format!(
             "s::Data::<{}>::new(server, format!(\"{{parent}}.{}\"))?",
             data_type_to_rust_type(typ),
             name
         ),
-        StateType::DataTake(name, typ) => format!(
+        StateType::DataTake(name, typ, _) => format!(
             "s::DataTake::<{}>::new(server, format!(\"{{parent}}.{}\"))?",
             data_type_to_rust_type(typ),
             name
         ),
-        StateType::DataMulti(name, typ) => format!(
+        StateType::DataMulti(name, typ, _) => format!(
             "s::DataMulti::<{}>::new(server, format!(\"{{parent}}.{}\"))?",
             data_type_to_rust_type(typ),
             name
         ),
-        StateType::DataMultiTake(name, typ) => format!(
+        StateType::DataMultiTake(name, typ, _) => format!(
             "s::DataMultiTake::<{}>::new(server, format!(\"{{parent}}.{}\"))?",
             data_type_to_rust_type(typ),
             name
@@ -419,6 +419,7 @@ fn render_rust<S: State>() -> Result<(String, String, String), String> {
     let (states, version_hash, rust_derives) = scripts::parse_states::<S>();
     rust_derives.validate();
     scripts::validate_states(&states);
+    scripts::reject_data_headers(&states, "Rust")?;
 
     let mut values_list = Vec::new();
     scripts::states_into_values_list(&states, &mut values_list);

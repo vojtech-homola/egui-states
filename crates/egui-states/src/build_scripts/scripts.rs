@@ -213,3 +213,20 @@ pub(crate) fn states_into_values_list(state: &StateType, list: &mut Vec<StateTyp
         }
     }
 }
+
+/// Fails for a state tree with a Data header, which the `generator`
+/// generator does not produce yet.
+pub(crate) fn reject_data_headers(state: &StateType, generator: &str) -> Result<(), String> {
+    match state {
+        StateType::Data(name, _, Some(_))
+        | StateType::DataTake(name, _, Some(_))
+        | StateType::DataMulti(name, _, Some(_))
+        | StateType::DataMultiTake(name, _, Some(_)) => Err(format!(
+            "the {generator} generator does not support the header of Data state '{name}' yet"
+        )),
+        StateType::SubState(_, _, states) => states
+            .iter()
+            .try_for_each(|state| reject_data_headers(state, generator)),
+        _ => Ok(()),
+    }
+}

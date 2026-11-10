@@ -410,10 +410,10 @@ fn render_c<S: State>() -> (String, String) {
             StateType::ImageMulti(_) => registrations.push_str(&generator.check(format!(
                 "egui_states_server_add_image_multi(server, {name}, NULL)"
             ))),
-            StateType::Data(_, data_type)
-            | StateType::DataTake(_, data_type)
-            | StateType::DataMulti(_, data_type)
-            | StateType::DataMultiTake(_, data_type) => {
+            StateType::Data(_, data_type, _)
+            | StateType::DataTake(_, data_type, _)
+            | StateType::DataMulti(_, data_type, _)
+            | StateType::DataMultiTake(_, data_type, _) => {
                 let data_name = names.claim(macro_name("DATA_TYPE"), full_name);
                 writeln!(
                     constants,
@@ -582,6 +582,7 @@ fn render_c<S: State>() -> (String, String) {
 /// Panics if a type is defined inconsistently in different locations, if two
 /// generated C names collide, or if the prefix would be `egui_states`.
 pub fn generate_c<S: State>(directory: impl AsRef<Path>) -> Result<(), String> {
+    scripts::reject_data_headers(&scripts::parse_states::<S>().0, "C")?;
     let (file_name, header) = render_c::<S>();
     scripts::write_generated_files(directory.as_ref(), [(file_name.as_str(), header.as_str())])
 }

@@ -123,10 +123,10 @@ fn collect_object_types(values: &[StateType]) -> Vec<ObjectType> {
             StateType::SubState(_, _, _)
             | StateType::Image(_)
             | StateType::ImageMulti(_)
-            | StateType::Data(_, _)
-            | StateType::DataTake(_, _)
-            | StateType::DataMulti(_, _)
-            | StateType::DataMultiTake(_, _) => {}
+            | StateType::Data(..)
+            | StateType::DataTake(..)
+            | StateType::DataMulti(..)
+            | StateType::DataMultiTake(..) => {}
         }
     }
 
@@ -382,19 +382,19 @@ fn state_to_line(state: &StateType, object_types: &[ObjectType]) -> String {
                 "        self.{attr}: s.Map[{key_type}, {value_type}] = s.Map[{key_type}, {value_type}]({key}, {value})\n"
             )
         }
-        StateType::Data(_, data_type) => {
+        StateType::Data(_, data_type, _) => {
             let data_type = data_type_to_dtype(data_type);
             format!("        self.{attr}: s.Data[{data_type}] = s.Data({data_type})\n")
         }
-        StateType::DataMulti(_, data_type) => {
+        StateType::DataMulti(_, data_type, _) => {
             let data_type = data_type_to_dtype(data_type);
             format!("        self.{attr}: s.DataMulti[{data_type}] = s.DataMulti({data_type})\n")
         }
-        StateType::DataTake(_, data_type) => {
+        StateType::DataTake(_, data_type, _) => {
             let data_type = data_type_to_dtype(data_type);
             format!("        self.{attr}: s.DataTake[{data_type}] = s.DataTake({data_type})\n")
         }
-        StateType::DataMultiTake(_, data_type) => {
+        StateType::DataMultiTake(_, data_type, _) => {
             let data_type = data_type_to_dtype(data_type);
             format!(
                 "        self.{attr}: s.DataMultiTake[{data_type}] = s.DataMultiTake({data_type})\n"
@@ -658,6 +658,7 @@ class StatesServer(StateServerBase[{root_name}]):
 /// conflicts with a generated symbol such as `StatesServer`, `enums`,
 /// `structs`, or `s`.
 pub fn generate_python<S: State>(directory: impl AsRef<Path>) -> Result<(), String> {
+    scripts::reject_data_headers(&scripts::parse_states::<S>().0, "Python")?;
     let (states, enums, structs) = render_python::<S>();
     scripts::write_generated_files(
         directory.as_ref(),

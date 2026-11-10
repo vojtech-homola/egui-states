@@ -6,12 +6,32 @@ use bytes::Bytes;
 use parking_lot::{Mutex, RwLock};
 
 use crate::client::messages::{ChannelMessage, MessageSender};
-use crate::client::states::data::{BatchBuffer, elements, private};
+use crate::client::states::data::{
+    BatchBuffer, HeaderValue, decode_header_bytes, elements, header_type_id, private, split_header,
+};
 use crate::hashing::NoHashMap;
-use crate::protocol::data::{DataTakeHeader, DataType};
+use crate::protocol::data::{DataTakeHeader, DataType, HeaderBytes};
 
-/// A completed transfer and whether taking it must acknowledge it.
-type Completed<T> = (Vec<T>, bool);
+/// A completed transfer, its header and whether taking it must acknowledge
+/// it.
+type Completed<T, H> = (Vec<T>, H, bool);
+
+/// Splits a terminal message's payload into its header and its elements and
+/// decodes the header; a transfer without one gets `H::default()`.
+fn take_header<'a, H: HeaderValue>(
+    type_id: Option<u32>,
+    header: Option<HeaderBytes>,
+    payload: &'a [u8],
+    name: &str,
+) -> Result<(H, &'a [u8]), String> {
+    match header {
+        None => Ok((H::default(), payload)),
+        Some(header) => {
+            let (bytes, data) = split_header(payload, header.size, name)?;
+            Ok((decode_header_bytes(type_id, header, bytes, name)?, data))
+        }
+    }
+}
 
 /// A take message: its wire header and the payload that followed it.
 pub(crate) type DataTakeMessage = (DataTakeHeader, Bytes);
@@ -38,24 +58,28 @@ pub(crate) trait UpdateDataTake: Sync + Send {
     fn disconnected(&self);
 }
 
-/// A one-shot numeric buffer sent from the server to the client.
+/// A one-shot numeric buffer sent from the server to the client, with an
+/// optional typed header `H`.
 ///
 /// A transfer becomes available only after every batch has arrived. Taking a
-/// blocking transfer also sends its acknowledgement to the server.
-pub struct DataTake<T> {
+/// blocking transfer also sends its acknowledgement to the server. A transfer
+/// sent without a header comes with `H::default()`.
+pub struct DataTake<T, H = ()> {
     name: Arc<String>,
     id: u64,
     data_type: DataType,
     element_size: usize,
-    inner: Arc<RwLock<Option<Completed<T>>>>,
+    header_type: Option<u32>,
+    inner: Arc<RwLock<Option<Completed<T, H>>>>,
     batch: Arc<Mutex<TakeBatch<T>>>,
     sender: MessageSender,
 }
 
 #[allow(private_bounds)]
-impl<T> DataTake<T>
+impl<T, H> DataTake<T, H>
 where
     T: private::GetDataType,
+    H: HeaderValue,
 {
     pub(crate) fn new(name: String, id: u64, sender: MessageSender) -> Self {
         Self {
@@ -63,6 +87,7 @@ where
             id,
             data_type: T::get_type(),
             element_size: T::get_type().item_size(),
+            header_type: header_type_id::<H>(),
             inner: Arc::new(RwLock::new(None)),
             batch: Arc::new(Mutex::new(TakeBatch::Empty)),
             sender,
@@ -74,14 +99,16 @@ where
     /// Each buffer can be taken once. Taking a blocking transfer acknowledges
     /// it and allows the server to send the next pending transfer.
     pub fn take(&self) -> Option<Vec<T>> {
-        let inner = self.inner.write().take();
-        if let Some((val, blocking)) = inner {
-            if blocking {
-                self.sender.send(ChannelMessage::Ack(self.id));
-            }
-            return Some(val);
+        self.take_with_header().map(|(value, _)| value)
+    }
+
+    /// Like [`Self::take`], with the header the buffer was sent with.
+    pub fn take_with_header(&self) -> Option<(Vec<T>, H)> {
+        let (value, header, blocking) = self.inner.write().take()?;
+        if blocking {
+            self.sender.send(ChannelMessage::Ack(self.id));
         }
-        None
+        Some((value, header))
     }
 
     /// Returns whether a completed buffer is waiting to be taken.
@@ -92,13 +119,14 @@ where
     }
 }
 
-impl<T> Clone for DataTake<T> {
+impl<T, H> Clone for DataTake<T, H> {
     fn clone(&self) -> Self {
         Self {
             name: self.name.clone(),
             id: self.id,
             data_type: self.data_type,
             element_size: self.element_size,
+            header_type: self.header_type,
             inner: self.inner.clone(),
             batch: self.batch.clone(),
             sender: self.sender.clone(),
@@ -107,13 +135,14 @@ impl<T> Clone for DataTake<T> {
 }
 
 #[allow(private_bounds)]
-impl<T> UpdateDataTake for DataTake<T>
+impl<T, H> UpdateDataTake for DataTake<T, H>
 where
     T: private::GetDataType + Send + Sync,
+    H: HeaderValue,
 {
     fn update(&self, (header, data): DataTakeMessage, blocking: bool) -> Result<(), String> {
         match header {
-            DataTakeHeader::All(data_type, count, ..) => {
+            DataTakeHeader::All(data_type, count, _, _, header) => {
                 let result = (|| {
                     if data_type != self.data_type {
                         return Err(format!(
@@ -121,6 +150,8 @@ where
                             data_type, self.data_type, self.name
                         ));
                     }
+                    let (header, data) =
+                        take_header::<H>(self.header_type, header, &data, &self.name)?;
                     if count.checked_mul(self.element_size as u64) != Some(data.len() as u64) {
                         return Err(format!(
                             "Data size {} does not match expected count {} for DataTake: {}",
@@ -129,12 +160,12 @@ where
                             self.name
                         ));
                     }
-                    elements(&data)
+                    Ok((elements(data)?, header))
                 })();
 
                 match result {
-                    Ok(buffer) => {
-                        *self.inner.write() = Some((buffer, blocking));
+                    Ok((buffer, header)) => {
+                        *self.inner.write() = Some((buffer, header, blocking));
                         Ok(())
                     }
                     Err(error) => {
@@ -202,7 +233,7 @@ where
                 }
                 Ok(())
             }
-            DataTakeHeader::End(data_type, count, ..) => {
+            DataTakeHeader::End(data_type, count, _, _, header) => {
                 let batch = std::mem::take(&mut *self.batch.lock());
                 let (buffer, batch_blocking) = match batch {
                     TakeBatch::Receiving { buffer, blocking } => (buffer, blocking),
@@ -242,7 +273,9 @@ where
                     }
                     // The batch start's count bounds the copy; the End count
                     // must agree with it as well.
-                    let buffer = buffer.finish(&data)?;
+                    let (header, data) =
+                        take_header::<H>(self.header_type, header, &data, &self.name)?;
+                    let buffer = buffer.finish(data)?;
                     if buffer.len() as u64 != count {
                         return Err(format!(
                             "Batch end data size {} does not match total data size {}",
@@ -250,12 +283,12 @@ where
                             count
                         ));
                     }
-                    Ok(buffer)
+                    Ok((buffer, header))
                 })();
 
                 match result {
-                    Ok(buffer) => {
-                        *self.inner.write() = Some((buffer, blocking));
+                    Ok((buffer, header)) => {
+                        *self.inner.write() = Some((buffer, header, blocking));
                         Ok(())
                     }
                     Err(error) => {
@@ -270,7 +303,7 @@ where
     }
 
     fn disconnected(&self) {
-        if let Some((_, blocking)) = self.inner.write().as_mut() {
+        if let Some((_, _, blocking)) = self.inner.write().as_mut() {
             *blocking = false;
         }
         // A batch from the closed connection can never complete.
@@ -292,20 +325,22 @@ pub(crate) trait UpdateDataMultiTake: Sync + Send {
 ///
 /// Each `u32` key has an independent pending transfer; taking one key does not
 /// consume or acknowledge any other key.
-pub struct DataMultiTake<T> {
+pub struct DataMultiTake<T, H = ()> {
     name: Arc<String>,
     id: u64,
     data_type: DataType,
     element_size: usize,
-    inner: Arc<RwLock<NoHashMap<u32, Completed<T>>>>,
+    header_type: Option<u32>,
+    inner: Arc<RwLock<NoHashMap<u32, Completed<T, H>>>>,
     batches: Arc<Mutex<NoHashMap<u32, TakeBatch<T>>>>,
     sender: MessageSender,
 }
 
 #[allow(private_bounds)]
-impl<T> DataMultiTake<T>
+impl<T, H> DataMultiTake<T, H>
 where
     T: private::GetDataType,
+    H: HeaderValue,
 {
     pub(crate) fn new(name: String, id: u64, sender: MessageSender) -> Self {
         Self {
@@ -313,6 +348,7 @@ where
             id,
             data_type: T::get_type(),
             element_size: T::get_type().item_size(),
+            header_type: header_type_id::<H>(),
             inner: Arc::new(RwLock::new(NoHashMap::default())),
             batches: Arc::new(Mutex::new(NoHashMap::default())),
             sender,
@@ -324,14 +360,16 @@ where
     /// Taking a blocking transfer acknowledges it and allows the server to send
     /// the next transfer for that key.
     pub fn take(&self, key: u32) -> Option<Vec<T>> {
-        let inner = self.inner.write().remove(&key);
-        if let Some((val, blocking)) = inner {
-            if blocking {
-                self.sender.send(ChannelMessage::Ack(self.id));
-            }
-            return Some(val);
+        self.take_with_header(key).map(|(value, _)| value)
+    }
+
+    /// Like [`Self::take`], with the header the buffer was sent with.
+    pub fn take_with_header(&self, key: u32) -> Option<(Vec<T>, H)> {
+        let (value, header, blocking) = self.inner.write().remove(&key)?;
+        if blocking {
+            self.sender.send(ChannelMessage::Ack(self.id));
         }
-        None
+        Some((value, header))
     }
 
     /// Returns whether a completed buffer at `key` is waiting to be taken.
@@ -340,13 +378,14 @@ where
     }
 }
 
-impl<T> Clone for DataMultiTake<T> {
+impl<T, H> Clone for DataMultiTake<T, H> {
     fn clone(&self) -> Self {
         Self {
             name: self.name.clone(),
             id: self.id,
             data_type: self.data_type,
             element_size: self.element_size,
+            header_type: self.header_type,
             inner: self.inner.clone(),
             batches: self.batches.clone(),
             sender: self.sender.clone(),
@@ -355,9 +394,10 @@ impl<T> Clone for DataMultiTake<T> {
 }
 
 #[allow(private_bounds)]
-impl<T> UpdateDataMultiTake for DataMultiTake<T>
+impl<T, H> UpdateDataMultiTake for DataMultiTake<T, H>
 where
     T: private::GetDataType + Send + Sync,
+    H: HeaderValue,
 {
     fn update(
         &self,
@@ -366,7 +406,7 @@ where
         blocking: bool,
     ) -> Result<(), String> {
         match header {
-            DataTakeHeader::All(data_type, count, ..) => {
+            DataTakeHeader::All(data_type, count, _, _, header) => {
                 let result = (|| {
                     if data_type != self.data_type {
                         return Err(format!(
@@ -374,6 +414,8 @@ where
                             data_type, self.data_type, self.name
                         ));
                     }
+                    let (header, data) =
+                        take_header::<H>(self.header_type, header, &data, &self.name)?;
                     if count.checked_mul(self.element_size as u64) != Some(data.len() as u64) {
                         return Err(format!(
                             "Data size {} does not match expected count {} for DataMultiTake: {}",
@@ -382,12 +424,12 @@ where
                             self.name
                         ));
                     }
-                    elements(&data)
+                    Ok((elements(data)?, header))
                 })();
 
                 match result {
-                    Ok(buffer) => {
-                        self.inner.write().insert(key, (buffer, blocking));
+                    Ok((buffer, header)) => {
+                        self.inner.write().insert(key, (buffer, header, blocking));
                         Ok(())
                     }
                     Err(error) => {
@@ -450,7 +492,7 @@ where
                 }
                 Ok(())
             }
-            DataTakeHeader::End(data_type, count, ..) => {
+            DataTakeHeader::End(data_type, count, _, _, header) => {
                 let batch = self.batches.lock().remove(&key).unwrap_or_default();
                 let (buffer, batch_blocking) = match batch {
                     TakeBatch::Receiving { buffer, blocking } => (buffer, blocking),
@@ -490,7 +532,9 @@ where
                     }
                     // The batch start's count bounds the copy; the End count
                     // must agree with it as well.
-                    let buffer = buffer.finish(&data)?;
+                    let (header, data) =
+                        take_header::<H>(self.header_type, header, &data, &self.name)?;
+                    let buffer = buffer.finish(data)?;
                     if buffer.len() as u64 != count {
                         return Err(format!(
                             "Batch end data size {} does not match total data size {}",
@@ -498,12 +542,12 @@ where
                             count
                         ));
                     }
-                    Ok(buffer)
+                    Ok((buffer, header))
                 })();
 
                 match result {
-                    Ok(buffer) => {
-                        self.inner.write().insert(key, (buffer, blocking));
+                    Ok((buffer, header)) => {
+                        self.inner.write().insert(key, (buffer, header, blocking));
                         Ok(())
                     }
                     Err(error) => {
@@ -522,7 +566,7 @@ where
     fn remove(&self, key: u32) {
         let removed = self.inner.write().remove(&key);
         self.batches.lock().remove(&key);
-        if let Some((_, true)) = removed {
+        if let Some((_, _, true)) = removed {
             self.sender.send_ack(self.id);
         }
     }
@@ -532,7 +576,7 @@ where
             .inner
             .write()
             .drain()
-            .filter(|(_, (_, blocking))| *blocking)
+            .filter(|(_, (_, _, blocking))| *blocking)
             .count();
         self.batches.lock().clear();
         for _ in 0..blocking {
@@ -541,7 +585,7 @@ where
     }
 
     fn disconnected(&self) {
-        for (_, blocking) in self.inner.write().values_mut() {
+        for (_, _, blocking) in self.inner.write().values_mut() {
             *blocking = false;
         }
         // Batches from the closed connection can never complete.
@@ -578,7 +622,7 @@ mod tests {
 
         let invalid = || {
             (
-                DataTakeHeader::All(DataType::U16, 1, false, 0),
+                DataTakeHeader::All(DataType::U16, 1, false, 0, None),
                 Bytes::from_static(&[0, 0]),
             )
         };
@@ -597,7 +641,7 @@ mod tests {
 
         take.update(
             (
-                DataTakeHeader::All(DataType::U16, 1, false, 0),
+                DataTakeHeader::All(DataType::U16, 1, false, 0, None),
                 Bytes::copy_from_slice(&9_u16.to_ne_bytes()),
             ),
             false,
@@ -618,7 +662,7 @@ mod tests {
         assert!(
             take.update(
                 (
-                    DataTakeHeader::End(DataType::U16, 3, false, 0),
+                    DataTakeHeader::End(DataType::U16, 3, false, 0, None),
                     Bytes::copy_from_slice(&2_u16.to_ne_bytes())
                 ),
                 true,
@@ -641,7 +685,7 @@ mod tests {
         for count in [u64::MAX, u64::MAX / 2 + 1, 1 << 62] {
             let all = || {
                 (
-                    DataTakeHeader::All(DataType::U16, count, false, 0),
+                    DataTakeHeader::All(DataType::U16, count, false, 0, None),
                     Bytes::new(),
                 )
             };
@@ -656,7 +700,7 @@ mod tests {
             };
             let end = || {
                 (
-                    DataTakeHeader::End(DataType::U16, count, false, 0),
+                    DataTakeHeader::End(DataType::U16, count, false, 0, None),
                     Bytes::new(),
                 )
             };
@@ -687,7 +731,7 @@ mod tests {
             };
             let end = || {
                 (
-                    DataTakeHeader::End(DataType::U16, 101, false, 0),
+                    DataTakeHeader::End(DataType::U16, 101, false, 0, None),
                     tail.clone(),
                 )
             };
@@ -721,7 +765,7 @@ mod tests {
 
         take.update(
             (
-                DataTakeHeader::All(DataType::U8, 2, false, 0),
+                DataTakeHeader::All(DataType::U8, 2, false, 0, None),
                 Bytes::from_static(&[1, 2]),
             ),
             true,
@@ -742,7 +786,7 @@ mod tests {
             take.update(
                 3,
                 (
-                    DataTakeHeader::All(DataType::U8, 1, false, 0),
+                    DataTakeHeader::All(DataType::U8, 1, false, 0, None),
                     Bytes::from_static(&[0])
                 ),
                 true,
@@ -771,7 +815,7 @@ mod tests {
             take.update(
                 7,
                 (
-                    DataTakeHeader::End(DataType::U16, 3, false, 0),
+                    DataTakeHeader::End(DataType::U16, 3, false, 0, None),
                     Bytes::copy_from_slice(&2_u16.to_ne_bytes())
                 ),
                 true,
@@ -793,7 +837,7 @@ mod lifecycle_tests {
         data.update(
             7,
             (
-                DataTakeHeader::All(DataType::U8, 1, false, 0),
+                DataTakeHeader::All(DataType::U8, 1, false, 0, None),
                 Bytes::from_static(&[7]),
             ),
             true,
@@ -816,7 +860,7 @@ mod lifecycle_tests {
         data.update(
             513,
             (
-                DataTakeHeader::All(DataType::U8, 1, false, 0),
+                DataTakeHeader::All(DataType::U8, 1, false, 0, None),
                 Bytes::from_static(&[9]),
             ),
             true,
@@ -845,7 +889,7 @@ mod lifecycle_tests {
         let multi = DataMultiTake::<u8>::new("takes".into(), 95, sender);
         let message = || {
             (
-                DataTakeHeader::All(DataType::U8, 1, false, 0),
+                DataTakeHeader::All(DataType::U8, 1, false, 0, None),
                 Bytes::from_static(&[7]),
             )
         };

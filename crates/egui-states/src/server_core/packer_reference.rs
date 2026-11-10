@@ -1,15 +1,14 @@
-//! Frozen copies of the chunk packers as they were before the transfer
+//! Frozen copies of the image packers as they were before the transfer
 //! refactoring, and tests that compare the live packers with them.
 //!
 //! The live packers may be restructured freely; for every chunk limit they must
 //! produce exactly the messages and `send_now` flags of these copies. Do not
-//! edit the copies unless the wire format changes on purpose.
+//! edit the copies unless the wire format changes on purpose. The Data and
+//! take packers changed their format for headers; their encoding is pinned
+//! by `data_transfer_bytes_are_stable`.
 
 use std::collections::VecDeque;
 
-use crate::protocol::data::{
-    DataHeader, DataMultiTakeHeader, DataTakeHeader, DataType, MultiDataHeader, TransportType,
-};
 use crate::protocol::image::{
     ImageHeader, ImageSetHeader, ImageType, checked_image_bounds, checked_image_bytes,
     checked_image_shape, serialize_image_multi_header,
@@ -24,203 +23,6 @@ pub(super) struct ReferenceImage {
     pub contiguous: bool,
     pub image_type: ImageType,
     pub data: *const u8,
-}
-
-// Frozen copy of `server_core/states/data.rs::pack_data_chunked`.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn reference_data(
-    id: u64,
-    data: &[u8],
-    transport_type: TransportType,
-    data_count: u64,
-    data_type: DataType,
-    multi_data: Option<u32>,
-    update: bool,
-    chunk_limit: usize,
-) -> Result<Vec<(FastVec<32>, bool)>, String> {
-    let mut messages = Vec::with_capacity(1);
-
-    if data.len() <= chunk_limit {
-        let header = DataHeader::All(data_type, transport_type, update, data.len() as u32);
-        let mut message = match multi_data {
-            None => header.serialize(id, true),
-            Some(index) => MultiDataHeader::serialize_modify(id, index, header),
-        }
-        .map_err(|_| "Failed to serialize header".to_string())?;
-        message.reserve_exact(data.len());
-        message.extend_from_slice(data);
-        messages.push((message, true));
-    } else {
-        let element_size = data_type.item_size();
-        let chunk_size = chunk_limit / element_size * element_size;
-        let mut processed = 0;
-        let header = DataHeader::StartBatch(data_count, chunk_size as u32);
-        let mut message = match multi_data {
-            None => header.serialize(id, true),
-            Some(index) => MultiDataHeader::serialize_modify(id, index, header),
-        }
-        .map_err(|_| "Failed to serialize header".to_string())?;
-        message.reserve_exact(chunk_size);
-        message.extend_from_slice(&data[..chunk_size]);
-        messages.push((message, true));
-        processed += chunk_size;
-
-        while processed < data.len() {
-            let remaining = data.len() - processed;
-            if remaining <= chunk_size {
-                let header = DataHeader::End(data_type, transport_type, update, remaining as u32);
-                let mut message = match multi_data {
-                    None => header.serialize(id, true),
-                    Some(index) => MultiDataHeader::serialize_modify(id, index, header),
-                }
-                .map_err(|_| "Failed to serialize header".to_string())?;
-                message.extend_from_slice(&data[processed..]);
-                messages.push((message, false));
-                break;
-            }
-
-            let header = DataHeader::Batch(chunk_size as u32);
-            let mut message = match multi_data {
-                None => header.serialize(id, true),
-                Some(index) => MultiDataHeader::serialize_modify(id, index, header),
-            }
-            .map_err(|_| "Failed to serialize header".to_string())?;
-            message.reserve_exact(chunk_size);
-            message.extend_from_slice(&data[processed..processed + chunk_size]);
-            messages.push((message, true));
-            processed += chunk_size;
-        }
-    }
-
-    Ok(messages)
-}
-
-// Frozen copy of `server_core/states/data_take.rs::pack_data_take_chunked`.
-pub(super) fn reference_data_take(
-    id: u64,
-    data: &[u8],
-    data_count: u64,
-    data_type: DataType,
-    blocking: bool,
-    update: bool,
-    chunk_limit: usize,
-) -> Result<Vec<(FastVec<32>, bool)>, String> {
-    let mut messages = Vec::with_capacity(1);
-
-    if data.len() <= chunk_limit {
-        let header = crate::protocol::data::DataTakeHeader::All(
-            data_type,
-            data_count,
-            update,
-            data.len() as u32,
-        );
-        let mut message = header
-            .serialize(id, blocking, true)
-            .map_err(|_| "Failed to serialize DataTake header".to_string())?;
-        message.reserve_exact(data.len());
-        message.extend_from_slice(data);
-        messages.push((message, true));
-    } else {
-        let element_size = data_type.item_size();
-        let chunk_size = chunk_limit / element_size * element_size;
-        let mut processed = 0;
-        let header =
-            crate::protocol::data::DataTakeHeader::StartBatch(data_count, chunk_size as u32);
-        let mut message = header
-            .serialize(id, blocking, true)
-            .map_err(|_| "Failed to serialize DataTake header".to_string())?;
-        message.reserve_exact(chunk_size);
-        message.extend_from_slice(&data[..chunk_size]);
-        messages.push((message, true));
-        processed += chunk_size;
-
-        while processed < data.len() {
-            let remaining = data.len() - processed;
-            if remaining <= chunk_size {
-                let header = crate::protocol::data::DataTakeHeader::End(
-                    data_type,
-                    data_count,
-                    update,
-                    remaining as u32,
-                );
-                let mut message = header
-                    .serialize(id, blocking, true)
-                    .map_err(|_| "Failed to serialize DataTake header".to_string())?;
-                message.extend_from_slice(&data[processed..]);
-                messages.push((message, false));
-                break;
-            }
-
-            let header = crate::protocol::data::DataTakeHeader::Batch(chunk_size as u32);
-            let mut message = header
-                .serialize(id, blocking, true)
-                .map_err(|_| "Failed to serialize DataTake header".to_string())?;
-            message.reserve_exact(chunk_size);
-            message.extend_from_slice(&data[processed..processed + chunk_size]);
-            messages.push((message, true));
-            processed += chunk_size;
-        }
-    }
-
-    Ok(messages)
-}
-
-// Frozen copy of `server_core/states/data_take.rs::pack_data_multi_take_chunked`.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn reference_data_multi_take(
-    id: u64,
-    index: u32,
-    data: &[u8],
-    data_count: u64,
-    data_type: DataType,
-    blocking: bool,
-    update: bool,
-    chunk_limit: usize,
-) -> Result<Vec<(FastVec<32>, bool)>, String> {
-    let mut messages = Vec::with_capacity(1);
-
-    if data.len() <= chunk_limit {
-        let header = DataTakeHeader::All(data_type, data_count, update, data.len() as u32);
-        let mut message = DataMultiTakeHeader::serialize_modify(id, index, header, blocking)
-            .map_err(|_| "Failed to serialize DataMultiTake header".to_string())?;
-        message.reserve_exact(data.len());
-        message.extend_from_slice(data);
-        messages.push((message, true));
-    } else {
-        let element_size = data_type.item_size();
-        let chunk_size = chunk_limit / element_size * element_size;
-        let mut processed = 0;
-        let header = DataTakeHeader::StartBatch(data_count, chunk_size as u32);
-        let mut message = DataMultiTakeHeader::serialize_modify(id, index, header, blocking)
-            .map_err(|_| "Failed to serialize DataMultiTake header".to_string())?;
-        message.reserve_exact(chunk_size);
-        message.extend_from_slice(&data[..chunk_size]);
-        messages.push((message, true));
-        processed += chunk_size;
-
-        while processed < data.len() {
-            let remaining = data.len() - processed;
-            if remaining <= chunk_size {
-                let header = DataTakeHeader::End(data_type, data_count, update, remaining as u32);
-                let mut message =
-                    DataMultiTakeHeader::serialize_modify(id, index, header, blocking)
-                        .map_err(|_| "Failed to serialize DataMultiTake header".to_string())?;
-                message.extend_from_slice(&data[processed..]);
-                messages.push((message, false));
-                break;
-            }
-
-            let header = DataTakeHeader::Batch(chunk_size as u32);
-            let mut message = DataMultiTakeHeader::serialize_modify(id, index, header, blocking)
-                .map_err(|_| "Failed to serialize DataMultiTake header".to_string())?;
-            message.reserve_exact(chunk_size);
-            message.extend_from_slice(&data[processed..processed + chunk_size]);
-            messages.push((message, true));
-            processed += chunk_size;
-        }
-    }
-
-    Ok(messages)
 }
 
 // Frozen copy of `server_core/states/image/single.rs::pack_set_data_chunked`.
@@ -569,10 +371,9 @@ pub(super) fn reference_image_multi_update(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::server_core::states::data::pack_data_chunked;
-    use crate::server_core::states::data_take::{
-        pack_data_multi_take_chunked, pack_data_take_chunked,
-    };
+    use crate::protocol::data::{DataType, HeaderBytes, HeaderUpdate, TransportType};
+    use crate::server_core::states::data::{WireHeader, pack_data_chunked};
+    use crate::server_core::states::data_take::pack_data_take_chunked;
     use crate::server_core::states::image::multi as image_multi_core;
     use crate::server_core::states::image::single::{self as image_core, ImageData};
 
@@ -594,138 +395,6 @@ mod tests {
 
     fn pattern(len: usize) -> Vec<u8> {
         (0..len).map(|i| (i * 7 % 251) as u8).collect()
-    }
-
-    const CHUNK_LIMITS: [usize; 3] = [8, 12, 24];
-    const DATA_TYPES: [DataType; 4] = [DataType::U8, DataType::U16, DataType::U32, DataType::F64];
-
-    /// Element counts around the chunk boundary: empty, one, c - 1, c, c + 1
-    /// and a remainder after two full chunks.
-    fn counts(chunk_limit: usize, item_size: usize) -> Vec<usize> {
-        let chunk = (chunk_limit / item_size).max(1);
-        let mut counts = vec![0, 1, chunk - 1, chunk, chunk + 1, 2 * chunk + chunk / 2 + 1];
-        counts.sort_unstable();
-        counts.dedup();
-        counts
-    }
-
-    fn transport(kind: usize, count: u64) -> TransportType {
-        match kind {
-            0 => TransportType::Set(count),
-            1 => TransportType::Add(count),
-            _ => TransportType::Replace(2, count),
-        }
-    }
-
-    #[test]
-    fn data_packers_match_the_frozen_reference() {
-        for chunk_limit in CHUNK_LIMITS {
-            for data_type in DATA_TYPES {
-                for count in counts(chunk_limit, data_type.item_size()) {
-                    let data = pattern(count * data_type.item_size());
-                    for multi in [None, Some(3)] {
-                        for update in [false, true] {
-                            for kind in 0..3 {
-                                let count = count as u64;
-                                let live = pack_data_chunked(
-                                    5,
-                                    &data,
-                                    transport(kind, count),
-                                    count,
-                                    data_type,
-                                    multi,
-                                    update,
-                                    chunk_limit,
-                                )
-                                .unwrap();
-                                let reference = reference_data(
-                                    5,
-                                    &data,
-                                    transport(kind, count),
-                                    count,
-                                    data_type,
-                                    multi,
-                                    update,
-                                    chunk_limit,
-                                )
-                                .unwrap();
-                                assert_eq!(
-                                    plain(&live),
-                                    plain(&reference),
-                                    "chunk {chunk_limit} {data_type:?} count {count} \
-                                     multi {multi:?} update {update} transport {kind}"
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn data_take_packers_match_the_frozen_reference() {
-        for chunk_limit in CHUNK_LIMITS {
-            for data_type in DATA_TYPES {
-                for count in counts(chunk_limit, data_type.item_size()) {
-                    let data = pattern(count * data_type.item_size());
-                    let count = count as u64;
-                    for blocking in [false, true] {
-                        for update in [false, true] {
-                            let context = format!(
-                                "chunk {chunk_limit} {data_type:?} count {count} \
-                                 blocking {blocking} update {update}"
-                            );
-                            let live = pack_data_take_chunked(
-                                5,
-                                &data,
-                                count,
-                                data_type,
-                                blocking,
-                                update,
-                                chunk_limit,
-                            )
-                            .unwrap();
-                            let reference = reference_data_take(
-                                5,
-                                &data,
-                                count,
-                                data_type,
-                                blocking,
-                                update,
-                                chunk_limit,
-                            )
-                            .unwrap();
-                            assert_eq!(plain(&live), plain(&reference), "{context}");
-
-                            let live = pack_data_multi_take_chunked(
-                                5,
-                                3,
-                                &data,
-                                count,
-                                data_type,
-                                blocking,
-                                update,
-                                chunk_limit,
-                            )
-                            .unwrap();
-                            let reference = reference_data_multi_take(
-                                5,
-                                3,
-                                &data,
-                                count,
-                                data_type,
-                                blocking,
-                                update,
-                                chunk_limit,
-                            )
-                            .unwrap();
-                            assert_eq!(plain(&live), plain(&reference), "multi {context}");
-                        }
-                    }
-                }
-            }
-        }
     }
 
     const IMAGE_TYPES: [ImageType; 4] = [
@@ -865,7 +534,8 @@ mod tests {
         }
     }
 
-    /// Pins the encoding of a chunked transfer independently of the reference.
+    /// Pins the encoding of Data and take transfers: the header goes with
+    /// the message that completes a transfer, in front of its elements.
     #[test]
     fn data_transfer_bytes_are_stable() {
         let data: Vec<u8> = (1..=10).collect();
@@ -877,6 +547,7 @@ mod tests {
             DataType::U8,
             None,
             true,
+            WireHeader::KEEP,
             8,
         )
         .unwrap();
@@ -884,7 +555,7 @@ mod tests {
             plain(&messages),
             vec![
                 (vec![4, 5, 1, 10, 8, 1, 2, 3, 4, 5, 6, 7, 8], true),
-                (vec![4, 5, 3, 0, 0, 10, 1, 2, 9, 10], false),
+                (vec![4, 5, 3, 0, 0, 10, 1, 2, 0, 9, 10], false),
             ]
         );
 
@@ -896,12 +567,59 @@ mod tests {
             DataType::U8,
             Some(3),
             false,
+            WireHeader::DEFAULT,
             8,
         )
         .unwrap();
         assert_eq!(
             plain(&messages),
-            vec![(vec![6, 5, 1, 3, 0, 0, 1, 2, 0, 2, 1, 2], true)]
+            vec![(vec![6, 5, 1, 3, 0, 0, 1, 2, 0, 2, 1, 1, 2], true)]
+        );
+
+        let header = HeaderBytes {
+            type_id: 300,
+            size: 3,
+        };
+        let messages = pack_data_chunked(
+            5,
+            &[1, 2],
+            TransportType::Set(2),
+            2,
+            DataType::U8,
+            None,
+            false,
+            WireHeader {
+                update: HeaderUpdate::Set(header),
+                bytes: &[7, 8, 9],
+            },
+            8,
+        )
+        .unwrap();
+        assert_eq!(
+            plain(&messages),
+            vec![(
+                vec![4, 5, 0, 0, 0, 2, 0, 2, 2, 0xac, 0x02, 3, 7, 8, 9, 1, 2],
+                true
+            )]
+        );
+
+        let messages = pack_data_take_chunked(
+            5,
+            &[1, 2],
+            2,
+            DataType::U8,
+            false,
+            true,
+            Some((header, &[7, 8, 9])),
+            8,
+        )
+        .unwrap();
+        assert_eq!(
+            plain(&messages),
+            vec![(
+                vec![5, 5, 0, 0, 2, 1, 2, 1, 0xac, 0x02, 3, 0, 7, 8, 9, 1, 2],
+                true
+            )]
         );
     }
 }
