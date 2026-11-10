@@ -515,6 +515,225 @@ mod tests {
         }
     }
 
+    fn assert_tags<T: Serialize>(name: &str, variants: &[T]) {
+        for (index, variant) in variants.iter().enumerate() {
+            let data: FastVec<32> = serialize(variant).unwrap();
+            assert_eq!(first_byte(&data), index as u8, "{name} variant {index}");
+        }
+    }
+
+    /// The headers nested inside `ServerHeader` are wire tags too.
+    #[test]
+    fn nested_header_variant_indexes_are_stable() {
+        use crate::collections::{MapHeader, VecHeader};
+        use crate::data_transport::{
+            DataHeader, DataMultiTakeHeader, DataTakeHeader, DataType, MultiDataHeader,
+            TransportType,
+        };
+        use crate::image_transport::{ImageSetHeader, ImageType};
+
+        assert_tags(
+            "TransportType",
+            &[
+                TransportType::Set(0),
+                TransportType::Add(0),
+                TransportType::Replace(0, 0),
+            ],
+        );
+        assert_tags(
+            "DataHeader",
+            &[
+                DataHeader::All(DataType::U8, TransportType::Set(0), false, 0),
+                DataHeader::StartBatch(0, 0),
+                DataHeader::Batch(0),
+                DataHeader::End(DataType::U8, TransportType::Set(0), false, 0),
+                DataHeader::Drain(0, 0, false),
+                DataHeader::Clear(false),
+            ],
+        );
+        assert_tags(
+            "DataTakeHeader",
+            &[
+                DataTakeHeader::All(DataType::U8, 0, false, 0),
+                DataTakeHeader::StartBatch(0, 0),
+                DataTakeHeader::Batch(0),
+                DataTakeHeader::End(DataType::U8, 0, false, 0),
+            ],
+        );
+        assert_tags(
+            "MultiDataHeader",
+            &[
+                MultiDataHeader::Remove(0, false),
+                MultiDataHeader::Modify(0, DataHeader::Clear(false)),
+                MultiDataHeader::Reset(false),
+            ],
+        );
+        assert_tags(
+            "DataMultiTakeHeader",
+            &[
+                DataMultiTakeHeader::Remove(0, false),
+                DataMultiTakeHeader::Modify(0, DataTakeHeader::Batch(0), false),
+                DataMultiTakeHeader::Reset(false),
+            ],
+        );
+        assert_tags(
+            "ImageType",
+            &[
+                ImageType::Color,
+                ImageType::ColorAlpha,
+                ImageType::Gray,
+                ImageType::GrayAlpha,
+            ],
+        );
+        assert_tags(
+            "ImageSetHeader",
+            &[
+                ImageSetHeader::All([0; 2], false),
+                ImageSetHeader::Start([0; 2], 0),
+                ImageSetHeader::Batch(0),
+                ImageSetHeader::End(0, false),
+            ],
+        );
+        assert_tags(
+            "ImageHeader",
+            &[
+                ImageHeader::Set(ImageSetHeader::Batch(0), ImageType::Color),
+                ImageHeader::Update([0; 4], ImageType::Color, false),
+                ImageHeader::Fill([0; 2], [0; 4], false),
+            ],
+        );
+        assert_tags(
+            "ImageMultiHeader",
+            &[
+                ImageMultiHeader::Remove(0, false),
+                ImageMultiHeader::Modify(0, ImageHeader::Fill([0; 2], [0; 4], false), 0),
+                ImageMultiHeader::Reset(false),
+            ],
+        );
+        assert_tags(
+            "VecHeader",
+            &[
+                VecHeader::All(0),
+                VecHeader::Set(0),
+                VecHeader::Add,
+                VecHeader::Remove(0),
+                VecHeader::Begin(0),
+                VecHeader::Chunk(0),
+                VecHeader::End(0),
+            ],
+        );
+        assert_tags(
+            "MapHeader",
+            &[
+                MapHeader::All(0),
+                MapHeader::Set,
+                MapHeader::Remove,
+                MapHeader::Begin(0),
+                MapHeader::Chunk(0),
+                MapHeader::End(0),
+            ],
+        );
+    }
+
+    /// Exact encodings of representative headers; any change here is a wire
+    /// format change.
+    #[test]
+    fn representative_header_bytes_are_stable() {
+        use crate::collections::VecHeader;
+        use crate::data_transport::{
+            DataHeader, DataMultiTakeHeader, DataTakeHeader, DataType, MultiDataHeader,
+            TransportType,
+        };
+        use crate::image_transport::{ImageSetHeader, ImageType};
+
+        fn bytes<T: Serialize>(value: &T) -> Vec<u8> {
+            contents(&serialize::<T, 64>(value).unwrap())
+        }
+
+        // postcard: enum tags and integers are varints, `bool` is one byte,
+        // `f32` is four little-endian bytes and arrays have no length prefix.
+        assert_eq!(bytes(&ServerHeader::Value(5, 7, true, 3)), [0, 5, 7, 1, 3]);
+        assert_eq!(
+            bytes(&ServerHeader::ValueTake(300, 1, true, false, 2)),
+            [1, 0xac, 0x02, 1, 1, 0, 2]
+        );
+        assert_eq!(
+            bytes(&ServerHeader::Data(
+                5,
+                DataHeader::All(DataType::U16, TransportType::Set(3), true, 6)
+            )),
+            [4, 5, 0, 1, 0, 3, 1, 6]
+        );
+        assert_eq!(
+            bytes(&ServerHeader::Data(
+                5,
+                DataHeader::End(DataType::F64, TransportType::Replace(2, 4), false, 32)
+            )),
+            [4, 5, 3, 9, 2, 2, 4, 0, 32]
+        );
+        assert_eq!(
+            bytes(&ServerHeader::Data(5, DataHeader::Drain(1, 2, true))),
+            [4, 5, 4, 1, 2, 1]
+        );
+        assert_eq!(
+            bytes(&ServerHeader::DataTake(
+                5,
+                DataTakeHeader::All(DataType::U8, 4, true, 4),
+                true
+            )),
+            [5, 5, 0, 0, 4, 1, 4, 1]
+        );
+        assert_eq!(
+            bytes(&ServerHeader::MultiData(
+                5,
+                MultiDataHeader::Modify(9, DataHeader::Clear(true))
+            )),
+            [6, 5, 1, 9, 5, 1]
+        );
+        assert_eq!(
+            bytes(&ServerHeader::DataMultiTake(
+                5,
+                DataMultiTakeHeader::Modify(9, DataTakeHeader::StartBatch(10, 4), false)
+            )),
+            [7, 5, 1, 9, 1, 10, 4, 0]
+        );
+        assert_eq!(
+            bytes(&ServerHeader::Image(
+                5,
+                ImageHeader::Set(ImageSetHeader::All([2, 3], true), ImageType::Gray),
+                6
+            )),
+            [3, 5, 0, 0, 2, 3, 1, 2, 6]
+        );
+        assert_eq!(
+            bytes(&ServerHeader::ImageMulti(
+                5,
+                ImageMultiHeader::Modify(
+                    1,
+                    ImageHeader::Update([0, 1, 2, 3], ImageType::ColorAlpha, true),
+                    24
+                )
+            )),
+            [11, 5, 1, 1, 1, 0, 1, 2, 3, 1, 1, 24]
+        );
+        assert_eq!(
+            bytes(&ServerHeader::ValueVec(
+                5,
+                7,
+                false,
+                VecHeader::Remove(2),
+                0
+            )),
+            [8, 5, 7, 0, 3, 2, 0]
+        );
+        assert_eq!(bytes(&ServerHeader::Update(1.0)), [10, 0, 0, 0x80, 0x3f]);
+        assert_eq!(bytes(&ClientHeader::Ack(300)), [2, 0xac, 0x02]);
+        assert_eq!(
+            bytes(&ClientHeader::Handshake(7, Some(1), None)),
+            [4, 7, 1, 1, 0]
+        );
+    }
+
     fn contents<const N: usize>(data: &FastVec<N>) -> Vec<u8> {
         match data {
             FastVec::Heap(data) => data.clone(),
