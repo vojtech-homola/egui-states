@@ -230,56 +230,71 @@ pub unsafe extern "C" fn egui_states_server_add_image_multi(
     })
 }
 
-/// Registers a `Data<T>` of `EGUI_STATES_DATA_*` elements. `out_id` may be null.
+/// Registers a `Data<T>` of `EGUI_STATES_DATA_*` elements. `header_type` is
+/// the type expression of its header, or null for a state without one.
+/// `out_id` may be null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn egui_states_server_add_data(
     server: *const egui_states_server_t,
     name: *const c_char,
     data_type: egui_states_data_type_t,
+    header_type: *const c_char,
     out_id: *mut u64,
 ) -> egui_states_status_t {
     add(server, name, out_id, |server, name| {
-        server.add_data(name, data_kind(data_type)?)
+        let header_type = unsafe { optional_c_str(header_type, "header_type") }?;
+        server.add_data(name, data_kind(data_type)?, header_type)
     })
 }
 
-/// Registers a `DataTake<T>` of `EGUI_STATES_DATA_*` elements. `out_id` may be null.
+/// Registers a `DataTake<T>` of `EGUI_STATES_DATA_*` elements. `header_type` is
+/// the type expression of its header, or null for a state without one.
+/// `out_id` may be null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn egui_states_server_add_data_take(
     server: *const egui_states_server_t,
     name: *const c_char,
     data_type: egui_states_data_type_t,
+    header_type: *const c_char,
     out_id: *mut u64,
 ) -> egui_states_status_t {
     add(server, name, out_id, |server, name| {
-        server.add_data_take(name, data_kind(data_type)?)
+        let header_type = unsafe { optional_c_str(header_type, "header_type") }?;
+        server.add_data_take(name, data_kind(data_type)?, header_type)
     })
 }
 
-/// Registers a `DataMulti<T>` of `EGUI_STATES_DATA_*` elements. `out_id` may be null.
+/// Registers a `DataMulti<T>` of `EGUI_STATES_DATA_*` elements. `header_type` is
+/// the type expression of its header, or null for a state without one.
+/// `out_id` may be null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn egui_states_server_add_data_multi(
     server: *const egui_states_server_t,
     name: *const c_char,
     data_type: egui_states_data_type_t,
+    header_type: *const c_char,
     out_id: *mut u64,
 ) -> egui_states_status_t {
     add(server, name, out_id, |server, name| {
-        server.add_data_multi(name, data_kind(data_type)?)
+        let header_type = unsafe { optional_c_str(header_type, "header_type") }?;
+        server.add_data_multi(name, data_kind(data_type)?, header_type)
     })
 }
 
-/// Registers a `DataMultiTake<T>` of `EGUI_STATES_DATA_*` elements. `out_id`
-/// may be null.
+/// Registers a `DataMultiTake<T>` of `EGUI_STATES_DATA_*` elements. `header_type` is
+/// the type expression of its header, or null for a state without one.
+/// `out_id` may be null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn egui_states_server_add_data_multi_take(
     server: *const egui_states_server_t,
     name: *const c_char,
     data_type: egui_states_data_type_t,
+    header_type: *const c_char,
     out_id: *mut u64,
 ) -> egui_states_status_t {
     add(server, name, out_id, |server, name| {
-        server.add_data_multi_take(name, data_kind(data_type)?)
+        let header_type = unsafe { optional_c_str(header_type, "header_type") }?;
+        server.add_data_multi_take(name, data_kind(data_type)?, header_type)
     })
 }
 

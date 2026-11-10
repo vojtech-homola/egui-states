@@ -148,6 +148,10 @@ fn state_types(state: &StateType) -> Vec<&ObjectType> {
         | StateType::ValueVec(_, object_type)
         | StateType::Signal(_, object_type, _) => vec![object_type],
         StateType::ValueMap(_, key, value) => vec![key, value],
+        StateType::Data(_, _, Some(header))
+        | StateType::DataTake(_, _, Some(header))
+        | StateType::DataMulti(_, _, Some(header))
+        | StateType::DataMultiTake(_, _, Some(header)) => vec![header],
         _ => Vec::new(),
     }
 }
@@ -410,10 +414,14 @@ fn render_c<S: State>() -> (String, String) {
             StateType::ImageMulti(_) => registrations.push_str(&generator.check(format!(
                 "egui_states_server_add_image_multi(server, {name}, NULL)"
             ))),
-            StateType::Data(_, data_type, _)
-            | StateType::DataTake(_, data_type, _)
-            | StateType::DataMulti(_, data_type, _)
-            | StateType::DataMultiTake(_, data_type, _) => {
+            StateType::Data(_, data_type, header)
+            | StateType::DataTake(_, data_type, header)
+            | StateType::DataMulti(_, data_type, header)
+            | StateType::DataMultiTake(_, data_type, header) => {
+                let header_name = match header {
+                    Some(header) => type_macro("HEADER_TYPE", header),
+                    None => "NULL".to_string(),
+                };
                 let data_name = names.claim(macro_name("DATA_TYPE"), full_name);
                 writeln!(
                     constants,
@@ -428,7 +436,7 @@ fn render_c<S: State>() -> (String, String) {
                     _ => "data_multi_take",
                 };
                 registrations.push_str(&generator.check(format!(
-                    "egui_states_server_add_{function}(server, {name}, {data_name}, NULL)"
+                    "egui_states_server_add_{function}(server, {name}, {data_name}, {header_name}, NULL)"
                 )));
             }
             StateType::SubState(..) => unreachable!("substates are flattened"),
@@ -582,7 +590,6 @@ fn render_c<S: State>() -> (String, String) {
 /// Panics if a type is defined inconsistently in different locations, if two
 /// generated C names collide, or if the prefix would be `egui_states`.
 pub fn generate_c<S: State>(directory: impl AsRef<Path>) -> Result<(), String> {
-    scripts::reject_data_headers(&scripts::parse_states::<S>().0, "C")?;
     let (file_name, header) = render_c::<S>();
     scripts::write_generated_files(directory.as_ref(), [(file_name.as_str(), header.as_str())])
 }

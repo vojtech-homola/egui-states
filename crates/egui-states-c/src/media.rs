@@ -7,6 +7,7 @@ use std::ffi::c_void;
 
 use egui_states::c_abi::{CServer, DataKind, Error, ErrorCode, ImageFormat, ImageInput};
 
+use crate::codec::{egui_states_reader_t, egui_states_writer_t};
 use crate::ffi::{
     bytes, data_kind, egui_states_status_t, elements, ffi, output, output_elements, reference,
     too_small, write, write_optional,
@@ -16,7 +17,7 @@ use crate::meta::{
     egui_states_data_type_t, egui_states_image_format_t,
 };
 use crate::server::{egui_states_server_t, server_ref};
-use crate::states::has;
+use crate::states::{has, optional_writer, reader_mut, writer_ref};
 
 /// Image pixels passed to the server.
 ///
@@ -428,6 +429,10 @@ pub unsafe extern "C" fn egui_states_image_multi_indices(
 }
 
 // data ------------------------------------------------------------------------
+//
+// A Data function takes the state's new header as `header`, a writer with
+// one value of the header type; null keeps the current header. A take sent
+// with a null header reaches the client with the header type's default.
 
 /// Reports the number of elements of a `Data` state.
 #[unsafe(no_mangle)]
@@ -464,8 +469,22 @@ pub unsafe extern "C" fn egui_states_data_get(
     })
 }
 
+/// Loads the header of a `Data` state into `reader`. `EGUI_STATES_ERROR_NOT_FOUND`
+/// when the state has no header type or no header was set yet.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn egui_states_data_get_header(
+    server: *const egui_states_server_t,
+    id: u64,
+    reader: *mut egui_states_reader_t,
+) -> egui_states_status_t {
+    run(server, |server| {
+        server.data_get_header(id, reader_mut(reader)?)
+    })
+}
+
 /// Replaces the elements of a `Data` state with `count` elements of
-/// `data_type` at `data`. `flags` may be `EGUI_STATES_UPDATE`.
+/// `data_type` at `data`, and the header unless `header` is null. `flags` may
+/// be `EGUI_STATES_UPDATE`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn egui_states_data_set(
     server: *const egui_states_server_t,
@@ -473,15 +492,18 @@ pub unsafe extern "C" fn egui_states_data_set(
     data_type: egui_states_data_type_t,
     data: *const c_void,
     count: usize,
+    header: *const egui_states_writer_t,
     flags: u32,
 ) -> egui_states_status_t {
     run(server, |server| {
         let (kind, data) = input_data(data_type, data, count)?;
-        server.data_set(id, kind, data, update_flag(flags)?)
+        let header = optional_writer(header)?;
+        server.data_set(id, kind, data, header, update_flag(flags)?)
     })
 }
 
-/// Appends `count` elements. `flags` may be `EGUI_STATES_UPDATE`.
+/// Appends `count` elements; `header` as for `egui_states_data_set`.
+/// `flags` may be `EGUI_STATES_UPDATE`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn egui_states_data_add(
     server: *const egui_states_server_t,
@@ -489,16 +511,19 @@ pub unsafe extern "C" fn egui_states_data_add(
     data_type: egui_states_data_type_t,
     data: *const c_void,
     count: usize,
+    header: *const egui_states_writer_t,
     flags: u32,
 ) -> egui_states_status_t {
     run(server, |server| {
         let (kind, data) = input_data(data_type, data, count)?;
-        server.data_add(id, kind, data, update_flag(flags)?)
+        let header = optional_writer(header)?;
+        server.data_add(id, kind, data, header, update_flag(flags)?)
     })
 }
 
 /// Overwrites `count` elements starting at element `index`; they must lie
-/// inside the buffer. `flags` may be `EGUI_STATES_UPDATE`.
+/// inside the buffer. `header` as for `egui_states_data_set`. `flags` may be
+/// `EGUI_STATES_UPDATE`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn egui_states_data_replace(
     server: *const egui_states_server_t,
@@ -507,40 +532,66 @@ pub unsafe extern "C" fn egui_states_data_replace(
     data: *const c_void,
     count: usize,
     index: usize,
+    header: *const egui_states_writer_t,
     flags: u32,
 ) -> egui_states_status_t {
     run(server, |server| {
         let (kind, data) = input_data(data_type, data, count)?;
-        server.data_replace(id, kind, data, index, update_flag(flags)?)
+        let header = optional_writer(header)?;
+        server.data_replace(id, kind, data, index, header, update_flag(flags)?)
     })
 }
 
 /// Removes `count` (at least 1) elements starting at element `index`.
-/// `flags` may be `EGUI_STATES_UPDATE`.
+/// `header` as for `egui_states_data_set`. `flags` may be `EGUI_STATES_UPDATE`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn egui_states_data_remove(
     server: *const egui_states_server_t,
     id: u64,
     index: usize,
     count: usize,
+    header: *const egui_states_writer_t,
     flags: u32,
 ) -> egui_states_status_t {
     run(server, |server| {
-        server.data_remove(id, index, count, update_flag(flags)?)
+        let header = optional_writer(header)?;
+        server.data_remove(id, index, count, header, update_flag(flags)?)
     })
 }
 
-/// Removes every element. `flags` may be `EGUI_STATES_UPDATE`.
+/// Removes every element; the header stays unless `header` is not null.
+/// `flags` may be `EGUI_STATES_UPDATE`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn egui_states_data_clear(
     server: *const egui_states_server_t,
     id: u64,
+    header: *const egui_states_writer_t,
     flags: u32,
 ) -> egui_states_status_t {
-    run(server, |server| server.data_clear(id, update_flag(flags)?))
+    run(server, |server| {
+        let header = optional_writer(header)?;
+        server.data_clear(id, header, update_flag(flags)?)
+    })
 }
 
-/// Sends a one-shot buffer to a `DataTake` state.
+/// Replaces the header of a `Data` state alone. The client does not
+/// acknowledge a header, so this never waits. `flags` may be
+/// `EGUI_STATES_UPDATE`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn egui_states_data_set_header(
+    server: *const egui_states_server_t,
+    id: u64,
+    header: *const egui_states_writer_t,
+    flags: u32,
+) -> egui_states_status_t {
+    run(server, |server| {
+        let header = writer_ref(header, "header")?;
+        server.data_set_header(id, header, update_flag(flags)?)
+    })
+}
+
+/// Sends a one-shot buffer to a `DataTake` state, with `header`, or the
+/// header type's default when it is null.
 ///
 /// `flags` may combine `EGUI_STATES_BLOCKING`, `EGUI_STATES_UPDATE`, and
 /// `EGUI_STATES_CACHE`, which keeps the buffer for clients that connect later.
@@ -551,13 +602,15 @@ pub unsafe extern "C" fn egui_states_data_take_set(
     data_type: egui_states_data_type_t,
     data: *const c_void,
     count: usize,
+    header: *const egui_states_writer_t,
     flags: u32,
 ) -> egui_states_status_t {
     run(server, |server| {
         let allowed = EGUI_STATES_BLOCKING | EGUI_STATES_UPDATE | EGUI_STATES_CACHE;
         let (blocking, update, cache) = take_flags(flags, allowed)?;
         let (kind, data) = input_data(data_type, data, count)?;
-        server.data_take_set(id, kind, data, blocking, update, cache)
+        let header = optional_writer(header)?;
+        server.data_take_set(id, kind, data, header, blocking, update, cache)
     })
 }
 
@@ -582,7 +635,24 @@ pub unsafe extern "C" fn egui_states_data_multi_get(
     })
 }
 
-/// Replaces or creates the buffer at `index`. `flags` may be `EGUI_STATES_UPDATE`.
+/// Loads the header at `index` of a `DataMulti` state into `reader`.
+/// `EGUI_STATES_ERROR_NOT_FOUND` when the index is missing, the state has no
+/// header type, or no header was set for the index yet.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn egui_states_data_multi_get_header(
+    server: *const egui_states_server_t,
+    id: u64,
+    index: u32,
+    reader: *mut egui_states_reader_t,
+) -> egui_states_status_t {
+    run(server, |server| {
+        server.data_multi_get_header(id, index, reader_mut(reader)?)
+    })
+}
+
+/// Replaces or creates the buffer at `index`, and its header unless `header`
+/// is null; a new index without one gets the default header. `flags` may be
+/// `EGUI_STATES_UPDATE`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn egui_states_data_multi_set(
     server: *const egui_states_server_t,
@@ -591,16 +661,18 @@ pub unsafe extern "C" fn egui_states_data_multi_set(
     data_type: egui_states_data_type_t,
     data: *const c_void,
     count: usize,
+    header: *const egui_states_writer_t,
     flags: u32,
 ) -> egui_states_status_t {
     run(server, |server| {
         let (kind, data) = input_data(data_type, data, count)?;
-        server.data_multi_set(id, index, kind, data, update_flag(flags)?)
+        let header = optional_writer(header)?;
+        server.data_multi_set(id, index, kind, data, header, update_flag(flags)?)
     })
 }
 
-/// Appends elements to the existing buffer at `index`. `flags` may be
-/// `EGUI_STATES_UPDATE`.
+/// Appends elements to the existing buffer at `index`; `header` as for
+/// `egui_states_data_multi_set`. `flags` may be `EGUI_STATES_UPDATE`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn egui_states_data_multi_add(
     server: *const egui_states_server_t,
@@ -609,16 +681,19 @@ pub unsafe extern "C" fn egui_states_data_multi_add(
     data_type: egui_states_data_type_t,
     data: *const c_void,
     count: usize,
+    header: *const egui_states_writer_t,
     flags: u32,
 ) -> egui_states_status_t {
     run(server, |server| {
         let (kind, data) = input_data(data_type, data, count)?;
-        server.data_multi_add(id, index, kind, data, update_flag(flags)?)
+        let header = optional_writer(header)?;
+        server.data_multi_add(id, index, kind, data, header, update_flag(flags)?)
     })
 }
 
 /// Overwrites elements of the existing buffer at `index` starting at element
-/// `data_index`. `flags` may be `EGUI_STATES_UPDATE`.
+/// `data_index`; `header` as for `egui_states_data_multi_set`. `flags` may be
+/// `EGUI_STATES_UPDATE`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn egui_states_data_multi_replace(
     server: *const egui_states_server_t,
@@ -628,17 +703,20 @@ pub unsafe extern "C" fn egui_states_data_multi_replace(
     data: *const c_void,
     count: usize,
     data_index: usize,
+    header: *const egui_states_writer_t,
     flags: u32,
 ) -> egui_states_status_t {
     run(server, |server| {
         let (kind, data) = input_data(data_type, data, count)?;
+        let header = optional_writer(header)?;
         let update = update_flag(flags)?;
-        server.data_multi_replace(id, index, kind, data, data_index, update)
+        server.data_multi_replace(id, index, kind, data, data_index, header, update)
     })
 }
 
 /// Removes `count` (at least 1) elements of the existing buffer at `index`
-/// starting at element `data_index`. `flags` may be `EGUI_STATES_UPDATE`.
+/// starting at element `data_index`; `header` as for
+/// `egui_states_data_multi_set`. `flags` may be `EGUI_STATES_UPDATE`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn egui_states_data_multi_remove(
     server: *const egui_states_server_t,
@@ -646,30 +724,51 @@ pub unsafe extern "C" fn egui_states_data_multi_remove(
     index: u32,
     data_index: usize,
     count: usize,
+    header: *const egui_states_writer_t,
     flags: u32,
 ) -> egui_states_status_t {
     run(server, |server| {
+        let header = optional_writer(header)?;
         let update = update_flag(flags)?;
-        server.data_multi_remove(id, index, data_index, count, update)
+        server.data_multi_remove(id, index, data_index, count, header, update)
     })
 }
 
 /// Removes every element of the existing buffer at `index`, keeping the
-/// index. `flags` may be `EGUI_STATES_UPDATE`.
+/// index and its header unless `header` is not null. `flags` may be
+/// `EGUI_STATES_UPDATE`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn egui_states_data_multi_clear(
     server: *const egui_states_server_t,
     id: u64,
     index: u32,
+    header: *const egui_states_writer_t,
     flags: u32,
 ) -> egui_states_status_t {
     run(server, |server| {
-        server.data_multi_clear(id, index, update_flag(flags)?)
+        let header = optional_writer(header)?;
+        server.data_multi_clear(id, index, header, update_flag(flags)?)
     })
 }
 
-/// Removes the buffer at `index`; a missing index is ignored. `flags` may be
-/// `EGUI_STATES_UPDATE`.
+/// Replaces the header at the existing `index` alone; this never waits for
+/// the client. `flags` may be `EGUI_STATES_UPDATE`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn egui_states_data_multi_set_header(
+    server: *const egui_states_server_t,
+    id: u64,
+    index: u32,
+    header: *const egui_states_writer_t,
+    flags: u32,
+) -> egui_states_status_t {
+    run(server, |server| {
+        let header = writer_ref(header, "header")?;
+        server.data_multi_set_header(id, index, header, update_flag(flags)?)
+    })
+}
+
+/// Removes the buffer and header at `index`; a missing index is ignored.
+/// `flags` may be `EGUI_STATES_UPDATE`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn egui_states_data_multi_remove_index(
     server: *const egui_states_server_t,
@@ -682,7 +781,7 @@ pub unsafe extern "C" fn egui_states_data_multi_remove_index(
     })
 }
 
-/// Removes every buffer. `flags` may be `EGUI_STATES_UPDATE`.
+/// Removes every buffer and header. `flags` may be `EGUI_STATES_UPDATE`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn egui_states_data_multi_reset(
     server: *const egui_states_server_t,
@@ -695,7 +794,7 @@ pub unsafe extern "C" fn egui_states_data_multi_reset(
 }
 
 /// Sends a one-shot buffer at `index` of a `DataMultiTake` state, with the
-/// flags of `egui_states_data_take_set`.
+/// header and flags of `egui_states_data_take_set`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn egui_states_data_multi_take_set(
     server: *const egui_states_server_t,
@@ -704,13 +803,15 @@ pub unsafe extern "C" fn egui_states_data_multi_take_set(
     data_type: egui_states_data_type_t,
     data: *const c_void,
     count: usize,
+    header: *const egui_states_writer_t,
     flags: u32,
 ) -> egui_states_status_t {
     run(server, |server| {
         let allowed = EGUI_STATES_BLOCKING | EGUI_STATES_UPDATE | EGUI_STATES_CACHE;
         let (blocking, update, cache) = take_flags(flags, allowed)?;
         let (kind, data) = input_data(data_type, data, count)?;
-        server.data_multi_take_set(id, index, kind, data, blocking, update, cache)
+        let header = optional_writer(header)?;
+        server.data_multi_take_set(id, index, kind, data, header, blocking, update, cache)
     })
 }
 
