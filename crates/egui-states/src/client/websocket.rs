@@ -11,7 +11,11 @@ pub(crate) async fn build_ws(address: &str) -> Result<(WsClientRead, WsClientSen
     let mut websocket_config = WebSocketConfig::default();
     websocket_config.max_message_size = Some(WEBSOCKET_MAX_SIZE);
     websocket_config.max_frame_size = Some(WEBSOCKET_MAX_SIZE);
-    let res = connect_async_with_config(address, Some(websocket_config), false).await;
+    // Disable Nagle's algorithm, as the server does for its sockets: the
+    // server answers value changes and acknowledgements with nothing, so its
+    // delayed ACK would otherwise hold back each next small client message.
+    let disable_nagle = true;
+    let res = connect_async_with_config(address, Some(websocket_config), disable_nagle).await;
 
     let socket = match res {
         Ok(res) => res.0,
