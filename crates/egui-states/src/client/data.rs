@@ -131,6 +131,9 @@ fn checked_range(start: u64, count: u64, len: usize) -> Option<std::ops::Range<u
 // Data -------------------------------------------------------------------
 pub(crate) trait UpdateData: Sync + Send {
     fn update_data(&self, message: DataMessage) -> Result<(), String>;
+    /// Drops a partial transfer, which can never complete once its
+    /// connection is closed.
+    fn disconnected(&self);
 }
 
 /// A client-side, contiguous numeric buffer synchronized from the server.
@@ -388,6 +391,10 @@ where
             }
         }
     }
+
+    fn disconnected(&self) {
+        self.buffer.lock().take();
+    }
 }
 
 impl<T> Clone for Data<T> {
@@ -409,6 +416,9 @@ pub(crate) trait UpdateMultiData: Sync + Send {
     fn update(&self, key: u32, message: DataMessage) -> Result<(), String>;
     fn remove(&self, key: u32);
     fn reset(&self);
+    /// Drops every partial transfer, which can never complete once its
+    /// connection is closed.
+    fn disconnected(&self);
 }
 
 /// A read-only client collection of server-controlled numeric buffers.
@@ -711,6 +721,8 @@ where
                 if let Some(val) = self.inner.write().get_mut(&index) {
                     val.clear();
                 }
+                // A later change of this key must not complete an older batch.
+                self.buffers.lock().remove(&index);
                 Ok(())
             }
         }
@@ -718,10 +730,16 @@ where
 
     fn remove(&self, index: u32) {
         self.inner.write().remove(&index);
+        self.buffers.lock().remove(&index);
     }
 
     fn reset(&self) {
         self.inner.write().clear();
+        self.buffers.lock().clear();
+    }
+
+    fn disconnected(&self) {
+        self.buffers.lock().clear();
     }
 }
 
@@ -770,6 +788,45 @@ mod tests {
             _ => panic!("expected an ACK for {expected_id}"),
         }
         assert!(matches!(receiver.try_recv(), Err(TryRecvError::Empty)));
+    }
+
+    /// Clear, remove, reset and a disconnect drop the partial batch of their
+    /// key, so the batch end that follows fails with one acknowledgement.
+    #[test]
+    fn controls_and_disconnects_drop_partial_batches() {
+        let id = 42;
+        let start = || DataMessage::BatchStart(4, Bytes::from_static(&[1, 2]));
+        let end = || {
+            DataMessage::BatchEnd(
+                DataType::U8,
+                TransportType::Set(4),
+                Bytes::from_static(&[3, 4]),
+            )
+        };
+
+        let (sender, mut receiver) = MessageSender::new();
+        let single = Data::<u8>::new("data".to_string(), id, sender);
+        single.update_data(start()).unwrap();
+        single.disconnected();
+        assert!(single.update_data(end()).is_err());
+        assert_single_ack(&mut receiver, id);
+
+        type Control = fn(&DataMulti<u8>);
+        let controls: [(&str, Control); 4] = [
+            ("clear", |data| data.update(1, DataMessage::Clear).unwrap()),
+            ("remove", |data| data.remove(1)),
+            ("reset", |data| data.reset()),
+            ("disconnect", |data| data.disconnected()),
+        ];
+        for (name, control) in controls {
+            let (sender, mut receiver) = MessageSender::new();
+            let multi = DataMulti::<u8>::new("data".to_string(), id, sender);
+            multi.update(1, start()).unwrap();
+            control(&multi);
+            assert!(multi.update(1, end()).is_err(), "{name} kept the batch");
+            assert_single_ack(&mut receiver, id);
+            assert_eq!(multi.get(1).map(|v| v.len()).unwrap_or(0), 0, "{name}");
+        }
     }
 
     /// `for_each` is callable with a plain closure, without a turbofish.

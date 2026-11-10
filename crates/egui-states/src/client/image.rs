@@ -159,6 +159,11 @@ impl Image {
         (load_texture(&self.context, name, image), size)
     }
 
+    /// Drops a partial image transfer of a closed connection.
+    pub(crate) fn disconnected(&self) {
+        self.buffer.lock().take();
+    }
+
     pub(crate) fn set_image(
         &self,
         message: ImageSetMessage,
@@ -574,6 +579,11 @@ impl ImageMulti {
         self.images.write().clear();
         self.buffers.lock().clear();
     }
+
+    /// Drops every partial image transfer of a closed connection.
+    pub(crate) fn disconnected(&self) {
+        self.buffers.lock().clear();
+    }
 }
 
 impl Clone for ImageMulti {
@@ -888,6 +898,41 @@ mod tests {
         assert_single_ack(&mut multi_receiver, 2);
         assert_eq!(image.get_size(), Some([3, 1]));
         assert_eq!(images.get_size(7), Some([3, 1]));
+    }
+
+    /// A batch from a closed connection can never complete, so the client
+    /// drops it on disconnect and a later End fails with one acknowledgement.
+    #[test]
+    fn a_disconnect_drops_partial_image_batches() {
+        let context = egui::Context::default();
+        let (sender, mut receiver) = MessageSender::new();
+        let image = Image::new("image".into(), 1, sender, context.clone());
+        let (sender, mut multi_receiver) = MessageSender::new();
+        let images = ImageMulti::new("images".into(), 2, sender, context);
+
+        image
+            .set_image(ImageSetMessage::Start([2, 1], 1), ImageType::Gray, &[1])
+            .unwrap();
+        images
+            .set_image(7, ImageSetMessage::Start([2, 1], 1), ImageType::Gray, &[1])
+            .unwrap();
+        image.disconnected();
+        images.disconnected();
+
+        assert!(
+            image
+                .set_image(ImageSetMessage::End(1), ImageType::Gray, &[2])
+                .is_err()
+        );
+        assert!(
+            images
+                .set_image(7, ImageSetMessage::End(1), ImageType::Gray, &[2])
+                .is_err()
+        );
+        assert_single_ack(&mut receiver, 1);
+        assert_single_ack(&mut multi_receiver, 2);
+        assert_eq!(image.get_size(), None);
+        assert_eq!(images.get_size(7), None);
     }
 
     #[test]

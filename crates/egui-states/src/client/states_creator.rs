@@ -193,6 +193,18 @@ impl ValuesList {
         for value in self.values_take.values() {
             value.disconnected();
         }
+        for data in self.data.values() {
+            data.disconnected();
+        }
+        for data in self.multi_data.values() {
+            data.disconnected();
+        }
+        for image in self.images.values() {
+            image.disconnected();
+        }
+        for images in self.image_multi.values() {
+            images.disconnected();
+        }
         for data in self.data_take.values() {
             data.disconnected();
         }
