@@ -22,6 +22,7 @@ use crate::server_core::heartbeat::Heartbeat;
 use crate::server_core::image_core::Image;
 use crate::server_core::image_multi_core::ImageMulti;
 use crate::server_core::map_core::ValueMap;
+use crate::server_core::origin::OriginPolicy;
 use crate::server_core::sender::{MessageReceiver, MessageSender};
 use crate::server_core::signals::{CLIENT_MESSAGE_ID, SignalsManager};
 use crate::server_core::values_core::{SignalCore, ValueCore, ValueStaticCore, ValueTakeCore};
@@ -217,6 +218,7 @@ pub(crate) struct Server {
     version: Option<u64>,
     web_path: Option<PathBuf>,
     web: WebSlot,
+    origins: Arc<OriginPolicy>,
     heartbeat: Option<Heartbeat>,
 
     runner_state: RunnerState,
@@ -238,6 +240,7 @@ impl Server {
             version,
             web_path: None,
             web: WebSlot::default(),
+            origins: Arc::default(),
             heartbeat: Some(Heartbeat::default()),
             runner_state: RunnerState::Stopped(rx),
         }
@@ -260,6 +263,16 @@ impl Server {
                     .map_err(|e| format!("invalid web page path {}: {e}", path.display()))
             })
             .transpose()?;
+        Ok(())
+    }
+
+    /// Sets which browser pages may connect, besides pages served by the
+    /// server itself on an IP address or local network name.
+    ///
+    /// `origins` are `scheme://host[:port]` patterns, where `*` matches any
+    /// scheme, part of the host, or port. Applies from the next start.
+    pub(crate) fn set_allowed_origins(&mut self, origins: &[String]) -> Result<(), String> {
+        self.origins = Arc::new(OriginPolicy::new(origins)?);
         Ok(())
     }
 
@@ -377,6 +390,7 @@ impl Server {
                 let handshake = core::Handshake {
                     version: self.version,
                     token,
+                    origins: self.origins.clone(),
                 };
 
                 let server_thread = thread::Builder::new().name("StatesServer".to_string());

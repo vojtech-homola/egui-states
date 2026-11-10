@@ -1001,6 +1001,25 @@ egui_states_status_t egui_states_server_set_heartbeat(const egui_states_server_t
                                                       uint64_t interval_ms,
                                                       uint64_t timeout_ms);
 
+// Sets which browser pages may connect. It applies from the next
+// `egui_states_server_start`.
+//
+// Browsers let any web page open a WebSocket to the server but state the
+// page's origin, which the page cannot change. By default only pages the
+// server serves itself, directly or through a proxy that sets
+// `X-Forwarded-Host`, on an IP address or a local network name (no dot, or
+// ending in `.local`, `.home.arpa`, `.internal`, or `.localhost`) may
+// connect. Native clients send no origin and are not affected.
+//
+// `origins` points to `count` UTF-8 strings, each a `scheme://host[:port]`
+// pattern where `*` matches any scheme, part of the host, or port, such as
+// `"http://localhost:3000"` or `"http://myserver.corp.example:*"`. An entry
+// of just `"*"` lets every page connect, including local files. A `count` of
+// 0 restores the default; `origins` may then be null. The strings are copied.
+egui_states_status_t egui_states_server_set_allowed_origins(const egui_states_server_t *server,
+                                                            const char *const *origins,
+                                                            size_t count);
+
 // Starts listening on `port`.
 //
 // `ipv4` is a dotted address such as `"0.0.0.0"`; null listens only on the

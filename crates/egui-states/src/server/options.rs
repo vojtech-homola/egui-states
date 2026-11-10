@@ -54,6 +54,26 @@ pub struct ServerOptions {
     /// server is created. The directory is read only by `start_web`, so it
     /// need not exist before then.
     pub web_path: Option<PathBuf>,
+    /// Origins of other web pages that may connect, as `scheme://host[:port]`
+    /// patterns.
+    ///
+    /// Browsers let any page open a WebSocket to the server, but state the
+    /// page's origin, which the page cannot change. By default only pages
+    /// served by the server itself (with [`StateServer::start_web`](super::StateServer::start_web)
+    /// or through a proxy that sets `X-Forwarded-Host`, such as `trunk serve`)
+    /// on an IP address or a local network name may connect: a name without a
+    /// dot (`localhost`, `pc-a`) or ending in `.local`, `.home.arpa`,
+    /// `.internal`, or `.localhost`, none of which an internet site can have.
+    /// Others are refused before the handshake. Native clients send no origin
+    /// and are not affected.
+    ///
+    /// `*` matches any scheme (`*://host`), any part of the host
+    /// (`https://*.example.com`), or any port (`http://myserver.corp.example:*`,
+    /// which allows the page opened by that name). Without a port, the
+    /// scheme's default port (80 or 443) is meant, as in browsers. An entry
+    /// of just `*` allows every page, including local files; any site open in
+    /// the browser can then connect, so set a token as well.
+    pub allowed_origins: Vec<String>,
 }
 
 impl ServerOptions {
@@ -61,7 +81,8 @@ impl ServerOptions {
     ///
     /// The server uses three signal workers, does not require an application
     /// version, pings the client every 5 s, disconnecting it after 20 s
-    /// without any response, and has no web page.
+    /// without any response, and has no web page. Browser pages may connect
+    /// only when the server serves them on an IP address or local name.
     pub fn new() -> Self {
         Self::default()
     }
@@ -77,6 +98,7 @@ impl Default for ServerOptions {
             heartbeat_interval: heartbeat::DEFAULT_INTERVAL,
             heartbeat_timeout: Some(heartbeat::DEFAULT_TIMEOUT),
             web_path: None,
+            allowed_origins: Vec::new(),
         }
     }
 }

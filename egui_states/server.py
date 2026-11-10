@@ -2,7 +2,7 @@
 """Base classes used by generated Python state servers."""
 
 from abc import ABC, abstractmethod
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from os import PathLike
 from pathlib import Path
 from typing import Any
@@ -89,6 +89,7 @@ class StateServerBase[T: StatesBase]:
         heartbeat_interval: float = 5.0,
         heartbeat_timeout: float | None = 20.0,
         web_path: str | PathLike[str] | None = None,
+        allowed_origins: Sequence[str] = (),
     ) -> None:
         """Initialize the state server.
 
@@ -116,13 +117,38 @@ class StateServerBase[T: StatesBase]:
                 is resolved against the current directory now; the directory
                 is read only by :meth:`start_web`. ``None`` means no page can
                 be served.
+            allowed_origins (Sequence[str], optional): Origins of other web
+                pages that may connect, as ``scheme://host[:port]`` patterns.
+                Browsers let any page open a WebSocket to the server but state
+                the page's origin, which the page cannot change. By default
+                only pages served by the server itself (with
+                :meth:`start_web` or through a proxy that sets
+                ``X-Forwarded-Host``, such as ``trunk serve``) on an IP
+                address or local network name may connect: a name without a
+                dot (``localhost``, ``pc-a``) or ending in ``.local``,
+                ``.home.arpa``, ``.internal``, or ``.localhost``. ``*``
+                matches any scheme, any part of the host
+                (``https://*.example.com``), or any port
+                (``http://myserver.corp.example:*``, which allows the page
+                opened by that name). Without a port, the scheme's default
+                port is meant. An entry of just ``*`` allows every page,
+                including local files; any site open in the browser can then
+                connect, so set a token as well. Native clients send no origin
+                and are not affected.
 
         Raises:
             ValueError: If ``heartbeat_interval`` is not positive,
-                ``heartbeat_timeout`` is not greater than it, or ``web_path``
-                cannot be made absolute (for example because it is empty).
+                ``heartbeat_timeout`` is not greater than it, ``web_path``
+                cannot be made absolute (for example because it is empty), or
+                an allowed origin is malformed.
         """
-        self._server = StateServerCore(version, heartbeat_interval, heartbeat_timeout, web_path)
+        self._server = StateServerCore(
+            version,
+            heartbeat_interval,
+            heartbeat_timeout,
+            web_path,
+            list(allowed_origins),
+        )
         self._signals_manager = SignalsManager(self._server, signals_workers, error_handler)
         self._states: T = state_class(self)
 

@@ -4,7 +4,7 @@ Applications normally use :mod:`egui_states.structures` and a generated
 ``StatesServer`` instead of constructing these objects directly.
 """
 
-from collections.abc import Buffer
+from collections.abc import Buffer, Sequence
 from enum import IntEnum
 from os import PathLike
 from pathlib import Path
@@ -50,6 +50,7 @@ class StateServerCore:
         heartbeat_interval: float = 5.0,
         heartbeat_timeout: float | None = 20.0,
         web_path: str | PathLike[str] | None = None,
+        allowed_origins: Sequence[str] = (),
     ) -> None: ...
     def start(
         self,

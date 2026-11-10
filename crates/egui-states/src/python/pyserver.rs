@@ -155,12 +155,14 @@ impl StateServerCore {
         heartbeat_interval=heartbeat::DEFAULT_INTERVAL.as_secs_f64(),
         heartbeat_timeout=Some(heartbeat::DEFAULT_TIMEOUT.as_secs_f64()),
         web_path=None,
+        allowed_origins=Vec::new(),
     ))]
     fn new(
         version: Option<u64>,
         heartbeat_interval: f64,
         heartbeat_timeout: Option<f64>,
         web_path: Option<PathBuf>,
+        allowed_origins: Vec<String>,
     ) -> PyResult<Self> {
         let heartbeat = Heartbeat::from_secs(heartbeat_interval, heartbeat_timeout)
             .map_err(PyValueError::new_err)?;
@@ -168,6 +170,9 @@ impl StateServerCore {
         server.set_heartbeat(heartbeat);
         server
             .set_web_path(web_path.as_deref())
+            .map_err(PyValueError::new_err)?;
+        server
+            .set_allowed_origins(&allowed_origins)
             .map_err(PyValueError::new_err)?;
         let signals = server.get_signals_manager();
 

@@ -66,6 +66,25 @@ connect elsewhere. When a separate development server such as `trunk serve`
 serves the page, let it forward the WebSocket to the state server; the showcase's
 `Trunk.toml` shows how.
 
+Browsers let any web page open a WebSocket to any address, including a server on
+your own machine, so the server checks the page's origin (`scheme://host:port`),
+which browsers state in every WebSocket request and pages cannot change. A page
+may connect when the server served it, directly or through a proxy that sets
+`X-Forwarded-Host` such as `trunk serve`, on an IP address or a name that only
+exists on your network: one without a dot (`localhost`, `pc-a`) or ending in
+`.local`, `.home.arpa`, `.internal`, or `.localhost`. Other pages are refused
+before the handshake, so a site open in your browser cannot take over the
+connection. To let other pages connect, list their origins in the
+`allowed_origins` option, where `*` matches any scheme, part of the host, or
+port: `http://myserver.corp.example:*` allows the page opened by a company
+domain name, `http://localhost:3000` a page from another local server. Native clients send no
+origin and are not affected; the `token` guards against other programs. An
+entry of just `*` turns the check off and lets every page connect, including
+local files; any site open in your browser can then connect too, so set a
+`token` with it. The option is `allowed_origins` in the Rust `ServerOptions`
+and the Python server's constructor, and `egui_states_server_set_allowed_origins`
+in C.
+
 ## Network access
 
 By default the server listens only on `127.0.0.1`, so only clients on the same

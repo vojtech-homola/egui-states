@@ -91,6 +91,43 @@ def test_server_start_while_running_requires_the_active_settings():
     assert server.address() is None
 
 
+def test_browser_pages_from_other_origins_cannot_connect():
+    """Refuse WebSocket upgrades from foreign pages and validate the allow lists."""
+    import socket
+    import pytest
+    from egui_states_test_bindings import StatesServer  # ty: ignore[import-not-found]
+    from tests.python_test_helpers.network import free_port
+
+    with pytest.raises(ValueError, match="allowed origin"):
+        StatesServer(signals_workers=1, allowed_origins=["localhost:8090"])
+
+    def upgrade_status(origin: str) -> str:
+        request = (
+            f"GET /ws HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nUpgrade: websocket\r\n"
+            "Connection: Upgrade\r\nSec-WebSocket-Version: 13\r\n"
+            f"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nOrigin: {origin}\r\n\r\n"
+        )
+        with socket.create_connection(("127.0.0.1", port), timeout=5) as connection:
+            connection.sendall(request.encode())
+            response = b""
+            while b"\r\n" not in response:
+                chunk = connection.recv(1024)
+                if not chunk:
+                    break
+                response += chunk
+        return response.split(b"\r\n", 1)[0].decode()
+
+    port = free_port()
+    server = StatesServer(signals_workers=1, allowed_origins=("http://localhost:*",))
+    try:
+        server.start(port, (127, 0, 0, 1))
+        assert upgrade_status("https://news.example").startswith("HTTP/1.1 403")
+        assert upgrade_status(f"http://127.0.0.1:{port}").startswith("HTTP/1.1 101")
+        assert upgrade_status("http://localhost:8090").startswith("HTTP/1.1 101")
+    finally:
+        server.stop()
+
+
 def test_server_serves_web_page_on_its_port(tmp_path):
     """Serve the configured web page on the server port and reload or stop it."""
     import urllib.request

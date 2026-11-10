@@ -127,14 +127,15 @@ impl StateServer {
         Self::with_options(ServerOptions::new())
     }
 
-    /// Creates a server with explicit application, worker, heartbeat, and web
-    /// page options.
+    /// Creates a server with explicit application, worker, heartbeat, web
+    /// page, and browser access options.
     ///
     /// # Errors
     ///
     /// Returns an error if the heartbeat interval is zero, the heartbeat
-    /// timeout is not greater than the interval, or the web page path cannot
-    /// be made absolute (for example because it is empty).
+    /// timeout is not greater than the interval, the web page path cannot be
+    /// made absolute (for example because it is empty), or an allowed origin
+    /// is malformed.
     pub fn with_options(options: ServerOptions) -> Result<Self> {
         let heartbeat = Heartbeat::new(options.heartbeat_interval, options.heartbeat_timeout)
             .map_err(ServerError::new)?;
@@ -142,6 +143,9 @@ impl StateServer {
         server.set_heartbeat(heartbeat);
         server
             .set_web_path(options.web_path.as_deref())
+            .map_err(ServerError::new)?;
+        server
+            .set_allowed_origins(&options.allowed_origins)
             .map_err(ServerError::new)?;
         let signals = server.get_signals_manager();
         signals.set_to_queue(LOGGING_ID);
@@ -2681,6 +2685,58 @@ mod connection_tests {
             port,
             &[format!("GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n").as_bytes()],
         )
+    }
+
+    /// Opens a WebSocket the way a browser page from `origin` would, and
+    /// returns the status the server answered the upgrade with.
+    fn upgrade_from(port: u16, origin: &str) -> u16 {
+        use tungstenite::client::IntoClientRequest;
+        let stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
+        let mut request = format!("ws://127.0.0.1:{port}/ws")
+            .into_client_request()
+            .unwrap();
+        request
+            .headers_mut()
+            .insert("Origin", origin.parse().unwrap());
+        match tungstenite::client(request, stream) {
+            Ok((_socket, response)) => response.status().as_u16(),
+            Err(tungstenite::HandshakeError::Failure(tungstenite::Error::Http(response))) => {
+                response.status().as_u16()
+            }
+            Err(error) => panic!("unexpected handshake failure: {error:?}"),
+        }
+    }
+
+    #[test]
+    fn browser_pages_from_other_origins_cannot_connect() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let mut options = ServerOptions::new();
+        options.allowed_origins = vec!["http://localhost:8090".into()];
+        let (server, value, port) = server(options, None);
+        let mut peer = Peer::connect(port, None);
+        peer.wait_for_value(731);
+
+        assert_eq!(upgrade_from(port, "https://news.example"), 403);
+        assert_eq!(upgrade_from(port, "null"), 403);
+        // A page the server served itself, and an allowed origin.
+        assert_eq!(upgrade_from(port, &format!("http://127.0.0.1:{port}")), 101);
+        assert_eq!(upgrade_from(port, "http://localhost:8090"), 101);
+
+        // The refused pages did not replace the connected client.
+        value.set(5, false).unwrap();
+        peer.wait_for_value(5);
+        assert!(server.is_connected());
+        server.stop();
+    }
+
+    #[test]
+    fn malformed_allowed_origins_are_rejected() {
+        let mut options = ServerOptions::new();
+        options.allowed_origins = vec!["localhost:8090".into()];
+        let error = StateServer::with_options(options).err().unwrap();
+        assert!(error.message().contains("allowed origin"), "{error}");
     }
 
     #[test]
