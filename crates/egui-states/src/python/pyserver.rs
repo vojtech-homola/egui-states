@@ -1220,22 +1220,40 @@ impl StateServerCore {
         })
     }
 
-    fn data_multi_clear(&self, value_id: u64, index: u32, update: bool) -> PyResult<()> {
-        self.inner_data_multi(value_id)?
-            .clear(index, update)
-            .map_err(PyValueError::new_err)
+    fn data_multi_clear(
+        &self,
+        py: Python,
+        value_id: u64,
+        index: u32,
+        update: bool,
+    ) -> PyResult<()> {
+        py.detach(|| {
+            self.inner_data_multi(value_id)?
+                .clear(index, update)
+                .map_err(PyValueError::new_err)
+        })
     }
 
-    fn data_multi_remove_index(&self, value_id: u64, index: u32, update: bool) -> PyResult<()> {
-        self.inner_data_multi(value_id)?
-            .remove_index(index, update)
-            .map_err(PyValueError::new_err)
+    fn data_multi_remove_index(
+        &self,
+        py: Python,
+        value_id: u64,
+        index: u32,
+        update: bool,
+    ) -> PyResult<()> {
+        py.detach(|| {
+            self.inner_data_multi(value_id)?
+                .remove_index(index, update)
+                .map_err(PyValueError::new_err)
+        })
     }
 
-    fn data_multi_reset(&self, value_id: u64, update: bool) -> PyResult<()> {
-        self.inner_data_multi(value_id)?
-            .reset(update)
-            .map_err(PyValueError::new_err)
+    fn data_multi_reset(&self, py: Python, value_id: u64, update: bool) -> PyResult<()> {
+        py.detach(|| {
+            self.inner_data_multi(value_id)?
+                .reset(update)
+                .map_err(PyValueError::new_err)
+        })
     }
 
     // data multi take --------------------------------------------------
@@ -1272,19 +1290,24 @@ impl StateServerCore {
 
     fn data_multi_take_remove_index(
         &self,
+        py: Python,
         value_id: u64,
         index: u32,
         update: bool,
     ) -> PyResult<()> {
-        self.inner_data_multi_take(value_id)?
-            .remove_index(index, update)
-            .map_err(PyValueError::new_err)
+        py.detach(|| {
+            self.inner_data_multi_take(value_id)?
+                .remove_index(index, update)
+                .map_err(PyValueError::new_err)
+        })
     }
 
-    fn data_multi_take_reset(&self, value_id: u64, update: bool) -> PyResult<()> {
-        self.inner_data_multi_take(value_id)?
-            .reset(update)
-            .map_err(PyValueError::new_err)
+    fn data_multi_take_reset(&self, py: Python, value_id: u64, update: bool) -> PyResult<()> {
+        py.detach(|| {
+            self.inner_data_multi_take(value_id)?
+                .reset(update)
+                .map_err(PyValueError::new_err)
+        })
     }
 
     // add states -------------------------------------------------------
@@ -1487,5 +1510,118 @@ impl StateServerCore {
             .add_data_multi_take(&name, data_type)
             .map_err(|e| PyValueError::new_err(format!("Failed to add DataMultiTake: {}", e)))?;
         Ok(value_id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::{Ipv4Addr, TcpListener, TcpStream};
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    use pyo3::types::PyBytes;
+    use tokio_tungstenite::tungstenite::{self, Message};
+
+    use super::*;
+    use crate::serialization::ClientHeader;
+
+    /// A raw client that completes the handshake and never acknowledges.
+    fn silent_client(port: u16) -> tungstenite::WebSocket<TcpStream> {
+        let stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
+        let (mut socket, _) =
+            tungstenite::client(format!("ws://127.0.0.1:{port}"), stream).unwrap();
+        let handshake = ClientHeader::Handshake(crate::PROTOCOL_VERSION, None, None);
+        let bytes = postcard::to_stdvec(&handshake).unwrap();
+        socket.send(Message::Binary(bytes.into())).unwrap();
+        socket
+    }
+
+    /// A started server with one `u8` DataMulti and a connected silent client.
+    fn silent_session() -> (
+        Arc<Py<StateServerCore>>,
+        u64,
+        tungstenite::WebSocket<TcpStream>,
+    ) {
+        Python::initialize();
+        let core = Python::attach(|py| {
+            let core = StateServerCore::new(None, 60.0, None, None, Vec::new()).unwrap();
+            Py::new(py, core).unwrap()
+        });
+        let port = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let id = Python::attach(|py| {
+            let server = core.borrow(py);
+            let id = server.add_data_multi("root.data".to_string(), 0).unwrap();
+            server.finalize(py).unwrap();
+            server.start(port, Some([127, 0, 0, 1]), None).unwrap();
+            id
+        });
+        let client = silent_client(port);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !Python::attach(|py| core.borrow(py).is_connected()) {
+            assert!(Instant::now() < deadline, "timed out: client connection");
+            thread::sleep(Duration::from_millis(10));
+        }
+        (Arc::new(core), id, client)
+    }
+
+    /// A control that waits behind a producer must release the GIL, or every
+    /// other Python thread stalls until the client acknowledges.
+    #[test]
+    fn data_multi_controls_release_the_gil_while_waiting() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        type Control = fn(&StateServerCore, Python, u64) -> PyResult<()>;
+        let controls: [(&str, Control); 3] = [
+            ("clear", |server, py, id| {
+                server.data_multi_clear(py, id, 0, false)
+            }),
+            ("remove_index", |server, py, id| {
+                server.data_multi_remove_index(py, id, 0, false)
+            }),
+            ("reset", |server, py, id| {
+                server.data_multi_reset(py, id, false)
+            }),
+        ];
+        for (name, control) in controls {
+            let (core, id, client) = silent_session();
+
+            // The second set waits for an acknowledgement that never comes.
+            let producer = {
+                let core = core.clone();
+                thread::spawn(move || {
+                    Python::attach(|py| {
+                        let server = core.borrow(py);
+                        let data = PyBytes::new(py, &[1, 2, 3]);
+                        server.data_multi_set(py, id, 0, data.as_any(), false)?;
+                        server.data_multi_set(py, id, 0, data.as_any(), false)
+                    })
+                })
+            };
+            thread::sleep(Duration::from_millis(300));
+            let waiting = {
+                let core = core.clone();
+                thread::spawn(move || Python::attach(|py| control(&core.borrow(py), py, id)))
+            };
+            thread::sleep(Duration::from_millis(300));
+
+            let (tx, rx) = mpsc::channel();
+            thread::spawn(move || Python::attach(|_| tx.send(()).unwrap()));
+            assert!(
+                rx.recv_timeout(Duration::from_secs(2)).is_ok(),
+                "a waiting DataMulti {name} holds the GIL"
+            );
+
+            // Closing the connection releases both waits.
+            drop(client);
+            producer.join().unwrap().unwrap();
+            waiting.join().unwrap().unwrap();
+            Python::attach(|py| core.borrow(py).stop());
+        }
     }
 }
