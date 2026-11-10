@@ -142,7 +142,7 @@ mod tests {
                 ws.close(None).await.unwrap();
             });
             let (mut reader, _writer) = build_ws(&format!("ws://{addr}/ws")).await.unwrap();
-            assert!(matches!(reader.read().await, Ok(ServerMessage::Update(dt)) if dt == 0.5));
+            assert!(matches!(reader.read().await, Ok((ServerHeader::Update(dt), _)) if dt == 0.5));
             assert!(reader.read().await.is_err());
             peer.await.unwrap();
         });

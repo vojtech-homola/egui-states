@@ -1107,9 +1107,10 @@ mod tests {
 mod transfer_tests {
     use super::*;
     use crate::client::data::{
-        Data as ClientData, DataMulti as ClientMulti, DataMultiMessage, UpdateData, UpdateMultiData,
+        Data as ClientData, DataMulti as ClientMulti, UpdateData, UpdateMultiData,
     };
-    use crate::client::messages::{MessageSender as ClientSender, MessagesParser, ServerMessage};
+    use crate::client::messages::{MessageSender as ClientSender, MessagesParser};
+    use crate::serialization::ServerHeader;
 
     #[test]
     fn real_numeric_chunks_publish_complete_single_and_sparse_data() {
@@ -1144,20 +1145,15 @@ mod transfer_tests {
                     let total = messages.len();
                     assert_eq!(total, bytes.len().div_ceil(TRANSFER_CHUNK_SIZE));
                     for (n, (message, _)) in messages.into_iter().enumerate() {
-                        let (mut parser, message) =
+                        let (mut parser, (header, payload)) =
                             MessagesParser::from_bytes(message.into_bytes()).unwrap();
-                        match message {
-                            ServerMessage::Data(51, repaint, message) => {
-                                assert_eq!(repaint, n + 1 == total);
-                                single.update_data(message).unwrap();
+                        assert_eq!(header.update_flag(), n + 1 == total);
+                        match header {
+                            ServerHeader::Data(51, header) => {
+                                single.update_data((header, payload)).unwrap();
                             }
-                            ServerMessage::DataMulti(
-                                51,
-                                repaint,
-                                DataMultiMessage::Modify(79, message),
-                            ) => {
-                                assert_eq!(repaint, n + 1 == total);
-                                multi.update(79, message).unwrap();
+                            ServerHeader::MultiData(51, MultiDataHeader::Modify(79, header)) => {
+                                multi.update(79, (header, payload)).unwrap();
                             }
                             _ => panic!("wrong packed message for key {key:?}, chunk {n}"),
                         }
@@ -1290,18 +1286,18 @@ mod transfer_tests {
                 moved = true;
                 let (mut parser, first) = MessagesParser::from_bytes(message.into_bytes()).unwrap();
                 let mut next = Some(first);
-                while let Some(message) = next {
-                    match message {
-                        ServerMessage::Data(51, _, message) => {
-                            self.single.update_data(message).unwrap()
+                while let Some((header, payload)) = next {
+                    match header {
+                        ServerHeader::Data(51, header) => {
+                            self.single.update_data((header, payload)).unwrap()
                         }
-                        ServerMessage::DataMulti(52, _, DataMultiMessage::Modify(key, message)) => {
-                            self.keyed.update(key, message).unwrap()
+                        ServerHeader::MultiData(52, MultiDataHeader::Modify(key, header)) => {
+                            self.keyed.update(key, (header, payload)).unwrap()
                         }
-                        ServerMessage::DataMulti(52, _, DataMultiMessage::Remove(key)) => {
+                        ServerHeader::MultiData(52, MultiDataHeader::Remove(key, _)) => {
                             self.keyed.remove(key)
                         }
-                        ServerMessage::DataMulti(52, _, DataMultiMessage::Reset) => {
+                        ServerHeader::MultiData(52, MultiDataHeader::Reset(_)) => {
                             self.keyed.reset()
                         }
                         _ => panic!("unexpected server message"),
@@ -1468,11 +1464,14 @@ mod transfer_tests {
                 .unwrap();
                 let total = messages.len();
                 for (n, (message, _)) in messages.into_iter().enumerate() {
-                    let (_, message) = MessagesParser::from_bytes(message.into_bytes()).unwrap();
-                    match message {
-                        ServerMessage::Data(52, _, message) => single.update_data(message).unwrap(),
-                        ServerMessage::DataMulti(52, _, DataMultiMessage::Modify(79, message)) => {
-                            multi.update(79, message).unwrap()
+                    let (_, (header, payload)) =
+                        MessagesParser::from_bytes(message.into_bytes()).unwrap();
+                    match header {
+                        ServerHeader::Data(52, header) => {
+                            single.update_data((header, payload)).unwrap()
+                        }
+                        ServerHeader::MultiData(52, MultiDataHeader::Modify(79, header)) => {
+                            multi.update(79, (header, payload)).unwrap()
                         }
                         _ => panic!("wrong packed message for key {key:?}"),
                     }

@@ -7,39 +7,14 @@ use parking_lot::{Mutex, RwLock};
 
 use crate::client::data::{BatchBuffer, elements, private};
 use crate::client::messages::{ChannelMessage, MessageSender};
-use crate::data_transport::DataType;
+use crate::data_transport::{DataTakeHeader, DataType};
 use crate::hashing::NoHashMap;
 
 /// A completed transfer and whether taking it must acknowledge it.
 type Completed<T> = (Vec<T>, bool);
 
-pub(crate) enum DataTakeMessage {
-    All(DataType, u64, Bytes),
-    BatchStart(u64, Bytes),
-    Batch(Bytes),
-    BatchEnd(DataType, u64, Bytes),
-}
-
-pub(crate) enum DataMultiTakeMessage {
-    Remove(u32),
-    Modify(u32, DataTakeMessage, bool),
-    Reset,
-}
-
-impl DataTakeMessage {
-    pub(crate) fn is_terminal(&self) -> bool {
-        matches!(self, Self::All(..) | Self::BatchEnd(..))
-    }
-}
-
-impl DataMultiTakeMessage {
-    pub(crate) fn requires_ack_on_failure(&self) -> bool {
-        match self {
-            Self::Modify(_, message, blocking) => *blocking && message.is_terminal(),
-            Self::Remove(_) | Self::Reset => false,
-        }
-    }
-}
+/// A take message: its wire header and the payload that followed it.
+pub(crate) type DataTakeMessage = (DataTakeHeader, Bytes);
 
 #[derive(Default)]
 enum TakeBatch<T> {
@@ -136,9 +111,9 @@ impl<T> UpdateDataTake for DataTake<T>
 where
     T: private::GetDataType + Send + Sync,
 {
-    fn update(&self, message: DataTakeMessage, blocking: bool) -> Result<(), String> {
-        match message {
-            DataTakeMessage::All(data_type, count, data) => {
+    fn update(&self, (header, data): DataTakeMessage, blocking: bool) -> Result<(), String> {
+        match header {
+            DataTakeHeader::All(data_type, count, ..) => {
                 let result = (|| {
                     if data_type != self.data_type {
                         return Err(format!(
@@ -170,7 +145,7 @@ where
                     }
                 }
             }
-            DataTakeMessage::BatchStart(count, data) => {
+            DataTakeHeader::StartBatch(count, _) => {
                 let result = BatchBuffer::start(&data, count);
 
                 *self.batch.lock() = match result {
@@ -179,7 +154,7 @@ where
                 };
                 Ok(())
             }
-            DataTakeMessage::Batch(data) => {
+            DataTakeHeader::Batch(_) => {
                 let mut batch = self.batch.lock();
                 let failure = match &mut *batch {
                     TakeBatch::Receiving {
@@ -227,7 +202,7 @@ where
                 }
                 Ok(())
             }
-            DataTakeMessage::BatchEnd(data_type, count, data) => {
+            DataTakeHeader::End(data_type, count, ..) => {
                 let batch = std::mem::take(&mut *self.batch.lock());
                 let (buffer, batch_blocking) = match batch {
                     TakeBatch::Receiving { buffer, blocking } => (buffer, blocking),
@@ -384,9 +359,14 @@ impl<T> UpdateDataMultiTake for DataMultiTake<T>
 where
     T: private::GetDataType + Send + Sync,
 {
-    fn update(&self, key: u32, message: DataTakeMessage, blocking: bool) -> Result<(), String> {
-        match message {
-            DataTakeMessage::All(data_type, count, data) => {
+    fn update(
+        &self,
+        key: u32,
+        (header, data): DataTakeMessage,
+        blocking: bool,
+    ) -> Result<(), String> {
+        match header {
+            DataTakeHeader::All(data_type, count, ..) => {
                 let result = (|| {
                     if data_type != self.data_type {
                         return Err(format!(
@@ -418,7 +398,7 @@ where
                     }
                 }
             }
-            DataTakeMessage::BatchStart(count, data) => {
+            DataTakeHeader::StartBatch(count, _) => {
                 let result = BatchBuffer::start(&data, count);
 
                 let batch = match result {
@@ -428,7 +408,7 @@ where
                 self.batches.lock().insert(key, batch);
                 Ok(())
             }
-            DataTakeMessage::Batch(data) => {
+            DataTakeHeader::Batch(_) => {
                 let mut batches = self.batches.lock();
                 let mut failure_blocking = blocking;
                 let failure = match batches.get_mut(&key) {
@@ -470,7 +450,7 @@ where
                 }
                 Ok(())
             }
-            DataTakeMessage::BatchEnd(data_type, count, data) => {
+            DataTakeHeader::End(data_type, count, ..) => {
                 let batch = self.batches.lock().remove(&key).unwrap_or_default();
                 let (buffer, batch_blocking) = match batch {
                     TakeBatch::Receiving { buffer, blocking } => (buffer, blocking),
@@ -596,7 +576,12 @@ mod tests {
         let (sender, mut receiver) = MessageSender::new();
         let take = DataTake::<u8>::new("take".to_string(), id, sender);
 
-        let invalid = || DataTakeMessage::All(DataType::U16, 1, Bytes::from_static(&[0, 0]));
+        let invalid = || {
+            (
+                DataTakeHeader::All(DataType::U16, 1, false, 0),
+                Bytes::from_static(&[0, 0]),
+            )
+        };
         assert!(take.update(invalid(), true).is_err());
         assert_single_ack(&mut receiver, id);
 
@@ -611,29 +596,30 @@ mod tests {
         let take = DataTake::<u16>::new("take".to_string(), id, sender);
 
         take.update(
-            DataTakeMessage::All(
-                DataType::U16,
-                1,
+            (
+                DataTakeHeader::All(DataType::U16, 1, false, 0),
                 Bytes::copy_from_slice(&9_u16.to_ne_bytes()),
             ),
             false,
         )
         .unwrap();
         take.update(
-            DataTakeMessage::BatchStart(3, Bytes::copy_from_slice(&1_u16.to_ne_bytes())),
+            (
+                DataTakeHeader::StartBatch(3, 0),
+                Bytes::copy_from_slice(&1_u16.to_ne_bytes()),
+            ),
             true,
         )
         .unwrap();
-        take.update(DataTakeMessage::Batch(Bytes::from_static(&[1])), true)
+        take.update((DataTakeHeader::Batch(0), Bytes::from_static(&[1])), true)
             .unwrap();
         assert_no_message(&mut receiver);
 
         assert!(
             take.update(
-                DataTakeMessage::BatchEnd(
-                    DataType::U16,
-                    3,
-                    Bytes::copy_from_slice(&2_u16.to_ne_bytes()),
+                (
+                    DataTakeHeader::End(DataType::U16, 3, false, 0),
+                    Bytes::copy_from_slice(&2_u16.to_ne_bytes())
                 ),
                 true,
             )
@@ -653,12 +639,27 @@ mod tests {
         let multi = DataMultiTake::<u16>::new("takes".to_string(), 65, sender);
 
         for count in [u64::MAX, u64::MAX / 2 + 1, 1 << 62] {
-            let all = || DataTakeMessage::All(DataType::U16, count, Bytes::new());
+            let all = || {
+                (
+                    DataTakeHeader::All(DataType::U16, count, false, 0),
+                    Bytes::new(),
+                )
+            };
             assert!(take.update(all(), false).is_err());
             assert!(multi.update(4, all(), false).is_err());
 
-            let start = || DataTakeMessage::BatchStart(count, Bytes::from_static(&[1, 0]));
-            let end = || DataTakeMessage::BatchEnd(DataType::U16, count, Bytes::new());
+            let start = || {
+                (
+                    DataTakeHeader::StartBatch(count, 0),
+                    Bytes::from_static(&[1, 0]),
+                )
+            };
+            let end = || {
+                (
+                    DataTakeHeader::End(DataType::U16, count, false, 0),
+                    Bytes::new(),
+                )
+            };
             take.update(start(), false).unwrap();
             assert!(take.update(end(), false).is_err());
             multi.update(4, start(), false).unwrap();
@@ -678,8 +679,18 @@ mod tests {
         let multi = DataMultiTake::<u16>::new("takes".to_string(), id, sender);
         let tail = Bytes::from(vec![7; 200]);
         for blocking in [false, true] {
-            let start = || DataTakeMessage::BatchStart(2, Bytes::from_static(&[1, 0]));
-            let end = || DataTakeMessage::BatchEnd(DataType::U16, 101, tail.clone());
+            let start = || {
+                (
+                    DataTakeHeader::StartBatch(2, 0),
+                    Bytes::from_static(&[1, 0]),
+                )
+            };
+            let end = || {
+                (
+                    DataTakeHeader::End(DataType::U16, 101, false, 0),
+                    tail.clone(),
+                )
+            };
 
             let acked_once = |receiver: &mut UnboundedReceiver<Option<ChannelMessage>>| {
                 if blocking {
@@ -709,7 +720,10 @@ mod tests {
         let take = DataTake::<u8>::new("take".to_string(), id, sender);
 
         take.update(
-            DataTakeMessage::All(DataType::U8, 2, Bytes::from_static(&[1, 2])),
+            (
+                DataTakeHeader::All(DataType::U8, 2, false, 0),
+                Bytes::from_static(&[1, 2]),
+            ),
             true,
         )
         .unwrap();
@@ -727,7 +741,10 @@ mod tests {
         assert!(
             take.update(
                 3,
-                DataTakeMessage::All(DataType::U8, 1, Bytes::from_static(&[0])),
+                (
+                    DataTakeHeader::All(DataType::U8, 1, false, 0),
+                    Bytes::from_static(&[0])
+                ),
                 true,
             )
             .is_err()
@@ -736,20 +753,26 @@ mod tests {
 
         take.update(
             7,
-            DataTakeMessage::BatchStart(3, Bytes::copy_from_slice(&1_u16.to_ne_bytes())),
+            (
+                DataTakeHeader::StartBatch(3, 0),
+                Bytes::copy_from_slice(&1_u16.to_ne_bytes()),
+            ),
             true,
         )
         .unwrap();
-        take.update(7, DataTakeMessage::Batch(Bytes::from_static(&[1])), true)
-            .unwrap();
+        take.update(
+            7,
+            (DataTakeHeader::Batch(0), Bytes::from_static(&[1])),
+            true,
+        )
+        .unwrap();
         assert_no_message(&mut receiver);
         assert!(
             take.update(
                 7,
-                DataTakeMessage::BatchEnd(
-                    DataType::U16,
-                    3,
-                    Bytes::copy_from_slice(&2_u16.to_ne_bytes()),
+                (
+                    DataTakeHeader::End(DataType::U16, 3, false, 0),
+                    Bytes::copy_from_slice(&2_u16.to_ne_bytes())
                 ),
                 true,
             )
@@ -769,7 +792,10 @@ mod lifecycle_tests {
         let data = DataMultiTake::<u8>::new("takes".into(), 93, sender);
         data.update(
             7,
-            DataTakeMessage::All(DataType::U8, 1, Bytes::from_static(&[7])),
+            (
+                DataTakeHeader::All(DataType::U8, 1, false, 0),
+                Bytes::from_static(&[7]),
+            ),
             true,
         )
         .unwrap();
@@ -789,7 +815,10 @@ mod lifecycle_tests {
         );
         data.update(
             513,
-            DataTakeMessage::All(DataType::U8, 1, Bytes::from_static(&[9])),
+            (
+                DataTakeHeader::All(DataType::U8, 1, false, 0),
+                Bytes::from_static(&[9]),
+            ),
             true,
         )
         .unwrap();
@@ -814,7 +843,12 @@ mod lifecycle_tests {
         let (sender, mut receiver) = MessageSender::new();
         let single = DataTake::<u8>::new("take".into(), 94, sender.clone());
         let multi = DataMultiTake::<u8>::new("takes".into(), 95, sender);
-        let message = || DataTakeMessage::All(DataType::U8, 1, Bytes::from_static(&[7]));
+        let message = || {
+            (
+                DataTakeHeader::All(DataType::U8, 1, false, 0),
+                Bytes::from_static(&[7]),
+            )
+        };
         single.update(message(), true).unwrap();
         multi.update(7, message(), true).unwrap();
         multi.update(8, message(), true).unwrap();

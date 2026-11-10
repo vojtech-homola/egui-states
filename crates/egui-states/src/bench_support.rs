@@ -5,9 +5,9 @@
 
 use bytes::Bytes;
 
-use crate::client::data::{Data, DataMessage, UpdateData};
+use crate::client::data::{Data, UpdateData};
 use crate::client::messages::MessageSender;
-use crate::data_transport::{DataType, TransportType};
+use crate::data_transport::{DataHeader, DataType, TransportType};
 use crate::image_transport::ImageType;
 use crate::server_core::data_core::pack_data;
 use crate::server_core::image_core::{ImageData, pack_set_data};
@@ -137,25 +137,23 @@ impl ClientData {
             [] => {}
             [single] => self
                 .data
-                .update_data(DataMessage::All(
-                    DataType::U8,
-                    TransportType::Set(count),
+                .update_data((
+                    DataHeader::All(DataType::U8, TransportType::Set(count), false, 0),
                     single.clone(),
                 ))
                 .expect("set"),
             [first, middle @ .., last] => {
                 self.data
-                    .update_data(DataMessage::BatchStart(count, first.clone()))
+                    .update_data((DataHeader::StartBatch(count, 0), first.clone()))
                     .expect("start");
                 for chunk in middle {
                     self.data
-                        .update_data(DataMessage::Batch(chunk.clone()))
+                        .update_data((DataHeader::Batch(0), chunk.clone()))
                         .expect("batch");
                 }
                 self.data
-                    .update_data(DataMessage::BatchEnd(
-                        DataType::U8,
-                        TransportType::Set(count),
+                    .update_data((
+                        DataHeader::End(DataType::U8, TransportType::Set(count), false, 0),
                         last.clone(),
                     ))
                     .expect("end");

@@ -166,6 +166,45 @@ pub(crate) enum ImageHeader {
     Fill([u32; 2], [u8; 4], bool),     // [width, height], RGBA, update
 }
 
+#[cfg(feature = "client")]
+impl ImageHeader {
+    /// Whether the message asks for a repaint; the first and middle chunks of
+    /// an image set never do.
+    pub(crate) fn update_flag(&self) -> bool {
+        match self {
+            Self::Set(ImageSetHeader::All(_, update) | ImageSetHeader::End(_, update), _) => {
+                *update
+            }
+            Self::Set(ImageSetHeader::Start(..) | ImageSetHeader::Batch(_), _) => false,
+            Self::Update(_, _, update) | Self::Fill(_, _, update) => *update,
+        }
+    }
+
+    /// Whether the client acknowledges this message, also when it fails.
+    pub(crate) fn requires_ack(&self) -> bool {
+        matches!(
+            self,
+            Self::Set(ImageSetHeader::All(..) | ImageSetHeader::End(..), _)
+                | Self::Update(..)
+                | Self::Fill(..)
+        )
+    }
+}
+
+#[cfg(feature = "client")]
+impl ImageMultiHeader {
+    pub(crate) fn update_flag(&self) -> bool {
+        match self {
+            Self::Remove(_, update) | Self::Reset(update) => *update,
+            Self::Modify(_, header, _) => header.update_flag(),
+        }
+    }
+
+    pub(crate) fn requires_ack(&self) -> bool {
+        matches!(self, Self::Modify(_, header, _) if header.requires_ack())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -906,8 +906,8 @@ mod tests {
 #[cfg(all(test, feature = "client"))]
 mod packing_tests {
     use super::*;
-    use crate::client::image::{Image as ClientImage, ImageMessage};
-    use crate::client::messages::{MessageSender as ClientSender, MessagesParser, ServerMessage};
+    use crate::client::image::Image as ClientImage;
+    use crate::client::messages::{MessageSender as ClientSender, MessagesParser};
 
     #[test]
     fn real_image_set_and_update_chunks_preserve_pixels_and_publication_boundaries() {
@@ -940,16 +940,11 @@ mod packing_tests {
             let total = packed.len();
             assert_eq!(total, expected.len().div_ceil(TRANSFER_CHUNK_SIZE));
             for (n, (message, _)) in packed.into_iter().enumerate() {
-                let (mut parser, message) =
+                let (mut parser, (header, payload)) =
                     MessagesParser::from_bytes(message.into_bytes()).unwrap();
-                match message {
-                    ServerMessage::Image(
-                        71,
-                        repaint,
-                        ImageMessage::Set(message, kind),
-                        payload,
-                    ) => {
-                        assert_eq!(repaint, n + 1 == total);
+                assert_eq!(header.update_flag(), n + 1 == total);
+                match header {
+                    ServerHeader::Image(71, ImageHeader::Set(message, kind), _) => {
                         client.set_image(message, kind, &payload).unwrap();
                     }
                     _ => panic!("unexpected packed image set"),
@@ -988,15 +983,11 @@ mod packing_tests {
             let mut reconstructed = vec![0; expected.len()];
             let mut next_row = 0;
             for (n, (message, _)) in packed.into_iter().enumerate() {
-                let (_, message) = MessagesParser::from_bytes(message.into_bytes()).unwrap();
-                match message {
-                    ServerMessage::Image(
-                        71,
-                        repaint,
-                        ImageMessage::Update(rect, kind),
-                        payload,
-                    ) => {
-                        assert_eq!(repaint, n + 1 == total);
+                let (_, (header, payload)) =
+                    MessagesParser::from_bytes(message.into_bytes()).unwrap();
+                assert_eq!(header.update_flag(), n + 1 == total);
+                match header {
+                    ServerHeader::Image(71, ImageHeader::Update(rect, kind, _), _) => {
                         assert_eq!(rect[0], 0);
                         assert_eq!(rect[1] as usize, next_row);
                         assert_eq!(rect[2] as usize, width);

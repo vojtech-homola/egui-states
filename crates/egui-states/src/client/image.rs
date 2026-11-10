@@ -7,7 +7,9 @@ use egui::{ColorImage, ImageData, TextureHandle};
 
 use crate::client::messages::{ChannelMessage, MessageSender};
 use crate::hashing::NoHashMap;
-use crate::image_transport::{ImageType, checked_image_bounds, checked_image_bytes, to_rgba};
+use crate::image_transport::{
+    ImageSetHeader, ImageType, checked_image_bounds, checked_image_bytes, to_rgba,
+};
 
 /// A texture and its `[width, height]` size.
 type Texture = (TextureHandle, [usize; 2]);
@@ -18,42 +20,6 @@ const TEXTURE_OPTIONS: egui::TextureOptions = egui::TextureOptions {
     wrap_mode: egui::TextureWrapMode::ClampToEdge,
     mipmap_mode: None,
 };
-
-pub(crate) enum ImageSetMessage {
-    All([u32; 2]),
-    Start([u32; 2], u32),
-    Batch(u32),
-    End(u32),
-}
-
-pub(crate) enum ImageMessage {
-    Set(ImageSetMessage, ImageType),
-    Update([u32; 4], ImageType),
-    Fill([u32; 2], [u8; 4]),
-}
-
-pub(crate) enum ImageMultiMessage {
-    Remove(u32),
-    Modify(u32, ImageMessage),
-    Reset,
-}
-
-impl ImageMultiMessage {
-    pub(crate) fn requires_ack(&self) -> bool {
-        matches!(self, Self::Modify(_, message) if message.requires_ack())
-    }
-}
-
-impl ImageMessage {
-    pub(crate) fn requires_ack(&self) -> bool {
-        matches!(
-            self,
-            Self::Set(ImageSetMessage::All(_) | ImageSetMessage::End(_), _)
-                | Self::Update(..)
-                | Self::Fill(..)
-        )
-    }
-}
 
 /// A server-controlled RGBA texture used by the egui client.
 ///
@@ -165,26 +131,26 @@ impl Image {
 
     pub(crate) fn set_image(
         &self,
-        message: ImageSetMessage,
+        message: ImageSetHeader,
         image_type: ImageType,
         data: &[u8],
     ) -> Result<(), String> {
         match message {
-            ImageSetMessage::All(size) => {
+            ImageSetHeader::All(size, _) => {
                 self.sender.send(ChannelMessage::Ack(self.id));
                 let image_size = [size[0] as usize, size[1] as usize];
                 let c_image = create_color_image(&self.name, image_size, image_type, data)?;
                 self.set_texture(c_image);
             }
-            ImageSetMessage::Start(size, pixels) => {
+            ImageSetHeader::Start(size, pixels) => {
                 let partial = PartialImage::start(&self.name, size, pixels, image_type, data)?;
                 *self.buffer.lock() = Some(partial)
             }
-            ImageSetMessage::Batch(pixels) => match *self.buffer.lock() {
+            ImageSetHeader::Batch(pixels) => match *self.buffer.lock() {
                 Some(ref mut partial) => partial.append(&self.name, pixels, image_type, data)?,
                 None => return Err(format!("No image buffer found for image: {}", self.name)),
             },
-            ImageSetMessage::End(pixels) => {
+            ImageSetHeader::End(pixels, _) => {
                 self.sender.send(ChannelMessage::Ack(self.id));
                 let Some(partial) = self.buffer.lock().take() else {
                     return Err(format!("No image buffer found for image: {}", self.name));
@@ -352,31 +318,31 @@ impl ImageMulti {
     pub(crate) fn set_image(
         &self,
         index: u32,
-        message: ImageSetMessage,
+        message: ImageSetHeader,
         image_type: ImageType,
         data: &[u8],
     ) -> Result<(), String> {
         match message {
-            ImageSetMessage::All(size) => {
+            ImageSetHeader::All(size, _) => {
                 self.sender.send_ack(self.id);
                 let image_size = [size[0] as usize, size[1] as usize];
                 let image = create_color_image(&self.name, image_size, image_type, data)?;
                 self.set_texture(index, image)
             }
-            ImageSetMessage::Start(size, pixels) => {
+            ImageSetHeader::Start(size, pixels) => {
                 let label = self.label(index);
                 let partial = PartialImage::start(&label, size, pixels, image_type, data)?;
                 self.buffers.lock().insert(index, partial);
                 Ok(())
             }
-            ImageSetMessage::Batch(pixels) => {
+            ImageSetHeader::Batch(pixels) => {
                 let mut buffers = self.buffers.lock();
                 let partial = buffers
                     .get_mut(&index)
                     .ok_or_else(|| self.no_buffer(index))?;
                 partial.append(&self.label(index), pixels, image_type, data)
             }
-            ImageSetMessage::End(pixels) => {
+            ImageSetHeader::End(pixels, _) => {
                 self.sender.send_ack(self.id);
                 let partial = self
                     .buffers
@@ -720,19 +686,24 @@ mod tests {
             for size in [[65_537, 1], [1, 65_537]] {
                 for operation in 0..4 {
                     let result = match operation {
-                        0 => image.set_image(ImageSetMessage::All(size), ImageType::Gray, &[]),
-                        1 => {
-                            image.set_image(ImageSetMessage::Start(size, 1), ImageType::Gray, &[9])
+                        0 => {
+                            image.set_image(ImageSetHeader::All(size, false), ImageType::Gray, &[])
                         }
+                        1 => image.set_image(ImageSetHeader::Start(size, 1), ImageType::Gray, &[9]),
                         2 => image.fill_image(size, [9; 4], &[]),
                         _ => image.update_image([0, 0, size[0], size[1]], ImageType::Gray, &[]),
                     };
                     assert!(result.unwrap_err().contains("65536"));
                     let result = match operation {
-                        0 => images.set_image(7, ImageSetMessage::All(size), ImageType::Gray, &[]),
+                        0 => images.set_image(
+                            7,
+                            ImageSetHeader::All(size, false),
+                            ImageType::Gray,
+                            &[],
+                        ),
                         1 => images.set_image(
                             7,
-                            ImageSetMessage::Start(size, 1),
+                            ImageSetHeader::Start(size, 1),
                             ImageType::Gray,
                             &[9],
                         ),
@@ -781,28 +752,37 @@ mod tests {
             let wire_size = [size[0] as u32, size[1] as u32];
             let data = vec![7; 65_536];
             image
-                .set_image(ImageSetMessage::All(wire_size), ImageType::Gray, &data)
+                .set_image(
+                    ImageSetHeader::All(wire_size, false),
+                    ImageType::Gray,
+                    &data,
+                )
                 .unwrap();
             images
-                .set_image(7, ImageSetMessage::All(wire_size), ImageType::Gray, &data)
+                .set_image(
+                    7,
+                    ImageSetHeader::All(wire_size, false),
+                    ImageType::Gray,
+                    &data,
+                )
                 .unwrap();
             assert_single_ack(&mut receiver, 1);
             assert_single_ack(&mut multi_receiver, 2);
 
             image
-                .set_image(ImageSetMessage::Start(wire_size, 1), ImageType::Gray, &[8])
+                .set_image(ImageSetHeader::Start(wire_size, 1), ImageType::Gray, &[8])
                 .unwrap();
             images
                 .set_image(
                     7,
-                    ImageSetMessage::Start(wire_size, 1),
+                    ImageSetHeader::Start(wire_size, 1),
                     ImageType::Gray,
                     &[8],
                 )
                 .unwrap();
             image
                 .set_image(
-                    ImageSetMessage::End(65_535),
+                    ImageSetHeader::End(65_535, false),
                     ImageType::Gray,
                     &data[..65_535],
                 )
@@ -810,7 +790,7 @@ mod tests {
             images
                 .set_image(
                     7,
-                    ImageSetMessage::End(65_535),
+                    ImageSetHeader::End(65_535, false),
                     ImageType::Gray,
                     &data[..65_535],
                 )
@@ -839,9 +819,9 @@ mod tests {
     fn a_batch_may_complete_the_image_before_its_end() {
         let chunks = || {
             [
-                (ImageSetMessage::Start([3, 1], 1), &[1][..]),
-                (ImageSetMessage::Batch(2), &[2, 3][..]),
-                (ImageSetMessage::End(0), &[][..]),
+                (ImageSetHeader::Start([3, 1], 1), &[1][..]),
+                (ImageSetHeader::Batch(2), &[2, 3][..]),
+                (ImageSetHeader::End(0, false), &[][..]),
             ]
         };
         let context = egui::Context::default();
@@ -873,22 +853,22 @@ mod tests {
         let images = ImageMulti::new("images".into(), 2, sender, context);
 
         image
-            .set_image(ImageSetMessage::Start([2, 1], 1), ImageType::Gray, &[1])
+            .set_image(ImageSetHeader::Start([2, 1], 1), ImageType::Gray, &[1])
             .unwrap();
         images
-            .set_image(7, ImageSetMessage::Start([2, 1], 1), ImageType::Gray, &[1])
+            .set_image(7, ImageSetHeader::Start([2, 1], 1), ImageType::Gray, &[1])
             .unwrap();
         image.disconnected();
         images.disconnected();
 
         assert!(
             image
-                .set_image(ImageSetMessage::End(1), ImageType::Gray, &[2])
+                .set_image(ImageSetHeader::End(1, false), ImageType::Gray, &[2])
                 .is_err()
         );
         assert!(
             images
-                .set_image(7, ImageSetMessage::End(1), ImageType::Gray, &[2])
+                .set_image(7, ImageSetHeader::End(1, false), ImageType::Gray, &[2])
                 .is_err()
         );
         assert_single_ack(&mut receiver, 1);
@@ -927,15 +907,15 @@ mod tests {
         let deliveries: [fn(&Image); 3] = [
             |image| {
                 image
-                    .set_image(ImageSetMessage::All([2, 1]), ImageType::Gray, &[1, 2])
+                    .set_image(ImageSetHeader::All([2, 1], false), ImageType::Gray, &[1, 2])
                     .unwrap()
             },
             |image| {
                 image
-                    .set_image(ImageSetMessage::Start([2, 1], 1), ImageType::Gray, &[1])
+                    .set_image(ImageSetHeader::Start([2, 1], 1), ImageType::Gray, &[1])
                     .unwrap();
                 image
-                    .set_image(ImageSetMessage::End(1), ImageType::Gray, &[2])
+                    .set_image(ImageSetHeader::End(1, false), ImageType::Gray, &[2])
                     .unwrap();
             },
             |image| image.fill_image([2, 1], [1, 2, 3, 255], &[]).unwrap(),
@@ -976,7 +956,11 @@ mod tests {
         let placeholder = |size| ColorImage::filled(size, egui::Color32::BLACK);
         let server_image = |image: &Image| {
             image
-                .set_image(ImageSetMessage::All([3, 1]), ImageType::Gray, &[1, 2, 3])
+                .set_image(
+                    ImageSetHeader::All([3, 1], false),
+                    ImageType::Gray,
+                    &[1, 2, 3],
+                )
                 .unwrap()
         };
 
@@ -1027,7 +1011,12 @@ mod tests {
 
         // The first image for a key creates its texture without any setup.
         images
-            .set_image(7, ImageSetMessage::All([2, 1]), ImageType::Gray, &[10, 20])
+            .set_image(
+                7,
+                ImageSetHeader::All([2, 1], false),
+                ImageType::Gray,
+                &[10, 20],
+            )
             .unwrap();
         assert_single_ack(&mut receiver, id);
         images.fill_image(2, [1, 3], [1, 2, 3, 4], &[]).unwrap();
@@ -1069,7 +1058,7 @@ mod tests {
             images
                 .set_image(
                     index,
-                    ImageSetMessage::Start([2, 1], 1),
+                    ImageSetHeader::Start([2, 1], 1),
                     ImageType::ColorAlpha,
                     &[index as u8, 0, 0, 255],
                 )
@@ -1081,7 +1070,7 @@ mod tests {
         images
             .set_image(
                 7,
-                ImageSetMessage::End(1),
+                ImageSetHeader::End(1, false),
                 ImageType::ColorAlpha,
                 &[70, 0, 0, 255],
             )
@@ -1103,7 +1092,7 @@ mod tests {
         images
             .set_image(
                 2,
-                ImageSetMessage::End(1),
+                ImageSetHeader::End(1, false),
                 ImageType::ColorAlpha,
                 &[20, 0, 0, 255],
             )
@@ -1124,18 +1113,18 @@ mod tests {
         );
 
         images
-            .set_image(11, ImageSetMessage::Start([2, 1], 1), ImageType::Gray, &[1])
+            .set_image(11, ImageSetHeader::Start([2, 1], 1), ImageType::Gray, &[1])
             .unwrap();
         images.remove(11);
         assert!(
             images
-                .set_image(11, ImageSetMessage::End(1), ImageType::Gray, &[2],)
+                .set_image(11, ImageSetHeader::End(1, false), ImageType::Gray, &[2],)
                 .is_err()
         );
         assert_single_ack(&mut receiver, id);
 
         images
-            .set_image(12, ImageSetMessage::Start([2, 1], 1), ImageType::Gray, &[1])
+            .set_image(12, ImageSetHeader::Start([2, 1], 1), ImageType::Gray, &[1])
             .unwrap();
         images.reset();
         assert!(images.buffers.lock().is_empty());

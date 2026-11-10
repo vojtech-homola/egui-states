@@ -570,10 +570,10 @@ mod tests {
 mod transfer_tests {
     use super::*;
     use crate::client::data_take::{
-        DataMultiTake as ClientMulti, DataMultiTakeMessage, DataTake as ClientTake,
-        UpdateDataMultiTake, UpdateDataTake,
+        DataMultiTake as ClientMulti, DataTake as ClientTake, UpdateDataMultiTake, UpdateDataTake,
     };
-    use crate::client::messages::{MessageSender as ClientSender, MessagesParser, ServerMessage};
+    use crate::client::messages::{MessageSender as ClientSender, MessagesParser};
+    use crate::serialization::ServerHeader;
 
     #[test]
     fn real_take_chunks_publish_once_and_ack_only_after_consumption() {
@@ -613,22 +613,22 @@ mod transfer_tests {
                         let total = messages.len();
                         assert_eq!(total, size.div_ceil(TRANSFER_CHUNK_SIZE));
                         for (n, (message, _)) in messages.into_iter().enumerate() {
-                            let (mut parser, message) =
+                            let (mut parser, (header, payload)) =
                                 MessagesParser::from_bytes(message.into_bytes()).unwrap();
-                            match message {
-                                ServerMessage::DataTake(61, actual_blocking, repaint, message) => {
+                            assert_eq!(header.update_flag(), n + 1 == total);
+                            match header {
+                                ServerHeader::DataTake(61, header, actual_blocking) => {
                                     assert_eq!(actual_blocking, blocking);
-                                    assert_eq!(repaint, n + 1 == total);
-                                    single.update(message, actual_blocking).unwrap();
+                                    single.update((header, payload), actual_blocking).unwrap();
                                 }
-                                ServerMessage::DataMultiTake(
+                                ServerHeader::DataMultiTake(
                                     61,
-                                    repaint,
-                                    DataMultiTakeMessage::Modify(113, message, actual_blocking),
+                                    DataMultiTakeHeader::Modify(113, header, actual_blocking),
                                 ) => {
                                     assert_eq!(actual_blocking, blocking);
-                                    assert_eq!(repaint, n + 1 == total);
-                                    multi.update(113, message, actual_blocking).unwrap();
+                                    multi
+                                        .update(113, (header, payload), actual_blocking)
+                                        .unwrap();
                                 }
                                 _ => panic!("wrong packed take message"),
                             }

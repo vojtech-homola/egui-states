@@ -6,38 +6,11 @@ use bytes::Bytes;
 use parking_lot::{Mutex, RwLock};
 
 use crate::client::messages::{ChannelMessage, MessageSender};
-use crate::data_transport::{DataType, TransportType};
+use crate::data_transport::{DataHeader, DataType, TransportType};
 use crate::hashing::NoHashMap;
 
-pub(crate) enum DataMessage {
-    All(DataType, TransportType, Bytes),
-    BatchStart(u64, Bytes),
-    Batch(Bytes),
-    BatchEnd(DataType, TransportType, Bytes),
-    Drain(u64, u64),
-    Clear,
-}
-
-impl DataMessage {
-    pub(crate) fn requires_ack(&self) -> bool {
-        matches!(self, Self::All(..) | Self::BatchEnd(..) | Self::Drain(..))
-    }
-}
-
-pub(crate) enum DataMultiMessage {
-    Remove(u32),
-    Modify(u32, DataMessage),
-    Reset,
-}
-
-impl DataMultiMessage {
-    pub(crate) fn requires_ack(&self) -> bool {
-        match self {
-            Self::Modify(_, message) => message.requires_ack(),
-            Self::Remove(_) | Self::Reset => false,
-        }
-    }
-}
+/// A Data message: its wire header and the payload that followed it.
+pub(crate) type DataMessage = (DataHeader, Bytes);
 
 pub(crate) mod private {
     use super::DataType;
@@ -415,26 +388,26 @@ impl<T: Sync + Send> UpdateData for Data<T>
 where
     T: private::GetDataType,
 {
-    fn update_data(&self, message: DataMessage) -> Result<(), String> {
-        match message {
-            DataMessage::All(data_type, transport_type, data) => {
+    fn update_data(&self, (header, data): DataMessage) -> Result<(), String> {
+        match header {
+            DataHeader::All(data_type, transport_type, ..) => {
                 if let Err(error) = check_data_type(self.data_type, data_type, &self.name) {
                     self.sender.send_ack(self.id);
                     return Err(error);
                 }
                 self.set_all(&data, transport_type)
             }
-            DataMessage::BatchStart(count, data) => self.batch_start(&data, count),
-            DataMessage::Batch(data) => self.batch(&data),
-            DataMessage::BatchEnd(data_type, transport_type, data) => {
+            DataHeader::StartBatch(count, _) => self.batch_start(&data, count),
+            DataHeader::Batch(_) => self.batch(&data),
+            DataHeader::End(data_type, transport_type, ..) => {
                 if let Err(error) = check_data_type(self.data_type, data_type, &self.name) {
                     self.sender.send_ack(self.id);
                     return Err(error);
                 }
                 self.batch_end(&data, transport_type)
             }
-            DataMessage::Drain(index, count) => self.drain(index, count),
-            DataMessage::Clear => {
+            DataHeader::Drain(index, count, _) => self.drain(index, count),
+            DataHeader::Clear(_) => {
                 self.inner.write().clear();
                 self.buffer.lock().take();
                 Ok(())
@@ -653,26 +626,26 @@ impl<T> UpdateMultiData for DataMulti<T>
 where
     T: private::GetDataType + Sync + Send,
 {
-    fn update(&self, index: u32, message: DataMessage) -> Result<(), String> {
-        match message {
-            DataMessage::All(data_type, transport_type, data) => {
+    fn update(&self, index: u32, (header, data): DataMessage) -> Result<(), String> {
+        match header {
+            DataHeader::All(data_type, transport_type, ..) => {
                 if let Err(error) = check_data_type(self.data_type, data_type, &self.name) {
                     self.sender.send_ack(self.id);
                     return Err(error);
                 }
                 self.set_all(index, &data, transport_type)
             }
-            DataMessage::BatchStart(count, data) => self.batch_start(index, &data, count),
-            DataMessage::Batch(data) => self.batch(index, &data),
-            DataMessage::BatchEnd(data_type, transport_type, data) => {
+            DataHeader::StartBatch(count, _) => self.batch_start(index, &data, count),
+            DataHeader::Batch(_) => self.batch(index, &data),
+            DataHeader::End(data_type, transport_type, ..) => {
                 if let Err(error) = check_data_type(self.data_type, data_type, &self.name) {
                     self.sender.send_ack(self.id);
                     return Err(error);
                 }
                 self.batch_end(index, &data, transport_type)
             }
-            DataMessage::Drain(start, count) => self.drain(index, start, count),
-            DataMessage::Clear => {
+            DataHeader::Drain(start, count, _) => self.drain(index, start, count),
+            DataHeader::Clear(_) => {
                 if let Some(val) = self.inner.write().get_mut(&index) {
                     val.clear();
                 }
@@ -750,11 +723,10 @@ mod tests {
     #[test]
     fn controls_and_disconnects_drop_partial_batches() {
         let id = 42;
-        let start = || DataMessage::BatchStart(4, Bytes::from_static(&[1, 2]));
+        let start = || (DataHeader::StartBatch(4, 0), Bytes::from_static(&[1, 2]));
         let end = || {
-            DataMessage::BatchEnd(
-                DataType::U8,
-                TransportType::Set(4),
+            (
+                DataHeader::End(DataType::U8, TransportType::Set(4), false, 0),
                 Bytes::from_static(&[3, 4]),
             )
         };
@@ -768,7 +740,10 @@ mod tests {
 
         type Control = fn(&DataMulti<u8>);
         let controls: [(&str, Control); 4] = [
-            ("clear", |data| data.update(1, DataMessage::Clear).unwrap()),
+            ("clear", |data| {
+                data.update(1, (DataHeader::Clear(false), Bytes::new()))
+                    .unwrap()
+            }),
             ("remove", |data| data.remove(1)),
             ("reset", |data| data.reset()),
             ("disconnect", |data| data.disconnected()),
@@ -792,9 +767,8 @@ mod tests {
         for key in [3, 5] {
             data.update(
                 key,
-                DataMessage::All(
-                    DataType::U8,
-                    TransportType::Set(2),
+                (
+                    DataHeader::All(DataType::U8, TransportType::Set(2), false, 0),
                     Bytes::from(vec![key as u8; 2]),
                 ),
             )
@@ -813,20 +787,18 @@ mod tests {
         let data = Data::<u8>::new("data".to_string(), id, sender);
 
         assert!(
-            data.update_data(DataMessage::All(
-                DataType::U16,
-                TransportType::Set(1),
-                Bytes::from_static(&[0, 0]),
+            data.update_data((
+                DataHeader::All(DataType::U16, TransportType::Set(1), false, 0),
+                Bytes::from_static(&[0, 0])
             ))
             .is_err()
         );
         assert_single_ack(&mut receiver, id);
 
         assert!(
-            data.update_data(DataMessage::BatchEnd(
-                DataType::U16,
-                TransportType::Set(1),
-                Bytes::from_static(&[0, 0]),
+            data.update_data((
+                DataHeader::End(DataType::U16, TransportType::Set(1), false, 0),
+                Bytes::from_static(&[0, 0])
             ))
             .is_err()
         );
@@ -842,10 +814,9 @@ mod tests {
         assert!(
             data.update(
                 7,
-                DataMessage::All(
-                    DataType::U16,
-                    TransportType::Set(1),
-                    Bytes::from_static(&[0, 0]),
+                (
+                    DataHeader::All(DataType::U16, TransportType::Set(1), false, 0),
+                    Bytes::from_static(&[0, 0])
                 ),
             )
             .is_err()
@@ -855,10 +826,9 @@ mod tests {
         assert!(
             data.update(
                 7,
-                DataMessage::BatchEnd(
-                    DataType::U16,
-                    TransportType::Set(1),
-                    Bytes::from_static(&[0, 0]),
+                (
+                    DataHeader::End(DataType::U16, TransportType::Set(1), false, 0),
+                    Bytes::from_static(&[0, 0])
                 ),
             )
             .is_err()
@@ -875,40 +845,36 @@ mod malformed_tests {
     fn invalid_count_and_unfinished_batches_preserve_previous_data_and_recover() {
         let (sender, mut receiver) = MessageSender::new();
         let data = Data::<u8>::new("buffer".into(), 91, sender);
-        data.update_data(DataMessage::All(
-            DataType::U8,
-            TransportType::Set(2),
+        data.update_data((
+            DataHeader::All(DataType::U8, TransportType::Set(2), false, 0),
             Bytes::from_static(&[7, 8]),
         ))
         .unwrap();
         crate::test_support::ack(&mut receiver, 91);
         assert!(
-            data.update_data(DataMessage::All(
-                DataType::U8,
-                TransportType::Set(3),
+            data.update_data((
+                DataHeader::All(DataType::U8, TransportType::Set(3), false, 0),
                 Bytes::from_static(&[1])
             ))
             .is_err()
         );
         crate::test_support::ack(&mut receiver, 91);
         data.read(|v| assert_eq!(v, [7, 8]));
-        data.update_data(DataMessage::BatchStart(3, Bytes::from_static(&[1])))
+        data.update_data((DataHeader::StartBatch(3, 0), Bytes::from_static(&[1])))
             .unwrap();
         data.read(|v| assert_eq!(v, [7, 8]));
         assert!(receiver.try_recv().is_err());
         assert!(
-            data.update_data(DataMessage::BatchEnd(
-                DataType::U8,
-                TransportType::Set(3),
+            data.update_data((
+                DataHeader::End(DataType::U8, TransportType::Set(3), false, 0),
                 Bytes::from_static(&[2])
             ))
             .is_err()
         );
         crate::test_support::ack(&mut receiver, 91);
         data.read(|v| assert_eq!(v, [7, 8]));
-        data.update_data(DataMessage::All(
-            DataType::U8,
-            TransportType::Set(1),
+        data.update_data((
+            DataHeader::All(DataType::U8, TransportType::Set(1), false, 0),
             Bytes::from_static(&[9]),
         ))
         .unwrap();
@@ -917,9 +883,13 @@ mod malformed_tests {
     }
 
     fn set(data: &Data<u8>, values: &[u8]) {
-        data.update_data(DataMessage::All(
-            DataType::U8,
-            TransportType::Set(values.len() as u64),
+        data.update_data((
+            DataHeader::All(
+                DataType::U8,
+                TransportType::Set(values.len() as u64),
+                false,
+                0,
+            ),
             Bytes::copy_from_slice(values),
         ))
         .unwrap();
@@ -933,7 +903,7 @@ mod malformed_tests {
         crate::test_support::ack(&mut receiver, 92);
 
         assert!(
-            data.update_data(DataMessage::Batch(Bytes::from_static(&[1])))
+            data.update_data((DataHeader::Batch(0), Bytes::from_static(&[1])))
                 .is_err()
         );
         assert!(
@@ -941,9 +911,8 @@ mod malformed_tests {
             "a middle chunk is never acknowledged"
         );
         assert!(
-            data.update_data(DataMessage::BatchEnd(
-                DataType::U8,
-                TransportType::Set(1),
+            data.update_data((
+                DataHeader::End(DataType::U8, TransportType::Set(1), false, 0),
                 Bytes::from_static(&[1])
             ))
             .is_err()
@@ -957,13 +926,12 @@ mod malformed_tests {
     fn a_new_batch_start_discards_a_stale_partial_batch() {
         let (sender, mut receiver) = MessageSender::new();
         let data = Data::<u8>::new("buffer".into(), 93, sender);
-        data.update_data(DataMessage::BatchStart(3, Bytes::from_static(&[1])))
+        data.update_data((DataHeader::StartBatch(3, 0), Bytes::from_static(&[1])))
             .unwrap();
-        data.update_data(DataMessage::BatchStart(2, Bytes::from_static(&[5])))
+        data.update_data((DataHeader::StartBatch(2, 0), Bytes::from_static(&[5])))
             .unwrap();
-        data.update_data(DataMessage::BatchEnd(
-            DataType::U8,
-            TransportType::Set(2),
+        data.update_data((
+            DataHeader::End(DataType::U8, TransportType::Set(2), false, 0),
             Bytes::from_static(&[6]),
         ))
         .unwrap();
@@ -978,11 +946,15 @@ mod malformed_tests {
         set(&data, &[1, 2, 3]);
         crate::test_support::ack(&mut receiver, 94);
 
-        assert!(data.update_data(DataMessage::Drain(2, 5)).is_err());
+        assert!(
+            data.update_data((DataHeader::Drain(2, 5, false), Bytes::new()))
+                .is_err()
+        );
         crate::test_support::ack(&mut receiver, 94);
         data.read(|v| assert_eq!(v, [1, 2, 3]));
 
-        data.update_data(DataMessage::Drain(0, 1)).unwrap();
+        data.update_data((DataHeader::Drain(0, 1, false), Bytes::new()))
+            .unwrap();
         crate::test_support::ack(&mut receiver, 94);
         data.read(|v| assert_eq!(v, [2, 3]));
     }
@@ -995,9 +967,8 @@ mod malformed_tests {
         let data = Data::<u16>::new("buffer".into(), 95, sender.clone());
         let multi = DataMulti::<u16>::new("buffers".into(), 95, sender);
         let values = || {
-            DataMessage::All(
-                DataType::U16,
-                TransportType::Set(3),
+            (
+                DataHeader::All(DataType::U16, TransportType::Set(3), false, 0),
                 Bytes::from_static(&[1, 0, 2, 0, 3, 0]),
             )
         };
@@ -1005,18 +976,22 @@ mod malformed_tests {
         multi.update(4, values()).unwrap();
 
         for count in [u64::MAX, u64::MAX / 2, 1 << 62] {
-            let start = || DataMessage::BatchStart(count, Bytes::from_static(&[1, 0]));
+            let start = || {
+                (
+                    DataHeader::StartBatch(count, 0),
+                    Bytes::from_static(&[1, 0]),
+                )
+            };
             assert!(data.update_data(start()).is_err());
             assert!(multi.update(4, start()).is_err());
         }
         for start in [u64::MAX, u64::MAX - 1] {
-            let drain = || DataMessage::Drain(start, 2);
+            let drain = || (DataHeader::Drain(start, 2, false), Bytes::new());
             assert!(data.update_data(drain()).is_err());
             assert!(multi.update(4, drain()).is_err());
             let replace = || {
-                DataMessage::All(
-                    DataType::U16,
-                    TransportType::Replace(start, 1),
+                (
+                    DataHeader::All(DataType::U16, TransportType::Replace(start, 1), false, 0),
                     Bytes::from_static(&[9, 0]),
                 )
             };
