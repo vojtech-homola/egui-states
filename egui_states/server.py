@@ -154,14 +154,10 @@ class StateServerBase[T: StatesBase]:
 
         _initialize(self._states, "root", self._server, self._signals_manager, self._states._get_obj_types())
         self._server.finalize()
-        self.logging = LoggingSignal(self._signals_manager, self._server)
+        self.logging = LoggingSignal(self._signals_manager)
         self._on_connect: Callable[[str], Any] | None = None
         self._on_disconnect: Callable[[], Any] | None = None
         self._on_client_message: Callable[[str], Any] | None = None
-
-        self._server.signal_set_to_queue(_ON_CONNECT_ID)
-        self._server.signal_set_to_queue(_ON_DISCONNECT_ID)
-        self._server.signal_set_to_queue(_CLIENT_MESSAGE_ID)
 
     @property
     def states(self) -> T:

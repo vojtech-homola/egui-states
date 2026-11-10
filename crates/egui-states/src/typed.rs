@@ -122,6 +122,11 @@ impl ObjectType {
         hasher.finish_u32()
     }
 
+    /// The type id of a map state with these key and value types.
+    pub(crate) fn map_hash(key: &ObjectType, value: &ObjectType) -> u32 {
+        value.get_hash_from(key.get_hash())
+    }
+
     /// Extends an existing stable hash with this type description.
     pub fn get_hash_from(&self, hash: u32) -> u32 {
         let mut hasher = StableHasher::new();

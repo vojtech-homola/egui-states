@@ -3,7 +3,6 @@
 from collections.abc import Callable
 from enum import Enum
 
-from egui_states._core import StateServerCore
 from egui_states.signals import SignalsManager
 
 _LOGGING_ID = 0
@@ -25,17 +24,15 @@ class LogLevel(Enum):
 class LoggingSignal:
     """Dispatch log messages emitted by the connected egui client."""
 
-    def __init__(self, signals_manager: SignalsManager, server: StateServerCore) -> None:
+    def __init__(self, signals_manager: SignalsManager) -> None:
         """Initialize the logging signal.
 
         Args:
             signals_manager (SignalsManager): Callback dispatcher to register
                 with.
-            server (StateServerCore): Native server that emits client messages.
         """
         self._loggers: dict[int, list[Callable[[str], None]]] = {0: [], 1: [], 2: [], 3: []}
         signals_manager.add_callback(_LOGGING_ID, self._callback)
-        server.signal_set_to_queue(_LOGGING_ID)
 
     def _callback(self, message: tuple[int, str]) -> None:
         level = message[0]

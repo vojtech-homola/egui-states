@@ -31,7 +31,7 @@ use super::kinds::{DataKind, StateKind};
 use super::media::{ImageInput, data_holder};
 use super::reader::Reader;
 use super::tree::{Node, TypeRef};
-use super::types::{TypeRegistry, map_hash};
+use super::types::TypeRegistry;
 use super::writer::Writer;
 
 enum State {
@@ -173,8 +173,6 @@ impl CServer {
             (ON_DISCONNECT_ID, "on_disconnect", ObjectType::Empty),
             (CLIENT_MESSAGE_ID, "client_message", ObjectType::String),
         ] {
-            // Server events are never coalesced, as with the Rust and Python servers.
-            signals.set_to_queue(id);
             entries.insert(
                 id,
                 Entry {
@@ -330,7 +328,7 @@ impl CServer {
         self.register(name, |types, core, id| {
             let key = types.parse(key_type)?;
             let value = types.parse(value_type)?;
-            let hash = map_hash(&key, &value);
+            let hash = ObjectType::map_hash(&key, &value);
             let map_type = ObjectType::Map(Box::new(key), Box::new(value));
             let type_text = type_expression(&map_type);
             let whole = TypeRef::new(&map_type);

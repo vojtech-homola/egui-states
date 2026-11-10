@@ -3,21 +3,31 @@ use serde::{Deserialize, Serialize};
 #[cfg(any(feature = "server", feature = "python"))]
 use crate::serialization::{FastVec, ServerHeader, serialize, serialize_heap};
 
+/// Element type of a numeric buffer.
+///
+/// The discriminants are the type ids every front-end uses, and the variant
+/// order is the wire tag; both are part of the protocol.
 #[derive(Serialize, Deserialize, PartialEq, Clone, Copy, Debug)]
+#[repr(u8)]
 pub(crate) enum DataType {
-    U8,
-    U16,
-    U32,
-    U64,
-    I8,
-    I16,
-    I32,
-    I64,
-    F32,
-    F64,
+    U8 = 0,
+    U16 = 1,
+    U32 = 2,
+    U64 = 3,
+    I8 = 4,
+    I16 = 5,
+    I32 = 6,
+    I64 = 7,
+    F32 = 8,
+    F64 = 9,
 }
 
 impl DataType {
+    /// The protocol type id.
+    pub(crate) const fn id(self) -> u8 {
+        self as u8
+    }
+
     pub(crate) fn item_size(&self) -> usize {
         match self {
             DataType::U8 | DataType::I8 => 1,
@@ -29,18 +39,33 @@ impl DataType {
 
     #[cfg(any(feature = "server", feature = "python"))]
     pub(crate) fn from_id(id: u8) -> Result<Self, ()> {
-        match id {
-            0 => Ok(DataType::U8),
-            1 => Ok(DataType::U16),
-            2 => Ok(DataType::U32),
-            3 => Ok(DataType::U64),
-            4 => Ok(DataType::I8),
-            5 => Ok(DataType::I16),
-            6 => Ok(DataType::I32),
-            7 => Ok(DataType::I64),
-            8 => Ok(DataType::F32),
-            9 => Ok(DataType::F64),
-            _ => Err(()),
+        Self::ALL.get(usize::from(id)).copied().ok_or(())
+    }
+
+    /// Every type, in id order.
+    #[cfg(any(test, feature = "server", feature = "python"))]
+    const ALL: [Self; 10] = [
+        Self::U8,
+        Self::U16,
+        Self::U32,
+        Self::U64,
+        Self::I8,
+        Self::I16,
+        Self::I32,
+        Self::I64,
+        Self::F32,
+        Self::F64,
+    ];
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn data_types_are_listed_in_id_order() {
+        for (index, data_type) in DataType::ALL.iter().enumerate() {
+            assert_eq!(usize::from(data_type.id()), index);
         }
     }
 }

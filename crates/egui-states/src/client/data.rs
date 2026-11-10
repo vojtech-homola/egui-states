@@ -50,33 +50,32 @@ pub(crate) mod private {
     /// copied straight into buffers of it.
     pub(crate) unsafe trait GetDataType: Clone + Copy {
         fn get_type() -> DataType;
-        fn get_type_id() -> u32;
+
+        fn get_type_id() -> u32 {
+            Self::get_type().id().into()
+        }
     }
 
     macro_rules! impl_get_data_type {
-        ($ty:ty, $variant:expr, $id:expr) => {
+        ($ty:ty, $variant:expr) => {
             unsafe impl GetDataType for $ty {
                 fn get_type() -> DataType {
                     $variant
-                }
-
-                fn get_type_id() -> u32 {
-                    $id
                 }
             }
         };
     }
 
-    impl_get_data_type!(u8, DataType::U8, 0);
-    impl_get_data_type!(u16, DataType::U16, 1);
-    impl_get_data_type!(u32, DataType::U32, 2);
-    impl_get_data_type!(u64, DataType::U64, 3);
-    impl_get_data_type!(i8, DataType::I8, 4);
-    impl_get_data_type!(i16, DataType::I16, 5);
-    impl_get_data_type!(i32, DataType::I32, 6);
-    impl_get_data_type!(i64, DataType::I64, 7);
-    impl_get_data_type!(f32, DataType::F32, 8);
-    impl_get_data_type!(f64, DataType::F64, 9);
+    impl_get_data_type!(u8, DataType::U8);
+    impl_get_data_type!(u16, DataType::U16);
+    impl_get_data_type!(u32, DataType::U32);
+    impl_get_data_type!(u64, DataType::U64);
+    impl_get_data_type!(i8, DataType::I8);
+    impl_get_data_type!(i16, DataType::I16);
+    impl_get_data_type!(i32, DataType::I32);
+    impl_get_data_type!(i64, DataType::I64);
+    impl_get_data_type!(f32, DataType::F32);
+    impl_get_data_type!(f64, DataType::F64);
 }
 
 /// Allocates the buffer of a chunked transfer of `count` elements and copies

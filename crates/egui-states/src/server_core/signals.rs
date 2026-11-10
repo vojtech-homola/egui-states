@@ -219,9 +219,19 @@ pub(crate) struct SignalsManager {
 
 impl SignalsManager {
     pub(crate) fn new() -> Self {
+        let mut values = ChangedInner::new();
+        // Server events are never coalesced, whichever front-end runs the server.
+        for id in [
+            LOGGING_ID,
+            ON_CONNECT_ID,
+            ON_DISCONNECT_ID,
+            CLIENT_MESSAGE_ID,
+        ] {
+            values.set_to_queue(id);
+        }
         Self {
             event: Event::new(),
-            values: Arc::new(Mutex::new(ChangedInner::new())),
+            values: Arc::new(Mutex::new(values)),
             #[cfg(any(feature = "python", feature = "c_abi"))]
             closed: Arc::new(AtomicBool::new(false)),
         }

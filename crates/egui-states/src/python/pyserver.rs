@@ -10,6 +10,7 @@ use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyByteArray, PyDict, PyList};
 
+use crate::ObjectType;
 use crate::hashing::NoHashMap;
 
 /// A signal event: id, value, whether it blocks, and the previous value.
@@ -1371,7 +1372,10 @@ impl StateServerCore {
         let key_object_type = key_type.borrow().object_type.clone_py(py);
         let value_object_type = value_type.borrow().object_type.clone_py(py);
 
-        let type_id = value_object_type.get_hash_from(py, key_object_type.get_hash(py)?)?;
+        let type_id = ObjectType::map_hash(
+            &key_object_type.get_core_type(py)?,
+            &value_object_type.get_core_type(py)?,
+        );
         let object_type = PyObjectType::Map(Box::new(key_object_type), Box::new(value_object_type));
 
         let value_id = self

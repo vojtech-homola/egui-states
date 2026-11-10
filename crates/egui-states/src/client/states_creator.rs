@@ -19,7 +19,7 @@ use crate::client::values::{
     ValueTake,
 };
 use crate::hashing::{NoHashMap, StableHasher, generate_value_id};
-use crate::typed::Typed;
+use crate::typed::{ObjectType, Typed};
 
 #[inline]
 pub(crate) fn hash_id_type(hasher: &mut StableHasher, id: u64, type_id: u32, hash_id: u8) {
@@ -457,7 +457,7 @@ impl StatesCreator for StatesCreatorClient {
     {
         let name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&name);
-        let type_id = V::get_type().get_hash_from(K::get_type().get_hash());
+        let type_id = ObjectType::map_hash(&K::get_type(), &V::get_type());
         hash_id_type(&mut self.version_hasher, id, type_id, MAP_HASH_ID);
 
         let value = MapState::new(name, type_id);

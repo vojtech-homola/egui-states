@@ -28,26 +28,26 @@ pub unsafe trait DataElement: Copy + Send + Sync + 'static {
 }
 
 macro_rules! impl_data_element {
-    ($(($ty:ty, $id:expr)),* $(,)?) => {
+    ($(($ty:ty, $variant:ident)),* $(,)?) => {
         $(
             unsafe impl DataElement for $ty {
-                const TYPE_ID: u8 = $id;
+                const TYPE_ID: u8 = DataType::$variant.id();
             }
         )*
     };
 }
 
 impl_data_element! {
-    (u8, 0),
-    (u16, 1),
-    (u32, 2),
-    (u64, 3),
-    (i8, 4),
-    (i16, 5),
-    (i32, 6),
-    (i64, 7),
-    (f32, 8),
-    (f64, 9),
+    (u8, U8),
+    (u16, U16),
+    (u32, U32),
+    (u64, U64),
+    (i8, I8),
+    (i16, I16),
+    (i32, I32),
+    (i64, I64),
+    (f32, F32),
+    (f64, F64),
 }
 
 fn data_type<T: DataElement>() -> DataType {

@@ -409,7 +409,7 @@ impl StatesCreator for StatesCreatorBuild {
         self.collect_rust_derives::<V>();
         let full_name = format!("{}.{}", self.parent, name);
         let id = generate_value_id(&full_name);
-        let type_id = V::get_type().get_hash_from(K::get_type().get_hash());
+        let type_id = ObjectType::map_hash(&K::get_type(), &V::get_type());
         hash_id_type(
             &mut self.version_hasher,
             id,

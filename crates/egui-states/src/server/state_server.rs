@@ -15,7 +15,6 @@ use bytes::Bytes;
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 
-use crate::Typed;
 use crate::serialization::{deserialize_value, serialize};
 use crate::server_core::data_core::{Data as CoreData, DataMulti as CoreDataMulti};
 use crate::server_core::data_take_core::{
@@ -27,8 +26,7 @@ use crate::server_core::image_multi_core::ImageMulti as CoreImageMulti;
 use crate::server_core::map_core::ValueMap as CoreMap;
 use crate::server_core::server::Server as CoreServer;
 use crate::server_core::signals::{
-    CLIENT_MESSAGE_ID, LOGGING_ID, ON_CONNECT_ID, ON_DISCONNECT_ID,
-    SignalsManager as CoreSignalsManager,
+    CLIENT_MESSAGE_ID, ON_CONNECT_ID, ON_DISCONNECT_ID, SignalsManager as CoreSignalsManager,
 };
 use crate::server_core::values_core::{
     SignalCore as CoreSignal, ValueCore as CoreValue, ValueStaticCore as CoreStatic,
@@ -36,6 +34,7 @@ use crate::server_core::values_core::{
 };
 use crate::server_core::vec_core::ValueList as CoreVec;
 use crate::server_core::web::WebSite;
+use crate::{ObjectType, Typed};
 
 use super::callbacks::{CallbackHandle, CallbackRegistry};
 use super::data::DataElement;
@@ -148,10 +147,6 @@ impl StateServer {
             .set_allowed_origins(&options.allowed_origins)
             .map_err(ServerError::new)?;
         let signals = server.get_signals_manager();
-        signals.set_to_queue(LOGGING_ID);
-        signals.set_to_queue(ON_CONNECT_ID);
-        signals.set_to_queue(ON_DISCONNECT_ID);
-        signals.set_to_queue(CLIENT_MESSAGE_ID);
 
         let error_handler = options.error_handler.unwrap_or_else(|| {
             Arc::new(|error: ServerError| {
@@ -557,7 +552,7 @@ impl StateServer {
         K: Typed,
         V: Typed,
     {
-        let type_id = V::get_type().get_hash_from(K::get_type().get_hash());
+        let type_id = ObjectType::map_hash(&K::get_type(), &V::get_type());
         let id = self
             .inner
             .server
