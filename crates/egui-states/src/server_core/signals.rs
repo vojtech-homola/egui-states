@@ -59,7 +59,16 @@ impl ChangedInner {
     }
 
     fn clear(&mut self) {
-        self.values.retain(|id, _| *id <= MAX_RESERVED_ID);
+        self.values.retain(|id, signal| match signal {
+            _ if *id <= MAX_RESERVED_ID => true,
+            // An empty queue is what records queue mode, so keep it and drop
+            // only the pending changes.
+            Signal::Queue(queue) => {
+                queue.clear();
+                true
+            }
+            Signal::Single(_) => false,
+        });
         self.indexes.retain(|id| *id <= MAX_RESERVED_ID);
         // Keep claimed ids blocked: their callbacks may still be running and are
         // released when the worker passes the id back.
@@ -671,6 +680,25 @@ mod tests {
             last = Some(id);
         }
         assert_eq!(claimed, [LOGGING_ID, ON_DISCONNECT_ID]);
+    }
+
+    /// Queue mode survives a disconnect: changes after the reconnect are all
+    /// delivered in order, not coalesced like single mode.
+    #[test]
+    fn reset_keeps_queue_mode() {
+        let manager = SignalsManager::new();
+        manager.set_register(24, true, false);
+        manager.set_to_queue(24);
+        manager.set(24, b("lost on disconnect"));
+        manager.reset();
+
+        manager.set(24, b("first"));
+        manager.set(24, b("second"));
+        let (id, value, _) = claim(&manager, None);
+        assert_eq!((id, value), (24, b("first")));
+        let (id, value, _) = claim(&manager, Some(24));
+        assert_eq!((id, value), (24, b("second")));
+        assert!(manager.values.lock().get(Some(24)).is_none());
     }
 
     /// A client streaming changes to a value whose callback is still running (a
