@@ -3,14 +3,49 @@
 use std::marker::PhantomData;
 use std::sync::Arc;
 
+use bytes::Bytes;
+use serde::Serialize;
+use serde::de::DeserializeOwned;
+
 use crate::protocol::data::DataType;
-use crate::server_core::states::data::{Data as CoreData, DataMulti as CoreDataMulti, DataSlice};
+use crate::server_core::states::data::{
+    Data as CoreData, DataMulti as CoreDataMulti, DataSlice, header_type_id,
+};
 use crate::server_core::states::data_take::{
     DataMultiTake as CoreDataMultiTake, DataTake as CoreDataTake,
 };
+use crate::typed::Typed;
 
-use super::state_server::StateServer;
+use super::state_server::{StateServer, deserialize_bytes, serialize_bytes};
 use super::{Result, ServerError};
+
+/// The header type of a Data state: any `Typed` value sent with the buffer,
+/// `()` (the default) for a state without one.
+///
+/// It must match the client's header type. A header that was never set reads
+/// as `None` here, while the client shows `H::default()`; once set, a
+/// [`Data`] header cannot return to "never set". A custom [`Typed`] type
+/// whose [`Typed::get_type`] is [`crate::ObjectType::Empty`] also means no
+/// header.
+pub trait HeaderValue: Typed + Serialize + DeserializeOwned + Send + Sync + 'static {}
+
+impl<H> HeaderValue for H where H: Typed + Serialize + DeserializeOwned + Send + Sync + 'static {}
+
+fn header_type<H: HeaderValue>() -> Option<u32> {
+    header_type_id(&H::get_type())
+}
+
+/// `data` with its encoded `header`, for the cores.
+fn with_header<'a, T: DataElement>(data: &'a [T], header: Option<&'a Bytes>) -> DataSlice<'a> {
+    DataSlice {
+        header: header.map(|header| header.as_ref()),
+        ..data_slice(data)
+    }
+}
+
+fn decode_header<H: HeaderValue>(header: Option<&[u8]>) -> Result<Option<H>> {
+    header.map(deserialize_bytes).transpose()
+}
 
 /// A numeric element that can be transported by a [`Data`] state.
 ///
@@ -81,20 +116,33 @@ fn data_from_bytes<T: DataElement>(data: &[u8]) -> Result<Vec<T>> {
     Ok(result)
 }
 
-#[derive(Clone)]
-/// Server-side contiguous numeric buffer mirrored on the client.
-pub struct Data<T> {
+/// Server-side contiguous numeric buffer mirrored on the client, with an
+/// optional typed header `H`.
+///
+/// The methods without a header keep the current one. A header sent with a
+/// change reaches the client together with the buffer.
+pub struct Data<T, H = ()> {
     inner: Arc<CoreData>,
-    _type: PhantomData<T>,
+    _type: PhantomData<fn() -> (T, H)>,
 }
 
-impl<T> Data<T>
+impl<T, H> Clone for Data<T, H> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            _type: PhantomData,
+        }
+    }
+}
+
+impl<T, H> Data<T, H>
 where
     T: DataElement,
+    H: HeaderValue,
 {
     /// Registers an empty numeric buffer under `name`.
     pub fn new(server: &StateServer, name: impl Into<String>) -> Result<Self> {
-        let (_, inner) = server.add_data::<T>(name.into())?;
+        let (_, inner) = server.add_data::<T>(name.into(), header_type::<H>())?;
         Ok(Self {
             inner,
             _type: PhantomData,
@@ -117,17 +165,45 @@ where
         self.inner.get(f)
     }
 
+    /// Returns the header, or `None` until one is set.
+    pub fn header(&self) -> Result<Option<H>> {
+        self.inner.header(decode_header)
+    }
+
     /// Replaces the complete buffer and optionally requests a client repaint.
     pub fn set(&self, data: &[T], update: bool) -> Result<()> {
+        self.set_inner(data, None, update)
+    }
+
+    /// Like [`Self::set`], replacing the header as well.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the state has no header type or the header is
+    /// larger than a value may be.
+    pub fn set_with_header(&self, data: &[T], header: &H, update: bool) -> Result<()> {
+        self.set_inner(data, Some(&serialize_bytes(header)?), update)
+    }
+
+    fn set_inner(&self, data: &[T], header: Option<&Bytes>, update: bool) -> Result<()> {
         self.inner
-            .set(data_slice(data), update)
+            .set(with_header(data, header), update)
             .map_err(ServerError::new)
     }
 
     /// Appends elements and optionally requests a client repaint.
     pub fn add(&self, data: &[T], update: bool) -> Result<()> {
+        self.add_inner(data, None, update)
+    }
+
+    /// Like [`Self::add`], replacing the header as well.
+    pub fn add_with_header(&self, data: &[T], header: &H, update: bool) -> Result<()> {
+        self.add_inner(data, Some(&serialize_bytes(header)?), update)
+    }
+
+    fn add_inner(&self, data: &[T], header: Option<&Bytes>, update: bool) -> Result<()> {
         self.inner
-            .add(data_slice(data), update)
+            .add(with_header(data, header), update)
             .map_err(ServerError::new)
     }
 
@@ -138,8 +214,29 @@ where
     /// Returns an error when the replaced range exceeds the current buffer or
     /// the update cannot be serialized or queued.
     pub fn replace(&self, data: &[T], index: usize, update: bool) -> Result<()> {
+        self.replace_inner(data, index, None, update)
+    }
+
+    /// Like [`Self::replace`], replacing the header as well.
+    pub fn replace_with_header(
+        &self,
+        data: &[T],
+        index: usize,
+        header: &H,
+        update: bool,
+    ) -> Result<()> {
+        self.replace_inner(data, index, Some(&serialize_bytes(header)?), update)
+    }
+
+    fn replace_inner(
+        &self,
+        data: &[T],
+        index: usize,
+        header: Option<&Bytes>,
+        update: bool,
+    ) -> Result<()> {
         self.inner
-            .replace(data_slice(data), index, update)
+            .replace(with_header(data, header), index, update)
             .map_err(ServerError::new)
     }
 
@@ -155,33 +252,78 @@ where
             .map_err(ServerError::new)
     }
 
-    /// Removes all elements and optionally requests a client repaint.
+    /// Like [`Self::remove`], replacing the header as well.
+    pub fn remove_with_header(
+        &self,
+        index: usize,
+        count: usize,
+        header: &H,
+        update: bool,
+    ) -> Result<()> {
+        let header = serialize_bytes(header)?;
+        self.inner
+            .remove(index, count, Some(&header), update)
+            .map_err(ServerError::new)
+    }
+
+    /// Removes all elements and optionally requests a client repaint. The
+    /// header stays.
     pub fn clear(&self, update: bool) -> Result<()> {
         self.inner.clear(None, update).map_err(ServerError::new)
     }
+
+    /// Like [`Self::clear`], replacing the header as well.
+    pub fn clear_with_header(&self, header: &H, update: bool) -> Result<()> {
+        let header = serialize_bytes(header)?;
+        self.inner
+            .clear(Some(&header), update)
+            .map_err(ServerError::new)
+    }
+
+    /// Replaces the header alone.
+    ///
+    /// Unlike buffer changes, the client does not acknowledge a header, so
+    /// this never waits for the client: headers set faster than the client
+    /// reads them queue up, as values do.
+    pub fn set_header(&self, header: &H, update: bool) -> Result<()> {
+        let header = serialize_bytes(header)?;
+        self.inner
+            .set_header(&header, update)
+            .map_err(ServerError::new)
+    }
 }
 
-#[derive(Clone)]
-/// One-shot numeric buffer sent by the server and consumed by the client.
-pub struct DataTake<T> {
+/// One-shot numeric buffer sent by the server and consumed by the client,
+/// with an optional typed header `H`.
+pub struct DataTake<T, H = ()> {
     inner: Arc<CoreDataTake>,
-    _type: PhantomData<T>,
+    _type: PhantomData<fn() -> (T, H)>,
 }
 
-impl<T> DataTake<T>
+impl<T, H> Clone for DataTake<T, H> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            _type: PhantomData,
+        }
+    }
+}
+
+impl<T, H> DataTake<T, H>
 where
     T: DataElement,
+    H: HeaderValue,
 {
     /// Registers a one-shot numeric buffer under `name`.
     pub fn new(server: &StateServer, name: impl Into<String>) -> Result<Self> {
-        let (_, inner) = server.add_data_take::<T>(name.into())?;
+        let (_, inner) = server.add_data_take::<T>(name.into(), header_type::<H>())?;
         Ok(Self {
             inner,
             _type: PhantomData,
         })
     }
 
-    /// Sends `data` to the client.
+    /// Sends `data` to the client; the client takes it with `H::default()`.
     ///
     /// `blocking` waits for the client to consume the previous transfer before
     /// the next send. `cache` retains the last transfer for a newly connecting
@@ -191,22 +333,47 @@ where
             .set(data_slice(data), blocking, update, cache)
             .map_err(ServerError::new)
     }
+
+    /// Like [`Self::set`], sending `header` with the buffer.
+    pub fn set_with_header(
+        &self,
+        data: &[T],
+        header: &H,
+        blocking: bool,
+        update: bool,
+        cache: bool,
+    ) -> Result<()> {
+        let header = serialize_bytes(header)?;
+        self.inner
+            .set(with_header(data, Some(&header)), blocking, update, cache)
+            .map_err(ServerError::new)
+    }
 }
 
-#[derive(Clone)]
-/// Server-side numeric buffers indexed by `u32` keys.
-pub struct DataMulti<T> {
+/// Server-side numeric buffers indexed by `u32` keys, each with an optional
+/// typed header `H`.
+pub struct DataMulti<T, H = ()> {
     inner: Arc<CoreDataMulti>,
-    _type: PhantomData<T>,
+    _type: PhantomData<fn() -> (T, H)>,
 }
 
-impl<T> DataMulti<T>
+impl<T, H> Clone for DataMulti<T, H> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            _type: PhantomData,
+        }
+    }
+}
+
+impl<T, H> DataMulti<T, H>
 where
     T: DataElement,
+    H: HeaderValue,
 {
     /// Registers an empty keyed buffer collection under `name`.
     pub fn new(server: &StateServer, name: impl Into<String>) -> Result<Self> {
-        let (_, inner) = server.add_data_multi::<T>(name.into())?;
+        let (_, inner) = server.add_data_multi::<T>(name.into(), header_type::<H>())?;
         Ok(Self {
             inner,
             _type: PhantomData,
@@ -221,24 +388,85 @@ where
         })
     }
 
-    /// Replaces the buffer at `index`.
-    pub fn set(&self, index: u32, data: &[T], update: bool) -> Result<()> {
+    /// Returns the header at `index`, or `None` if the key is absent or no
+    /// header was set for it.
+    pub fn header(&self, index: u32) -> Result<Option<H>> {
         self.inner
-            .set(index, data_slice(data), update)
+            .header(index, |header| decode_header(header.flatten()))
+    }
+
+    /// Replaces the buffer at `index`. A new key gets the default header.
+    pub fn set(&self, index: u32, data: &[T], update: bool) -> Result<()> {
+        self.set_inner(index, data, None, update)
+    }
+
+    /// Like [`Self::set`], replacing the header as well.
+    pub fn set_with_header(&self, index: u32, data: &[T], header: &H, update: bool) -> Result<()> {
+        self.set_inner(index, data, Some(&serialize_bytes(header)?), update)
+    }
+
+    fn set_inner(
+        &self,
+        index: u32,
+        data: &[T],
+        header: Option<&Bytes>,
+        update: bool,
+    ) -> Result<()> {
+        self.inner
+            .set(index, with_header(data, header), update)
             .map_err(ServerError::new)
     }
 
     /// Appends elements to the buffer at `index`.
     pub fn add(&self, index: u32, data: &[T], update: bool) -> Result<()> {
+        self.add_inner(index, data, None, update)
+    }
+
+    /// Like [`Self::add`], replacing the header as well.
+    pub fn add_with_header(&self, index: u32, data: &[T], header: &H, update: bool) -> Result<()> {
+        self.add_inner(index, data, Some(&serialize_bytes(header)?), update)
+    }
+
+    fn add_inner(
+        &self,
+        index: u32,
+        data: &[T],
+        header: Option<&Bytes>,
+        update: bool,
+    ) -> Result<()> {
         self.inner
-            .add(index, data_slice(data), update)
+            .add(index, with_header(data, header), update)
             .map_err(ServerError::new)
     }
 
     /// Replaces elements starting at `data_index` in the buffer at `index`.
     pub fn replace(&self, index: u32, data_index: usize, data: &[T], update: bool) -> Result<()> {
+        self.replace_inner(index, data_index, data, None, update)
+    }
+
+    /// Like [`Self::replace`], replacing the header as well.
+    pub fn replace_with_header(
+        &self,
+        index: u32,
+        data_index: usize,
+        data: &[T],
+        header: &H,
+        update: bool,
+    ) -> Result<()> {
+        let header = serialize_bytes(header)?;
+        self.replace_inner(index, data_index, data, Some(&header), update)
+    }
+
+    fn replace_inner(
+        &self,
+        index: u32,
+        data_index: usize,
+        data: &[T],
+        header: Option<&Bytes>,
+        update: bool,
+    ) -> Result<()> {
         self.inner
-            .replace(index, data_index, data_slice(data), update)
+            .replace(index, data_index, with_header(data, header), update)
             .map_err(ServerError::new)
     }
 
@@ -249,47 +477,95 @@ where
             .map_err(ServerError::new)
     }
 
-    /// Clears the buffer at `index` without removing its key.
+    /// Like [`Self::remove`], replacing the header as well.
+    pub fn remove_with_header(
+        &self,
+        index: u32,
+        data_index: usize,
+        count: usize,
+        header: &H,
+        update: bool,
+    ) -> Result<()> {
+        let header = serialize_bytes(header)?;
+        self.inner
+            .remove(index, data_index, count, Some(&header), update)
+            .map_err(ServerError::new)
+    }
+
+    /// Clears the buffer at `index` without removing its key or its header.
     pub fn clear(&self, index: u32, update: bool) -> Result<()> {
         self.inner
             .clear(index, None, update)
             .map_err(ServerError::new)
     }
 
-    /// Removes the buffer and key at `index`.
+    /// Like [`Self::clear`], replacing the header as well.
+    pub fn clear_with_header(&self, index: u32, header: &H, update: bool) -> Result<()> {
+        let header = serialize_bytes(header)?;
+        self.inner
+            .clear(index, Some(&header), update)
+            .map_err(ServerError::new)
+    }
+
+    /// Replaces the header at `index` alone; like [`Data::set_header`], it
+    /// never waits for the client.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `index` does not exist, the state has no header
+    /// type or the header is too large.
+    pub fn set_header(&self, index: u32, header: &H, update: bool) -> Result<()> {
+        let header = serialize_bytes(header)?;
+        self.inner
+            .set_header(index, &header, update)
+            .map_err(ServerError::new)
+    }
+
+    /// Removes the buffer, key and header at `index`.
     pub fn remove_index(&self, index: u32, update: bool) -> Result<()> {
         self.inner
             .remove_index(index, update)
             .map_err(ServerError::new)
     }
 
-    /// Removes every keyed buffer.
+    /// Removes every keyed buffer and header.
     pub fn reset(&self, update: bool) -> Result<()> {
         self.inner.reset(update).map_err(ServerError::new)
     }
 }
 
-#[derive(Clone)]
-/// Keyed one-shot numeric buffers sent from the server to the client.
-pub struct DataMultiTake<T> {
+/// Keyed one-shot numeric buffers sent from the server to the client, with
+/// an optional typed header `H`.
+pub struct DataMultiTake<T, H = ()> {
     inner: Arc<CoreDataMultiTake>,
-    _type: PhantomData<T>,
+    _type: PhantomData<fn() -> (T, H)>,
 }
 
-impl<T> DataMultiTake<T>
+impl<T, H> Clone for DataMultiTake<T, H> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            _type: PhantomData,
+        }
+    }
+}
+
+impl<T, H> DataMultiTake<T, H>
 where
     T: DataElement,
+    H: HeaderValue,
 {
     /// Registers an empty keyed one-shot collection under `name`.
     pub fn new(server: &StateServer, name: impl Into<String>) -> Result<Self> {
-        let (_, inner) = server.add_data_multi_take::<T>(name.into())?;
+        let (_, inner) = server.add_data_multi_take::<T>(name.into(), header_type::<H>())?;
         Ok(Self {
             inner,
             _type: PhantomData,
         })
     }
 
-    /// Sends a buffer at `index` with blocking, repaint, and caching controls.
+    /// Sends a buffer at `index` with blocking, repaint, and caching controls;
+    /// the client takes it with `H::default()`.
     pub fn set(
         &self,
         index: u32,
@@ -300,6 +576,28 @@ where
     ) -> Result<()> {
         self.inner
             .set(index, data_slice(data), blocking, update, cache)
+            .map_err(ServerError::new)
+    }
+
+    /// Like [`Self::set`], sending `header` with the buffer.
+    pub fn set_with_header(
+        &self,
+        index: u32,
+        data: &[T],
+        header: &H,
+        blocking: bool,
+        update: bool,
+        cache: bool,
+    ) -> Result<()> {
+        let header = serialize_bytes(header)?;
+        self.inner
+            .set(
+                index,
+                with_header(data, Some(&header)),
+                blocking,
+                update,
+                cache,
+            )
             .map_err(ServerError::new)
     }
 
@@ -429,5 +727,41 @@ mod tests {
         data.reset(false).unwrap();
         data.reset(false).unwrap();
         assert_eq!(data.get(1).unwrap(), None);
+    }
+
+    #[test]
+    fn headers_are_stored_with_the_data() {
+        type Meta = (u32, String);
+        let server = StateServer::new().unwrap();
+        let data = Data::<u16, Meta>::new(&server, "root.data").unwrap();
+        let multi = DataMulti::<u16, Meta>::new(&server, "root.multi").unwrap();
+        let take = DataTake::<u16, Meta>::new(&server, "root.take").unwrap();
+        let plain = Data::<u16>::new(&server, "root.plain").unwrap();
+
+        assert_eq!(data.header().unwrap(), None);
+        data.set_with_header(&[1, 2], &(1, "a".into()), false)
+            .unwrap();
+        data.add(&[3], false).unwrap();
+        assert_eq!(data.header().unwrap(), Some((1, "a".into())));
+        data.clear_with_header(&(2, "b".into()), false).unwrap();
+        data.set_header(&(3, "c".into()), false).unwrap();
+        assert_eq!(data.get().unwrap(), Vec::<u16>::new());
+        assert_eq!(data.header().unwrap(), Some((3, "c".into())));
+
+        multi.set(1, &[1], false).unwrap();
+        assert_eq!(multi.header(1).unwrap(), None);
+        multi
+            .replace_with_header(1, 0, &[5], &(4, "d".into()), false)
+            .unwrap();
+        assert_eq!(multi.header(1).unwrap(), Some((4, "d".into())));
+        assert!(multi.set_header(2, &(5, "e".into()), false).is_err());
+        assert_eq!(multi.header(2).unwrap(), None);
+
+        take.set_with_header(&[1], &(6, "f".into()), false, false, true)
+            .unwrap();
+
+        let error = plain.set_with_header(&[1], &(), false).unwrap_err();
+        assert!(error.to_string().contains("without a header"), "{error}");
+        assert_eq!(plain.header().unwrap(), None);
     }
 }

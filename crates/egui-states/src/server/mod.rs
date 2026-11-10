@@ -26,7 +26,7 @@ mod values;
 
 pub use callbacks::CallbackHandle;
 pub use collections::{MapState, VecState};
-pub use data::{Data, DataElement, DataMulti, DataMultiTake, DataTake};
+pub use data::{Data, DataElement, DataMulti, DataMultiTake, DataTake, HeaderValue};
 pub use error::{Result, ServerError};
 pub use image::{Image, ImageColor, ImageFormat, ImageMulti};
 pub use logging::{LogLevel, LoggingSignal};

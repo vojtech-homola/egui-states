@@ -558,13 +558,17 @@ impl StateServer {
         Ok((id, value))
     }
 
-    pub(super) fn add_data<T>(&self, name: String) -> Result<(u64, Arc<CoreData>)>
+    pub(super) fn add_data<T>(
+        &self,
+        name: String,
+        header_type: Option<u32>,
+    ) -> Result<(u64, Arc<CoreData>)>
     where
         T: DataElement,
     {
         let mut server = self.inner.server.write();
         let id = server
-            .add_data(&name, T::TYPE_ID, None)
+            .add_data(&name, T::TYPE_ID, header_type)
             .map_err(ServerError::new)?;
         let value = server.get_data(id).ok_or_else(|| {
             ServerError::new(format!("data not found after registration: {name}"))
@@ -572,13 +576,17 @@ impl StateServer {
         Ok((id, value))
     }
 
-    pub(super) fn add_data_take<T>(&self, name: String) -> Result<(u64, Arc<CoreDataTake>)>
+    pub(super) fn add_data_take<T>(
+        &self,
+        name: String,
+        header_type: Option<u32>,
+    ) -> Result<(u64, Arc<CoreDataTake>)>
     where
         T: DataElement,
     {
         let mut server = self.inner.server.write();
         let id = server
-            .add_data_take(&name, T::TYPE_ID, None)
+            .add_data_take(&name, T::TYPE_ID, header_type)
             .map_err(ServerError::new)?;
         let value = server.get_data_take(id).ok_or_else(|| {
             ServerError::new(format!("data_take not found after registration: {name}"))
@@ -586,13 +594,17 @@ impl StateServer {
         Ok((id, value))
     }
 
-    pub(super) fn add_data_multi<T>(&self, name: String) -> Result<(u64, Arc<CoreDataMulti>)>
+    pub(super) fn add_data_multi<T>(
+        &self,
+        name: String,
+        header_type: Option<u32>,
+    ) -> Result<(u64, Arc<CoreDataMulti>)>
     where
         T: DataElement,
     {
         let mut server = self.inner.server.write();
         let id = server
-            .add_data_multi(&name, T::TYPE_ID, None)
+            .add_data_multi(&name, T::TYPE_ID, header_type)
             .map_err(ServerError::new)?;
         let value = server.get_data_multi(id).ok_or_else(|| {
             ServerError::new(format!("data_multi not found after registration: {name}"))
@@ -603,13 +615,14 @@ impl StateServer {
     pub(super) fn add_data_multi_take<T>(
         &self,
         name: String,
+        header_type: Option<u32>,
     ) -> Result<(u64, Arc<CoreDataMultiTake>)>
     where
         T: DataElement,
     {
         let mut server = self.inner.server.write();
         let id = server
-            .add_data_multi_take(&name, T::TYPE_ID, None)
+            .add_data_multi_take(&name, T::TYPE_ID, header_type)
             .map_err(ServerError::new)?;
         let value = server.get_data_multi_take(id).ok_or_else(|| {
             ServerError::new(format!(

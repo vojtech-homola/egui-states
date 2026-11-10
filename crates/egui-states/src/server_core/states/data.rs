@@ -24,6 +24,16 @@ pub(crate) struct DataSlice<'a> {
     pub header: Option<&'a [u8]>,
 }
 
+/// The header type id of a Data state whose header type is `object_type`:
+/// `None` for [`ObjectType::Empty`], the type's hash otherwise.
+#[cfg(any(feature = "server", feature = "c_abi"))]
+pub(crate) fn header_type_id(object_type: &crate::typed::ObjectType) -> Option<u32> {
+    match object_type {
+        crate::typed::ObjectType::Empty => None,
+        object_type => Some(object_type.get_hash()),
+    }
+}
+
 /// The header type of a Data state, if it was registered with one, and the
 /// checks every header given to it passes.
 #[derive(Clone, Copy)]
@@ -395,8 +405,6 @@ impl Data {
 
     /// Replaces the header alone. Like a clear, the client does not
     /// acknowledge it, so it is queued at once without waiting.
-    // The front-ends call this from the Rust server commit on.
-    #[allow(dead_code)]
     pub(crate) fn set_header(&self, header: &[u8], update: bool) -> Result<(), String> {
         self.header_type.check(&self.name, Some(header))?;
         let _producer = self.producer.lock();
@@ -421,8 +429,6 @@ impl Data {
     }
 
     /// Calls `f` with the encoded header, `None` until one is set.
-    // The front-ends call this from the Rust server commit on.
-    #[allow(dead_code)]
     pub(crate) fn header<R>(&self, f: impl FnOnce(Option<&[u8]>) -> R) -> R {
         let storage = self.storage.read();
         f(storage.header.as_deref())
@@ -804,8 +810,6 @@ impl DataMulti {
     }
 
     /// Replaces the header of `index` alone; queued at once like a clear.
-    // The front-ends call this from the Rust server commit on.
-    #[allow(dead_code)]
     pub(crate) fn set_header(
         &self,
         index: u32,
@@ -838,8 +842,6 @@ impl DataMulti {
 
     /// Calls `f` with the encoded header of `key`: `None` for a missing key,
     /// `Some(None)` until a header is set for it.
-    // The front-ends call this from the Rust server commit on.
-    #[allow(dead_code)]
     pub(crate) fn header<R>(&self, key: u32, f: impl FnOnce(Option<Option<&[u8]>>) -> R) -> R {
         let storage = self.storage.read();
         f(storage
