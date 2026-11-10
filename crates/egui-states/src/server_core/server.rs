@@ -8,6 +8,7 @@ use std::thread;
 use std::time::Duration;
 
 use bytes::Bytes;
+use parking_lot::Mutex;
 use tokio::net::TcpListener;
 use tokio::runtime::Builder;
 
@@ -255,7 +256,10 @@ pub(crate) struct Server {
     origins: Arc<OriginPolicy>,
     heartbeat: Option<Heartbeat>,
 
-    runner_state: RunnerState,
+    /// Held by `start` and `stop` for their whole run, including the join of
+    /// the server thread, so they never overlap. Nothing that a connected
+    /// client needs, like `update` or `is_connected`, takes it.
+    runner_state: Mutex<RunnerState>,
 }
 
 /// Binds `addr` and builds the runtime whose thread will serve it.
@@ -314,7 +318,7 @@ impl Server {
             web: WebSlot::default(),
             origins: Arc::default(),
             heartbeat: Some(Heartbeat::default()),
-            runner_state: RunnerState::Stopped(rx),
+            runner_state: Mutex::new(RunnerState::Stopped(rx)),
         }
     }
 
@@ -372,11 +376,12 @@ impl Server {
     /// creates and owns a Tokio runtime, which must be allowed to shut down on
     /// a non-async thread.
     pub(crate) fn start(
-        &mut self,
+        &self,
         addr: SocketAddrV4,
         token: Option<String>,
     ) -> Result<(), StartError> {
-        let runner_state = match self.runner_state.take() {
+        let mut state = self.runner_state.lock();
+        let runner_state = match state.take() {
             RunnerState::Running(handle, _) if handle.is_finished() => match handle.join() {
                 Ok(rx) => RunnerState::Stopped(rx),
                 Err(_) => RunnerState::Undefined,
@@ -387,14 +392,14 @@ impl Server {
         match (runner_state, &self.states_server) {
             (RunnerState::Running(handle, listening), _) => {
                 let checked = listening.check(addr, &token);
-                self.runner_state = RunnerState::Running(handle, listening);
+                *state = RunnerState::Running(handle, listening);
                 checked
             }
             (RunnerState::Stopped(rx), Some(states_server)) => {
                 let (runtime, listener, bound) = match listen(addr) {
                     Ok(listening) => listening,
                     Err(error) => {
-                        self.runner_state = RunnerState::Stopped(rx);
+                        *state = RunnerState::Stopped(rx);
                         return Err(error);
                     }
                 };
@@ -435,14 +440,14 @@ impl Server {
 
                 match thread_handle_res {
                     Err(_) => {
-                        self.runner_state = RunnerState::Undefined;
+                        *state = RunnerState::Undefined;
                         Err(StartError::Io(
                             "Failed to start server thread, server is in undefined state"
                                 .to_string(),
                         ))
                     }
                     Ok(thread_handle) => {
-                        self.runner_state = RunnerState::Running(thread_handle, listening);
+                        *state = RunnerState::Running(thread_handle, listening);
                         Ok(())
                     }
                 }
@@ -450,8 +455,8 @@ impl Server {
             (RunnerState::Undefined, _) => Err(StartError::InvalidState(
                 "Server is in undefined state".to_string(),
             )),
-            (state, None) => {
-                self.runner_state = state;
+            (stopped, None) => {
+                *state = stopped;
                 Err(StartError::InvalidState(
                     "Server has not been finalized".to_string(),
                 ))
@@ -459,30 +464,28 @@ impl Server {
         }
     }
 
-    pub(crate) fn stop(&mut self) {
-        match self.runner_state.take() {
+    /// Stops the server and waits for its thread to finish.
+    pub(crate) fn stop(&self) {
+        let mut state = self.runner_state.lock();
+        match state.take() {
             RunnerState::Stopped(rx) => {
-                self.runner_state = RunnerState::Stopped(rx);
+                *state = RunnerState::Stopped(rx);
             }
             RunnerState::Running(handle, _) => {
                 self.connected.store(false, Ordering::Release);
                 self.stop_event.set();
                 self.sender.close();
 
-                match handle.join() {
-                    Ok(rx) => {
-                        self.runner_state = RunnerState::Stopped(rx);
-                    }
-                    Err(_) => {
-                        self.runner_state = RunnerState::Undefined;
-                    }
-                }
+                *state = match handle.join() {
+                    Ok(rx) => RunnerState::Stopped(rx),
+                    Err(_) => RunnerState::Undefined,
+                };
             }
             RunnerState::Undefined => {}
         }
     }
 
-    pub(crate) fn disconnect_client(&mut self) {
+    pub(crate) fn disconnect_client(&self) {
         if self.connected.load(Ordering::Acquire) {
             self.connected.store(false, Ordering::Release);
             self.sender.close();
@@ -490,22 +493,23 @@ impl Server {
     }
 
     pub(crate) fn is_running(&self) -> bool {
-        self.listening().is_some()
+        self.address().is_some()
     }
 
     /// Returns the address the server listens on while it is running.
     ///
-    /// With port 0 this is the port the system assigned.
+    /// With port 0 this is the port the system assigned. While `stop` is
+    /// joining the server thread this waits for it, unless `stop` has already
+    /// signalled the thread.
     pub(crate) fn address(&self) -> Option<SocketAddrV4> {
-        self.listening().map(|listening| listening.bound)
-    }
-
-    fn listening(&self) -> Option<&Listening> {
-        match &self.runner_state {
+        if self.stop_event.is_set() {
+            return None;
+        }
+        match &*self.runner_state.lock() {
             RunnerState::Running(handle, listening)
                 if !handle.is_finished() && !self.stop_event.is_set() =>
             {
-                Some(listening)
+                Some(listening.bound)
             }
             _ => None,
         }
@@ -775,5 +779,36 @@ impl Server {
 impl Drop for Server {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::sync::mpsc;
+
+    use super::*;
+
+    /// `stop` holds the runner lock while it joins the server thread, and the
+    /// front-ends call it under a shared lock. The calls a connected client
+    /// needs must not wait for it.
+    #[test]
+    fn client_calls_do_not_wait_for_a_stop_in_progress() {
+        let server = Arc::new(Server::new(None));
+        let stopping = server.runner_state.lock();
+
+        let (done, finished) = mpsc::channel();
+        let caller = server.clone();
+        thread::spawn(move || {
+            caller.update(None).unwrap();
+            caller.is_connected();
+            caller.disconnect_client();
+            let _ = done.send(());
+        });
+        assert!(
+            finished.recv_timeout(Duration::from_secs(2)).is_ok(),
+            "a client call waited for the stop"
+        );
+        drop(stopping);
     }
 }

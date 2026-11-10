@@ -452,7 +452,7 @@ impl CServer {
         self.states()?;
         let address = SocketAddrV4::new(ip.unwrap_or(Ipv4Addr::LOCALHOST), port);
         self.core
-            .write()
+            .read()
             .start(address, token)
             .map_err(|error| match error {
                 StartError::InvalidState(message) => Error::new(ErrorCode::InvalidState, message),
@@ -467,12 +467,12 @@ impl CServer {
 
     /// Stops listening and disconnects the client.
     pub fn stop(&self) {
-        self.core.write().stop();
+        self.core.read().stop();
     }
 
     /// Disconnects the current client and keeps listening.
     pub fn disconnect_client(&self) {
-        self.core.write().disconnect_client();
+        self.core.read().disconnect_client();
     }
 
     /// Returns whether the server is listening.

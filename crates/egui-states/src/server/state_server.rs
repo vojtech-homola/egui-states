@@ -194,7 +194,7 @@ impl StateServer {
         let addr = SocketAddrV4::new(ip_addr.unwrap_or(Ipv4Addr::LOCALHOST), port);
         self.inner
             .server
-            .write()
+            .read()
             .start(addr, token)
             .map_err(|error| ServerError::new(error.to_string()))?;
         self.start_signal_workers();
@@ -203,12 +203,12 @@ impl StateServer {
 
     /// Stops listening and disconnects the current client.
     pub fn stop(&self) {
-        self.inner.server.write().stop();
+        self.inner.server.read().stop();
     }
 
     /// Disconnects the current client while leaving the server running.
     pub fn disconnect_client(&self) {
-        self.inner.server.write().disconnect_client();
+        self.inner.server.read().disconnect_client();
     }
 
     /// Returns whether the server is listening.

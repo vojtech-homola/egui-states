@@ -282,34 +282,42 @@ impl StateServerCore {
         Ok(())
     }
 
+    // The lifecycle calls run without the GIL: `stop` joins the server
+    // thread, and the others wait for a `stop` in progress, so callbacks can
+    // still call into the server meanwhile.
+
     #[pyo3(signature = (port, ip_addr=None, token=None))]
-    fn start(&self, port: u16, ip_addr: Option<[u8; 4]>, token: Option<String>) -> PyResult<()> {
+    fn start(
+        &self,
+        py: Python,
+        port: u16,
+        ip_addr: Option<[u8; 4]>,
+        token: Option<String>,
+    ) -> PyResult<()> {
         let addr = match ip_addr {
             Some(addr) => {
                 SocketAddrV4::new(Ipv4Addr::new(addr[0], addr[1], addr[2], addr[3]), port)
             }
             None => SocketAddrV4::new(Ipv4Addr::LOCALHOST, port),
         };
-        self.server
-            .write()
-            .start(addr, token)
+        py.detach(|| self.server.read().start(addr, token))
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))
     }
 
-    fn address(&self) -> Option<((u8, u8, u8, u8), u16)> {
+    fn address(&self, py: Python) -> Option<((u8, u8, u8, u8), u16)> {
         // A tuple, not `[u8; 4]`, which PyO3 would convert to `bytes`.
-        self.server.read().address().map(|addr| {
+        py.detach(|| self.server.read().address()).map(|addr| {
             let [a, b, c, d] = addr.ip().octets();
             ((a, b, c, d), addr.port())
         })
     }
 
-    fn stop(&self) {
-        self.server.write().stop();
+    fn stop(&self, py: Python) {
+        py.detach(|| self.server.read().stop());
     }
 
-    fn is_running(&self) -> bool {
-        self.server.read().is_running()
+    fn is_running(&self, py: Python) -> bool {
+        py.detach(|| self.server.read().is_running())
     }
 
     fn is_connected(&self) -> bool {
@@ -317,7 +325,7 @@ impl StateServerCore {
     }
 
     fn disconnect_client(&self) {
-        self.server.write().disconnect_client();
+        self.server.read().disconnect_client();
     }
 
     fn start_web(&self, py: Python) -> PyResult<()> {
@@ -1428,7 +1436,7 @@ mod tests {
             let server = core.borrow(py);
             let id = server.add_data_multi("root.data".to_string(), 0).unwrap();
             server.finalize(py).unwrap();
-            server.start(port, Some([127, 0, 0, 1]), None).unwrap();
+            server.start(py, port, Some([127, 0, 0, 1]), None).unwrap();
             id
         });
         let client = silent_client(port);
@@ -1492,7 +1500,7 @@ mod tests {
             drop(client);
             producer.join().unwrap().unwrap();
             waiting.join().unwrap().unwrap();
-            Python::attach(|py| core.borrow(py).stop());
+            Python::attach(|py| core.borrow(py).stop(py));
         }
     }
 }
