@@ -11,6 +11,7 @@ use crate::image_transport::{
     serialize_image_multi_header,
 };
 use crate::serialization::{FastVec, MSG_SIZE_THRESHOLD, TRANSFER_CHUNK_SIZE};
+use crate::server_core::error::CoreError;
 use crate::server_core::image_core_common::{
     ImageData, checked_fill_size, checked_image_rect, checked_image_size, pack_image_set,
     pack_image_update, write_all_new, write_all_new_stride, write_rectangle,
@@ -451,7 +452,7 @@ impl ImageMulti {
         image: ImageData,
         update: bool,
         force: bool,
-    ) -> Result<(), String> {
+    ) -> Result<(), CoreError> {
         checked_fill_size(image.size)?;
         checked_image_rect(origin, image.size)?;
         let to_send = if self.transfer.is_connected() {
@@ -471,13 +472,13 @@ impl ImageMulti {
         let stored = inner
             .images
             .get_mut(&index)
-            .ok_or_else(|| "ImageMulti index not found.".to_string())?;
+            .ok_or_else(|| CoreError::not_found("ImageMulti index not found."))?;
         let end_row = origin[0].checked_add(image.size[0]);
         let end_column = origin[1].checked_add(image.size[1]);
         if end_row.is_none_or(|end| end > stored.size[0])
             || end_column.is_none_or(|end| end > stored.size[1])
         {
-            return Err(format!("ImageMulti index {} update exceeds bounds", index));
+            return Err(format!("ImageMulti index {} update exceeds bounds", index).into());
         }
         unsafe {
             write_rectangle(
@@ -501,7 +502,8 @@ impl ImageMulti {
         let generation = self.transfer.generation();
         drop(inner);
         self.transfer
-            .send_or_buffer_update(lock, index, rect, &mut to_send, force, generation)
+            .send_or_buffer_update(lock, index, rect, &mut to_send, force, generation)?;
+        Ok(())
     }
 
     pub(crate) fn remove_index(&self, index: u32, update: bool) -> Result<(), String> {
@@ -702,7 +704,9 @@ mod tests {
                     images.set_image(7, data(), false),
                     images.set_image(9, data(), false),
                     images.set_all_image(7, size, [0; 4], false),
-                    images.update_image(7, &[0, 0], data(), false, false),
+                    images
+                        .update_image(7, &[0, 0], data(), false, false)
+                        .map_err(String::from),
                     pack_set_data(1, 7, &data(), false).map(|_| ()),
                     pack_fill_data(1, 7, [size[0] as u32, size[1] as u32], [0; 4], false)
                         .map(|_| ()),

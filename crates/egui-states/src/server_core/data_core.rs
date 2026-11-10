@@ -7,6 +7,7 @@ use crate::data_transport::{DataHeader, DataType, MultiDataHeader, TransportType
 use crate::event::Event;
 use crate::hashing::NoHashMap;
 use crate::serialization::{FastVec, TRANSFER_CHUNK_SIZE};
+use crate::server_core::error::CoreError;
 use crate::server_core::sender::MessageSender;
 use crate::server_core::server::{Acknowledge, SyncTrait};
 use crate::server_core::transfer::{Chunk, chunk_transfer};
@@ -448,17 +449,16 @@ impl DataMulti {
         Ok(())
     }
 
-    pub(crate) fn add(&self, index: u32, data: DataHolder, update: bool) -> Result<(), String> {
+    pub(crate) fn add(&self, index: u32, data: DataHolder, update: bool) -> Result<(), CoreError> {
         check_data_type(&data, self.data_type, self.item_size)?;
         let slice = unsafe { std::slice::from_raw_parts(data.data, data.data_size) };
 
         let _producer = self.producer.lock();
         let generation = {
             let mut w = self.storage.write();
-            let entry = w
-                .values
-                .get_mut(&index)
-                .ok_or_else(|| format!("DataMulti index {} does not exist", index))?;
+            let entry = w.values.get_mut(&index).ok_or_else(|| {
+                CoreError::not_found(format!("DataMulti index {} does not exist", index))
+            })?;
             entry.0.extend_from_slice(slice);
             entry.1 += data.count;
             w.sync.sendable(&self.connected)
@@ -487,17 +487,16 @@ impl DataMulti {
         data_index: usize,
         data: DataHolder,
         update: bool,
-    ) -> Result<(), String> {
+    ) -> Result<(), CoreError> {
         check_data_type(&data, self.data_type, self.item_size)?;
         let slice = unsafe { std::slice::from_raw_parts(data.data, data.data_size) };
 
         let _producer = self.producer.lock();
         let generation = {
             let mut w = self.storage.write();
-            let value = w
-                .values
-                .get_mut(&index)
-                .ok_or_else(|| format!("DataMulti index {} does not exist", index))?;
+            let value = w.values.get_mut(&index).ok_or_else(|| {
+                CoreError::not_found(format!("DataMulti index {} does not exist", index))
+            })?;
             if data_index
                 .checked_add(data.count)
                 .is_none_or(|end| end > value.1)
@@ -505,7 +504,7 @@ impl DataMulti {
                 return Err(format!(
                     "Replace range out of bounds for DataMulti index {}: data_index {} + data count {} exceeds current size {}",
                     index, data_index, data.count, value.1
-                ));
+                ).into());
             }
             let byte_index = data_index * self.item_size;
             value.0[byte_index..byte_index + data.data_size].copy_from_slice(slice);
@@ -535,23 +534,22 @@ impl DataMulti {
         data_index: usize,
         size: usize,
         update: bool,
-    ) -> Result<(), String> {
+    ) -> Result<(), CoreError> {
         if size == 0 {
-            return Err("Invalid remove size: size must be greater than 0".to_string());
+            return Err("Invalid remove size: size must be greater than 0".into());
         }
 
         let _producer = self.producer.lock();
         let generation = {
             let mut w = self.storage.write();
-            let value = w
-                .values
-                .get_mut(&index)
-                .ok_or_else(|| format!("DataMulti index {} does not exist", index))?;
+            let value = w.values.get_mut(&index).ok_or_else(|| {
+                CoreError::not_found(format!("DataMulti index {} does not exist", index))
+            })?;
             if data_index.checked_add(size).is_none_or(|end| end > value.1) {
                 return Err(format!(
                     "Remove range out of bounds for DataMulti index {}: data_index {} + size {} exceeds current size {}",
                     index, data_index, size, value.1
-                ));
+                ).into());
             }
             let byte_index = data_index * self.item_size;
             value
@@ -571,13 +569,13 @@ impl DataMulti {
         Ok(())
     }
 
-    pub(crate) fn clear(&self, index: u32, update: bool) -> Result<(), String> {
+    pub(crate) fn clear(&self, index: u32, update: bool) -> Result<(), CoreError> {
         let _producer = self.producer.lock();
         let mut w = self.storage.write();
         let value = w
             .values
             .get_mut(&index)
-            .ok_or_else(|| "Index not found".to_string())?;
+            .ok_or_else(|| CoreError::not_found("Index not found"))?;
         value.0.clear();
         value.1 = 0;
 
@@ -1238,10 +1236,14 @@ mod transfer_tests {
             3 => data.remove(start, values.len().max(1), false),
             4 => data.clear(false),
             5 => multi.set(key, holder(&values), false),
-            6 => multi.add(key, holder(&values), false),
-            7 => multi.replace(key, key_start, holder(&values), false),
-            8 => multi.remove(key, key_start, values.len().max(1), false),
-            9 => multi.clear(key, false),
+            6 => multi.add(key, holder(&values), false).map_err(String::from),
+            7 => multi
+                .replace(key, key_start, holder(&values), false)
+                .map_err(String::from),
+            8 => multi
+                .remove(key, key_start, values.len().max(1), false)
+                .map_err(String::from),
+            9 => multi.clear(key, false).map_err(String::from),
             10 => multi.remove_index(key, false),
             _ => multi.reset(false),
         };
