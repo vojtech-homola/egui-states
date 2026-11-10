@@ -785,7 +785,7 @@ fn run_signal_worker(
         let error_handler = server.error_handler.read().clone();
         drop(server);
 
-        for entry in callbacks {
+        for entry in callbacks.iter() {
             let data = data.clone();
             let previous = previous.clone();
             let result = catch_unwind(AssertUnwindSafe(|| (entry.callback)(data, previous)));
@@ -1402,7 +1402,7 @@ mod tests {
         let handle = server.add_typed_callback_previous(id, move |_: i32, _: i32| {
             flag.store(true, Ordering::Relaxed);
         });
-        let entry = server.inner.callbacks.get(id).remove(0);
+        let entry = server.inner.callbacks.get(id)[0].clone();
 
         // Exactly what the worker passes for a change claimed before registration.
         assert!(
