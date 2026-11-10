@@ -243,6 +243,60 @@ impl RunnerState {
     }
 }
 
+/// The settings a server reads when it starts, as every front-end passes
+/// them.
+pub(crate) struct ServerConfig {
+    /// The application version clients must present, if any.
+    version: Option<u64>,
+    /// `None` disables the heartbeat.
+    heartbeat: Option<Heartbeat>,
+    /// The absolute directory of the web page that `start_web` serves.
+    web_path: Option<PathBuf>,
+    origins: Arc<OriginPolicy>,
+}
+
+impl ServerConfig {
+    /// Checks the settings.
+    ///
+    /// A relative `web_path` is resolved against the current directory now,
+    /// so a later change of the current directory does not move the page; the
+    /// directory itself is not read here. `allowed_origins` are the browser
+    /// pages that may connect besides pages the server serves itself on an
+    /// IP address or local network name: `scheme://host[:port]` patterns,
+    /// where `*` matches any scheme, part of the host, or port.
+    pub(crate) fn new(
+        version: Option<u64>,
+        heartbeat: Option<Heartbeat>,
+        web_path: Option<&Path>,
+        allowed_origins: &[String],
+    ) -> Result<Self, String> {
+        let web_path = web_path
+            .map(|path| {
+                std::path::absolute(path)
+                    .map_err(|e| format!("invalid web page path {}: {e}", path.display()))
+            })
+            .transpose()?;
+        Ok(Self {
+            version,
+            heartbeat,
+            web_path,
+            origins: Arc::new(OriginPolicy::new(allowed_origins)?),
+        })
+    }
+
+    /// The defaults: the default heartbeat, no web page and the default
+    /// browser access.
+    #[cfg(any(feature = "c_abi", test))]
+    pub(crate) fn with_version(version: Option<u64>) -> Self {
+        Self {
+            version,
+            heartbeat: Some(Heartbeat::default()),
+            web_path: None,
+            origins: Arc::default(),
+        }
+    }
+}
+
 pub(crate) struct Server {
     connected: Arc<AtomicBool>,
     stop_event: Event,
@@ -250,11 +304,8 @@ pub(crate) struct Server {
     states: StatesList,
     states_server: Option<ServerStatesList>,
     signals: SignalsManager,
-    version: Option<u64>,
-    web_path: Option<PathBuf>,
+    config: ServerConfig,
     web: WebSlot,
-    origins: Arc<OriginPolicy>,
-    heartbeat: Option<Heartbeat>,
 
     /// Held by `start` and `stop` for their whole run, including the join of
     /// the server thread, so they never overlap. Nothing that a connected
@@ -301,7 +352,7 @@ fn listen(
 }
 
 impl Server {
-    pub(crate) fn new(version: Option<u64>) -> Self {
+    pub(crate) fn new(config: ServerConfig) -> Self {
         let connected = Arc::new(AtomicBool::new(false));
         let (sender, rx) = MessageSender::new();
         let signals = SignalsManager::new();
@@ -313,42 +364,23 @@ impl Server {
             states: StatesList::default(),
             states_server: None,
             signals,
-            version,
-            web_path: None,
+            config,
             web: WebSlot::default(),
-            origins: Arc::default(),
-            heartbeat: Some(Heartbeat::default()),
             runner_state: Mutex::new(RunnerState::Stopped(rx)),
         }
     }
 
     /// Sets the heartbeat used from the next [`Self::start`]; `None` disables it.
+    #[cfg(feature = "c_abi")]
     pub(crate) fn set_heartbeat(&mut self, heartbeat: Option<Heartbeat>) {
-        self.heartbeat = heartbeat;
+        self.config.heartbeat = heartbeat;
     }
 
-    /// Sets the web page directory that `start_web` loads and serves.
-    ///
-    /// A relative path is resolved against the current directory now, so a
-    /// later change of the current directory does not move the page. The
-    /// directory itself is not read here.
-    pub(crate) fn set_web_path(&mut self, path: Option<&Path>) -> Result<(), String> {
-        self.web_path = path
-            .map(|path| {
-                std::path::absolute(path)
-                    .map_err(|e| format!("invalid web page path {}: {e}", path.display()))
-            })
-            .transpose()?;
-        Ok(())
-    }
-
-    /// Sets which browser pages may connect, besides pages served by the
-    /// server itself on an IP address or local network name.
-    ///
-    /// `origins` are `scheme://host[:port]` patterns, where `*` matches any
-    /// scheme, part of the host, or port. Applies from the next start.
+    /// Sets which browser pages may connect from the next start; see
+    /// [`ServerConfig::new`].
+    #[cfg(feature = "c_abi")]
     pub(crate) fn set_allowed_origins(&mut self, origins: &[String]) -> Result<(), String> {
-        self.origins = Arc::new(OriginPolicy::new(origins)?);
+        self.config.origins = Arc::new(OriginPolicy::new(origins)?);
         Ok(())
     }
 
@@ -410,7 +442,7 @@ impl Server {
                 let values = states_server.clone();
                 let signals = self.signals.clone();
                 let web = self.web.clone();
-                let heartbeat = self.heartbeat;
+                let heartbeat = self.config.heartbeat;
 
                 let listening = Listening {
                     requested: addr,
@@ -418,9 +450,9 @@ impl Server {
                     token: token.clone(),
                 };
                 let handshake = core::Handshake {
-                    version: self.version,
+                    version: self.config.version,
                     token,
-                    origins: self.origins.clone(),
+                    origins: self.config.origins.clone(),
                 };
 
                 let server_thread = thread::Builder::new().name("StatesServer".to_string());
@@ -534,7 +566,7 @@ impl Server {
 
     /// Returns the configured absolute web page directory, served or not.
     pub(crate) fn web_path(&self) -> Option<PathBuf> {
-        self.web_path.clone()
+        self.config.web_path.clone()
     }
 
     pub(crate) fn update(&self, duration: Option<f32>) -> Result<(), ()> {
@@ -794,7 +826,7 @@ mod tests {
     /// needs must not wait for it.
     #[test]
     fn client_calls_do_not_wait_for_a_stop_in_progress() {
-        let server = Arc::new(Server::new(None));
+        let server = Arc::new(Server::new(ServerConfig::with_version(None)));
         let stopping = server.runner_state.lock();
 
         let (done, finished) = mpsc::channel();

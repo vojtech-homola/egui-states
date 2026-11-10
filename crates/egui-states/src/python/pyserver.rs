@@ -24,7 +24,7 @@ use crate::python::{
 use crate::server_core::data_core::{Data, DataMulti};
 use crate::server_core::data_take_core::{DataMultiTake, DataTake};
 use crate::server_core::heartbeat::{self, Heartbeat};
-use crate::server_core::server::{Server, StateRef};
+use crate::server_core::server::{Server, ServerConfig, StateRef};
 use crate::server_core::signals::{self, Claim, SignalsManager};
 use crate::server_core::values_core::{SignalCore, ValueCore, ValueStaticCore, ValueTakeCore};
 use crate::server_core::web::{LoadError, WebSite};
@@ -182,14 +182,9 @@ impl StateServerCore {
     ) -> PyResult<Self> {
         let heartbeat = Heartbeat::from_secs(heartbeat_interval, heartbeat_timeout)
             .map_err(PyValueError::new_err)?;
-        let mut server = Server::new(version);
-        server.set_heartbeat(heartbeat);
-        server
-            .set_web_path(web_path.as_deref())
+        let config = ServerConfig::new(version, heartbeat, web_path.as_deref(), &allowed_origins)
             .map_err(PyValueError::new_err)?;
-        server
-            .set_allowed_origins(&allowed_origins)
-            .map_err(PyValueError::new_err)?;
+        let server = Server::new(config);
         let signals = server.get_signals_manager();
 
         let mut types = NoHashMap::default();

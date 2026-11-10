@@ -20,7 +20,7 @@ use crate::server_core::heartbeat::Heartbeat;
 use crate::server_core::image_core::Image as CoreImage;
 use crate::server_core::image_multi_core::ImageMulti as CoreImageMulti;
 use crate::server_core::map_core::ValueMap as CoreMap;
-use crate::server_core::server::Server as CoreServer;
+use crate::server_core::server::{Server as CoreServer, ServerConfig};
 use crate::server_core::signals::{
     CLIENT_MESSAGE_ID, Claim, ON_CONNECT_ID, ON_DISCONNECT_ID, SignalsManager as CoreSignalsManager,
 };
@@ -132,14 +132,14 @@ impl StateServer {
     pub fn with_options(options: ServerOptions) -> Result<Self> {
         let heartbeat = Heartbeat::new(options.heartbeat_interval, options.heartbeat_timeout)
             .map_err(ServerError::new)?;
-        let mut server = CoreServer::new(options.version);
-        server.set_heartbeat(heartbeat);
-        server
-            .set_web_path(options.web_path.as_deref())
-            .map_err(ServerError::new)?;
-        server
-            .set_allowed_origins(&options.allowed_origins)
-            .map_err(ServerError::new)?;
+        let config = ServerConfig::new(
+            options.version,
+            heartbeat,
+            options.web_path.as_deref(),
+            &options.allowed_origins,
+        )
+        .map_err(ServerError::new)?;
+        let server = CoreServer::new(config);
         let signals = server.get_signals_manager();
 
         let error_handler = options.error_handler.unwrap_or_else(|| {

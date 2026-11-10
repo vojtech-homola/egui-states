@@ -18,7 +18,7 @@ use crate::server_core::image_core::Image;
 use crate::server_core::image_core_common::checked_image_size;
 use crate::server_core::image_multi_core::ImageMulti;
 use crate::server_core::map_core::ValueMap;
-use crate::server_core::server::{Server, StartError};
+use crate::server_core::server::{Server, ServerConfig, StartError};
 use crate::server_core::signals::{
     CLIENT_MESSAGE_ID, Claim, LOGGING_ID, ON_CONNECT_ID, ON_DISCONNECT_ID, SignalsManager,
 };
@@ -160,7 +160,7 @@ impl CServer {
     /// Creates a server. With `version`, clients must present the same
     /// application version during the handshake.
     pub fn new(version: Option<u64>) -> Self {
-        let core = Server::new(version);
+        let core = Server::new(ServerConfig::with_version(version));
         let signals = core.get_signals_manager();
 
         let mut entries = NoHashMap::default();
