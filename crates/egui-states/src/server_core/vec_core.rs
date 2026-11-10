@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use tokio_tungstenite::tungstenite::Bytes;
 
-use crate::collections::{VecHeader, split_collection};
+use crate::collections::{VecHeader, serialize_replacement};
 use crate::serialization::{ServerHeader, check_value_size, serialize};
 use crate::server_core::sender::{MessageSender, SenderData};
 use crate::server_core::server::SyncTrait;
@@ -40,26 +40,21 @@ impl ValueList {
     /// Serializes a whole-list replacement, split into frame-sized messages.
     /// Only the last message requests a UI update.
     fn serialize_all(&self, vec: &[Bytes], update: bool) -> Result<Vec<SenderData>, &'static str> {
-        let chunks = split_collection(vec.iter().map(Bytes::len));
-        let last = chunks.len() - 1;
-        let mut items = vec.iter();
-        let mut messages = Vec::with_capacity(chunks.len());
-        for (i, (part, count, size)) in chunks.into_iter().enumerate() {
-            let header = ServerHeader::ValueVec(
-                self.id,
-                self.type_id,
-                update && i == last,
-                VecHeader::part(part, count),
-                size as u32,
-            );
-            let mut data = serialize(&header).map_err(|_| "Failed to serialize header")?;
-            items
-                .by_ref()
-                .take(count as usize)
-                .for_each(|b| data.extend_from_slice(b));
-            messages.push(data);
-        }
-        Ok(messages)
+        serialize_replacement(
+            vec.iter(),
+            |item| item.len(),
+            |message, item| message.extend_from_slice(item),
+            |part, count, size, update| {
+                ServerHeader::ValueVec(
+                    self.id,
+                    self.type_id,
+                    update,
+                    VecHeader::part(part, count),
+                    size,
+                )
+            },
+            update,
+        )
     }
 
     fn send_all(&self, messages: Vec<SenderData>) {

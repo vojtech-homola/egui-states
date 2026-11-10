@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use tokio_tungstenite::tungstenite::Bytes;
 
-use crate::collections::{MapHeader, split_collection};
+use crate::collections::{MapHeader, serialize_replacement};
 use crate::serialization::{ServerHeader, check_value_size, serialize};
 use crate::server_core::sender::{MessageSender, SenderData};
 use crate::server_core::server::SyncTrait;
@@ -45,26 +45,24 @@ impl ValueMap {
         map: &HashMap<Bytes, Bytes>,
         update: bool,
     ) -> Result<Vec<SenderData>, &'static str> {
-        let chunks = split_collection(map.iter().map(|(k, v)| k.len() + v.len()));
-        let last = chunks.len() - 1;
-        let mut items = map.iter();
-        let mut messages = Vec::with_capacity(chunks.len());
-        for (i, (part, count, size)) in chunks.into_iter().enumerate() {
-            let header = ServerHeader::ValueMap(
-                self.id,
-                self.type_id,
-                update && i == last,
-                MapHeader::part(part, count),
-                size as u32,
-            );
-            let mut data = serialize(&header).map_err(|_| "Failed to serialize header")?;
-            items.by_ref().take(count as usize).for_each(|(k, v)| {
-                data.extend_from_slice(k);
-                data.extend_from_slice(v);
-            });
-            messages.push(data);
-        }
-        Ok(messages)
+        serialize_replacement(
+            map.iter(),
+            |(key, value)| key.len() + value.len(),
+            |message, (key, value)| {
+                message.extend_from_slice(key);
+                message.extend_from_slice(value);
+            },
+            |part, count, size, update| {
+                ServerHeader::ValueMap(
+                    self.id,
+                    self.type_id,
+                    update,
+                    MapHeader::part(part, count),
+                    size,
+                )
+            },
+            update,
+        )
     }
 
     fn send_all(&self, messages: Vec<SenderData>) {

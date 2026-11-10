@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 
-// A whole-collection replacement larger than `MSG_SIZE_THRESHOLD` is split at
+#[cfg(any(feature = "server", feature = "python"))]
+use crate::serialization::{FastVec, ServerHeader, serialize};
+
+// A whole-collection replacement larger than `TRANSFER_CHUNK_SIZE` is split at
 // item boundaries into `Begin`, any number of `Chunk`, and `End`; each carries the
 // item count of its own message. The client applies the collection on `End`.
 
@@ -26,7 +29,6 @@ pub(crate) enum VecHeader {
 }
 
 /// Position of one message in a whole-collection replacement.
-#[cfg(any(feature = "server", feature = "python"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Part {
     All,
@@ -84,6 +86,100 @@ pub(crate) fn split_collection(sizes: impl IntoIterator<Item = usize>) -> Vec<(P
         chunks.last_mut().expect("at least one chunk").0 = Part::End;
     }
     chunks
+}
+
+/// Serializes a whole-collection replacement into messages of at most one
+/// transfer chunk each, split at item boundaries.
+///
+/// `header` builds the message header from the part, its item count, its
+/// payload size and whether it requests a UI update, which only the last
+/// message does; `write` appends one item.
+#[cfg(any(feature = "server", feature = "python"))]
+pub(crate) fn serialize_replacement<I: Iterator + Clone>(
+    items: I,
+    size: impl Fn(&I::Item) -> usize,
+    mut write: impl FnMut(&mut FastVec<32>, I::Item),
+    header: impl Fn(Part, u64, u32, bool) -> ServerHeader,
+    update: bool,
+) -> Result<Vec<FastVec<32>>, &'static str> {
+    let chunks = split_collection(items.clone().map(|item| size(&item)));
+    let last = chunks.len() - 1;
+    let mut items = items;
+    let mut messages = Vec::with_capacity(chunks.len());
+    for (i, (part, count, bytes)) in chunks.into_iter().enumerate() {
+        let header = header(part, count, bytes as u32, update && i == last);
+        let mut message = serialize(&header).map_err(|_| "Failed to serialize header")?;
+        items
+            .by_ref()
+            .take(count as usize)
+            .for_each(|item| write(&mut message, item));
+        messages.push(message);
+    }
+    Ok(messages)
+}
+
+/// A whole-collection replacement being assembled on the client.
+///
+/// The previous collection stays in place until the last part arrives. A
+/// malformed or unexpected part discards the replacement, and a new `Begin`
+/// replaces one that never finished.
+#[cfg(feature = "client")]
+pub(crate) struct Replacement<C>(parking_lot::Mutex<Option<C>>);
+
+#[cfg(feature = "client")]
+impl<C: Default> Replacement<C> {
+    pub(crate) fn new() -> Self {
+        Self(parking_lot::Mutex::new(None))
+    }
+
+    /// Applies one part and returns the complete collection after `All` or
+    /// `End`. `decode` appends `count` items from `data`; `no_begin` gives the
+    /// error for a part without a beginning.
+    pub(crate) fn apply(
+        &self,
+        part: Part,
+        count: u64,
+        data: &[u8],
+        decode: impl Fn(u64, &[u8], &mut C) -> Result<(), String>,
+        no_begin: impl FnOnce() -> String,
+    ) -> Result<Option<C>, String> {
+        let mut pending = self.0.lock();
+        match part {
+            Part::All => {
+                // Decode outside the lock; the caller swaps only on success,
+                // so a malformed payload keeps the previous collection.
+                *pending = None;
+                drop(pending);
+                let mut collection = C::default();
+                decode(count, data, &mut collection)?;
+                return Ok(Some(collection));
+            }
+            Part::Begin => *pending = Some(C::default()),
+            Part::Chunk | Part::End => {}
+        }
+        let Some(collection) = pending.as_mut() else {
+            return Err(no_begin());
+        };
+        if let Err(error) = decode(count, data, collection) {
+            *pending = None;
+            return Err(error);
+        }
+        Ok(if part == Part::End {
+            pending.take()
+        } else {
+            None
+        })
+    }
+
+    /// Drops a replacement cut short by a closed connection.
+    pub(crate) fn clear(&self) {
+        *self.0.lock() = None;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_pending(&self) -> bool {
+        self.0.lock().is_some()
+    }
 }
 
 #[cfg(all(test, any(feature = "server", feature = "python")))]

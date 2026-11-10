@@ -1,13 +1,13 @@
 //! Read-only client mirror of a server-controlled map.
 
-use parking_lot::{Mutex, RwLock};
+use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::Arc;
 
 use serde::Deserialize;
 
-use crate::collections::MapHeader;
+use crate::collections::{MapHeader, Part, Replacement};
 use crate::serialization::{Deserializer, deserialize};
 use crate::typed::Typed;
 
@@ -26,7 +26,7 @@ pub struct MapState<K, V> {
     type_id: u32,
     dict: Arc<RwLock<HashMap<K, V>>>,
     // Items of a chunked replacement received so far; applied on `End`.
-    pending: Arc<Mutex<Option<HashMap<K, V>>>>,
+    pending: Arc<Replacement<HashMap<K, V>>>,
 }
 
 impl<K, V> MapState<K, V>
@@ -39,7 +39,7 @@ where
             name,
             type_id,
             dict: Arc::new(RwLock::new(HashMap::new())),
-            pending: Arc::new(Mutex::new(None)),
+            pending: Arc::new(Replacement::new()),
         }
     }
 
@@ -94,16 +94,18 @@ where
         Ok(())
     }
 
-    /// Adds one chunk to the pending replacement. A malformed or unexpected
-    /// chunk discards the whole replacement and keeps the previous map.
-    fn extend_pending(&self, size: u64, data: &[u8]) -> Result<(), String> {
-        let mut pending = self.pending.lock();
-        let Some(map) = pending.as_mut() else {
-            return Err(format!("Map chunk without a beginning for {}", self.name));
-        };
-        if let Err(error) = self.decode_items(size, data, map) {
-            *pending = None;
-            return Err(error);
+    /// Applies one part of a whole-map replacement.
+    fn replace(&self, part: Part, size: u64, data: &[u8]) -> Result<(), String> {
+        let complete = self.pending.apply(
+            part,
+            size,
+            data,
+            |size, data, map| self.decode_items(size, data, map),
+            || format!("Map chunk without a beginning for {}", self.name),
+        )?;
+        if let Some(map) = complete {
+            // The previous map is dropped after the lock is released.
+            let _previous = std::mem::replace(&mut *self.dict.write(), map);
         }
         Ok(())
     }
@@ -120,26 +122,10 @@ where
         }
 
         match header {
-            MapHeader::All(size) => {
-                // Decode outside the lock and swap only on success, so a malformed
-                // payload keeps the previous map.
-                *self.pending.lock() = None;
-                let mut map = HashMap::new();
-                self.decode_items(size, data, &mut map)?;
-                let _previous = std::mem::replace(&mut *self.dict.write(), map);
-            }
-            MapHeader::Begin(size) => {
-                // A new beginning replaces a transfer that never finished.
-                *self.pending.lock() = Some(HashMap::new());
-                self.extend_pending(size, data)?;
-            }
-            MapHeader::Chunk(size) => self.extend_pending(size, data)?,
-            MapHeader::End(size) => {
-                self.extend_pending(size, data)?;
-                if let Some(map) = self.pending.lock().take() {
-                    let _previous = std::mem::replace(&mut *self.dict.write(), map);
-                }
-            }
+            MapHeader::All(size) => self.replace(Part::All, size, data)?,
+            MapHeader::Begin(size) => self.replace(Part::Begin, size, data)?,
+            MapHeader::Chunk(size) => self.replace(Part::Chunk, size, data)?,
+            MapHeader::End(size) => self.replace(Part::End, size, data)?,
             MapHeader::Set => {
                 let (key, value): (K, V) = deserialize(data).map_err(|e| {
                     format!("Error deserializing dict item for {}: {}", self.name, e)
@@ -157,7 +143,7 @@ where
     }
 
     fn disconnected(&self) {
-        *self.pending.lock() = None;
+        self.pending.clear();
     }
 }
 
@@ -301,12 +287,12 @@ mod tests {
         map.update_map(TYPE_ID, MapHeader::Begin(1), &chunk)
             .unwrap();
         map.disconnected();
-        assert!(map.pending.lock().is_none());
+        assert!(!map.pending.is_pending());
 
         map.update_map(TYPE_ID, MapHeader::Begin(1), &chunk)
             .unwrap();
         map.update_map(TYPE_ID, MapHeader::All(0), &[]).unwrap();
-        assert!(map.pending.lock().is_none());
+        assert!(!map.pending.is_pending());
         assert!(map.update_map(TYPE_ID, MapHeader::End(1), &chunk).is_err());
         assert!(map.get().is_empty());
     }

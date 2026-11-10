@@ -1,11 +1,11 @@
 //! Read-only client mirror of a server-controlled vector.
 
-use parking_lot::{Mutex, RwLock};
+use parking_lot::RwLock;
 use std::sync::Arc;
 
 use serde::Deserialize;
 
-use crate::collections::VecHeader;
+use crate::collections::{Part, Replacement, VecHeader};
 use crate::serialization::{Deserializer, deserialize};
 use crate::typed::Typed;
 
@@ -24,7 +24,7 @@ pub struct VecState<T> {
     type_id: u32,
     list: Arc<RwLock<Vec<T>>>,
     // Items of a chunked replacement received so far; applied on `End`.
-    pending: Arc<Mutex<Option<Vec<T>>>>,
+    pending: Arc<Replacement<Vec<T>>>,
 }
 
 impl<T: Typed + Clone> VecState<T> {
@@ -33,7 +33,7 @@ impl<T: Typed + Clone> VecState<T> {
             name,
             type_id,
             list: Arc::new(RwLock::new(Vec::new())),
-            pending: Arc::new(Mutex::new(None)),
+            pending: Arc::new(Replacement::new()),
         }
     }
 
@@ -78,16 +78,18 @@ impl<T: for<'a> Deserialize<'a>> VecState<T> {
         Ok(())
     }
 
-    /// Appends one chunk to the pending replacement. A malformed or unexpected
-    /// chunk discards the whole replacement and keeps the previous list.
-    fn extend_pending(&self, size: u64, data: &[u8]) -> Result<(), String> {
-        let mut pending = self.pending.lock();
-        let Some(list) = pending.as_mut() else {
-            return Err(format!("List chunk without a beginning for {}", self.name));
-        };
-        if let Err(error) = self.decode_items(size, data, list) {
-            *pending = None;
-            return Err(error);
+    /// Applies one part of a whole-list replacement.
+    fn replace(&self, part: Part, size: u64, data: &[u8]) -> Result<(), String> {
+        let complete = self.pending.apply(
+            part,
+            size,
+            data,
+            |size, data, list| self.decode_items(size, data, list),
+            || format!("List chunk without a beginning for {}", self.name),
+        )?;
+        if let Some(list) = complete {
+            // The previous list is dropped after the lock is released.
+            let _previous = std::mem::replace(&mut *self.list.write(), list);
         }
         Ok(())
     }
@@ -100,26 +102,10 @@ impl<T: for<'a> Deserialize<'a> + Send + Sync> UpdateList for VecState<T> {
         }
 
         match header {
-            VecHeader::All(size) => {
-                // Decode outside the lock and swap only on success, so a malformed
-                // payload keeps the previous list.
-                *self.pending.lock() = None;
-                let mut list = Vec::new();
-                self.decode_items(size, data, &mut list)?;
-                let _previous = std::mem::replace(&mut *self.list.write(), list);
-            }
-            VecHeader::Begin(size) => {
-                // A new beginning replaces a transfer that never finished.
-                *self.pending.lock() = Some(Vec::new());
-                self.extend_pending(size, data)?;
-            }
-            VecHeader::Chunk(size) => self.extend_pending(size, data)?,
-            VecHeader::End(size) => {
-                self.extend_pending(size, data)?;
-                if let Some(list) = self.pending.lock().take() {
-                    let _previous = std::mem::replace(&mut *self.list.write(), list);
-                }
-            }
+            VecHeader::All(size) => self.replace(Part::All, size, data)?,
+            VecHeader::Begin(size) => self.replace(Part::Begin, size, data)?,
+            VecHeader::Chunk(size) => self.replace(Part::Chunk, size, data)?,
+            VecHeader::End(size) => self.replace(Part::End, size, data)?,
             VecHeader::Set(idx) => {
                 let value: T = deserialize(data).map_err(|e| {
                     format!("Error deserializing list item for {}: {}", self.name, e)
@@ -148,7 +134,7 @@ impl<T: for<'a> Deserialize<'a> + Send + Sync> UpdateList for VecState<T> {
     }
 
     fn disconnected(&self) {
-        *self.pending.lock() = None;
+        self.pending.clear();
     }
 }
 
@@ -309,7 +295,7 @@ mod tests {
         list.update_list(TYPE_ID, VecHeader::Begin(1), &items(&[2]))
             .unwrap();
         list.update_list(TYPE_ID, VecHeader::All(0), &[]).unwrap();
-        assert!(list.pending.lock().is_none());
+        assert!(!list.pending.is_pending());
         assert!(
             list.update_list(TYPE_ID, VecHeader::End(1), &items(&[3]))
                 .is_err()
