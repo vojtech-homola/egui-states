@@ -2595,6 +2595,76 @@ mod connection_tests {
         server.stop();
     }
 
+    struct DataTestState {
+        _data: crate::Data<u16>,
+        _multi: crate::DataMulti<u16>,
+    }
+
+    impl crate::State for DataTestState {
+        const NAME: &'static str = "DataTestState";
+
+        fn new(c: &mut impl crate::StatesCreator) -> Self {
+            Self {
+                _data: c.data("data"),
+                _multi: c.data_multi("multi"),
+            }
+        }
+    }
+
+    /// Two producers write the same Data and DataMulti while a client connects
+    /// again and again. A producer in the connect window used to block the
+    /// synchronization, and with it the run loop, so the server could no longer
+    /// be stopped (D1).
+    #[test]
+    fn data_writers_during_reconnects_do_not_block_the_server() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        if crate::test_support::isolated() {
+            return;
+        }
+        let port = free_port();
+        let server = StateServer::new().unwrap();
+        let data = crate::server::Data::<u16>::new(&server, "root.data").unwrap();
+        let multi = crate::server::DataMulti::<u16>::new(&server, "root.multi").unwrap();
+        server.finalize().unwrap();
+        server.start(port, Some(Ipv4Addr::LOCALHOST), None).unwrap();
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let writers: Vec<_> = (0..2_u16)
+            .map(|writer| {
+                let (data, multi, stop) = (data.clone(), multi.clone(), stop.clone());
+                thread::spawn(move || {
+                    let mut round = 0_u16;
+                    while !stop.load(Ordering::Acquire) {
+                        round = round.wrapping_add(1);
+                        data.set(&[writer, round], false).unwrap();
+                        data.add(&[round], false).unwrap();
+                        multi.set(u32::from(writer), &[round], false).unwrap();
+                        multi.add(u32::from(writer), &[round], false).unwrap();
+                    }
+                })
+            })
+            .collect();
+
+        for _ in 0..5 {
+            let (_state, client) =
+                ClientBuilder::<DataTestState>::new(egui::Context::default(), port).build();
+            wait("connection", || {
+                client.connect();
+                server.is_connected()
+            });
+            thread::sleep(Duration::from_millis(50));
+            client.disconnect();
+            wait("disconnect", || !server.is_connected());
+        }
+
+        stop.store(true, Ordering::Release);
+        for writer in writers {
+            writer.join().unwrap();
+        }
+        server.stop();
+    }
+
     /// Like [`a_collection_larger_than_one_frame_reaches_the_client`], for a map
     /// that is already set when the client connects, so the initial sync is split.
     #[test]
