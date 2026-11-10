@@ -8,8 +8,8 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use crate::Typed;
-use crate::server_core::map_core::ValueMap as CoreMap;
-use crate::server_core::vec_core::ValueList as CoreVec;
+use crate::server_core::states::map::ValueMap as CoreMap;
+use crate::server_core::states::vec::ValueList as CoreVec;
 
 use super::state_server::{StateServer, deserialize_bytes, serialize_bytes};
 use super::{Result, ServerError};

@@ -12,24 +12,24 @@ use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 
 use crate::protocol::{deserialize_value, serialize};
-use crate::server_core::data_core::{Data as CoreData, DataMulti as CoreDataMulti};
-use crate::server_core::data_take_core::{
-    DataMultiTake as CoreDataMultiTake, DataTake as CoreDataTake,
-};
-use crate::server_core::heartbeat::Heartbeat;
-use crate::server_core::image_core::Image as CoreImage;
-use crate::server_core::image_multi_core::ImageMulti as CoreImageMulti;
-use crate::server_core::map_core::ValueMap as CoreMap;
+use crate::server_core::http::web::WebSite;
+use crate::server_core::net::heartbeat::Heartbeat;
 use crate::server_core::server::{Server as CoreServer, ServerConfig};
 use crate::server_core::signals::{
     CLIENT_MESSAGE_ID, Claim, ON_CONNECT_ID, ON_DISCONNECT_ID, SignalsManager as CoreSignalsManager,
 };
-use crate::server_core::values_core::{
+use crate::server_core::states::data::{Data as CoreData, DataMulti as CoreDataMulti};
+use crate::server_core::states::data_take::{
+    DataMultiTake as CoreDataMultiTake, DataTake as CoreDataTake,
+};
+use crate::server_core::states::image::multi::ImageMulti as CoreImageMulti;
+use crate::server_core::states::image::single::Image as CoreImage;
+use crate::server_core::states::map::ValueMap as CoreMap;
+use crate::server_core::states::value::{
     SignalCore as CoreSignal, ValueCore as CoreValue, ValueStaticCore as CoreStatic,
     ValueTakeCore as CoreValueTake,
 };
-use crate::server_core::vec_core::ValueList as CoreVec;
-use crate::server_core::web::WebSite;
+use crate::server_core::states::vec::ValueList as CoreVec;
 use crate::{ObjectType, Typed};
 
 use super::callbacks::{CallbackHandle, CallbackRegistry};

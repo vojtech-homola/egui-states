@@ -17,9 +17,9 @@ use tokio_tungstenite::tungstenite::http::StatusCode;
 use tokio_tungstenite::tungstenite::{Message, protocol::WebSocketConfig};
 
 use crate::protocol::WEBSOCKET_MAX_SIZE;
-use crate::server_core::origin::OriginPolicy;
+use crate::server_core::http::origin::OriginPolicy;
+use crate::server_core::http::web::{self, Dispatch, WebSite};
 use crate::server_core::signals::SignalsManager;
-use crate::server_core::web::{self, Dispatch, WebSite};
 
 /// A frame from the client.
 pub(crate) enum Incoming {

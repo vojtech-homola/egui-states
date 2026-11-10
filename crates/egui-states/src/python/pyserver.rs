@@ -21,16 +21,15 @@ use crate::python::{
     pyimage, pyparsing,
     pytypes::{PyObjectClass, PyObjectType},
 };
-use crate::server_core::data_core::{Data, DataMulti};
-use crate::server_core::data_take_core::{DataMultiTake, DataTake};
-use crate::server_core::heartbeat::{self, Heartbeat};
+use crate::server_core::http::web::{LoadError, WebSite};
+use crate::server_core::net::heartbeat::{self, Heartbeat};
 use crate::server_core::server::{Server, ServerConfig, StateRef};
 use crate::server_core::signals::{self, Claim, SignalsManager};
-use crate::server_core::values_core::{SignalCore, ValueCore, ValueStaticCore, ValueTakeCore};
-use crate::server_core::web::{LoadError, WebSite};
-use crate::server_core::{
-    image_core::Image, image_multi_core::ImageMulti, map_core::ValueMap, vec_core::ValueList,
-};
+use crate::server_core::states::data::{Data, DataMulti};
+use crate::server_core::states::data_take::{DataMultiTake, DataTake};
+use crate::server_core::states::image::{multi::ImageMulti, single::Image};
+use crate::server_core::states::value::{SignalCore, ValueCore, ValueStaticCore, ValueTakeCore};
+use crate::server_core::states::{map::ValueMap, vec::ValueList};
 
 /// A registered state and, where Python converts its values, their type.
 enum PyState {

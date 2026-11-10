@@ -15,7 +15,7 @@ use crate::protocol::image::{
     checked_image_shape, serialize_image_multi_header,
 };
 use crate::protocol::{FastVec, ServerHeader};
-use crate::server_core::image_core_common::{checked_image_rect, checked_image_size};
+use crate::server_core::states::image::common::{checked_image_rect, checked_image_size};
 
 /// The image descriptor the frozen packers read, independent of the live one.
 pub(super) struct ReferenceImage {
@@ -26,7 +26,7 @@ pub(super) struct ReferenceImage {
     pub data: *const u8,
 }
 
-// Frozen copy of `server_core/data_core.rs::pack_data_chunked`.
+// Frozen copy of `server_core/states/data.rs::pack_data_chunked`.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn reference_data(
     id: u64,
@@ -95,7 +95,7 @@ pub(super) fn reference_data(
     Ok(messages)
 }
 
-// Frozen copy of `server_core/data_take_core.rs::pack_data_take_chunked`.
+// Frozen copy of `server_core/states/data_take.rs::pack_data_take_chunked`.
 pub(super) fn reference_data_take(
     id: u64,
     data: &[u8],
@@ -165,7 +165,7 @@ pub(super) fn reference_data_take(
     Ok(messages)
 }
 
-// Frozen copy of `server_core/data_take_core.rs::pack_data_multi_take_chunked`.
+// Frozen copy of `server_core/states/data_take.rs::pack_data_multi_take_chunked`.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn reference_data_multi_take(
     id: u64,
@@ -223,7 +223,7 @@ pub(super) fn reference_data_multi_take(
     Ok(messages)
 }
 
-// Frozen copy of `server_core/image_core.rs::pack_set_data_chunked`.
+// Frozen copy of `server_core/states/image/single.rs::pack_set_data_chunked`.
 pub(super) fn reference_image_set(
     id: u64,
     image: &ReferenceImage,
@@ -317,7 +317,7 @@ pub(super) fn reference_image_set(
     }
 }
 
-// Frozen copy of `server_core/image_core.rs::pack_update_data_chunked`.
+// Frozen copy of `server_core/states/image/single.rs::pack_update_data_chunked`.
 pub(super) fn reference_image_update(
     id: u64,
     origin: &[usize; 2],
@@ -392,7 +392,7 @@ pub(super) fn reference_image_update(
     }
 }
 
-// Frozen copy of `server_core/image_multi_core.rs::pack_set_data_chunked`.
+// Frozen copy of `server_core/states/image/multi.rs::pack_set_data_chunked`.
 pub(super) fn reference_image_multi_set(
     id: u64,
     index: u32,
@@ -486,7 +486,7 @@ pub(super) fn reference_image_multi_set(
     }
 }
 
-// Frozen copy of `server_core/image_multi_core.rs::pack_update_data_chunked`.
+// Frozen copy of `server_core/states/image/multi.rs::pack_update_data_chunked`.
 pub(super) fn reference_image_multi_update(
     id: u64,
     index: u32,
@@ -569,12 +569,12 @@ pub(super) fn reference_image_multi_update(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::server_core::data_core::pack_data_chunked;
-    use crate::server_core::data_take_core::{
+    use crate::server_core::states::data::pack_data_chunked;
+    use crate::server_core::states::data_take::{
         pack_data_multi_take_chunked, pack_data_take_chunked,
     };
-    use crate::server_core::image_core::{self, ImageData};
-    use crate::server_core::image_multi_core;
+    use crate::server_core::states::image::multi as image_multi_core;
+    use crate::server_core::states::image::single::{self as image_core, ImageData};
 
     type Messages = Vec<(Vec<u8>, bool)>;
 

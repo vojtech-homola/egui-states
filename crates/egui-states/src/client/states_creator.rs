@@ -6,18 +6,22 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use crate::State;
-use crate::client::atomics::{Atomic, AtomicStatic};
-use crate::client::data::{Data, DataMulti, UpdateData, UpdateMultiData, private::GetDataType};
-use crate::client::data_take::{DataMultiTake, DataTake, UpdateDataMultiTake, UpdateDataTake};
-use crate::client::image::{Image, ImageMulti};
-use crate::client::initial_value::InitialValue;
 use crate::client::messages::MessageSender;
-use crate::client::value_map::{MapState, UpdateMap};
-use crate::client::value_vec::{UpdateList, VecState};
-use crate::client::values::{
+use crate::client::states::atomics::{Atomic, AtomicStatic};
+use crate::client::states::data::{
+    Data, DataMulti, UpdateData, UpdateMultiData, private::GetDataType,
+};
+use crate::client::states::data_take::{
+    DataMultiTake, DataTake, UpdateDataMultiTake, UpdateDataTake,
+};
+use crate::client::states::image::{Image, ImageMulti};
+use crate::client::states::initial_value::InitialValue;
+use crate::client::states::map::{MapState, UpdateMap};
+use crate::client::states::values::{
     GetQueueType, Signal, Static, StaticAtomic, UpdateValue, UpdateValueTake, Value, ValueAtomic,
     ValueTake,
 };
+use crate::client::states::vec::{UpdateList, VecState};
 use crate::hashing::{NoHashMap, StableHasher, generate_value_id};
 use crate::typed::{ObjectType, Typed};
 

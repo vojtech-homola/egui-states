@@ -3,9 +3,9 @@
 use std::sync::Arc;
 
 use crate::protocol::image::{ImageType, checked_image_bytes};
-use crate::server_core::image_core::{Image as CoreImage, ImageData};
-use crate::server_core::image_core_common::checked_fill_size;
-use crate::server_core::image_multi_core::ImageMulti as CoreImageMulti;
+use crate::server_core::states::image::common::checked_fill_size;
+use crate::server_core::states::image::multi::ImageMulti as CoreImageMulti;
+use crate::server_core::states::image::single::{Image as CoreImage, ImageData};
 
 use super::state_server::StateServer;
 use super::{Result, ServerError};

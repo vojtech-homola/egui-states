@@ -86,20 +86,22 @@ mod server_core;
 
 #[cfg(feature = "client")]
 pub use client::{
-    atomics::{Atomic, AtomicLock, AtomicLockStatic, AtomicStatic, FallbackLock, UpdateLock},
     client::ClientBuilder,
     client::{Client, ConnectionState},
-    data::{Data, DataMulti},
-    data_take::{DataMultiTake, DataTake},
-    image::{Image, ImageMulti},
-    initial_value::{InitValue, InitialValue},
-    states_creator::StatesCreator,
-    value_map::MapState,
-    value_vec::VecState,
-    values::{
-        Diff, DiffAtomic, GetQueueType, NoQueue, Queue, Signal, Static, StaticAtomic, Value,
-        ValueAtomic, ValueTake,
+    states::{
+        atomics::{Atomic, AtomicLock, AtomicLockStatic, AtomicStatic, FallbackLock, UpdateLock},
+        data::{Data, DataMulti},
+        data_take::{DataMultiTake, DataTake},
+        image::{Image, ImageMulti},
+        initial_value::{InitValue, InitialValue},
+        map::MapState,
+        values::{
+            Diff, DiffAtomic, GetQueueType, NoQueue, Queue, Signal, Static, StaticAtomic, Value,
+            ValueAtomic, ValueTake,
+        },
+        vec::VecState,
     },
+    states_creator::StatesCreator,
 };
 
 /// A root or nested group of client-side states.

@@ -3,8 +3,8 @@ use std::sync::Arc;
 use bytes::Bytes;
 
 use crate::protocol::ClientHeader;
-use crate::server_core::heartbeat::Activity;
-use crate::server_core::transport::{FrameSource, Incoming};
+use crate::server_core::net::heartbeat::Activity;
+use crate::server_core::net::transport::{FrameSource, Incoming};
 
 const COPY_SIZE: usize = 1024; // 1 KB
 
@@ -105,7 +105,7 @@ mod tests {
             .build()
             .unwrap();
         runtime.block_on(async {
-            let (client, opened) = crate::server_core::transport::memory::pair().await;
+            let (client, opened) = crate::server_core::net::transport::memory::pair().await;
             let mut truncated = postcard::to_stdvec(&ClientHeader::Value(7, 3, true, 5)).unwrap();
             truncated.push(1);
             let mut later = postcard::to_stdvec(&ClientHeader::Ack(31)).unwrap();

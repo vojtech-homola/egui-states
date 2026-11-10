@@ -5,9 +5,9 @@ use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use crate::client::atomics::{Atomic, AtomicLock, AtomicLockStatic, AtomicStatic};
 use crate::client::client::print_error;
 use crate::client::messages::{ChannelMessage, MessageSender};
+use crate::client::states::atomics::{Atomic, AtomicLock, AtomicLockStatic, AtomicStatic};
 use crate::protocol::{check_value_size, deserialize, to_message};
 
 /// Report a value that cannot be sent, locally and to the server.

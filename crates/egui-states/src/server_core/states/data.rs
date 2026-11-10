@@ -8,7 +8,7 @@ use crate::hashing::NoHashMap;
 use crate::protocol::data::{DataHeader, DataType, MultiDataHeader, TransportType};
 use crate::protocol::{FastVec, TRANSFER_CHUNK_SIZE};
 use crate::server_core::error::CoreError;
-use crate::server_core::sender::MessageSender;
+use crate::server_core::net::sender::MessageSender;
 use crate::server_core::server::{Acknowledge, SyncTrait};
 use crate::server_core::transfer::{Chunk, chunk_transfer};
 
@@ -754,7 +754,7 @@ pub(crate) fn pack_data(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn pack_data_chunked(
+pub(in crate::server_core) fn pack_data_chunked(
     id: u64,
     data: &[u8],
     transport_type: TransportType,
@@ -806,7 +806,7 @@ mod tests {
     }
 
     /// Every message queued so far, as plain bytes.
-    fn queued(receiver: &mut crate::server_core::sender::MessageReceiver) -> Vec<Vec<u8>> {
+    fn queued(receiver: &mut crate::server_core::net::sender::MessageReceiver) -> Vec<Vec<u8>> {
         let mut messages = Vec::new();
         while let Ok(Some((message, _))) = receiver.try_recv() {
             messages.push(contents(&message));
@@ -1109,16 +1109,16 @@ mod tests {
 #[cfg(all(test, feature = "client"))]
 mod transfer_tests {
     use super::*;
-    use crate::client::data::{
+    use crate::client::messages::{MessageSender as ClientSender, MessagesParser};
+    use crate::client::states::data::{
         Data as ClientData, DataMulti as ClientMulti, UpdateData, UpdateMultiData,
     };
-    use crate::client::messages::{MessageSender as ClientSender, MessagesParser};
     use crate::protocol::{ClientHeader, ServerHeader};
-    use crate::server_core::core::{Handshake, Session, run};
+    use crate::server_core::net::session::{Handshake, Session, run};
+    use crate::server_core::net::transport::memory::{self, MemoryClient, MemoryConnector};
+    use crate::server_core::net::transport::{Incoming, Outgoing};
     use crate::server_core::server::ServerStatesList;
     use crate::server_core::signals::SignalsManager;
-    use crate::server_core::transport::memory::{self, MemoryClient, MemoryConnector};
-    use crate::server_core::transport::{Incoming, Outgoing};
 
     #[test]
     fn real_numeric_chunks_publish_complete_single_and_sparse_data() {

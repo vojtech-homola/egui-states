@@ -5,12 +5,12 @@
 
 use bytes::Bytes;
 
-use crate::client::data::{Data, UpdateData};
 use crate::client::messages::MessageSender;
+use crate::client::states::data::{Data, UpdateData};
 use crate::protocol::data::{DataHeader, DataType, TransportType};
 use crate::protocol::image::ImageType;
-use crate::server_core::data_core::pack_data;
-use crate::server_core::image_core::{ImageData, pack_set_data};
+use crate::server_core::states::data::pack_data;
+use crate::server_core::states::image::single::{ImageData, pack_set_data};
 
 /// A pixel layout accepted by the server and sent to the client.
 #[derive(Clone, Copy, Debug)]
@@ -81,7 +81,7 @@ pub fn server_to_rgba(pixels: &[u8], format: PixelFormat, rgba: &mut Vec<u8>) {
     let count = pixels.len() / image_type.bytes_per_pixel();
     assert_eq!(rgba.len(), count * 4);
     let image = ImageData::packed(pixels, [1, count], image_type);
-    crate::server_core::image_core_common::store_rgba(rgba, &image, false);
+    crate::server_core::states::image::common::store_rgba(rgba, &image, false);
 }
 
 /// Builds the client texture image for `pixels`, as a complete image set does.
@@ -91,7 +91,7 @@ pub fn client_color_image(
     format: PixelFormat,
 ) -> egui::ColorImage {
     // The client works in egui's `[width, height]` order.
-    crate::client::image::create_color_image(
+    crate::client::states::image::create_color_image(
         "bench",
         [size[1], size[0]],
         format.image_type(),

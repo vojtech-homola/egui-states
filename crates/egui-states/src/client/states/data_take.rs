@@ -5,8 +5,8 @@ use std::sync::Arc;
 use bytes::Bytes;
 use parking_lot::{Mutex, RwLock};
 
-use crate::client::data::{BatchBuffer, elements, private};
 use crate::client::messages::{ChannelMessage, MessageSender};
+use crate::client::states::data::{BatchBuffer, elements, private};
 use crate::hashing::NoHashMap;
 use crate::protocol::data::{DataTakeHeader, DataType};
 

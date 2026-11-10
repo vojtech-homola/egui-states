@@ -6,7 +6,7 @@ use bytes::Bytes;
 
 use crate::protocol::collections::{VecHeader, serialize_replacement};
 use crate::protocol::{ServerHeader, check_value_size, serialize};
-use crate::server_core::sender::{MessageSender, SenderData};
+use crate::server_core::net::sender::{MessageSender, SenderData};
 use crate::server_core::server::SyncTrait;
 
 pub(crate) struct ValueList {
@@ -178,7 +178,7 @@ mod tests {
 
     /// Returns `(header kind, item count, update, payload bytes)` per sent message.
     fn sent(
-        receiver: &mut crate::server_core::sender::MessageReceiver,
+        receiver: &mut crate::server_core::net::sender::MessageReceiver,
     ) -> Vec<(&'static str, u64, bool, usize)> {
         let mut messages = Vec::new();
         while let Ok(Some((message, _))) = receiver.try_recv() {

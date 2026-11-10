@@ -4,20 +4,20 @@ use std::hash::{Hash, Hasher};
 use serde::{Deserialize, Serialize};
 
 use crate::State;
-use crate::client::atomics::{Atomic, AtomicStatic};
-use crate::client::data::{Data, DataMulti, private::GetDataType};
-use crate::client::data_take::{DataMultiTake, DataTake};
-use crate::client::image::{Image, ImageMulti};
-use crate::client::initial_value::{InitValue, InitialValue};
+use crate::client::states::atomics::{Atomic, AtomicStatic};
+use crate::client::states::data::{Data, DataMulti, private::GetDataType};
+use crate::client::states::data_take::{DataMultiTake, DataTake};
+use crate::client::states::image::{Image, ImageMulti};
+use crate::client::states::initial_value::{InitValue, InitialValue};
 
 use crate::client::messages::MessageSender;
+use crate::client::states::map::MapState;
+use crate::client::states::values::{
+    GetQueueType, Signal, Static, StaticAtomic, Value, ValueAtomic, ValueTake,
+};
+use crate::client::states::vec::VecState;
 use crate::client::states_creator::{
     self, StatesCreator, hash_id, hash_id_kind, hash_id_type, state_path,
-};
-use crate::client::value_map::MapState;
-use crate::client::value_vec::VecState;
-use crate::client::values::{
-    GetQueueType, Signal, Static, StaticAtomic, Value, ValueAtomic, ValueTake,
 };
 use crate::hashing::StableHasher;
 use crate::protocol::data::DataType;

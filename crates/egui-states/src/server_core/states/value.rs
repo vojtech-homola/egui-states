@@ -6,7 +6,7 @@ use bytes::Bytes;
 
 use crate::event::Event;
 use crate::protocol::{ServerHeader, check_value_size};
-use crate::server_core::sender::MessageSender;
+use crate::server_core::net::sender::MessageSender;
 use crate::server_core::server::{Acknowledge, SyncTrait};
 use crate::server_core::signals::SignalsManager;
 
@@ -296,7 +296,7 @@ impl SignalCore {
 mod tests {
     use super::*;
     use crate::protocol::VALUE_MAX_SIZE;
-    use crate::server_core::sender::MessageReceiver;
+    use crate::server_core::net::sender::MessageReceiver;
 
     const ID: u64 = 40;
     const TYPE_ID: u32 = 7;

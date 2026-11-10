@@ -11,14 +11,14 @@ use tokio::time::{Instant, Interval, MissedTickBehavior, interval_at, timeout_at
 use crate::PROTOCOL_VERSION;
 use crate::event::Event;
 use crate::protocol::{MAX_MSG_COUNT, MSG_SIZE_THRESHOLD, ServerHeader, serialize};
-use crate::server_core::heartbeat::{Activity, Heartbeat};
-use crate::server_core::origin::OriginPolicy;
-use crate::server_core::sender::{MessageReceiver, MessageSender, SenderData};
+use crate::server_core::http::origin::OriginPolicy;
+use crate::server_core::http::web::{WebSite, WebSlot};
+use crate::server_core::net::heartbeat::{Activity, Heartbeat};
+use crate::server_core::net::sender::{MessageReceiver, MessageSender, SenderData};
+use crate::server_core::net::socket_reader::{ClientMessage, SocketReader};
+use crate::server_core::net::transport::{FrameSink, FrameSource, Listener, Opened, Outgoing};
 use crate::server_core::server::ServerStatesList;
 use crate::server_core::signals::SignalsManager;
-use crate::server_core::socket_reader::{ClientMessage, SocketReader};
-use crate::server_core::transport::{FrameSink, FrameSource, Listener, Opened, Outgoing};
-use crate::server_core::web::{WebSite, WebSlot};
 
 enum ChannelHolder {
     Transfer(JoinHandle<MessageReceiver>),
@@ -718,9 +718,9 @@ mod run_tests {
 
     use super::*;
     use crate::protocol::{ClientHeader, FastVec};
+    use crate::server_core::net::transport::Incoming;
+    use crate::server_core::net::transport::memory::{self, MemoryClient, MemoryConnector};
     use crate::server_core::server::{Acknowledge, SyncTrait};
-    use crate::server_core::transport::Incoming;
-    use crate::server_core::transport::memory::{self, MemoryClient, MemoryConnector};
 
     /// Fails only its first connection sync.
     struct FailFirstSync(AtomicUsize);

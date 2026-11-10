@@ -6,7 +6,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use crate::Typed;
-use crate::server_core::values_core::{SignalCore, ValueCore, ValueStaticCore, ValueTakeCore};
+use crate::server_core::states::value::{SignalCore, ValueCore, ValueStaticCore, ValueTakeCore};
 
 use super::callbacks::CallbackHandle;
 use super::state_server::{StateServer, WeakServer, deserialize_bytes, serialize_bytes};

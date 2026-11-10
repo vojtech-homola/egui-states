@@ -10,12 +10,12 @@ use crate::protocol::image::{
     ImageHeader, ImageType, checked_image_bounds, checked_image_bytes, checked_image_shape,
 };
 use crate::protocol::{FastVec, MSG_SIZE_THRESHOLD, TRANSFER_CHUNK_SIZE};
-pub(crate) use crate::server_core::image_core_common::ImageData;
-use crate::server_core::image_core_common::{
+use crate::server_core::net::sender::MessageSender;
+use crate::server_core::server::{Acknowledge, SyncTrait};
+pub(crate) use crate::server_core::states::image::common::ImageData;
+use crate::server_core::states::image::common::{
     checked_fill_size, pack_image_set, pack_image_update, store_rgba, write_rectangle,
 };
-use crate::server_core::sender::MessageSender;
-use crate::server_core::server::{Acknowledge, SyncTrait};
 
 enum Buffer {
     Set(Vec<(FastVec<32>, bool)>),
@@ -421,7 +421,7 @@ pub(crate) fn pack_set_data(
     pack_set_data_chunked(id, image, update, TRANSFER_CHUNK_SIZE)
 }
 
-pub(super) fn pack_set_data_chunked(
+pub(in crate::server_core) fn pack_set_data_chunked(
     id: u64,
     image: &ImageData,
     update: bool,
@@ -448,7 +448,7 @@ fn pack_update_data(
     pack_update_data_chunked(id, origin, image, update, MSG_SIZE_THRESHOLD)
 }
 
-pub(super) fn pack_update_data_chunked(
+pub(in crate::server_core) fn pack_update_data_chunked(
     id: u64,
     origin: &[usize; 2],
     image: &ImageData,
@@ -476,7 +476,7 @@ mod tests {
     use tokio::sync::mpsc::error::TryRecvError;
 
     use super::*;
-    use crate::server_core::sender::MessageReceiver;
+    use crate::server_core::net::sender::MessageReceiver;
 
     fn new_image(is_connected: bool) -> (Arc<Image>, Arc<AtomicBool>, MessageReceiver) {
         let connected = Arc::new(AtomicBool::new(is_connected));
@@ -853,8 +853,8 @@ mod tests {
 #[cfg(all(test, feature = "client"))]
 mod packing_tests {
     use super::*;
-    use crate::client::image::Image as ClientImage;
     use crate::client::messages::{MessageSender as ClientSender, MessagesParser};
+    use crate::client::states::image::Image as ClientImage;
 
     #[test]
     fn real_image_set_and_update_chunks_preserve_pixels_and_publication_boundaries() {

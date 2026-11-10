@@ -7,9 +7,9 @@ use crate::event::Event;
 use crate::hashing::NoHashMap;
 use crate::protocol::data::{DataMultiTakeHeader, DataTakeHeader, DataType};
 use crate::protocol::{FastVec, TRANSFER_CHUNK_SIZE};
-use crate::server_core::data_core::{DataSlice, SyncState, check_data_type};
-use crate::server_core::sender::MessageSender;
+use crate::server_core::net::sender::MessageSender;
 use crate::server_core::server::{Acknowledge, SyncTrait};
+use crate::server_core::states::data::{DataSlice, SyncState, check_data_type};
 use crate::server_core::transfer::{Chunk, chunk_transfer};
 
 // DataTake --------------------------------------------------
@@ -387,7 +387,7 @@ fn pack_take(
     )
 }
 
-pub(super) fn pack_data_take_chunked(
+pub(in crate::server_core) fn pack_data_take_chunked(
     id: u64,
     data: &[u8],
     data_count: u64,
@@ -425,7 +425,7 @@ fn pack_data_multi_take(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn pack_data_multi_take_chunked(
+pub(in crate::server_core) fn pack_data_multi_take_chunked(
     id: u64,
     index: u32,
     data: &[u8],
@@ -454,7 +454,7 @@ mod tests {
         }
     }
 
-    fn count(receiver: &mut crate::server_core::sender::MessageReceiver) -> usize {
+    fn count(receiver: &mut crate::server_core::net::sender::MessageReceiver) -> usize {
         let mut count = 0;
         while let Ok(Some(_)) = receiver.try_recv() {
             count += 1;
@@ -565,10 +565,10 @@ mod tests {
 #[cfg(all(test, feature = "client"))]
 mod transfer_tests {
     use super::*;
-    use crate::client::data_take::{
+    use crate::client::messages::{MessageSender as ClientSender, MessagesParser};
+    use crate::client::states::data_take::{
         DataMultiTake as ClientMulti, DataTake as ClientTake, UpdateDataMultiTake, UpdateDataTake,
     };
-    use crate::client::messages::{MessageSender as ClientSender, MessagesParser};
     use crate::protocol::ServerHeader;
 
     #[test]

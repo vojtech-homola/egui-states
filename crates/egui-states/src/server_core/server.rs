@@ -16,19 +16,19 @@ use crate::event::Event;
 use crate::hashing::{MAX_RESERVED_ID, NoHashMap, generate_value_id};
 use crate::protocol::data::DataType;
 use crate::protocol::{ServerHeader, check_value_size, serialize};
-use crate::server_core::core;
-use crate::server_core::data_core::{Data, DataMulti};
-use crate::server_core::data_take_core::{DataMultiTake, DataTake};
-use crate::server_core::heartbeat::Heartbeat;
-use crate::server_core::image_core::Image;
-use crate::server_core::image_multi_core::ImageMulti;
-use crate::server_core::map_core::ValueMap;
-use crate::server_core::origin::OriginPolicy;
-use crate::server_core::sender::{MessageReceiver, MessageSender};
+use crate::server_core::http::origin::OriginPolicy;
+use crate::server_core::http::web::{WebSite, WebSlot};
+use crate::server_core::net::heartbeat::Heartbeat;
+use crate::server_core::net::sender::{MessageReceiver, MessageSender};
+use crate::server_core::net::session;
 use crate::server_core::signals::SignalsManager;
-use crate::server_core::values_core::{SignalCore, ValueCore, ValueStaticCore, ValueTakeCore};
-use crate::server_core::vec_core::ValueList;
-use crate::server_core::web::{WebSite, WebSlot};
+use crate::server_core::states::data::{Data, DataMulti};
+use crate::server_core::states::data_take::{DataMultiTake, DataTake};
+use crate::server_core::states::image::multi::ImageMulti;
+use crate::server_core::states::image::single::Image;
+use crate::server_core::states::map::ValueMap;
+use crate::server_core::states::value::{SignalCore, ValueCore, ValueStaticCore, ValueTakeCore};
+use crate::server_core::states::vec::ValueList;
 
 pub(crate) trait SyncTrait: Sync + Send {
     fn sync(&self) -> Result<(), ()>;
@@ -449,7 +449,7 @@ impl Server {
                     bound,
                     token: token.clone(),
                 };
-                let handshake = core::Handshake {
+                let handshake = session::Handshake {
                     version: self.config.version,
                     token,
                     origins: self.config.origins.clone(),
@@ -459,14 +459,14 @@ impl Server {
                 stop_event.clear();
                 let thread_handle_res = server_thread.spawn(move || {
                     runtime.block_on(async move {
-                        let session = core::Session {
+                        let session = session::Session {
                             sender,
                             connected,
                             values,
                             signals,
                             heartbeat,
                         };
-                        core::run(listener, rx, stop_event, handshake, web, session).await
+                        session::run(listener, rx, stop_event, handshake, web, session).await
                     })
                 });
 

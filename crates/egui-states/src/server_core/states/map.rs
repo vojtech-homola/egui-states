@@ -7,7 +7,7 @@ use bytes::Bytes;
 
 use crate::protocol::collections::{MapHeader, serialize_replacement};
 use crate::protocol::{ServerHeader, check_value_size, serialize};
-use crate::server_core::sender::{MessageSender, SenderData};
+use crate::server_core::net::sender::{MessageSender, SenderData};
 use crate::server_core::server::SyncTrait;
 
 pub(crate) struct ValueMap {

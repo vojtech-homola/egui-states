@@ -12,12 +12,12 @@ use crate::protocol::image::{
 };
 use crate::protocol::{FastVec, MSG_SIZE_THRESHOLD, TRANSFER_CHUNK_SIZE};
 use crate::server_core::error::CoreError;
-use crate::server_core::image_core_common::{
+use crate::server_core::net::sender::MessageSender;
+use crate::server_core::server::{Acknowledge, SyncTrait};
+use crate::server_core::states::image::common::{
     ImageData, checked_fill_size, checked_image_rect, checked_image_size, pack_image_set,
     pack_image_update, store_rgba, write_rectangle,
 };
-use crate::server_core::sender::MessageSender;
-use crate::server_core::server::{Acknowledge, SyncTrait};
 
 enum Buffer {
     Set(Vec<(FastVec<32>, bool)>),
@@ -574,7 +574,7 @@ fn pack_set_data(
     pack_set_data_chunked(id, index, image, update, TRANSFER_CHUNK_SIZE)
 }
 
-pub(super) fn pack_set_data_chunked(
+pub(in crate::server_core) fn pack_set_data_chunked(
     id: u64,
     index: u32,
     image: &ImageData,
@@ -598,7 +598,7 @@ fn pack_update_data(
     pack_update_data_chunked(id, index, origin, image, update, MSG_SIZE_THRESHOLD)
 }
 
-pub(super) fn pack_update_data_chunked(
+pub(in crate::server_core) fn pack_update_data_chunked(
     id: u64,
     index: u32,
     origin: &[usize; 2],
@@ -624,7 +624,7 @@ mod tests {
     use crate::protocol::ServerHeader;
     #[cfg(feature = "client")]
     use crate::protocol::image::{ImageHeader, ImageSetHeader};
-    use crate::server_core::sender::MessageReceiver;
+    use crate::server_core::net::sender::MessageReceiver;
 
     fn new_image_multi(is_connected: bool) -> (Arc<ImageMulti>, Arc<AtomicBool>, MessageReceiver) {
         let connected = Arc::new(AtomicBool::new(is_connected));

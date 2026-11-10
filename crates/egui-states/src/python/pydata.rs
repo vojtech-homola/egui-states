@@ -3,7 +3,7 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 use crate::protocol::data::DataType;
-use crate::server_core::data_core::DataSlice;
+use crate::server_core::states::data::DataSlice;
 
 /// Gets the buffer of a Data argument.
 pub(crate) fn data_buffer(data: &Bound<PyAny>) -> PyResult<PyUntypedBuffer> {
