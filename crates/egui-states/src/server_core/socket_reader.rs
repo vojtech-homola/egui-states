@@ -74,69 +74,31 @@ impl SocketReader {
 
         let (header, size) = ClientHeader::deserialize(&data[pointer..])
             .map_err(|_| Some("Failed to deserialize message header".to_string()))?;
-        match header {
-            ClientHeader::Value(id, type_id, signal, data_size) => {
-                let all_size = size + data_size as usize;
-                if all_size > data.len() - pointer {
-                    return Err(Some("Incomplete data received".to_string()));
-                }
-                let header_data = if slice {
-                    data.slice(pointer + size..pointer + all_size)
-                } else {
-                    Bytes::copy_from_slice(&data[pointer + size..pointer + all_size])
-                };
-                if pointer + all_size < data.len() {
-                    self.previous = Some((data, pointer + all_size, slice));
-                }
-                Ok(ClientMessage::Value(id, type_id, signal, header_data))
-            }
-            ClientHeader::Signal(id, type_id, data_size) => {
-                let all_size = size + data_size as usize;
-                if all_size > data.len() - pointer {
-                    return Err(Some("Incomplete data received".to_string()));
-                }
-                let header_data = if slice {
-                    data.slice(pointer + size..pointer + all_size)
-                } else {
-                    Bytes::copy_from_slice(&data[pointer + size..pointer + all_size])
-                };
-                if pointer + all_size < data.len() {
-                    self.previous = Some((data, pointer + all_size, slice));
-                }
-                Ok(ClientMessage::Signal(id, type_id, header_data))
-            }
-            ClientHeader::Ack(id) => {
-                if pointer + size < data.len() {
-                    self.previous = Some((data, pointer + size, slice));
-                }
-                Ok(ClientMessage::Ack(id))
-            }
-            ClientHeader::Message(data_size) => {
-                let all_size = size + data_size as usize;
-                if all_size > data.len() - pointer {
-                    return Err(Some("Incomplete data received".to_string()));
-                }
-                let message_data = if slice {
-                    data.slice(pointer + size..pointer + all_size)
-                } else {
-                    Bytes::copy_from_slice(&data[pointer + size..pointer + all_size])
-                };
-                if pointer + all_size < data.len() {
-                    self.previous = Some((data, pointer + all_size, slice));
-                }
-                Ok(ClientMessage::Message(message_data))
-            }
-            ClientHeader::Handshake(protocol_version, client_version, hash) => {
-                if pointer + size < data.len() {
-                    self.previous = Some((data, pointer + size, slice));
-                }
-                Ok(ClientMessage::Handshake(
-                    protocol_version,
-                    client_version,
-                    hash,
-                ))
-            }
+        let start = pointer + size;
+        let end = start
+            .checked_add(header.payload_len() as usize)
+            .filter(|end| *end <= data.len())
+            .ok_or_else(|| Some("Incomplete data received".to_string()))?;
+        let payload = if slice {
+            data.slice(start..end)
+        } else {
+            Bytes::copy_from_slice(&data[start..end])
+        };
+        if end < data.len() {
+            self.previous = Some((data, end, slice));
         }
+
+        Ok(match header {
+            ClientHeader::Value(id, type_id, signal, _) => {
+                ClientMessage::Value(id, type_id, signal, payload)
+            }
+            ClientHeader::Signal(id, type_id, _) => ClientMessage::Signal(id, type_id, payload),
+            ClientHeader::Ack(id) => ClientMessage::Ack(id),
+            ClientHeader::Message(_) => ClientMessage::Message(payload),
+            ClientHeader::Handshake(protocol_version, client_version, hash) => {
+                ClientMessage::Handshake(protocol_version, client_version, hash)
+            }
+        })
     }
 }
 

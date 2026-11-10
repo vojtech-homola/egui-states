@@ -375,6 +375,15 @@ impl ClientHeader {
         FastVec::Heap(data)
     }
 
+    /// Bytes of payload that follow this header in the frame.
+    #[cfg(any(feature = "server", feature = "python"))]
+    pub(crate) fn payload_len(&self) -> u32 {
+        match self {
+            Self::Value(.., size) | Self::Signal(.., size) | Self::Message(size) => *size,
+            Self::Ack(_) | Self::Handshake(..) => 0,
+        }
+    }
+
     #[cfg(any(feature = "server", feature = "python"))]
     #[inline]
     pub fn deserialize(msg: &[u8]) -> Result<(Self, usize), ()> {
