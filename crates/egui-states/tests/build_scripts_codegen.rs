@@ -378,6 +378,17 @@ fn layout_hash_of_a_fixed_schema_is_stable() {
     );
 }
 
+/// Pins the per-kind tags and type ids of every state kind, so a refactor of
+/// registration cannot change the hash of any of them.
+#[test]
+fn layout_hash_of_a_schema_with_every_kind_is_stable() {
+    const GOLDEN: u64 = 11746098588710645841;
+    assert_eq!(
+        ClientBuilder::<AllKinds>::new(egui::Context::default(), 0).get_version_hash(),
+        GOLDEN
+    );
+}
+
 struct NamedLikeServer;
 
 impl State for NamedLikeServer {
