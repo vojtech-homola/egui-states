@@ -257,12 +257,16 @@ impl StateServer {
     /// load that overlaps a reload may combine files of both versions;
     /// reloading the page in the browser resolves it.
     ///
+    /// Files and directories whose names start with `.` (such as `.git` or
+    /// `.env`) are skipped. Symlinks are followed, except a link back to a
+    /// directory that contains it.
+    ///
     /// # Errors
     ///
     /// Returns an error if the server was created without a web page path,
-    /// the path is not a directory, a file cannot be read, or the directory
-    /// does not contain `index.html`. A page already being served is kept in
-    /// that case.
+    /// the path is not a directory, a file cannot be read, the directory
+    /// does not contain `index.html`, or its files exceed 128 MiB. A page
+    /// already being served is kept in that case.
     pub fn start_web(&self) -> Result<()> {
         // Read the files without holding the server lock.
         let path = self.inner.server.read().web_path().ok_or_else(|| {

@@ -262,11 +262,15 @@ class StateServerBase[T: StatesBase]:
         page load that overlaps a reload may combine files of both versions;
         reloading the page in the browser resolves it.
 
+        Files and directories whose names start with ``.`` (such as ``.git``
+        or ``.env``) are skipped. Symlinks are followed, except a link back to
+        a directory that contains it.
+
         Raises:
             RuntimeError: If the server was created without ``web_path``.
             ValueError: If the path is not a directory, a file cannot be read,
-                or the directory does not contain ``index.html``. A page
-                already being served is kept.
+                the directory does not contain ``index.html``, or its files
+                exceed 128 MiB. A page already being served is kept.
         """
         self._server.start_web()
 
