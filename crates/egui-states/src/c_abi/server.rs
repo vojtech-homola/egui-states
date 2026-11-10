@@ -12,6 +12,7 @@ use crate::hashing::{NoHashMap, generate_value_id};
 use crate::serialization::check_value_size;
 use crate::server_core::data_core::{Data, DataMulti};
 use crate::server_core::data_take_core::{DataMultiTake, DataTake};
+use crate::server_core::error::{CoreError, ErrorKind};
 use crate::server_core::heartbeat::Heartbeat;
 use crate::server_core::image_core::Image;
 use crate::server_core::image_core_common::checked_image_size;
@@ -829,11 +830,8 @@ impl CServer {
         force: bool,
     ) -> Result<()> {
         let (name, core) = lookup!(self.states()?, id, ImageMulti(core));
-        if !core.contains(index) {
-            return Err(missing_index(name, index));
-        }
         core.update_image(index, &origin, image.image_data()?, update, force)
-            .map_err(Error::out_of_range)
+            .map_err(keyed(name, index, Error::out_of_range))
     }
 
     /// Removes the image at `index`; a missing index is ignored.
@@ -991,9 +989,8 @@ impl CServer {
     ) -> Result<()> {
         let (name, core, registered) = lookup!(self.states()?, id, DataMulti(core, kind));
         check_kind(name, *registered, kind)?;
-        check_multi_index(name, core, index)?;
         core.add(index, data_holder(kind, data)?, update)
-            .map_err(Error::out_of_range)
+            .map_err(keyed(name, index, Error::out_of_range))
     }
 
     /// Overwrites elements of the buffer at `index` starting at `data_index`.
@@ -1008,9 +1005,8 @@ impl CServer {
     ) -> Result<()> {
         let (name, core, registered) = lookup!(self.states()?, id, DataMulti(core, kind));
         check_kind(name, *registered, kind)?;
-        check_multi_index(name, core, index)?;
         core.replace(index, data_index, data_holder(kind, data)?, update)
-            .map_err(Error::out_of_range)
+            .map_err(keyed(name, index, Error::out_of_range))
     }
 
     /// Removes `count` elements of the buffer at `index` starting at `data_index`.
@@ -1024,16 +1020,18 @@ impl CServer {
     ) -> Result<()> {
         let (name, core, _) = lookup!(self.states()?, id, DataMulti(core, kind));
         check_count(count)?;
-        check_multi_index(name, core, index)?;
-        core.remove(index, data_index, count, update)
-            .map_err(Error::out_of_range)
+        core.remove(index, data_index, count, update).map_err(keyed(
+            name,
+            index,
+            Error::out_of_range,
+        ))
     }
 
     /// Removes every element of the buffer at `index`, keeping the index.
     pub fn data_multi_clear(&self, id: u64, index: u32, update: bool) -> Result<()> {
         let (name, core, _) = lookup!(self.states()?, id, DataMulti(core, kind));
-        check_multi_index(name, core, index)?;
-        core.clear(index, update).map_err(Error::out_of_range)
+        core.clear(index, update)
+            .map_err(keyed(name, index, Error::out_of_range))
     }
 
     /// Removes the buffer at `index`; a missing index is ignored.
@@ -1216,11 +1214,16 @@ fn check_count(count: usize) -> Result<()> {
     Ok(())
 }
 
-fn check_multi_index(name: &str, core: &DataMulti, index: u32) -> Result<()> {
-    if core.get(index, |data| data.is_none()) {
-        return Err(missing_index(name, index));
+/// Maps an error of a keyed core call: a key that is missing when the core
+/// looks for it to [`missing_index`], anything else with `other`.
+///
+/// The core checks the key under its own lock; checking it here first could
+/// race with a concurrent removal and report the wrong error.
+fn keyed(name: &str, index: u32, other: fn(String) -> Error) -> impl Fn(CoreError) -> Error + '_ {
+    move |error| match error.kind {
+        ErrorKind::NotFound => missing_index(name, index),
+        ErrorKind::Other => other(error.message),
     }
-    Ok(())
 }
 
 /// Copies `data` into `out` if it fits; `None` only asks for the size.
@@ -1539,6 +1542,41 @@ mod tests {
             server.map_set(map, &duplicate, false).unwrap_err().code,
             ErrorCode::InvalidArgument
         );
+    }
+
+    /// A key that is missing when the core looks for it is NotFound with the
+    /// C message, for every keyed call. The core checks the key under its own
+    /// lock, so a concurrent removal cannot turn it into another error (D5).
+    #[test]
+    fn missing_keys_are_not_found_in_every_keyed_call() {
+        let server = CServer::new(None);
+        let images = server.add_image_multi("root.images").unwrap();
+        let multi = server.add_data_multi("root.multi", DataKind::U8).unwrap();
+        server.finalize().unwrap();
+
+        let patch = ImageInput {
+            data: &[1],
+            height: 1,
+            width: 1,
+            row_stride: 0,
+            format: crate::c_abi::ImageFormat::Gray,
+        };
+        let results = [
+            server.data_multi_add(multi, 3, DataKind::U8, &[1], false),
+            server.data_multi_replace(multi, 3, DataKind::U8, &[1], 0, false),
+            server.data_multi_remove(multi, 3, 0, 1, false),
+            server.data_multi_clear(multi, 3, false),
+            server.image_multi_update(images, 3, &patch, [0, 0], false, false),
+        ];
+        for result in results {
+            let error = result.unwrap_err();
+            assert_eq!(error.code, ErrorCode::NotFound, "{}", error.message);
+            assert!(
+                error.message.contains("has nothing at index 3"),
+                "{}",
+                error.message
+            );
+        }
     }
 
     #[test]
