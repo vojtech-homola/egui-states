@@ -1,8 +1,30 @@
 use pyo3::buffer::{Element, PyUntypedBuffer};
+use pyo3::exceptions::PyValueError;
+use pyo3::prelude::*;
 
 use crate::data_transport::DataType;
+use crate::server_core::data_core::DataHolder;
 
-pub(crate) fn check_data_type(buffer: &PyUntypedBuffer, data_type: DataType) -> Result<(), String> {
+/// Gets the buffer of a Data argument.
+pub(crate) fn data_buffer(data: &Bound<PyAny>) -> PyResult<PyUntypedBuffer> {
+    PyUntypedBuffer::get(data)
+        .map_err(|_| PyValueError::new_err("Data must be a bytes-like object."))
+}
+
+/// Checks `buffer` against a Data state's element type and views it.
+///
+/// The holder points into `buffer`, which must outlive every use of it.
+pub(crate) fn data_holder(buffer: &PyUntypedBuffer, data_type: DataType) -> PyResult<DataHolder> {
+    check_data_type(buffer, data_type).map_err(PyValueError::new_err)?;
+    Ok(DataHolder {
+        data: buffer.buf_ptr() as *const u8,
+        count: buffer.item_count(),
+        data_size: buffer.len_bytes(),
+        data_type,
+    })
+}
+
+fn check_data_type(buffer: &PyUntypedBuffer, data_type: DataType) -> Result<(), String> {
     if !buffer.is_c_contiguous() {
         return Err("Data buffer must be C-contiguous.".to_string());
     }

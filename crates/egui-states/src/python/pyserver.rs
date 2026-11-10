@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::OnceLock;
 
-use pyo3::buffer::{PyBuffer, PyUntypedBuffer};
+use pyo3::buffer::PyBuffer;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyByteArray, PyDict, PyList};
@@ -16,11 +16,11 @@ use crate::hashing::NoHashMap;
 type SignalEvent<'py> = (u64, Bound<'py, PyAny>, bool, Option<Bound<'py, PyAny>>);
 use crate::python::value_parsing::{ValueCreator, ValueParser};
 use crate::python::{
-    pydata::check_data_type,
+    pydata::{data_buffer, data_holder},
     pyimage, pyparsing,
     pytypes::{PyObjectClass, PyObjectType},
 };
-use crate::server_core::data_core::{Data, DataHolder, DataMulti};
+use crate::server_core::data_core::{Data, DataMulti};
 use crate::server_core::data_take_core::{DataMultiTake, DataTake};
 use crate::server_core::heartbeat::{self, Heartbeat};
 use crate::server_core::server::Server;
@@ -977,18 +977,9 @@ impl StateServerCore {
         data: &Bound<PyAny>,
         update: bool,
     ) -> PyResult<()> {
-        let buffer_untyped = PyUntypedBuffer::get(data)
-            .map_err(|_| PyValueError::new_err("Data must be a bytes-like object."))?;
-
+        let buffer = data_buffer(data)?;
         let data_value = self.inner_data(value_id)?;
-        check_data_type(&buffer_untyped, data_value.data_type).map_err(PyValueError::new_err)?;
-
-        let data_holder = DataHolder {
-            data: buffer_untyped.buf_ptr() as *const u8,
-            count: buffer_untyped.item_count(),
-            data_size: buffer_untyped.len_bytes(),
-            data_type: data_value.data_type,
-        };
+        let data_holder = data_holder(&buffer, data_value.data_type)?;
 
         py.detach(|| {
             data_value
@@ -1004,18 +995,9 @@ impl StateServerCore {
         data: &Bound<PyAny>,
         update: bool,
     ) -> PyResult<()> {
-        let buffer_untyped = PyUntypedBuffer::get(data)
-            .map_err(|_| PyValueError::new_err("Data must be a bytes-like object."))?;
-
+        let buffer = data_buffer(data)?;
         let data_value = self.inner_data(value_id)?;
-        check_data_type(&buffer_untyped, data_value.data_type).map_err(PyValueError::new_err)?;
-
-        let data_holder = DataHolder {
-            data: buffer_untyped.buf_ptr() as *const u8,
-            count: buffer_untyped.item_count(),
-            data_size: buffer_untyped.len_bytes(),
-            data_type: data_value.data_type,
-        };
+        let data_holder = data_holder(&buffer, data_value.data_type)?;
 
         py.detach(|| {
             data_value
@@ -1032,18 +1014,9 @@ impl StateServerCore {
         index: usize,
         update: bool,
     ) -> PyResult<()> {
-        let buffer_untyped = PyUntypedBuffer::get(data)
-            .map_err(|_| PyValueError::new_err("Data must be a bytes-like object."))?;
-
+        let buffer = data_buffer(data)?;
         let data_value = self.inner_data(value_id)?;
-        check_data_type(&buffer_untyped, data_value.data_type).map_err(PyValueError::new_err)?;
-
-        let data_holder = DataHolder {
-            data: buffer_untyped.buf_ptr() as *const u8,
-            count: buffer_untyped.item_count(),
-            data_size: buffer_untyped.len_bytes(),
-            data_type: data_value.data_type,
-        };
+        let data_holder = data_holder(&buffer, data_value.data_type)?;
 
         py.detach(|| {
             data_value
@@ -1085,18 +1058,9 @@ impl StateServerCore {
         update: bool,
         cache: bool,
     ) -> PyResult<()> {
-        let buffer_untyped = PyUntypedBuffer::get(data)
-            .map_err(|_| PyValueError::new_err("Data must be a bytes-like object."))?;
-
+        let buffer = data_buffer(data)?;
         let data_value = self.inner_data_take(value_id)?;
-        check_data_type(&buffer_untyped, data_value.data_type).map_err(PyValueError::new_err)?;
-
-        let data_holder = DataHolder {
-            data: buffer_untyped.buf_ptr() as *const u8,
-            count: buffer_untyped.item_count(),
-            data_size: buffer_untyped.len_bytes(),
-            data_type: data_value.data_type,
-        };
+        let data_holder = data_holder(&buffer, data_value.data_type)?;
 
         py.detach(|| {
             data_value
@@ -1127,18 +1091,9 @@ impl StateServerCore {
         data: &Bound<PyAny>,
         update: bool,
     ) -> PyResult<()> {
-        let buffer_untyped = PyUntypedBuffer::get(data)
-            .map_err(|_| PyValueError::new_err("Data must be a bytes-like object."))?;
-
+        let buffer = data_buffer(data)?;
         let data_value = self.inner_data_multi(value_id)?;
-        check_data_type(&buffer_untyped, data_value.data_type).map_err(PyValueError::new_err)?;
-
-        let data_holder = DataHolder {
-            data: buffer_untyped.buf_ptr() as *const u8,
-            count: buffer_untyped.item_count(),
-            data_size: buffer_untyped.len_bytes(),
-            data_type: data_value.data_type,
-        };
+        let data_holder = data_holder(&buffer, data_value.data_type)?;
 
         py.detach(|| {
             data_value
@@ -1155,18 +1110,9 @@ impl StateServerCore {
         data: &Bound<PyAny>,
         update: bool,
     ) -> PyResult<()> {
-        let buffer_untyped = PyUntypedBuffer::get(data)
-            .map_err(|_| PyValueError::new_err("Data must be a bytes-like object."))?;
-
+        let buffer = data_buffer(data)?;
         let data_value = self.inner_data_multi(value_id)?;
-        check_data_type(&buffer_untyped, data_value.data_type).map_err(PyValueError::new_err)?;
-
-        let data_holder = DataHolder {
-            data: buffer_untyped.buf_ptr() as *const u8,
-            count: buffer_untyped.item_count(),
-            data_size: buffer_untyped.len_bytes(),
-            data_type: data_value.data_type,
-        };
+        let data_holder = data_holder(&buffer, data_value.data_type)?;
 
         py.detach(|| {
             data_value
@@ -1184,18 +1130,9 @@ impl StateServerCore {
         data_index: usize,
         update: bool,
     ) -> PyResult<()> {
-        let buffer_untyped = PyUntypedBuffer::get(data)
-            .map_err(|_| PyValueError::new_err("Data must be a bytes-like object."))?;
-
+        let buffer = data_buffer(data)?;
         let data_value = self.inner_data_multi(value_id)?;
-        check_data_type(&buffer_untyped, data_value.data_type).map_err(PyValueError::new_err)?;
-
-        let data_holder = DataHolder {
-            data: buffer_untyped.buf_ptr() as *const u8,
-            count: buffer_untyped.item_count(),
-            data_size: buffer_untyped.len_bytes(),
-            data_type: data_value.data_type,
-        };
+        let data_holder = data_holder(&buffer, data_value.data_type)?;
 
         py.detach(|| {
             data_value
@@ -1268,18 +1205,9 @@ impl StateServerCore {
         update: bool,
         cache: bool,
     ) -> PyResult<()> {
-        let buffer_untyped = PyUntypedBuffer::get(data)
-            .map_err(|_| PyValueError::new_err("Data must be a bytes-like object."))?;
-
+        let buffer = data_buffer(data)?;
         let data_value = self.inner_data_multi_take(value_id)?;
-        check_data_type(&buffer_untyped, data_value.data_type).map_err(PyValueError::new_err)?;
-
-        let data_holder = DataHolder {
-            data: buffer_untyped.buf_ptr() as *const u8,
-            count: buffer_untyped.item_count(),
-            data_size: buffer_untyped.len_bytes(),
-            data_type: data_value.data_type,
-        };
+        let data_holder = data_holder(&buffer, data_value.data_type)?;
 
         py.detach(|| {
             data_value
