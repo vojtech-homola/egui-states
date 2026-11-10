@@ -65,6 +65,10 @@ mod image_transport;
 mod serialization;
 mod typed;
 
+/// Internal entry points for the benchmarks; not a public API.
+#[cfg(feature = "bench")]
+#[doc(hidden)]
+pub mod bench_support;
 /// Build-time generators for typed Rust and Python server bindings.
 #[cfg(feature = "build_scripts")]
 pub mod build_scripts;

@@ -467,7 +467,7 @@ fn pack_fill_data(
     Ok(vec![(message, false)])
 }
 
-fn pack_set_data(
+pub(crate) fn pack_set_data(
     id: u64,
     image: &ImageData,
     update: bool,

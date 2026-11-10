@@ -626,7 +626,7 @@ fn update_color_image(
     Ok(())
 }
 
-fn create_color_image(
+pub(crate) fn create_color_image(
     name: &str,
     image_size: [usize; 2],
     image_type: ImageType,

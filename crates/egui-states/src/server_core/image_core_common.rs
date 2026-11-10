@@ -30,7 +30,7 @@ pub(crate) fn checked_fill_size(size: [usize; 2]) -> Result<([u32; 2], usize), S
 }
 
 #[inline]
-pub(super) unsafe fn write_all_new(
+pub(crate) unsafe fn write_all_new(
     data: *const u8,
     new_data: *mut u8,
     pixel_count: usize,
