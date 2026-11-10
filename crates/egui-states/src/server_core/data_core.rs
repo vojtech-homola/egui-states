@@ -643,9 +643,11 @@ impl SyncTrait for DataMulti {
         let mut w = self.storage.write();
         w.sync.synchronized();
 
+        // The client keeps its keys across a disconnect; drop the ones removed
+        // meanwhile before sending the current keys.
+        let message = MultiDataHeader::Reset(false).serialize(self.id)?;
+        self.sender.send(message);
         if w.values.is_empty() {
-            let message = MultiDataHeader::Reset(false).serialize(self.id)?;
-            self.sender.send(message);
             self.event.set();
         } else {
             self.event.clear();
@@ -931,7 +933,10 @@ mod tests {
             Some(1),
             false,
         );
-        assert_eq!(queued(&mut receiver), packed(expected.unwrap()));
+        let reset = MultiDataHeader::Reset(false).serialize(5).unwrap();
+        let mut expected = packed(expected.unwrap());
+        expected.insert(0, contents(&reset));
+        assert_eq!(queued(&mut receiver), expected);
     }
 
     /// On a reconnect the reset leaves the event set, so a producer in the
@@ -1025,6 +1030,40 @@ mod tests {
         .unwrap();
         assert!(queued(&mut receiver).is_empty(), "a stale delta was sent");
         data.get(|bytes| assert_eq!(bytes, u16_bytes(&[1, 2])));
+    }
+
+    /// The client keeps its keys across a disconnect, so a key removed while
+    /// disconnected must be dropped by the synchronization (D9).
+    #[test]
+    fn multi_sync_resets_the_client_collection_before_the_keys() {
+        let (sender, mut receiver) = MessageSender::new();
+        let connected = Arc::new(AtomicBool::new(false));
+        let data = DataMulti::new(
+            "root.data".into(),
+            5,
+            DataType::U16,
+            sender,
+            connected.clone(),
+        );
+        data.set(1, holder(&[1]), false).unwrap();
+        data.set(2, holder(&[2]), false).unwrap();
+        data.remove_index(2, false).unwrap();
+
+        connected.store(true, Ordering::Release);
+        data.sync().unwrap();
+        let reset = MultiDataHeader::Reset(false).serialize(5).unwrap();
+        let key = pack_data(
+            5,
+            &u16_bytes(&[1]),
+            TransportType::Set(1),
+            1,
+            DataType::U16,
+            Some(1),
+            false,
+        );
+        let mut expected = packed(key.unwrap());
+        expected.insert(0, contents(&reset));
+        assert_eq!(queued(&mut receiver), expected);
     }
 
     #[test]
@@ -1171,6 +1210,228 @@ mod transfer_tests {
             }
         }
     }
+    /// A deterministic xorshift generator.
+    struct Random(u64);
+
+    impl Random {
+        fn below(&mut self, bound: usize) -> usize {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            (self.0 % bound as u64) as usize
+        }
+
+        fn values(&mut self) -> Vec<u16> {
+            (0..self.below(5))
+                .map(|_| self.below(1000) as u16)
+                .collect()
+        }
+    }
+
+    fn holder(values: &[u16]) -> DataHolder {
+        DataHolder {
+            data: values.as_ptr() as *const u8,
+            count: values.len(),
+            data_size: size_of_val(values),
+            data_type: DataType::U16,
+        }
+    }
+
+    /// One random operation on the shared Data and DataMulti; failures such
+    /// as an out-of-range index are part of the model and ignored.
+    fn random_operation(random: &mut Random, data: &Data, multi: &DataMulti) {
+        let values = random.values();
+        let key = random.below(4) as u32;
+        let len = data.get(|bytes| bytes.len() / 2);
+        let key_len = multi.get(key, |bytes| bytes.map_or(0, |b| b.len() / 2));
+        let start = random.below(len + 1);
+        let key_start = random.below(key_len + 1);
+        let _ = match random.below(12) {
+            0 => data.set(holder(&values), false),
+            1 => data.add(holder(&values), false),
+            2 => data.replace(holder(&values), start, false),
+            3 => data.remove(start, values.len().max(1), false),
+            4 => data.clear(false),
+            5 => multi.set(key, holder(&values), false),
+            6 => multi.add(key, holder(&values), false),
+            7 => multi.replace(key, key_start, holder(&values), false),
+            8 => multi.remove(key, key_start, values.len().max(1), false),
+            9 => multi.clear(key, false),
+            10 => multi.remove_index(key, false),
+            _ => multi.reset(false),
+        };
+    }
+
+    /// The two peers of the model test, connected by their message queues.
+    struct Harness {
+        data: Arc<Data>,
+        multi: Arc<DataMulti>,
+        connected: Arc<AtomicBool>,
+        queue: crate::server_core::sender::MessageReceiver,
+        single: ClientData<u16>,
+        keyed: ClientMulti<u16>,
+        acks: tokio::sync::mpsc::UnboundedReceiver<Option<crate::client::messages::ChannelMessage>>,
+    }
+
+    impl Harness {
+        /// The run loop: drop what was queued for the previous connection,
+        /// mark the connection, then synchronize the states in list order.
+        fn connect(&mut self) {
+            while let Ok(Some(_)) = self.queue.try_recv() {}
+            self.connected.store(true, Ordering::Release);
+            self.data.sync().unwrap();
+            self.multi.sync().unwrap();
+        }
+
+        /// The writer's shutdown: acknowledgements in flight are lost.
+        fn disconnect(&mut self) {
+            self.connected.store(false, Ordering::Release);
+            Acknowledge::reset(&*self.data);
+            Acknowledge::reset(&*self.multi);
+            while let Ok(Some(_)) = self.acks.try_recv() {}
+        }
+
+        /// Delivers one queued frame to the client and the client's
+        /// acknowledgements to the server; returns whether anything moved.
+        fn pump(&mut self) -> bool {
+            use crate::client::messages::ChannelMessage;
+
+            let mut moved = false;
+            if let Ok(Some((message, _))) = self.queue.try_recv() {
+                moved = true;
+                let (mut parser, first) = MessagesParser::from_bytes(message.into_bytes()).unwrap();
+                let mut next = Some(first);
+                while let Some(message) = next {
+                    match message {
+                        ServerMessage::Data(51, _, message) => {
+                            self.single.update_data(message).unwrap()
+                        }
+                        ServerMessage::DataMulti(52, _, DataMultiMessage::Modify(key, message)) => {
+                            self.keyed.update(key, message).unwrap()
+                        }
+                        ServerMessage::DataMulti(52, _, DataMultiMessage::Remove(key)) => {
+                            self.keyed.remove(key)
+                        }
+                        ServerMessage::DataMulti(52, _, DataMultiMessage::Reset) => {
+                            self.keyed.reset()
+                        }
+                        _ => panic!("unexpected server message"),
+                    }
+                    next = parser.next().unwrap();
+                }
+            }
+            while let Ok(Some(message)) = self.acks.try_recv() {
+                if let ChannelMessage::Ack(id) = message {
+                    moved = true;
+                    match id {
+                        51 => self.data.acknowledge(),
+                        52 => self.multi.acknowledge(),
+                        _ => panic!("unexpected acknowledgement {id}"),
+                    }
+                }
+            }
+            moved
+        }
+    }
+
+    /// Producers race connects, acknowledgements and disconnects driven in the
+    /// run loop's order. At rest the real client handles must hold exactly the
+    /// server's data: a change sent both as a delta and inside a
+    /// synchronization (D8), or a key the synchronization left on the client
+    /// (D9), shows up as a difference.
+    #[test]
+    fn producers_and_reconnects_keep_the_client_equal_to_the_server() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let (sender, queue) = MessageSender::new();
+        let connected = Arc::new(AtomicBool::new(false));
+        let (client_sender, acks) = ClientSender::new();
+        let mut harness = Harness {
+            data: Data::new(
+                "data".into(),
+                51,
+                DataType::U16,
+                sender.clone(),
+                connected.clone(),
+            ),
+            multi: DataMulti::new("multi".into(), 52, DataType::U16, sender, connected.clone()),
+            connected,
+            queue,
+            single: ClientData::new("data".into(), 51, client_sender.clone()),
+            keyed: ClientMulti::new("multi".into(), 52, client_sender),
+            acks,
+        };
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let producers: Vec<_> = (0..3_u64)
+            .map(|seed| {
+                let (data, multi) = (harness.data.clone(), harness.multi.clone());
+                let stop = stop.clone();
+                std::thread::spawn(move || {
+                    let mut random = Random(0x9e37_79b9_7f4a_7c15 ^ (seed + 1));
+                    while !stop.load(Ordering::Acquire) {
+                        random_operation(&mut random, &data, &multi);
+                        if random.below(8) == 0 {
+                            std::thread::yield_now();
+                        }
+                    }
+                })
+            })
+            .collect();
+
+        let mut random = Random(0x2545_f491_4f6c_dd1d);
+        const CONNECTIONS: usize = 200;
+        for _ in 0..CONNECTIONS {
+            harness.connect();
+            for _ in 0..random.below(200) {
+                if !harness.pump() {
+                    std::thread::yield_now();
+                }
+            }
+            harness.disconnect();
+            // Let producers change the states while no client is connected.
+            std::thread::sleep(std::time::Duration::from_micros(random.below(300) as u64));
+        }
+        // The last disconnect released every producer waiting for an
+        // acknowledgement, so they all see the stop flag.
+        stop.store(true, Ordering::Release);
+        for producer in producers {
+            producer.join().unwrap();
+        }
+
+        // A final connection, run until nothing moves any more.
+        harness.connect();
+        let mut idle = 0;
+        while idle < 50 {
+            if harness.pump() {
+                idle = 0;
+            } else {
+                idle += 1;
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        }
+
+        let server = harness.data.get(|bytes| bytes.to_vec());
+        let client: Vec<u8> = harness
+            .single
+            .get()
+            .iter()
+            .flat_map(|v| v.to_ne_bytes())
+            .collect();
+        assert_eq!(client, server, "Data diverged");
+        for key in 0..4 {
+            let server = harness.multi.get(key, |bytes| bytes.map(<[u8]>::to_vec));
+            let client = harness.keyed.get(key).map(|values| {
+                values
+                    .iter()
+                    .flat_map(|v| v.to_ne_bytes())
+                    .collect::<Vec<u8>>()
+            });
+            assert_eq!(client, server, "DataMulti key {key} diverged");
+        }
+    }
+
     /// Chunked `Add` and `Replace` transfers must extend and patch the existing
     /// data only after their final chunk, like a chunked `Set`.
     #[test]
