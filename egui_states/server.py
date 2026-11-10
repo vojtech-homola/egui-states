@@ -268,9 +268,12 @@ class StateServerBase[T: StatesBase]:
 
         Raises:
             RuntimeError: If the server was created without ``web_path``.
-            ValueError: If the path is not a directory, a file cannot be read,
-                the directory does not contain ``index.html``, or its files
-                exceed 128 MiB. A page already being served is kept.
+            OSError: If the path or a file below it cannot be read, such as
+                ``FileNotFoundError`` for a missing path. A page already being
+                served is kept.
+            ValueError: If the path is not a directory, the directory does not
+                contain ``index.html``, or its files exceed 128 MiB. A page
+                already being served is kept.
         """
         self._server.start_web()
 

@@ -26,7 +26,7 @@ use crate::server_core::server::Server;
 use crate::server_core::signals::{self, SignalsManager};
 use crate::server_core::value_parsing::{ValueCreator, ValueParser};
 use crate::server_core::values_core::{SignalCore, ValueCore, ValueStaticCore, ValueTakeCore};
-use crate::server_core::web::WebSite;
+use crate::server_core::web::{LoadError, WebSite};
 use crate::server_core::{
     image_core::Image, image_multi_core::ImageMulti, map_core::ValueMap, vec_core::ValueList,
 };
@@ -348,9 +348,11 @@ impl StateServerCore {
             self.server.read().web_path().ok_or_else(|| {
                 PyRuntimeError::new_err("The server was created without web_path.")
             })?;
-        let site = py
-            .detach(|| WebSite::load(&path))
-            .map_err(PyValueError::new_err)?;
+        let site = py.detach(|| WebSite::load(&path)).map_err(|e| match e {
+            // Keeps the kind, so a missing path raises FileNotFoundError.
+            LoadError::Io(e) => PyErr::from(e),
+            LoadError::Invalid(message) => PyValueError::new_err(message),
+        })?;
         self.server.read().set_web(Some(site));
         Ok(())
     }

@@ -264,15 +264,15 @@ impl StateServer {
     /// # Errors
     ///
     /// Returns an error if the server was created without a web page path,
-    /// the path is not a directory, a file cannot be read, the directory
-    /// does not contain `index.html`, or its files exceed 128 MiB. A page
-    /// already being served is kept in that case.
+    /// the path or a file below it cannot be read, the path is not a
+    /// directory, the directory does not contain `index.html`, or its files
+    /// exceed 128 MiB. A page already being served is kept in that case.
     pub fn start_web(&self) -> Result<()> {
         // Read the files without holding the server lock.
         let path = self.inner.server.read().web_path().ok_or_else(|| {
             ServerError::new("no web page path configured; set ServerOptions::web_path")
         })?;
-        let site = WebSite::load(&path).map_err(ServerError::new)?;
+        let site = WebSite::load(&path).map_err(|e| ServerError::new(e.to_string()))?;
         self.inner.server.read().set_web(Some(site));
         Ok(())
     }
@@ -2758,7 +2758,10 @@ mod connection_tests {
         let expected = std::env::current_dir().unwrap().join("not-built-yet");
         assert_eq!(server.web_path(), Some(expected));
         let error = server.start_web().unwrap_err();
-        assert!(error.message().contains("not a directory"), "{error}");
+        assert!(
+            error.message().starts_with("reading ") && error.message().contains("not-built-yet"),
+            "{error}"
+        );
         assert!(!server.is_web_running());
 
         let mut options = ServerOptions::new();

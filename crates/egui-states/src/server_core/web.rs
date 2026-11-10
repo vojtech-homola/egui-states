@@ -1,6 +1,6 @@
 //! Optional static web page served on the same port as the WebSocket.
 //!
-//! When a page is configured, every new connection is peeked (not read) until
+//! While the page is served, every new connection is peeked (not read) until
 //! its HTTP request head is complete. WebSocket upgrades get the untouched
 //! `TcpStream` back, so the WebSocket path keeps its exact stream type and no
 //! wrapper or extra copy is involved. Other requests are answered from an
@@ -43,6 +43,37 @@ struct WebFile {
     etag: String,
 }
 
+/// Why a page directory could not be loaded.
+#[derive(Debug)]
+pub(crate) enum LoadError {
+    /// Reading the file system failed. The error keeps the original kind and
+    /// its message names the path.
+    Io(io::Error),
+    /// The directory was read but cannot be served as a page.
+    Invalid(String),
+}
+
+impl LoadError {
+    /// Returns a mapper that adds `path` to an I/O error message.
+    fn reading(path: &Path) -> impl FnOnce(io::Error) -> Self + '_ {
+        move |e| {
+            Self::Io(io::Error::new(
+                e.kind(),
+                format!("reading {} failed: {e}", path.display()),
+            ))
+        }
+    }
+}
+
+impl std::fmt::Display for LoadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io(e) => e.fmt(f),
+            Self::Invalid(message) => f.write_str(message),
+        }
+    }
+}
+
 /// In-memory snapshot of a static web page directory.
 pub(crate) struct WebSite {
     files: HashMap<String, WebFile>,
@@ -50,20 +81,23 @@ pub(crate) struct WebSite {
 
 impl WebSite {
     /// Loads every file below `root`, which must contain `index.html`.
-    pub(crate) fn load(root: &Path) -> Result<Self, String> {
-        if !root.is_dir() {
-            return Err(format!(
+    pub(crate) fn load(root: &Path) -> Result<Self, LoadError> {
+        if !std::fs::metadata(root)
+            .map_err(LoadError::reading(root))?
+            .is_dir()
+        {
+            return Err(LoadError::Invalid(format!(
                 "web page path {} is not a directory",
                 root.display()
-            ));
+            )));
         }
 
         let files = load_files(root, MAX_PAGE_SIZE)?;
         if !files.contains_key("index.html") {
-            return Err(format!(
+            return Err(LoadError::Invalid(format!(
                 "web page directory {} does not contain index.html",
                 root.display()
-            ));
+            )));
         }
 
         Ok(Self { files })
@@ -80,7 +114,7 @@ impl WebSite {
 /// part of a page and are skipped. Symlinks are followed, except to a
 /// directory that is already being read, which would otherwise repeat
 /// itself. Fails once the files exceed `max_size` bytes.
-fn load_files(root: &Path, max_size: u64) -> Result<HashMap<String, WebFile>, String> {
+fn load_files(root: &Path, max_size: u64) -> Result<HashMap<String, WebFile>, LoadError> {
     let mut loader = Loader {
         files: HashMap::new(),
         ancestors: Vec::new(),
@@ -100,18 +134,17 @@ struct Loader {
 }
 
 impl Loader {
-    fn directory(&mut self, directory: &Path, prefix: &str, depth: usize) -> Result<(), String> {
+    fn directory(&mut self, directory: &Path, prefix: &str, depth: usize) -> Result<(), LoadError> {
         if depth > MAX_DIRECTORY_DEPTH {
-            return Err(format!(
+            return Err(LoadError::Invalid(format!(
                 "web page directory {} is nested too deeply",
                 directory.display()
-            ));
+            )));
         }
 
         // A link to this directory or one of its parents would be read again
         // inside itself; skip it instead.
-        let resolved = std::fs::canonicalize(directory)
-            .map_err(|e| format!("reading directory {} failed: {e}", directory.display()))?;
+        let resolved = std::fs::canonicalize(directory).map_err(LoadError::reading(directory))?;
         if self.ancestors.contains(&resolved) {
             return Ok(());
         }
@@ -121,12 +154,10 @@ impl Loader {
         result
     }
 
-    fn entries(&mut self, directory: &Path, prefix: &str, depth: usize) -> Result<(), String> {
-        let entries = std::fs::read_dir(directory)
-            .map_err(|e| format!("reading directory {} failed: {e}", directory.display()))?;
+    fn entries(&mut self, directory: &Path, prefix: &str, depth: usize) -> Result<(), LoadError> {
+        let entries = std::fs::read_dir(directory).map_err(LoadError::reading(directory))?;
         for entry in entries {
-            let entry = entry
-                .map_err(|e| format!("reading directory {} failed: {e}", directory.display()))?;
+            let entry = entry.map_err(LoadError::reading(directory))?;
             let path = entry.path();
             // Names that are not UTF-8 cannot be addressed by a request path.
             let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
@@ -137,8 +168,7 @@ impl Loader {
             }
             let key = format!("{prefix}{name}");
             // Follows symlinks, so linked files and directories are served too.
-            let metadata = std::fs::metadata(&path)
-                .map_err(|e| format!("reading {} failed: {e}", path.display()))?;
+            let metadata = std::fs::metadata(&path).map_err(LoadError::reading(&path))?;
 
             if metadata.is_dir() {
                 self.directory(&path, &format!("{key}/"), depth + 1)?;
@@ -147,7 +177,7 @@ impl Loader {
                 self.check_size(metadata.len())?;
                 let body = self
                     .read_file(&path, metadata.len())
-                    .map_err(|e| format!("reading {} failed: {e}", path.display()))?;
+                    .map_err(LoadError::reading(&path))?;
                 // The file may have grown since its metadata was read. The read
                 // stops one byte past the limit, so this rejects such a file
                 // without loading all of it.
@@ -186,12 +216,12 @@ impl Loader {
     }
 
     /// Fails if adding `size` bytes would exceed the page size limit.
-    fn check_size(&self, size: u64) -> Result<(), String> {
+    fn check_size(&self, size: u64) -> Result<(), LoadError> {
         if self.size.saturating_add(size) > self.max_size {
-            return Err(format!(
+            return Err(LoadError::Invalid(format!(
                 "web page files exceed the {} MiB limit",
                 self.max_size >> 20
-            ));
+            )));
         }
         Ok(())
     }
@@ -234,10 +264,11 @@ enum Peeked {
     WebSocket,
     Http(RequestHead),
     Invalid,
+    /// The request head exceeds [`MAX_REQUEST_HEAD`] or [`MAX_HEADERS`].
     TooLarge,
 }
 
-/// Outcome of inspecting a new connection while a web page is configured.
+/// Outcome of inspecting a new connection while the web page is served.
 pub(crate) enum Dispatch {
     /// A WebSocket upgrade request; the stream is unread.
     WebSocket(TcpStream),
@@ -311,6 +342,7 @@ async fn peek_request(stream: &TcpStream, buffer: &mut [u8]) -> io::Result<Peeke
                 }
                 previous = size;
             }
+            Err(httparse::Error::TooManyHeaders) => return Ok(Peeked::TooLarge),
             Err(_) => return Ok(Peeked::Invalid),
         }
     }
@@ -424,7 +456,12 @@ fn respond<'a>(head: &RequestHead, site: &'a WebSite) -> Response<'a> {
         _ => return Response::error(405),
     };
     let Some(file) = resolve_path(&head.path).and_then(|path| site.get(&path)) else {
-        return Response::error(404);
+        let mut response = Response::error(404);
+        if is_head {
+            // HEAD responses carry no body; the length still describes a GET.
+            response.body = None;
+        }
+        return response;
     };
 
     if head
@@ -551,11 +588,26 @@ mod tests {
         let dir = tempdir::TempDir::new();
         std::fs::write(dir.path().join("app.js"), "js").unwrap();
         let error = WebSite::load(dir.path()).err().unwrap();
-        assert!(error.contains("index.html"), "{error}");
+        assert!(
+            matches!(&error, LoadError::Invalid(m) if m.contains("index.html")),
+            "{error}"
+        );
 
+        let file = dir.path().join("app.js");
+        let error = WebSite::load(&file).err().unwrap();
+        assert!(
+            matches!(&error, LoadError::Invalid(m) if m.contains("not a directory")),
+            "{error}"
+        );
+
+        // File system failures keep their kind and name the path.
         let missing = dir.path().join("missing");
         let error = WebSite::load(&missing).err().unwrap();
-        assert!(error.contains("not a directory"), "{error}");
+        let LoadError::Io(io_error) = &error else {
+            panic!("expected an I/O error, got {error}");
+        };
+        assert_eq!(io_error.kind(), io::ErrorKind::NotFound);
+        assert!(error.to_string().contains("missing"), "{error}");
 
         let (_dir, site) = site(&[("index.html", "page"), ("assets/app.wasm", "wasm")]);
         assert_eq!(&site.get("index.html").unwrap().body[..], b"page");
@@ -590,7 +642,10 @@ mod tests {
 
         assert_eq!(load_files(dir.path(), 8).unwrap().len(), 2);
         let error = load_files(dir.path(), 7).err().unwrap();
-        assert!(error.contains("limit"), "{error}");
+        assert!(
+            matches!(&error, LoadError::Invalid(m) if m.contains("limit")),
+            "{error}"
+        );
 
         // A file larger than its metadata said is read only one byte past the
         // remaining budget, never in full.
@@ -658,6 +713,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn too_many_headers_is_answered_with_431() {
+        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let mut peer = TcpStream::connect(listener.local_addr().unwrap())
+            .await
+            .unwrap();
+        let mut request = String::from("GET / HTTP/1.1\r\n");
+        for i in 0..=MAX_HEADERS {
+            request.push_str(&format!("X-Header-{i}: 1\r\n"));
+        }
+        request.push_str("\r\n");
+        assert!(request.len() < MAX_REQUEST_HEAD);
+        peer.write_all(request.as_bytes()).await.unwrap();
+        let (stream, _) = listener.accept().await.unwrap();
+
+        let Dispatch::Http(_, request) = dispatch(stream).await.unwrap() else {
+            panic!("expected an HTTP request");
+        };
+        assert!(matches!(request.0, Err(431)));
+    }
+
+    #[tokio::test]
     async fn a_peer_that_stops_reading_releases_the_connection() {
         // Large enough to fill the socket buffers of both peers.
         let page = "x".repeat(64 * 1024 * 1024);
@@ -692,6 +770,12 @@ mod tests {
         let response = respond(&head("HEAD", "/"), &site);
         assert_eq!((response.status, response.content_length), (200, Some(4)));
         assert!(response.body.is_none());
+
+        let response = respond(&head("HEAD", "/missing"), &site);
+        assert_eq!(response.status, 404);
+        assert!(response.content_length.is_some());
+        assert!(response.body.is_none());
+        assert!(respond(&head("GET", "/missing"), &site).body.is_some());
 
         let etag = site.get("index.html").unwrap().etag.clone();
         let mut conditional = head("GET", "/");

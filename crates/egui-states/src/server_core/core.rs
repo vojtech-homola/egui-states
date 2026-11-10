@@ -214,7 +214,7 @@ pub(crate) async fn run(
 
 /// Takes a new connection up to a passed protocol handshake.
 ///
-/// With a web page configured, plain HTTP requests are answered here and
+/// While the web page is served, plain HTTP requests are answered here and
 /// yield `None`. Failures never touch the current client's connection.
 async fn accept_client(
     stream: TcpStream,

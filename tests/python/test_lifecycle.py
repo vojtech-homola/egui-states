@@ -141,6 +141,15 @@ def test_server_serves_web_page_on_its_port(tmp_path):
         without_page.start_web()
     assert not without_page.is_web_running()
 
+    # File system failures raise OSError subclasses; unservable pages ValueError.
+    missing = StatesServer(signals_workers=1, web_path=tmp_path / "missing")
+    with pytest.raises(FileNotFoundError, match="missing"):
+        missing.start_web()
+    not_directory = tmp_path / "file.txt"
+    not_directory.write_text("x")
+    with pytest.raises(ValueError, match="not a directory"):
+        StatesServer(signals_workers=1, web_path=not_directory).start_web()
+
     page = tmp_path / "page"
     page.mkdir()
     index = page / "index.html"
