@@ -128,13 +128,18 @@ fn served_origin(headers: &HeaderMap) -> Option<Origin> {
         Some(headers.get(name)?.to_str().ok()?.split(',').next()?.trim())
     };
     let address = first(X_FORWARDED_HOST).or_else(|| first(header::HOST.as_str()))?;
-    let scheme = first(X_FORWARDED_PROTO).unwrap_or("http");
+    let scheme = first(X_FORWARDED_PROTO)
+        .unwrap_or("http")
+        .to_ascii_lowercase();
+    // Some proxies, such as Traefik, report a WebSocket request's scheme as
+    // `ws` or `wss`; the page that opened it was loaded over HTTP or HTTPS.
+    let scheme = match scheme.as_str() {
+        "ws" => "http".to_string(),
+        "wss" => "https".to_string(),
+        _ => scheme,
+    };
     let (host, port) = split_authority(address)?;
-    Some(Origin {
-        scheme: scheme.to_ascii_lowercase(),
-        host,
-        port,
-    })
+    Some(Origin { scheme, host, port })
 }
 
 /// The port a browser uses for `scheme` when the origin names none.
@@ -368,6 +373,19 @@ mod tests {
                 ("X-Forwarded-Proto", "https"),
                 ("Origin", "https://localhost"),
             ],
+            // Proxies that name the WebSocket scheme instead, like Traefik.
+            vec![
+                ("Host", "127.0.0.1:8091"),
+                ("X-Forwarded-Host", "pc-a.local"),
+                ("X-Forwarded-Proto", "wss"),
+                ("Origin", "https://pc-a.local"),
+            ],
+            vec![
+                ("Host", "127.0.0.1:8091"),
+                ("X-Forwarded-Host", "pc-a.local:8090"),
+                ("X-Forwarded-Proto", "WS"),
+                ("Origin", "http://pc-a.local:8090"),
+            ],
         ] {
             assert_eq!(default.check(&headers(&request)), Ok(()), "{request:?}");
         }
@@ -403,6 +421,12 @@ mod tests {
                 ("Host", "127.0.0.1:8091"),
                 ("X-Forwarded-Host", "localhost"),
                 ("X-Forwarded-Proto", "https"),
+                ("Origin", "http://localhost"),
+            ],
+            vec![
+                ("Host", "127.0.0.1:8091"),
+                ("X-Forwarded-Host", "localhost"),
+                ("X-Forwarded-Proto", "wss"),
                 ("Origin", "http://localhost"),
             ],
             // DNS rebinding: an attacker's name resolved to this machine.
