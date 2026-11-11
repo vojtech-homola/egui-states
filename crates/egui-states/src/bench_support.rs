@@ -93,7 +93,7 @@ pub fn client_color_image(
 ) -> egui::ColorImage {
     // The client works in egui's `[width, height]` order.
     crate::client::states::image::create_color_image(
-        "bench",
+        &"bench",
         [size[1], size[0]],
         format.image_type(),
         pixels,

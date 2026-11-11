@@ -1,6 +1,7 @@
 //! Client image state backed by an egui texture.
 
 use parking_lot::{Mutex, RwLock};
+use std::fmt::{self, Display};
 use std::sync::Arc;
 
 use egui::{ColorImage, ImageData, TextureHandle};
@@ -386,8 +387,8 @@ impl ImageMulti {
     }
 
     /// Names one image of the collection in errors.
-    fn label(&self, index: u32) -> String {
-        format!("{} index {}", self.name, index)
+    fn label(&self, index: u32) -> KeyLabel<'_> {
+        KeyLabel(&self.name, index)
     }
 
     fn no_buffer(&self, index: u32) -> String {
@@ -484,6 +485,16 @@ fn load_texture(context: &egui::Context, name: String, image: ColorImage) -> Tex
     TextureHandle::new(manager, id)
 }
 
+/// Names one image of an image collection in errors; it is formatted only
+/// when one occurs, not for every chunk.
+struct KeyLabel<'a>(&'a str, u32);
+
+impl Display for KeyLabel<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} index {}", self.0, self.1)
+    }
+}
+
 /// An image set being assembled from its chunks; `pixels` holds the pixels
 /// received so far. `label` names the image in errors.
 struct PartialImage {
@@ -493,7 +504,7 @@ struct PartialImage {
 
 impl PartialImage {
     fn start(
-        label: &str,
+        label: &dyn Display,
         size: [u32; 2],
         pixels: u32,
         image_type: ImageType,
@@ -515,7 +526,7 @@ impl PartialImage {
 
     fn append(
         &mut self,
-        label: &str,
+        label: &dyn Display,
         pixels: u32,
         image_type: ImageType,
         data: &[u8],
@@ -529,7 +540,7 @@ impl PartialImage {
 
     fn finish(
         mut self,
-        label: &str,
+        label: &dyn Display,
         pixels: u32,
         image_type: ImageType,
         data: &[u8],
@@ -549,7 +560,7 @@ impl PartialImage {
 /// Validates an update at `origin` against a texture of `texture_size`.
 fn check_update(
     texture_size: [usize; 2],
-    label: &str,
+    label: &dyn Display,
     origin: [usize; 2],
     size: [usize; 2],
 ) -> Result<(), String> {
@@ -578,7 +589,7 @@ fn put_update(
 
 /// Converts `count` source pixels from `data` and appends them to `pixels`.
 fn convert_pixels(
-    label: &str,
+    label: &dyn Display,
     pixels: &mut Vec<egui::Color32>,
     count: usize,
     image_type: ImageType,
@@ -606,7 +617,7 @@ fn convert_pixels(
 }
 
 pub(crate) fn create_color_image(
-    name: &str,
+    name: &dyn Display,
     image_size: [usize; 2],
     image_type: ImageType,
     data: &[u8],

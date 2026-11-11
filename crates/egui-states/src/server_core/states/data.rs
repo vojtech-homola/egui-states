@@ -47,7 +47,7 @@ impl HeaderType {
         if self.0.is_none() {
             return Err(format!("Data '{name}' was registered without a header"));
         }
-        check_value_size(&format!("{name} header"), header.len())?;
+        check_value_size(format_args!("{name} header"), header.len())?;
         Ok(Some(header))
     }
 

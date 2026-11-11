@@ -15,8 +15,9 @@ pub(crate) const MAX_MSG_COUNT: usize = 10;
 ///
 /// Both sides of the connection use this, so the limit and the reported message
 /// stay identical for values sent to the server and values sent to the client.
+/// `name` is formatted only into the error.
 #[inline]
-pub(crate) fn check_value_size(name: &str, size: usize) -> Result<(), String> {
+pub(crate) fn check_value_size(name: impl std::fmt::Display, size: usize) -> Result<(), String> {
     if size > VALUE_MAX_SIZE {
         return Err(format!(
             "value '{}' is too large: {} bytes, max {} bytes",
