@@ -204,6 +204,10 @@ where
     }
 
     /// Borrows the current value for the duration of `f` without copying it.
+    ///
+    /// Do not call this handle or a clone of it from `f`: the read lock is not
+    /// reentrant, so a nested read waits behind an incoming server update,
+    /// which waits for `f`.
     pub fn read<R>(&self, f: impl Fn(&T) -> R) -> R {
         let r = self.shared.value.read();
         f(&r)
@@ -234,6 +238,9 @@ where
     /// kept locally but not sent, which leaves it out of sync with the server until
     /// a later write succeeds or the server sends an update. The error is reported
     /// locally and to the server.
+    ///
+    /// The write lock is held while `f` runs, so do not call this handle or a
+    /// clone of it from `f`: the nested call would wait for `f` forever.
     pub fn write<R>(&self, f: impl Fn(&mut T) -> R) -> R {
         let mut w = self.shared.value.write();
         let result = f(&mut w);
@@ -243,7 +250,8 @@ where
 
     /// Same as [`Value::write`], but the server side emits a signal for the new value.
     ///
-    /// The same out of sync caveat for oversized values applies.
+    /// The same out of sync caveat for oversized values and nested calls
+    /// applies.
     pub fn write_signal<R>(&self, f: impl Fn(&mut T) -> R) -> R {
         let mut w = self.shared.value.write();
         let result = f(&mut w);
@@ -436,6 +444,10 @@ impl<T: Clone> Static<T> {
     }
 
     /// Borrows the current value for the duration of `f` without copying it.
+    ///
+    /// Do not call this handle or a clone of it from `f`: the read lock is not
+    /// reentrant, so a nested read waits behind an incoming server update,
+    /// which waits for `f`.
     pub fn read<R>(&self, f: impl Fn(&T) -> R) -> R {
         let r = self.shared.value.read();
         f(&r)

@@ -58,6 +58,10 @@ where
     /// Borrows the complete map for the duration of `f`.
     ///
     /// The synchronization read lock remains held while `f` runs.
+    ///
+    /// Do not call this handle or a clone of it from `f`: the read lock is not
+    /// reentrant, so a nested read waits behind an incoming server update,
+    /// which waits for `f`.
     pub fn read<R>(&self, mut f: impl FnMut(&HashMap<K, V>) -> R) -> R {
         let d = self.dict.read();
         f(&*d)
@@ -66,6 +70,10 @@ where
     /// Borrows the value at `key` for the duration of `f`.
     ///
     /// The synchronization read lock remains held while `f` runs.
+    ///
+    /// Do not call this handle or a clone of it from `f`: the read lock is not
+    /// reentrant, so a nested read waits behind an incoming server update,
+    /// which waits for `f`.
     pub fn read_item<R>(&self, key: &K, mut f: impl FnMut(Option<&V>) -> R) -> R {
         let d = self.dict.read();
         let v = d.get(key);

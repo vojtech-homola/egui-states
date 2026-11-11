@@ -396,6 +396,11 @@ where
     ///
     /// The synchronization read lock remains held while `f` runs, so keep the
     /// closure short to avoid delaying incoming server updates.
+    ///
+    /// Do not call this handle or a clone of it from `f`: the read lock is not
+    /// reentrant, so a nested read waits behind an incoming server update,
+    /// which waits for `f`.
+    /// Use [`Self::read_with_header`] to read the header with the buffer.
     pub fn read<R>(&self, f: impl Fn(&[T]) -> R) -> R {
         f(&self.inner.read().data)
     }
@@ -406,12 +411,20 @@ where
     }
 
     /// Borrows the header for the duration of `f`.
+    ///
+    /// Do not call this handle or a clone of it from `f`: the read lock is not
+    /// reentrant, so a nested read waits behind an incoming server update,
+    /// which waits for `f`.
     pub fn read_header<R>(&self, f: impl Fn(&H) -> R) -> R {
         f(&self.inner.read().header)
     }
 
     /// Borrows the buffer and the header that belongs to it for the duration
     /// of `f`, under one read lock.
+    ///
+    /// Do not call this handle or a clone of it from `f`: the read lock is not
+    /// reentrant, so a nested read waits behind an incoming server update,
+    /// which waits for `f`.
     pub fn read_with_header<R>(&self, f: impl Fn(&[T], &H) -> R) -> R {
         let inner = self.inner.read();
         f(&inner.data, &inner.header)
@@ -681,6 +694,11 @@ where
     /// Borrows the buffer at `key` for the duration of `f`.
     ///
     /// The synchronization read lock remains held while `f` runs.
+    ///
+    /// Do not call this handle or a clone of it from `f`: the read lock is not
+    /// reentrant, so a nested read waits behind an incoming server update,
+    /// which waits for `f`.
+    /// Use [`Self::read_with_header`] to read the header with the buffer.
     #[inline]
     pub fn read<R>(&self, key: u32, f: impl Fn(Option<&[T]>) -> R) -> R {
         f(self.inner.read().data.get(&key).map(Vec::as_slice))
@@ -689,6 +707,10 @@ where
     /// Borrows the complete keyed collection for the duration of `f`.
     ///
     /// The synchronization read lock remains held while `f` runs.
+    ///
+    /// Do not call this handle or a clone of it from `f`: the read lock is not
+    /// reentrant, so a nested read waits behind an incoming server update,
+    /// which waits for `f`.
     #[inline]
     pub fn read_all<R>(&self, f: impl Fn(&NoHashMap<u32, Vec<T>>) -> R) -> R {
         f(&self.inner.read().data)
@@ -697,6 +719,11 @@ where
     /// Calls `f` for every currently stored key and buffer.
     ///
     /// The synchronization read lock remains held for the full iteration.
+    ///
+    /// Do not call this handle or a clone of it from `f`: the read lock is not
+    /// reentrant, so a nested read waits behind an incoming server update,
+    /// which waits for `f`.
+    /// Use [`Self::for_each_with_header`] to read the headers as well.
     #[inline]
     pub fn for_each(&self, mut f: impl FnMut(u32, &[T])) {
         self.inner.read().data.iter().for_each(|(k, v)| f(*k, v));
@@ -710,6 +737,10 @@ where
 
     /// Borrows the buffer at `key` and its header for the duration of `f`,
     /// under one read lock; `None` when the key is absent.
+    ///
+    /// Do not call this handle or a clone of it from `f`: the read lock is not
+    /// reentrant, so a nested read waits behind an incoming server update,
+    /// which waits for `f`.
     pub fn read_with_header<R>(&self, key: u32, f: impl Fn(Option<(&[T], &H)>) -> R) -> R {
         let inner = self.inner.read();
         let entry = inner
@@ -723,6 +754,10 @@ where
     /// Calls `f` for every currently stored key, buffer and header.
     ///
     /// The synchronization read lock remains held for the full iteration.
+    ///
+    /// Do not call this handle or a clone of it from `f`: the read lock is not
+    /// reentrant, so a nested read waits behind an incoming server update,
+    /// which waits for `f`.
     pub fn for_each_with_header(&self, mut f: impl FnMut(u32, &[T], &H)) {
         let inner = self.inner.read();
         for (key, data) in inner.data.iter() {

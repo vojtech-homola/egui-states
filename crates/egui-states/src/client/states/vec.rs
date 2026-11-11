@@ -50,6 +50,10 @@ impl<T: Typed + Clone> VecState<T> {
     /// Borrows the complete vector for the duration of `f`.
     ///
     /// The synchronization read lock remains held while `f` runs.
+    ///
+    /// Do not call this handle or a clone of it from `f`: the read lock is not
+    /// reentrant, so a nested read waits behind an incoming server update,
+    /// which waits for `f`.
     pub fn read<R>(&self, mut f: impl FnMut(&Vec<T>) -> R) -> R {
         let l = self.list.read();
         f(&*l)
@@ -58,6 +62,10 @@ impl<T: Typed + Clone> VecState<T> {
     /// Borrows the item at `idx` for the duration of `f`.
     ///
     /// The synchronization read lock remains held while `f` runs.
+    ///
+    /// Do not call this handle or a clone of it from `f`: the read lock is not
+    /// reentrant, so a nested read waits behind an incoming server update,
+    /// which waits for `f`.
     pub fn read_item<R>(&self, idx: usize, mut f: impl FnMut(Option<&T>) -> R) -> R {
         let l = self.list.read();
         f(l.get(idx))
