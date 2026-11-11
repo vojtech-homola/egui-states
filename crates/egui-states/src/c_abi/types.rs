@@ -50,11 +50,6 @@ impl TypeRegistry {
     }
 }
 
-/// Protocol hash of a map state with the given key and value types.
-pub(crate) fn map_hash(key: &ObjectType, value: &ObjectType) -> u32 {
-    value.get_hash_from(key.get_hash())
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;

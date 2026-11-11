@@ -3,6 +3,7 @@ mod pyimage;
 mod pyparsing;
 mod pyserver;
 mod pytypes;
+mod value_parsing;
 
 use pyo3::prelude::*;
 

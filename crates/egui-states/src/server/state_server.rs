@@ -3,11 +3,7 @@
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
-use std::sync::{
-    Arc, Weak,
-    atomic::{AtomicBool, Ordering},
-    mpsc,
-};
+use std::sync::{Arc, Weak, mpsc};
 use std::thread;
 use std::time::Duration;
 
@@ -15,27 +11,26 @@ use bytes::Bytes;
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 
-use crate::Typed;
-use crate::serialization::{deserialize_value, serialize};
-use crate::server_core::data_core::{Data as CoreData, DataMulti as CoreDataMulti};
-use crate::server_core::data_take_core::{
+use crate::protocol::{deserialize_value, serialize};
+use crate::server_core::http::web::WebSite;
+use crate::server_core::net::heartbeat::Heartbeat;
+use crate::server_core::server::{Server as CoreServer, ServerConfig};
+use crate::server_core::signals::{
+    CLIENT_MESSAGE_ID, Claim, ON_CONNECT_ID, ON_DISCONNECT_ID, SignalsManager as CoreSignalsManager,
+};
+use crate::server_core::states::data::{Data as CoreData, DataMulti as CoreDataMulti};
+use crate::server_core::states::data_take::{
     DataMultiTake as CoreDataMultiTake, DataTake as CoreDataTake,
 };
-use crate::server_core::heartbeat::Heartbeat;
-use crate::server_core::image_core::Image as CoreImage;
-use crate::server_core::image_multi_core::ImageMulti as CoreImageMulti;
-use crate::server_core::map_core::ValueMap as CoreMap;
-use crate::server_core::server::Server as CoreServer;
-use crate::server_core::signals::{
-    CLIENT_MESSAGE_ID, LOGGING_ID, ON_CONNECT_ID, ON_DISCONNECT_ID,
-    SignalsManager as CoreSignalsManager,
-};
-use crate::server_core::values_core::{
+use crate::server_core::states::image::multi::ImageMulti as CoreImageMulti;
+use crate::server_core::states::image::single::Image as CoreImage;
+use crate::server_core::states::map::ValueMap as CoreMap;
+use crate::server_core::states::value::{
     SignalCore as CoreSignal, ValueCore as CoreValue, ValueStaticCore as CoreStatic,
     ValueTakeCore as CoreValueTake,
 };
-use crate::server_core::vec_core::ValueList as CoreVec;
-use crate::server_core::web::WebSite;
+use crate::server_core::states::vec::ValueList as CoreVec;
+use crate::{ObjectType, Typed};
 
 use super::callbacks::{CallbackHandle, CallbackRegistry};
 use super::data::DataElement;
@@ -67,7 +62,6 @@ pub(super) struct ServerInner {
     /// all of them have returned. Used to bound teardown without `join`ing.
     worker_exit: Mutex<Option<mpsc::Receiver<()>>>,
     worker_count: usize,
-    worker_shutdown: Arc<AtomicBool>,
     shutdown_timeout: Duration,
     error_handler: RwLock<ErrorHandler>,
 }
@@ -81,14 +75,13 @@ impl ServerInner {
 
 impl Drop for ServerInner {
     fn drop(&mut self) {
-        self.worker_shutdown.store(true, Ordering::Release);
+        self.signals.close();
         // Before waiting on the workers, so a callback still running cannot
         // queue changes either.
         self.callbacks.clear(&self.signals);
-        self.signals.wake_waiters();
         self.server.get_mut().stop();
 
-        // A worker only observes `worker_shutdown` between callbacks, so one
+        // A worker only observes the closed signals between callbacks, so one
         // that is inside a blocking callback cannot be waited on unboundedly --
         // `Drop` must not hang. Wait for all of them to return, then detach
         // whatever is left. Detaching is safe: a worker holds only a `Weak` to
@@ -139,19 +132,15 @@ impl StateServer {
     pub fn with_options(options: ServerOptions) -> Result<Self> {
         let heartbeat = Heartbeat::new(options.heartbeat_interval, options.heartbeat_timeout)
             .map_err(ServerError::new)?;
-        let mut server = CoreServer::new(options.version);
-        server.set_heartbeat(heartbeat);
-        server
-            .set_web_path(options.web_path.as_deref())
-            .map_err(ServerError::new)?;
-        server
-            .set_allowed_origins(&options.allowed_origins)
-            .map_err(ServerError::new)?;
+        let config = ServerConfig::new(
+            options.version,
+            heartbeat,
+            options.web_path.as_deref(),
+            &options.allowed_origins,
+        )
+        .map_err(ServerError::new)?;
+        let server = CoreServer::new(config);
         let signals = server.get_signals_manager();
-        signals.set_to_queue(LOGGING_ID);
-        signals.set_to_queue(ON_CONNECT_ID);
-        signals.set_to_queue(ON_DISCONNECT_ID);
-        signals.set_to_queue(CLIENT_MESSAGE_ID);
 
         let error_handler = options.error_handler.unwrap_or_else(|| {
             Arc::new(|error: ServerError| {
@@ -168,7 +157,6 @@ impl StateServer {
                 worker_exit: Mutex::new(None),
                 worker_count: options.signal_workers.max(1),
                 shutdown_timeout: options.shutdown_timeout,
-                worker_shutdown: Arc::new(AtomicBool::new(false)),
                 error_handler: RwLock::new(error_handler),
             }),
         })
@@ -206,7 +194,7 @@ impl StateServer {
         let addr = SocketAddrV4::new(ip_addr.unwrap_or(Ipv4Addr::LOCALHOST), port);
         self.inner
             .server
-            .write()
+            .read()
             .start(addr, token)
             .map_err(|error| ServerError::new(error.to_string()))?;
         self.start_signal_workers();
@@ -215,12 +203,12 @@ impl StateServer {
 
     /// Stops listening and disconnects the current client.
     pub fn stop(&self) {
-        self.inner.server.write().stop();
+        self.inner.server.read().stop();
     }
 
     /// Disconnects the current client while leaving the server running.
     pub fn disconnect_client(&self) {
-        self.inner.server.write().disconnect_client();
+        self.inner.server.read().disconnect_client();
     }
 
     /// Returns whether the server is listening.
@@ -429,7 +417,6 @@ impl StateServer {
         for index in 0..self.inner.worker_count {
             let inner = Arc::downgrade(&self.inner);
             let signals = self.inner.signals.clone();
-            let shutdown = self.inner.worker_shutdown.clone();
             let exit = exit_sender.clone();
             let worker = thread::Builder::new()
                 .name(format!("egui_states_signal_worker_{index}"))
@@ -437,7 +424,7 @@ impl StateServer {
                     // Dropped when the worker returns, which is how `Drop`
                     // learns that every worker has finished.
                     let _exit = exit;
-                    run_signal_worker(inner, signals, shutdown)
+                    run_signal_worker(inner, signals)
                 });
             match worker {
                 Ok(worker) => workers.push(worker),
@@ -466,13 +453,11 @@ impl StateServer {
     {
         let data = serialize_bytes(&initial_value)?;
         let type_id = T::get_type().get_hash();
-        let id = self
-            .inner
-            .server
-            .write()
+        let mut server = self.inner.server.write();
+        let id = server
             .add_value(&name, type_id, data, queue)
             .map_err(ServerError::new)?;
-        let value = self.inner.server.read().get_value(id).ok_or_else(|| {
+        let value = server.get_value(id).ok_or_else(|| {
             ServerError::new(format!("value not found after registration: {name}"))
         })?;
         Ok((id, value))
@@ -483,13 +468,11 @@ impl StateServer {
         T: Typed,
     {
         let type_id = T::get_type().get_hash();
-        let id = self
-            .inner
-            .server
-            .write()
+        let mut server = self.inner.server.write();
+        let id = server
             .add_value_take(&name, type_id)
             .map_err(ServerError::new)?;
-        let value = self.inner.server.read().get_value_take(id).ok_or_else(|| {
+        let value = server.get_value_take(id).ok_or_else(|| {
             ServerError::new(format!("value_take not found after registration: {name}"))
         })?;
         Ok((id, value))
@@ -505,13 +488,11 @@ impl StateServer {
     {
         let data = serialize_bytes(&initial_value)?;
         let type_id = T::get_type().get_hash();
-        let id = self
-            .inner
-            .server
-            .write()
+        let mut server = self.inner.server.write();
+        let id = server
             .add_static(&name, type_id, data)
             .map_err(ServerError::new)?;
-        let value = self.inner.server.read().get_static(id).ok_or_else(|| {
+        let value = server.get_static(id).ok_or_else(|| {
             ServerError::new(format!("static not found after registration: {name}"))
         })?;
         Ok((id, value))
@@ -522,13 +503,11 @@ impl StateServer {
         T: Typed,
     {
         let type_id = T::get_type().get_hash();
-        let id = self
-            .inner
-            .server
-            .write()
+        let mut server = self.inner.server.write();
+        let id = server
             .add_signal(&name, type_id, queue)
             .map_err(ServerError::new)?;
-        let value = self.inner.server.read().get_signal(id).ok_or_else(|| {
+        let value = server.get_signal(id).ok_or_else(|| {
             ServerError::new(format!("signal not found after registration: {name}"))
         })?;
         Ok((id, value))
@@ -539,16 +518,11 @@ impl StateServer {
         T: Typed,
     {
         let type_id = T::get_type().get_hash();
-        let id = self
-            .inner
-            .server
-            .write()
-            .add_vec(&name, type_id)
-            .map_err(ServerError::new)?;
-        let value =
-            self.inner.server.read().get_vec(id).ok_or_else(|| {
-                ServerError::new(format!("vec not found after registration: {name}"))
-            })?;
+        let mut server = self.inner.server.write();
+        let id = server.add_vec(&name, type_id).map_err(ServerError::new)?;
+        let value = server
+            .get_vec(id)
+            .ok_or_else(|| ServerError::new(format!("vec not found after registration: {name}")))?;
         Ok((id, value))
     }
 
@@ -557,94 +531,82 @@ impl StateServer {
         K: Typed,
         V: Typed,
     {
-        let type_id = V::get_type().get_hash_from(K::get_type().get_hash());
-        let id = self
-            .inner
-            .server
-            .write()
-            .add_map(&name, type_id)
-            .map_err(ServerError::new)?;
-        let value =
-            self.inner.server.read().get_map(id).ok_or_else(|| {
-                ServerError::new(format!("map not found after registration: {name}"))
-            })?;
+        let type_id = ObjectType::map_hash(&K::get_type(), &V::get_type());
+        let mut server = self.inner.server.write();
+        let id = server.add_map(&name, type_id).map_err(ServerError::new)?;
+        let value = server
+            .get_map(id)
+            .ok_or_else(|| ServerError::new(format!("map not found after registration: {name}")))?;
         Ok((id, value))
     }
 
     pub(super) fn add_image(&self, name: String) -> Result<(u64, Arc<CoreImage>)> {
-        let id = self
-            .inner
-            .server
-            .write()
-            .add_image(&name)
-            .map_err(ServerError::new)?;
-        let value = self.inner.server.read().get_image(id).ok_or_else(|| {
+        let mut server = self.inner.server.write();
+        let id = server.add_image(&name).map_err(ServerError::new)?;
+        let value = server.get_image(id).ok_or_else(|| {
             ServerError::new(format!("image not found after registration: {name}"))
         })?;
         Ok((id, value))
     }
 
     pub(super) fn add_image_multi(&self, name: String) -> Result<(u64, Arc<CoreImageMulti>)> {
-        let id = self
-            .inner
-            .server
-            .write()
-            .add_image_multi(&name)
-            .map_err(ServerError::new)?;
-        let value = self
-            .inner
-            .server
-            .read()
-            .get_image_multi(id)
-            .ok_or_else(|| {
-                ServerError::new(format!("image_multi not found after registration: {name}"))
-            })?;
+        let mut server = self.inner.server.write();
+        let id = server.add_image_multi(&name).map_err(ServerError::new)?;
+        let value = server.get_image_multi(id).ok_or_else(|| {
+            ServerError::new(format!("image_multi not found after registration: {name}"))
+        })?;
         Ok((id, value))
     }
 
-    pub(super) fn add_data<T>(&self, name: String) -> Result<(u64, Arc<CoreData>)>
+    pub(super) fn add_data<T>(
+        &self,
+        name: String,
+        header_type: Option<u32>,
+    ) -> Result<(u64, Arc<CoreData>)>
     where
         T: DataElement,
     {
-        let id = self
-            .inner
-            .server
-            .write()
-            .add_data(&name, T::TYPE_ID)
+        let mut server = self.inner.server.write();
+        let id = server
+            .add_data(&name, T::TYPE_ID, header_type)
             .map_err(ServerError::new)?;
-        let value = self.inner.server.read().get_data(id).ok_or_else(|| {
+        let value = server.get_data(id).ok_or_else(|| {
             ServerError::new(format!("data not found after registration: {name}"))
         })?;
         Ok((id, value))
     }
 
-    pub(super) fn add_data_take<T>(&self, name: String) -> Result<(u64, Arc<CoreDataTake>)>
+    pub(super) fn add_data_take<T>(
+        &self,
+        name: String,
+        header_type: Option<u32>,
+    ) -> Result<(u64, Arc<CoreDataTake>)>
     where
         T: DataElement,
     {
-        let id = self
-            .inner
-            .server
-            .write()
-            .add_data_take(&name, T::TYPE_ID)
+        let mut server = self.inner.server.write();
+        let id = server
+            .add_data_take(&name, T::TYPE_ID, header_type)
             .map_err(ServerError::new)?;
-        let value = self.inner.server.read().get_data_take(id).ok_or_else(|| {
+        let value = server.get_data_take(id).ok_or_else(|| {
             ServerError::new(format!("data_take not found after registration: {name}"))
         })?;
         Ok((id, value))
     }
 
-    pub(super) fn add_data_multi<T>(&self, name: String) -> Result<(u64, Arc<CoreDataMulti>)>
+    pub(super) fn add_data_multi<T>(
+        &self,
+        name: String,
+        header_type: Option<u32>,
+    ) -> Result<(u64, Arc<CoreDataMulti>)>
     where
         T: DataElement,
     {
-        let id = self
-            .inner
-            .server
-            .write()
-            .add_data_multi(&name, T::TYPE_ID)
+        let mut server = self.inner.server.write();
+        let id = server
+            .add_data_multi(&name, T::TYPE_ID, header_type)
             .map_err(ServerError::new)?;
-        let value = self.inner.server.read().get_data_multi(id).ok_or_else(|| {
+        let value = server.get_data_multi(id).ok_or_else(|| {
             ServerError::new(format!("data_multi not found after registration: {name}"))
         })?;
         Ok((id, value))
@@ -653,26 +615,20 @@ impl StateServer {
     pub(super) fn add_data_multi_take<T>(
         &self,
         name: String,
+        header_type: Option<u32>,
     ) -> Result<(u64, Arc<CoreDataMultiTake>)>
     where
         T: DataElement,
     {
-        let id = self
-            .inner
-            .server
-            .write()
-            .add_data_multi_take(&name, T::TYPE_ID)
+        let mut server = self.inner.server.write();
+        let id = server
+            .add_data_multi_take(&name, T::TYPE_ID, header_type)
             .map_err(ServerError::new)?;
-        let value = self
-            .inner
-            .server
-            .read()
-            .get_data_multi_take(id)
-            .ok_or_else(|| {
-                ServerError::new(format!(
-                    "data_multi_take not found after registration: {name}"
-                ))
-            })?;
+        let value = server.get_data_multi_take(id).ok_or_else(|| {
+            ServerError::new(format!(
+                "data_multi_take not found after registration: {name}"
+            ))
+        })?;
         Ok((id, value))
     }
 
@@ -760,26 +716,15 @@ impl WeakServer {
     }
 }
 
-fn run_signal_worker(
-    inner: Weak<ServerInner>,
-    signals: CoreSignalsManager,
-    shutdown: Arc<AtomicBool>,
-) {
+fn run_signal_worker(inner: Weak<ServerInner>, signals: CoreSignalsManager) {
     let mut last_id = None;
     loop {
-        if shutdown.load(Ordering::Acquire) {
-            return;
-        }
-
-        // `take` matters: the id is released exactly once, on the poll that
+        // `take` matters: the id is released exactly once, on the claim that
         // follows its dispatch. Retrying with it still set would release a
         // claim another worker may have taken in the meantime, letting two
         // workers run callbacks for the same value concurrently.
-        let Some((value_id, data, previous)) = signals.try_changed_value(last_id.take()) else {
-            if !signals.wait_for_change_until(&shutdown) {
-                return;
-            }
-            continue;
+        let Claim::Ready(value_id, data, previous) = signals.claim(last_id.take(), None) else {
+            return;
         };
         last_id = Some(value_id);
 
@@ -790,7 +735,7 @@ fn run_signal_worker(
         let error_handler = server.error_handler.read().clone();
         drop(server);
 
-        for entry in callbacks {
+        for entry in callbacks.iter() {
             let data = data.clone();
             let previous = previous.clone();
             let result = catch_unwind(AssertUnwindSafe(|| (entry.callback)(data, previous)));
@@ -839,6 +784,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc;
     #[cfg(feature = "client")]
     use std::thread;
@@ -947,7 +893,7 @@ mod tests {
         assert!(server.inner.callbacks.get(id).is_empty());
 
         signal.set(serialize_bytes(&42_u32).unwrap());
-        assert!(server.inner.signals.try_changed_value(None).is_none());
+        assert!(server.inner.signals.try_claim(None).is_none());
     }
 
     /// The server owns its callbacks, and a callback routinely captures a state
@@ -1071,7 +1017,7 @@ mod tests {
             signal.set(index).unwrap();
         }
         assert!(
-            signals.try_changed_value(None).is_none(),
+            signals.try_claim(None).is_none(),
             "changes were queued for a server that is gone"
         );
         drop(handles);
@@ -1407,7 +1353,7 @@ mod tests {
         let handle = server.add_typed_callback_previous(id, move |_: i32, _: i32| {
             flag.store(true, Ordering::Relaxed);
         });
-        let entry = server.inner.callbacks.get(id).remove(0);
+        let entry = server.inner.callbacks.get(id)[0].clone();
 
         // Exactly what the worker passes for a change claimed before registration.
         assert!(
@@ -1439,13 +1385,13 @@ mod tests {
         let plain = value.connect(|_: i32| {});
         let with_previous = value.connect_previous(|_: i32, _: i32| {});
         value.set_signal(2, false).unwrap();
-        let (id, _, previous) = server.inner.signals.try_changed_value(None).unwrap();
+        let (id, _, previous) = server.inner.signals.try_claim(None).unwrap();
         assert_eq!(previous, Some(serialize_bytes(&1_i32).unwrap()));
 
         drop(with_previous);
         value.set_signal(3, false).unwrap();
         // `id` has to come back as `last_id`, otherwise it stays blocked and is skipped.
-        let (_, _, previous) = server.inner.signals.try_changed_value(Some(id)).unwrap();
+        let (_, _, previous) = server.inner.signals.try_claim(Some(id)).unwrap();
         assert_eq!(
             previous, None,
             "the previous value must not be delivered once nobody asks for it"
@@ -1485,7 +1431,7 @@ mod tests {
             .recv_timeout(Duration::from_secs(2))
             .expect("callback should have been entered");
 
-        // The worker cannot observe the shutdown flag until its callback
+        // The worker cannot observe the closed signals until its callback
         // returns, so `drop` has to fall back to detaching it. Dropped on
         // another thread so a regression fails the test instead of hanging it.
         let (dropped_sender, dropped_receiver) = mpsc::channel::<()>();
@@ -1515,7 +1461,7 @@ mod tests {
         let server = StateServer::with_options(options).unwrap();
         server.start_signal_workers();
 
-        // Idle workers observe the shutdown flag immediately, so teardown must
+        // Idle workers observe the closed signals immediately, so teardown must
         // not wait out the timeout.
         let start = std::time::Instant::now();
         drop(server);
@@ -1675,7 +1621,7 @@ mod tests {
 #[cfg(all(test, feature = "client"))]
 mod wire_tests {
     use super::*;
-    use crate::serialization::{ClientHeader, ServerHeader};
+    use crate::protocol::{ClientHeader, ServerHeader};
     use futures_util::{SinkExt, StreamExt};
     use tokio_tungstenite::tungstenite::Message;
 
@@ -1866,11 +1812,12 @@ mod wire_tests {
 #[cfg(all(test, feature = "client"))]
 mod connection_tests {
     use std::net::TcpStream;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
 
     use super::*;
-    use crate::serialization::{ClientHeader, ServerHeader, VALUE_MAX_SIZE};
+    use crate::protocol::{ClientHeader, ServerHeader, VALUE_MAX_SIZE};
     use crate::{ClientBuilder, ConnectionState};
     use tokio_tungstenite::tungstenite::{self, Message};
 
@@ -2592,6 +2539,76 @@ mod connection_tests {
             client.get_state() == ConnectionState::Connected
         );
         client.disconnect();
+        server.stop();
+    }
+
+    struct DataTestState {
+        _data: crate::Data<u16>,
+        _multi: crate::DataMulti<u16>,
+    }
+
+    impl crate::State for DataTestState {
+        const NAME: &'static str = "DataTestState";
+
+        fn new(c: &mut impl crate::StatesCreator) -> Self {
+            Self {
+                _data: c.data("data"),
+                _multi: c.data_multi("multi"),
+            }
+        }
+    }
+
+    /// Two producers write the same Data and DataMulti while a client connects
+    /// again and again. A producer in the connect window used to block the
+    /// synchronization, and with it the run loop, so the server could no longer
+    /// be stopped (D1).
+    #[test]
+    fn data_writers_during_reconnects_do_not_block_the_server() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        if crate::test_support::isolated() {
+            return;
+        }
+        let port = free_port();
+        let server = StateServer::new().unwrap();
+        let data = crate::server::Data::<u16>::new(&server, "root.data").unwrap();
+        let multi = crate::server::DataMulti::<u16>::new(&server, "root.multi").unwrap();
+        server.finalize().unwrap();
+        server.start(port, Some(Ipv4Addr::LOCALHOST), None).unwrap();
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let writers: Vec<_> = (0..2_u16)
+            .map(|writer| {
+                let (data, multi, stop) = (data.clone(), multi.clone(), stop.clone());
+                thread::spawn(move || {
+                    let mut round = 0_u16;
+                    while !stop.load(Ordering::Acquire) {
+                        round = round.wrapping_add(1);
+                        data.set(&[writer, round], false).unwrap();
+                        data.add(&[round], false).unwrap();
+                        multi.set(u32::from(writer), &[round], false).unwrap();
+                        multi.add(u32::from(writer), &[round], false).unwrap();
+                    }
+                })
+            })
+            .collect();
+
+        for _ in 0..5 {
+            let (_state, client) =
+                ClientBuilder::<DataTestState>::new(egui::Context::default(), port).build();
+            wait("connection", || {
+                client.connect();
+                server.is_connected()
+            });
+            thread::sleep(Duration::from_millis(50));
+            client.disconnect();
+            wait("disconnect", || !server.is_connected());
+        }
+
+        stop.store(true, Ordering::Release);
+        for writer in writers {
+            writer.join().unwrap();
+        }
         server.stop();
     }
 

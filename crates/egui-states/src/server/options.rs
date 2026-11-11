@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::ServerError;
-use crate::server_core::heartbeat;
+use crate::server_core::net::heartbeat;
 
 /// Thread-safe callback used for asynchronous server errors.
 ///

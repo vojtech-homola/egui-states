@@ -59,6 +59,9 @@ jobs:
         if: ${{ !cancelled() }}
       - run: cargo clippy --locked -p egui_states_c --all-targets -- -D warnings
         if: ${{ !cancelled() }}
+      # Compiles the benchmarks without running them.
+      - run: cargo clippy --locked -p egui_states_bench --all-targets -- -D warnings
+        if: ${{ !cancelled() }}
 
   rust-tests:
     name: Rust tests (${{ matrix.os }})

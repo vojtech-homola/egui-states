@@ -1,17 +1,6 @@
-pub(crate) mod atomics;
 #[allow(clippy::module_inception)]
 pub(crate) mod client;
-pub(crate) mod data;
-pub(crate) mod data_take;
-pub(crate) mod image;
-pub(crate) mod initial_value;
 pub(crate) mod messages;
+mod net;
+pub(crate) mod states;
 pub(crate) mod states_creator;
-pub(crate) mod value_map;
-pub(crate) mod value_vec;
-pub(crate) mod values;
-
-#[cfg(not(target_arch = "wasm32"))]
-mod websocket;
-#[cfg(target_arch = "wasm32")]
-mod websocket_wasm;

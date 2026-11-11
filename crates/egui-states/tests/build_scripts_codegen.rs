@@ -356,6 +356,64 @@ fn client_and_generated_layout_hashes_match_for_every_state_kind() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Data states with headers.
+struct WithHeaders;
+
+impl State for WithHeaders {
+    const NAME: &'static str = "WithHeaders";
+
+    fn new(c: &mut impl StatesCreator) -> Self {
+        let _: Data<f32, GeneratedOuter> = c.data("data");
+        let _: DataMulti<u8, GeneratedEnum> = c.data_multi("data_multi");
+        let _: DataTake<u16, (u32, String)> = c.data_take("data_take");
+        let _: DataMultiTake<i64, Vec<u8>> = c.data_multi_take("data_multi_take");
+        let _: Data<u8> = c.data("plain");
+        Self
+    }
+}
+
+#[test]
+fn bindings_carry_data_header_types() {
+    let dir = output_dir("with_headers", 0);
+    generate_rust::<WithHeaders>(&dir).unwrap();
+    generate_python::<WithHeaders>(dir.join("python")).unwrap();
+    let rust = std::fs::read_to_string(dir.join("mod.rs")).unwrap();
+    let structs = std::fs::read_to_string(dir.join("structs.rs")).unwrap();
+    let enums = std::fs::read_to_string(dir.join("enums.rs")).unwrap();
+    for expected in [
+        "s::Data<f32, structs::GeneratedOuter>",
+        "s::DataMulti<u8, enums::GeneratedEnum>",
+        "s::DataTake<u16, (u32, String)>",
+        "s::DataMultiTake<i64, Vec<u8>>",
+        "s::Data<u8>",
+        "s::Data::<f32, structs::GeneratedOuter>::new(",
+    ] {
+        assert!(rust.contains(expected), "missing {expected} in\n{rust}");
+    }
+    assert!(structs.contains("pub struct GeneratedOuter"));
+    assert!(structs.contains("pub struct GeneratedInner"));
+    assert!(enums.contains("pub enum GeneratedEnum"));
+
+    let python = std::fs::read_to_string(dir.join("python/__init__.py")).unwrap();
+    for expected in [
+        "s.DataWithHeader[np.float32, structs.GeneratedOuter] = s.DataWithHeader(np.float32, ",
+        "s.DataMultiWithHeader[np.uint8, enums.GeneratedEnum] = s.DataMultiWithHeader(np.uint8, ",
+        "s.DataTakeWithHeader[np.uint16, tuple[int, str]] = s.DataTakeWithHeader(np.uint16, ",
+        "s.DataMultiTakeWithHeader[np.int64, list[int]] = s.DataMultiTakeWithHeader(np.int64, ",
+        "s.Data[np.uint8] = s.Data(np.uint8)",
+    ] {
+        assert!(python.contains(expected), "missing {expected} in\n{python}");
+    }
+
+    let client = ClientBuilder::<WithHeaders>::new(egui::Context::default(), 0).get_version_hash();
+    assert_eq!(
+        generated_hash(&rust, "pub const VERSION_HASH: u64 = "),
+        client
+    );
+    assert_eq!(generated_hash(&python, "VERSION_HASH: int = "), client);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 struct Golden;
 
 impl State for Golden {
@@ -374,6 +432,17 @@ fn layout_hash_of_a_fixed_schema_is_stable() {
     const GOLDEN: u64 = 15207089630600656803;
     assert_eq!(
         ClientBuilder::<Golden>::new(egui::Context::default(), 0).get_version_hash(),
+        GOLDEN
+    );
+}
+
+/// Pins the per-kind tags and type ids of every state kind, so a refactor of
+/// registration cannot change the hash of any of them.
+#[test]
+fn layout_hash_of_a_schema_with_every_kind_is_stable() {
+    const GOLDEN: u64 = 11746098588710645841;
+    assert_eq!(
+        ClientBuilder::<AllKinds>::new(egui::Context::default(), 0).get_version_hash(),
         GOLDEN
     );
 }

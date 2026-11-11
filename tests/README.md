@@ -104,6 +104,21 @@ expected values live in `src/scenarios.rs`, `src/fixture.rs`, and
   `build_scripts_c.rs` does the same for the experimental C header (with
   `c_abi`) and parses its type strings with the C ABI.
 
+## Benchmarks
+
+`crates/egui-states-bench` holds Criterion benchmarks, outside the default
+members so test builds do not compile Criterion:
+
+```sh
+cargo bench -p egui_states_bench --bench transfer   # loopback Data/Image sets, client latency
+cargo bench -p egui_states_bench --bench internals  # packers, pixel conversion, client assembly
+```
+
+Save a baseline with `-- --save-baseline <name>` and compare a later run with
+`-- --baseline <name>`. Loopback numbers are noisy: compare three runs, and treat
+differences under 5 % as noise. The internals reach crate-private code through
+the `bench` feature of `egui_states`, which is not a public API.
+
 ## Conventions
 
 - Tests that could block run in a child process with a deadline (25 s for Rust

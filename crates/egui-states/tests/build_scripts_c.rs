@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 
 use egui_states::build_scripts::generate_c;
 use egui_states::{
-    ClientBuilder, Data, Image, MapState, Queue, Signal, State, StatesCreator, Static, Value,
-    ValueTake, VecState,
+    ClientBuilder, Data, DataMulti, Image, MapState, Queue, Signal, State, StatesCreator, Static,
+    Value, ValueTake, VecState,
 };
 
 #[egui_states::typed]
@@ -75,6 +75,7 @@ impl State for Golden {
         let _: Signal<()> = c.signal("pulse");
         let _: ValueTake<(u8,)> = c.value_take("take");
         let _: Data<f32> = c.data("samples");
+        let _: DataMulti<u16, (u8, [u16; 2])> = c.data_multi("framed");
         let _: Image = c.image("image");
         let _: Leaf = c.substate("nested");
         Self
@@ -127,7 +128,9 @@ fn header_registers_every_state_with_exact_initial_values() {
         "#define C_GOLDEN_PULSE_TYPE \"()\"",
         "#define C_GOLDEN_TAKE_TYPE \"(u8,)\"",
         "#define C_GOLDEN_SAMPLES_DATA_TYPE EGUI_STATES_DATA_F32",
-        "egui_states_server_add_data(server, C_GOLDEN_SAMPLES_NAME, C_GOLDEN_SAMPLES_DATA_TYPE, NULL)",
+        "egui_states_server_add_data(server, C_GOLDEN_SAMPLES_NAME, C_GOLDEN_SAMPLES_DATA_TYPE, NULL, NULL)",
+        "#define C_GOLDEN_FRAMED_HEADER_TYPE \"(u8, [u16; 2])\"",
+        "egui_states_server_add_data_multi(server, C_GOLDEN_FRAMED_NAME, C_GOLDEN_FRAMED_DATA_TYPE, C_GOLDEN_FRAMED_HEADER_TYPE, NULL)",
         "egui_states_server_add_image(server, C_GOLDEN_IMAGE_NAME, NULL)",
         "#define C_GOLDEN_NESTED_VALUE_NAME \"root.nested.value\"",
         "typedef enum c_golden_sparse_t {",

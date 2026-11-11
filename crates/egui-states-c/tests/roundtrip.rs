@@ -154,6 +154,12 @@ impl Reader {
         index
     }
 
+    fn u32(&self) -> u32 {
+        let mut value = 0;
+        ok(unsafe { egui_states_read_u32(self.0, &mut value) });
+        value
+    }
+
     fn at_end(&self) -> bool {
         let mut at_end = false;
         ok(unsafe { egui_states_reader_at_end(self.0, &mut at_end) });
@@ -295,16 +301,40 @@ fn register() -> Server {
             egui_states_server_add_image_multi(s, name.as_ptr(), id)
         });
         add("samples", &|name, id| {
-            egui_states_server_add_data(s, name.as_ptr(), EGUI_STATES_DATA_F32, id)
+            egui_states_server_add_data(
+                s,
+                name.as_ptr(),
+                EGUI_STATES_DATA_F32,
+                std::ptr::null(),
+                id,
+            )
         });
         add("once", &|name, id| {
-            egui_states_server_add_data_take(s, name.as_ptr(), EGUI_STATES_DATA_U8, id)
+            egui_states_server_add_data_take(
+                s,
+                name.as_ptr(),
+                EGUI_STATES_DATA_U8,
+                std::ptr::null(),
+                id,
+            )
         });
         add("channels", &|name, id| {
-            egui_states_server_add_data_multi(s, name.as_ptr(), EGUI_STATES_DATA_I64, id)
+            egui_states_server_add_data_multi(
+                s,
+                name.as_ptr(),
+                EGUI_STATES_DATA_I64,
+                std::ptr::null(),
+                id,
+            )
         });
         add("burst", &|name, id| {
-            egui_states_server_add_data_multi_take(s, name.as_ptr(), EGUI_STATES_DATA_U16, id)
+            egui_states_server_add_data_multi_take(
+                s,
+                name.as_ptr(),
+                EGUI_STATES_DATA_U16,
+                std::ptr::null(),
+                id,
+            )
         });
         add("nested.flag", &|name, id| {
             egui_states_server_add_static(s, name.as_ptr(), c"bool".as_ptr(), flag.0, id)
@@ -376,6 +406,7 @@ fn client_and_c_server_synchronize_every_state_kind() {
             EGUI_STATES_DATA_F32,
             samples.as_ptr().cast(),
             2,
+            std::ptr::null(),
             0,
         ));
         ok(egui_states_data_multi_set(
@@ -385,6 +416,7 @@ fn client_and_c_server_synchronize_every_state_kind() {
             EGUI_STATES_DATA_I64,
             channel.as_ptr().cast(),
             2,
+            std::ptr::null(),
             0,
         ));
         ok(egui_states_image_set(s, id("image"), &image, 0));
@@ -485,6 +517,7 @@ fn client_and_c_server_synchronize_every_state_kind() {
             EGUI_STATES_DATA_U8,
             bytes.as_ptr().cast(),
             3,
+            std::ptr::null(),
             0,
         ));
         ok(egui_states_data_multi_take_set(
@@ -494,6 +527,7 @@ fn client_and_c_server_synchronize_every_state_kind() {
             EGUI_STATES_DATA_U16,
             burst.as_ptr().cast(),
             2,
+            std::ptr::null(),
             0,
         ));
         ok(egui_states_vec_append(s, id("items"), item.0, 0));
@@ -575,4 +609,154 @@ fn client_and_c_server_synchronize_every_state_kind() {
     let (event, _, _) = server.next_event();
     assert_eq!(event, EGUI_STATES_ID_ON_DISCONNECT);
     ok(unsafe { egui_states_server_stop(s) });
+}
+
+#[derive(egui_states::State)]
+struct HeaderKinds {
+    framed: Data<f32, (u32, String)>,
+    keyed: DataMulti<u16, (u32, String)>,
+    plain: Data<u8>,
+}
+
+/// A header writer of `(u32, String)`.
+fn meta(number: u32, label: &str) -> Writer {
+    Writer::new(|w| {
+        w.u32(number);
+        w.string(label);
+    })
+}
+
+#[test]
+fn data_headers_cross_the_c_abi() {
+    let mut s = null_mut();
+    ok(unsafe { egui_states_server_new(null(), &mut s) });
+    let server = Server {
+        handle: s,
+        ids: HashMap::new(),
+    };
+    let header_type = c"(u32, String)".as_ptr();
+    let (mut framed, mut keyed, mut plain, mut bad) = (0, 0, 0, 0);
+    unsafe {
+        ok(egui_states_server_add_data(
+            s,
+            c"root.framed".as_ptr(),
+            EGUI_STATES_DATA_F32,
+            header_type,
+            &mut framed,
+        ));
+        ok(egui_states_server_add_data_multi(
+            s,
+            c"root.keyed".as_ptr(),
+            EGUI_STATES_DATA_U16,
+            header_type,
+            &mut keyed,
+        ));
+        ok(egui_states_server_add_data(
+            s,
+            c"root.plain".as_ptr(),
+            EGUI_STATES_DATA_U8,
+            null(),
+            &mut plain,
+        ));
+        assert_ne!(
+            egui_states_server_add_data(
+                s,
+                c"root.bad".as_ptr(),
+                EGUI_STATES_DATA_U8,
+                c"NoSuchType".as_ptr(),
+                &mut bad,
+            ),
+            EGUI_STATES_OK
+        );
+        ok(egui_states_server_finalize(s));
+    }
+
+    let reader = Reader::new();
+    let values = [1.0f32, 2.0];
+    let more = [3.0f32];
+    unsafe {
+        let get_header = |id| egui_states_data_get_header(s, id, reader.0);
+        assert_eq!(get_header(framed), EGUI_STATES_ERROR_NOT_FOUND);
+        let seven = meta(7, "seven");
+        ok(egui_states_data_set(
+            s,
+            framed,
+            EGUI_STATES_DATA_F32,
+            values.as_ptr().cast(),
+            2,
+            seven.0,
+            0,
+        ));
+        // A null header keeps the current one.
+        ok(egui_states_data_add(
+            s,
+            framed,
+            EGUI_STATES_DATA_F32,
+            more.as_ptr().cast(),
+            1,
+            null(),
+            0,
+        ));
+        ok(get_header(framed));
+        assert_eq!((reader.u32(), reader.string()), (7, "seven".to_string()));
+        assert!(reader.at_end());
+
+        // A state without a header type has no header to read or set.
+        assert_eq!(get_header(plain), EGUI_STATES_ERROR_NOT_FOUND);
+        assert_eq!(
+            egui_states_data_set_header(s, plain, seven.0, 0),
+            EGUI_STATES_ERROR_INVALID_ARGUMENT
+        );
+        let large = meta(1, &"x".repeat(1024 * 1024));
+        assert_eq!(
+            egui_states_data_set_header(s, framed, large.0, 0),
+            EGUI_STATES_ERROR_OUT_OF_RANGE
+        );
+
+        let keyed_header = |index| egui_states_data_multi_get_header(s, keyed, index, reader.0);
+        let nine = meta(9, "nine");
+        assert_eq!(keyed_header(1), EGUI_STATES_ERROR_NOT_FOUND);
+        assert_eq!(
+            egui_states_data_multi_set_header(s, keyed, 1, nine.0, 0),
+            EGUI_STATES_ERROR_NOT_FOUND
+        );
+        let five = [5u16];
+        ok(egui_states_data_multi_set(
+            s,
+            keyed,
+            1,
+            EGUI_STATES_DATA_U16,
+            five.as_ptr().cast(),
+            1,
+            null(),
+            0,
+        ));
+        assert_eq!(keyed_header(1), EGUI_STATES_ERROR_NOT_FOUND);
+        ok(egui_states_data_multi_set_header(s, keyed, 1, nine.0, 0));
+        ok(keyed_header(1));
+        assert_eq!((reader.u32(), reader.string()), (9, "nine".to_string()));
+    }
+
+    // A client gets the stored headers with their buffers.
+    let port = free_port();
+    ok(unsafe { egui_states_server_start(s, port, c"127.0.0.1".as_ptr(), null()) });
+    let (state, client) = ClientBuilder::<HeaderKinds>::new(egui::Context::default(), port).build();
+    let connection = Connection(client);
+    wait("client connection", || {
+        connection.0.connect();
+        connection.0.get_state() == ConnectionState::Connected
+    });
+    wait("headers", || {
+        state.framed.header() == (7, "seven".to_string())
+            && state.keyed.header(1) == Some((9, "nine".to_string()))
+    });
+    state.framed.read_with_header(|values, header| {
+        assert_eq!(values, [1.0, 2.0, 3.0]);
+        assert_eq!(header.0, 7);
+    });
+    assert_eq!(state.keyed.get(1), Some(vec![5]));
+    assert!(state.plain.get().is_empty());
+    drop(connection);
+    unsafe { egui_states_server_stop(s) };
+    drop(server);
 }

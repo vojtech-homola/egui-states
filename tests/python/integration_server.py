@@ -8,6 +8,27 @@ from tests.python_test_helpers.network import free_port
 from tests.python_test_helpers.waiting import wait_until
 
 
+def edit_headers(states, number):
+    """Commands 35 and 36: typed Data headers."""
+    from egui_states_test_bindings.structs import HeaderMeta  # ty: ignore[import-not-found]
+
+    h = states.headers
+    if number == 35:  # noqa: PLR2004
+        h.series.set(np.array([1.0, 2.0], dtype=np.float32), header=HeaderMeta(1.5, "series", [3]))
+        h.series.add(np.array([3.0], dtype=np.float32))
+        h.keyed[1].set(np.array([7], dtype=np.uint16))
+        h.keyed[2].set(np.array([8], dtype=np.uint16), header=HeaderMeta(2.0, "keyed", [1]))
+        h.keyed[2].set_header(HeaderMeta(3.0, "renamed", []))
+        h.take.set(np.array([5], dtype=np.uint8), cache=True, header=HeaderMeta(0.5, "take", [1]))
+        h.keyed_take[4].set(np.array([6], dtype=np.uint8))
+        return
+    h.series.clear()
+    h.series.set_header(HeaderMeta(4.0, "cleared", [0]))
+    h.keyed.remove_index(1)
+    assert h.series.get_header() == HeaderMeta(4.0, "cleared", [0])
+    assert h.keyed[2].get_header() == HeaderMeta(3.0, "renamed", [])
+
+
 def set_wire_values(states):
     """Command 30: non-default values of every shape for the client to check."""
     from egui_states_test_bindings.enums import TestEnum, TestEnum2  # ty: ignore[import-not-found]
@@ -242,6 +263,9 @@ def configure(states):  # noqa: PLR0915
                 st.phase.set(31, update=True)
         elif number in {32, 33, 34}:
             {32: edit_collections, 33: edit_numeric, 34: edit_images}[number](states)
+            st.phase.set(number, update=True)
+        elif number in {35, 36}:
+            edit_headers(states, number)
             st.phase.set(number, update=True)
         elif number == 99:
             st.phase.set(99, update=True)
