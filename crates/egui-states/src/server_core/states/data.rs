@@ -165,6 +165,12 @@ impl SyncState {
         self.generation
     }
 
+    /// Whether the state awaits a synchronization with a newly connected
+    /// client.
+    pub(crate) fn required(&self) -> bool {
+        self.required
+    }
+
     pub(crate) fn synchronized(&mut self) {
         self.required = false;
     }

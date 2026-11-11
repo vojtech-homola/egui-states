@@ -12,6 +12,7 @@ use crate::protocol::image::{
 use crate::protocol::{FastVec, MSG_SIZE_THRESHOLD, TRANSFER_CHUNK_SIZE};
 use crate::server_core::net::sender::MessageSender;
 use crate::server_core::server::{Acknowledge, SyncTrait};
+use crate::server_core::states::data::SyncState;
 pub(crate) use crate::server_core::states::image::common::ImageData;
 use crate::server_core::states::image::common::{
     checked_fill_size, pack_image_set, pack_image_update, store_rgba, write_rectangle,
@@ -26,8 +27,7 @@ struct ImageDataInner {
     data: Vec<u8>,
     size: [usize; 2],
     buffer: Buffer,
-    sync_required: bool,
-    sync_generation: u64,
+    sync: SyncState,
 }
 
 pub(crate) struct Image {
@@ -58,8 +58,7 @@ impl Image {
                 data: Vec::with_capacity(0),
                 size: [0, 0],
                 buffer: Buffer::Set(Vec::new()),
-                sync_required: true,
-                sync_generation: 0,
+                sync: SyncState::new(),
             }),
             lock: Mutex::new(()),
             sender,
@@ -97,7 +96,7 @@ impl Image {
 
         // A connection sync sends the latest complete image. Do not enqueue a
         // separate mutation until that initial sync has completed.
-        if w.sync_required || !self.connected.load(Ordering::Acquire) {
+        if w.sync.sendable(&self.connected).is_none() {
             return Ok(());
         }
 
@@ -148,7 +147,7 @@ impl Image {
 
         // The first sync for a connection always sends the complete cached
         // RGBA image. A compact fill is only useful after sync has completed.
-        if w.sync_required || !self.connected.load(Ordering::Acquire) {
+        if w.sync.sendable(&self.connected).is_none() {
             return Ok(());
         }
 
@@ -196,7 +195,7 @@ impl Image {
         // Buffer::Set already contains a pending set. Drop the image guard, but
         // keep the producer mutex, so acknowledge() can drain it before this
         // call sends its data.
-        let sync_generation = w.sync_generation;
+        let sync_generation = w.sync.generation();
         drop(w);
 
         self.event.wait_clear();
@@ -208,7 +207,7 @@ impl Image {
         // the read guard through enqueueing so reset/sync cannot race this
         // generation check.
         let w = self.image.read();
-        if w.sync_generation != sync_generation {
+        if w.sync.generation() != sync_generation {
             return Ok(());
         }
 
@@ -252,7 +251,7 @@ impl Image {
 
         // A connection sync sends the latest complete image. Do not enqueue a
         // separate mutation until that initial sync has completed.
-        if w.sync_required || !self.connected.load(Ordering::Acquire) {
+        if w.sync.sendable(&self.connected).is_none() {
             return Ok(());
         }
 
@@ -310,7 +309,7 @@ impl Image {
             }
         }
 
-        let sync_generation = w.sync_generation;
+        let sync_generation = w.sync.generation();
         drop(w);
 
         self.event.wait_clear();
@@ -319,7 +318,7 @@ impl Image {
         }
 
         let mut w = self.image.write();
-        if w.sync_generation != sync_generation {
+        if w.sync.generation() != sync_generation {
             return Ok(());
         }
 
@@ -359,11 +358,14 @@ impl Acknowledge for Image {
     }
 
     fn reset(&self) {
+        // Bump the generation before releasing a waiting producer, so it sees
+        // that its work belongs to the old connection.
+        {
+            let mut w = self.image.write();
+            w.buffer = Buffer::Set(Vec::new());
+            w.sync.reset();
+        }
         self.event.set();
-        let mut w = self.image.write();
-        w.buffer = Buffer::Set(Vec::new());
-        w.sync_required = true;
-        w.sync_generation = w.sync_generation.wrapping_add(1);
     }
 }
 
@@ -375,13 +377,13 @@ impl SyncTrait for Image {
         // producer consumes it and observes the new generation.
         let _lock = self.lock.lock();
         let mut w = self.image.write();
-        if !w.sync_required {
+        if !w.sync.required() {
             return Ok(());
         }
 
         if w.size[0] == 0 || w.size[1] == 0 {
             w.buffer = Buffer::Set(Vec::new());
-            w.sync_required = false;
+            w.sync.synchronized();
             self.event.set();
             return Ok(());
         }
@@ -391,7 +393,7 @@ impl SyncTrait for Image {
         let data = pack_set_data(self.id, &image_data, false).map_err(|_| ())?;
 
         w.buffer = Buffer::Set(Vec::new());
-        w.sync_required = false;
+        w.sync.synchronized();
         self.event.clear();
         for (message, send_now) in data {
             self.sender.send_set(message, send_now);
@@ -551,13 +553,13 @@ mod tests {
             .unwrap();
 
         assert_no_message(&mut receiver);
-        assert!(image.image.read().sync_required);
+        assert!(image.image.read().sync.required());
 
         image.sync().unwrap();
 
         assert_message(&mut receiver);
         assert_no_message(&mut receiver);
-        assert!(!image.image.read().sync_required);
+        assert!(!image.image.read().sync.required());
 
         image.sync().unwrap();
         assert_no_message(&mut receiver);
@@ -717,7 +719,7 @@ mod tests {
 
         connected.store(false, Ordering::Release);
         image.reset();
-        assert!(image.image.read().sync_required);
+        assert!(image.image.read().sync.required());
 
         image
             .set_image(
@@ -730,7 +732,7 @@ mod tests {
 
         assert_message(&mut receiver);
         assert_no_message(&mut receiver);
-        assert!(!image.image.read().sync_required);
+        assert!(!image.image.read().sync.required());
     }
 
     #[test]

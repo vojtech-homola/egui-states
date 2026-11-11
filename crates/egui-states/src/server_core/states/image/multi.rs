@@ -14,6 +14,7 @@ use crate::protocol::{FastVec, MSG_SIZE_THRESHOLD, TRANSFER_CHUNK_SIZE};
 use crate::server_core::error::CoreError;
 use crate::server_core::net::sender::MessageSender;
 use crate::server_core::server::{Acknowledge, SyncTrait};
+use crate::server_core::states::data::SyncState;
 use crate::server_core::states::image::common::{
     ImageData, checked_fill_size, checked_image_rect, checked_image_size, pack_image_set,
     pack_image_update, store_rgba, write_rectangle,
@@ -26,7 +27,7 @@ enum Buffer {
 
 struct TransferState {
     buffer: Buffer,
-    sync_generation: u64,
+    sync: SyncState,
     sync_acks: usize,
 }
 
@@ -48,7 +49,7 @@ impl ImageMultiTransfer {
             lock: Mutex::new(()),
             state: Mutex::new(TransferState {
                 buffer: Buffer::Set(Vec::new()),
-                sync_generation: 0,
+                sync: SyncState::new(),
                 sync_acks: 0,
             }),
             sender,
@@ -62,11 +63,21 @@ impl ImageMultiTransfer {
         self.connected.load(Ordering::Acquire)
     }
 
-    /// The generation of the current connection. Producers read it while they
-    /// hold the image storage, so a reset after their `sync_required` check
-    /// invalidates their work.
+    /// The generation to send in, or `None` while the collection awaits a
+    /// synchronization or no client is connected. Producers ask while they
+    /// hold the image storage, so a reset after their check invalidates
+    /// their work.
+    fn sendable(&self) -> Option<u64> {
+        self.state.lock().sync.sendable(&self.connected)
+    }
+
+    fn required(&self) -> bool {
+        self.state.lock().sync.required()
+    }
+
+    #[cfg(test)]
     fn generation(&self) -> u64 {
-        self.state.lock().sync_generation
+        self.state.lock().sync.generation()
     }
 
     #[cfg(test)]
@@ -83,9 +94,9 @@ impl ImageMultiTransfer {
         generation: u64,
     ) -> Result<(), String> {
         let mut state = self.state.lock();
-        // A reset after the producer checked `sync_required` belongs to a
-        // later connection, so this work is stale.
-        if state.sync_generation != generation {
+        // A reset after the producer checked whether it may send belongs to
+        // a later connection, so this work is stale.
+        if state.sync.generation() != generation {
             return Ok(());
         }
         match state.buffer {
@@ -126,7 +137,7 @@ impl ImageMultiTransfer {
         // Keep reset from changing the generation between this check and the
         // enqueue, which could otherwise leak stale work into a new connection.
         let state = self.state.lock();
-        if state.sync_generation != generation {
+        if state.sync.generation() != generation {
             return Ok(());
         }
         self.event.clear();
@@ -144,9 +155,9 @@ impl ImageMultiTransfer {
         generation: u64,
     ) -> Result<(), String> {
         let mut state = self.state.lock();
-        // A reset after the producer checked `sync_required` belongs to a
-        // later connection, so this work is stale.
-        if state.sync_generation != generation {
+        // A reset after the producer checked whether it may send belongs to
+        // a later connection, so this work is stale.
+        if state.sync.generation() != generation {
             return Ok(());
         }
         match state.buffer {
@@ -192,7 +203,7 @@ impl ImageMultiTransfer {
         }
 
         let mut state = self.state.lock();
-        if state.sync_generation != generation {
+        if state.sync.generation() != generation {
             return Ok(());
         }
         self.event.clear();
@@ -210,7 +221,7 @@ impl ImageMultiTransfer {
         }
 
         let state = self.state.lock();
-        if state.sync_generation != generation {
+        if state.sync.generation() != generation {
             return;
         }
         self.sender.send(message);
@@ -218,6 +229,7 @@ impl ImageMultiTransfer {
 
     fn begin_sync(&self, messages: Vec<(FastVec<32>, bool)>, ack_count: usize) {
         let mut state = self.state.lock();
+        state.sync.synchronized();
         state.buffer = Buffer::Set(Vec::new());
         state.sync_acks = ack_count;
         if ack_count == 0 {
@@ -256,11 +268,15 @@ impl ImageMultiTransfer {
     }
 
     fn reset(&self) {
+        // Bump the generation before releasing a waiting producer, so it sees
+        // that its work belongs to the old connection.
+        {
+            let mut state = self.state.lock();
+            state.buffer = Buffer::Set(Vec::new());
+            state.sync_acks = 0;
+            state.sync.reset();
+        }
         self.event.set();
-        let mut state = self.state.lock();
-        state.buffer = Buffer::Set(Vec::new());
-        state.sync_acks = 0;
-        state.sync_generation = state.sync_generation.wrapping_add(1);
     }
 
     fn send_all(&self, messages: impl IntoIterator<Item = (FastVec<32>, bool)>) {
@@ -277,7 +293,6 @@ struct StoredImage {
 
 struct ImageMultiInner {
     images: NoHashMap<u32, StoredImage>,
-    sync_required: bool,
 }
 
 pub(crate) struct ImageMulti {
@@ -298,7 +313,6 @@ impl ImageMulti {
             name,
             inner: RwLock::new(ImageMultiInner {
                 images: NoHashMap::default(),
-                sync_required: true,
             }),
             transfer: ImageMultiTransfer::new(id, sender, connected),
         })
@@ -357,14 +371,13 @@ impl ImageMulti {
         let resized = stored.size != image.size;
         stored.size = image.size;
         store_rgba(&mut stored.data, &image, resized);
-        if inner.sync_required || !self.transfer.is_connected() {
+        let Some(generation) = self.transfer.sendable() else {
             return Ok(());
-        }
+        };
         let to_send = match to_send {
             Some(messages) => messages,
             None => pack_set_data(self.transfer.id, index, &image, update)?,
         };
-        let generation = self.transfer.generation();
         drop(inner);
         self.transfer
             .send_or_buffer_set(lock, index, to_send, generation)
@@ -405,14 +418,13 @@ impl ImageMulti {
             }
             stored.data.set_len(rgba_size);
         }
-        if inner.sync_required || !self.transfer.is_connected() {
+        let Some(generation) = self.transfer.sendable() else {
             return Ok(());
-        }
+        };
         let to_send = match to_send {
             Some(messages) => messages,
             None => pack_fill_data(self.transfer.id, index, wire_size, rgba, update)?,
         };
-        let generation = self.transfer.generation();
         drop(inner);
         self.transfer
             .send_or_buffer_set(lock, index, to_send, generation)
@@ -441,7 +453,6 @@ impl ImageMulti {
         };
         let lock = self.transfer.lock.lock();
         let mut inner = self.inner.write();
-        let sync_required = inner.sync_required;
         let stored = inner
             .images
             .get_mut(&index)
@@ -455,15 +466,14 @@ impl ImageMulti {
         }
         let width = stored.size[1];
         write_rectangle(&image, &mut stored.data, width, origin);
-        if sync_required || !self.transfer.is_connected() {
+        let Some(generation) = self.transfer.sendable() else {
             return Ok(());
-        }
+        };
         let mut to_send = match to_send {
             Some(messages) => messages,
             None => pack_update_data(self.transfer.id, index, origin, &image, update)?,
         };
         let rect = [origin[0], origin[1], image.size[0], image.size[1]];
-        let generation = self.transfer.generation();
         drop(inner);
         self.transfer
             .send_or_buffer_update(lock, index, rect, &mut to_send, force, generation)?;
@@ -476,10 +486,9 @@ impl ImageMulti {
         if inner.images.remove(&index).is_none() {
             return Ok(());
         }
-        if inner.sync_required || !self.transfer.is_connected() {
+        let Some(generation) = self.transfer.sendable() else {
             return Ok(());
-        }
-        let generation = self.transfer.generation();
+        };
         drop(inner);
         let message = ImageMultiHeader::Remove(index, update)
             .serialize(self.transfer.id)
@@ -495,10 +504,9 @@ impl ImageMulti {
             return Ok(());
         }
         inner.images.clear();
-        if inner.sync_required || !self.transfer.is_connected() {
+        let Some(generation) = self.transfer.sendable() else {
             return Ok(());
-        }
-        let generation = self.transfer.generation();
+        };
         drop(inner);
         let message = ImageMultiHeader::Reset(update)
             .serialize(self.transfer.id)
@@ -514,10 +522,9 @@ impl Acknowledge for ImageMulti {
     }
 
     fn reset(&self) {
-        // Under the storage lock, so a producer either checked `sync_required`
-        // and read the generation before this reset, or sees the new state.
-        let mut inner = self.inner.write();
-        inner.sync_required = true;
+        // Under the storage lock, so a producer either checked whether it may
+        // send before this reset, or sees the new state.
+        let _inner = self.inner.write();
         self.transfer.reset();
     }
 }
@@ -525,8 +532,8 @@ impl Acknowledge for ImageMulti {
 impl SyncTrait for ImageMulti {
     fn sync(&self) -> Result<(), ()> {
         let _lock = self.transfer.lock.lock();
-        let mut inner = self.inner.write();
-        if !inner.sync_required {
+        let inner = self.inner.write();
+        if !self.transfer.required() {
             return Ok(());
         }
 
@@ -546,7 +553,6 @@ impl SyncTrait for ImageMulti {
             );
         }
         let ack_count = inner.images.len();
-        inner.sync_required = false;
         self.transfer.begin_sync(messages, ack_count);
         Ok(())
     }
@@ -896,7 +902,7 @@ mod tests {
         assert_eq!(images.indices(), vec![1, 13]);
     }
 
-    /// A producer that checked `sync_required` before a reset must not send
+    /// A producer that checked whether it may send before a reset must not send
     /// its work into the next connection, on the idle fast path as well.
     #[test]
     fn work_checked_before_a_reset_is_never_sent() {
