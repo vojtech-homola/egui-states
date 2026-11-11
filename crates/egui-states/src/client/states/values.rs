@@ -420,21 +420,33 @@ impl<T: Atomic, Q: GetQueueType> Clone for ValueAtomic<T, Q> {
 }
 
 // Static --------------------------------------------
+/// What all clones of a read-only handle share. A static never sends or
+/// acknowledges anything, so unlike [`Shared`] it holds no sender.
+struct StaticShared<V> {
+    name: String,
+    type_id: u32,
+    value: V,
+}
+
+impl<V> StaticShared<V> {
+    fn new(name: String, type_id: u32, value: V) -> Arc<Self> {
+        Arc::new(Self {
+            name,
+            type_id,
+            value,
+        })
+    }
+}
+
 /// A server-controlled value that is read-only on the client.
 pub struct Static<T> {
-    shared: Arc<Shared<RwLock<T>>>,
+    shared: Arc<StaticShared<RwLock<T>>>,
 }
 
 impl<T: Clone> Static<T> {
-    pub(crate) fn new(
-        name: String,
-        id: u64,
-        type_id: u32,
-        value: T,
-        sender: MessageSender,
-    ) -> Self {
+    pub(crate) fn new(name: String, type_id: u32, value: T) -> Self {
         Self {
-            shared: Shared::new(name, id, type_id, RwLock::new(value), sender),
+            shared: StaticShared::new(name, type_id, RwLock::new(value)),
         }
     }
 
@@ -476,19 +488,13 @@ impl<T> Clone for Static<T> {
 
 /// Atomic server-controlled value that is read-only on the client.
 pub struct StaticAtomic<T: AtomicStatic> {
-    shared: Arc<Shared<T::Lock>>,
+    shared: Arc<StaticShared<T::Lock>>,
 }
 
 impl<T: AtomicStatic> StaticAtomic<T> {
-    pub(crate) fn new(
-        name: String,
-        id: u64,
-        type_id: u32,
-        value: T,
-        sender: MessageSender,
-    ) -> Self {
+    pub(crate) fn new(name: String, type_id: u32, value: T) -> Self {
         Self {
-            shared: Shared::new(name, id, type_id, T::Lock::new(value), sender),
+            shared: StaticShared::new(name, type_id, T::Lock::new(value)),
         }
     }
 

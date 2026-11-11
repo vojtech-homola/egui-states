@@ -320,7 +320,7 @@ impl StatesCreator for StatesCreatorBuild {
         );
 
         let init = value.init_value();
-        let value = Static::new(full_name, id, type_id, value, self.sender.clone());
+        let value = Static::new(full_name, type_id, value);
 
         self.states
             .push(StateType::Static(name.to_owned(), T::get_type(), init));
@@ -350,7 +350,7 @@ impl StatesCreator for StatesCreatorBuild {
         );
 
         let init = value.init_value();
-        let value = StaticAtomic::new(full_name, id, type_id, value, self.sender.clone());
+        let value = StaticAtomic::new(full_name, type_id, value);
 
         self.states
             .push(StateType::Static(name.to_owned(), T::get_type(), init));
