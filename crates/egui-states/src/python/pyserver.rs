@@ -995,6 +995,23 @@ impl StateServerCore {
         decode_header(py, header, header_type)
     }
 
+    /// The buffer and its header under one storage lock; the header is decoded
+    /// after the lock is released.
+    fn data_get_with_header<'py>(
+        &self,
+        py: Python<'py>,
+        value_id: u64,
+    ) -> PyResult<(Bound<'py, PyByteArray>, Option<Bound<'py, PyAny>>)> {
+        let (data, header_type) = self.inner_data(value_id)?;
+        let (bytes, header) = data.get_with_header(|data, header| {
+            (
+                PyByteArray::new(py, data),
+                header.map(Bytes::copy_from_slice),
+            )
+        });
+        Ok((bytes, decode_header(py, header, header_type)?))
+    }
+
     fn data_set(
         &self,
         py: Python,
@@ -1170,6 +1187,28 @@ impl StateServerCore {
             })
             .ok_or_else(|| PyValueError::new_err("DataMulti index not found."))?;
         decode_header(py, header, header_type)
+    }
+
+    /// The buffer at `index` and its header under one storage lock; the
+    /// header is decoded after the lock is released.
+    fn data_multi_get_with_header<'py>(
+        &self,
+        py: Python<'py>,
+        value_id: u64,
+        index: u32,
+    ) -> PyResult<(Bound<'py, PyByteArray>, Option<Bound<'py, PyAny>>)> {
+        let (data_multi, header_type) = self.inner_data_multi(value_id)?;
+        let (bytes, header) = data_multi
+            .get_with_header(index, |entry| {
+                entry.map(|(data, header)| {
+                    (
+                        PyByteArray::new(py, data),
+                        header.map(Bytes::copy_from_slice),
+                    )
+                })
+            })
+            .ok_or_else(|| PyValueError::new_err("DataMulti index not found."))?;
+        Ok((bytes, decode_header(py, header, header_type)?))
     }
 
     #[allow(clippy::too_many_arguments)]

@@ -160,6 +160,9 @@ def test_data_headers_are_stored_with_their_buffer(local_bundle):
     series.set(np.array([1.0], dtype=np.float32), header=HeaderMeta(1.5, "a", [1]))
     series.add(np.array([2.0], dtype=np.float32))
     assert series.get_header() == HeaderMeta(1.5, "a", [1])
+    data, header = series.get_with_header()
+    assert_array(data, np.array([1.0, 2.0], dtype=np.float32))
+    assert header == HeaderMeta(1.5, "a", [1])
     series.clear(header=HeaderMeta(2.0, "b", []))
     series.set_header(HeaderMeta(3.0, "c", [2, 3]))
     assert_array(series.get(), np.array([], dtype=np.float32))
@@ -168,12 +171,18 @@ def test_data_headers_are_stored_with_their_buffer(local_bundle):
     keyed = states.headers.keyed
     keyed[1].set(np.array([7], dtype=np.uint16))
     assert keyed[1].get_header() is None
+    assert keyed[1].get_with_header()[1] is None
     keyed[1].replace(np.array([8], dtype=np.uint16), 0, header=HeaderMeta(4.0, "d", []))
     assert keyed[1].get_header() == HeaderMeta(4.0, "d", [])
+    data, header = keyed[1].get_with_header()
+    assert_array(data, np.array([8], dtype=np.uint16))
+    assert header == HeaderMeta(4.0, "d", [])
     with pytest.raises(ValueError, match="does not exist"):
         keyed[2].set_header(HeaderMeta(5.0, "e", []))
     with pytest.raises(ValueError, match="index not found"):
         keyed[2].get_header()
+    with pytest.raises(ValueError, match="index not found"):
+        keyed[2].get_with_header()
     keyed.remove_index(1)
     with pytest.raises(ValueError, match="index not found"):
         keyed[1].get_header()
@@ -182,7 +191,8 @@ def test_data_headers_are_stored_with_their_buffer(local_bundle):
     states.headers.keyed_take[3].set(np.array([1], dtype=np.uint8))
 
 
-def test_a_header_is_decoded_outside_the_storage_lock(local_bundle, monkeypatch):
+@pytest.mark.parametrize("with_buffer", [False, True])
+def test_a_header_is_decoded_outside_the_storage_lock(local_bundle, monkeypatch, with_buffer):
     """Decoding runs the header class's Python code, which may use the state.
 
     While the storage lock was held during decoding, a header class that wrote
@@ -221,8 +231,11 @@ def test_a_header_is_decoded_outside_the_storage_lock(local_bundle, monkeypatch)
     def write_keyed():
         keyed[1].set_header(HeaderMeta(2.0, "b", []))
 
-    assert read(series.get_header, write_series) == HeaderMeta(1.0, "a", [])
-    assert read(keyed[1].get_header, write_keyed) == HeaderMeta(1.0, "a", [])
+    def getter(single):
+        return (lambda: single.get_with_header()[1]) if with_buffer else single.get_header
+
+    assert read(getter(series), write_series) == HeaderMeta(1.0, "a", [])
+    assert read(getter(keyed[1]), write_keyed) == HeaderMeta(1.0, "a", [])
 
     monkeypatch.undo()
     assert series.get_header() == HeaderMeta(2.0, "b", [])

@@ -433,6 +433,13 @@ impl Data {
         f(storage.header.as_deref())
     }
 
+    /// Calls `f` with the bytes and the encoded header, `None` until one is
+    /// set, under one read lock.
+    pub(crate) fn get_with_header<R>(&self, f: impl FnOnce(&[u8], Option<&[u8]>) -> R) -> R {
+        let storage = self.storage.read();
+        f(&storage.bytes, storage.header.as_deref())
+    }
+
     fn send_after_ack(&self, generation: u64, messages: Vec<(FastVec<32>, bool)>) {
         send_after_ack(
             &self.storage,
@@ -847,6 +854,21 @@ impl DataMulti {
             .values
             .get(&key)
             .map(|value| value.header.as_deref()))
+    }
+
+    /// Calls `f` with the bytes and the encoded header of `key` under one
+    /// read lock: `None` for a missing key, a `None` header until one is set
+    /// for it.
+    pub(crate) fn get_with_header<R>(
+        &self,
+        key: u32,
+        f: impl FnOnce(Option<(&[u8], Option<&[u8]>)>) -> R,
+    ) -> R {
+        let storage = self.storage.read();
+        f(storage
+            .values
+            .get(&key)
+            .map(|value| (value.bytes.as_slice(), value.header.as_deref())))
     }
 
     fn send_after_ack(&self, generation: u64, messages: Vec<(FastVec<32>, bool)>) {
@@ -1956,7 +1978,13 @@ mod header_tests {
         data.add(with(&[3], None), false).unwrap();
         deliver(&client);
         data.acknowledge();
-        assert_eq!((client.get(), client.header()), (vec![1, 2, 3], meta(1)));
+        assert_eq!(client.get_with_header(), (vec![1, 2, 3], meta(1)));
+        data.get_with_header(|bytes, header| {
+            assert_eq!(
+                (bytes, header),
+                (u16_slice(&[1, 2, 3]).bytes, Some(&encoded(1)[..]))
+            );
+        });
 
         data.remove(0, 1, Some(&encoded(2)), false).unwrap();
         deliver(&client);
@@ -2072,6 +2100,14 @@ mod header_tests {
         client.read_with_header(1, |entry| {
             assert_eq!(entry, Some((&[2, 3][..], &meta(1))));
         });
+        assert_eq!(client.get_with_header(1), Some((vec![2, 3], meta(1))));
+        client.read_header(1, |header| assert_eq!(header, Some(&meta(1))));
+        data.get_with_header(1, |entry| {
+            assert_eq!(
+                entry,
+                Some((u16_slice(&[2, 3]).bytes, Some(&encoded(1)[..])))
+            );
+        });
 
         data.set(2, with(&[4], Some(&encoded(2))), false).unwrap();
         deliver(&client);
@@ -2082,6 +2118,10 @@ mod header_tests {
         });
         seen.sort();
         assert_eq!(seen, [(1, vec![2, 3], meta(1)), (2, vec![4], meta(2))]);
+        client.read_all_with_header(|data, headers| {
+            assert_eq!((data.len(), data.get(&2)), (2, Some(&vec![4])));
+            assert_eq!((headers.len(), headers.get(&2)), (2, Some(&meta(2))));
+        });
 
         let error = data.set_header(9, &encoded(9), false).unwrap_err();
         assert_eq!(error.kind, ErrorKind::NotFound);
@@ -2090,7 +2130,10 @@ mod header_tests {
         data.remove_index(1, false).unwrap();
         deliver(&client);
         assert_eq!(client.header(1), None);
+        assert_eq!(client.get_with_header(1), None);
+        client.read_header(1, |header| assert_eq!(header, None));
         data.header(1, |header| assert_eq!(header, None));
+        data.get_with_header(1, |entry| assert_eq!(entry, None));
 
         // A reconnecting client gets every key with its stored header.
         data.set(3, with(&[5], None), false).unwrap();

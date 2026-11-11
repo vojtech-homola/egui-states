@@ -876,6 +876,19 @@ class DataWithHeader[T: np.generic, H](Data[T]):
         """
         return self._server.data_get_header(self._value_id)
 
+    def get_with_header(self) -> tuple[npt.NDArray[T], H | None]:
+        """Return a snapshot of the buffer and the header read together.
+
+        Separate :meth:`get` and :meth:`get_header` calls can each see a
+        different change made in between.
+
+        Returns:
+            tuple[npt.NDArray[T], H | None]: A NumPy view backed by a copied
+                ``bytearray``, and the header, or ``None`` until one is set.
+        """
+        data, header = self._server.data_get_with_header(self._value_id)
+        return np.frombuffer(data, dtype=self._dtype), header
+
     def set(self, data: Buffer, update: bool = False, header: H | _Unset = UNSET) -> None:
         """Set the data and optionally the header.
 
@@ -1144,6 +1157,23 @@ class SingleDataWithHeader[T: np.generic, H](SingleData[T]):
             ValueError: If the index does not exist.
         """
         return self._server.data_multi_get_header(self._value_id, self._index)
+
+    def get_with_header(self) -> tuple[npt.NDArray[T], H | None]:
+        """Return a snapshot of the buffer and its header read together.
+
+        Separate :meth:`get` and :meth:`get_header` calls can each see a
+        different change made in between.
+
+        Returns:
+            tuple[npt.NDArray[T], H | None]: A NumPy view backed by a copied
+                ``bytearray``, and the header, or ``None`` until one is set
+                for the index.
+
+        Raises:
+            ValueError: If the index does not exist.
+        """
+        data, header = self._server.data_multi_get_with_header(self._value_id, self._index)
+        return np.frombuffer(data, dtype=self._dtype), header
 
     def set(self, data: Buffer, update: bool = False, header: H | _Unset = UNSET) -> None:
         """Set the data at this index and optionally its header.

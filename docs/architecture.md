@@ -149,7 +149,9 @@ is part of the state type, `Data<f32, Meta>`; `Data<f32>` has no header.
 
 A change can carry a new header, which the client publishes together with the
 buffer, also when the transfer is split into chunks: readers never see a new
-header with an old buffer. A change without a header keeps the current one.
+header with an old buffer. To read the two together, use a `*_with_header`
+getter (not in the C ABI): separate reads of the buffer and the header can each
+see a different change. A change without a header keeps the current one.
 Clearing a buffer keeps its header unless a new one is given; removing a
 `DataMulti` key or resetting the collection drops the headers with the keys,
 and a new key gets the header type's default. A header can also be sent alone.

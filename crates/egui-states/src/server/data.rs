@@ -168,6 +168,16 @@ where
         self.inner.header(decode_header)
     }
 
+    /// Returns a copy of the buffer and the header that belongs to it, read
+    /// together; the header is `None` until one is set.
+    ///
+    /// Separate [`Self::get`] and [`Self::header`] calls can each see a
+    /// different change made in between.
+    pub fn get_with_header(&self) -> Result<(Vec<T>, Option<H>)> {
+        self.inner
+            .get_with_header(|data, header| Ok((data_from_bytes(data)?, decode_header(header)?)))
+    }
+
     /// Replaces the complete buffer and optionally requests a client repaint.
     pub fn set(&self, data: &[T], update: bool) -> Result<()> {
         self.set_inner(data, None, update)
@@ -393,6 +403,20 @@ where
     pub fn header(&self, index: u32) -> Result<Option<H>> {
         self.inner
             .header(index, |header| decode_header(header.flatten()))
+    }
+
+    /// Returns a copy of the buffer at `index` and the header that belongs to
+    /// it, read together, or `None` if the index is absent; the header is
+    /// `None` until one is set for the index.
+    ///
+    /// Separate [`Self::get`] and [`Self::header`] calls can each see a
+    /// different change made in between.
+    pub fn get_with_header(&self, index: u32) -> Result<Option<(Vec<T>, Option<H>)>> {
+        self.inner.get_with_header(index, |entry| {
+            entry
+                .map(|(data, header)| Ok((data_from_bytes(data)?, decode_header(header)?)))
+                .transpose()
+        })
     }
 
     /// Replaces the buffer at `index`. A new key gets the default header.
@@ -743,10 +767,15 @@ mod tests {
         let plain = Data::<u16>::new(&server, "root.plain").unwrap();
 
         assert_eq!(data.header().unwrap(), None);
+        assert_eq!(data.get_with_header().unwrap(), (vec![], None));
         data.set_with_header(&[1, 2], &(1, "a".into()), false)
             .unwrap();
         data.add(&[3], false).unwrap();
         assert_eq!(data.header().unwrap(), Some((1, "a".into())));
+        assert_eq!(
+            data.get_with_header().unwrap(),
+            (vec![1, 2, 3], Some((1, "a".into())))
+        );
         data.clear_with_header(&(2, "b".into()), false).unwrap();
         data.set_header(&(3, "c".into()), false).unwrap();
         assert_eq!(data.get().unwrap(), Vec::<u16>::new());
@@ -754,12 +783,18 @@ mod tests {
 
         multi.set(1, &[1], false).unwrap();
         assert_eq!(multi.header(1).unwrap(), None);
+        assert_eq!(multi.get_with_header(1).unwrap(), Some((vec![1], None)));
         multi
             .replace_with_header(1, 0, &[5], &(4, "d".into()), false)
             .unwrap();
         assert_eq!(multi.header(1).unwrap(), Some((4, "d".into())));
+        assert_eq!(
+            multi.get_with_header(1).unwrap(),
+            Some((vec![5], Some((4, "d".into()))))
+        );
         assert!(multi.set_header(2, &(5, "e".into()), false).is_err());
         assert_eq!(multi.header(2).unwrap(), None);
+        assert_eq!(multi.get_with_header(2).unwrap(), None);
 
         take.set_with_header(&[1], &(6, "f".into()), false, false, true)
             .unwrap();

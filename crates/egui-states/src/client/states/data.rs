@@ -384,7 +384,8 @@ where
     /// Returns a copy of the complete buffer.
     ///
     /// This allocates and copies every element. Use [`Self::read`] to inspect a
-    /// large buffer without cloning it.
+    /// large buffer without cloning it, and [`Self::get_with_header`] to copy
+    /// the header with the buffer.
     pub fn get(&self) -> Vec<T> {
         self.inner.read().data.clone()
     }
@@ -414,6 +415,17 @@ where
     /// which waits for `f`.
     pub fn read_header<R>(&self, f: impl Fn(&H) -> R) -> R {
         f(&self.inner.read().header)
+    }
+
+    /// Returns a copy of the buffer and the header that belongs to it, read
+    /// under one read lock.
+    ///
+    /// Separate [`Self::get`] and [`Self::header`] calls can each see a
+    /// different server update. Use [`Self::read_with_header`] to inspect a
+    /// large buffer without cloning it.
+    pub fn get_with_header(&self) -> (Vec<T>, H) {
+        let inner = self.inner.read();
+        (inner.data.clone(), inner.header.clone())
     }
 
     /// Borrows the buffer and the header that belongs to it for the duration
@@ -683,6 +695,8 @@ where
     }
 
     /// Returns a copy of the buffer at `key`, or `None` when it is absent.
+    ///
+    /// Use [`Self::get_with_header`] to copy the header with the buffer.
     #[inline]
     pub fn get(&self, key: u32) -> Option<Vec<T>> {
         self.inner.read().data.get(&key).cloned()
@@ -708,9 +722,24 @@ where
     /// Do not call this handle or a clone of it from `f`: the read lock is not
     /// reentrant, so a nested read waits behind an incoming server update,
     /// which waits for `f`.
+    /// Use [`Self::read_all_with_header`] to read the headers as well.
     #[inline]
     pub fn read_all<R>(&self, f: impl Fn(&NoHashMap<u32, Vec<T>>) -> R) -> R {
         f(&self.inner.read().data)
+    }
+
+    /// Borrows the complete keyed collection and the headers by key for the
+    /// duration of `f`, under one read lock; both maps have the same keys.
+    ///
+    /// Do not call this handle or a clone of it from `f`: the read lock is not
+    /// reentrant, so a nested read waits behind an incoming server update,
+    /// which waits for `f`.
+    pub fn read_all_with_header<R>(
+        &self,
+        f: impl Fn(&NoHashMap<u32, Vec<T>>, &NoHashMap<u32, H>) -> R,
+    ) -> R {
+        let inner = self.inner.read();
+        f(&inner.data, &inner.headers)
     }
 
     /// Calls `f` for every currently stored key and buffer.
@@ -730,6 +759,31 @@ where
     /// absent; `H::default()` until the server sets one for the key.
     pub fn header(&self, key: u32) -> Option<H> {
         self.inner.read().headers.get(&key).cloned()
+    }
+
+    /// Borrows the header at `key` for the duration of `f`; `None` when the
+    /// key is absent.
+    ///
+    /// Do not call this handle or a clone of it from `f`: the read lock is not
+    /// reentrant, so a nested read waits behind an incoming server update,
+    /// which waits for `f`.
+    pub fn read_header<R>(&self, key: u32, f: impl Fn(Option<&H>) -> R) -> R {
+        f(self.inner.read().headers.get(&key))
+    }
+
+    /// Returns a copy of the buffer at `key` and its header, read under one
+    /// read lock; `None` when the key is absent.
+    ///
+    /// Separate [`Self::get`] and [`Self::header`] calls can each see a
+    /// different server update. Use [`Self::read_with_header`] to inspect a
+    /// large buffer without cloning it.
+    pub fn get_with_header(&self, key: u32) -> Option<(Vec<T>, H)> {
+        let inner = self.inner.read();
+        inner
+            .data
+            .get(&key)
+            .zip(inner.headers.get(&key))
+            .map(|(data, header)| (data.clone(), header.clone()))
     }
 
     /// Borrows the buffer at `key` and its header for the duration of `f`,
