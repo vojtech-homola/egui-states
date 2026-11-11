@@ -940,8 +940,11 @@ class DataWithHeader[T: np.generic, H](Data[T]):
     def set_header(self, header: H, update: bool = False) -> None:
         """Replace the header alone.
 
-        The client does not acknowledge a header, so this never waits for it:
-        headers set faster than the client reads them queue up, as values do.
+        The client does not acknowledge a header, so this does not wait for
+        the client itself: headers set faster than the client reads them
+        queue up, as values do. It is queued after a buffer change that
+        another thread is still sending, though, and waits as long as that
+        change waits for the client.
 
         Args:
             header (H): New header.
@@ -1204,7 +1207,10 @@ class SingleDataWithHeader[T: np.generic, H](SingleData[T]):
         self._server.data_multi_clear(self._value_id, self._index, update, _header(header))
 
     def set_header(self, header: H, update: bool = False) -> None:
-        """Replace the header at this index alone; it never waits for the client.
+        """Replace the header at this index alone.
+
+        It does not wait for the client itself, but it is queued after a
+        buffer change to any index that another thread is still sending.
 
         Args:
             header (H): New header.

@@ -403,7 +403,10 @@ impl Data {
     }
 
     /// Replaces the header alone. Like a clear, the client does not
-    /// acknowledge it, so it is queued at once without waiting.
+    /// acknowledge it, so it is queued without waiting for an
+    /// acknowledgement of its own. The producer mutex still orders it after
+    /// a change another producer is sending, so it cannot overtake a stored
+    /// header that change carries.
     pub(crate) fn set_header(&self, header: &[u8], update: bool) -> Result<(), String> {
         self.header_type.check(&self.name, Some(header))?;
         let _producer = self.producer.lock();

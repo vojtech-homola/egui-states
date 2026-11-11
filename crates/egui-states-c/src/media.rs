@@ -575,8 +575,9 @@ pub unsafe extern "C" fn egui_states_data_clear(
 }
 
 /// Replaces the header of a `Data` state alone. The client does not
-/// acknowledge a header, so this never waits. `flags` may be
-/// `EGUI_STATES_UPDATE`.
+/// acknowledge a header, so this does not wait for the client itself, but it
+/// is queued after a buffer change that another thread is still sending.
+/// `flags` may be `EGUI_STATES_UPDATE`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn egui_states_data_set_header(
     server: *const egui_states_server_t,
@@ -751,8 +752,9 @@ pub unsafe extern "C" fn egui_states_data_multi_clear(
     })
 }
 
-/// Replaces the header at the existing `index` alone; this never waits for
-/// the client. `flags` may be `EGUI_STATES_UPDATE`.
+/// Replaces the header at the existing `index` alone. It does not wait for
+/// the client itself, but it is queued after a buffer change to any key that
+/// another thread is still sending. `flags` may be `EGUI_STATES_UPDATE`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn egui_states_data_multi_set_header(
     server: *const egui_states_server_t,

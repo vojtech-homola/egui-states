@@ -283,8 +283,10 @@ where
     /// Replaces the header alone.
     ///
     /// Unlike buffer changes, the client does not acknowledge a header, so
-    /// this never waits for the client: headers set faster than the client
-    /// reads them queue up, as values do.
+    /// this does not wait for the client itself: headers set faster than the
+    /// client reads them queue up, as values do. It is queued after a buffer
+    /// change that another thread is still sending, though, and waits as long
+    /// as that change waits for the client.
     pub fn set_header(&self, header: &H, update: bool) -> Result<()> {
         let header = serialize_bytes(header)?;
         self.inner
@@ -507,8 +509,9 @@ where
             .map_err(ServerError::new)
     }
 
-    /// Replaces the header at `index` alone; like [`Data::set_header`], it
-    /// never waits for the client.
+    /// Replaces the header at `index` alone. Like [`Data::set_header`], it
+    /// does not wait for the client itself, but it is queued after a buffer
+    /// change to any key that another thread is still sending.
     ///
     /// # Errors
     ///

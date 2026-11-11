@@ -151,8 +151,11 @@ header with an old buffer. A change without a header keeps the current one.
 Clearing a buffer keeps its header unless a new one is given; removing a
 `DataMulti` key or resetting the collection drops the headers with the keys,
 and a new key gets the header type's default. A header can also be sent alone.
-Unlike a buffer change, the client does not acknowledge it, so sending
-headers alone never waits for the client, as with values.
+Unlike a buffer change, the client does not acknowledge it, so a header sent
+alone does not wait for the client itself, as with values. It keeps its place
+after the buffer changes of its state, though: while another thread's change
+to the state, or to any key of a `DataMulti`, waits for the client's
+acknowledgement, the header waits behind it.
 
 A header that was never set reads as missing on the server (`None` in Rust and
 Python, `NOT_FOUND` in C), while the client shows the header type's default. A

@@ -770,8 +770,9 @@ egui_states_status_t egui_states_data_clear(const egui_states_server_t *server,
                                             uint32_t flags);
 
 // Replaces the header of a `Data` state alone. The client does not
-// acknowledge a header, so this never waits. `flags` may be
-// `EGUI_STATES_UPDATE`.
+// acknowledge a header, so this does not wait for the client itself, but it
+// is queued after a buffer change that another thread is still sending.
+// `flags` may be `EGUI_STATES_UPDATE`.
 egui_states_status_t egui_states_data_set_header(const egui_states_server_t *server,
                                                  uint64_t id,
                                                  const egui_states_writer_t *header,
@@ -864,8 +865,9 @@ egui_states_status_t egui_states_data_multi_clear(const egui_states_server_t *se
                                                   const egui_states_writer_t *header,
                                                   uint32_t flags);
 
-// Replaces the header at the existing `index` alone; this never waits for
-// the client. `flags` may be `EGUI_STATES_UPDATE`.
+// Replaces the header at the existing `index` alone. It does not wait for
+// the client itself, but it is queued after a buffer change to any key that
+// another thread is still sending. `flags` may be `EGUI_STATES_UPDATE`.
 egui_states_status_t egui_states_data_multi_set_header(const egui_states_server_t *server,
                                                        uint64_t id,
                                                        uint32_t index,

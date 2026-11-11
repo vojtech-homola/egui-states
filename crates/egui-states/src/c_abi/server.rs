@@ -1020,7 +1020,8 @@ impl CServer {
             .map_err(Error::internal)
     }
 
-    /// Replaces the header alone; this never waits for the client.
+    /// Replaces the header alone. It does not wait for the client itself, but
+    /// it is queued after a buffer change that another thread is still sending.
     pub fn data_set_header(&self, id: u64, header: &Writer, update: bool) -> Result<()> {
         let (name, core, _, header_type) = lookup!(self.states()?, id, Data(core, kind, header));
         let header = header_bytes(name, header_type, Some(header))?.unwrap_or_default();
@@ -1170,7 +1171,9 @@ impl CServer {
         ))
     }
 
-    /// Replaces the header at `index` alone; this never waits for the client.
+    /// Replaces the header at `index` alone. It does not wait for the client
+    /// itself, but it is queued after a buffer change to any key that another
+    /// thread is still sending.
     pub fn data_multi_set_header(
         &self,
         id: u64,
