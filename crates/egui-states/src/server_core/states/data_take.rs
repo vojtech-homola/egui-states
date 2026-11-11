@@ -312,34 +312,33 @@ impl SyncTrait for DataMultiTake {
     fn sync(&self) -> Result<(), ()> {
         let mut w = self.state.write();
         w.sync.synchronized();
-        if w.values.is_empty() {
-            let message = DataMultiTakeHeader::Reset(false).serialize(self.id)?;
-            self.sender.send(message);
-            self.event.set();
-        } else {
-            for (index, (data, count, header)) in w.values.iter() {
-                let messages = pack_data_multi_take(
-                    self.id,
-                    *index,
-                    data,
-                    *count as u64,
-                    self.data_type,
-                    false,
-                    false,
-                    take_header(&self.header_type, header.as_deref()),
-                )
-                .map_err(|_| ())?;
 
-                for (message, single) in messages {
-                    self.sender.send_set(message, single);
-                }
+        // The client keeps the values it has not taken across a disconnect;
+        // drop them, so it holds exactly the cached keys, like a DataMulti.
+        let message = DataMultiTakeHeader::Reset(false).serialize(self.id)?;
+        self.sender.send(message);
+        for (index, (data, count, header)) in w.values.iter() {
+            let messages = pack_data_multi_take(
+                self.id,
+                *index,
+                data,
+                *count as u64,
+                self.data_type,
+                false,
+                false,
+                take_header(&self.header_type, header.as_deref()),
+            )
+            .map_err(|_| ())?;
 
-                if !self.connected.load(Ordering::Acquire) {
-                    return Ok(());
-                }
+            for (message, single) in messages {
+                self.sender.send_set(message, single);
             }
-            self.event.set();
+
+            if !self.connected.load(Ordering::Acquire) {
+                return Ok(());
+            }
         }
+        self.event.set();
 
         Ok(())
     }
@@ -653,8 +652,8 @@ mod tests {
         take.sync().unwrap();
         assert_eq!(
             count(&mut receiver),
-            1,
-            "the synchronization sends the cache"
+            2,
+            "the synchronization resets and sends the cache"
         );
 
         let first = take.clone();
@@ -797,6 +796,68 @@ mod transfer_tests {
         DataMultiTake as ClientMulti, DataTake as ClientTake, UpdateDataMultiTake, UpdateDataTake,
     };
     use crate::protocol::ServerHeader;
+
+    /// Applies the queued server messages of the multi take `61` to `client`.
+    fn apply(
+        receiver: &mut crate::server_core::net::sender::MessageReceiver,
+        client: &ClientMulti<u8>,
+    ) {
+        while let Ok(Some((message, _))) = receiver.try_recv() {
+            let (mut parser, (header, payload)) =
+                MessagesParser::from_bytes(message.into_bytes()).unwrap();
+            match header {
+                ServerHeader::DataMultiTake(61, DataMultiTakeHeader::Reset(_)) => client.reset(),
+                ServerHeader::DataMultiTake(
+                    61,
+                    DataMultiTakeHeader::Modify(key, header, blocking),
+                ) => {
+                    client.update(key, (header, payload), blocking).unwrap();
+                }
+                _ => panic!("unexpected server message"),
+            }
+            assert!(parser.next().unwrap().is_none());
+        }
+    }
+
+    /// A resynchronization used to reset the client only when no key was
+    /// cached, so a value the client had not taken survived a reconnect
+    /// whenever another key was cached.
+    #[test]
+    fn a_resync_leaves_the_client_with_the_cached_keys() {
+        let (client_sender, _acks) = ClientSender::new();
+        let client = ClientMulti::<u8>::new("takes".into(), 61, client_sender);
+        let (sender, mut receiver) = MessageSender::new();
+        let connected = Arc::new(AtomicBool::new(true));
+        let server = DataMultiTake::new(
+            "takes".into(),
+            61,
+            DataType::U8,
+            None,
+            sender,
+            connected.clone(),
+        );
+        let data = |bytes: &'static [u8]| DataSlice {
+            bytes,
+            data_type: DataType::U8,
+            header: None,
+        };
+
+        server.sync().unwrap();
+        server.set(1, data(&[1]), false, false, true).unwrap();
+        server.set(2, data(&[2]), false, false, false).unwrap();
+        apply(&mut receiver, &client);
+        assert!(client.is_some(1) && client.is_some(2));
+
+        connected.store(false, Ordering::Release);
+        Acknowledge::reset(&*server);
+        client.disconnected();
+        connected.store(true, Ordering::Release);
+        server.sync().unwrap();
+        apply(&mut receiver, &client);
+
+        assert_eq!(client.take(1).as_deref(), Some(&[1u8][..]));
+        assert!(!client.is_some(2), "an uncached value survived the resync");
+    }
 
     #[test]
     fn real_take_chunks_publish_once_and_ack_only_after_consumption() {

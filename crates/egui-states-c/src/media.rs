@@ -796,7 +796,8 @@ pub unsafe extern "C" fn egui_states_data_multi_reset(
 }
 
 /// Sends a one-shot buffer at `index` of a `DataMultiTake` state, with the
-/// header and flags of `egui_states_data_take_set`.
+/// header and flags of `egui_states_data_take_set`. A reconnected client holds
+/// only the cached keys; values it had not taken are dropped.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn egui_states_data_multi_take_set(
     server: *const egui_states_server_t,

@@ -1336,7 +1336,8 @@ class SingleDataTake[T: np.generic]:
             update (bool, optional): Whether to request a client repaint.
                 Defaults to False.
             cache (bool, optional): Whether to cache the last sent data for a
-                newly initialized client. Defaults to False.
+                newly initialized client, which holds only cached indices.
+                Defaults to False.
         """
         self._server.data_multi_take_set(
             self._value_id,
@@ -1369,7 +1370,8 @@ class SingleDataTakeWithHeader[T: np.generic, H](SingleDataTake[T]):
             update (bool, optional): Whether to request a client repaint.
                 Defaults to False.
             cache (bool, optional): Whether to cache the last sent data and
-                header for a newly initialized client. Defaults to False.
+                header for a newly initialized client, which holds only cached
+                indices. Defaults to False.
             header (H | _Unset, optional): Header sent with the data;
                 :data:`UNSET` sends the default. Defaults to :data:`UNSET`.
         """

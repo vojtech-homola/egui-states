@@ -106,9 +106,9 @@ pending server work.
 
 When a client connects, every state is synchronized from the server's current
 contents; a change made while the client was away is not replayed. A
-`DataMulti` or `ImageMulti` is reset first and then receives its keys one by
-one, so for a moment a reconnected client shows the collection empty or with
-only some keys, until the last key has arrived. A partial transfer from a lost
+`DataMulti`, `DataMultiTake` or `ImageMulti` is reset first and then receives
+its keys one by one, so for a moment a reconnected client shows the collection
+empty or with only some keys, until the last key has arrived. A partial transfer from a lost
 connection is dropped on both sides.
 
 A whole-collection replacement of a `VecState` or `MapState` larger than one
@@ -137,6 +137,8 @@ For one-shot transfers, `blocking = true` prevents a later send from overtaking
 the pending transfer. Calling the client handle's `take` method consumes the
 value and sends the acknowledgement. For numeric takes, `cache = true` also
 retains the last transfer for synchronization with a newly connected client.
+A reconnected `DataMultiTake` holds only the cached keys: values the client
+had not taken before the disconnect are dropped.
 
 ## Data headers
 

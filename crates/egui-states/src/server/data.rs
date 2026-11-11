@@ -569,6 +569,9 @@ where
 
     /// Sends a buffer at `index` with blocking, repaint, and caching controls;
     /// the client takes it with `H::default()`.
+    ///
+    /// A reconnected client holds only the cached keys; values it had not
+    /// taken before the disconnect are dropped.
     pub fn set(
         &self,
         index: u32,

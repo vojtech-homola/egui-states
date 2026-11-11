@@ -887,7 +887,8 @@ egui_states_status_t egui_states_data_multi_reset(const egui_states_server_t *se
                                                   uint32_t flags);
 
 // Sends a one-shot buffer at `index` of a `DataMultiTake` state, with the
-// header and flags of `egui_states_data_take_set`.
+// header and flags of `egui_states_data_take_set`. A reconnected client holds
+// only the cached keys; values it had not taken are dropped.
 egui_states_status_t egui_states_data_multi_take_set(const egui_states_server_t *server,
                                                      uint64_t id,
                                                      uint32_t index,
