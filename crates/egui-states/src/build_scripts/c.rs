@@ -571,7 +571,8 @@ fn render_c<S: State>() -> (String, String) {
 /// - `<PREFIX>_VERSION_HASH`, the layout hash for the handshake;
 /// - for each state, `<PREFIX>_<PATH>_ID` and `_NAME`, plus its type string
 ///   in `_TYPE` (`_KEY_TYPE` and `_VALUE_TYPE` for maps, `_DATA_TYPE` for
-///   numeric buffers);
+///   numeric buffers, and `_HEADER_TYPE` for a numeric buffer with a
+///   header);
 /// - a C enum per protocol enum, with conversions to and from the variant
 ///   index that the wire format carries;
 /// - `<prefix>_register(server)`, which defines every struct and enum and
