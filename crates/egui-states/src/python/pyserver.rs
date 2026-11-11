@@ -213,14 +213,18 @@ fn encode_single_header(
 }
 
 /// Decodes a stored header, `None` when none was set.
+///
+/// The caller copies the header out of the core first: decoding constructs
+/// Python objects, whose code may hand the GIL to a thread that then waits
+/// for the same storage lock.
 fn decode_header<'py>(
     py: Python<'py>,
-    header: Option<&[u8]>,
+    header: Option<Bytes>,
     header_type: &Option<PyObjectType>,
 ) -> PyResult<Option<Bound<'py, PyAny>>> {
     match (header, header_type) {
         (Some(header), Some(object_type)) => {
-            let mut parser = ValueParser::new(Bytes::copy_from_slice(header));
+            let mut parser = ValueParser::new(header);
             pyparsing::deserialize_py(py, &mut parser, object_type).map(Some)
         }
         _ => Ok(None),
@@ -986,7 +990,8 @@ impl StateServerCore {
         value_id: u64,
     ) -> PyResult<Option<Bound<'py, PyAny>>> {
         let (data, header_type) = self.inner_data(value_id)?;
-        data.header(|header| decode_header(py, header, header_type))
+        let header = data.header(|header| header.map(Bytes::copy_from_slice));
+        decode_header(py, header, header_type)
     }
 
     fn data_set(
@@ -1158,10 +1163,12 @@ impl StateServerCore {
         index: u32,
     ) -> PyResult<Option<Bound<'py, PyAny>>> {
         let (data_multi, header_type) = self.inner_data_multi(value_id)?;
-        data_multi.header(index, |header| match header {
-            Some(header) => decode_header(py, header, header_type),
-            None => Err(PyValueError::new_err("DataMulti index not found.")),
-        })
+        let header = data_multi
+            .header(index, |header| {
+                header.map(|header| header.map(Bytes::copy_from_slice))
+            })
+            .ok_or_else(|| PyValueError::new_err("DataMulti index not found."))?;
+        decode_header(py, header, header_type)
     }
 
     #[allow(clippy::too_many_arguments)]

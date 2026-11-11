@@ -1,6 +1,8 @@
 # ruff: noqa: D103
 """Numeric buffer mutation and range validation through generated state handles."""
 
+import threading
+
 import numpy as np
 import pytest
 from .assertions import assert_array
@@ -178,6 +180,53 @@ def test_data_headers_are_stored_with_their_buffer(local_bundle):
 
     states.headers.take.set(np.array([1], dtype=np.uint8), header=HeaderMeta(6.0, "f", []))
     states.headers.keyed_take[3].set(np.array([1], dtype=np.uint8))
+
+
+def test_a_header_is_decoded_outside_the_storage_lock(local_bundle, monkeypatch):
+    """Decoding runs the header class's Python code, which may use the state.
+
+    While the storage lock was held during decoding, a header class that wrote
+    to the same state deadlocked; so did a second Python thread reading it
+    while the connection waited to write.
+    """
+    _, states, _ = local_bundle
+    series = states.headers.series
+    keyed = states.headers.keyed
+    series.set_header(HeaderMeta(1.0, "a", []))
+    keyed[1].set(np.array([1], dtype=np.uint16), header=HeaderMeta(1.0, "a", []))
+
+    init = HeaderMeta.__init__
+    writes = []
+
+    def writing_init(self, *args, **kwargs):
+        init(self, *args, **kwargs)
+        if writes:
+            write = writes.pop()
+            write()
+
+    monkeypatch.setattr(HeaderMeta, "__init__", writing_init)
+
+    def read(get_header, write):
+        writes.append(write)
+        result = []
+        worker = threading.Thread(target=lambda: result.append(get_header()), daemon=True)
+        worker.start()
+        worker.join(timeout=5)
+        assert not worker.is_alive(), "decoding a header deadlocked"
+        return result[0]
+
+    def write_series():
+        series.set_header(HeaderMeta(2.0, "b", []))
+
+    def write_keyed():
+        keyed[1].set_header(HeaderMeta(2.0, "b", []))
+
+    assert read(series.get_header, write_series) == HeaderMeta(1.0, "a", [])
+    assert read(keyed[1].get_header, write_keyed) == HeaderMeta(1.0, "a", [])
+
+    monkeypatch.undo()
+    assert series.get_header() == HeaderMeta(2.0, "b", [])
+    assert keyed[1].get_header() == HeaderMeta(2.0, "b", [])
 
 
 def test_a_header_of_the_wrong_type_changes_nothing(local_bundle):
