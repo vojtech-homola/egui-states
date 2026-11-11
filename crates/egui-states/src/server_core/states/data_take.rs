@@ -26,9 +26,11 @@ struct TakeState {
 /// A producer waits for the client to take a pending blocking value before it
 /// takes the state lock, so a remove or reset can still cancel that value.
 /// It then stores the cache and queues its chunks under the lock. While the
-/// state awaits a synchronization with a newly connected client, or when its
-/// wait spanned a reset, it only stores: the synchronization sends the cache,
-/// and sending as well would deliver the value twice.
+/// state awaits a synchronization with a newly connected client, it only
+/// stores: the synchronization sends the cache, and sending as well would
+/// deliver the value twice. When a synchronization ran after the producer
+/// checked the connection, it sent the previous cache, so the producer starts
+/// over for the new connection; see [`finish`].
 pub(crate) struct DataTake {
     pub(crate) name: String,
     id: u64,
@@ -76,38 +78,44 @@ impl DataTake {
         let elements = check_data_type(&data, self.data_type, self.item_size)?;
         let header = self.header_type.check(&self.name, data.header)?;
         let slice = data.bytes;
-        let generation = self.state.lock().sync.generation();
 
-        let messages = if self.connected.load(Ordering::Acquire) {
-            let messages = pack_data_take(
-                self.id,
-                slice,
-                elements as u64,
-                self.data_type,
-                blocking,
-                update,
-                self.take_header(header),
-            )?;
-            wait_for_slot(&self.event, blocking);
-            Some(messages)
-        } else {
-            None
-        };
+        loop {
+            let generation = self.state.lock().sync.generation();
+            let messages = if self.connected.load(Ordering::Acquire) {
+                let messages = pack_data_take(
+                    self.id,
+                    slice,
+                    elements as u64,
+                    self.data_type,
+                    blocking,
+                    update,
+                    self.take_header(header),
+                )?;
+                wait_for_slot(&self.event, blocking);
+                Some(messages)
+            } else {
+                None
+            };
 
-        let mut state = self.state.lock();
-        state.cache = cache.then(|| (slice.to_vec(), elements, header.map(<[u8]>::to_vec)));
-        if let Some(messages) = messages {
-            send_if_current(
+            let mut state = self.state.lock();
+            let messages = match finish(
                 &state.sync,
                 &self.event,
                 &self.connected,
-                &self.sender,
                 generation,
                 blocking,
                 messages,
-            );
+            ) {
+                Finish::Retry => continue,
+                Finish::Store => None,
+                Finish::Send(messages) => Some(messages),
+            };
+            state.cache = cache.then(|| (slice.to_vec(), elements, header.map(<[u8]>::to_vec)));
+            for (message, single) in messages.into_iter().flatten() {
+                self.sender.send_set(message, single);
+            }
+            return Ok(());
         }
-        Ok(())
     }
 }
 
@@ -212,46 +220,52 @@ impl DataMultiTake {
         let elements = check_data_type(&data, self.data_type, self.item_size)?;
         let header = self.header_type.check(&self.name, data.header)?;
         let slice = data.bytes;
-        let generation = self.state.read().sync.generation();
 
-        let messages = if self.connected.load(Ordering::Acquire) {
-            let messages = pack_data_multi_take(
-                self.id,
-                index,
-                slice,
-                elements as u64,
-                self.data_type,
-                blocking,
-                update,
-                take_header(&self.header_type, header),
-            )?;
-            wait_for_slot(&self.event, blocking);
-            Some(messages)
-        } else {
-            None
-        };
+        loop {
+            let generation = self.state.read().sync.generation();
+            let messages = if self.connected.load(Ordering::Acquire) {
+                let messages = pack_data_multi_take(
+                    self.id,
+                    index,
+                    slice,
+                    elements as u64,
+                    self.data_type,
+                    blocking,
+                    update,
+                    take_header(&self.header_type, header),
+                )?;
+                wait_for_slot(&self.event, blocking);
+                Some(messages)
+            } else {
+                None
+            };
 
-        // Held until every chunk is queued, so concurrent non-blocking
-        // transfers cannot interleave their chunks on the wire.
-        let mut w = self.state.write();
-        if cache {
-            let cached = (slice.to_vec(), elements, header.map(<[u8]>::to_vec));
-            w.values.insert(index, cached);
-        } else {
-            w.values.remove(&index);
-        }
-        if let Some(messages) = messages {
-            send_if_current(
+            // Held until every chunk is queued, so concurrent non-blocking
+            // transfers cannot interleave their chunks on the wire.
+            let mut w = self.state.write();
+            let messages = match finish(
                 &w.sync,
                 &self.event,
                 &self.connected,
-                &self.sender,
                 generation,
                 blocking,
                 messages,
-            );
+            ) {
+                Finish::Retry => continue,
+                Finish::Store => None,
+                Finish::Send(messages) => Some(messages),
+            };
+            if cache {
+                let cached = (slice.to_vec(), elements, header.map(<[u8]>::to_vec));
+                w.values.insert(index, cached);
+            } else {
+                w.values.remove(&index);
+            }
+            for (message, single) in messages.into_iter().flatten() {
+                self.sender.send_set(message, single);
+            }
+            return Ok(());
         }
-        Ok(())
     }
 
     pub(crate) fn remove_index(&self, index: u32, update: bool) -> Result<(), String> {
@@ -350,28 +364,41 @@ fn wait_for_slot(event: &Event, blocking: bool) {
     }
 }
 
-/// Queues `messages` if the state is still synchronized in the generation the
-/// producer started in, under the caller's state lock. Otherwise the
-/// synchronization delivers the cached value, and a blocking producer returns
+/// What a producer does with its transfer once it holds the state lock.
+enum Finish {
+    /// Store the value and queue these messages.
+    Send(Vec<(FastVec<32>, bool)>),
+    /// Only store the value: no client is synchronized, and the next
+    /// synchronization sends the cache.
+    Store,
+    /// Start over: a synchronization ran after the producer checked the
+    /// connection, so it sent the previous cache and the transfer packed for
+    /// the old connection, if any, is stale.
+    Retry,
+}
+
+/// Decides, under the caller's state lock, how a producer finishes the
+/// transfer it packed (`Some`) or skipped (`None`) after it read `generation`
+/// and checked the connection. A blocking producer that does not send returns
 /// the slot its wait consumed.
-fn send_if_current(
+fn finish(
     sync: &SyncState,
     event: &Event,
     connected: &AtomicBool,
-    sender: &MessageSender,
     generation: u64,
     blocking: bool,
-    messages: Vec<(FastVec<32>, bool)>,
-) {
-    if sync.sendable(connected) != Some(generation) {
-        if blocking {
-            event.set();
-        }
-        return;
+    messages: Option<Vec<(FastVec<32>, bool)>>,
+) -> Finish {
+    let packed = messages.is_some();
+    let finish = match (sync.sendable(connected), messages) {
+        (Some(current), Some(messages)) if current == generation => return Finish::Send(messages),
+        (None, _) => Finish::Store,
+        (Some(_), _) => Finish::Retry,
+    };
+    if blocking && packed {
+        event.set();
     }
-    for (message, single) in messages {
-        sender.send_set(message, single);
-    }
+    finish
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -636,6 +663,129 @@ mod tests {
         })
         .unwrap();
         assert_eq!(count(&mut receiver), 1);
+    }
+
+    /// A synchronization that ran after the producer checked the connection
+    /// sent the previous cache, so the producer must start over instead of
+    /// only storing; a blocking producer returns the slot it consumed.
+    #[test]
+    fn finish_retries_after_a_synchronization_it_did_not_see() {
+        let event = Event::new();
+        let connected = AtomicBool::new(true);
+        let mut sync = SyncState::new();
+        let packed = || Some(vec![(FastVec::new(), false)]);
+
+        // Awaiting a synchronization: only store, and free the slot.
+        assert!(matches!(
+            finish(&sync, &event, &connected, 0, true, packed()),
+            Finish::Store
+        ));
+        assert!(event.is_set());
+        event.clear();
+
+        sync.synchronized();
+        assert!(matches!(
+            finish(&sync, &event, &connected, 0, true, packed()),
+            Finish::Send(_)
+        ));
+        assert!(!event.is_set(), "a sent blocking transfer keeps the slot");
+        // Not connected at the check, synchronized now.
+        assert!(matches!(
+            finish(&sync, &event, &connected, 0, true, None),
+            Finish::Retry
+        ));
+        assert!(!event.is_set(), "a producer that did not wait has no slot");
+
+        // A reset and a resynchronization while the producer waited.
+        sync.reset();
+        sync.synchronized();
+        assert!(matches!(
+            finish(&sync, &event, &connected, 0, true, packed()),
+            Finish::Retry
+        ));
+        assert!(event.is_set());
+        event.clear();
+
+        connected.store(false, Ordering::Release);
+        assert!(matches!(
+            finish(&sync, &event, &connected, 1, false, packed()),
+            Finish::Store
+        ));
+        assert!(!event.is_set(), "a non-blocking producer consumed no slot");
+    }
+
+    /// Releases a producer waiting for the slot with a reset and finishes a
+    /// resynchronization before the producer can take the state lock.
+    fn reconnect_under_lock(sync: &mut SyncState, event: &Event, connected: &AtomicBool) {
+        connected.store(false, Ordering::Release);
+        sync.reset();
+        event.set();
+        connected.store(true, Ordering::Release);
+        sync.synchronized();
+    }
+
+    /// A blocking take whose wait spanned a reset and a resynchronization
+    /// used to be only cached, after the synchronization had sent the old
+    /// cache, so the new connection never received it.
+    #[test]
+    fn a_take_whose_wait_spans_a_resync_reaches_the_new_connection() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let (sender, mut receiver) = MessageSender::new();
+        let connected = Arc::new(AtomicBool::new(true));
+        let take = DataTake::new(
+            "root.take".into(),
+            5,
+            DataType::U8,
+            None,
+            sender,
+            connected.clone(),
+        );
+        take.sync().unwrap();
+        take.set(holder(&[1]), true, false, true).unwrap();
+        assert_eq!(count(&mut receiver), 1);
+
+        let producer = take.clone();
+        let waiting = std::thread::spawn(move || producer.set(holder(&[2]), true, false, true));
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(count(&mut receiver), 0, "a blocking take did not wait");
+
+        reconnect_under_lock(&mut take.state.lock().sync, &take.event, &connected);
+        within("take after the resync", move || waiting.join().unwrap()).unwrap();
+        assert_eq!(count(&mut receiver), 1, "the new value was not sent");
+    }
+
+    #[test]
+    fn a_multi_take_whose_wait_spans_a_resync_reaches_the_new_connection() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let (sender, mut receiver) = MessageSender::new();
+        let connected = Arc::new(AtomicBool::new(true));
+        let take = DataMultiTake::new(
+            "root.take".into(),
+            5,
+            DataType::U8,
+            None,
+            sender,
+            connected.clone(),
+        );
+        take.sync().unwrap();
+        take.set(1, holder(&[1]), true, false, true).unwrap();
+        assert_eq!(count(&mut receiver), 2, "the reset and the take");
+
+        let producer = take.clone();
+        let waiting = std::thread::spawn(move || producer.set(1, holder(&[2]), true, false, true));
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(count(&mut receiver), 0, "a blocking take did not wait");
+
+        reconnect_under_lock(&mut take.state.write().sync, &take.event, &connected);
+        within("multi take after the resync", move || {
+            waiting.join().unwrap()
+        })
+        .unwrap();
+        assert_eq!(count(&mut receiver), 1, "the new value was not sent");
     }
 }
 
