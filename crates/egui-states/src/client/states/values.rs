@@ -1,0 +1,788 @@
+//! Client handles for scalar values, signals, and one-shot values.
+
+use parking_lot::RwLock;
+use serde::{Deserialize, Serialize};
+use std::marker::PhantomData;
+use std::sync::Arc;
+
+use crate::client::client::print_error;
+use crate::client::messages::{ChannelMessage, MessageSender};
+use crate::client::states::atomics::{Atomic, AtomicLock, AtomicLockStatic, AtomicStatic};
+use crate::protocol::{check_value_size, deserialize, to_message};
+
+/// Report a value that cannot be sent, locally and to the server.
+#[cold]
+fn report_error(sender: &MessageSender, error: String) {
+    print_error(&error);
+    sender.send_message(&error);
+}
+
+/// Editable snapshot that sends a [`Value`] only when it changed.
+///
+/// Modify [`Self::v`], then consume the snapshot with [`Self::set`] or
+/// [`Self::set_signal`].
+pub struct Diff<'a, T> {
+    /// Editable copy of the synchronized value.
+    pub v: T,
+    original: T,
+    value: &'a Value<T>,
+}
+
+impl<'a, T: Serialize + Clone + PartialEq> Diff<'a, T> {
+    /// Captures the current value and remembers its source handle.
+    pub fn new(value: &'a Value<T>) -> Self {
+        let v = value.get();
+        Self {
+            v: v.clone(),
+            original: v,
+            value,
+        }
+    }
+
+    /// Sends the edited value if it differs from the captured value.
+    ///
+    /// The comparison uses `T`'s [`PartialEq`] implementation.
+    #[inline]
+    pub fn set(self) {
+        if self.v != self.original {
+            self.value.set(self.v);
+        }
+    }
+
+    /// Sends and signals the edited value if it differs from the captured value.
+    ///
+    /// The comparison uses `T`'s [`PartialEq`] implementation.
+    #[inline]
+    pub fn set_signal(self) {
+        if self.v != self.original {
+            self.value.set_signal(self.v);
+        }
+    }
+}
+
+/// Editable snapshot that sends a [`ValueAtomic`] only when it changed.
+pub struct DiffAtomic<'a, T: Atomic> {
+    /// Editable copy of the synchronized value.
+    pub v: T,
+    original: T,
+    value: &'a ValueAtomic<T>,
+}
+
+impl<'a, T: Serialize + Clone + PartialEq + Atomic> DiffAtomic<'a, T> {
+    /// Captures the current value and remembers its source handle.
+    pub fn new(value: &'a ValueAtomic<T>) -> Self {
+        let v = value.get();
+        Self {
+            v,
+            original: v,
+            value,
+        }
+    }
+
+    /// Sends the edited value if it differs from the captured value.
+    ///
+    /// The comparison uses `T`'s [`PartialEq`] implementation.
+    #[inline]
+    pub fn set(self) {
+        if self.v != self.original {
+            self.value.set(self.v);
+        }
+    }
+
+    /// Sends and signals the edited value if it differs from the captured value.
+    ///
+    /// The comparison uses `T`'s [`PartialEq`] implementation.
+    #[inline]
+    pub fn set_signal(self) {
+        if self.v != self.original {
+            self.value.set_signal(self.v);
+        }
+    }
+}
+
+pub(crate) trait UpdateValue: Sync + Send {
+    fn update_value(&self, type_id: u32, data: &[u8]) -> Result<(), String>;
+}
+
+pub(crate) trait UpdateValueTake: Sync + Send {
+    fn update_take(&self, type_id: u32, data: &[u8], blocking: bool) -> Result<(), String>;
+    /// The server releases blocking sends when a connection ends, so pending
+    /// values from it must not be acknowledged on the next connection.
+    fn disconnected(&self);
+}
+
+/// Selects how server callbacks buffer signaled client changes.
+pub trait GetQueueType: Sync + Send + 'static {
+    /// Returns whether every pending change should be queued.
+    fn is_queue() -> bool;
+}
+
+/// Coalescing mode: callbacks receive only the latest pending signaled change.
+pub struct NoQueue;
+
+impl GetQueueType for NoQueue {
+    #[inline]
+    fn is_queue() -> bool {
+        false
+    }
+}
+
+/// Queue mode: callbacks receive every signaled change in arrival order.
+pub struct Queue;
+
+impl GetQueueType for Queue {
+    #[inline]
+    fn is_queue() -> bool {
+        true
+    }
+}
+
+/// What all clones of a value handle share, in one allocation.
+struct Shared<V> {
+    name: String,
+    id: u64,
+    type_id: u32,
+    value: V,
+    sender: MessageSender,
+}
+
+impl<V> Shared<V> {
+    fn new(name: String, id: u64, type_id: u32, value: V, sender: MessageSender) -> Arc<Self> {
+        Arc::new(Self {
+            name,
+            id,
+            type_id,
+            value,
+            sender,
+        })
+    }
+}
+
+// Value --------------------------------------------
+/// A bidirectional synchronized value.
+///
+/// Client writes update the local copy immediately and are sent to the server.
+/// `Q` controls how server-side callbacks process changes produced by
+/// [`Self::set_signal`] or [`Self::write_signal`].
+///
+/// The server wins concurrent writes. A client write that reaches the server
+/// before the client has acknowledged the server's latest write to this value
+/// is discarded without running server callbacks, and the local copy is
+/// replaced when that server value arrives. A value the server sets
+/// continuously therefore cannot be changed reliably from the client; use a
+/// [`Static`] for it and send change requests as a [`Signal`].
+///
+/// An oversized [`Self::set`] is rejected before changing the local copy. An
+/// oversized in-place [`Self::write`] keeps the local edit but cannot send it,
+/// so the peers remain out of sync until a later successful write or server
+/// update.
+pub struct Value<T, Q: GetQueueType = NoQueue> {
+    shared: Arc<Shared<RwLock<T>>>,
+    _phantom: PhantomData<Q>,
+}
+
+impl<T, Q: GetQueueType> Value<T, Q>
+where
+    T: Serialize + Clone,
+{
+    pub(crate) fn new(
+        name: String,
+        id: u64,
+        type_id: u32,
+        value: T,
+        sender: MessageSender,
+    ) -> Self {
+        Self {
+            shared: Shared::new(name, id, type_id, RwLock::new(value), sender),
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Returns a copy of the current client value.
+    pub fn get(&self) -> T {
+        self.shared.value.read().clone()
+    }
+
+    /// Borrows the current value for the duration of `f` without copying it.
+    ///
+    /// Do not call this handle or a clone of it from `f`: the read lock is not
+    /// reentrant, so a nested read waits behind an incoming server update,
+    /// which waits for `f`.
+    pub fn read<R>(&self, f: impl Fn(&T) -> R) -> R {
+        let r = self.shared.value.read();
+        f(&r)
+    }
+
+    fn write_inner(&self, value: &T, signal: bool) {
+        let data = to_message(value);
+
+        if let Err(e) = check_value_size(&self.shared.name, data.len()) {
+            report_error(
+                &self.shared.sender,
+                format!("{}, the value stays out of sync with the server", e),
+            );
+            return;
+        }
+
+        self.shared.sender.send(ChannelMessage::Value(
+            self.shared.id,
+            self.shared.type_id,
+            signal,
+            data,
+        ));
+    }
+
+    /// Modify the value in place and send it to the server.
+    ///
+    /// If the modified value serializes to more than the maximum allowed size, it is
+    /// kept locally but not sent, which leaves it out of sync with the server until
+    /// a later write succeeds or the server sends an update. The error is reported
+    /// locally and to the server.
+    ///
+    /// The write lock is held while `f` runs, so do not call this handle or a
+    /// clone of it from `f`: the nested call would wait for `f` forever.
+    pub fn write<R>(&self, f: impl Fn(&mut T) -> R) -> R {
+        let mut w = self.shared.value.write();
+        let result = f(&mut w);
+        self.write_inner(&*w, false);
+        result
+    }
+
+    /// Same as [`Value::write`], but the server side emits a signal for the new value.
+    ///
+    /// The same out of sync caveat for oversized values and nested calls
+    /// applies.
+    pub fn write_signal<R>(&self, f: impl Fn(&mut T) -> R) -> R {
+        let mut w = self.shared.value.write();
+        let result = f(&mut w);
+        self.write_inner(&*w, true);
+        result
+    }
+
+    #[inline]
+    fn set_inner(&self, value: T, signal: bool) {
+        let data = to_message(&value);
+
+        if let Err(e) = check_value_size(&self.shared.name, data.len()) {
+            report_error(&self.shared.sender, format!("{}, the value was not set", e));
+            return;
+        }
+
+        let mut w = self.shared.value.write();
+        self.shared.sender.send(ChannelMessage::Value(
+            self.shared.id,
+            self.shared.type_id,
+            signal,
+            data,
+        ));
+        *w = value;
+    }
+
+    /// Replaces the client value and sends it to the server without signaling.
+    ///
+    /// If serialization exceeds the protocol value limit, the operation is
+    /// reported and the stored client value is left unchanged.
+    pub fn set(&self, value: T) {
+        self.set_inner(value, false);
+    }
+
+    /// Replaces the client value and asks the server to emit its callbacks.
+    ///
+    /// If serialization exceeds the protocol value limit, the operation is
+    /// reported and the stored client value is left unchanged.
+    pub fn set_signal(&self, value: T) {
+        self.set_inner(value, true);
+    }
+}
+
+impl<T: for<'a> Deserialize<'a> + Send + Sync, Q: GetQueueType + Send + Sync> UpdateValue
+    for Value<T, Q>
+{
+    fn update_value(&self, type_id: u32, data: &[u8]) -> Result<(), String> {
+        if type_id != self.shared.type_id {
+            self.shared.sender.send(ChannelMessage::Ack(self.shared.id));
+            return Err(format!("Type id mismatch for Value: {}", self.shared.name));
+        }
+        let value = deserialize(data).map_err(|e| {
+            self.shared.sender.send(ChannelMessage::Ack(self.shared.id));
+            format!("Parse error: {} for value: {}", e, self.shared.name)
+        })?;
+
+        let mut w = self.shared.value.write();
+        self.shared.sender.send(ChannelMessage::Ack(self.shared.id));
+        *w = value;
+
+        Ok(())
+    }
+}
+
+impl<T, Q: GetQueueType> Clone for Value<T, Q> {
+    fn clone(&self) -> Self {
+        Self {
+            shared: self.shared.clone(),
+            _phantom: PhantomData,
+        }
+    }
+}
+
+/// Atomic variant of [`Value`] for small copyable values.
+///
+/// Built-in implementations cover integers, `bool`, `f32`, `f64`, `(f32,
+/// f32)`, and `[f32; 2]`. Custom [`Atomic`] implementations must preserve the
+/// synchronization and size guarantees documented by that unsafe trait.
+///
+/// Concurrent writes follow the same rule as [`Value`]: the server wins.
+pub struct ValueAtomic<T: Atomic, Q: GetQueueType = NoQueue> {
+    shared: Arc<Shared<T::Lock>>,
+    _phantom: PhantomData<Q>,
+}
+
+impl<T, Q: GetQueueType> ValueAtomic<T, Q>
+where
+    T: Serialize + Clone + Atomic,
+{
+    pub(crate) fn new(
+        name: String,
+        id: u64,
+        type_id: u32,
+        value: T,
+        sender: MessageSender,
+    ) -> Self {
+        Self {
+            shared: Shared::new(name, id, type_id, T::Lock::new(value), sender),
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Atomically loads the current client value.
+    pub fn get(&self) -> T {
+        self.shared.value.load()
+    }
+
+    fn set_inner(&self, value: T, signal: bool) {
+        let data = to_message(value);
+
+        // the built in atomic types are always small, but `Atomic` is public and
+        // hand written implementations are not limited in size
+        if let Err(e) = check_value_size(&self.shared.name, data.len()) {
+            report_error(&self.shared.sender, format!("{}, the value was not set", e));
+            return;
+        }
+
+        let message = ChannelMessage::Value(self.shared.id, self.shared.type_id, signal, data);
+        self.shared
+            .value
+            .update(value, || self.shared.sender.send(message));
+    }
+
+    /// Atomically replaces the value and sends it without signaling.
+    pub fn set(&self, value: T) {
+        self.set_inner(value, false);
+    }
+
+    /// Atomically replaces the value and asks the server to emit callbacks.
+    pub fn set_signal(&self, value: T) {
+        self.set_inner(value, true);
+    }
+}
+
+impl<T: for<'a> Deserialize<'a> + Atomic + Send + Sync, Q: GetQueueType + Send + Sync> UpdateValue
+    for ValueAtomic<T, Q>
+{
+    fn update_value(&self, type_id: u32, data: &[u8]) -> Result<(), String> {
+        if type_id != self.shared.type_id {
+            self.shared.sender.send(ChannelMessage::Ack(self.shared.id));
+            return Err(format!(
+                "Type id mismatch for ValueAtomic: {}",
+                self.shared.name
+            ));
+        }
+        let value = deserialize(data).map_err(|e| {
+            self.shared.sender.send(ChannelMessage::Ack(self.shared.id));
+            format!("Parse error: {} for value id: {}", e, self.shared.id)
+        })?;
+
+        self.shared.value.update(value, || {
+            self.shared.sender.send(ChannelMessage::Ack(self.shared.id))
+        });
+
+        Ok(())
+    }
+}
+
+impl<T: Atomic, Q: GetQueueType> Clone for ValueAtomic<T, Q> {
+    fn clone(&self) -> Self {
+        Self {
+            shared: self.shared.clone(),
+            _phantom: PhantomData,
+        }
+    }
+}
+
+// Static --------------------------------------------
+/// What all clones of a read-only handle share. A static never sends or
+/// acknowledges anything, so unlike [`Shared`] it holds no sender.
+struct StaticShared<V> {
+    name: String,
+    type_id: u32,
+    value: V,
+}
+
+impl<V> StaticShared<V> {
+    fn new(name: String, type_id: u32, value: V) -> Arc<Self> {
+        Arc::new(Self {
+            name,
+            type_id,
+            value,
+        })
+    }
+}
+
+/// A server-controlled value that is read-only on the client.
+pub struct Static<T> {
+    shared: Arc<StaticShared<RwLock<T>>>,
+}
+
+impl<T: Clone> Static<T> {
+    pub(crate) fn new(name: String, type_id: u32, value: T) -> Self {
+        Self {
+            shared: StaticShared::new(name, type_id, RwLock::new(value)),
+        }
+    }
+
+    /// Returns a copy of the current value.
+    pub fn get(&self) -> T {
+        self.shared.value.read().clone()
+    }
+
+    /// Borrows the current value for the duration of `f` without copying it.
+    ///
+    /// Do not call this handle or a clone of it from `f`: the read lock is not
+    /// reentrant, so a nested read waits behind an incoming server update,
+    /// which waits for `f`.
+    pub fn read<R>(&self, f: impl Fn(&T) -> R) -> R {
+        let r = self.shared.value.read();
+        f(&r)
+    }
+}
+
+impl<T: for<'a> Deserialize<'a> + Send + Sync> UpdateValue for Static<T> {
+    fn update_value(&self, type_id: u32, data: &[u8]) -> Result<(), String> {
+        if type_id != self.shared.type_id {
+            return Err(format!("Type id mismatch for Static: {}", self.shared.name));
+        }
+        let value = deserialize(data)
+            .map_err(|e| format!("Parse error: {} for value: {}", e, self.shared.name))?;
+        *self.shared.value.write() = value;
+        Ok(())
+    }
+}
+
+impl<T> Clone for Static<T> {
+    fn clone(&self) -> Self {
+        Self {
+            shared: self.shared.clone(),
+        }
+    }
+}
+
+/// Atomic server-controlled value that is read-only on the client.
+pub struct StaticAtomic<T: AtomicStatic> {
+    shared: Arc<StaticShared<T::Lock>>,
+}
+
+impl<T: AtomicStatic> StaticAtomic<T> {
+    pub(crate) fn new(name: String, type_id: u32, value: T) -> Self {
+        Self {
+            shared: StaticShared::new(name, type_id, T::Lock::new(value)),
+        }
+    }
+
+    /// Atomically loads the current value.
+    pub fn get(&self) -> T {
+        self.shared.value.load()
+    }
+}
+
+impl<T: for<'a> Deserialize<'a> + AtomicStatic + Send + Sync> UpdateValue for StaticAtomic<T> {
+    fn update_value(&self, type_id: u32, data: &[u8]) -> Result<(), String> {
+        if type_id != self.shared.type_id {
+            return Err(format!(
+                "Type id mismatch for AtomicStatic: {}",
+                self.shared.name
+            ));
+        }
+        let value = deserialize(data)
+            .map_err(|e| format!("Parse error: {} for value: {}", e, self.shared.name))?;
+        self.shared.value.store(value);
+        Ok(())
+    }
+}
+
+impl<T: AtomicStatic> Clone for StaticAtomic<T> {
+    fn clone(&self) -> Self {
+        Self {
+            shared: self.shared.clone(),
+        }
+    }
+}
+
+// Signal --------------------------------------------
+/// A client-to-server event carrying a value without storing it.
+///
+/// `Q` controls whether server callbacks queue every event or coalesce pending
+/// events to the latest one.
+pub struct Signal<T, Q: GetQueueType = NoQueue> {
+    shared: Arc<Shared<()>>,
+    phantom: PhantomData<(T, Q)>,
+}
+
+impl<T: Serialize + Clone, Q: GetQueueType> Signal<T, Q> {
+    pub(crate) fn new(name: String, id: u64, type_id: u32, sender: MessageSender) -> Self {
+        Self {
+            shared: Shared::new(name, id, type_id, (), sender),
+            phantom: PhantomData,
+        }
+    }
+
+    /// Emits `value` to the server without retaining it on the client.
+    ///
+    /// The `Into<T>` parameter accepts values that can be converted to the
+    /// signal's payload type, such as `&str` for a `Signal<String>`.
+    pub fn set(&self, value: impl Into<T>) {
+        let message = to_message(value.into());
+
+        if let Err(e) = check_value_size(&self.shared.name, message.len()) {
+            report_error(
+                &self.shared.sender,
+                format!("{}, the signal was not sent", e),
+            );
+            return;
+        }
+
+        self.shared.sender.send(ChannelMessage::Signal(
+            self.shared.id,
+            self.shared.type_id,
+            message,
+        ));
+    }
+}
+
+impl<T, Q: GetQueueType> Clone for Signal<T, Q> {
+    fn clone(&self) -> Self {
+        Self {
+            shared: self.shared.clone(),
+            phantom: PhantomData,
+        }
+    }
+}
+
+// ValueTake --------------------------------------------
+/// An untaken value and whether taking it sends an acknowledgement.
+type Pending<T> = RwLock<Option<(T, bool)>>;
+
+/// A one-shot value sent by the server and consumed by the client.
+///
+/// A newly received value replaces an untaken value. Taking a blocking value
+/// sends the acknowledgement that releases the server's next send.
+pub struct ValueTake<T> {
+    shared: Arc<Shared<Pending<T>>>,
+}
+
+impl<T> ValueTake<T> {
+    pub(crate) fn new(name: String, id: u64, type_id: u32, sender: MessageSender) -> Self {
+        Self {
+            shared: Shared::new(name, id, type_id, RwLock::new(None), sender),
+        }
+    }
+
+    /// Removes and returns the pending value, if one has arrived.
+    ///
+    /// Each value can be taken once. Taking a blocking value also acknowledges
+    /// it, allowing the server to send the next pending value.
+    pub fn take(&self) -> Option<T> {
+        let value = self.shared.value.write().take();
+        if let Some((val, blocking)) = value {
+            if blocking {
+                self.shared.sender.send(ChannelMessage::Ack(self.shared.id));
+            }
+            return Some(val);
+        }
+        None
+    }
+
+    /// Returns whether a value is waiting to be taken.
+    pub fn is_some(&self) -> bool {
+        self.shared.value.read().is_some()
+    }
+}
+
+impl<T> UpdateValueTake for ValueTake<T>
+where
+    T: for<'a> Deserialize<'a> + Send + Sync,
+{
+    fn update_take(&self, type_id: u32, data: &[u8], blocking: bool) -> Result<(), String> {
+        if type_id != self.shared.type_id {
+            if blocking {
+                self.shared.sender.send(ChannelMessage::Ack(self.shared.id));
+            }
+            return Err(format!(
+                "Type id mismatch for ValueTake: {}",
+                self.shared.name
+            ));
+        }
+
+        let value = deserialize(data).map_err(|e| {
+            if blocking {
+                self.shared.sender.send(ChannelMessage::Ack(self.shared.id));
+            }
+            format!("Parse error: {} for value: {}", e, self.shared.name)
+        })?;
+        *self.shared.value.write() = Some((value, blocking));
+
+        Ok(())
+    }
+
+    fn disconnected(&self) {
+        if let Some((_, blocking)) = self.shared.value.write().as_mut() {
+            *blocking = false;
+        }
+    }
+}
+
+impl<T> Clone for ValueTake<T> {
+    fn clone(&self) -> Self {
+        Self {
+            shared: self.shared.clone(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::protocol::VALUE_MAX_SIZE;
+
+    #[test]
+    fn diff_and_atomic_diff_emit_only_changes_in_call_order() {
+        let (sender, mut rx) = MessageSender::new();
+        let value: Value<i32> = Value::new("value".into(), 31, 7, 3, sender.clone());
+        let atomic = ValueAtomic::new("atomic".into(), 32, 9, 1.5f64, sender);
+        Diff::new(&value).set();
+        Diff::new(&value).set_signal();
+        DiffAtomic::new(&atomic).set();
+        DiffAtomic::new(&atomic).set_signal();
+        assert!(rx.try_recv().is_err());
+        let mut diff = Diff::new(&value);
+        diff.v = -7;
+        diff.set_signal();
+        let mut diff = DiffAtomic::new(&atomic);
+        diff.v = 2.75;
+        diff.set();
+        match rx.try_recv().unwrap().unwrap() {
+            ChannelMessage::Value(31, 7, true, data) => {
+                assert_eq!(deserialize::<i32>(&data.into_bytes()).unwrap(), -7)
+            }
+            _ => panic!("expected signaled scalar first"),
+        }
+        match rx.try_recv().unwrap().unwrap() {
+            ChannelMessage::Value(32, 9, false, data) => {
+                assert_eq!(deserialize::<f64>(&data.into_bytes()).unwrap(), 2.75)
+            }
+            _ => panic!("expected atomic value second"),
+        }
+        assert!(rx.try_recv().is_err());
+        assert_eq!(value.get(), -7);
+        assert_eq!(atomic.get(), 2.75);
+    }
+
+    #[test]
+    fn oversized_set_rejects_but_in_place_write_retains_local_edit() {
+        let (sender, mut rx) = MessageSender::new();
+        let value: Value<String> = Value::new("text".into(), 1, 2, "seed".into(), sender);
+        let oversized = "x".repeat(VALUE_MAX_SIZE + 1);
+        value.set(oversized.clone());
+        assert_eq!(value.get(), "seed");
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Some(ChannelMessage::Message(_)))
+        ));
+        value.write(|v| *v = oversized.clone());
+        assert_eq!(value.get(), oversized);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Some(ChannelMessage::Message(_)))
+        ));
+        assert!(rx.try_recv().is_err());
+        value.set("recovered".into());
+        assert_eq!(value.get(), "recovered");
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Some(ChannelMessage::Value(1, 2, false, _)))
+        ));
+        assert!(rx.try_recv().is_err());
+    }
+
+    /// The server releases blocking sends on disconnect, so taking a value from
+    /// the closed connection must not acknowledge it on the next one.
+    #[test]
+    fn value_from_a_closed_connection_is_not_acknowledged() {
+        let (sender, mut rx) = MessageSender::new();
+        let value = ValueTake::<u8>::new("take".into(), 33, 4, sender);
+        value.update_take(4, &[5], true).unwrap();
+        value.disconnected();
+        assert_eq!(value.take(), Some(5));
+        assert!(rx.try_recv().is_err());
+    }
+}
+
+#[cfg(test)]
+mod concurrent_tests {
+    use super::*;
+
+    #[test]
+    fn concurrent_atomic_sends_match_final_storage_and_each_writers_order() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let (sender, mut receiver) = MessageSender::new();
+        let value: ValueAtomic<u32> = ValueAtomic::new("atomic".into(), 33, 4, 0, sender);
+        let barrier = Arc::new(std::sync::Barrier::new(4));
+        let workers: Vec<_> = (0..4)
+            .map(|writer| {
+                let value = value.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    for sequence in 1..=50 {
+                        value.set(writer * 1000 + sequence);
+                    }
+                })
+            })
+            .collect();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        let mut previous = [0; 4];
+        let mut last = 0;
+        for _ in 0..200 {
+            match receiver.try_recv().unwrap().unwrap() {
+                ChannelMessage::Value(33, 4, false, data) => {
+                    let sent: u32 = deserialize(&data.into_bytes()).unwrap();
+                    let writer = (sent / 1000) as usize;
+                    assert_eq!(sent % 1000, previous[writer] + 1);
+                    previous[writer] += 1;
+                    last = sent;
+                }
+                _ => panic!("unexpected outgoing atomic update"),
+            }
+        }
+        assert_eq!(previous, [50; 4]);
+        assert_eq!(
+            value.get(),
+            last,
+            "last notification and committed value diverged"
+        );
+        assert!(receiver.try_recv().is_err());
+    }
+}

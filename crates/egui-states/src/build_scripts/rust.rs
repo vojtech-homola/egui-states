@@ -6,7 +6,7 @@ use crate::InitValue;
 use crate::State;
 use crate::build_scripts::scripts;
 use crate::build_scripts::states_creator_build::StateType;
-use crate::data_transport::DataType;
+use crate::protocol::data::DataType;
 use crate::typed::ObjectType;
 
 fn data_type_to_rust_type(data_type: &DataType) -> &'static str {
@@ -213,17 +213,32 @@ fn state_field_type(state: &StateType) -> String {
             type_to_rust_type(key, RustTypeContext::States),
             type_to_rust_type(value, RustTypeContext::States)
         ),
-        StateType::Data(_, typ) => format!("s::Data<{}>", data_type_to_rust_type(typ)),
-        StateType::DataTake(_, typ) => format!("s::DataTake<{}>", data_type_to_rust_type(typ)),
-        StateType::DataMulti(_, typ) => {
-            format!("s::DataMulti<{}>", data_type_to_rust_type(typ))
+        StateType::Data(_, typ, header) => format!("s::Data<{}>", data_parameters(typ, header)),
+        StateType::DataTake(_, typ, header) => {
+            format!("s::DataTake<{}>", data_parameters(typ, header))
         }
-        StateType::DataMultiTake(_, typ) => {
-            format!("s::DataMultiTake<{}>", data_type_to_rust_type(typ))
+        StateType::DataMulti(_, typ, header) => {
+            format!("s::DataMulti<{}>", data_parameters(typ, header))
+        }
+        StateType::DataMultiTake(_, typ, header) => {
+            format!("s::DataMultiTake<{}>", data_parameters(typ, header))
         }
         StateType::Image(_) => "s::Image".to_string(),
         StateType::ImageMulti(_) => "s::ImageMulti".to_string(),
         StateType::SubState(_, state_class, _) => state_class.to_string(),
+    }
+}
+
+/// The type parameters of a Data state: its element type and, when it has
+/// one, its header type.
+fn data_parameters(data_type: &DataType, header: &Option<ObjectType>) -> String {
+    let element = data_type_to_rust_type(data_type);
+    match header {
+        None => element.to_string(),
+        Some(header) => format!(
+            "{element}, {}",
+            type_to_rust_type(header, RustTypeContext::States)
+        ),
     }
 }
 
@@ -280,24 +295,24 @@ fn state_initializer(state: &StateType) -> String {
             type_to_rust_type(value, RustTypeContext::States),
             name
         ),
-        StateType::Data(name, typ) => format!(
+        StateType::Data(name, typ, header) => format!(
             "s::Data::<{}>::new(server, format!(\"{{parent}}.{}\"))?",
-            data_type_to_rust_type(typ),
+            data_parameters(typ, header),
             name
         ),
-        StateType::DataTake(name, typ) => format!(
+        StateType::DataTake(name, typ, header) => format!(
             "s::DataTake::<{}>::new(server, format!(\"{{parent}}.{}\"))?",
-            data_type_to_rust_type(typ),
+            data_parameters(typ, header),
             name
         ),
-        StateType::DataMulti(name, typ) => format!(
+        StateType::DataMulti(name, typ, header) => format!(
             "s::DataMulti::<{}>::new(server, format!(\"{{parent}}.{}\"))?",
-            data_type_to_rust_type(typ),
+            data_parameters(typ, header),
             name
         ),
-        StateType::DataMultiTake(name, typ) => format!(
+        StateType::DataMultiTake(name, typ, header) => format!(
             "s::DataMultiTake::<{}>::new(server, format!(\"{{parent}}.{}\"))?",
-            data_type_to_rust_type(typ),
+            data_parameters(typ, header),
             name
         ),
         StateType::Image(name) => {

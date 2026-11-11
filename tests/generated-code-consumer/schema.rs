@@ -1,4 +1,4 @@
-use egui_states::{State, StatesCreator, Value};
+use egui_states::{Data, State, StatesCreator, Value};
 use std::collections::HashMap;
 
 #[egui_states::typed(rust_derive(
@@ -46,6 +46,7 @@ impl State for Root {
         );
         let _: Value<HashMap<u16, u32>> =
             c.value("mapping", HashMap::from([(1, 10), (20, 200), (3, 30)]));
+        let _: Data<f32, Inner> = c.data("measurements");
         Self
     }
 }

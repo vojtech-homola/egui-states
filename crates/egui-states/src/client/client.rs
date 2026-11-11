@@ -19,13 +19,13 @@ use crate::State;
 use crate::client::messages::{ChannelMessage, MessageSender, MessagesSerializer, handle_message};
 use crate::client::states_creator::{StatesCreatorClient, ValuesList};
 use crate::event::Event;
-use crate::serialization::ClientHeader;
+use crate::protocol::ClientHeader;
 
 #[cfg(not(target_arch = "wasm32"))]
-use crate::client::websocket::{WsClientRead, WsClientSend, build_ws};
+use crate::client::net::websocket::{WsClientRead, WsClientSend, build_ws};
 
 #[cfg(target_arch = "wasm32")]
-use crate::client::websocket_wasm::{WsClientRead, WsClientSend, build_ws};
+use crate::client::net::websocket_wasm::{WsClientRead, WsClientSend, build_ws};
 
 type MessageReceiver = UnboundedReceiver<Option<ChannelMessage>>;
 

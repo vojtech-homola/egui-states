@@ -1,0 +1,21 @@
+[package]
+name = "egui_states_bench"
+version.workspace = true
+edition.workspace = true
+description = "Throughput, latency and hot-path benchmarks for egui_states"
+license = "MIT"
+publish = false
+
+[dependencies]
+egui = { workspace = true }
+egui_states = { workspace = true, features = ["bench"] }
+bytes = "1.11"
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "transfer"
+harness = false
+
+[[bench]]
+name = "internals"
+harness = false

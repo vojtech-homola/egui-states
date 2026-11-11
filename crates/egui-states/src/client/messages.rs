@@ -2,14 +2,10 @@ use bytes::Bytes;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, error, unbounded_channel};
 
 use crate::client::client::ClientCore;
-use crate::client::data::{DataMessage, DataMultiMessage};
-use crate::client::data_take::{DataMultiTakeMessage, DataTakeMessage};
-use crate::client::image::{ImageMessage, ImageMultiMessage, ImageSetMessage};
 use crate::client::states_creator::ValuesList;
-use crate::collections::{MapHeader, VecHeader};
-use crate::data_transport::{DataHeader, DataMultiTakeHeader, DataTakeHeader, MultiDataHeader};
-use crate::image_transport::{ImageHeader, ImageMultiHeader, ImageSetHeader};
-use crate::serialization::{
+use crate::protocol::data::{DataMultiTakeHeader, MultiDataHeader};
+use crate::protocol::image::{ImageHeader, ImageMultiHeader};
+use crate::protocol::{
     ClientHeader, FastVec, MAX_MSG_COUNT, MSG_SIZE_THRESHOLD, MessageData, ServerHeader, serialize,
     serialize_to_data,
 };
@@ -128,20 +124,8 @@ impl MessagesSerializer {
     }
 }
 
-pub(crate) enum ServerMessage {
-    Value(u64, u32, bool, Bytes),
-    ValueTake(u64, u32, bool, bool, Bytes),
-    Static(u64, u32, bool, Bytes),
-    Image(u64, bool, ImageMessage, Bytes),
-    ValueVec(u64, u32, bool, VecHeader, Bytes),
-    ValueMap(u64, u32, bool, MapHeader, Bytes),
-    Data(u64, bool, DataMessage),
-    DataTake(u64, bool, bool, DataTakeMessage),
-    DataMulti(u64, bool, DataMultiMessage),
-    DataMultiTake(u64, bool, DataMultiTakeMessage),
-    ImageMulti(u64, bool, ImageMultiMessage, Bytes),
-    Update(f32),
-}
+/// A message from the server: its header and the payload that followed it.
+pub(crate) type ServerMessage = (ServerHeader, Bytes);
 
 pub(crate) struct MessagesParser {
     data: Bytes,
@@ -149,7 +133,22 @@ pub(crate) struct MessagesParser {
     is_empty: bool,
 }
 
+/// The end of a `len`-byte payload that starts at `pointer`, if it lies
+/// within a frame of `total` bytes. The sizes come from the network, so the
+/// sum must not overflow, which a 32-bit `usize` (wasm32) otherwise allows.
+fn checked_end(pointer: usize, len: u32, total: usize) -> Option<usize> {
+    let end = pointer.checked_add(usize::try_from(len).ok()?)?;
+    (end <= total).then_some(end)
+}
+
 impl MessagesParser {
+    /// Moves past the next `len` payload bytes of the frame, or fails with
+    /// `error` when the frame is shorter.
+    fn skip(&mut self, len: u32, error: &'static str) -> Result<(), &'static str> {
+        self.pointer = checked_end(self.pointer, len, self.data.len()).ok_or(error)?;
+        Ok(())
+    }
+
     pub(crate) fn empty() -> Self {
         Self {
             data: Bytes::new(),
@@ -186,258 +185,46 @@ impl MessagesParser {
         let (header, size) = ServerHeader::deserialize(&self.data[self.pointer..])
             .map_err(|_| "Failed to deserialize message header")?;
         self.pointer += size;
-
-        let message_data = match header {
-            ServerHeader::Value(id, type_id, update, size) => {
-                let size = size as usize;
-                if size + self.pointer > self.data.len() {
-                    return Err("Incomplete data for Value message");
-                }
-                let data = self.data.slice(self.pointer..self.pointer + size);
-                self.pointer += size;
-                ServerMessage::Value(id, type_id, update, data)
-            }
-            ServerHeader::Static(id, type_id, update, size) => {
-                let size = size as usize;
-                if size + self.pointer > self.data.len() {
-                    return Err("Incomplete data for Static message");
-                }
-                let data = self.data.slice(self.pointer..self.pointer + size);
-                self.pointer += size;
-                ServerMessage::Static(id, type_id, update, data)
-            }
-            ServerHeader::ValueTake(id, type_id, blocking, update, size) => {
-                let size = size as usize;
-                if size + self.pointer > self.data.len() {
-                    return Err("Incomplete data for ValueTake message");
-                }
-                let data = self.data.slice(self.pointer..self.pointer + size);
-                self.pointer += size;
-                ServerMessage::ValueTake(id, type_id, blocking, update, data)
-            }
-            ServerHeader::ValueVec(id, type_id, update, header, size) => {
-                let size = size as usize;
-                if size + self.pointer > self.data.len() {
-                    return Err("Incomplete data for ValueVec message");
-                }
-                let data = self.data.slice(self.pointer..self.pointer + size);
-                self.pointer += size;
-                ServerMessage::ValueVec(id, type_id, update, header, data)
-            }
-            ServerHeader::ValueMap(id, type_id, update, header, size) => {
-                let size = size as usize;
-                if size + self.pointer > self.data.len() {
-                    return Err("Incomplete data for Map message");
-                }
-                let data = self.data.slice(self.pointer..self.pointer + size);
-                self.pointer += size;
-                ServerMessage::ValueMap(id, type_id, update, header, data)
-            }
-            ServerHeader::Update(dt) => ServerMessage::Update(dt),
-            ServerHeader::Image(id, header, size) => {
-                let (message, update, data) = self._process_image(header, size)?;
-                ServerMessage::Image(id, update, message, data)
-            }
-            ServerHeader::Data(id, data_header) => {
-                let (data_message, update) = self._process_data(data_header)?;
-                ServerMessage::Data(id, update, data_message)
-            }
-            ServerHeader::DataTake(id, data_take_header, blocking) => {
-                let (data_take_message, update) = self._process_data_take(data_take_header)?;
-                ServerMessage::DataTake(id, blocking, update, data_take_message)
-            }
-            ServerHeader::MultiData(id, multi_data_header) => match multi_data_header {
-                MultiDataHeader::Remove(key, update) => {
-                    ServerMessage::DataMulti(id, update, DataMultiMessage::Remove(key))
-                }
-                MultiDataHeader::Reset(update) => {
-                    ServerMessage::DataMulti(id, update, DataMultiMessage::Reset)
-                }
-                MultiDataHeader::Modify(key, data_header) => {
-                    let (data_message, update) = self._process_data(data_header)?;
-                    ServerMessage::DataMulti(
-                        id,
-                        update,
-                        DataMultiMessage::Modify(key, data_message),
-                    )
-                }
-            },
-            ServerHeader::DataMultiTake(id, data_multi_take_header) => match data_multi_take_header
-            {
-                DataMultiTakeHeader::Remove(key, update) => {
-                    ServerMessage::DataMultiTake(id, update, DataMultiTakeMessage::Remove(key))
-                }
-                DataMultiTakeHeader::Reset(update) => {
-                    ServerMessage::DataMultiTake(id, update, DataMultiTakeMessage::Reset)
-                }
-                DataMultiTakeHeader::Modify(key, data_take_header, blocking) => {
-                    let (data_take_message, update) = self._process_data_take(data_take_header)?;
-                    ServerMessage::DataMultiTake(
-                        id,
-                        update,
-                        DataMultiTakeMessage::Modify(key, data_take_message, blocking),
-                    )
-                }
-            },
-            ServerHeader::ImageMulti(id, header) => match header {
-                ImageMultiHeader::Remove(index, update) => ServerMessage::ImageMulti(
-                    id,
-                    update,
-                    ImageMultiMessage::Remove(index),
-                    Bytes::new(),
-                ),
-                ImageMultiHeader::Reset(update) => {
-                    ServerMessage::ImageMulti(id, update, ImageMultiMessage::Reset, Bytes::new())
-                }
-                ImageMultiHeader::Modify(index, header, size) => {
-                    let (message, update, data) = self._process_image(header, size)?;
-                    ServerMessage::ImageMulti(
-                        id,
-                        update,
-                        ImageMultiMessage::Modify(index, message),
-                        data,
-                    )
-                }
-            },
-        };
-
-        Ok(message_data)
+        // A Data header's bytes come first; each part is checked on its own,
+        // so their sizes are never added.
+        let start = self.pointer;
+        self.skip(header.header_len(), header.incomplete())?;
+        self.skip(header.payload_len(), header.incomplete())?;
+        Ok((header, self.data.slice(start..self.pointer)))
     }
+}
 
-    fn _process_image(
-        &mut self,
-        header: ImageHeader,
-        size: u32,
-    ) -> Result<(ImageMessage, bool, Bytes), &'static str> {
-        let size = size as usize;
-        if self.pointer + size > self.data.len() {
-            return Err("Incomplete data for Image message");
+/// The binary frames a server sends, apart from how they travel.
+pub(crate) trait ServerFrames {
+    /// Waits for the next frame of server messages. Frames without messages,
+    /// such as pings, are skipped.
+    async fn next_frame(&mut self) -> Result<Bytes, &'static str>;
+}
+
+/// Reads the server messages of the frames of `S`, one at a time.
+pub(crate) struct ServerReader<S> {
+    frames: S,
+    parser: MessagesParser,
+}
+
+impl<S: ServerFrames> ServerReader<S> {
+    pub(crate) fn new(frames: S) -> Self {
+        Self {
+            frames,
+            parser: MessagesParser::empty(),
         }
-        let data = self.data.slice(self.pointer..self.pointer + size);
-        self.pointer += size;
-
-        let (message, update) = match header {
-            ImageHeader::Set(set_header, image_type) => {
-                let mut update = false;
-                let set_message = match set_header {
-                    ImageSetHeader::All(size, value) => {
-                        update = value;
-                        ImageSetMessage::All(size)
-                    }
-                    ImageSetHeader::Start(size, pixels) => ImageSetMessage::Start(size, pixels),
-                    ImageSetHeader::Batch(pixels) => ImageSetMessage::Batch(pixels),
-                    ImageSetHeader::End(pixels, value) => {
-                        update = value;
-                        ImageSetMessage::End(pixels)
-                    }
-                };
-                (ImageMessage::Set(set_message, image_type), update)
-            }
-            ImageHeader::Update(rect, image_type, update) => {
-                (ImageMessage::Update(rect, image_type), update)
-            }
-            ImageHeader::Fill(size, rgba, update) => (ImageMessage::Fill(size, rgba), update),
-        };
-        Ok((message, update, data))
     }
 
-    fn _process_data(
-        &mut self,
-        data_header: DataHeader,
-    ) -> Result<(DataMessage, bool), &'static str> {
-        let res = match data_header {
-            DataHeader::All(data_type, transport_type, update, data_size) => {
-                let data_size = data_size as usize;
-                if self.pointer + data_size > self.data.len() {
-                    return Err("Incomplete data for Data/DataStatic message");
-                }
-
-                let dat = self.data.slice(self.pointer..self.pointer + data_size);
-                self.pointer += data_size;
-                (DataMessage::All(data_type, transport_type, dat), update)
-            }
-            DataHeader::StartBatch(count, data_size) => {
-                let data_size = data_size as usize;
-                if self.pointer + data_size > self.data.len() {
-                    return Err("Incomplete data for Data/DataStatic message");
-                }
-
-                let dat = self.data.slice(self.pointer..self.pointer + data_size);
-                self.pointer += data_size;
-                (DataMessage::BatchStart(count, dat), false)
-            }
-            DataHeader::Batch(data_size) => {
-                let data_size = data_size as usize;
-                if self.pointer + data_size > self.data.len() {
-                    return Err("Incomplete data for Data/DataStatic message");
-                }
-                let dat = self.data.slice(self.pointer..self.pointer + data_size);
-                self.pointer += data_size;
-                (DataMessage::Batch(dat), false)
-            }
-            DataHeader::End(data_type, transport_type, update, data_size) => {
-                let data_size = data_size as usize;
-                if self.pointer + data_size > self.data.len() {
-                    return Err("Incomplete data for Data/DataStatic message");
-                }
-                let dat = self.data.slice(self.pointer..self.pointer + data_size);
-                self.pointer += data_size;
-                (
-                    DataMessage::BatchEnd(data_type, transport_type, dat),
-                    update,
-                )
-            }
-            DataHeader::Drain(start, count, update) => (DataMessage::Drain(start, count), update),
-            DataHeader::Clear(update) => (DataMessage::Clear, update),
-        };
-        Ok(res)
-    }
-
-    fn _process_data_take(
-        &mut self,
-        data_header: DataTakeHeader,
-    ) -> Result<(DataTakeMessage, bool), &'static str> {
-        let res = match data_header {
-            DataTakeHeader::All(data_type, count, update, data_size) => {
-                let data_size = data_size as usize;
-                if self.pointer + data_size > self.data.len() {
-                    return Err("Incomplete data for DataTake message");
-                }
-
-                let dat = self.data.slice(self.pointer..self.pointer + data_size);
-                self.pointer += data_size;
-                (DataTakeMessage::All(data_type, count, dat), update)
-            }
-            DataTakeHeader::StartBatch(count, data_size) => {
-                let data_size = data_size as usize;
-                if self.pointer + data_size > self.data.len() {
-                    return Err("Incomplete data for DataTake message");
-                }
-
-                let dat = self.data.slice(self.pointer..self.pointer + data_size);
-                self.pointer += data_size;
-                (DataTakeMessage::BatchStart(count, dat), false)
-            }
-            DataTakeHeader::Batch(data_size) => {
-                let data_size = data_size as usize;
-                if self.pointer + data_size > self.data.len() {
-                    return Err("Incomplete data for DataTake message");
-                }
-                let dat = self.data.slice(self.pointer..self.pointer + data_size);
-                self.pointer += data_size;
-                (DataTakeMessage::Batch(dat), false)
-            }
-            DataTakeHeader::End(data_type, count, update, data_size) => {
-                let data_size = data_size as usize;
-                if self.pointer + data_size > self.data.len() {
-                    return Err("Incomplete data for DataTake message");
-                }
-                let dat = self.data.slice(self.pointer..self.pointer + data_size);
-                self.pointer += data_size;
-                (DataTakeMessage::BatchEnd(data_type, count, dat), update)
-            }
-        };
-        Ok(res)
+    /// Returns the next message, reading a frame when the current one is
+    /// used up. An error ends the connection.
+    pub(crate) async fn read(&mut self) -> Result<ServerMessage, &'static str> {
+        if let Some(message) = self.parser.next()? {
+            return Ok(message);
+        }
+        let frame = self.frames.next_frame().await?;
+        let (parser, message) = MessagesParser::from_bytes(frame)?;
+        self.parser = parser;
+        Ok(message)
     }
 }
 
@@ -446,161 +233,126 @@ pub(crate) async fn handle_message(
     vals: &ValuesList,
     client: &ClientCore,
 ) -> Result<(), String> {
-    let update = match message {
-        ServerMessage::Update(t) => {
+    let (header, payload) = message;
+    let update = header.update_flag();
+    match header {
+        ServerHeader::Update(t) => {
             client.update(t);
             return Ok(());
         }
-        ServerMessage::Value(id, type_id, update, data) => {
-            match vals.values.get(&id) {
-                Some(value) => value.update_value(type_id, &data)?,
-                None => {
+        ServerHeader::Value(id, type_id, ..) => match vals.value(id) {
+            Some(value) => value.update_value(type_id, &payload)?,
+            None => {
+                client.send_ack(id);
+                return Err(format!("Value with id {} not found", id));
+            }
+        },
+        ServerHeader::Static(id, type_id, ..) => match vals.static_value(id) {
+            Some(value) => value.update_value(type_id, &payload)?,
+            None => return Err(format!("Static with id {} not found", id)),
+        },
+        ServerHeader::ValueTake(id, type_id, blocking, ..) => match vals.value_take(id) {
+            Some(value) => value.update_take(type_id, &payload, blocking)?,
+            None => {
+                if blocking {
                     client.send_ack(id);
-                    return Err(format!("Value with id {} not found", id));
                 }
+                return Err(format!("ValueTake with id {} not found", id));
             }
-            update
-        }
-        ServerMessage::Static(id, type_id, update, data) => {
-            match vals.static_values.get(&id) {
-                Some(value) => value.update_value(type_id, &data)?,
-                None => return Err(format!("Static with id {} not found", id)),
-            }
-            update
-        }
-        ServerMessage::ValueTake(id, type_id, blocking, update, data) => {
-            match vals.values_take.get(&id) {
-                Some(value) => value.update_take(type_id, &data, blocking)?,
-                None => {
-                    if blocking {
-                        client.send_ack(id);
-                    }
-                    return Err(format!("ValueTake with id {} not found", id));
+        },
+        ServerHeader::Image(id, header, _) => match vals.image(id) {
+            Some(image) => match header {
+                ImageHeader::Set(set, image_type) => image.set_image(set, image_type, &payload)?,
+                ImageHeader::Update(rect, image_type, _) => {
+                    image.update_image(rect, image_type, &payload)?
                 }
-            }
-            update
-        }
-        ServerMessage::Image(id, update, image_message, data) => {
-            match vals.images.get(&id) {
-                Some(value) => match image_message {
-                    ImageMessage::Set(set_message, image_type) => {
-                        value.set_image(set_message, image_type, &data)?;
-                    }
-                    ImageMessage::Update(size, image_type) => {
-                        value.update_image(size, image_type, &data)?
-                    }
-                    ImageMessage::Fill(size, rgba) => value.fill_image(size, rgba, &data)?,
-                },
-                None => {
-                    if image_message.requires_ack() {
-                        client.send_ack(id);
-                    }
-                    return Err(format!("Image with id {} not found", id));
+                ImageHeader::Fill(size, rgba, _) => image.fill_image(size, rgba, &payload)?,
+            },
+            None => {
+                if header.requires_ack() {
+                    client.send_ack(id);
                 }
+                return Err(format!("Image with id {} not found", id));
             }
-            update
-        }
-        ServerMessage::ValueVec(id, type_id, update, list_header, data) => {
-            match vals.vecs.get(&id) {
-                Some(value) => value.update_list(type_id, list_header, &data)?,
-                None => return Err(format!("List with id {} not found", id)),
-            }
-            update
-        }
-        ServerMessage::ValueMap(id, type_id, update, map_header, data) => {
-            match vals.maps.get(&id) {
-                Some(value) => value.update_map(type_id, map_header, &data)?,
-                None => return Err(format!("Map with id {} not found", id)),
-            }
-            update
-        }
-        ServerMessage::Data(id, update, message) => {
-            match vals.data.get(&id) {
-                Some(data) => data.update_data(message)?,
-                None => {
-                    if message.requires_ack() {
-                        client.send_ack(id);
-                    }
-                    return Err(format!("Data with id {} not found", id));
+        },
+        ServerHeader::ValueVec(id, type_id, _, list_header, _) => match vals.vec(id) {
+            Some(value) => value.update_list(type_id, list_header, &payload)?,
+            None => return Err(format!("List with id {} not found", id)),
+        },
+        ServerHeader::ValueMap(id, type_id, _, map_header, _) => match vals.map(id) {
+            Some(value) => value.update_map(type_id, map_header, &payload)?,
+            None => return Err(format!("Map with id {} not found", id)),
+        },
+        ServerHeader::Data(id, header) => match vals.data(id) {
+            Some(data) => data.update_data((header, payload))?,
+            None => {
+                if header.requires_ack() {
+                    client.send_ack(id);
                 }
+                return Err(format!("Data with id {} not found", id));
             }
-            update
-        }
-        ServerMessage::DataTake(id, blocking, update, message) => {
-            match vals.data_take.get(&id) {
-                Some(data_take) => data_take.update(message, blocking)?,
-                None => {
-                    if blocking && message.is_terminal() {
-                        client.send_ack(id);
-                    }
-                    return Err(format!("DataTake with id {} not found", id));
+        },
+        ServerHeader::DataTake(id, header, blocking) => match vals.data_take(id) {
+            Some(data_take) => data_take.update((header, payload), blocking)?,
+            None => {
+                if blocking && header.is_terminal() {
+                    client.send_ack(id);
                 }
+                return Err(format!("DataTake with id {} not found", id));
             }
-            update
-        }
-        ServerMessage::DataMulti(id, update, message) => {
-            match vals.multi_data.get(&id) {
-                Some(multi_data) => match message {
-                    DataMultiMessage::Remove(key) => multi_data.remove(key),
-                    DataMultiMessage::Reset => multi_data.reset(),
-                    DataMultiMessage::Modify(key, data_message) => {
-                        multi_data.update(key, data_message)?
-                    }
-                },
-                None => {
-                    if message.requires_ack() {
-                        client.send_ack(id);
-                    }
-                    return Err(format!("MultiData with id {} not found", id));
+        },
+        ServerHeader::MultiData(id, header) => match vals.data_multi(id) {
+            Some(multi_data) => match header {
+                MultiDataHeader::Remove(key, _) => multi_data.remove(key),
+                MultiDataHeader::Reset(_) => multi_data.reset(),
+                MultiDataHeader::Modify(key, header) => {
+                    multi_data.update(key, (header, payload))?
                 }
-            }
-            update
-        }
-        ServerMessage::DataMultiTake(id, update, message) => {
-            match vals.data_multi_take.get(&id) {
-                Some(data_multi_take) => match message {
-                    DataMultiTakeMessage::Remove(key) => data_multi_take.remove(key),
-                    DataMultiTakeMessage::Reset => data_multi_take.reset(),
-                    DataMultiTakeMessage::Modify(key, data_take_message, blocking) => {
-                        data_multi_take.update(key, data_take_message, blocking)?
-                    }
-                },
-                None => {
-                    if message.requires_ack_on_failure() {
-                        client.send_ack(id);
-                    }
-                    return Err(format!("DataMultiTake with id {} not found", id));
+            },
+            None => {
+                if header.requires_ack() {
+                    client.send_ack(id);
                 }
+                return Err(format!("MultiData with id {} not found", id));
             }
-            update
-        }
-        ServerMessage::ImageMulti(id, update, message, data) => {
-            match vals.image_multi.get(&id) {
-                Some(images) => match message {
-                    ImageMultiMessage::Remove(index) => images.remove(index),
-                    ImageMultiMessage::Reset => images.reset(),
-                    ImageMultiMessage::Modify(index, image_message) => match image_message {
-                        ImageMessage::Set(set_message, image_type) => {
-                            images.set_image(index, set_message, image_type, &data)?
-                        }
-                        ImageMessage::Update(rect, image_type) => {
-                            images.update_image(index, rect, image_type, &data)?
-                        }
-                        ImageMessage::Fill(size, rgba) => {
-                            images.fill_image(index, size, rgba, &data)?
-                        }
-                    },
-                },
-                None => {
-                    if message.requires_ack() {
-                        client.send_ack(id);
-                    }
-                    return Err(format!("ImageMulti with id {} not found", id));
+        },
+        ServerHeader::DataMultiTake(id, header) => match vals.data_multi_take(id) {
+            Some(data_multi_take) => match header {
+                DataMultiTakeHeader::Remove(key, _) => data_multi_take.remove(key),
+                DataMultiTakeHeader::Reset(_) => data_multi_take.reset(),
+                DataMultiTakeHeader::Modify(key, header, blocking) => {
+                    data_multi_take.update(key, (header, payload), blocking)?
                 }
+            },
+            None => {
+                if header.requires_ack_on_failure() {
+                    client.send_ack(id);
+                }
+                return Err(format!("DataMultiTake with id {} not found", id));
             }
-            update
-        }
-    };
+        },
+        ServerHeader::ImageMulti(id, header) => match vals.image_multi(id) {
+            Some(images) => match header {
+                ImageMultiHeader::Remove(index, _) => images.remove(index),
+                ImageMultiHeader::Reset(_) => images.reset(),
+                ImageMultiHeader::Modify(index, ImageHeader::Set(set, image_type), _) => {
+                    images.set_image(index, set, image_type, &payload)?
+                }
+                ImageMultiHeader::Modify(index, ImageHeader::Update(rect, image_type, _), _) => {
+                    images.update_image(index, rect, image_type, &payload)?
+                }
+                ImageMultiHeader::Modify(index, ImageHeader::Fill(size, rgba, _), _) => {
+                    images.fill_image(index, size, rgba, &payload)?
+                }
+            },
+            None => {
+                if header.requires_ack() {
+                    client.send_ack(id);
+                }
+                return Err(format!("ImageMulti with id {} not found", id));
+            }
+        },
+    }
 
     if update {
         client.update(0.);
@@ -614,9 +366,85 @@ mod tests {
     use super::*;
     use crate::client::client::ClientCore;
     use crate::client::states_creator::StatesCreatorClient;
-    use crate::data_transport::{DataType, TransportType};
-    use crate::image_transport::ImageType;
+    use crate::protocol::collections::VecHeader;
+    use crate::protocol::data::{DataHeader, DataTakeHeader};
+    use crate::protocol::data::{DataType, TransportType};
+    use crate::protocol::image::ImageSetHeader;
+    use crate::protocol::image::ImageType;
     use tokio::sync::mpsc::{UnboundedReceiver, error::TryRecvError};
+
+    /// Frames that were queued in advance.
+    struct QueuedFrames(std::collections::VecDeque<Bytes>);
+
+    impl ServerFrames for QueuedFrames {
+        async fn next_frame(&mut self) -> Result<Bytes, &'static str> {
+            self.0.pop_front().ok_or("Connection closed by server")
+        }
+    }
+
+    #[test]
+    fn server_reader_reads_every_message_of_every_frame() {
+        let update = |dt| {
+            crate::protocol::serialize::<_, 32>(&ServerHeader::Update(dt))
+                .unwrap()
+                .into_bytes()
+        };
+        let both: Vec<u8> = [update(1.0), update(2.0)].concat();
+        let frames = QueuedFrames([Bytes::from(both), update(3.0)].into());
+        let mut reader = ServerReader::new(frames);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            for expected in [1.0, 2.0, 3.0] {
+                let (header, payload) = reader.read().await.unwrap();
+                assert!(matches!(header, ServerHeader::Update(dt) if dt == expected));
+                assert!(payload.is_empty());
+            }
+            assert!(matches!(
+                reader.read().await,
+                Err("Connection closed by server")
+            ));
+        });
+    }
+
+    /// Payload sizes come from the network, so their end is computed without
+    /// overflow, also for a pointer near the top of the address space (D7).
+    #[test]
+    fn payload_bounds_do_not_overflow() {
+        assert_eq!(checked_end(2, 3, 5), Some(5));
+        assert_eq!(checked_end(2, 4, 5), None);
+        assert_eq!(checked_end(0, u32::MAX, 10), None);
+        assert_eq!(checked_end(usize::MAX - 1, 2, usize::MAX), None);
+        assert_eq!(checked_end(usize::MAX, u32::MAX, usize::MAX), None);
+    }
+
+    /// A frame that declares a payload far beyond its own length is a parse
+    /// error, not a panic.
+    #[test]
+    fn oversized_payload_sizes_are_parse_errors() {
+        let headers = [
+            ServerHeader::Value(1, 0, false, u32::MAX),
+            ServerHeader::ValueVec(1, 0, false, VecHeader::Add, u32::MAX),
+            ServerHeader::Image(1, ImageHeader::Fill([1, 1], [0; 4], false), u32::MAX),
+            ServerHeader::Data(
+                1,
+                DataHeader::All(
+                    DataType::U8,
+                    TransportType::Set(1),
+                    false,
+                    u32::MAX,
+                    crate::protocol::data::HeaderUpdate::Keep,
+                ),
+            ),
+            ServerHeader::MultiData(1, MultiDataHeader::Modify(2, DataHeader::Batch(u32::MAX))),
+            ServerHeader::DataTake(1, DataTakeHeader::Batch(u32::MAX), false),
+        ];
+        for header in headers {
+            let bytes = postcard::to_stdvec(&header).unwrap();
+            assert!(MessagesParser::from_bytes(Bytes::from(bytes)).is_err());
+        }
+    }
 
     fn dispatch_missing(message: ServerMessage) -> UnboundedReceiver<Option<ChannelMessage>> {
         let (sender, receiver) = MessageSender::new();
@@ -667,18 +495,15 @@ mod tests {
     #[test]
     fn missing_value_and_blocking_value_take_ack() {
         assert_ack(
-            dispatch_missing(ServerMessage::Value(71, 0, false, Bytes::new())),
+            dispatch_missing((ServerHeader::Value(71, 0, false, 0), Bytes::new())),
             71,
         );
         assert_ack(
-            dispatch_missing(ServerMessage::ValueTake(72, 0, true, false, Bytes::new())),
+            dispatch_missing((ServerHeader::ValueTake(72, 0, true, false, 0), Bytes::new())),
             72,
         );
-        assert_no_ack(dispatch_missing(ServerMessage::ValueTake(
-            73,
-            0,
-            false,
-            false,
+        assert_no_ack(dispatch_missing((
+            ServerHeader::ValueTake(73, 0, false, false, 0),
             Bytes::new(),
         )));
     }
@@ -686,18 +511,18 @@ mod tests {
     #[test]
     fn missing_image_acks_only_ack_boundaries() {
         assert_ack(
-            dispatch_missing(ServerMessage::Image(
-                74,
-                false,
-                ImageMessage::Fill([1, 1], [0; 4]),
+            dispatch_missing((
+                ServerHeader::Image(74, ImageHeader::Fill([1, 1], [0; 4], false), 0),
                 Bytes::new(),
             )),
             74,
         );
-        assert_no_ack(dispatch_missing(ServerMessage::Image(
-            75,
-            false,
-            ImageMessage::Set(ImageSetMessage::Start([1, 1], 1), ImageType::ColorAlpha),
+        assert_no_ack(dispatch_missing((
+            ServerHeader::Image(
+                75,
+                ImageHeader::Set(ImageSetHeader::Start([1, 1], 1), ImageType::ColorAlpha),
+                0,
+            ),
             Bytes::new(),
         )));
     }
@@ -705,27 +530,28 @@ mod tests {
     #[test]
     fn missing_image_multi_acks_only_terminal_modifications() {
         assert_ack(
-            dispatch_missing(ServerMessage::ImageMulti(
-                83,
-                true,
-                ImageMultiMessage::Modify(7, ImageMessage::Fill([1, 1], [0; 4])),
+            dispatch_missing((
+                ServerHeader::ImageMulti(
+                    83,
+                    ImageMultiHeader::Modify(7, ImageHeader::Fill([1, 1], [0; 4], true), 0),
+                ),
                 Bytes::new(),
             )),
             83,
         );
-        assert_no_ack(dispatch_missing(ServerMessage::ImageMulti(
-            84,
-            false,
-            ImageMultiMessage::Modify(
-                7,
-                ImageMessage::Set(ImageSetMessage::Start([1, 1], 1), ImageType::ColorAlpha),
+        assert_no_ack(dispatch_missing((
+            ServerHeader::ImageMulti(
+                84,
+                ImageMultiHeader::Modify(
+                    7,
+                    ImageHeader::Set(ImageSetHeader::Start([1, 1], 1), ImageType::ColorAlpha),
+                    0,
+                ),
             ),
             Bytes::new(),
         )));
-        assert_no_ack(dispatch_missing(ServerMessage::ImageMulti(
-            85,
-            true,
-            ImageMultiMessage::Remove(7),
+        assert_no_ack(dispatch_missing((
+            ServerHeader::ImageMulti(85, ImageMultiHeader::Remove(7, true)),
             Bytes::new(),
         )));
     }
@@ -761,36 +587,30 @@ mod tests {
             &[],
         );
 
-        let (mut parser, first) = MessagesParser::from_bytes(Bytes::from(bytes)).unwrap();
-        match first {
-            ServerMessage::ImageMulti(
+        let (mut parser, (header, data)) = MessagesParser::from_bytes(Bytes::from(bytes)).unwrap();
+        assert!(header.update_flag());
+        match header {
+            ServerHeader::ImageMulti(
                 90,
-                true,
-                ImageMultiMessage::Modify(
+                ImageMultiHeader::Modify(
                     7,
-                    ImageMessage::Set(ImageSetMessage::All([2, 1]), ImageType::ColorAlpha),
+                    ImageHeader::Set(ImageSetHeader::All([2, 1], true), ImageType::ColorAlpha),
+                    8,
                 ),
-                data,
             ) => assert_eq!(data.as_ref(), &[1, 2, 3, 4, 5, 6, 7, 8]),
             _ => panic!("unexpected ImageMulti set message"),
         }
+        let (header, data) = parser.next().unwrap().unwrap();
+        assert!(header.update_flag() && data.is_empty());
         assert!(matches!(
-            parser.next().unwrap(),
-            Some(ServerMessage::ImageMulti(
-                90,
-                true,
-                ImageMultiMessage::Remove(2),
-                _
-            ))
+            header,
+            ServerHeader::ImageMulti(90, ImageMultiHeader::Remove(2, true))
         ));
+        let (header, _) = parser.next().unwrap().unwrap();
+        assert!(!header.update_flag());
         assert!(matches!(
-            parser.next().unwrap(),
-            Some(ServerMessage::ImageMulti(
-                90,
-                false,
-                ImageMultiMessage::Reset,
-                _
-            ))
+            header,
+            ServerHeader::ImageMulti(90, ImageMultiHeader::Reset(false))
         ));
         assert!(parser.next().unwrap().is_none());
     }
@@ -816,34 +636,41 @@ mod tests {
     #[test]
     fn missing_data_acks_only_terminal_operations() {
         assert_ack(
-            dispatch_missing(ServerMessage::Data(
-                76,
-                false,
-                DataMessage::All(
-                    DataType::U8,
-                    TransportType::Set(1),
-                    Bytes::from_static(&[1]),
+            dispatch_missing((
+                ServerHeader::Data(
+                    76,
+                    DataHeader::All(
+                        DataType::U8,
+                        TransportType::Set(1),
+                        false,
+                        0,
+                        crate::protocol::data::HeaderUpdate::Keep,
+                    ),
                 ),
+                Bytes::from_static(&[1]),
             )),
             76,
         );
-        assert_no_ack(dispatch_missing(ServerMessage::Data(
-            77,
-            false,
-            DataMessage::BatchStart(1, Bytes::from_static(&[1])),
+        assert_no_ack(dispatch_missing((
+            ServerHeader::Data(77, DataHeader::StartBatch(1, 0)),
+            Bytes::from_static(&[1]),
         )));
         assert_ack(
-            dispatch_missing(ServerMessage::DataMulti(
-                78,
-                false,
-                DataMultiMessage::Modify(
-                    3,
-                    DataMessage::All(
-                        DataType::U8,
-                        TransportType::Set(1),
-                        Bytes::from_static(&[1]),
+            dispatch_missing((
+                ServerHeader::MultiData(
+                    78,
+                    MultiDataHeader::Modify(
+                        3,
+                        DataHeader::All(
+                            DataType::U8,
+                            TransportType::Set(1),
+                            false,
+                            0,
+                            crate::protocol::data::HeaderUpdate::Keep,
+                        ),
                     ),
                 ),
+                Bytes::from_static(&[1]),
             )),
             78,
         );
@@ -852,40 +679,44 @@ mod tests {
     #[test]
     fn missing_take_data_acks_only_blocking_terminal_operations() {
         assert_ack(
-            dispatch_missing(ServerMessage::DataTake(
-                79,
-                true,
-                false,
-                DataTakeMessage::All(DataType::U8, 1, Bytes::from_static(&[1])),
+            dispatch_missing((
+                ServerHeader::DataTake(
+                    79,
+                    DataTakeHeader::All(DataType::U8, 1, false, 0, None),
+                    true,
+                ),
+                Bytes::from_static(&[1]),
             )),
             79,
         );
-        assert_no_ack(dispatch_missing(ServerMessage::DataTake(
-            80,
-            true,
-            false,
-            DataTakeMessage::BatchStart(1, Bytes::from_static(&[1])),
+        assert_no_ack(dispatch_missing((
+            ServerHeader::DataTake(80, DataTakeHeader::StartBatch(1, 0), true),
+            Bytes::from_static(&[1]),
         )));
         assert_ack(
-            dispatch_missing(ServerMessage::DataMultiTake(
-                81,
-                false,
-                DataMultiTakeMessage::Modify(
-                    3,
-                    DataTakeMessage::All(DataType::U8, 1, Bytes::from_static(&[1])),
-                    true,
+            dispatch_missing((
+                ServerHeader::DataMultiTake(
+                    81,
+                    DataMultiTakeHeader::Modify(
+                        3,
+                        DataTakeHeader::All(DataType::U8, 1, false, 0, None),
+                        true,
+                    ),
                 ),
+                Bytes::from_static(&[1]),
             )),
             81,
         );
-        assert_no_ack(dispatch_missing(ServerMessage::DataMultiTake(
-            82,
-            false,
-            DataMultiTakeMessage::Modify(
-                3,
-                DataTakeMessage::All(DataType::U8, 1, Bytes::from_static(&[1])),
-                false,
+        assert_no_ack(dispatch_missing((
+            ServerHeader::DataMultiTake(
+                82,
+                DataMultiTakeHeader::Modify(
+                    3,
+                    DataTakeHeader::All(DataType::U8, 1, false, 0, None),
+                    false,
+                ),
             ),
+            Bytes::from_static(&[1]),
         )));
     }
 }
@@ -911,7 +742,7 @@ mod malformed_tests {
         mixed.push(255);
         let (mut parser, first) = MessagesParser::from_bytes(mixed.into()).unwrap();
         assert!(
-            matches!(first, ServerMessage::Value(17, 2, false, ref data) if data.as_ref() == [1, 2])
+            matches!(first, (ServerHeader::Value(17, 2, false, 2), ref data) if data.as_ref() == [1, 2])
         );
         assert!(parser.next().is_err());
         assert!(
@@ -927,7 +758,7 @@ mod malformed_tests {
         let mut creator = StatesCreatorClient::new(sender.clone(), context.clone(), "root".into());
         let value: crate::Value<i32> = creator.value("number", 37);
         let values = creator.get_values();
-        let id = *values.values.keys().next().unwrap();
+        let id = *values.states.keys().next().unwrap();
         let type_id = <i32 as Typed>::get_type().get_hash();
         let client = ClientCore::new(context, sender);
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -940,7 +771,7 @@ mod malformed_tests {
             assert!(
                 runtime
                     .block_on(handle_message(
-                        ServerMessage::Value(id, kind, false, payload),
+                        (ServerHeader::Value(id, kind, false, 0), payload),
                         &values,
                         &client
                     ))
@@ -951,10 +782,8 @@ mod malformed_tests {
         }
         runtime
             .block_on(handle_message(
-                ServerMessage::Value(
-                    id,
-                    type_id,
-                    false,
+                (
+                    ServerHeader::Value(id, type_id, false, 0),
                     postcard::to_stdvec(&-91i32).unwrap().into(),
                 ),
                 &values,
@@ -969,7 +798,7 @@ mod malformed_tests {
 #[cfg(test)]
 mod serializer_tests {
     use super::*;
-    use crate::serialization::{VALUE_MAX_SIZE, WEBSOCKET_MAX_SIZE};
+    use crate::protocol::{VALUE_MAX_SIZE, WEBSOCKET_MAX_SIZE};
 
     /// Splits one outgoing frame into its client messages.
     fn headers(frame: &FastVec<64>) -> Vec<ClientHeader> {

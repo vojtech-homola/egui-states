@@ -31,10 +31,10 @@ pub use writer::Writer;
 
 /// Default time between two heartbeat pings.
 pub const DEFAULT_HEARTBEAT_INTERVAL: std::time::Duration =
-    crate::server_core::heartbeat::DEFAULT_INTERVAL;
+    crate::server_core::net::heartbeat::DEFAULT_INTERVAL;
 /// Default time a client may stay silent before it is disconnected.
 pub const DEFAULT_HEARTBEAT_TIMEOUT: std::time::Duration =
-    crate::server_core::heartbeat::DEFAULT_TIMEOUT;
+    crate::server_core::net::heartbeat::DEFAULT_TIMEOUT;
 
 use crate::typed::ObjectType;
 

@@ -6,8 +6,8 @@ use crate::InitValue;
 use crate::State;
 use crate::build_scripts::scripts;
 use crate::build_scripts::states_creator_build::StateType;
-use crate::data_transport::DataType;
 use crate::hashing::generate_value_id;
+use crate::protocol::data::DataType;
 use crate::typed::{ObjectType, type_definition, type_expression};
 
 /// Converts a Rust type name such as `CounterState` or `HTTPServer` to
@@ -148,6 +148,10 @@ fn state_types(state: &StateType) -> Vec<&ObjectType> {
         | StateType::ValueVec(_, object_type)
         | StateType::Signal(_, object_type, _) => vec![object_type],
         StateType::ValueMap(_, key, value) => vec![key, value],
+        StateType::Data(_, _, Some(header))
+        | StateType::DataTake(_, _, Some(header))
+        | StateType::DataMulti(_, _, Some(header))
+        | StateType::DataMultiTake(_, _, Some(header)) => vec![header],
         _ => Vec::new(),
     }
 }
@@ -410,10 +414,14 @@ fn render_c<S: State>() -> (String, String) {
             StateType::ImageMulti(_) => registrations.push_str(&generator.check(format!(
                 "egui_states_server_add_image_multi(server, {name}, NULL)"
             ))),
-            StateType::Data(_, data_type)
-            | StateType::DataTake(_, data_type)
-            | StateType::DataMulti(_, data_type)
-            | StateType::DataMultiTake(_, data_type) => {
+            StateType::Data(_, data_type, header)
+            | StateType::DataTake(_, data_type, header)
+            | StateType::DataMulti(_, data_type, header)
+            | StateType::DataMultiTake(_, data_type, header) => {
+                let header_name = match header {
+                    Some(header) => type_macro("HEADER_TYPE", header),
+                    None => "NULL".to_string(),
+                };
                 let data_name = names.claim(macro_name("DATA_TYPE"), full_name);
                 writeln!(
                     constants,
@@ -428,7 +436,7 @@ fn render_c<S: State>() -> (String, String) {
                     _ => "data_multi_take",
                 };
                 registrations.push_str(&generator.check(format!(
-                    "egui_states_server_add_{function}(server, {name}, {data_name}, NULL)"
+                    "egui_states_server_add_{function}(server, {name}, {data_name}, {header_name}, NULL)"
                 )));
             }
             StateType::SubState(..) => unreachable!("substates are flattened"),
@@ -563,7 +571,8 @@ fn render_c<S: State>() -> (String, String) {
 /// - `<PREFIX>_VERSION_HASH`, the layout hash for the handshake;
 /// - for each state, `<PREFIX>_<PATH>_ID` and `_NAME`, plus its type string
 ///   in `_TYPE` (`_KEY_TYPE` and `_VALUE_TYPE` for maps, `_DATA_TYPE` for
-///   numeric buffers);
+///   numeric buffers, and `_HEADER_TYPE` for a numeric buffer with a
+///   header);
 /// - a C enum per protocol enum, with conversions to and from the variant
 ///   index that the wire format carries;
 /// - `<prefix>_register(server)`, which defines every struct and enum and

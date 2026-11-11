@@ -24,9 +24,12 @@ pub(super) struct CallbackEntry {
     pub(super) wants_previous: bool,
 }
 
+/// Callbacks per value. A value's entries are shared with the workers that
+/// run them, so an event takes a reference instead of copying the list;
+/// registration, which is rare, replaces the list.
 pub(super) struct CallbackRegistry {
     next_id: AtomicU64,
-    callbacks: Mutex<HashMap<u64, Vec<CallbackEntry>>>,
+    callbacks: Mutex<HashMap<u64, Arc<[CallbackEntry]>>>,
 }
 
 impl CallbackRegistry {
@@ -46,27 +49,35 @@ impl CallbackRegistry {
     ) -> u64 {
         let callback_id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let mut callbacks = self.callbacks.lock();
-        let entries = callbacks.entry(value_id).or_default();
+        let mut entries = callbacks
+            .get(&value_id)
+            .map_or_else(Vec::new, |entries| entries.to_vec());
         entries.push(CallbackEntry {
             id: callback_id,
             callback,
             wants_previous,
         });
-        signals.set_register(value_id, true, any_wants_previous(entries));
+        signals.set_register(value_id, true, any_wants_previous(&entries));
+        callbacks.insert(value_id, entries.into());
         callback_id
     }
 
     pub(super) fn remove(&self, signals: &CoreSignalsManager, value_id: u64, callback_id: u64) {
         let mut callbacks = self.callbacks.lock();
-        if let Some(entries) = callbacks.get_mut(&value_id) {
-            entries.retain(|entry| entry.id != callback_id);
+        if let Some(entries) = callbacks.get(&value_id) {
+            let entries: Vec<CallbackEntry> = entries
+                .iter()
+                .filter(|entry| entry.id != callback_id)
+                .cloned()
+                .collect();
             if entries.is_empty() {
                 callbacks.remove(&value_id);
                 signals.set_register(value_id, false, false);
             } else {
                 // Dropping the last previous-value callback stops the previous value
                 // from being carried, so the flag has to be recomputed here too.
-                signals.set_register(value_id, true, any_wants_previous(entries));
+                signals.set_register(value_id, true, any_wants_previous(&entries));
+                callbacks.insert(value_id, entries.into());
             }
         }
     }
@@ -85,12 +96,12 @@ impl CallbackRegistry {
         }
     }
 
-    pub(super) fn get(&self, value_id: u64) -> Vec<CallbackEntry> {
+    pub(super) fn get(&self, value_id: u64) -> Arc<[CallbackEntry]> {
         self.callbacks
             .lock()
             .get(&value_id)
             .cloned()
-            .unwrap_or_default()
+            .unwrap_or_else(|| Arc::new([]))
     }
 }
 

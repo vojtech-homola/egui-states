@@ -75,10 +75,13 @@ impl Hasher for StableHasher {
     fn finish(&self) -> u64 {
         let result = self.hasher.clone().finalize();
         let hash = u64::from_le_bytes(result[0..8].try_into().unwrap());
-        // Avoid reserved IDs 0-9
-        10 + hash % (u64::MAX - 9)
+        MAX_RESERVED_ID + 1 + hash % (u64::MAX - MAX_RESERVED_ID)
     }
 }
+
+/// Ids `0..=MAX_RESERVED_ID` belong to built-in signals (logging, connect,
+/// disconnect, client messages); state ids never use them.
+pub(crate) const MAX_RESERVED_ID: u64 = 9;
 
 pub(crate) fn generate_value_id(name: &str) -> u64 {
     let mut hasher = StableHasher::new();

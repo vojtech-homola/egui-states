@@ -8,8 +8,8 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use crate::Typed;
-use crate::server_core::map_core::ValueMap as CoreMap;
-use crate::server_core::vec_core::ValueList as CoreVec;
+use crate::server_core::states::map::ValueMap as CoreMap;
+use crate::server_core::states::vec::ValueList as CoreVec;
 
 use super::state_server::{StateServer, deserialize_bytes, serialize_bytes};
 use super::{Result, ServerError};
@@ -255,7 +255,7 @@ mod tests {
         assert!(values.remove_item(2, false).is_err());
         assert_eq!(values.get().unwrap(), vec![1, 2]);
 
-        let too_large = "a".repeat(crate::serialization::VALUE_MAX_SIZE + 1);
+        let too_large = "a".repeat(crate::protocol::VALUE_MAX_SIZE + 1);
         map.set(HashMap::from([(1, String::from("one"))]), false)
             .unwrap();
         assert!(map.set_item(2, too_large.clone(), false).is_err());

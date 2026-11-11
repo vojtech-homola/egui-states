@@ -3,7 +3,7 @@ use crate::{
     bindings::{
         ShowcaseState,
         enums::{PrimaryChoice, SecondaryChoice},
-        structs::{Point, Summary},
+        structs::{Measurement, Point, Summary},
     },
     default_map,
 };
@@ -85,6 +85,18 @@ pub fn populate_initial_data(states: &ShowcaseState) -> s::Result<()> {
         .map(|index| index as f32 / ((1024 * 20 - 1) as f32))
         .collect::<Vec<_>>();
     states.data.samples.set(&samples, true)?;
+    let temperatures = (0..50)
+        .map(|index| 20.0 + (index as f32 / 8.0).sin())
+        .collect::<Vec<_>>();
+    let measurement = Measurement {
+        label: "temperature".into(),
+        unit: "°C".into(),
+        sample_rate: 10.0,
+    };
+    states
+        .data
+        .measurement
+        .set_with_header(&temperatures, &measurement, true)?;
     let nested_buffer = (0u16..8).collect::<Vec<_>>();
     states.data.nested.buffer.set(&nested_buffer, true)?;
 

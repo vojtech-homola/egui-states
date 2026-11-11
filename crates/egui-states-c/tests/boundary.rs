@@ -112,12 +112,14 @@ fn fixture() -> Fixture {
             server.0,
             c"root.data".as_ptr(),
             EGUI_STATES_DATA_U16,
+            std::ptr::null(),
             &mut ids[3],
         ));
         ok(egui_states_server_add_data_take(
             server.0,
             c"root.take".as_ptr(),
             EGUI_STATES_DATA_U8,
+            std::ptr::null(),
             &mut ids[4],
         ));
         ok(egui_states_server_finalize(server.0));
@@ -223,6 +225,7 @@ fn flags_and_enum_values_are_validated() {
                 EGUI_STATES_DATA_U8,
                 null(),
                 0,
+                std::ptr::null(),
                 EGUI_STATES_FORCE,
             ),
             EGUI_STATES_ERROR_INVALID_ARGUMENT,
@@ -239,7 +242,7 @@ fn flags_and_enum_values_are_validated() {
             "EGUI_STATES_MODE_",
         );
         fails(
-            egui_states_data_set(server, f.data, 10, null(), 0, 0),
+            egui_states_data_set(server, f.data, 10, null(), 0, std::ptr::null(), 0),
             EGUI_STATES_ERROR_INVALID_ARGUMENT,
             "10 is not an EGUI_STATES_DATA_* value",
         );
@@ -263,7 +266,15 @@ fn flags_and_enum_values_are_validated() {
             "EGUI_STATES_IMAGE_",
         );
         fails(
-            egui_states_data_set(server, f.data, EGUI_STATES_DATA_U32, null(), 0, 0),
+            egui_states_data_set(
+                server,
+                f.data,
+                EGUI_STATES_DATA_U32,
+                null(),
+                0,
+                std::ptr::null(),
+                0,
+            ),
             EGUI_STATES_ERROR_TYPE_MISMATCH,
             "holds u16 elements, not u32",
         );
@@ -418,6 +429,7 @@ fn copy_out_reports_sizes_and_short_buffers() {
             EGUI_STATES_DATA_U16,
             values.as_ptr().cast(),
             3,
+            std::ptr::null(),
             0,
         ));
         let mut count = 0;
@@ -459,6 +471,7 @@ fn copy_out_reports_sizes_and_short_buffers() {
             EGUI_STATES_DATA_U16,
             null(),
             0,
+            std::ptr::null(),
             0,
         ));
         ok(egui_states_data_len(server, f.data, &mut count));

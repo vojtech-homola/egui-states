@@ -27,4 +27,5 @@ pub struct State {
     pub data_multi_take: MultiDataTakeStates,
     pub image: ImageStates,
     pub wire_types: wire::WireTypeStates,
+    pub headers: data::HeaderStates,
 }

@@ -9,9 +9,20 @@ pub struct NestedDataStates {
     pub buffer: Data<u16>,
 }
 
+/// Describes the numbers of a measurement; the server sends it as the header
+/// of the buffer, so the GUI always shows a buffer with its own description.
+#[egui_states::typed]
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Measurement {
+    pub label: String,
+    pub unit: String,
+    pub sample_rate: f32,
+}
+
 pub struct DataStates {
     pub bytes: Data<u8>,
     pub samples: Data<f32>,
+    pub measurement: Data<f32, Measurement>,
     pub nested: NestedDataStates,
 }
 
@@ -101,6 +112,7 @@ impl egui_states::State for DataStates {
         Self {
             bytes: c.data("bytes"),
             samples: c.data("samples"),
+            measurement: c.data("measurement"),
             nested: c.substate("nested"),
         }
     }

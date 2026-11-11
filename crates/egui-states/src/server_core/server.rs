@@ -8,26 +8,27 @@ use std::thread;
 use std::time::Duration;
 
 use bytes::Bytes;
+use parking_lot::Mutex;
 use tokio::net::TcpListener;
 use tokio::runtime::Builder;
 
-use crate::data_transport::DataType;
 use crate::event::Event;
-use crate::hashing::{NoHashMap, generate_value_id};
-use crate::serialization::{ServerHeader, check_value_size, serialize};
-use crate::server_core::core;
-use crate::server_core::data_core::{Data, DataMulti};
-use crate::server_core::data_take_core::{DataMultiTake, DataTake};
-use crate::server_core::heartbeat::Heartbeat;
-use crate::server_core::image_core::Image;
-use crate::server_core::image_multi_core::ImageMulti;
-use crate::server_core::map_core::ValueMap;
-use crate::server_core::origin::OriginPolicy;
-use crate::server_core::sender::{MessageReceiver, MessageSender};
-use crate::server_core::signals::{CLIENT_MESSAGE_ID, SignalsManager};
-use crate::server_core::values_core::{SignalCore, ValueCore, ValueStaticCore, ValueTakeCore};
-use crate::server_core::vec_core::ValueList;
-use crate::server_core::web::{WebSite, WebSlot};
+use crate::hashing::{MAX_RESERVED_ID, NoHashMap, generate_value_id};
+use crate::protocol::data::DataType;
+use crate::protocol::{ServerHeader, check_value_size, serialize};
+use crate::server_core::http::origin::OriginPolicy;
+use crate::server_core::http::web::{WebSite, WebSlot};
+use crate::server_core::net::heartbeat::Heartbeat;
+use crate::server_core::net::sender::{MessageReceiver, MessageSender};
+use crate::server_core::net::session;
+use crate::server_core::signals::SignalsManager;
+use crate::server_core::states::data::{Data, DataMulti};
+use crate::server_core::states::data_take::{DataMultiTake, DataTake};
+use crate::server_core::states::image::multi::ImageMulti;
+use crate::server_core::states::image::single::Image;
+use crate::server_core::states::map::ValueMap;
+use crate::server_core::states::value::{SignalCore, ValueCore, ValueStaticCore, ValueTakeCore};
+use crate::server_core::states::vec::ValueList;
 
 pub(crate) trait SyncTrait: Sync + Send {
     fn sync(&self) -> Result<(), ()>;
@@ -41,99 +42,133 @@ pub(crate) trait Acknowledge: Sync + Send {
     }
 }
 
+/// A registered state of any kind.
+#[derive(Clone)]
+pub(crate) enum StateRef {
+    Value(Arc<ValueCore>),
+    ValueTake(Arc<ValueTakeCore>),
+    Static(Arc<ValueStaticCore>),
+    Signal(Arc<SignalCore>),
+    Vec(Arc<ValueList>),
+    Map(Arc<ValueMap>),
+    Image(Arc<Image>),
+    ImageMulti(Arc<ImageMulti>),
+    Data(Arc<Data>),
+    DataMulti(Arc<DataMulti>),
+    DataTake(Arc<DataTake>),
+    DataMultiTake(Arc<DataMultiTake>),
+}
+
+impl StateRef {
+    /// Where the kind is synchronized with a newly connected client; kinds
+    /// go in this order, images before data. Signals are not synchronized.
+    fn sync_rank(&self) -> Option<u8> {
+        Some(match self {
+            Self::ValueTake(_) => 0,
+            Self::Value(_) => 1,
+            Self::Static(_) => 2,
+            Self::Image(_) => 3,
+            Self::ImageMulti(_) => 4,
+            Self::Map(_) => 5,
+            Self::Vec(_) => 6,
+            Self::Data(_) => 7,
+            Self::DataMulti(_) => 8,
+            Self::DataTake(_) => 9,
+            Self::DataMultiTake(_) => 10,
+            Self::Signal(_) => return None,
+        })
+    }
+
+    fn sync(&self) -> Option<Arc<dyn SyncTrait>> {
+        Some(match self {
+            Self::Value(state) => state.clone(),
+            Self::ValueTake(state) => state.clone(),
+            Self::Static(state) => state.clone(),
+            Self::Vec(state) => state.clone(),
+            Self::Map(state) => state.clone(),
+            Self::Image(state) => state.clone(),
+            Self::ImageMulti(state) => state.clone(),
+            Self::Data(state) => state.clone(),
+            Self::DataMulti(state) => state.clone(),
+            Self::DataTake(state) => state.clone(),
+            Self::DataMultiTake(state) => state.clone(),
+            Self::Signal(_) => return None,
+        })
+    }
+
+    /// The kinds the client acknowledges.
+    fn ack(&self) -> Option<Arc<dyn Acknowledge>> {
+        Some(match self {
+            Self::Value(state) => state.clone(),
+            Self::ValueTake(state) => state.clone(),
+            Self::Image(state) => state.clone(),
+            Self::ImageMulti(state) => state.clone(),
+            Self::Data(state) => state.clone(),
+            Self::DataMulti(state) => state.clone(),
+            Self::DataTake(state) => state.clone(),
+            Self::DataMultiTake(state) => state.clone(),
+            Self::Static(_) | Self::Vec(_) | Self::Map(_) | Self::Signal(_) => return None,
+        })
+    }
+}
+
+/// Every registered state, by id. An id belongs to one state of one kind.
 #[derive(Clone, Default)]
 pub(crate) struct StatesList {
-    pub(crate) values: NoHashMap<u64, Arc<ValueCore>>,
-    pub(crate) values_take: NoHashMap<u64, Arc<ValueTakeCore>>,
-    pub(crate) static_values: NoHashMap<u64, Arc<ValueStaticCore>>,
-    pub(crate) signals: NoHashMap<u64, Arc<SignalCore>>,
-    pub(crate) images: NoHashMap<u64, Arc<Image>>,
-    pub(crate) image_multi: NoHashMap<u64, Arc<ImageMulti>>,
-    pub(crate) maps: NoHashMap<u64, Arc<ValueMap>>,
-    pub(crate) lists: NoHashMap<u64, Arc<ValueList>>,
-    pub(crate) data: NoHashMap<u64, Arc<Data>>,
-    pub(crate) data_take: NoHashMap<u64, Arc<DataTake>>,
-    pub(crate) data_multi: NoHashMap<u64, Arc<DataMulti>>,
-    pub(crate) data_multi_take: NoHashMap<u64, Arc<DataMultiTake>>,
+    pub(crate) states: NoHashMap<u64, StateRef>,
 }
 
 impl StatesList {
     fn contains_id(&self, id: u64) -> bool {
-        id <= CLIENT_MESSAGE_ID
-            || self.values.contains_key(&id)
-            || self.values_take.contains_key(&id)
-            || self.static_values.contains_key(&id)
-            || self.signals.contains_key(&id)
-            || self.images.contains_key(&id)
-            || self.image_multi.contains_key(&id)
-            || self.maps.contains_key(&id)
-            || self.lists.contains_key(&id)
-            || self.data.contains_key(&id)
-            || self.data_take.contains_key(&id)
-            || self.data_multi.contains_key(&id)
-            || self.data_multi_take.contains_key(&id)
+        id <= MAX_RESERVED_ID || self.states.contains_key(&id)
     }
 
     fn get_server_list(&self) -> ServerStatesList {
         let mut server_list = ServerStatesList::default();
-
-        server_list.values.extend(self.values.clone());
-        server_list.signals.extend(self.signals.clone());
-
-        for (id, value_take) in self.values_take.iter() {
-            server_list.sync.push(value_take.clone());
-            server_list.ack.insert(*id, value_take.clone());
+        let mut sync = Vec::new();
+        for (id, state) in self.states.iter() {
+            match state {
+                StateRef::Value(value) => {
+                    server_list.values.insert(*id, value.clone());
+                }
+                StateRef::Signal(signal) => {
+                    server_list.signals.insert(*id, signal.clone());
+                }
+                _ => {}
+            }
+            if let Some(ack) = state.ack() {
+                server_list.ack.insert(*id, ack);
+            }
+            if let (Some(rank), Some(state)) = (state.sync_rank(), state.sync()) {
+                sync.push((rank, state));
+            }
         }
-
-        for (id, value) in self.values.iter() {
-            server_list.sync.push(value.clone());
-            server_list.ack.insert(*id, value.clone());
-        }
-
-        for value in self.static_values.values() {
-            server_list.sync.push(value.clone());
-        }
-
-        for (id, image) in self.images.iter() {
-            server_list.sync.push(image.clone());
-            server_list.ack.insert(*id, image.clone());
-        }
-
-        for (id, images) in self.image_multi.iter() {
-            server_list.sync.push(images.clone());
-            server_list.ack.insert(*id, images.clone());
-        }
-
-        for map in self.maps.values() {
-            server_list.sync.push(map.clone());
-        }
-
-        for list in self.lists.values() {
-            server_list.sync.push(list.clone());
-        }
-
-        for (id, data) in self.data.iter() {
-            server_list.sync.push(data.clone());
-            server_list.ack.insert(*id, data.clone());
-        }
-
-        for (id, data_multi) in self.data_multi.iter() {
-            server_list.sync.push(data_multi.clone());
-            server_list.ack.insert(*id, data_multi.clone());
-        }
-
-        for (id, data_take) in self.data_take.iter() {
-            server_list.sync.push(data_take.clone());
-            server_list.ack.insert(*id, data_take.clone());
-        }
-
-        for (id, data_multi_take) in self.data_multi_take.iter() {
-            server_list.sync.push(data_multi_take.clone());
-            server_list.ack.insert(*id, data_multi_take.clone());
-        }
-
+        // Stable, so the states of one kind keep the map's order.
+        sync.sort_by_key(|(rank, _)| *rank);
+        server_list.sync = sync.into_iter().map(|(_, state)| state).collect();
         server_list
     }
+}
+
+/// Typed lookups of registered states; a state of another kind is reported
+/// like a missing one.
+#[cfg(feature = "server")]
+macro_rules! getters {
+    ($($name:ident: $variant:ident($ty:ty)),* $(,)?) => {
+        $(
+            pub(crate) fn $name(&self, id: u64) -> Option<Arc<$ty>> {
+                match self.states.states.get(&id) {
+                    Some(StateRef::$variant(state)) => Some(state.clone()),
+                    _ => None,
+                }
+            }
+        )*
+    };
+}
+
+/// The data type for a protocol type id.
+fn data_type(type_id: u8) -> Result<DataType, String> {
+    DataType::from_id(type_id).map_err(|_| "Invalid data type id".to_string())
 }
 
 #[derive(Clone, Default)]
@@ -208,6 +243,60 @@ impl RunnerState {
     }
 }
 
+/// The settings a server reads when it starts, as every front-end passes
+/// them.
+pub(crate) struct ServerConfig {
+    /// The application version clients must present, if any.
+    version: Option<u64>,
+    /// `None` disables the heartbeat.
+    heartbeat: Option<Heartbeat>,
+    /// The absolute directory of the web page that `start_web` serves.
+    web_path: Option<PathBuf>,
+    origins: Arc<OriginPolicy>,
+}
+
+impl ServerConfig {
+    /// Checks the settings.
+    ///
+    /// A relative `web_path` is resolved against the current directory now,
+    /// so a later change of the current directory does not move the page; the
+    /// directory itself is not read here. `allowed_origins` are the browser
+    /// pages that may connect besides pages the server serves itself on an
+    /// IP address or local network name: `scheme://host[:port]` patterns,
+    /// where `*` matches any scheme, part of the host, or port.
+    pub(crate) fn new(
+        version: Option<u64>,
+        heartbeat: Option<Heartbeat>,
+        web_path: Option<&Path>,
+        allowed_origins: &[String],
+    ) -> Result<Self, String> {
+        let web_path = web_path
+            .map(|path| {
+                std::path::absolute(path)
+                    .map_err(|e| format!("invalid web page path {}: {e}", path.display()))
+            })
+            .transpose()?;
+        Ok(Self {
+            version,
+            heartbeat,
+            web_path,
+            origins: Arc::new(OriginPolicy::new(allowed_origins)?),
+        })
+    }
+
+    /// The defaults: the default heartbeat, no web page and the default
+    /// browser access.
+    #[cfg(any(feature = "c_abi", test))]
+    pub(crate) fn with_version(version: Option<u64>) -> Self {
+        Self {
+            version,
+            heartbeat: Some(Heartbeat::default()),
+            web_path: None,
+            origins: Arc::default(),
+        }
+    }
+}
+
 pub(crate) struct Server {
     connected: Arc<AtomicBool>,
     stop_event: Event,
@@ -215,17 +304,55 @@ pub(crate) struct Server {
     states: StatesList,
     states_server: Option<ServerStatesList>,
     signals: SignalsManager,
-    version: Option<u64>,
-    web_path: Option<PathBuf>,
+    config: ServerConfig,
     web: WebSlot,
-    origins: Arc<OriginPolicy>,
-    heartbeat: Option<Heartbeat>,
 
-    runner_state: RunnerState,
+    /// Held by `start` and `stop` for their whole run, including the join of
+    /// the server thread, so they never overlap. Nothing that a connected
+    /// client needs, like `update` or `is_connected`, takes it.
+    runner_state: Mutex<RunnerState>,
+}
+
+/// Binds `addr` and builds the runtime whose thread will serve it.
+///
+/// Returns the runtime, the listener registered with it and the bound address.
+fn listen(
+    addr: SocketAddrV4,
+) -> Result<(tokio::runtime::Runtime, TcpListener, SocketAddrV4), StartError> {
+    let listener = std::net::TcpListener::bind(addr)
+        .map_err(|error| StartError::Io(format!("binding failed: {error:?}")))?;
+    let bound = match listener.local_addr() {
+        Ok(std::net::SocketAddr::V4(bound)) => bound,
+        // Binding an IPv4 address always reports an IPv4 one.
+        Ok(std::net::SocketAddr::V6(_)) => addr,
+        Err(error) => {
+            return Err(StartError::Io(format!(
+                "failed to read the listener address: {error:?}"
+            )));
+        }
+    };
+    listener
+        .set_nonblocking(true)
+        .map_err(|error| StartError::Io(format!("failed to configure listener: {error:?}")))?;
+
+    let runtime = Builder::new_multi_thread()
+        .thread_name("ServerRuntime")
+        .enable_io()
+        .enable_time()
+        .worker_threads(2)
+        .thread_keep_alive(Duration::from_hours(1))
+        .build()
+        .map_err(|_| StartError::Io("Failed to create server runtime".to_string()))?;
+    let listener = {
+        let _guard = runtime.enter();
+        TcpListener::from_std(listener)
+    }
+    .map_err(|error| StartError::Io(format!("failed to initialize listener: {error:?}")))?;
+    Ok((runtime, listener, bound))
 }
 
 impl Server {
-    pub(crate) fn new(version: Option<u64>) -> Self {
+    pub(crate) fn new(config: ServerConfig) -> Self {
         let connected = Arc::new(AtomicBool::new(false));
         let (sender, rx) = MessageSender::new();
         let signals = SignalsManager::new();
@@ -237,42 +364,23 @@ impl Server {
             states: StatesList::default(),
             states_server: None,
             signals,
-            version,
-            web_path: None,
+            config,
             web: WebSlot::default(),
-            origins: Arc::default(),
-            heartbeat: Some(Heartbeat::default()),
-            runner_state: RunnerState::Stopped(rx),
+            runner_state: Mutex::new(RunnerState::Stopped(rx)),
         }
     }
 
     /// Sets the heartbeat used from the next [`Self::start`]; `None` disables it.
+    #[cfg(feature = "c_abi")]
     pub(crate) fn set_heartbeat(&mut self, heartbeat: Option<Heartbeat>) {
-        self.heartbeat = heartbeat;
+        self.config.heartbeat = heartbeat;
     }
 
-    /// Sets the web page directory that `start_web` loads and serves.
-    ///
-    /// A relative path is resolved against the current directory now, so a
-    /// later change of the current directory does not move the page. The
-    /// directory itself is not read here.
-    pub(crate) fn set_web_path(&mut self, path: Option<&Path>) -> Result<(), String> {
-        self.web_path = path
-            .map(|path| {
-                std::path::absolute(path)
-                    .map_err(|e| format!("invalid web page path {}: {e}", path.display()))
-            })
-            .transpose()?;
-        Ok(())
-    }
-
-    /// Sets which browser pages may connect, besides pages served by the
-    /// server itself on an IP address or local network name.
-    ///
-    /// `origins` are `scheme://host[:port]` patterns, where `*` matches any
-    /// scheme, part of the host, or port. Applies from the next start.
+    /// Sets which browser pages may connect from the next start; see
+    /// [`ServerConfig::new`].
+    #[cfg(feature = "c_abi")]
     pub(crate) fn set_allowed_origins(&mut self, origins: &[String]) -> Result<(), String> {
-        self.origins = Arc::new(OriginPolicy::new(origins)?);
+        self.config.origins = Arc::new(OriginPolicy::new(origins)?);
         Ok(())
     }
 
@@ -300,11 +408,12 @@ impl Server {
     /// creates and owns a Tokio runtime, which must be allowed to shut down on
     /// a non-async thread.
     pub(crate) fn start(
-        &mut self,
+        &self,
         addr: SocketAddrV4,
         token: Option<String>,
     ) -> Result<(), StartError> {
-        let runner_state = match self.runner_state.take() {
+        let mut state = self.runner_state.lock();
+        let runner_state = match state.take() {
             RunnerState::Running(handle, _) if handle.is_finished() => match handle.join() {
                 Ok(rx) => RunnerState::Stopped(rx),
                 Err(_) => RunnerState::Undefined,
@@ -315,62 +424,15 @@ impl Server {
         match (runner_state, &self.states_server) {
             (RunnerState::Running(handle, listening), _) => {
                 let checked = listening.check(addr, &token);
-                self.runner_state = RunnerState::Running(handle, listening);
+                *state = RunnerState::Running(handle, listening);
                 checked
             }
             (RunnerState::Stopped(rx), Some(states_server)) => {
-                let listener = match std::net::TcpListener::bind(addr) {
-                    Ok(listener) => listener,
+                let (runtime, listener, bound) = match listen(addr) {
+                    Ok(listening) => listening,
                     Err(error) => {
-                        self.runner_state = RunnerState::Stopped(rx);
-                        return Err(StartError::Io(format!("binding failed: {error:?}")));
-                    }
-                };
-                let bound = match listener.local_addr() {
-                    Ok(std::net::SocketAddr::V4(bound)) => bound,
-                    // Binding an IPv4 address always reports an IPv4 one.
-                    Ok(std::net::SocketAddr::V6(_)) => addr,
-                    Err(error) => {
-                        self.runner_state = RunnerState::Stopped(rx);
-                        return Err(StartError::Io(format!(
-                            "failed to read the listener address: {error:?}"
-                        )));
-                    }
-                };
-                if let Err(error) = listener.set_nonblocking(true) {
-                    self.runner_state = RunnerState::Stopped(rx);
-                    return Err(StartError::Io(format!(
-                        "failed to configure listener: {error:?}"
-                    )));
-                }
-
-                let runtime = match Builder::new_multi_thread()
-                    .thread_name("ServerRuntime")
-                    .enable_io()
-                    .enable_time()
-                    .worker_threads(2)
-                    .thread_keep_alive(Duration::from_hours(1))
-                    .build()
-                {
-                    Ok(runtime) => runtime,
-                    Err(_) => {
-                        self.runner_state = RunnerState::Stopped(rx);
-                        return Err(StartError::Io(
-                            "Failed to create server runtime".to_string(),
-                        ));
-                    }
-                };
-                let registered = {
-                    let _guard = runtime.enter();
-                    TcpListener::from_std(listener)
-                };
-                let listener = match registered {
-                    Ok(listener) => listener,
-                    Err(error) => {
-                        self.runner_state = RunnerState::Stopped(rx);
-                        return Err(StartError::Io(format!(
-                            "failed to initialize listener: {error:?}"
-                        )));
+                        *state = RunnerState::Stopped(rx);
+                        return Err(error);
                     }
                 };
 
@@ -380,41 +442,44 @@ impl Server {
                 let values = states_server.clone();
                 let signals = self.signals.clone();
                 let web = self.web.clone();
-                let heartbeat = self.heartbeat;
+                let heartbeat = self.config.heartbeat;
 
                 let listening = Listening {
                     requested: addr,
                     bound,
                     token: token.clone(),
                 };
-                let handshake = core::Handshake {
-                    version: self.version,
+                let handshake = session::Handshake {
+                    version: self.config.version,
                     token,
-                    origins: self.origins.clone(),
+                    origins: self.config.origins.clone(),
                 };
 
                 let server_thread = thread::Builder::new().name("StatesServer".to_string());
                 stop_event.clear();
                 let thread_handle_res = server_thread.spawn(move || {
                     runtime.block_on(async move {
-                        core::run(
-                            listener, sender, rx, connected, stop_event, values, signals,
-                            handshake, web, heartbeat,
-                        )
-                        .await
+                        let session = session::Session {
+                            sender,
+                            connected,
+                            values,
+                            signals,
+                            heartbeat,
+                        };
+                        session::run(listener, rx, stop_event, handshake, web, session).await
                     })
                 });
 
                 match thread_handle_res {
                     Err(_) => {
-                        self.runner_state = RunnerState::Undefined;
+                        *state = RunnerState::Undefined;
                         Err(StartError::Io(
                             "Failed to start server thread, server is in undefined state"
                                 .to_string(),
                         ))
                     }
                     Ok(thread_handle) => {
-                        self.runner_state = RunnerState::Running(thread_handle, listening);
+                        *state = RunnerState::Running(thread_handle, listening);
                         Ok(())
                     }
                 }
@@ -422,8 +487,8 @@ impl Server {
             (RunnerState::Undefined, _) => Err(StartError::InvalidState(
                 "Server is in undefined state".to_string(),
             )),
-            (state, None) => {
-                self.runner_state = state;
+            (stopped, None) => {
+                *state = stopped;
                 Err(StartError::InvalidState(
                     "Server has not been finalized".to_string(),
                 ))
@@ -431,30 +496,28 @@ impl Server {
         }
     }
 
-    pub(crate) fn stop(&mut self) {
-        match self.runner_state.take() {
+    /// Stops the server and waits for its thread to finish.
+    pub(crate) fn stop(&self) {
+        let mut state = self.runner_state.lock();
+        match state.take() {
             RunnerState::Stopped(rx) => {
-                self.runner_state = RunnerState::Stopped(rx);
+                *state = RunnerState::Stopped(rx);
             }
             RunnerState::Running(handle, _) => {
                 self.connected.store(false, Ordering::Release);
                 self.stop_event.set();
                 self.sender.close();
 
-                match handle.join() {
-                    Ok(rx) => {
-                        self.runner_state = RunnerState::Stopped(rx);
-                    }
-                    Err(_) => {
-                        self.runner_state = RunnerState::Undefined;
-                    }
-                }
+                *state = match handle.join() {
+                    Ok(rx) => RunnerState::Stopped(rx),
+                    Err(_) => RunnerState::Undefined,
+                };
             }
             RunnerState::Undefined => {}
         }
     }
 
-    pub(crate) fn disconnect_client(&mut self) {
+    pub(crate) fn disconnect_client(&self) {
         if self.connected.load(Ordering::Acquire) {
             self.connected.store(false, Ordering::Release);
             self.sender.close();
@@ -462,22 +525,23 @@ impl Server {
     }
 
     pub(crate) fn is_running(&self) -> bool {
-        self.listening().is_some()
+        self.address().is_some()
     }
 
     /// Returns the address the server listens on while it is running.
     ///
-    /// With port 0 this is the port the system assigned.
+    /// With port 0 this is the port the system assigned. While `stop` is
+    /// joining the server thread this waits for it, unless `stop` has already
+    /// signalled the thread.
     pub(crate) fn address(&self) -> Option<SocketAddrV4> {
-        self.listening().map(|listening| listening.bound)
-    }
-
-    fn listening(&self) -> Option<&Listening> {
-        match &self.runner_state {
+        if self.stop_event.is_set() {
+            return None;
+        }
+        match &*self.runner_state.lock() {
             RunnerState::Running(handle, listening)
                 if !handle.is_finished() && !self.stop_event.is_set() =>
             {
-                Some(listening)
+                Some(listening.bound)
             }
             _ => None,
         }
@@ -502,7 +566,7 @@ impl Server {
 
     /// Returns the configured absolute web page directory, served or not.
     pub(crate) fn web_path(&self) -> Option<PathBuf> {
-        self.web_path.clone()
+        self.config.web_path.clone()
     }
 
     pub(crate) fn update(&self, duration: Option<f32>) -> Result<(), ()> {
@@ -515,12 +579,13 @@ impl Server {
         Ok(())
     }
 
-    pub(crate) fn add_value(
+    /// Registers the state `make` builds for `name`'s id; `kind` names the
+    /// state in the duplicate error.
+    fn register(
         &mut self,
         name: &str,
-        type_id: u32,
-        value: Bytes,
-        queue: bool,
+        kind: &str,
+        make: impl FnOnce(u64) -> Result<StateRef, String>,
     ) -> Result<u64, String> {
         if self.states_server.is_some() {
             return Err("Cannot add new values after server has been finalized".to_string());
@@ -528,50 +593,59 @@ impl Server {
 
         let id = generate_value_id(name);
         if self.states.contains_id(id) {
-            return Err(format!("Value with id {} already exists", id));
+            return Err(format!("{kind} with id {id} already exists"));
         }
-        check_value_size(name, value.len())?;
+        let state = make(id)?;
+        self.states.states.insert(id, state);
+        Ok(id)
+    }
 
-        let val = ValueCore::new(
-            name.to_string(),
-            id,
-            type_id,
-            value,
+    /// What a new state needs to send and to raise signals.
+    fn channels(&self) -> (MessageSender, Arc<AtomicBool>, SignalsManager) {
+        (
             self.sender.clone(),
             self.connected.clone(),
             self.signals.clone(),
-        );
+        )
+    }
 
-        self.states.values.insert(id, val);
-
+    pub(crate) fn add_value(
+        &mut self,
+        name: &str,
+        type_id: u32,
+        value: Bytes,
+        queue: bool,
+    ) -> Result<u64, String> {
+        let (sender, connected, signals) = self.channels();
+        let id = self.register(name, "Value", |id| {
+            check_value_size(name, value.len())?;
+            Ok(StateRef::Value(ValueCore::new(
+                name.to_string(),
+                id,
+                type_id,
+                value,
+                sender,
+                connected,
+                signals,
+            )))
+        })?;
         if queue {
             self.signals.set_to_queue(id);
         }
-
         Ok(id)
     }
 
     pub(crate) fn add_value_take(&mut self, name: &str, type_id: u32) -> Result<u64, String> {
-        if self.states_server.is_some() {
-            return Err("Cannot add new values after server has been finalized".to_string());
-        }
-
-        let id = generate_value_id(name);
-        if self.states.contains_id(id) {
-            return Err(format!("ValueTake with id {} already exists", id));
-        }
-
-        let val = ValueTakeCore::new(
-            name.to_string(),
-            id,
-            type_id,
-            self.sender.clone(),
-            self.connected.clone(),
-        );
-
-        self.states.values_take.insert(id, val);
-
-        Ok(id)
+        let (sender, connected, _) = self.channels();
+        self.register(name, "ValueTake", |id| {
+            Ok(StateRef::ValueTake(ValueTakeCore::new(
+                name.to_string(),
+                id,
+                type_id,
+                sender,
+                connected,
+            )))
+        })
     }
 
     pub(crate) fn add_static(
@@ -580,27 +654,18 @@ impl Server {
         type_id: u32,
         value: Bytes,
     ) -> Result<u64, String> {
-        if self.states_server.is_some() {
-            return Err("Cannot add new values after server has been finalized".to_string());
-        }
-
-        let id = generate_value_id(name);
-        if self.states.contains_id(id) {
-            return Err(format!("Static value with id {} already exists", id));
-        }
-        check_value_size(name, value.len())?;
-
-        let val = ValueStaticCore::new(
-            name.to_string(),
-            id,
-            type_id,
-            value,
-            self.sender.clone(),
-            self.connected.clone(),
-        );
-
-        self.states.static_values.insert(id, val);
-        Ok(id)
+        let (sender, connected, _) = self.channels();
+        self.register(name, "Static value", |id| {
+            check_value_size(name, value.len())?;
+            Ok(StateRef::Static(ValueStaticCore::new(
+                name.to_string(),
+                id,
+                type_id,
+                value,
+                sender,
+                connected,
+            )))
+        })
     }
 
     pub(crate) fn add_signal(
@@ -609,271 +674,205 @@ impl Server {
         type_id: u32,
         queue: bool,
     ) -> Result<u64, String> {
-        if self.states_server.is_some() {
-            return Err("Cannot add new values after server has been finalized".to_string());
-        }
-
-        let id = generate_value_id(name);
-        if self.states.contains_id(id) {
-            return Err(format!("Signal with id {} already exists", id));
-        }
-
-        let val = SignalCore::new(name.to_string(), id, type_id, self.signals.clone());
-
-        self.states.signals.insert(id, val);
-
+        let (_, _, signals) = self.channels();
+        let id = self.register(name, "Signal", |id| {
+            Ok(StateRef::Signal(SignalCore::new(
+                name.to_string(),
+                id,
+                type_id,
+                signals,
+            )))
+        })?;
         if queue {
             self.signals.set_to_queue(id);
         }
-
         Ok(id)
     }
 
     pub(crate) fn add_vec(&mut self, name: &str, type_id: u32) -> Result<u64, String> {
-        if self.states_server.is_some() {
-            return Err("Cannot add new values after server has been finalized".to_string());
-        }
-
-        let id = generate_value_id(name);
-        if self.states.contains_id(id) {
-            return Err(format!("Vec with id {} already exists", id));
-        }
-
-        let val = ValueList::new(
-            name.to_string(),
-            id,
-            type_id,
-            self.sender.clone(),
-            self.connected.clone(),
-        );
-
-        self.states.lists.insert(id, val);
-        Ok(id)
+        let (sender, connected, _) = self.channels();
+        self.register(name, "Vec", |id| {
+            Ok(StateRef::Vec(ValueList::new(
+                name.to_string(),
+                id,
+                type_id,
+                sender,
+                connected,
+            )))
+        })
     }
 
     pub(crate) fn add_map(&mut self, name: &str, type_id: u32) -> Result<u64, String> {
-        if self.states_server.is_some() {
-            return Err("Cannot add new values after server has been finalized".to_string());
-        }
-
-        let id = generate_value_id(name);
-        if self.states.contains_id(id) {
-            return Err(format!("Map with id {} already exists", id));
-        }
-
-        let val = ValueMap::new(
-            name.to_string(),
-            id,
-            type_id,
-            self.sender.clone(),
-            self.connected.clone(),
-        );
-
-        self.states.maps.insert(id, val);
-
-        Ok(id)
+        let (sender, connected, _) = self.channels();
+        self.register(name, "Map", |id| {
+            Ok(StateRef::Map(ValueMap::new(
+                name.to_string(),
+                id,
+                type_id,
+                sender,
+                connected,
+            )))
+        })
     }
 
     pub(crate) fn add_image(&mut self, name: &str) -> Result<u64, String> {
-        if self.states_server.is_some() {
-            return Err("Cannot add new values after server has been finalized".to_string());
-        }
-
-        let id = generate_value_id(name);
-        if self.states.contains_id(id) {
-            return Err(format!("Image with id {} already exists", id));
-        }
-
-        let val = Image::new(
-            name.to_string(),
-            id,
-            self.sender.clone(),
-            self.connected.clone(),
-        );
-
-        self.states.images.insert(id, val);
-        Ok(id)
+        let (sender, connected, _) = self.channels();
+        self.register(name, "Image", |id| {
+            Ok(StateRef::Image(Image::new(
+                name.to_string(),
+                id,
+                sender,
+                connected,
+            )))
+        })
     }
 
     pub(crate) fn add_image_multi(&mut self, name: &str) -> Result<u64, String> {
-        if self.states_server.is_some() {
-            return Err("Cannot add new values after server has been finalized".to_string());
-        }
-
-        let id = generate_value_id(name);
-        if self.states.contains_id(id) {
-            return Err(format!("ImageMulti with id {} already exists", id));
-        }
-
-        let value = ImageMulti::new(
-            name.to_string(),
-            id,
-            self.sender.clone(),
-            self.connected.clone(),
-        );
-        self.states.image_multi.insert(id, value);
-        Ok(id)
+        let (sender, connected, _) = self.channels();
+        self.register(name, "ImageMulti", |id| {
+            Ok(StateRef::ImageMulti(ImageMulti::new(
+                name.to_string(),
+                id,
+                sender,
+                connected,
+            )))
+        })
     }
 
-    pub(crate) fn add_data(&mut self, name: &str, type_id: u8) -> Result<u64, String> {
-        if self.states_server.is_some() {
-            return Err("Cannot add new values after server has been finalized".to_string());
-        }
-
-        let id = generate_value_id(name);
-        if self.states.contains_id(id) {
-            return Err(format!("Data with id {} already exists", id));
-        }
-
-        let data_type =
-            DataType::from_id(type_id).map_err(|_| "Invalid data type id".to_string())?;
-        let val = Data::new(
-            name.to_string(),
-            id,
-            data_type,
-            self.sender.clone(),
-            self.connected.clone(),
-        );
-
-        self.states.data.insert(id, val);
-        Ok(id)
+    /// Registers a data state; `header_type` is the type id of
+    /// its header, `None` for a state without one.
+    pub(crate) fn add_data(
+        &mut self,
+        name: &str,
+        type_id: u8,
+        header_type: Option<u32>,
+    ) -> Result<u64, String> {
+        let (sender, connected, _) = self.channels();
+        self.register(name, "Data", |id| {
+            Ok(StateRef::Data(Data::new(
+                name.to_string(),
+                id,
+                data_type(type_id)?,
+                header_type,
+                sender,
+                connected,
+            )))
+        })
     }
 
-    pub(crate) fn add_data_multi(&mut self, name: &str, type_id: u8) -> Result<u64, String> {
-        if self.states_server.is_some() {
-            return Err("Cannot add new values after server has been finalized".to_string());
-        }
-
-        let id = generate_value_id(name);
-        if self.states.contains_id(id) {
-            return Err(format!("DataMulti with id {} already exists", id));
-        }
-
-        let data_type =
-            DataType::from_id(type_id).map_err(|_| "Invalid data type id".to_string())?;
-        let val = DataMulti::new(
-            name.to_string(),
-            id,
-            data_type,
-            self.sender.clone(),
-            self.connected.clone(),
-        );
-
-        self.states.data_multi.insert(id, val);
-        Ok(id)
+    /// Registers a data multi state; `header_type` is the type id of
+    /// its header, `None` for a state without one.
+    pub(crate) fn add_data_multi(
+        &mut self,
+        name: &str,
+        type_id: u8,
+        header_type: Option<u32>,
+    ) -> Result<u64, String> {
+        let (sender, connected, _) = self.channels();
+        self.register(name, "DataMulti", |id| {
+            Ok(StateRef::DataMulti(DataMulti::new(
+                name.to_string(),
+                id,
+                data_type(type_id)?,
+                header_type,
+                sender,
+                connected,
+            )))
+        })
     }
 
-    pub(crate) fn add_data_take(&mut self, name: &str, type_id: u8) -> Result<u64, String> {
-        if self.states_server.is_some() {
-            return Err("Cannot add new values after server has been finalized".to_string());
-        }
-
-        let id = generate_value_id(name);
-        if self.states.contains_id(id) {
-            return Err(format!("DataTake with id {} already exists", id));
-        }
-
-        let data_type =
-            DataType::from_id(type_id).map_err(|_| "Invalid data type id".to_string())?;
-        let val = DataTake::new(
-            name.to_string(),
-            id,
-            data_type,
-            self.sender.clone(),
-            self.connected.clone(),
-        );
-
-        self.states.data_take.insert(id, val);
-        Ok(id)
+    /// Registers a data take state; `header_type` is the type id of
+    /// its header, `None` for a state without one.
+    pub(crate) fn add_data_take(
+        &mut self,
+        name: &str,
+        type_id: u8,
+        header_type: Option<u32>,
+    ) -> Result<u64, String> {
+        let (sender, connected, _) = self.channels();
+        self.register(name, "DataTake", |id| {
+            Ok(StateRef::DataTake(DataTake::new(
+                name.to_string(),
+                id,
+                data_type(type_id)?,
+                header_type,
+                sender,
+                connected,
+            )))
+        })
     }
 
-    pub(crate) fn add_data_multi_take(&mut self, name: &str, type_id: u8) -> Result<u64, String> {
-        if self.states_server.is_some() {
-            return Err("Cannot add new values after server has been finalized".to_string());
-        }
-
-        let id = generate_value_id(name);
-        if self.states.contains_id(id) {
-            return Err(format!("DataMultiTake with id {} already exists", id));
-        }
-
-        let data_type =
-            DataType::from_id(type_id).map_err(|_| "Invalid data type id".to_string())?;
-        let val = DataMultiTake::new(
-            name.to_string(),
-            id,
-            data_type,
-            self.sender.clone(),
-            self.connected.clone(),
-        );
-
-        self.states.data_multi_take.insert(id, val);
-        Ok(id)
+    /// Registers a data multi take state; `header_type` is the type id of
+    /// its header, `None` for a state without one.
+    pub(crate) fn add_data_multi_take(
+        &mut self,
+        name: &str,
+        type_id: u8,
+        header_type: Option<u32>,
+    ) -> Result<u64, String> {
+        let (sender, connected, _) = self.channels();
+        self.register(name, "DataMultiTake", |id| {
+            Ok(StateRef::DataMultiTake(DataMultiTake::new(
+                name.to_string(),
+                id,
+                data_type(type_id)?,
+                header_type,
+                sender,
+                connected,
+            )))
+        })
     }
 
     #[cfg(feature = "server")]
-    pub(crate) fn get_value(&self, id: u64) -> Option<Arc<ValueCore>> {
-        self.states.values.get(&id).cloned()
-    }
-
-    #[cfg(feature = "server")]
-    pub(crate) fn get_value_take(&self, id: u64) -> Option<Arc<ValueTakeCore>> {
-        self.states.values_take.get(&id).cloned()
-    }
-
-    #[cfg(feature = "server")]
-    pub(crate) fn get_static(&self, id: u64) -> Option<Arc<ValueStaticCore>> {
-        self.states.static_values.get(&id).cloned()
-    }
-
-    #[cfg(feature = "server")]
-    pub(crate) fn get_signal(&self, id: u64) -> Option<Arc<SignalCore>> {
-        self.states.signals.get(&id).cloned()
-    }
-
-    #[cfg(feature = "server")]
-    pub(crate) fn get_vec(&self, id: u64) -> Option<Arc<ValueList>> {
-        self.states.lists.get(&id).cloned()
-    }
-
-    #[cfg(feature = "server")]
-    pub(crate) fn get_map(&self, id: u64) -> Option<Arc<ValueMap>> {
-        self.states.maps.get(&id).cloned()
-    }
-
-    #[cfg(feature = "server")]
-    pub(crate) fn get_image(&self, id: u64) -> Option<Arc<Image>> {
-        self.states.images.get(&id).cloned()
-    }
-
-    #[cfg(feature = "server")]
-    pub(crate) fn get_image_multi(&self, id: u64) -> Option<Arc<ImageMulti>> {
-        self.states.image_multi.get(&id).cloned()
-    }
-
-    #[cfg(feature = "server")]
-    pub(crate) fn get_data(&self, id: u64) -> Option<Arc<Data>> {
-        self.states.data.get(&id).cloned()
-    }
-
-    #[cfg(feature = "server")]
-    pub(crate) fn get_data_take(&self, id: u64) -> Option<Arc<DataTake>> {
-        self.states.data_take.get(&id).cloned()
-    }
-
-    #[cfg(feature = "server")]
-    pub(crate) fn get_data_multi(&self, id: u64) -> Option<Arc<DataMulti>> {
-        self.states.data_multi.get(&id).cloned()
-    }
-
-    #[cfg(feature = "server")]
-    pub(crate) fn get_data_multi_take(&self, id: u64) -> Option<Arc<DataMultiTake>> {
-        self.states.data_multi_take.get(&id).cloned()
+    getters! {
+        get_value: Value(ValueCore),
+        get_value_take: ValueTake(ValueTakeCore),
+        get_static: Static(ValueStaticCore),
+        get_signal: Signal(SignalCore),
+        get_vec: Vec(ValueList),
+        get_map: Map(ValueMap),
+        get_image: Image(Image),
+        get_image_multi: ImageMulti(ImageMulti),
+        get_data: Data(Data),
+        get_data_take: DataTake(DataTake),
+        get_data_multi: DataMulti(DataMulti),
+        get_data_multi_take: DataMultiTake(DataMultiTake),
     }
 }
 
 impl Drop for Server {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::sync::mpsc;
+
+    use super::*;
+
+    /// `stop` holds the runner lock while it joins the server thread, and the
+    /// front-ends call it under a shared lock. The calls a connected client
+    /// needs must not wait for it.
+    #[test]
+    fn client_calls_do_not_wait_for_a_stop_in_progress() {
+        let server = Arc::new(Server::new(ServerConfig::with_version(None)));
+        let stopping = server.runner_state.lock();
+
+        let (done, finished) = mpsc::channel();
+        let caller = server.clone();
+        thread::spawn(move || {
+            caller.update(None).unwrap();
+            caller.is_connected();
+            caller.disconnect_client();
+            let _ = done.send(());
+        });
+        assert!(
+            finished.recv_timeout(Duration::from_secs(2)).is_ok(),
+            "a client call waited for the stop"
+        );
+        drop(stopping);
     }
 }

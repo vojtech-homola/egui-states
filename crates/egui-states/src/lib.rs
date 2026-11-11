@@ -57,14 +57,15 @@ extern crate self as egui_states;
 #[cfg(test)]
 mod test_support;
 
-mod collections;
-mod data_transport;
 mod event;
 mod hashing;
-mod image_transport;
-mod serialization;
+mod protocol;
 mod typed;
 
+/// Internal entry points for the benchmarks; not a public API.
+#[cfg(feature = "bench")]
+#[doc(hidden)]
+pub mod bench_support;
 /// Build-time generators for typed Rust and Python server bindings.
 #[cfg(feature = "build_scripts")]
 pub mod build_scripts;
@@ -85,20 +86,22 @@ mod server_core;
 
 #[cfg(feature = "client")]
 pub use client::{
-    atomics::{Atomic, AtomicLock, AtomicLockStatic, AtomicStatic, FallbackLock, UpdateLock},
     client::ClientBuilder,
     client::{Client, ConnectionState},
-    data::{Data, DataMulti},
-    data_take::{DataMultiTake, DataTake},
-    image::{Image, ImageMulti},
-    initial_value::{InitValue, InitialValue},
-    states_creator::StatesCreator,
-    value_map::MapState,
-    value_vec::VecState,
-    values::{
-        Diff, DiffAtomic, GetQueueType, NoQueue, Queue, Signal, Static, StaticAtomic, Value,
-        ValueAtomic, ValueTake,
+    states::{
+        atomics::{Atomic, AtomicLock, AtomicLockStatic, AtomicStatic, FallbackLock, UpdateLock},
+        data::{Data, DataMulti, HeaderValue},
+        data_take::{DataMultiTake, DataTake},
+        image::{Image, ImageMulti},
+        initial_value::{InitValue, InitialValue},
+        map::MapState,
+        values::{
+            Diff, DiffAtomic, GetQueueType, NoQueue, Queue, Signal, Static, StaticAtomic, Value,
+            ValueAtomic, ValueTake,
+        },
+        vec::VecState,
     },
+    states_creator::StatesCreator,
 };
 
 /// A root or nested group of client-side states.

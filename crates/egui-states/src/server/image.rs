@@ -2,10 +2,10 @@
 
 use std::sync::Arc;
 
-use crate::image_transport::{ImageType, checked_image_bytes};
-use crate::server_core::image_core::{Image as CoreImage, ImageData};
-use crate::server_core::image_core_common::checked_fill_size;
-use crate::server_core::image_multi_core::{ImageMulti as CoreImageMulti, ImageMultiData};
+use crate::protocol::image::{ImageType, checked_image_bytes};
+use crate::server_core::states::image::common::checked_fill_size;
+use crate::server_core::states::image::multi::ImageMulti as CoreImageMulti;
+use crate::server_core::states::image::single::{Image as CoreImage, ImageData};
 
 use super::state_server::StateServer;
 use super::{Result, ServerError};
@@ -106,14 +106,8 @@ impl Image {
         format: ImageFormat,
         update: bool,
     ) -> Result<()> {
-        let stride = self.check_image_data(data, size, format)?;
-        let image = ImageData {
-            size,
-            stride,
-            contiguous: true,
-            image_type: format.image_type(),
-            data: data.as_ptr(),
-        };
+        self.check_image_data(data, size, format)?;
+        let image = ImageData::packed(data, size, format.image_type());
         self.inner
             .set_image(image, update)
             .map_err(ServerError::new)
@@ -154,25 +148,14 @@ impl Image {
         update: bool,
         force: bool,
     ) -> Result<()> {
-        let stride = self.check_image_data(data, size, format)?;
-        let image = ImageData {
-            size,
-            stride,
-            contiguous: true,
-            image_type: format.image_type(),
-            data: data.as_ptr(),
-        };
+        self.check_image_data(data, size, format)?;
+        let image = ImageData::packed(data, size, format.image_type());
         self.inner
             .update_image(&origin, image, update, force)
             .map_err(ServerError::new)
     }
 
-    fn check_image_data(
-        &self,
-        data: &[u8],
-        size: [usize; 2],
-        format: ImageFormat,
-    ) -> Result<usize> {
+    fn check_image_data(&self, data: &[u8], size: [usize; 2], format: ImageFormat) -> Result<()> {
         checked_image_bytes(size, 4).map_err(ServerError::new)?;
         let stride = size[1]
             .checked_mul(format.bytes_per_pixel())
@@ -186,7 +169,7 @@ impl Image {
                 data.len()
             )));
         }
-        Ok(stride)
+        Ok(())
     }
 }
 
@@ -246,17 +229,11 @@ impl ImageMulti {
         format: ImageFormat,
         update: bool,
     ) -> Result<()> {
-        let stride = check_image_multi_data(data, size, format)?;
+        check_image_multi_data(data, size, format)?;
         self.inner
             .set_image(
                 index,
-                ImageMultiData {
-                    size,
-                    stride,
-                    contiguous: true,
-                    image_type: format.image_type(),
-                    data: data.as_ptr(),
-                },
+                ImageData::packed(data, size, format.image_type()),
                 update,
             )
             .map_err(ServerError::new)
@@ -291,18 +268,12 @@ impl ImageMulti {
         update: bool,
         force: bool,
     ) -> Result<()> {
-        let stride = check_image_multi_data(data, size, format)?;
+        check_image_multi_data(data, size, format)?;
         self.inner
             .update_image(
                 index,
                 &origin,
-                ImageMultiData {
-                    size,
-                    stride,
-                    contiguous: true,
-                    image_type: format.image_type(),
-                    data: data.as_ptr(),
-                },
+                ImageData::packed(data, size, format.image_type()),
                 update,
                 force,
             )
@@ -322,7 +293,7 @@ impl ImageMulti {
     }
 }
 
-fn check_image_multi_data(data: &[u8], size: [usize; 2], format: ImageFormat) -> Result<usize> {
+fn check_image_multi_data(data: &[u8], size: [usize; 2], format: ImageFormat) -> Result<()> {
     checked_fill_size(size).map_err(ServerError::new)?;
     let stride = size[1]
         .checked_mul(format.bytes_per_pixel())
@@ -336,7 +307,7 @@ fn check_image_multi_data(data: &[u8], size: [usize; 2], format: ImageFormat) ->
             data.len()
         )));
     }
-    Ok(stride)
+    Ok(())
 }
 
 #[cfg(test)]

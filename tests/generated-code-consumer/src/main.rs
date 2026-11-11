@@ -50,6 +50,12 @@ mod tests {
             server.states.mapping.get().unwrap(),
             std::collections::HashMap::from([(1, 10), (3, 30), (20, 200)])
         );
+        let header = bindings::structs::Inner { enabled: true };
+        let measurements = &server.states.measurements;
+        measurements
+            .set_with_header(&[1.0, 2.0], &header, false)
+            .unwrap();
+        assert_eq!(measurements.header().unwrap(), Some(header));
         assert!(!server.is_running());
     }
 

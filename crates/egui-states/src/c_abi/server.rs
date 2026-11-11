@@ -9,29 +9,31 @@ use bytes::Bytes;
 use parking_lot::{Mutex, RwLock};
 
 use crate::hashing::{NoHashMap, generate_value_id};
-use crate::serialization::check_value_size;
-use crate::server_core::data_core::{Data, DataMulti};
-use crate::server_core::data_take_core::{DataMultiTake, DataTake};
-use crate::server_core::heartbeat::Heartbeat;
-use crate::server_core::image_core::Image;
-use crate::server_core::image_core_common::checked_image_size;
-use crate::server_core::image_multi_core::ImageMulti;
-use crate::server_core::map_core::ValueMap;
-use crate::server_core::server::{Server, StartError};
+use crate::protocol::check_value_size;
+use crate::protocol::data::header_type_id;
+use crate::server_core::error::{CoreError, ErrorKind};
+use crate::server_core::net::heartbeat::Heartbeat;
+use crate::server_core::server::{Server, ServerConfig, StartError};
 use crate::server_core::signals::{
-    CLIENT_MESSAGE_ID, ClaimResult, LOGGING_ID, ON_CONNECT_ID, ON_DISCONNECT_ID, SignalsManager,
+    CLIENT_MESSAGE_ID, Claim, LOGGING_ID, ON_CONNECT_ID, ON_DISCONNECT_ID, SignalsManager,
 };
-use crate::server_core::values_core::{SignalCore, ValueCore, ValueStaticCore, ValueTakeCore};
-use crate::server_core::vec_core::ValueList;
+use crate::server_core::states::data::{Data, DataMulti, DataSlice};
+use crate::server_core::states::data_take::{DataMultiTake, DataTake};
+use crate::server_core::states::image::common::checked_image_size;
+use crate::server_core::states::image::multi::ImageMulti;
+use crate::server_core::states::image::single::Image;
+use crate::server_core::states::map::ValueMap;
+use crate::server_core::states::value::{SignalCore, ValueCore, ValueStaticCore, ValueTakeCore};
+use crate::server_core::states::vec::ValueList;
 use crate::typed::{ObjectType, type_expression};
 
 use super::error::{Error, ErrorCode, Result};
 use super::events::ChangeEvent;
 use super::kinds::{DataKind, StateKind};
-use super::media::{ImageInput, data_holder};
+use super::media::{ImageInput, data_slice};
 use super::reader::Reader;
 use super::tree::{Node, TypeRef};
-use super::types::{TypeRegistry, map_hash};
+use super::types::TypeRegistry;
 use super::writer::Writer;
 
 enum State {
@@ -45,10 +47,11 @@ enum State {
     Map(Arc<ValueMap>, TypeRef, TypeRef, TypeRef),
     Image(Arc<Image>),
     ImageMulti(Arc<ImageMulti>),
-    Data(Arc<Data>, DataKind),
-    DataTake(Arc<DataTake>, DataKind),
-    DataMulti(Arc<DataMulti>, DataKind),
-    DataMultiTake(Arc<DataMultiTake>, DataKind),
+    /// The Data kinds keep their element kind and header type.
+    Data(Arc<Data>, DataKind, Option<TypeRef>),
+    DataTake(Arc<DataTake>, DataKind, Option<TypeRef>),
+    DataMulti(Arc<DataMulti>, DataKind, Option<TypeRef>),
+    DataMultiTake(Arc<DataMultiTake>, DataKind, Option<TypeRef>),
     System(TypeRef),
 }
 
@@ -159,7 +162,7 @@ impl CServer {
     /// Creates a server. With `version`, clients must present the same
     /// application version during the handshake.
     pub fn new(version: Option<u64>) -> Self {
-        let core = Server::new(version);
+        let core = Server::new(ServerConfig::with_version(version));
         let signals = core.get_signals_manager();
 
         let mut entries = NoHashMap::default();
@@ -173,8 +176,6 @@ impl CServer {
             (ON_DISCONNECT_ID, "on_disconnect", ObjectType::Empty),
             (CLIENT_MESSAGE_ID, "client_message", ObjectType::String),
         ] {
-            // Server events are never coalesced, as with the Rust and Python servers.
-            signals.set_to_queue(id);
             entries.insert(
                 id,
                 Entry {
@@ -330,7 +331,7 @@ impl CServer {
         self.register(name, |types, core, id| {
             let key = types.parse(key_type)?;
             let value = types.parse(value_type)?;
-            let hash = map_hash(&key, &value);
+            let hash = ObjectType::map_hash(&key, &value);
             let map_type = ObjectType::Map(Box::new(key), Box::new(value));
             let type_text = type_expression(&map_type);
             let whole = TypeRef::new(&map_type);
@@ -363,41 +364,86 @@ impl CServer {
         })
     }
 
-    /// Registers a `Data` buffer of `kind` elements.
-    pub fn add_data(&self, name: &str, kind: DataKind) -> Result<u64> {
-        self.register(name, |_, core, id| {
-            core.add_data(name, kind as u8).map_err(Error::internal)?;
-            let state = State::Data(registered(core.get_data(id))?, kind);
+    /// Registers a `Data` buffer of `kind` elements, with a header of the type
+    /// `header_type` names, or without one for `None`.
+    pub fn add_data(&self, name: &str, kind: DataKind, header_type: Option<&str>) -> Result<u64> {
+        self.register(name, |types, core, id| {
+            let header = parse_header(types, header_type)?;
+            core.add_data(
+                name,
+                kind as u8,
+                header.as_ref().map(|(type_id, _)| *type_id),
+            )
+            .map_err(Error::internal)?;
+            let header = header.map(|(_, header)| header);
+            let state = State::Data(registered(core.get_data(id))?, kind, header);
             Ok((state, Some(kind.name().to_owned())))
         })
     }
 
-    /// Registers a `DataTake` buffer of `kind` elements.
-    pub fn add_data_take(&self, name: &str, kind: DataKind) -> Result<u64> {
-        self.register(name, |_, core, id| {
-            core.add_data_take(name, kind as u8)
-                .map_err(Error::internal)?;
-            let state = State::DataTake(registered(core.get_data_take(id))?, kind);
+    /// Registers a `DataTake` buffer of `kind` elements, with a header of the type
+    /// `header_type` names, or without one for `None`.
+    pub fn add_data_take(
+        &self,
+        name: &str,
+        kind: DataKind,
+        header_type: Option<&str>,
+    ) -> Result<u64> {
+        self.register(name, |types, core, id| {
+            let header = parse_header(types, header_type)?;
+            core.add_data_take(
+                name,
+                kind as u8,
+                header.as_ref().map(|(type_id, _)| *type_id),
+            )
+            .map_err(Error::internal)?;
+            let header = header.map(|(_, header)| header);
+            let state = State::DataTake(registered(core.get_data_take(id))?, kind, header);
             Ok((state, Some(kind.name().to_owned())))
         })
     }
 
-    /// Registers a `DataMulti` collection of `kind` buffers.
-    pub fn add_data_multi(&self, name: &str, kind: DataKind) -> Result<u64> {
-        self.register(name, |_, core, id| {
-            core.add_data_multi(name, kind as u8)
-                .map_err(Error::internal)?;
-            let state = State::DataMulti(registered(core.get_data_multi(id))?, kind);
+    /// Registers a `DataMulti` collection of `kind` buffers, with a header of the type
+    /// `header_type` names, or without one for `None`.
+    pub fn add_data_multi(
+        &self,
+        name: &str,
+        kind: DataKind,
+        header_type: Option<&str>,
+    ) -> Result<u64> {
+        self.register(name, |types, core, id| {
+            let header = parse_header(types, header_type)?;
+            core.add_data_multi(
+                name,
+                kind as u8,
+                header.as_ref().map(|(type_id, _)| *type_id),
+            )
+            .map_err(Error::internal)?;
+            let header = header.map(|(_, header)| header);
+            let state = State::DataMulti(registered(core.get_data_multi(id))?, kind, header);
             Ok((state, Some(kind.name().to_owned())))
         })
     }
 
-    /// Registers a `DataMultiTake` collection of `kind` buffers.
-    pub fn add_data_multi_take(&self, name: &str, kind: DataKind) -> Result<u64> {
-        self.register(name, |_, core, id| {
-            core.add_data_multi_take(name, kind as u8)
-                .map_err(Error::internal)?;
-            let state = State::DataMultiTake(registered(core.get_data_multi_take(id))?, kind);
+    /// Registers a `DataMultiTake` collection of `kind` buffers, with a header of the type
+    /// `header_type` names, or without one for `None`.
+    pub fn add_data_multi_take(
+        &self,
+        name: &str,
+        kind: DataKind,
+        header_type: Option<&str>,
+    ) -> Result<u64> {
+        self.register(name, |types, core, id| {
+            let header = parse_header(types, header_type)?;
+            core.add_data_multi_take(
+                name,
+                kind as u8,
+                header.as_ref().map(|(type_id, _)| *type_id),
+            )
+            .map_err(Error::internal)?;
+            let header = header.map(|(_, header)| header);
+            let state =
+                State::DataMultiTake(registered(core.get_data_multi_take(id))?, kind, header);
             Ok((state, Some(kind.name().to_owned())))
         })
     }
@@ -453,7 +499,7 @@ impl CServer {
         self.states()?;
         let address = SocketAddrV4::new(ip.unwrap_or(Ipv4Addr::LOCALHOST), port);
         self.core
-            .write()
+            .read()
             .start(address, token)
             .map_err(|error| match error {
                 StartError::InvalidState(message) => Error::new(ErrorCode::InvalidState, message),
@@ -468,12 +514,12 @@ impl CServer {
 
     /// Stops listening and disconnects the client.
     pub fn stop(&self) {
-        self.core.write().stop();
+        self.core.read().stop();
     }
 
     /// Disconnects the current client and keeps listening.
     pub fn disconnect_client(&self) {
-        self.core.write().disconnect_client();
+        self.core.read().disconnect_client();
     }
 
     /// Returns whether the server is listening.
@@ -801,7 +847,7 @@ impl CServer {
         update: bool,
     ) -> Result<()> {
         let (_, core) = lookup!(self.states()?, id, ImageMulti(core));
-        core.set_image(index, image.image_multi_data()?, update)
+        core.set_image(index, image.image_data()?, update)
             .map_err(Error::out_of_range)
     }
 
@@ -831,11 +877,8 @@ impl CServer {
         force: bool,
     ) -> Result<()> {
         let (name, core) = lookup!(self.states()?, id, ImageMulti(core));
-        if !core.contains(index) {
-            return Err(missing_index(name, index));
-        }
-        core.update_image(index, &origin, image.image_multi_data()?, update, force)
-            .map_err(Error::out_of_range)
+        core.update_image(index, &origin, image.image_data()?, update, force)
+            .map_err(keyed(name, index, Error::out_of_range))
     }
 
     /// Removes the image at `index`; a missing index is ignored.
@@ -872,7 +915,7 @@ impl CServer {
 
     /// Returns the number of elements.
     pub fn data_len(&self, id: u64) -> Result<usize> {
-        let (_, core, kind) = lookup!(self.states()?, id, Data(core, kind));
+        let (_, core, kind, _header) = lookup!(self.states()?, id, Data(core, kind, header));
         Ok(core.get(|data| data.len() / kind.size()))
     }
 
@@ -885,24 +928,54 @@ impl CServer {
         kind: DataKind,
         out: Option<&mut [u8]>,
     ) -> Result<(usize, bool)> {
-        let (name, core, registered) = lookup!(self.states()?, id, Data(core, kind));
+        let (name, core, registered, _header) =
+            lookup!(self.states()?, id, Data(core, kind, header));
         check_kind(name, *registered, kind)?;
         Ok(core.get(|data| (data.len() / kind.size(), copy_into(data, out))))
     }
 
+    /// Loads the header into `reader`; `NotFound` when the state has no
+    /// header type or no header was set.
+    pub fn data_get_header(&self, id: u64, reader: &mut Reader) -> Result<()> {
+        let (name, core, _, header) = lookup!(self.states()?, id, Data(core, kind, header));
+        let header_type = header_type(name, header)?;
+        core.header(|bytes| load_header(name, bytes, header_type, reader))
+    }
+
+    // A data operation takes its new header as a writer; `None` keeps the
+    // current one.
+
     /// Replaces the elements.
-    pub fn data_set(&self, id: u64, kind: DataKind, data: &[u8], update: bool) -> Result<()> {
-        let (name, core, registered) = lookup!(self.states()?, id, Data(core, kind));
+    pub fn data_set(
+        &self,
+        id: u64,
+        kind: DataKind,
+        data: &[u8],
+        header: Option<&Writer>,
+        update: bool,
+    ) -> Result<()> {
+        let (name, core, registered, header_type) =
+            lookup!(self.states()?, id, Data(core, kind, header));
         check_kind(name, *registered, kind)?;
-        core.set(data_holder(kind, data)?, update)
+        let header = header_bytes(name, header_type, header)?;
+        core.set(with_header(kind, data, &header)?, update)
             .map_err(Error::internal)
     }
 
     /// Appends elements.
-    pub fn data_add(&self, id: u64, kind: DataKind, data: &[u8], update: bool) -> Result<()> {
-        let (name, core, registered) = lookup!(self.states()?, id, Data(core, kind));
+    pub fn data_add(
+        &self,
+        id: u64,
+        kind: DataKind,
+        data: &[u8],
+        header: Option<&Writer>,
+        update: bool,
+    ) -> Result<()> {
+        let (name, core, registered, header_type) =
+            lookup!(self.states()?, id, Data(core, kind, header));
         check_kind(name, *registered, kind)?;
-        core.add(data_holder(kind, data)?, update)
+        let header = header_bytes(name, header_type, header)?;
+        core.add(with_header(kind, data, &header)?, update)
             .map_err(Error::internal)
     }
 
@@ -913,41 +986,67 @@ impl CServer {
         kind: DataKind,
         data: &[u8],
         index: usize,
+        header: Option<&Writer>,
         update: bool,
     ) -> Result<()> {
-        let (name, core, registered) = lookup!(self.states()?, id, Data(core, kind));
+        let (name, core, registered, header_type) =
+            lookup!(self.states()?, id, Data(core, kind, header));
         check_kind(name, *registered, kind)?;
-        core.replace(data_holder(kind, data)?, index, update)
+        let header = header_bytes(name, header_type, header)?;
+        core.replace(with_header(kind, data, &header)?, index, update)
             .map_err(Error::out_of_range)
     }
 
     /// Removes `count` elements starting at element `index`.
-    pub fn data_remove(&self, id: u64, index: usize, count: usize, update: bool) -> Result<()> {
-        let (_, core, _) = lookup!(self.states()?, id, Data(core, kind));
+    pub fn data_remove(
+        &self,
+        id: u64,
+        index: usize,
+        count: usize,
+        header: Option<&Writer>,
+        update: bool,
+    ) -> Result<()> {
+        let (name, core, _, header_type) = lookup!(self.states()?, id, Data(core, kind, header));
         check_count(count)?;
-        core.remove(index, count, update)
+        let header = header_bytes(name, header_type, header)?;
+        core.remove(index, count, header.as_deref(), update)
             .map_err(Error::out_of_range)
     }
 
-    /// Removes every element.
-    pub fn data_clear(&self, id: u64, update: bool) -> Result<()> {
-        let (_, core, _) = lookup!(self.states()?, id, Data(core, kind));
-        core.clear(update).map_err(Error::internal)
+    /// Removes every element; the header stays unless a new one is given.
+    pub fn data_clear(&self, id: u64, header: Option<&Writer>, update: bool) -> Result<()> {
+        let (name, core, _, header_type) = lookup!(self.states()?, id, Data(core, kind, header));
+        let header = header_bytes(name, header_type, header)?;
+        core.clear(header.as_deref(), update)
+            .map_err(Error::internal)
     }
 
-    /// Sends a one-shot buffer; `cache` keeps it for clients that connect later.
+    /// Replaces the header alone. It does not wait for the client itself, but
+    /// it is queued after a buffer change that another thread is still sending.
+    pub fn data_set_header(&self, id: u64, header: &Writer, update: bool) -> Result<()> {
+        let (name, core, _, header_type) = lookup!(self.states()?, id, Data(core, kind, header));
+        let header = header_bytes(name, header_type, Some(header))?.unwrap_or_default();
+        core.set_header(&header, update).map_err(Error::internal)
+    }
+
+    /// Sends a one-shot buffer; `cache` keeps it for clients that connect
+    /// later. Without a header, the client takes it with the default one.
+    #[allow(clippy::too_many_arguments)]
     pub fn data_take_set(
         &self,
         id: u64,
         kind: DataKind,
         data: &[u8],
+        header: Option<&Writer>,
         blocking: bool,
         update: bool,
         cache: bool,
     ) -> Result<()> {
-        let (name, core, registered) = lookup!(self.states()?, id, DataTake(core, kind));
+        let (name, core, registered, header_type) =
+            lookup!(self.states()?, id, DataTake(core, kind, header));
         check_kind(name, *registered, kind)?;
-        core.set(data_holder(kind, data)?, blocking, update, cache)
+        let header = header_bytes(name, header_type, header)?;
+        core.set(with_header(kind, data, &header)?, blocking, update, cache)
             .map_err(Error::internal)
     }
 
@@ -959,7 +1058,8 @@ impl CServer {
         kind: DataKind,
         out: Option<&mut [u8]>,
     ) -> Result<(usize, bool)> {
-        let (name, core, registered) = lookup!(self.states()?, id, DataMulti(core, kind));
+        let (name, core, registered, _header) =
+            lookup!(self.states()?, id, DataMulti(core, kind, header));
         check_kind(name, *registered, kind)?;
         core.get(index, |data| match data {
             Some(data) => Ok((data.len() / kind.size(), copy_into(data, out))),
@@ -967,18 +1067,33 @@ impl CServer {
         })
     }
 
-    /// Replaces or creates the buffer at `index`.
+    /// Loads the header at `index` into `reader`; `NotFound` when the index
+    /// is missing, the state has no header type or no header was set.
+    pub fn data_multi_get_header(&self, id: u64, index: u32, reader: &mut Reader) -> Result<()> {
+        let (name, core, _, header) = lookup!(self.states()?, id, DataMulti(core, kind, header));
+        let header_type = header_type(name, header)?;
+        core.header(index, |bytes| match bytes {
+            Some(bytes) => load_header(name, bytes, header_type, reader),
+            None => Err(missing_index(name, index)),
+        })
+    }
+
+    /// Replaces or creates the buffer at `index`. A new index without a
+    /// header gets the default one.
     pub fn data_multi_set(
         &self,
         id: u64,
         index: u32,
         kind: DataKind,
         data: &[u8],
+        header: Option<&Writer>,
         update: bool,
     ) -> Result<()> {
-        let (name, core, registered) = lookup!(self.states()?, id, DataMulti(core, kind));
+        let (name, core, registered, header_type) =
+            lookup!(self.states()?, id, DataMulti(core, kind, header));
         check_kind(name, *registered, kind)?;
-        core.set(index, data_holder(kind, data)?, update)
+        let header = header_bytes(name, header_type, header)?;
+        core.set(index, with_header(kind, data, &header)?, update)
             .map_err(Error::internal)
     }
 
@@ -989,16 +1104,19 @@ impl CServer {
         index: u32,
         kind: DataKind,
         data: &[u8],
+        header: Option<&Writer>,
         update: bool,
     ) -> Result<()> {
-        let (name, core, registered) = lookup!(self.states()?, id, DataMulti(core, kind));
+        let (name, core, registered, header_type) =
+            lookup!(self.states()?, id, DataMulti(core, kind, header));
         check_kind(name, *registered, kind)?;
-        check_multi_index(name, core, index)?;
-        core.add(index, data_holder(kind, data)?, update)
-            .map_err(Error::out_of_range)
+        let header = header_bytes(name, header_type, header)?;
+        core.add(index, with_header(kind, data, &header)?, update)
+            .map_err(keyed(name, index, Error::out_of_range))
     }
 
     /// Overwrites elements of the buffer at `index` starting at `data_index`.
+    #[allow(clippy::too_many_arguments)]
     pub fn data_multi_replace(
         &self,
         id: u64,
@@ -1006,13 +1124,15 @@ impl CServer {
         kind: DataKind,
         data: &[u8],
         data_index: usize,
+        header: Option<&Writer>,
         update: bool,
     ) -> Result<()> {
-        let (name, core, registered) = lookup!(self.states()?, id, DataMulti(core, kind));
+        let (name, core, registered, header_type) =
+            lookup!(self.states()?, id, DataMulti(core, kind, header));
         check_kind(name, *registered, kind)?;
-        check_multi_index(name, core, index)?;
-        core.replace(index, data_index, data_holder(kind, data)?, update)
-            .map_err(Error::out_of_range)
+        let header = header_bytes(name, header_type, header)?;
+        core.replace(index, data_index, with_header(kind, data, &header)?, update)
+            .map_err(keyed(name, index, Error::out_of_range))
     }
 
     /// Removes `count` elements of the buffer at `index` starting at `data_index`.
@@ -1022,35 +1142,67 @@ impl CServer {
         index: u32,
         data_index: usize,
         count: usize,
+        header: Option<&Writer>,
         update: bool,
     ) -> Result<()> {
-        let (name, core, _) = lookup!(self.states()?, id, DataMulti(core, kind));
+        let (name, core, _, header_type) =
+            lookup!(self.states()?, id, DataMulti(core, kind, header));
         check_count(count)?;
-        check_multi_index(name, core, index)?;
-        core.remove(index, data_index, count, update)
-            .map_err(Error::out_of_range)
+        let header = header_bytes(name, header_type, header)?;
+        core.remove(index, data_index, count, header.as_deref(), update)
+            .map_err(keyed(name, index, Error::out_of_range))
     }
 
-    /// Removes every element of the buffer at `index`, keeping the index.
-    pub fn data_multi_clear(&self, id: u64, index: u32, update: bool) -> Result<()> {
-        let (name, core, _) = lookup!(self.states()?, id, DataMulti(core, kind));
-        check_multi_index(name, core, index)?;
-        core.clear(index, update).map_err(Error::out_of_range)
+    /// Removes every element of the buffer at `index`, keeping the index and
+    /// its header unless a new one is given.
+    pub fn data_multi_clear(
+        &self,
+        id: u64,
+        index: u32,
+        header: Option<&Writer>,
+        update: bool,
+    ) -> Result<()> {
+        let (name, core, _, header_type) =
+            lookup!(self.states()?, id, DataMulti(core, kind, header));
+        let header = header_bytes(name, header_type, header)?;
+        core.clear(index, header.as_deref(), update).map_err(keyed(
+            name,
+            index,
+            Error::out_of_range,
+        ))
+    }
+
+    /// Replaces the header at `index` alone. It does not wait for the client
+    /// itself, but it is queued after a buffer change to any key that another
+    /// thread is still sending.
+    pub fn data_multi_set_header(
+        &self,
+        id: u64,
+        index: u32,
+        header: &Writer,
+        update: bool,
+    ) -> Result<()> {
+        let (name, core, _, header_type) =
+            lookup!(self.states()?, id, DataMulti(core, kind, header));
+        let header = header_bytes(name, header_type, Some(header))?.unwrap_or_default();
+        core.set_header(index, &header, update)
+            .map_err(keyed(name, index, Error::internal))
     }
 
     /// Removes the buffer at `index`; a missing index is ignored.
     pub fn data_multi_remove_index(&self, id: u64, index: u32, update: bool) -> Result<()> {
-        let (_, core, _) = lookup!(self.states()?, id, DataMulti(core, kind));
+        let (_, core, _, _header) = lookup!(self.states()?, id, DataMulti(core, kind, header));
         core.remove_index(index, update).map_err(Error::internal)
     }
 
     /// Removes every buffer.
     pub fn data_multi_reset(&self, id: u64, update: bool) -> Result<()> {
-        let (_, core, _) = lookup!(self.states()?, id, DataMulti(core, kind));
+        let (_, core, _, _header) = lookup!(self.states()?, id, DataMulti(core, kind, header));
         core.reset(update).map_err(Error::internal)
     }
 
-    /// Sends a one-shot buffer at `index`.
+    /// Sends a one-shot buffer at `index`; without a header, the client
+    /// takes it with the default one.
     #[allow(clippy::too_many_arguments)]
     pub fn data_multi_take_set(
         &self,
@@ -1058,25 +1210,34 @@ impl CServer {
         index: u32,
         kind: DataKind,
         data: &[u8],
+        header: Option<&Writer>,
         blocking: bool,
         update: bool,
         cache: bool,
     ) -> Result<()> {
-        let (name, core, registered) = lookup!(self.states()?, id, DataMultiTake(core, kind));
+        let (name, core, registered, header_type) =
+            lookup!(self.states()?, id, DataMultiTake(core, kind, header));
         check_kind(name, *registered, kind)?;
-        core.set(index, data_holder(kind, data)?, blocking, update, cache)
-            .map_err(Error::internal)
+        let header = header_bytes(name, header_type, header)?;
+        core.set(
+            index,
+            with_header(kind, data, &header)?,
+            blocking,
+            update,
+            cache,
+        )
+        .map_err(Error::internal)
     }
 
     /// Removes the one-shot buffer at `index`; a missing index is ignored.
     pub fn data_multi_take_remove_index(&self, id: u64, index: u32, update: bool) -> Result<()> {
-        let (_, core, _) = lookup!(self.states()?, id, DataMultiTake(core, kind));
+        let (_, core, _, _header) = lookup!(self.states()?, id, DataMultiTake(core, kind, header));
         core.remove_index(index, update).map_err(Error::internal)
     }
 
     /// Removes every one-shot buffer.
     pub fn data_multi_take_reset(&self, id: u64, update: bool) -> Result<()> {
-        let (_, core, _) = lookup!(self.states()?, id, DataMultiTake(core, kind));
+        let (_, core, _, _header) = lookup!(self.states()?, id, DataMultiTake(core, kind, header));
         core.reset(update).map_err(Error::internal)
     }
 
@@ -1113,8 +1274,8 @@ impl CServer {
     /// `deadline` (`None` waits indefinitely).
     pub fn wait_event(&self, deadline: Option<Instant>) -> Result<ChangeEvent> {
         let states = self.states()?;
-        match self.signals.claim_next(deadline) {
-            ClaimResult::Ready(id, value, previous) => {
+        match self.signals.claim(None, deadline) {
+            Claim::Ready(id, value, previous) => {
                 let Some(value_type) = states.entries.get(&id).and_then(Entry::event_type) else {
                     self.signals.release(id);
                     return Err(Error::internal(format!(
@@ -1129,11 +1290,11 @@ impl CServer {
                     value_type.clone(),
                 ))
             }
-            ClaimResult::TimedOut => Err(Error::new(
+            Claim::TimedOut => Err(Error::new(
                 ErrorCode::Timeout,
                 "no event arrived before the deadline",
             )),
-            ClaimResult::Closed => Err(Error::new(ErrorCode::Closed, "events are closed")),
+            Claim::Closed => Err(Error::new(ErrorCode::Closed, "events are closed")),
         }
     }
 
@@ -1162,6 +1323,66 @@ fn parse(types: &TypeRegistry, type_text: &str) -> Result<(ObjectType, TypeRef)>
 
 fn registered<T>(state: Option<Arc<T>>) -> Result<Arc<T>> {
     state.ok_or_else(|| Error::internal("state not found after registration"))
+}
+
+/// Parses a Data state's header type: its type id and type, or `None` for a
+/// state without one. A type that describes no value, like `()`, means none.
+fn parse_header(types: &TypeRegistry, header_type: Option<&str>) -> Result<Option<(u32, TypeRef)>> {
+    let Some(header_type) = header_type else {
+        return Ok(None);
+    };
+    let (object_type, header) = parse(types, header_type)?;
+    Ok(header_type_id(&object_type).map(|type_id| (type_id, header)))
+}
+
+/// The header type of state `name`; `NotFound` without one.
+fn header_type<'a>(name: &str, header: &'a Option<TypeRef>) -> Result<&'a TypeRef> {
+    header
+        .as_ref()
+        .ok_or_else(|| Error::not_found(format!("'{name}' has no header type")))
+}
+
+/// Encodes the header in `writer` for state `name`, `None` without a writer.
+fn header_bytes(
+    name: &str,
+    header_type: &Option<TypeRef>,
+    writer: Option<&Writer>,
+) -> Result<Option<Bytes>> {
+    let Some(writer) = writer else {
+        return Ok(None);
+    };
+    let Some(header_type) = header_type else {
+        return Err(Error::invalid_argument(format!(
+            "'{name}' was registered without a header"
+        )));
+    };
+    let header = writer.encoded(header_type)?;
+    check_size(&format!("{name} header"), header.len())?;
+    Ok(Some(header))
+}
+
+/// The elements of `kind` in `data`, with the encoded `header`.
+fn with_header<'a>(
+    kind: DataKind,
+    data: &'a [u8],
+    header: &'a Option<Bytes>,
+) -> Result<DataSlice<'a>> {
+    Ok(DataSlice {
+        header: header.as_deref(),
+        ..data_slice(kind, data)?
+    })
+}
+
+/// Loads a stored header into `reader`; `NotFound` when none was set.
+fn load_header(
+    name: &str,
+    header: Option<&[u8]>,
+    header_type: &TypeRef,
+    reader: &mut Reader,
+) -> Result<()> {
+    let header = header.ok_or_else(|| Error::not_found(format!("'{name}' has no header yet")))?;
+    reader.load(Bytes::copy_from_slice(header), header_type);
+    Ok(())
 }
 
 /// Encodes an optional writer; a missing writer is an empty value.
@@ -1218,11 +1439,16 @@ fn check_count(count: usize) -> Result<()> {
     Ok(())
 }
 
-fn check_multi_index(name: &str, core: &DataMulti, index: u32) -> Result<()> {
-    if core.get(index, |data| data.is_none()) {
-        return Err(missing_index(name, index));
+/// Maps an error of a keyed core call: a key that is missing when the core
+/// looks for it to [`missing_index`], anything else with `other`.
+///
+/// The core checks the key under its own lock; checking it here first could
+/// race with a concurrent removal and report the wrong error.
+fn keyed(name: &str, index: u32, other: fn(String) -> Error) -> impl Fn(CoreError) -> Error + '_ {
+    move |error| match error.kind {
+        ErrorKind::NotFound => missing_index(name, index),
+        ErrorKind::Other => other(error.message),
     }
-    Ok(())
 }
 
 /// Copies `data` into `out` if it fits; `None` only asks for the size.
@@ -1543,16 +1769,57 @@ mod tests {
         );
     }
 
+    /// A key that is missing when the core looks for it is NotFound with the
+    /// C message, for every keyed call. The core checks the key under its own
+    /// lock, so a concurrent removal cannot turn it into another error (D5).
+    #[test]
+    fn missing_keys_are_not_found_in_every_keyed_call() {
+        let server = CServer::new(None);
+        let images = server.add_image_multi("root.images").unwrap();
+        let multi = server
+            .add_data_multi("root.multi", DataKind::U8, None)
+            .unwrap();
+        server.finalize().unwrap();
+
+        let patch = ImageInput {
+            data: &[1],
+            height: 1,
+            width: 1,
+            row_stride: 0,
+            format: crate::c_abi::ImageFormat::Gray,
+        };
+        let results = [
+            server.data_multi_add(multi, 3, DataKind::U8, &[1], None, false),
+            server.data_multi_replace(multi, 3, DataKind::U8, &[1], 0, None, false),
+            server.data_multi_remove(multi, 3, 0, 1, None, false),
+            server.data_multi_clear(multi, 3, None, false),
+            server.image_multi_update(images, 3, &patch, [0, 0], false, false),
+        ];
+        for result in results {
+            let error = result.unwrap_err();
+            assert_eq!(error.code, ErrorCode::NotFound, "{}", error.message);
+            assert!(
+                error.message.contains("has nothing at index 3"),
+                "{}",
+                error.message
+            );
+        }
+    }
+
     #[test]
     fn images_and_data_round_trip() {
         let server = CServer::new(None);
         let image = server.add_image("root.image").unwrap();
         let images = server.add_image_multi("root.images").unwrap();
-        let data = server.add_data("root.data", DataKind::U16).unwrap();
-        let take = server.add_data_take("root.take", DataKind::U8).unwrap();
-        let multi = server.add_data_multi("root.multi", DataKind::F32).unwrap();
+        let data = server.add_data("root.data", DataKind::U16, None).unwrap();
+        let take = server
+            .add_data_take("root.take", DataKind::U8, None)
+            .unwrap();
+        let multi = server
+            .add_data_multi("root.multi", DataKind::F32, None)
+            .unwrap();
         let multi_take = server
-            .add_data_multi_take("root.multi_take", DataKind::I8)
+            .add_data_multi_take("root.multi_take", DataKind::I8, None)
             .unwrap();
         server.finalize().unwrap();
 
@@ -1642,15 +1909,15 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         server
-            .data_set(data, DataKind::U16, &raw(&[1, 2, 3]), false)
+            .data_set(data, DataKind::U16, &raw(&[1, 2, 3]), None, false)
             .unwrap();
         server
-            .data_add(data, DataKind::U16, &raw(&[4]), false)
+            .data_add(data, DataKind::U16, &raw(&[4]), None, false)
             .unwrap();
         server
-            .data_replace(data, DataKind::U16, &raw(&[9]), 0, false)
+            .data_replace(data, DataKind::U16, &raw(&[9]), 0, None, false)
             .unwrap();
-        server.data_remove(data, 1, 1, false).unwrap();
+        server.data_remove(data, 1, 1, None, false).unwrap();
         assert_eq!(server.data_len(data).unwrap(), 3);
         let mut out = [0u8; 6];
         assert_eq!(
@@ -1666,20 +1933,23 @@ mod tests {
         );
         assert_eq!(
             server
-                .data_replace(data, DataKind::U16, &raw(&[1, 1]), 2, false)
+                .data_replace(data, DataKind::U16, &raw(&[1, 1]), 2, None, false)
                 .unwrap_err()
                 .code,
             ErrorCode::OutOfRange
         );
         assert_eq!(
-            server.data_remove(data, 0, 0, false).unwrap_err().code,
+            server
+                .data_remove(data, 0, 0, None, false)
+                .unwrap_err()
+                .code,
             ErrorCode::InvalidArgument
         );
-        server.data_clear(data, false).unwrap();
+        server.data_clear(data, None, false).unwrap();
         assert_eq!(server.data_len(data).unwrap(), 0);
 
         server
-            .data_take_set(take, DataKind::U8, &[1, 2], true, false, true)
+            .data_take_set(take, DataKind::U8, &[1, 2], None, true, false, true)
             .unwrap();
 
         let floats = |values: &[f32]| {
@@ -1690,21 +1960,23 @@ mod tests {
         };
         assert_eq!(
             server
-                .data_multi_add(multi, 3, DataKind::F32, &floats(&[1.0]), false)
+                .data_multi_add(multi, 3, DataKind::F32, &floats(&[1.0]), None, false)
                 .unwrap_err()
                 .code,
             ErrorCode::NotFound
         );
         server
-            .data_multi_set(multi, 3, DataKind::F32, &floats(&[1.0, 2.0]), false)
+            .data_multi_set(multi, 3, DataKind::F32, &floats(&[1.0, 2.0]), None, false)
             .unwrap();
         server
-            .data_multi_add(multi, 3, DataKind::F32, &floats(&[3.0]), false)
+            .data_multi_add(multi, 3, DataKind::F32, &floats(&[3.0]), None, false)
             .unwrap();
         server
-            .data_multi_replace(multi, 3, DataKind::F32, &floats(&[-1.0]), 1, false)
+            .data_multi_replace(multi, 3, DataKind::F32, &floats(&[-1.0]), 1, None, false)
             .unwrap();
-        server.data_multi_remove(multi, 3, 0, 1, false).unwrap();
+        server
+            .data_multi_remove(multi, 3, 0, 1, None, false)
+            .unwrap();
         let mut out = [0u8; 8];
         assert_eq!(
             server
@@ -1713,7 +1985,7 @@ mod tests {
             (2, true)
         );
         assert_eq!(out.to_vec(), floats(&[-1.0, 3.0]));
-        server.data_multi_clear(multi, 3, false).unwrap();
+        server.data_multi_clear(multi, 3, None, false).unwrap();
         assert_eq!(
             server
                 .data_multi_get(multi, 3, DataKind::F32, None)
@@ -1731,7 +2003,7 @@ mod tests {
         server.data_multi_reset(multi, false).unwrap();
 
         server
-            .data_multi_take_set(multi_take, 1, DataKind::I8, &[1], false, false, false)
+            .data_multi_take_set(multi_take, 1, DataKind::I8, &[1], None, false, false, false)
             .unwrap();
         server
             .data_multi_take_remove_index(multi_take, 1, false)

@@ -714,47 +714,72 @@ egui_states_status_t egui_states_data_get(const egui_states_server_t *server,
                                           size_t capacity,
                                           size_t *out_count);
 
+// Loads the header of a `Data` state into `reader`. `EGUI_STATES_ERROR_NOT_FOUND`
+// when the state has no header type or no header was set yet.
+egui_states_status_t egui_states_data_get_header(const egui_states_server_t *server,
+                                                 uint64_t id,
+                                                 egui_states_reader_t *reader);
+
 // Replaces the elements of a `Data` state with `count` elements of
-// `data_type` at `data`. `flags` may be `EGUI_STATES_UPDATE`.
+// `data_type` at `data`, and the header unless `header` is null. `flags` may
+// be `EGUI_STATES_UPDATE`.
 egui_states_status_t egui_states_data_set(const egui_states_server_t *server,
                                           uint64_t id,
                                           egui_states_data_type_t data_type,
                                           const void *data,
                                           size_t count,
+                                          const egui_states_writer_t *header,
                                           uint32_t flags);
 
-// Appends `count` elements. `flags` may be `EGUI_STATES_UPDATE`.
+// Appends `count` elements; `header` as for `egui_states_data_set`.
+// `flags` may be `EGUI_STATES_UPDATE`.
 egui_states_status_t egui_states_data_add(const egui_states_server_t *server,
                                           uint64_t id,
                                           egui_states_data_type_t data_type,
                                           const void *data,
                                           size_t count,
+                                          const egui_states_writer_t *header,
                                           uint32_t flags);
 
 // Overwrites `count` elements starting at element `index`; they must lie
-// inside the buffer. `flags` may be `EGUI_STATES_UPDATE`.
+// inside the buffer. `header` as for `egui_states_data_set`. `flags` may be
+// `EGUI_STATES_UPDATE`.
 egui_states_status_t egui_states_data_replace(const egui_states_server_t *server,
                                               uint64_t id,
                                               egui_states_data_type_t data_type,
                                               const void *data,
                                               size_t count,
                                               size_t index,
+                                              const egui_states_writer_t *header,
                                               uint32_t flags);
 
 // Removes `count` (at least 1) elements starting at element `index`.
-// `flags` may be `EGUI_STATES_UPDATE`.
+// `header` as for `egui_states_data_set`. `flags` may be `EGUI_STATES_UPDATE`.
 egui_states_status_t egui_states_data_remove(const egui_states_server_t *server,
                                              uint64_t id,
                                              size_t index,
                                              size_t count,
+                                             const egui_states_writer_t *header,
                                              uint32_t flags);
 
-// Removes every element. `flags` may be `EGUI_STATES_UPDATE`.
+// Removes every element; the header stays unless `header` is not null.
+// `flags` may be `EGUI_STATES_UPDATE`.
 egui_states_status_t egui_states_data_clear(const egui_states_server_t *server,
                                             uint64_t id,
+                                            const egui_states_writer_t *header,
                                             uint32_t flags);
 
-// Sends a one-shot buffer to a `DataTake` state.
+// Replaces the header of a `Data` state alone. The client does not
+// acknowledge a header, so this does not wait for the client itself, but it
+// is queued after a buffer change that another thread is still sending.
+// `flags` may be `EGUI_STATES_UPDATE`.
+egui_states_status_t egui_states_data_set_header(const egui_states_server_t *server,
+                                                 uint64_t id,
+                                                 const egui_states_writer_t *header,
+                                                 uint32_t flags);
+
+// Sends a one-shot buffer to a `DataTake` state, with `header`, or the
+// header type's default when it is null.
 //
 // `flags` may combine `EGUI_STATES_BLOCKING`, `EGUI_STATES_UPDATE`, and
 // `EGUI_STATES_CACHE`, which keeps the buffer for clients that connect later.
@@ -763,6 +788,7 @@ egui_states_status_t egui_states_data_take_set(const egui_states_server_t *serve
                                                egui_states_data_type_t data_type,
                                                const void *data,
                                                size_t count,
+                                               const egui_states_writer_t *header,
                                                uint32_t flags);
 
 // Copies the elements at `index` of a `DataMulti` state, like
@@ -775,27 +801,40 @@ egui_states_status_t egui_states_data_multi_get(const egui_states_server_t *serv
                                                 size_t capacity,
                                                 size_t *out_count);
 
-// Replaces or creates the buffer at `index`. `flags` may be `EGUI_STATES_UPDATE`.
+// Loads the header at `index` of a `DataMulti` state into `reader`.
+// `EGUI_STATES_ERROR_NOT_FOUND` when the index is missing, the state has no
+// header type, or no header was set for the index yet.
+egui_states_status_t egui_states_data_multi_get_header(const egui_states_server_t *server,
+                                                       uint64_t id,
+                                                       uint32_t index,
+                                                       egui_states_reader_t *reader);
+
+// Replaces or creates the buffer at `index`, and its header unless `header`
+// is null; a new index without one gets the default header. `flags` may be
+// `EGUI_STATES_UPDATE`.
 egui_states_status_t egui_states_data_multi_set(const egui_states_server_t *server,
                                                 uint64_t id,
                                                 uint32_t index,
                                                 egui_states_data_type_t data_type,
                                                 const void *data,
                                                 size_t count,
+                                                const egui_states_writer_t *header,
                                                 uint32_t flags);
 
-// Appends elements to the existing buffer at `index`. `flags` may be
-// `EGUI_STATES_UPDATE`.
+// Appends elements to the existing buffer at `index`; `header` as for
+// `egui_states_data_multi_set`. `flags` may be `EGUI_STATES_UPDATE`.
 egui_states_status_t egui_states_data_multi_add(const egui_states_server_t *server,
                                                 uint64_t id,
                                                 uint32_t index,
                                                 egui_states_data_type_t data_type,
                                                 const void *data,
                                                 size_t count,
+                                                const egui_states_writer_t *header,
                                                 uint32_t flags);
 
 // Overwrites elements of the existing buffer at `index` starting at element
-// `data_index`. `flags` may be `EGUI_STATES_UPDATE`.
+// `data_index`; `header` as for `egui_states_data_multi_set`. `flags` may be
+// `EGUI_STATES_UPDATE`.
 egui_states_status_t egui_states_data_multi_replace(const egui_states_server_t *server,
                                                     uint64_t id,
                                                     uint32_t index,
@@ -803,44 +842,60 @@ egui_states_status_t egui_states_data_multi_replace(const egui_states_server_t *
                                                     const void *data,
                                                     size_t count,
                                                     size_t data_index,
+                                                    const egui_states_writer_t *header,
                                                     uint32_t flags);
 
 // Removes `count` (at least 1) elements of the existing buffer at `index`
-// starting at element `data_index`. `flags` may be `EGUI_STATES_UPDATE`.
+// starting at element `data_index`; `header` as for
+// `egui_states_data_multi_set`. `flags` may be `EGUI_STATES_UPDATE`.
 egui_states_status_t egui_states_data_multi_remove(const egui_states_server_t *server,
                                                    uint64_t id,
                                                    uint32_t index,
                                                    size_t data_index,
                                                    size_t count,
+                                                   const egui_states_writer_t *header,
                                                    uint32_t flags);
 
 // Removes every element of the existing buffer at `index`, keeping the
-// index. `flags` may be `EGUI_STATES_UPDATE`.
+// index and its header unless `header` is not null. `flags` may be
+// `EGUI_STATES_UPDATE`.
 egui_states_status_t egui_states_data_multi_clear(const egui_states_server_t *server,
                                                   uint64_t id,
                                                   uint32_t index,
+                                                  const egui_states_writer_t *header,
                                                   uint32_t flags);
 
-// Removes the buffer at `index`; a missing index is ignored. `flags` may be
-// `EGUI_STATES_UPDATE`.
+// Replaces the header at the existing `index` alone. It does not wait for
+// the client itself, but it is queued after a buffer change to any key that
+// another thread is still sending. `flags` may be `EGUI_STATES_UPDATE`.
+egui_states_status_t egui_states_data_multi_set_header(const egui_states_server_t *server,
+                                                       uint64_t id,
+                                                       uint32_t index,
+                                                       const egui_states_writer_t *header,
+                                                       uint32_t flags);
+
+// Removes the buffer and header at `index`; a missing index is ignored.
+// `flags` may be `EGUI_STATES_UPDATE`.
 egui_states_status_t egui_states_data_multi_remove_index(const egui_states_server_t *server,
                                                          uint64_t id,
                                                          uint32_t index,
                                                          uint32_t flags);
 
-// Removes every buffer. `flags` may be `EGUI_STATES_UPDATE`.
+// Removes every buffer and header. `flags` may be `EGUI_STATES_UPDATE`.
 egui_states_status_t egui_states_data_multi_reset(const egui_states_server_t *server,
                                                   uint64_t id,
                                                   uint32_t flags);
 
 // Sends a one-shot buffer at `index` of a `DataMultiTake` state, with the
-// flags of `egui_states_data_take_set`.
+// header and flags of `egui_states_data_take_set`. A reconnected client holds
+// only the cached keys; values it had not taken are dropped.
 egui_states_status_t egui_states_data_multi_take_set(const egui_states_server_t *server,
                                                      uint64_t id,
                                                      uint32_t index,
                                                      egui_states_data_type_t data_type,
                                                      const void *data,
                                                      size_t count,
+                                                     const egui_states_writer_t *header,
                                                      uint32_t flags);
 
 // Removes the one-shot buffer at `index`; a missing index is ignored.
@@ -958,29 +1013,40 @@ egui_states_status_t egui_states_server_add_image_multi(const egui_states_server
                                                         const char *name,
                                                         uint64_t *out_id);
 
-// Registers a `Data<T>` of `EGUI_STATES_DATA_*` elements. `out_id` may be null.
+// Registers a `Data<T>` of `EGUI_STATES_DATA_*` elements. `header_type` is
+// the type expression of its header, or null for a state without one.
+// `out_id` may be null.
 egui_states_status_t egui_states_server_add_data(const egui_states_server_t *server,
                                                  const char *name,
                                                  egui_states_data_type_t data_type,
+                                                 const char *header_type,
                                                  uint64_t *out_id);
 
-// Registers a `DataTake<T>` of `EGUI_STATES_DATA_*` elements. `out_id` may be null.
+// Registers a `DataTake<T>` of `EGUI_STATES_DATA_*` elements. `header_type` is
+// the type expression of its header, or null for a state without one.
+// `out_id` may be null.
 egui_states_status_t egui_states_server_add_data_take(const egui_states_server_t *server,
                                                       const char *name,
                                                       egui_states_data_type_t data_type,
+                                                      const char *header_type,
                                                       uint64_t *out_id);
 
-// Registers a `DataMulti<T>` of `EGUI_STATES_DATA_*` elements. `out_id` may be null.
+// Registers a `DataMulti<T>` of `EGUI_STATES_DATA_*` elements. `header_type` is
+// the type expression of its header, or null for a state without one.
+// `out_id` may be null.
 egui_states_status_t egui_states_server_add_data_multi(const egui_states_server_t *server,
                                                        const char *name,
                                                        egui_states_data_type_t data_type,
+                                                       const char *header_type,
                                                        uint64_t *out_id);
 
-// Registers a `DataMultiTake<T>` of `EGUI_STATES_DATA_*` elements. `out_id`
-// may be null.
+// Registers a `DataMultiTake<T>` of `EGUI_STATES_DATA_*` elements. `header_type` is
+// the type expression of its header, or null for a state without one.
+// `out_id` may be null.
 egui_states_status_t egui_states_server_add_data_multi_take(const egui_states_server_t *server,
                                                             const char *name,
                                                             egui_states_data_type_t data_type,
+                                                            const char *header_type,
                                                             uint64_t *out_id);
 
 // Ends registration. Every other operation needs a finalized server; calling

@@ -1,6 +1,6 @@
 //! Numeric enumerations shared with the C header.
 
-use crate::data_transport::DataType;
+use crate::protocol::data::DataType;
 
 /// Element type of numeric primitives, `Data` states, and array reads and writes.
 ///
@@ -219,6 +219,20 @@ impl StateKind {
             Self::DataMulti => "DataMulti",
             Self::DataMultiTake => "DataMultiTake",
             Self::System => "system event",
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The C enum values are the protocol type ids.
+    #[test]
+    fn data_kinds_use_the_protocol_type_ids() {
+        for kind in DataKind::ALL {
+            assert_eq!(kind as u8, kind.data_type().id(), "{}", kind.name());
+            assert_eq!(DataKind::from_id(kind as u32), Some(kind));
         }
     }
 }

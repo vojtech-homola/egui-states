@@ -1,20 +1,14 @@
 use std::collections::{VecDeque, hash_map::Entry};
 use std::sync::Arc;
-#[cfg(any(feature = "server", feature = "python"))]
-use std::sync::atomic::AtomicBool;
-#[cfg(any(feature = "python", feature = "c_abi"))]
-use std::sync::atomic::Ordering;
-#[cfg(feature = "c_abi")]
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use bytes::Bytes;
 use parking_lot::Mutex;
 
-use crate::event::Event;
-#[cfg(feature = "c_abi")]
-use crate::event::WaitOutcome;
-use crate::hashing::{NoHashMap, NoHashSet};
-use crate::serialization::{FastVec, serialize, serialize_to_data};
+use crate::event::{Event, WaitOutcome};
+use crate::hashing::{MAX_RESERVED_ID, NoHashMap, NoHashSet};
+use crate::protocol::{FastVec, serialize, serialize_to_data};
 
 pub(crate) const LOGGING_ID: u64 = 0;
 pub(crate) const ON_CONNECT_ID: u64 = 1;
@@ -59,8 +53,17 @@ impl ChangedInner {
     }
 
     fn clear(&mut self) {
-        self.values.retain(|id, _| *id <= 9);
-        self.indexes.retain(|id| *id <= 9);
+        self.values.retain(|id, signal| match signal {
+            _ if *id <= MAX_RESERVED_ID => true,
+            // An empty queue is what records queue mode, so keep it and drop
+            // only the pending changes.
+            Signal::Queue(queue) => {
+                queue.clear();
+                true
+            }
+            Signal::Single(_) => false,
+        });
+        self.indexes.retain(|id| *id <= MAX_RESERVED_ID);
         // Keep claimed ids blocked: their callbacks may still be running and are
         // released when the worker passes the id back.
     }
@@ -189,9 +192,8 @@ impl ChangedInner {
     }
 }
 
-/// Result of [`SignalsManager::claim_next`].
-#[cfg(feature = "c_abi")]
-pub(crate) enum ClaimResult {
+/// Result of [`SignalsManager::claim`].
+pub(crate) enum Claim {
     /// A claimed change: id, value, and the previous value when registered for it.
     Ready(u64, Bytes, Option<Bytes>),
     /// The deadline passed without a change.
@@ -204,16 +206,24 @@ pub(crate) enum ClaimResult {
 pub(crate) struct SignalsManager {
     event: Event,
     values: Arc<Mutex<ChangedInner>>,
-    #[cfg(any(feature = "python", feature = "c_abi"))]
     closed: Arc<AtomicBool>,
 }
 
 impl SignalsManager {
     pub(crate) fn new() -> Self {
+        let mut values = ChangedInner::new();
+        // Server events are never coalesced, whichever front-end runs the server.
+        for id in [
+            LOGGING_ID,
+            ON_CONNECT_ID,
+            ON_DISCONNECT_ID,
+            CLIENT_MESSAGE_ID,
+        ] {
+            values.set_to_queue(id);
+        }
         Self {
             event: Event::new(),
-            values: Arc::new(Mutex::new(ChangedInner::new())),
-            #[cfg(any(feature = "python", feature = "c_abi"))]
+            values: Arc::new(Mutex::new(values)),
             closed: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -289,67 +299,51 @@ impl SignalsManager {
         self.set(CLIENT_MESSAGE_ID, message);
     }
 
-    /// Blocks until a registered change is available, or returns `None` once
-    /// [`Self::close`] has been called.
-    #[cfg(feature = "python")]
-    pub(crate) fn wait_changed_value(
-        &self,
-        mut last_id: Option<u64>,
-    ) -> Option<(u64, Bytes, Option<Bytes>)> {
+    /// Claims the next registered change, waiting until `deadline` (`None`
+    /// waits indefinitely).
+    ///
+    /// `release` passes back the id the caller claimed last, in the same lock
+    /// as the claim. The returned id stays blocked for every other consumer
+    /// until the caller passes it back here or to [`Self::release`], which it
+    /// must do exactly once, so the callbacks of one state never run
+    /// concurrently.
+    pub(crate) fn claim(&self, mut release: Option<u64>, deadline: Option<Instant>) -> Claim {
         loop {
             if self.closed.load(Ordering::Acquire) {
-                return None;
+                return Claim::Closed;
             }
-            if let Some(val) = self.values.lock().get(last_id.take()) {
-                // Pass the wake-up on, as in `claim_next`.
+            if let Some((id, value, previous)) = self.values.lock().get(release.take()) {
+                // The event is a flag and `notify(1)` does not add listeners,
+                // so two changes that arrive before any waiter wakes up are
+                // announced only once. Pass the wake-up on, so another waiter
+                // checks for a second ready id instead of sleeping until the
+                // next change.
                 self.event.set_one();
-                return Some(val);
+                return Claim::Ready(id, value, previous);
             }
-            if !self.event.wait_clear_until(&self.closed) {
-                return None;
+            match self.event.wait_clear_deadline(&self.closed, deadline) {
+                WaitOutcome::Set => {}
+                WaitOutcome::Stopped => return Claim::Closed,
+                WaitOutcome::TimedOut => return Claim::TimedOut,
             }
         }
     }
 
-    /// Permanently wakes every waiter in [`Self::wait_changed_value`] and makes
-    /// it return `None`, so the workers waiting on it can exit.
-    #[cfg(any(feature = "python", feature = "c_abi"))]
-    pub(crate) fn close(&self) {
-        self.closed.store(true, Ordering::Release);
-        self.event.set();
-    }
-
-    #[cfg(feature = "server")]
-    pub(crate) fn try_changed_value(
-        &self,
-        last_id: Option<u64>,
-    ) -> Option<(u64, Bytes, Option<Bytes>)> {
-        let value = self.values.lock().get(last_id);
-        if value.is_some() {
-            // Pass the wake-up on, as in `claim_next`.
+    /// Claims a change that is already pending, like [`Self::claim`] without
+    /// waiting.
+    #[cfg(test)]
+    pub(crate) fn try_claim(&self, release: Option<u64>) -> Option<(u64, Bytes, Option<Bytes>)> {
+        let change = self.values.lock().get(release);
+        if change.is_some() {
             self.event.set_one();
         }
-        value
+        change
     }
 
-    // #[cfg(feature = "python")]
-    // pub(crate) fn wait_for_change(&self) {
-    //     self.event.wait_clear();
-    // }
-
-    #[cfg(feature = "server")]
-    pub(crate) fn wait_for_change_until(&self, stop: &AtomicBool) -> bool {
-        self.event.wait_clear_until(stop)
-    }
-
-    #[cfg(feature = "server")]
-    pub(crate) fn wake_waiters(&self) {
-        self.event.set();
-    }
-
-    /// Releases an id that was handed out but will never be passed back as
-    /// `last_id`, because the caller failed before it could use the value.
-    #[cfg(any(feature = "python", feature = "c_abi"))]
+    /// Releases a claimed id that will never be passed back to
+    /// [`Self::claim`], because the caller failed before it could use the
+    /// value.
+    #[cfg(any(feature = "python", feature = "c_abi", test))]
     pub(crate) fn release(&self, id: u64) {
         self.values.lock().blocked_list.remove(&id);
         // Anything that arrived while the id was blocked did not set the event
@@ -358,32 +352,11 @@ impl SignalsManager {
         self.event.set_one();
     }
 
-    /// Claims the next registered change, waiting until `deadline` (`None`
-    /// waits indefinitely).
-    ///
-    /// The returned id stays blocked for every other consumer until the caller
-    /// passes it to [`Self::release`], which it must do exactly once.
-    #[cfg(feature = "c_abi")]
-    pub(crate) fn claim_next(&self, deadline: Option<Instant>) -> ClaimResult {
-        loop {
-            if self.closed.load(Ordering::Acquire) {
-                return ClaimResult::Closed;
-            }
-            if let Some((id, value, previous)) = self.values.lock().get(None) {
-                // The event is a flag and `notify(1)` does not add listeners,
-                // so two changes that arrive before any waiter wakes up are
-                // announced only once. Pass the wake-up on, so another waiter
-                // checks for a second ready id instead of sleeping until the
-                // next change.
-                self.event.set_one();
-                return ClaimResult::Ready(id, value, previous);
-            }
-            match self.event.wait_clear_deadline(&self.closed, deadline) {
-                WaitOutcome::Set => {}
-                WaitOutcome::Stopped => return ClaimResult::Closed,
-                WaitOutcome::TimedOut => return ClaimResult::TimedOut,
-            }
-        }
+    /// Permanently wakes every waiter in [`Self::claim`] and makes it return
+    /// [`Claim::Closed`], so the workers waiting on it can exit.
+    pub(crate) fn close(&self) {
+        self.closed.store(true, Ordering::Release);
+        self.event.set();
     }
 
     /// Registers `id` to be signaled. `with_previous` asks for the replaced value to
@@ -418,15 +391,12 @@ mod tests {
     use std::sync::mpsc;
     use std::thread;
     use std::time::Duration;
-    #[cfg(feature = "c_abi")]
-    use std::time::Instant;
 
     use super::*;
 
-    /// A caller that fails before passing an id back as `last_id` must not
+    /// A caller that fails before passing an id back to `claim` must not
     /// strand it: `release` is what keeps signals queued behind it reachable.
     #[test]
-    #[cfg(feature = "python")]
     fn release_frees_an_id_that_was_never_passed_back() {
         if crate::test_support::isolated() {
             return;
@@ -436,14 +406,14 @@ mod tests {
         manager.set_register(9, true, false);
 
         manager.set(5, Bytes::from_static(b"first"));
-        assert_eq!(manager.wait_changed_value(None).unwrap().0, 5);
+        assert_eq!(claim_ready(&manager, None).0, 5);
 
         // A second signal for 5 queues silently -- it is blocked, so no wake-up
         // is sent and only 9 is reachable.
         manager.set(5, Bytes::from_static(b"stranded"));
         manager.set(9, Bytes::from_static(b"other"));
         assert_eq!(
-            manager.wait_changed_value(None).unwrap().0,
+            claim_ready(&manager, None).0,
             9,
             "5 must stay blocked while its holder has not released it"
         );
@@ -456,7 +426,7 @@ mod tests {
         let (sender, receiver) = mpsc::channel();
         let waiter = manager.clone();
         thread::spawn(move || {
-            let _ = sender.send(waiter.wait_changed_value(None).unwrap().0);
+            let _ = sender.send(claim_ready(&waiter, None).0);
         });
         assert_eq!(
             receiver.recv_timeout(Duration::from_secs(2)).ok(),
@@ -465,11 +435,10 @@ mod tests {
         );
     }
 
-    /// Python workers block here with no other exit; `close` must release every
-    /// one of them, and later calls must not block.
+    /// Workers waiting without a deadline have no other exit; `close` must
+    /// release every one of them, and later claims must not block.
     #[test]
-    #[cfg(feature = "python")]
-    fn close_releases_blocked_waiters() {
+    fn close_wakes_every_blocked_claim() {
         if crate::test_support::isolated() {
             return;
         }
@@ -481,7 +450,8 @@ mod tests {
             let waiter = manager.clone();
             let sender = sender.clone();
             thread::spawn(move || {
-                let _ = sender.send(waiter.wait_changed_value(None).is_none());
+                let closed = matches!(waiter.claim(None, None), Claim::Closed);
+                let _ = sender.send(closed);
             });
         }
         assert!(receiver.recv_timeout(Duration::from_millis(100)).is_err());
@@ -494,7 +464,7 @@ mod tests {
             );
         }
         manager.set(5, b("pending"));
-        assert!(manager.wait_changed_value(None).is_none());
+        assert!(matches!(manager.claim(None, None), Claim::Closed));
     }
 
     /// In single mode changes coalesce, and the consumer only ever learns about the
@@ -509,7 +479,7 @@ mod tests {
         manager.set_with_previous(10, b("b"), b("a"));
         manager.set_with_previous(10, b("c"), b("b"));
 
-        let (id, value, previous) = claim(&manager, None);
+        let (id, value, previous) = next(&manager, None);
         assert_eq!(id, 10);
         assert_eq!(value, b("c"));
         assert_eq!(
@@ -529,9 +499,9 @@ mod tests {
         manager.set_with_previous(11, b("c"), b("b"));
 
         // Every queued change is delivered, so the chain is already contiguous.
-        let (_, value, previous) = claim(&manager, None);
+        let (_, value, previous) = next(&manager, None);
         assert_eq!((value, previous), (b("b"), Some(b("a"))));
-        let (_, value, previous) = claim(&manager, Some(11));
+        let (_, value, previous) = next(&manager, Some(11));
         assert_eq!((value, previous), (b("c"), Some(b("b"))));
     }
 
@@ -547,7 +517,7 @@ mod tests {
         manager.set_with_previous(12, b("c"), b("b"));
         manager.set_to_single(12);
 
-        let (_, value, previous) = claim(&manager, None);
+        let (_, value, previous) = next(&manager, None);
         assert_eq!((value, previous), (b("c"), Some(b("a"))));
     }
 
@@ -562,7 +532,7 @@ mod tests {
         manager.set_with_previous(15, b("b"), b("a"));
         manager.set_to_single(15);
 
-        let (_, value, previous) = claim(&manager, None);
+        let (_, value, previous) = next(&manager, None);
         assert_eq!((value, previous), (b("b"), Some(b("a"))));
     }
 
@@ -579,7 +549,7 @@ mod tests {
         manager.set_with_previous(16, b("c"), b("b"));
 
         // Coalesced rather than queued, which is what single mode means.
-        let (_, value, previous) = claim(&manager, None);
+        let (_, value, previous) = next(&manager, None);
         assert_eq!((value, previous), (b("c"), Some(b("a"))));
         assert!(manager.values.lock().get(Some(16)).is_none());
     }
@@ -593,7 +563,7 @@ mod tests {
         manager.set_register(13, true, false);
 
         manager.set_with_previous(13, b("new"), b("old"));
-        let (_, value, previous) = claim(&manager, None);
+        let (_, value, previous) = next(&manager, None);
         assert_eq!(value, b("new"));
         assert_eq!(previous, None);
 
@@ -601,7 +571,7 @@ mod tests {
         // it was kept all along, only masked on the way out.
         manager.set_register(13, true, true);
         manager.set_with_previous(13, b("newer"), b("new"));
-        let (_, value, previous) = claim(&manager, Some(13));
+        let (_, value, previous) = next(&manager, Some(13));
         assert_eq!((value, previous), (b("newer"), Some(b("new"))));
     }
 
@@ -612,7 +582,7 @@ mod tests {
         manager.set_register(14, true, true);
 
         manager.set(14, b("fired"));
-        let (_, value, previous) = claim(&manager, None);
+        let (_, value, previous) = next(&manager, None);
         assert_eq!(value, b("fired"));
         assert_eq!(previous, None);
     }
@@ -625,13 +595,13 @@ mod tests {
         manager.set_register(20, true, false);
 
         manager.set(20, b("first"));
-        assert_eq!(claim(&manager, None).0, 20);
+        assert_eq!(next(&manager, None).0, 20);
         manager.set(20, b("second"));
         assert!(
             manager.values.lock().get(None).is_none(),
             "another worker claimed an id that is still running"
         );
-        let (id, value, _) = claim(&manager, Some(20));
+        let (id, value, _) = next(&manager, Some(20));
         assert_eq!((id, value), (20, b("second")));
     }
 
@@ -644,14 +614,14 @@ mod tests {
         manager.set_register(21, true, false);
 
         manager.set(21, b("before disconnect"));
-        assert_eq!(claim(&manager, None).0, 21);
+        assert_eq!(next(&manager, None).0, 21);
         manager.reset();
         manager.set(21, b("after reconnect"));
         assert!(
             manager.values.lock().get(None).is_none(),
             "reset released an id whose callback is still running"
         );
-        let (id, value, _) = claim(&manager, Some(21));
+        let (id, value, _) = next(&manager, Some(21));
         assert_eq!((id, value), (21, b("after reconnect")));
     }
 
@@ -678,6 +648,25 @@ mod tests {
         assert_eq!(claimed, [LOGGING_ID, ON_DISCONNECT_ID]);
     }
 
+    /// Queue mode survives a disconnect: changes after the reconnect are all
+    /// delivered in order, not coalesced like single mode.
+    #[test]
+    fn reset_keeps_queue_mode() {
+        let manager = SignalsManager::new();
+        manager.set_register(24, true, false);
+        manager.set_to_queue(24);
+        manager.set(24, b("lost on disconnect"));
+        manager.reset();
+
+        manager.set(24, b("first"));
+        manager.set(24, b("second"));
+        let (id, value, _) = next(&manager, None);
+        assert_eq!((id, value), (24, b("first")));
+        let (id, value, _) = next(&manager, Some(24));
+        assert_eq!((id, value), (24, b("second")));
+        assert!(manager.values.lock().get(Some(24)).is_none());
+    }
+
     /// A client streaming changes to a value whose callback is still running (a
     /// slider drag) must not grow the schedule: the changes coalesce into one
     /// pending delivery, so they hold one slot, or every `get` by every worker
@@ -688,13 +677,13 @@ mod tests {
         manager.set_register(23, true, false);
 
         manager.set(23, b("first"));
-        assert_eq!(claim(&manager, None).0, 23);
+        assert_eq!(next(&manager, None).0, 23);
         for i in 0..100 {
             manager.set(23, b(&i.to_string()));
         }
         assert_eq!(manager.values.lock().indexes, [23]);
 
-        let (id, value, _) = claim(&manager, Some(23));
+        let (id, value, _) = next(&manager, Some(23));
         assert_eq!((id, value), (23, b("99")));
         assert!(manager.values.lock().indexes.is_empty());
     }
@@ -726,24 +715,22 @@ mod tests {
         assert_eq!(delivered, [b("a1"), b("s2"), b("a2"), b("c1")]);
     }
 
-    #[cfg(feature = "c_abi")]
     fn claim_ready(manager: &SignalsManager, deadline: Option<Instant>) -> (u64, Bytes) {
-        match manager.claim_next(deadline) {
-            ClaimResult::Ready(id, value, _) => (id, value),
-            ClaimResult::TimedOut => panic!("claim timed out"),
-            ClaimResult::Closed => panic!("signals closed"),
+        match manager.claim(None, deadline) {
+            Claim::Ready(id, value, _) => (id, value),
+            Claim::TimedOut => panic!("claim timed out"),
+            Claim::Closed => panic!("signals closed"),
         }
     }
 
     #[test]
-    #[cfg(feature = "c_abi")]
-    fn claim_next_times_out_without_changes() {
+    fn claim_times_out_without_changes() {
         let manager = SignalsManager::new();
         manager.set_register(30, true, false);
 
         let start = Instant::now();
-        let result = manager.claim_next(Some(start + Duration::from_millis(50)));
-        assert!(matches!(result, ClaimResult::TimedOut));
+        let result = manager.claim(None, Some(start + Duration::from_millis(50)));
+        assert!(matches!(result, Claim::TimedOut));
         assert!(start.elapsed() >= Duration::from_millis(50));
         assert!(start.elapsed() < Duration::from_secs(5));
 
@@ -753,11 +740,10 @@ mod tests {
         assert_eq!((id, value), (30, b("ready")));
     }
 
-    /// A claim taken with `claim_next` is held until `release`, so a second
-    /// change for the same state cannot be handed to another consumer.
+    /// A claimed id is held until it is passed back, so a second change for
+    /// the same state cannot be handed to another consumer.
     #[test]
-    #[cfg(feature = "c_abi")]
-    fn claim_next_holds_the_id_until_release() {
+    fn claim_holds_the_id_until_it_is_passed_back() {
         let manager = SignalsManager::new();
         manager.set_register(31, true, false);
 
@@ -765,8 +751,8 @@ mod tests {
         assert_eq!(claim_ready(&manager, None).0, 31);
         manager.set(31, b("second"));
         assert!(matches!(
-            manager.claim_next(Some(Instant::now())),
-            ClaimResult::TimedOut
+            manager.claim(None, Some(Instant::now())),
+            Claim::TimedOut
         ));
 
         manager.release(31);
@@ -774,38 +760,19 @@ mod tests {
             claim_ready(&manager, Some(Instant::now())),
             (31, b("second"))
         );
+
+        // Passing the id back to `claim` releases it in the same step.
+        manager.set(31, b("third"));
+        assert!(matches!(
+            manager.claim(Some(31), Some(Instant::now())),
+            Claim::Ready(31, value, None) if value == b("third")
+        ));
     }
 
+    /// Two changes that arrive before any waiter wakes notify only once. The
+    /// waiter that claims the first must pass the wake-up on, or the second
+    /// waits until the first callback has finished.
     #[test]
-    #[cfg(feature = "c_abi")]
-    fn close_wakes_a_blocked_claim() {
-        if crate::test_support::isolated() {
-            return;
-        }
-        let manager = SignalsManager::new();
-        manager.set_register(32, true, false);
-
-        let (sender, receiver) = mpsc::channel();
-        let waiter = manager.clone();
-        thread::spawn(move || {
-            let closed = matches!(waiter.claim_next(None), ClaimResult::Closed);
-            let _ = sender.send(closed);
-        });
-        assert!(receiver.recv_timeout(Duration::from_millis(100)).is_err());
-
-        manager.close();
-        assert_eq!(
-            receiver.recv_timeout(Duration::from_secs(2)).ok(),
-            Some(true)
-        );
-        manager.set(32, b("late"));
-        assert!(matches!(manager.claim_next(None), ClaimResult::Closed));
-    }
-
-    /// Two changes that arrive before any waiter wakes notify only once; the
-    /// first waiter must pass the wake-up on so the second id is not stranded.
-    #[test]
-    #[cfg(feature = "c_abi")]
     fn every_waiter_receives_a_ready_id() {
         if crate::test_support::isolated() {
             return;
@@ -815,12 +782,12 @@ mod tests {
         manager.set_register(34, true, false);
 
         let (sender, receiver) = mpsc::channel();
-        for _ in 0..2 {
+        for deadline in [None, Some(Instant::now() + Duration::from_secs(5))] {
             let waiter = manager.clone();
             let sender = sender.clone();
+            // Each waiter keeps its claim, like one that is still running a callback.
             thread::spawn(move || {
-                let deadline = Instant::now() + Duration::from_secs(5);
-                if let ClaimResult::Ready(id, _, _) = waiter.claim_next(Some(deadline)) {
+                if let Claim::Ready(id, _, _) = waiter.claim(None, deadline) {
                     let _ = sender.send(id);
                 }
             });
@@ -835,72 +802,10 @@ mod tests {
         ];
         ids.sort_unstable();
         assert_eq!(ids, [33, 34]);
+        manager.close();
     }
 
-    /// Two changes that arrive before any worker wakes notify only once. The
-    /// worker that claims the first must pass the wake-up on, or the second
-    /// waits until the first callback has finished.
-    fn every_worker_receives_a_ready_id(claim_one: fn(SignalsManager) -> Option<u64>) {
-        let manager = SignalsManager::new();
-        manager.set_register(35, true, false);
-        manager.set_register(36, true, false);
-
-        let (sender, receiver) = mpsc::channel();
-        for _ in 0..2 {
-            let worker = manager.clone();
-            let sender = sender.clone();
-            // Each worker keeps its claim, like one that is still running a callback.
-            thread::spawn(move || {
-                if let Some(id) = claim_one(worker) {
-                    let _ = sender.send(id);
-                }
-            });
-        }
-        thread::sleep(Duration::from_millis(50));
-        manager.set(35, b("a"));
-        manager.set(36, b("b"));
-
-        let mut ids = [
-            receiver.recv_timeout(Duration::from_secs(2)).unwrap(),
-            receiver.recv_timeout(Duration::from_secs(2)).unwrap(),
-        ];
-        ids.sort_unstable();
-        assert_eq!(ids, [35, 36]);
-    }
-
-    /// The claim loop of the Rust callback worker.
-    #[test]
-    #[cfg(feature = "server")]
-    fn every_polling_worker_receives_a_ready_id() {
-        if crate::test_support::isolated() {
-            return;
-        }
-        every_worker_receives_a_ready_id(|worker| {
-            let stop = AtomicBool::new(false);
-            loop {
-                if let Some((id, _, _)) = worker.try_changed_value(None) {
-                    return Some(id);
-                }
-                if !worker.wait_for_change_until(&stop) {
-                    return None;
-                }
-            }
-        });
-    }
-
-    /// The claim loop of the Python callback worker.
-    #[test]
-    #[cfg(feature = "python")]
-    fn every_blocking_worker_receives_a_ready_id() {
-        if crate::test_support::isolated() {
-            return;
-        }
-        every_worker_receives_a_ready_id(|worker| {
-            worker.wait_changed_value(None).map(|(id, _, _)| id)
-        });
-    }
-
-    fn claim(manager: &SignalsManager, last: Option<u64>) -> (u64, Bytes, Option<Bytes>) {
+    fn next(manager: &SignalsManager, last: Option<u64>) -> (u64, Bytes, Option<Bytes>) {
         manager
             .values
             .lock()

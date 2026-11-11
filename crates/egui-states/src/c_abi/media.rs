@@ -1,10 +1,9 @@
 //! Validation of image and numeric buffers passed to the server.
 
-use crate::image_transport::ImageType;
-use crate::server_core::data_core::DataHolder;
-use crate::server_core::image_core::ImageData;
-use crate::server_core::image_core_common::checked_image_size;
-use crate::server_core::image_multi_core::ImageMultiData;
+use crate::protocol::image::ImageType;
+use crate::server_core::states::data::DataSlice;
+use crate::server_core::states::image::common::checked_image_size;
+use crate::server_core::states::image::single::ImageData;
 
 use super::error::{Error, Result};
 use super::kinds::DataKind;
@@ -63,16 +62,9 @@ pub struct ImageInput<'a> {
     pub format: ImageFormat,
 }
 
-struct CheckedImage {
-    size: [usize; 2],
-    stride: usize,
-    contiguous: bool,
-    image_type: ImageType,
-    data: *const u8,
-}
-
-impl ImageInput<'_> {
-    fn check(&self) -> Result<CheckedImage> {
+impl<'a> ImageInput<'a> {
+    /// Checks the input and views it as an image of the server core.
+    pub(crate) fn image_data(&self) -> Result<ImageData<'a>> {
         let size = [self.height, self.width];
         checked_image_size(size).map_err(Error::out_of_range)?;
         let image_type = self.format.image_type();
@@ -100,40 +92,17 @@ impl ImageInput<'_> {
                 self.data.len()
             )));
         }
-        Ok(CheckedImage {
+        Ok(ImageData {
             size,
             stride,
-            contiguous: stride == packed,
             image_type,
-            data: self.data.as_ptr(),
-        })
-    }
-
-    pub(crate) fn image_data(&self) -> Result<ImageData> {
-        let checked = self.check()?;
-        Ok(ImageData {
-            size: checked.size,
-            stride: checked.stride,
-            contiguous: checked.contiguous,
-            image_type: checked.image_type,
-            data: checked.data,
-        })
-    }
-
-    pub(crate) fn image_multi_data(&self) -> Result<ImageMultiData> {
-        let checked = self.check()?;
-        Ok(ImageMultiData {
-            size: checked.size,
-            stride: checked.stride,
-            contiguous: checked.contiguous,
-            image_type: checked.image_type,
-            data: checked.data,
+            data: self.data,
         })
     }
 }
 
 /// Wraps native-endian numbers of `kind` for the data cores, which copy them.
-pub(crate) fn data_holder(kind: DataKind, bytes: &[u8]) -> Result<DataHolder> {
+pub(crate) fn data_slice(kind: DataKind, bytes: &[u8]) -> Result<DataSlice<'_>> {
     if !bytes.len().is_multiple_of(kind.size()) {
         return Err(Error::invalid_argument(format!(
             "{} bytes are not a whole number of {} values",
@@ -141,11 +110,10 @@ pub(crate) fn data_holder(kind: DataKind, bytes: &[u8]) -> Result<DataHolder> {
             kind.name()
         )));
     }
-    Ok(DataHolder {
-        data: bytes.as_ptr(),
-        count: bytes.len() / kind.size(),
-        data_size: bytes.len(),
+    Ok(DataSlice {
+        bytes,
         data_type: kind.data_type(),
+        header: None,
     })
 }
 
@@ -168,13 +136,13 @@ mod tests {
     fn images_are_checked_against_their_shape() {
         let data = [0u8; 64];
         let packed = input(&data[..12], 2, 2, 0).image_data().unwrap();
-        assert!(packed.contiguous);
+        assert!(packed.contiguous());
         assert_eq!(packed.stride, 6);
         assert_eq!(packed.size, [2, 2]);
 
         // The last row needs no padding after it.
         let strided = input(&data[..16], 2, 2, 10).image_data().unwrap();
-        assert!(!strided.contiguous);
+        assert!(!strided.contiguous());
         assert_eq!(strided.stride, 10);
 
         for (image, code, message) in [
@@ -203,9 +171,10 @@ mod tests {
 
     #[test]
     fn data_must_be_whole_elements() {
-        let holder = data_holder(DataKind::U32, &[0; 8]).unwrap();
-        assert_eq!((holder.count, holder.data_size), (2, 8));
-        assert!(data_holder(DataKind::U32, &[0; 7]).is_err());
-        assert_eq!(data_holder(DataKind::F64, &[]).unwrap().count, 0);
+        let slice = data_slice(DataKind::U32, &[0; 8]).unwrap();
+        assert_eq!(slice.bytes.len(), 8);
+        assert_eq!(slice.data_type, DataKind::U32.data_type());
+        assert!(data_slice(DataKind::U32, &[0; 7]).is_err());
+        assert!(data_slice(DataKind::F64, &[]).unwrap().bytes.is_empty());
     }
 }

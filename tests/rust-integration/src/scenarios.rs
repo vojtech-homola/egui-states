@@ -293,6 +293,7 @@ pub fn run(port: u16, scenario: &str) {
         "values-wire" => values_wire(&state),
         "collections-wire" => collections_wire(&state),
         "numeric-wire" => numeric_wire(&state),
+        "data-headers" => data_headers(port, &state, connection),
         _ => panic!("unknown scenario: {scenario}"),
     }
 }
@@ -450,6 +451,66 @@ fn numeric_wire(state: &State) {
     assert_eq!(m.bytes.get(2), None);
     assert_eq!(m.samples.get(7), Some(vec![0.5]));
     assert_eq!(m.nested.buffer.get(3), Some(vec![4, 6]));
+}
+
+fn meta(scale: f32, label: &str, shape: &[u32]) -> egui_states_test_schema::data::HeaderMeta {
+    egui_states_test_schema::data::HeaderMeta {
+        scale,
+        label: label.into(),
+        shape: shape.to_vec(),
+    }
+}
+
+/// Typed Data headers: the server sets them on commands 35 and 36, and a
+/// reconnecting client gets the stored ones.
+fn data_headers(port: u16, state: &State, connection: Connection) {
+    use egui_states_test_schema::data::HeaderMeta;
+
+    let s = &state.integration;
+    let h = &state.headers;
+    assert_eq!(h.series.header(), HeaderMeta::default());
+    s.command.set(35u32);
+    phase(s, 35);
+    h.series.read_with_header(|values, header| {
+        assert_eq!(values, [1.0, 2.0, 3.0]);
+        assert_eq!(header, &meta(1.5, "series", &[3]));
+    });
+    assert_eq!(h.keyed.header(1), Some(HeaderMeta::default()));
+    h.keyed.read_with_header(2, |entry| {
+        assert_eq!(entry, Some((&[8][..], &meta(3.0, "renamed", &[]))));
+    });
+    once(
+        "take with header",
+        (vec![5], meta(0.5, "take", &[1])),
+        || h.take.take_with_header(),
+    );
+    once(
+        "keyed take with default header",
+        (vec![6], HeaderMeta::default()),
+        || h.keyed_take.take_with_header(4),
+    );
+
+    s.command.set(36u32);
+    phase(s, 36);
+    assert!(h.series.get().is_empty());
+    assert_eq!(h.series.header(), meta(4.0, "cleared", &[0]));
+    assert_eq!(h.keyed.header(1), None);
+    assert_eq!(h.keyed.get(2), Some(vec![8]));
+
+    drop(connection);
+    let (next, _connection) = connect(port);
+    let h = &next.headers;
+    wait("stored header for a new client", || {
+        (h.series.header() == meta(4.0, "cleared", &[0])).then_some(())
+    });
+    assert!(h.series.get().is_empty());
+    assert_eq!(h.keyed.header(2), Some(meta(3.0, "renamed", &[])));
+    assert_eq!(h.keyed.header(1), None);
+    once(
+        "cached take with its header",
+        (vec![5], meta(0.5, "take", &[1])),
+        || h.take.take_with_header(),
+    );
 }
 
 /// Applies every queued texture change to `textures`, like a painter would.
