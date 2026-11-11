@@ -7,10 +7,8 @@ use bytes::Bytes;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use crate::protocol::data::DataType;
-use crate::server_core::states::data::{
-    Data as CoreData, DataMulti as CoreDataMulti, DataSlice, header_type_id,
-};
+use crate::protocol::data::{DataType, header_type_id};
+use crate::server_core::states::data::{Data as CoreData, DataMulti as CoreDataMulti, DataSlice};
 use crate::server_core::states::data_take::{
     DataMultiTake as CoreDataMultiTake, DataTake as CoreDataTake,
 };

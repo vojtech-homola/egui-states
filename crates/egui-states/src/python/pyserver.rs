@@ -16,6 +16,7 @@ use crate::hashing::NoHashMap;
 
 /// A signal event: id, value, whether it blocks, and the previous value.
 type SignalEvent<'py> = (u64, Bound<'py, PyAny>, bool, Option<Bound<'py, PyAny>>);
+use crate::protocol::data::header_type_id;
 use crate::python::value_parsing::{ValueCreator, ValueParser};
 use crate::python::{
     pydata::{data_buffer, data_slice},
@@ -26,7 +27,7 @@ use crate::server_core::http::web::{LoadError, WebSite};
 use crate::server_core::net::heartbeat::{self, Heartbeat};
 use crate::server_core::server::{Server, ServerConfig, StateRef};
 use crate::server_core::signals::{self, Claim, SignalsManager};
-use crate::server_core::states::data::{Data, DataMulti, DataSlice, header_type_id};
+use crate::server_core::states::data::{Data, DataMulti, DataSlice};
 use crate::server_core::states::data_take::{DataMultiTake, DataTake};
 use crate::server_core::states::image::{multi::ImageMulti, single::Image};
 use crate::server_core::states::value::{SignalCore, ValueCore, ValueStaticCore, ValueTakeCore};

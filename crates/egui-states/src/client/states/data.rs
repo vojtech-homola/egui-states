@@ -10,7 +10,7 @@ use serde::de::DeserializeOwned;
 use crate::client::messages::{ChannelMessage, MessageSender};
 use crate::hashing::NoHashMap;
 use crate::protocol::data::{DataHeader, DataType, HeaderBytes, HeaderUpdate, TransportType};
-use crate::protocol::{VALUE_MAX_SIZE, deserialize};
+use crate::protocol::{self, VALUE_MAX_SIZE, deserialize};
 use crate::typed::{ObjectType, Typed};
 
 /// A Data message: its wire header and the payload that followed it.
@@ -261,10 +261,7 @@ impl<H> HeaderValue for H where H: Default + Typed + DeserializeOwned + Clone + 
 /// The type hash a header of `H` carries on the wire, `None` for a state
 /// without a header.
 pub(crate) fn header_type_id<H: HeaderValue>() -> Option<u32> {
-    match H::get_type() {
-        ObjectType::Empty => None,
-        object_type => Some(object_type.get_hash()),
-    }
+    protocol::data::header_type_id(&H::get_type())
 }
 
 /// The layout hash type id of a Data state of elements `T` with header `H`.

@@ -24,15 +24,6 @@ pub(crate) struct DataSlice<'a> {
     pub header: Option<&'a [u8]>,
 }
 
-/// The header type id of a Data state whose header type is `object_type`:
-/// `None` for [`ObjectType::Empty`], the type's hash otherwise.
-pub(crate) fn header_type_id(object_type: &crate::typed::ObjectType) -> Option<u32> {
-    match object_type {
-        crate::typed::ObjectType::Empty => None,
-        object_type => Some(object_type.get_hash()),
-    }
-}
-
 /// The header type of a Data state, if it was registered with one, and the
 /// checks every header given to it passes.
 #[derive(Clone, Copy)]

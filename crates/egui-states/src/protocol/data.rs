@@ -1,7 +1,22 @@
 use serde::{Deserialize, Serialize};
 
+use crate::typed::ObjectType;
+
 #[cfg(any(feature = "server", feature = "python"))]
 use crate::protocol::{FastVec, ServerHeader, serialize, serialize_heap};
+
+/// The type id a Data header of type `object_type` carries on the wire:
+/// `None` for [`ObjectType::Empty`], which means the state has no header, the
+/// type's hash otherwise.
+///
+/// Both peers derive it here, so they agree whether a state has a header and
+/// which type it carries.
+pub(crate) fn header_type_id(object_type: &ObjectType) -> Option<u32> {
+    match object_type {
+        ObjectType::Empty => None,
+        object_type => Some(object_type.get_hash()),
+    }
+}
 
 /// Element type of a numeric buffer.
 ///

@@ -10,13 +10,14 @@ use parking_lot::{Mutex, RwLock};
 
 use crate::hashing::{NoHashMap, generate_value_id};
 use crate::protocol::check_value_size;
+use crate::protocol::data::header_type_id;
 use crate::server_core::error::{CoreError, ErrorKind};
 use crate::server_core::net::heartbeat::Heartbeat;
 use crate::server_core::server::{Server, ServerConfig, StartError};
 use crate::server_core::signals::{
     CLIENT_MESSAGE_ID, Claim, LOGGING_ID, ON_CONNECT_ID, ON_DISCONNECT_ID, SignalsManager,
 };
-use crate::server_core::states::data::{Data, DataMulti, DataSlice, header_type_id};
+use crate::server_core::states::data::{Data, DataMulti, DataSlice};
 use crate::server_core::states::data_take::{DataMultiTake, DataTake};
 use crate::server_core::states::image::common::checked_image_size;
 use crate::server_core::states::image::multi::ImageMulti;
