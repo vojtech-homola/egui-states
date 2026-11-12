@@ -725,7 +725,7 @@ mod tests {
         let server = StateServer::new().unwrap();
         let data = Data::<u16>::new(&server, "root.data").unwrap();
         assert_eq!(data.get().unwrap(), None);
-        assert_eq!(data.read_bytes(|bytes| bytes.is_none()), true);
+        assert!(data.read_bytes(|bytes| bytes.is_none()));
 
         for (name, error) in [
             ("add", data.add(&[1], false).unwrap_err()),

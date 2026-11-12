@@ -231,7 +231,8 @@ class StateServerCore:
             cache (bool): Whether to retain the data for a newly initialized
                 client.
             header (tuple[object] | None): The header sent with the data as
-                ``(header,)``, or ``None`` for the header type's default.
+                ``(header,)``; ``None`` only for a state without a header
+                type.
         """
 
     # data multi --------------------------------------------------------------------
@@ -290,7 +291,8 @@ class StateServerCore:
             cache (bool): Whether to retain the data for a newly initialized
                 client.
             header (tuple[object] | None): The header sent with the data as
-                ``(header,)``, or ``None`` for the header type's default.
+                ``(header,)``; ``None`` only for a state without a header
+                type.
         """
     def data_multi_take_remove_index(self, value_id: int, index: int, update: bool) -> None: ...
     def data_multi_take_reset(self, value_id: int, update: bool) -> None: ...
