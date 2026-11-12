@@ -434,19 +434,19 @@ fn numeric_wire(state: &State) {
     s.command.set(33u32);
     phase(s, 33);
     let (d, n, m) = (&state.data, &state.numeric, &state.multi_data);
-    assert_eq!(d.bytes.get(), [20, 30, 4, 5, 6]);
-    assert_eq!(d.samples.get(), [-1.5, 0.25]);
-    assert!(d.nested.buffer.get().is_empty());
-    assert_eq!(n.u8_data.get(), [u8::MIN, 0, u8::MAX]);
-    assert_eq!(n.i8_data.get(), [i8::MIN, 0, i8::MAX]);
-    assert_eq!(n.u16_data.get(), [u16::MIN, 0, u16::MAX]);
-    assert_eq!(n.i16_data.get(), [i16::MIN, 0, i16::MAX]);
-    assert_eq!(n.u32_data.get(), [u32::MIN, 0, u32::MAX]);
-    assert_eq!(n.i32_data.get(), [i32::MIN, 0, i32::MAX]);
-    assert_eq!(n.u64_data.get(), [u64::MIN, 0, u64::MAX]);
-    assert_eq!(n.i64_data.get(), [i64::MIN, 0, i64::MAX]);
-    assert_eq!(n.f32_data.get(), [f32::MIN, 0.0, f32::MAX]);
-    assert_eq!(n.f64_data.get(), [f64::MIN, 0.0, f64::MAX]);
+    assert_eq!(d.bytes.get(), Some(vec![20, 30, 4, 5, 6]));
+    assert_eq!(d.samples.get(), Some(vec![-1.5, 0.25]));
+    assert_eq!(d.nested.buffer.get(), Some(vec![]));
+    assert_eq!(n.u8_data.get(), Some(vec![u8::MIN, 0, u8::MAX]));
+    assert_eq!(n.i8_data.get(), Some(vec![i8::MIN, 0, i8::MAX]));
+    assert_eq!(n.u16_data.get(), Some(vec![u16::MIN, 0, u16::MAX]));
+    assert_eq!(n.i16_data.get(), Some(vec![i16::MIN, 0, i16::MAX]));
+    assert_eq!(n.u32_data.get(), Some(vec![u32::MIN, 0, u32::MAX]));
+    assert_eq!(n.i32_data.get(), Some(vec![i32::MIN, 0, i32::MAX]));
+    assert_eq!(n.u64_data.get(), Some(vec![u64::MIN, 0, u64::MAX]));
+    assert_eq!(n.i64_data.get(), Some(vec![i64::MIN, 0, i64::MAX]));
+    assert_eq!(n.f32_data.get(), Some(vec![f32::MIN, 0.0, f32::MAX]));
+    assert_eq!(n.f64_data.get(), Some(vec![f64::MIN, 0.0, f64::MAX]));
     assert_eq!(m.bytes.get(1), Some(vec![1, 2, 3]));
     assert_eq!(m.bytes.get(2), None);
     assert_eq!(m.samples.get(7), Some(vec![0.5]));
@@ -464,46 +464,56 @@ fn meta(scale: f32, label: &str, shape: &[u32]) -> egui_states_test_schema::data
 /// Typed Data headers: the server sets them on commands 35 and 36, and a
 /// reconnecting client gets the stored ones.
 fn data_headers(port: u16, state: &State, connection: Connection) {
-    use egui_states_test_schema::data::HeaderMeta;
-
     let s = &state.integration;
     let h = &state.headers;
-    assert_eq!(h.series.header(), HeaderMeta::default());
+    // Data is not set until the server sets it, with its header.
+    assert_eq!(h.series.get_with_header(), None);
+    assert_eq!(h.transient.get_with_header(), None);
     s.command.set(35u32);
     phase(s, 35);
-    h.series.read_with_header(|values, header| {
+    h.series.read_with_header(|entry| {
+        let (values, header) = entry.expect("series is set");
         assert_eq!(values, [1.0, 2.0, 3.0]);
         assert_eq!(header, &meta(1.5, "series", &[3]));
     });
-    assert_eq!(h.keyed.header(1), Some(HeaderMeta::default()));
+    assert_eq!(h.keyed.header(1), Some(meta(1.0, "first", &[1])));
     h.keyed.read_with_header(2, |entry| {
         assert_eq!(entry, Some((&[8][..], &meta(3.0, "renamed", &[]))));
     });
+    assert_eq!(
+        h.transient.get_with_header(),
+        Some((vec![9], meta(9.0, "transient", &[1])))
+    );
     once(
         "take with header",
         (vec![5], meta(0.5, "take", &[1])),
         || h.take.take_with_header(),
     );
     once(
-        "keyed take with default header",
-        (vec![6], HeaderMeta::default()),
+        "keyed take with header",
+        (vec![6], meta(0.25, "keyed take", &[])),
         || h.keyed_take.take_with_header(4),
     );
 
     s.command.set(36u32);
     phase(s, 36);
-    assert!(h.series.get().is_empty());
-    assert_eq!(h.series.header(), meta(4.0, "cleared", &[0]));
+    // A clear keeps the data set, with an empty buffer; a reset does not.
+    assert_eq!(
+        h.series.get_with_header(),
+        Some((vec![], meta(4.0, "cleared", &[0])))
+    );
     assert_eq!(h.keyed.header(1), None);
     assert_eq!(h.keyed.get(2), Some(vec![8]));
+    assert_eq!(h.transient.get_with_header(), None);
 
     drop(connection);
     let (next, _connection) = connect(port);
     let h = &next.headers;
     wait("stored header for a new client", || {
-        (h.series.header() == meta(4.0, "cleared", &[0])).then_some(())
+        (h.series.header() == Some(meta(4.0, "cleared", &[0]))).then_some(())
     });
-    assert!(h.series.get().is_empty());
+    assert_eq!(h.series.get(), Some(vec![]));
+    assert_eq!(h.transient.get_with_header(), None);
     assert_eq!(h.keyed.header(2), Some(meta(3.0, "renamed", &[])));
     assert_eq!(h.keyed.header(1), None);
     once(

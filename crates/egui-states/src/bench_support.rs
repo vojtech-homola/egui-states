@@ -149,7 +149,7 @@ impl ClientData {
             }
         }
         while self.receiver.try_recv().is_ok() {}
-        self.data.read(|data| data.len())
+        self.data.read(|data| data.map_or(0, <[u8]>::len))
     }
 }
 

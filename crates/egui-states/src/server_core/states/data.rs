@@ -1,3 +1,4 @@
+use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -51,6 +52,23 @@ impl HeaderType {
         Ok(Some(header))
     }
 
+    /// Checks that a change that creates data carries a header: a state with
+    /// a header type never holds data without one. `what` completes the
+    /// error message, such as "to create its data".
+    pub(crate) fn require(
+        &self,
+        name: &str,
+        header: Option<&[u8]>,
+        what: impl fmt::Display,
+    ) -> Result<(), CoreError> {
+        if self.0.is_some() && header.is_none() {
+            return Err(CoreError::invalid_argument(format!(
+                "Data '{name}' needs a header {what}"
+            )));
+        }
+        Ok(())
+    }
+
     /// The wire form of a checked header, `Keep` without one.
     pub(crate) fn change<'a>(&self, header: Option<&'a [u8]>) -> WireHeader<'a> {
         match (self.0, header) {
@@ -59,12 +77,12 @@ impl HeaderType {
         }
     }
 
-    /// The wire form of a stored header for a synchronization or a new key:
-    /// `Default` while none was set.
-    pub(crate) fn stored<'a>(&self, header: Option<&'a [u8]>) -> WireHeader<'a> {
-        match (self.0, header) {
-            (Some(type_id), Some(bytes)) => WireHeader::set(type_id, bytes),
-            _ => WireHeader::DEFAULT,
+    /// The wire form of a stored header for a synchronization: a state with
+    /// a header type always says what it is.
+    pub(crate) fn stored<'a>(&self, header: &'a [u8]) -> WireHeader<'a> {
+        match self.0 {
+            Some(type_id) => WireHeader::set(type_id, header),
+            None => WireHeader::KEEP,
         }
     }
 
@@ -91,12 +109,7 @@ impl<'a> WireHeader<'a> {
         bytes: &[],
     };
 
-    pub(crate) const DEFAULT: Self = Self {
-        update: HeaderUpdate::Default,
-        bytes: &[],
-    };
-
-    fn set(type_id: u32, bytes: &'a [u8]) -> Self {
+    pub(crate) fn set(type_id: u32, bytes: &'a [u8]) -> Self {
         Self {
             update: HeaderUpdate::Set(HeaderBytes {
                 type_id,
@@ -118,12 +131,36 @@ impl<'a> WireHeader<'a> {
     }
 }
 
-/// Stores `header` in `stored` when one was given.
-fn store_header(stored: &mut Option<Vec<u8>>, header: Option<&[u8]>) {
-    if let Some(header) = header {
-        let stored = stored.get_or_insert_with(Vec::new);
-        stored.clear();
-        stored.extend_from_slice(header);
+/// The data of a [`Data`] or of one [`DataMulti`] key: its elements and its
+/// encoded header, which stays empty for a state without a header type.
+struct Stored {
+    bytes: Vec<u8>,
+    count: usize,
+    header: Vec<u8>,
+}
+
+impl Stored {
+    fn new(bytes: &[u8], count: usize, header: Option<&[u8]>) -> Self {
+        Self {
+            bytes: bytes.to_vec(),
+            count,
+            header: header.map(<[u8]>::to_vec).unwrap_or_default(),
+        }
+    }
+
+    /// Replaces the elements, and the header when one is given.
+    fn set(&mut self, bytes: &[u8], count: usize, header: Option<&[u8]>) {
+        self.bytes.clear();
+        self.bytes.extend_from_slice(bytes);
+        self.count = count;
+        self.store_header(header);
+    }
+
+    fn store_header(&mut self, header: Option<&[u8]>) {
+        if let Some(header) = header {
+            self.header.clear();
+            self.header.extend_from_slice(header);
+        }
     }
 }
 
@@ -174,14 +211,16 @@ impl SyncState {
 
 // Data --------------------------------------------------
 struct DataStorage {
-    bytes: Vec<u8>,
-    count: usize,
-    /// `None` until a header is set.
-    header: Option<Vec<u8>>,
+    /// `None` while the data is not set.
+    value: Option<Stored>,
     sync: SyncState,
 }
 
 /// Server storage of one numeric buffer and its header.
+///
+/// The data starts "not set". Only [`Data::set`] creates it, with a header
+/// when the state has a header type; [`Data::reset`] returns it to "not set".
+/// Every other change needs data that is set.
 ///
 /// Producers are serialized by `producer`, which they hold across the wait
 /// for the client's acknowledgement of the previous transfer, so the stored
@@ -218,9 +257,7 @@ impl Data {
             header_type: HeaderType::new(header_type),
             producer: Mutex::new(()),
             storage: RwLock::new(DataStorage {
-                bytes: Vec::new(),
-                count: 0,
-                header: None,
+                value: None,
                 sync: SyncState::new(),
             }),
             sender,
@@ -229,7 +266,13 @@ impl Data {
         })
     }
 
-    pub(crate) fn set(&self, data: DataSlice, update: bool) -> Result<(), String> {
+    fn not_set(&self) -> CoreError {
+        CoreError::not_found(format!("Data '{}' is not set", self.name))
+    }
+
+    /// Replaces the buffer, creating the data when it is not set; creating
+    /// the data of a state with a header type needs a header.
+    pub(crate) fn set(&self, data: DataSlice, update: bool) -> Result<(), CoreError> {
         let elements = check_data_type(&data, self.data_type, self.item_size)?;
         let header = self.header_type.check(&self.name, data.header)?;
         let slice = data.bytes;
@@ -237,10 +280,14 @@ impl Data {
         let _producer = self.producer.lock();
         let generation = {
             let mut w = self.storage.write();
-            w.bytes.clear();
-            w.bytes.extend_from_slice(slice);
-            w.count = elements;
-            store_header(&mut w.header, header);
+            match w.value.as_mut() {
+                Some(value) => value.set(slice, elements, header),
+                None => {
+                    self.header_type
+                        .require(&self.name, header, "to create its data")?;
+                    w.value = Some(Stored::new(slice, elements, header));
+                }
+            }
             w.sync.sendable(&self.connected)
         };
         let Some(generation) = generation else {
@@ -262,7 +309,7 @@ impl Data {
         Ok(())
     }
 
-    pub(crate) fn add(&self, data: DataSlice, update: bool) -> Result<(), String> {
+    pub(crate) fn add(&self, data: DataSlice, update: bool) -> Result<(), CoreError> {
         let elements = check_data_type(&data, self.data_type, self.item_size)?;
         let header = self.header_type.check(&self.name, data.header)?;
         let slice = data.bytes;
@@ -270,9 +317,10 @@ impl Data {
         let _producer = self.producer.lock();
         let generation = {
             let mut w = self.storage.write();
-            w.bytes.extend_from_slice(slice);
-            w.count += elements;
-            store_header(&mut w.header, header);
+            let value = w.value.as_mut().ok_or_else(|| self.not_set())?;
+            value.bytes.extend_from_slice(slice);
+            value.count += elements;
+            value.store_header(header);
             w.sync.sendable(&self.connected)
         };
         let Some(generation) = generation else {
@@ -299,7 +347,7 @@ impl Data {
         data: DataSlice,
         index: usize,
         update: bool,
-    ) -> Result<(), String> {
+    ) -> Result<(), CoreError> {
         let elements = check_data_type(&data, self.data_type, self.item_size)?;
         let header = self.header_type.check(&self.name, data.header)?;
         let slice = data.bytes;
@@ -307,15 +355,20 @@ impl Data {
         let _producer = self.producer.lock();
         let generation = {
             let mut w = self.storage.write();
-            if index.checked_add(elements).is_none_or(|end| end > w.count) {
+            let value = w.value.as_mut().ok_or_else(|| self.not_set())?;
+            if index
+                .checked_add(elements)
+                .is_none_or(|end| end > value.count)
+            {
                 return Err(format!(
                     "Replace range out of bounds: index {} + data count {} exceeds current size {}",
-                    index, elements, w.count
-                ));
+                    index, elements, value.count
+                )
+                .into());
             }
             let byte_index = index * self.item_size;
-            w.bytes[byte_index..byte_index + slice.len()].copy_from_slice(slice);
-            store_header(&mut w.header, header);
+            value.bytes[byte_index..byte_index + slice.len()].copy_from_slice(slice);
+            value.store_header(header);
             w.sync.sendable(&self.connected)
         };
         let Some(generation) = generation else {
@@ -343,26 +396,29 @@ impl Data {
         size: usize,
         header: Option<&[u8]>,
         update: bool,
-    ) -> Result<(), String> {
+    ) -> Result<(), CoreError> {
         if size == 0 {
-            return Err("Invalid remove size: size must be greater than 0".to_string());
+            return Err("Invalid remove size: size must be greater than 0".into());
         }
         let header = self.header_type.check(&self.name, header)?;
 
         let _producer = self.producer.lock();
         let generation = {
             let mut w = self.storage.write();
-            if index.checked_add(size).is_none_or(|end| end > w.count) {
+            let value = w.value.as_mut().ok_or_else(|| self.not_set())?;
+            if index.checked_add(size).is_none_or(|end| end > value.count) {
                 return Err(format!(
                     "Remove range out of bounds: index {} + size {} exceeds current size {}",
-                    index, size, w.count
-                ));
+                    index, size, value.count
+                )
+                .into());
             }
             let byte_index = index * self.item_size;
-            w.bytes
+            value
+                .bytes
                 .drain(byte_index..byte_index + size * self.item_size);
-            w.count -= size;
-            store_header(&mut w.header, header);
+            value.count -= size;
+            value.store_header(header);
             w.sync.sendable(&self.connected)
         };
         let Some(generation) = generation else {
@@ -379,13 +435,14 @@ impl Data {
     }
 
     /// Empties the buffer; the header stays unless a new one is given.
-    pub(crate) fn clear(&self, header: Option<&[u8]>, update: bool) -> Result<(), String> {
+    pub(crate) fn clear(&self, header: Option<&[u8]>, update: bool) -> Result<(), CoreError> {
         let header = self.header_type.check(&self.name, header)?;
         let _producer = self.producer.lock();
         let mut w = self.storage.write();
-        w.bytes.clear();
-        w.count = 0;
-        store_header(&mut w.header, header);
+        let value = w.value.as_mut().ok_or_else(|| self.not_set())?;
+        value.bytes.clear();
+        value.count = 0;
+        value.store_header(header);
 
         // The client does not acknowledge a clear, so it is queued at once,
         // under the storage lock so a reset cannot slip in before it.
@@ -404,11 +461,12 @@ impl Data {
     /// acknowledgement of its own. The producer mutex still orders it after
     /// a change another producer is sending, so it cannot overtake a stored
     /// header that change carries.
-    pub(crate) fn set_header(&self, header: &[u8], update: bool) -> Result<(), String> {
+    pub(crate) fn set_header(&self, header: &[u8], update: bool) -> Result<(), CoreError> {
         self.header_type.check(&self.name, Some(header))?;
         let _producer = self.producer.lock();
         let mut w = self.storage.write();
-        store_header(&mut w.header, Some(header));
+        let value = w.value.as_mut().ok_or_else(|| self.not_set())?;
+        value.store_header(Some(header));
 
         if w.sync.sendable(&self.connected).is_some()
             && let Some(bytes) = self.header_type.bytes(header)
@@ -422,22 +480,42 @@ impl Data {
         Ok(())
     }
 
-    pub(crate) fn get<R>(&self, f: impl FnOnce(&[u8]) -> R) -> R {
-        let storage = self.storage.read();
-        f(&storage.bytes)
+    /// Returns the data and its header to "not set"; data that is not set
+    /// stays so. Like a clear, it is queued at once.
+    pub(crate) fn reset(&self, update: bool) -> Result<(), CoreError> {
+        let _producer = self.producer.lock();
+        let mut w = self.storage.write();
+        if w.value.take().is_some() && w.sync.sendable(&self.connected).is_some() {
+            let message = DataHeader::Reset(update)
+                .serialize(self.id, false)
+                .map_err(|_| "Failed to serialize reset header".to_string())?;
+            self.sender.send(message);
+        }
+
+        Ok(())
     }
 
-    /// Calls `f` with the encoded header, `None` until one is set.
+    /// Calls `f` with the bytes, `None` while the data is not set.
+    pub(crate) fn get<R>(&self, f: impl FnOnce(Option<&[u8]>) -> R) -> R {
+        let storage = self.storage.read();
+        f(storage.value.as_ref().map(|value| value.bytes.as_slice()))
+    }
+
+    /// Calls `f` with the encoded header, `None` while the data is not set;
+    /// a state without a header type has an empty one.
     pub(crate) fn header<R>(&self, f: impl FnOnce(Option<&[u8]>) -> R) -> R {
         let storage = self.storage.read();
-        f(storage.header.as_deref())
+        f(storage.value.as_ref().map(|value| value.header.as_slice()))
     }
 
-    /// Calls `f` with the bytes and the encoded header, `None` until one is
-    /// set, under one read lock.
-    pub(crate) fn get_with_header<R>(&self, f: impl FnOnce(&[u8], Option<&[u8]>) -> R) -> R {
+    /// Calls `f` with the bytes and the encoded header under one read lock,
+    /// `None` while the data is not set.
+    pub(crate) fn get_with_header<R>(&self, f: impl FnOnce(Option<(&[u8], &[u8])>) -> R) -> R {
         let storage = self.storage.read();
-        f(&storage.bytes, storage.header.as_deref())
+        f(storage
+            .value
+            .as_ref()
+            .map(|value| (value.bytes.as_slice(), value.header.as_slice())))
     }
 
     fn send_after_ack(&self, generation: u64, messages: Vec<(FastVec<32>, bool)>) {
@@ -476,31 +554,43 @@ impl SyncTrait for Data {
         let mut w = self.storage.write();
         w.sync.synchronized();
 
-        // A synchronization always says what the header is, never keeps it.
-        let header = self.header_type.stored(w.header.as_deref());
-        if w.count == 0 {
-            let message = header
-                .message(|| DataHeader::Clear(false, header.update).serialize(self.id, false))
+        // The client keeps its data across a disconnect, so a synchronization
+        // always says what the data is: not set, empty, or its elements, each
+        // with the stored header.
+        match &w.value {
+            None => {
+                let message = DataHeader::Reset(false)
+                    .serialize(self.id, false)
+                    .map_err(|_| ())?;
+                self.sender.send(message);
+                self.event.set();
+            }
+            Some(value) if value.count == 0 => {
+                let header = self.header_type.stored(&value.header);
+                let message = header
+                    .message(|| DataHeader::Clear(false, header.update).serialize(self.id, false))
+                    .map_err(|_| ())?;
+                self.sender.send(message);
+                self.event.set();
+            }
+            Some(value) => {
+                let count = value.count as u64;
+                let messages = pack_data(
+                    self.id,
+                    &value.bytes,
+                    TransportType::Set(count),
+                    count,
+                    self.data_type,
+                    None,
+                    false,
+                    self.header_type.stored(&value.header),
+                )
                 .map_err(|_| ())?;
-            self.sender.send(message);
-            self.event.set();
-        } else {
-            let count = w.count as u64;
-            let messages = pack_data(
-                self.id,
-                &w.bytes,
-                TransportType::Set(count),
-                count,
-                self.data_type,
-                None,
-                false,
-                header,
-            )
-            .map_err(|_| ())?;
 
-            self.event.clear();
-            for (message, single) in messages {
-                self.sender.send_set(message, single);
+                self.event.clear();
+                for (message, single) in messages {
+                    self.sender.send_set(message, single);
+                }
             }
         }
 
@@ -509,16 +599,8 @@ impl SyncTrait for Data {
 }
 
 // DataMulti --------------------------------------------------
-/// One key of a [`DataMulti`].
-struct KeyData {
-    bytes: Vec<u8>,
-    count: usize,
-    /// `None` until a header is set for the key.
-    header: Option<Vec<u8>>,
-}
-
 struct MultiStorage {
-    values: NoHashMap<u32, KeyData>,
+    values: NoHashMap<u32, Stored>,
     sync: SyncState,
 }
 
@@ -527,6 +609,9 @@ fn missing_key(index: u32) -> CoreError {
 }
 
 /// Server storage of numeric buffers indexed by key, each with its header.
+///
+/// Only [`DataMulti::set`] creates a key, with a header when the state has a
+/// header type; every other change needs an existing key.
 ///
 /// Uses the same producer protocol as [`Data`]; all keys share one stream of
 /// acknowledgements.
@@ -602,44 +687,33 @@ impl DataMulti {
         Ok(())
     }
 
-    /// Sets the buffer at `index`, creating the key. A new key without a
-    /// header gets the default one.
-    pub(crate) fn set(&self, index: u32, data: DataSlice, update: bool) -> Result<(), String> {
+    /// Sets the buffer at `index`, creating the key; creating a key of a
+    /// state with a header type needs a header.
+    pub(crate) fn set(&self, index: u32, data: DataSlice, update: bool) -> Result<(), CoreError> {
         let elements = check_data_type(&data, self.data_type, self.item_size)?;
         let header = self.header_type.check(&self.name, data.header)?;
         let slice = data.bytes;
 
         let _producer = self.producer.lock();
-        let (generation, created) = {
+        let generation = {
             let mut w = self.storage.write();
-            let created = match w.values.get_mut(&index) {
-                Some(value) => {
-                    value.bytes.clear();
-                    value.bytes.extend_from_slice(slice);
-                    value.count = elements;
-                    store_header(&mut value.header, header);
-                    false
-                }
+            match w.values.get_mut(&index) {
+                Some(value) => value.set(slice, elements, header),
                 None => {
-                    let value = KeyData {
-                        bytes: slice.to_vec(),
-                        count: elements,
-                        header: header.map(<[u8]>::to_vec),
-                    };
-                    w.values.insert(index, value);
-                    true
+                    self.header_type.require(
+                        &self.name,
+                        header,
+                        format_args!("to create index {index}"),
+                    )?;
+                    w.values.insert(index, Stored::new(slice, elements, header));
                 }
-            };
-            (w.sync.sendable(&self.connected), created)
+            }
+            w.sync.sendable(&self.connected)
         };
         let Some(generation) = generation else {
             return Ok(());
         };
 
-        let change = match created {
-            true => self.header_type.stored(header),
-            false => self.header_type.change(header),
-        };
         let count = elements as u64;
         let messages = pack_data(
             self.id,
@@ -649,7 +723,7 @@ impl DataMulti {
             self.data_type,
             Some(index),
             update,
-            change,
+            self.header_type.change(header),
         )?;
         self.send_after_ack(generation, messages);
         Ok(())
@@ -666,7 +740,7 @@ impl DataMulti {
             let value = w.values.get_mut(&index).ok_or_else(|| missing_key(index))?;
             value.bytes.extend_from_slice(slice);
             value.count += elements;
-            store_header(&mut value.header, header);
+            value.store_header(header);
             w.sync.sendable(&self.connected)
         };
         let Some(generation) = generation else {
@@ -714,7 +788,7 @@ impl DataMulti {
             }
             let byte_index = data_index * self.item_size;
             value.bytes[byte_index..byte_index + slice.len()].copy_from_slice(slice);
-            store_header(&mut value.header, header);
+            value.store_header(header);
             w.sync.sendable(&self.connected)
         };
         let Some(generation) = generation else {
@@ -767,7 +841,7 @@ impl DataMulti {
                 .bytes
                 .drain(byte_index..byte_index + size * self.item_size);
             value.count -= size;
-            store_header(&mut value.header, header);
+            value.store_header(header);
             w.sync.sendable(&self.connected)
         };
         let Some(generation) = generation else {
@@ -794,13 +868,10 @@ impl DataMulti {
         let header = self.header_type.check(&self.name, header)?;
         let _producer = self.producer.lock();
         let mut w = self.storage.write();
-        let value = w
-            .values
-            .get_mut(&index)
-            .ok_or_else(|| CoreError::not_found("Index not found"))?;
+        let value = w.values.get_mut(&index).ok_or_else(|| missing_key(index))?;
         value.bytes.clear();
         value.count = 0;
-        store_header(&mut value.header, header);
+        value.store_header(header);
 
         // Not acknowledged by the client: queued at once, under the storage lock.
         if w.sync.sendable(&self.connected).is_some() {
@@ -826,7 +897,7 @@ impl DataMulti {
         let _producer = self.producer.lock();
         let mut w = self.storage.write();
         let value = w.values.get_mut(&index).ok_or_else(|| missing_key(index))?;
-        store_header(&mut value.header, Some(header));
+        value.store_header(Some(header));
 
         if w.sync.sendable(&self.connected).is_some()
             && let Some(bytes) = self.header_type.bytes(header)
@@ -846,29 +917,28 @@ impl DataMulti {
         f(storage.values.get(&key).map(|value| value.bytes.as_slice()))
     }
 
-    /// Calls `f` with the encoded header of `key`: `None` for a missing key,
-    /// `Some(None)` until a header is set for it.
-    pub(crate) fn header<R>(&self, key: u32, f: impl FnOnce(Option<Option<&[u8]>>) -> R) -> R {
+    /// Calls `f` with the encoded header of `key`, `None` for a missing key;
+    /// a state without a header type has an empty one.
+    pub(crate) fn header<R>(&self, key: u32, f: impl FnOnce(Option<&[u8]>) -> R) -> R {
         let storage = self.storage.read();
         f(storage
             .values
             .get(&key)
-            .map(|value| value.header.as_deref()))
+            .map(|value| value.header.as_slice()))
     }
 
     /// Calls `f` with the bytes and the encoded header of `key` under one
-    /// read lock: `None` for a missing key, a `None` header until one is set
-    /// for it.
+    /// read lock, `None` for a missing key.
     pub(crate) fn get_with_header<R>(
         &self,
         key: u32,
-        f: impl FnOnce(Option<(&[u8], Option<&[u8]>)>) -> R,
+        f: impl FnOnce(Option<(&[u8], &[u8])>) -> R,
     ) -> R {
         let storage = self.storage.read();
         f(storage
             .values
             .get(&key)
-            .map(|value| (value.bytes.as_slice(), value.header.as_deref())))
+            .map(|value| (value.bytes.as_slice(), value.header.as_slice())))
     }
 
     fn send_after_ack(&self, generation: u64, messages: Vec<(FastVec<32>, bool)>) {
@@ -932,7 +1002,7 @@ impl SyncTrait for DataMulti {
                     self.data_type,
                     Some(*index),
                     false,
-                    self.header_type.stored(value.header.as_deref()),
+                    self.header_type.stored(&value.header),
                 )
                 .map_err(|_| ())?;
 
@@ -1167,7 +1237,7 @@ mod tests {
             within("Data window producer", move || producer.join().unwrap()).unwrap();
         }
 
-        let stored = data.get(|bytes| bytes.to_vec());
+        let stored = data.get(|bytes| bytes.unwrap().to_vec());
         assert_eq!(stored.len(), 12);
         let expected = pack_data(
             5,
@@ -1177,7 +1247,7 @@ mod tests {
             DataType::U16,
             None,
             false,
-            WireHeader::DEFAULT,
+            WireHeader::KEEP,
         );
         assert_eq!(queued(&mut receiver), packed(expected.unwrap()));
     }
@@ -1223,7 +1293,7 @@ mod tests {
             DataType::U16,
             Some(1),
             false,
-            WireHeader::DEFAULT,
+            WireHeader::KEEP,
         );
         let reset = MultiDataHeader::Reset(false).serialize(5).unwrap();
         let mut expected = packed(expected.unwrap());
@@ -1271,7 +1341,7 @@ mod tests {
             DataType::U16,
             None,
             false,
-            WireHeader::DEFAULT,
+            WireHeader::KEEP,
         );
         assert_eq!(queued(&mut receiver), packed(expected.unwrap()));
 
@@ -1310,7 +1380,8 @@ mod tests {
         );
         connected.store(true, Ordering::Release);
         data.sync().unwrap();
-        // The empty synchronization needs no acknowledgement; this set does.
+        // The synchronization of data that is not set needs no
+        // acknowledgement; this set does.
         data.set(holder(&[1]), false).unwrap();
         queued(&mut receiver);
 
@@ -1325,7 +1396,7 @@ mod tests {
         })
         .unwrap();
         assert!(queued(&mut receiver).is_empty(), "a stale delta was sent");
-        data.get(|bytes| assert_eq!(bytes, u16_bytes(&[1, 2])));
+        data.get(|bytes| assert_eq!(bytes, Some(&u16_bytes(&[1, 2])[..])));
     }
 
     /// The client keeps its keys across a disconnect, so a key removed while
@@ -1357,7 +1428,7 @@ mod tests {
             DataType::U16,
             Some(1),
             false,
-            WireHeader::DEFAULT,
+            WireHeader::KEEP,
         );
         let mut expected = packed(key.unwrap());
         expected.insert(0, contents(&reset));
@@ -1481,9 +1552,9 @@ mod transfer_tests {
                                     assert_eq!(
                                         v,
                                         if pass == 0 {
-                                            &[][..]
+                                            None
                                         } else {
-                                            expected.as_slice()
+                                            Some(expected.as_slice())
                                         }
                                     )
                                 });
@@ -1503,7 +1574,7 @@ mod transfer_tests {
                     }
                     crate::test_support::ack(&mut receiver, 51);
                     if key.is_none() {
-                        single.read(|v| assert_eq!(v, payload));
+                        single.read(|v| assert_eq!(v, Some(payload.as_slice())));
                     } else {
                         multi.read(79, |v| assert_eq!(v, Some(payload.as_slice())));
                     }
@@ -1538,27 +1609,25 @@ mod transfer_tests {
     fn random_operation(random: &mut Random, data: &Data, multi: &DataMulti) {
         let values = random.values();
         let key = random.below(4) as u32;
-        let len = data.get(|bytes| bytes.len() / 2);
+        let len = data.get(|bytes| bytes.map_or(0, |b| b.len() / 2));
         let key_len = multi.get(key, |bytes| bytes.map_or(0, |b| b.len() / 2));
         let start = random.below(len + 1);
         let key_start = random.below(key_len + 1);
-        let _ = match random.below(12) {
-            0 => data.set(holder(&values), false),
-            1 => data.add(holder(&values), false),
-            2 => data.replace(holder(&values), start, false),
-            3 => data.remove(start, values.len().max(1), None, false),
-            4 => data.clear(None, false),
-            5 => multi.set(key, holder(&values), false),
-            6 => multi.add(key, holder(&values), false).map_err(String::from),
-            7 => multi
-                .replace(key, key_start, holder(&values), false)
-                .map_err(String::from),
-            8 => multi
-                .remove(key, key_start, values.len().max(1), None, false)
-                .map_err(String::from),
-            9 => multi.clear(key, None, false).map_err(String::from),
-            10 => multi.remove_index(key, false),
-            _ => multi.reset(false),
+        let _ = match random.below(14) {
+            // Sets come twice as often, so the data is mostly set.
+            0 | 1 => data.set(holder(&values), false),
+            2 => data.add(holder(&values), false),
+            3 => data.replace(holder(&values), start, false),
+            4 => data.remove(start, values.len().max(1), None, false),
+            5 => data.clear(None, false),
+            6 => data.reset(false),
+            7 => multi.set(key, holder(&values), false),
+            8 => multi.add(key, holder(&values), false),
+            9 => multi.replace(key, key_start, holder(&values), false),
+            10 => multi.remove(key, key_start, values.len().max(1), None, false),
+            11 => multi.clear(key, None, false),
+            12 => multi.remove_index(key, false).map_err(CoreError::from),
+            _ => multi.reset(false).map_err(CoreError::from),
         };
     }
 
@@ -1774,13 +1843,13 @@ mod transfer_tests {
             }
         }
 
-        let server = data.get(|bytes| bytes.to_vec());
-        let client: Vec<u8> = harness
-            .single
-            .get()
-            .iter()
-            .flat_map(|v| v.to_ne_bytes())
-            .collect();
+        let server = data.get(|bytes| bytes.map(<[u8]>::to_vec));
+        let client = harness.single.get().map(|values| {
+            values
+                .iter()
+                .flat_map(|v| v.to_ne_bytes())
+                .collect::<Vec<u8>>()
+        });
         assert_eq!(client, server, "Data diverged");
         for key in 0..4 {
             let server = multi.get(key, |bytes| bytes.map(<[u8]>::to_vec));
@@ -1813,7 +1882,7 @@ mod transfer_tests {
             let mut expected = Vec::new();
             let read = |expected: &[u16]| {
                 if key.is_none() {
-                    single.read(|v| assert!(v == expected, "single data diverged"));
+                    single.read(|v| assert!(v == Some(expected), "single data diverged"));
                 } else {
                     multi.read(79, |v| assert!(v == Some(expected), "keyed data diverged"));
                 }
@@ -1882,7 +1951,7 @@ mod header_tests {
     use crate::protocol::{ServerHeader, VALUE_MAX_SIZE};
     use crate::server_core::error::ErrorKind;
     use crate::server_core::net::sender::MessageReceiver;
-    use crate::server_core::states::data_take::DataTake;
+    use crate::server_core::states::data_take::{DataMultiTake, DataTake};
     use crate::typed::Typed;
 
     type Meta = (u32, String);
@@ -1961,16 +2030,16 @@ mod header_tests {
         let mut deliver =
             |single: &ClientData<u16, Meta>| deliver(&mut receiver, &mut acks, Some(single), None);
 
-        // A synchronization before any header was set sends the default.
+        // A synchronization of data that is not set says so.
         data.sync().unwrap();
         deliver(&client);
-        assert_eq!(client.header(), Meta::default());
+        assert_eq!(client.get_with_header(), None);
         data.header(|header| assert_eq!(header, None));
 
         data.set(with(&[1, 2], Some(&encoded(1))), false).unwrap();
         assert_eq!(deliver(&client), 1);
-        client.read_with_header(|values, header| {
-            assert_eq!((values, header), (&[1, 2][..], &meta(1)));
+        client.read_with_header(|entry| {
+            assert_eq!(entry, Some((&[1, 2][..], &meta(1))));
         });
         data.acknowledge();
 
@@ -1978,30 +2047,31 @@ mod header_tests {
         data.add(with(&[3], None), false).unwrap();
         deliver(&client);
         data.acknowledge();
-        assert_eq!(client.get_with_header(), (vec![1, 2, 3], meta(1)));
-        data.get_with_header(|bytes, header| {
-            assert_eq!(
-                (bytes, header),
-                (u16_slice(&[1, 2, 3]).bytes, Some(&encoded(1)[..]))
-            );
+        assert_eq!(client.get_with_header(), Some((vec![1, 2, 3], meta(1))));
+        data.get_with_header(|entry| {
+            assert_eq!(entry, Some((u16_slice(&[1, 2, 3]).bytes, &encoded(1)[..])));
         });
 
         data.remove(0, 1, Some(&encoded(2)), false).unwrap();
         deliver(&client);
         data.acknowledge();
-        assert_eq!((client.get(), client.header()), (vec![2, 3], meta(2)));
+        assert_eq!(
+            (client.get(), client.header()),
+            (Some(vec![2, 3]), Some(meta(2)))
+        );
 
         // A header alone needs no acknowledgement.
         data.set_header(&encoded(3), false).unwrap();
         assert_eq!(deliver(&client), 0);
-        assert_eq!((client.get(), client.header()), (vec![2, 3], meta(3)));
+        assert_eq!(client.get_with_header(), Some((vec![2, 3], meta(3))));
 
+        // A clear keeps the data set, with an empty buffer.
         data.clear(None, false).unwrap();
         deliver(&client);
-        assert_eq!((client.get(), client.header()), (vec![], meta(3)));
+        assert_eq!(client.get_with_header(), Some((vec![], meta(3))));
         data.clear(Some(&encoded(4)), false).unwrap();
         deliver(&client);
-        assert_eq!(client.header(), meta(4));
+        assert_eq!(client.header(), Some(meta(4)));
         data.header(|header| assert_eq!(header, Some(&encoded(4)[..])));
 
         // A reconnecting client gets the stored header, with the empty buffer.
@@ -2010,7 +2080,7 @@ mod header_tests {
         let fresh = ClientData::<u16, Meta>::new("root.data".into(), 5, client_sender);
         data.sync().unwrap();
         deliver(&fresh);
-        assert_eq!((fresh.get(), fresh.header()), (vec![], meta(4)));
+        assert_eq!(fresh.get_with_header(), Some((vec![], meta(4))));
 
         data.set(with(&[9], None), false).unwrap();
         deliver(&fresh);
@@ -2020,7 +2090,107 @@ mod header_tests {
         let fresh = ClientData::<u16, Meta>::new("root.data".into(), 5, client_sender);
         data.sync().unwrap();
         deliver(&fresh);
-        assert_eq!((fresh.get(), fresh.header()), (vec![9], meta(4)));
+        assert_eq!(fresh.get_with_header(), Some((vec![9], meta(4))));
+    }
+
+    #[test]
+    fn a_reset_returns_the_data_to_not_set() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let (sender, mut receiver) = MessageSender::new();
+        let connected = Arc::new(AtomicBool::new(true));
+        let data = Data::new(
+            "root.data".into(),
+            5,
+            DataType::U16,
+            type_id(),
+            sender,
+            connected,
+        );
+        let (client_sender, mut acks) = ClientSender::new();
+        let client = ClientData::<u16, Meta>::new("root.data".into(), 5, client_sender);
+        data.sync().unwrap();
+        deliver(&mut receiver, &mut acks, Some(&client), None);
+
+        data.set(with(&[1], Some(&encoded(1))), false).unwrap();
+        deliver(&mut receiver, &mut acks, Some(&client), None);
+        data.acknowledge();
+
+        // A reset needs no acknowledgement.
+        data.reset(true).unwrap();
+        assert_eq!(deliver(&mut receiver, &mut acks, Some(&client), None), 0);
+        assert_eq!(client.get_with_header(), None);
+        data.get_with_header(|entry| assert_eq!(entry, None));
+
+        // Resetting data that is not set sends nothing.
+        data.reset(false).unwrap();
+        assert!(receiver.try_recv().is_err(), "a message was queued");
+
+        // The set that creates the data again needs a header.
+        let error = data.set(with(&[2], None), false).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::InvalidArgument);
+        data.set(with(&[2], Some(&encoded(2))), false).unwrap();
+        assert_eq!(deliver(&mut receiver, &mut acks, Some(&client), None), 1);
+        data.acknowledge();
+        assert_eq!(client.get_with_header(), Some((vec![2], meta(2))));
+
+        // A client keeps its data across a disconnect; the synchronization
+        // tells it that the data was reset meanwhile.
+        Acknowledge::reset(&*data);
+        data.reset(false).unwrap();
+        assert!(receiver.try_recv().is_err(), "a message was queued");
+        assert_eq!(client.get_with_header(), Some((vec![2], meta(2))));
+        data.sync().unwrap();
+        assert_eq!(deliver(&mut receiver, &mut acks, Some(&client), None), 0);
+        assert_eq!(client.get_with_header(), None);
+    }
+
+    #[test]
+    fn data_that_is_not_set_is_created_only_by_a_set_with_its_header() {
+        let (sender, _receiver) = MessageSender::new();
+        let connected = Arc::new(AtomicBool::new(false));
+        let data = Data::new(
+            "root.data".into(),
+            6,
+            DataType::U16,
+            type_id(),
+            sender.clone(),
+            connected.clone(),
+        );
+        let header = encoded(1);
+        let error = data.set(with(&[1], None), false).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::InvalidArgument);
+        assert!(error.message.contains("needs a header"), "{error}");
+        for error in [
+            data.add(with(&[1], Some(&header)), false).unwrap_err(),
+            data.replace(with(&[], None), 0, false).unwrap_err(),
+            data.remove(0, 1, None, false).unwrap_err(),
+            data.clear(Some(&header), false).unwrap_err(),
+            data.set_header(&header, false).unwrap_err(),
+        ] {
+            assert_eq!(error.kind, ErrorKind::NotFound, "{error}");
+            assert!(error.message.contains("is not set"), "{error}");
+        }
+        data.get_with_header(|entry| assert_eq!(entry, None));
+
+        // Empty data is set, unlike no data.
+        data.set(with(&[], Some(&header)), false).unwrap();
+        data.get_with_header(|entry| assert_eq!(entry, Some((&[][..], &header[..]))));
+
+        // Without a header type, a set creates the data alone.
+        let plain = Data::new(
+            "root.plain".into(),
+            7,
+            DataType::U16,
+            None,
+            sender,
+            connected,
+        );
+        plain.set(with(&[3], None), false).unwrap();
+        plain.get_with_header(|entry| {
+            assert_eq!(entry, Some((u16_slice(&[3]).bytes, &[][..])));
+        });
     }
 
     #[test]
@@ -2041,9 +2211,12 @@ mod header_tests {
             plain.clear(Some(&header), false).unwrap_err(),
             plain.set_header(&header, false).unwrap_err(),
         ] {
-            assert!(error.contains("registered without a header"), "{error}");
+            assert!(
+                error.message.contains("registered without a header"),
+                "{error}"
+            );
         }
-        plain.get(|bytes| assert!(bytes.is_empty()));
+        plain.get(|bytes| assert_eq!(bytes, None));
 
         let data = Data::new(
             "root.data".into(),
@@ -2053,13 +2226,14 @@ mod header_tests {
             sender,
             connected,
         );
+        data.set(with(&[], Some(&header)), false).unwrap();
         let largest = vec![0; VALUE_MAX_SIZE];
         data.set_header(&largest, false).unwrap();
         let error = data
             .set_header(&[0; VALUE_MAX_SIZE + 1], false)
             .unwrap_err();
-        assert!(error.contains("root.data header"), "{error}");
-        assert!(error.contains("too large"), "{error}");
+        assert!(error.message.contains("root.data header"), "{error}");
+        assert!(error.message.contains("too large"), "{error}");
         data.header(|header| assert_eq!(header.map(<[u8]>::len), Some(VALUE_MAX_SIZE)));
     }
 
@@ -2085,12 +2259,16 @@ mod header_tests {
         data.sync().unwrap();
         deliver(&client);
 
-        // A new key without a header gets the default one.
-        data.set(1, with(&[1], None), false).unwrap();
+        // A new key needs a header.
+        let error = data.set(1, with(&[1], None), false).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::InvalidArgument);
+        assert!(error.message.contains("index 1"), "{error}");
+        data.header(1, |header| assert_eq!(header, None));
+        data.set(1, with(&[1], Some(&encoded(0))), false).unwrap();
         deliver(&client);
         data.acknowledge();
-        assert_eq!(client.header(1), Some(Meta::default()));
-        data.header(1, |header| assert_eq!(header, Some(None)));
+        assert_eq!(client.header(1), Some(meta(0)));
+        data.header(1, |header| assert_eq!(header, Some(&encoded(0)[..])));
 
         data.set_header(1, &encoded(1), false).unwrap();
         deliver(&client);
@@ -2103,10 +2281,7 @@ mod header_tests {
         assert_eq!(client.get_with_header(1), Some((vec![2, 3], meta(1))));
         client.read_header(1, |header| assert_eq!(header, Some(&meta(1))));
         data.get_with_header(1, |entry| {
-            assert_eq!(
-                entry,
-                Some((u16_slice(&[2, 3]).bytes, Some(&encoded(1)[..])))
-            );
+            assert_eq!(entry, Some((u16_slice(&[2, 3]).bytes, &encoded(1)[..])));
         });
 
         data.set(2, with(&[4], Some(&encoded(2))), false).unwrap();
@@ -2136,7 +2311,7 @@ mod header_tests {
         data.get_with_header(1, |entry| assert_eq!(entry, None));
 
         // A reconnecting client gets every key with its stored header.
-        data.set(3, with(&[5], None), false).unwrap();
+        data.set(3, with(&[5], Some(&encoded(5))), false).unwrap();
         deliver(&client);
         data.acknowledge();
         Acknowledge::reset(&*data);
@@ -2145,7 +2320,7 @@ mod header_tests {
         data.sync().unwrap();
         deliver(&fresh);
         assert_eq!(fresh.header(2), Some(meta(2)));
-        assert_eq!(fresh.header(3), Some(Meta::default()));
+        assert_eq!(fresh.header(3), Some(meta(5)));
         assert_eq!(fresh.header(1), None);
     }
 
@@ -2158,8 +2333,8 @@ mod header_tests {
             5,
             DataType::U16,
             type_id(),
-            sender,
-            connected,
+            sender.clone(),
+            connected.clone(),
         );
         let (client_sender, _acks) = ClientSender::new();
         let client = ClientTake::<u16, Meta>::new("root.take".into(), 5, client_sender);
@@ -2180,9 +2355,11 @@ mod header_tests {
         deliver();
         assert_eq!(client.take_with_header(), Some((vec![1, 2], meta(1))));
 
-        take.set(with(&[3], None), false, false, true).unwrap();
+        // Every take needs a header.
+        let error = take.set(with(&[3], None), false, false, true).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::InvalidArgument);
         deliver();
-        assert_eq!(client.take_with_header(), Some((vec![3], Meta::default())));
+        assert_eq!(client.take_with_header(), None);
 
         // A reconnect replays the cache with its header.
         take.set(with(&[4], Some(&encoded(4))), false, false, true)
@@ -2193,5 +2370,18 @@ mod header_tests {
         take.sync().unwrap();
         deliver();
         assert_eq!(client.take_with_header(), Some((vec![4], meta(4))));
+
+        let multi = DataMultiTake::new(
+            "root.multi_take".into(),
+            6,
+            DataType::U16,
+            type_id(),
+            sender,
+            connected,
+        );
+        let error = multi
+            .set(1, with(&[1], None), false, false, true)
+            .unwrap_err();
+        assert_eq!(error.kind, ErrorKind::InvalidArgument);
     }
 }

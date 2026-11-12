@@ -20,11 +20,12 @@ use super::{Result, ServerError};
 /// The header type of a Data state: any `Typed` value sent with the buffer,
 /// `()` (the default) for a state without one.
 ///
-/// It must match the client's header type. A header that was never set reads
-/// as `None` here, while the client shows `H::default()`; once set, a
-/// [`Data`] header cannot return to "never set". A custom [`Typed`] type
-/// whose [`Typed::get_type`] is [`crate::ObjectType::Empty`] also means no
-/// header.
+/// It must match the client's header type. A state with a header type never
+/// holds data without a header: the change that creates the data, the first
+/// set of a [`Data`] or of a [`DataMulti`] index, and every take must carry
+/// one. A custom [`Typed`] type whose [`Typed::get_type`] is
+/// [`crate::ObjectType::Empty`] also means no header; it must encode to no
+/// bytes.
 pub trait HeaderValue: Typed + Serialize + DeserializeOwned + Send + Sync + 'static {}
 
 impl<H> HeaderValue for H where H: Typed + Serialize + DeserializeOwned + Send + Sync + 'static {}
@@ -41,8 +42,8 @@ fn with_header<'a, T: DataElement>(data: &'a [T], header: Option<&'a Bytes>) -> 
     }
 }
 
-fn decode_header<H: HeaderValue>(header: Option<&[u8]>) -> Result<Option<H>> {
-    header.map(deserialize_bytes).transpose()
+fn decode_header<H: HeaderValue>(header: &[u8]) -> Result<H> {
+    deserialize_bytes(header)
 }
 
 /// A numeric element that can be transported by a [`Data`] state.
@@ -117,6 +118,12 @@ fn data_from_bytes<T: DataElement>(data: &[u8]) -> Result<Vec<T>> {
 /// Server-side contiguous numeric buffer mirrored on the client, with an
 /// optional typed header `H`.
 ///
+/// The data starts "not set": the getters return `None`, here and on the
+/// client, until [`Self::set`] or [`Self::set_with_header`] creates it, so an
+/// empty buffer differs from no data. With a header type, the set that
+/// creates the data must carry a header. Every other change needs data that
+/// is set, and [`Self::reset`] returns the data and its header to "not set".
+///
 /// The methods without a header keep the current one. A header sent with a
 /// change reaches the client together with the buffer.
 pub struct Data<T, H = ()> {
@@ -138,7 +145,7 @@ where
     T: DataElement,
     H: HeaderValue,
 {
-    /// Registers an empty numeric buffer under `name`.
+    /// Registers a numeric buffer under `name`, not set yet.
     pub fn new(server: &StateServer, name: impl Into<String>) -> Result<Self> {
         let (_, inner) = server.add_data::<T>(name.into(), header_type::<H>())?;
         Ok(Self {
@@ -147,38 +154,51 @@ where
         })
     }
 
-    /// Returns a copy of the complete buffer.
-    pub fn get(&self) -> Result<Vec<T>> {
-        self.inner.get(data_from_bytes)
+    /// Returns a copy of the complete buffer, or `None` while the data is not
+    /// set.
+    pub fn get(&self) -> Result<Option<Vec<T>>> {
+        self.inner.get(|data| data.map(data_from_bytes).transpose())
     }
 
-    /// Passes the typed buffer to `f`.
-    pub fn read<R>(&self, f: impl FnOnce(&[T]) -> R) -> Result<R> {
+    /// Passes the typed buffer to `f`, `None` while the data is not set.
+    pub fn read<R>(&self, f: impl FnOnce(Option<&[T]>) -> R) -> Result<R> {
         let data = self.get()?;
-        Ok(f(&data))
+        Ok(f(data.as_deref()))
     }
 
-    /// Borrows the buffer's native-endian byte representation for `f`.
-    pub fn read_bytes<R>(&self, f: impl Fn(&[u8]) -> R) -> R {
+    /// Borrows the buffer's native-endian byte representation for `f`,
+    /// `None` while the data is not set.
+    pub fn read_bytes<R>(&self, f: impl Fn(Option<&[u8]>) -> R) -> R {
         self.inner.get(f)
     }
 
-    /// Returns the header, or `None` until one is set.
+    /// Returns the header, or `None` while the data is not set.
     pub fn header(&self) -> Result<Option<H>> {
-        self.inner.header(decode_header)
+        self.inner
+            .header(|header| header.map(decode_header).transpose())
     }
 
     /// Returns a copy of the buffer and the header that belongs to it, read
-    /// together; the header is `None` until one is set.
+    /// together, or `None` while the data is not set.
     ///
     /// Separate [`Self::get`] and [`Self::header`] calls can each see a
     /// different change made in between.
-    pub fn get_with_header(&self) -> Result<(Vec<T>, Option<H>)> {
-        self.inner
-            .get_with_header(|data, header| Ok((data_from_bytes(data)?, decode_header(header)?)))
+    pub fn get_with_header(&self) -> Result<Option<(Vec<T>, H)>> {
+        self.inner.get_with_header(|entry| {
+            entry
+                .map(|(data, header)| Ok((data_from_bytes(data)?, decode_header(header)?)))
+                .transpose()
+        })
     }
 
     /// Replaces the complete buffer and optionally requests a client repaint.
+    /// It creates the data when it is not set, keeping the current header
+    /// otherwise.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the data is not set and the state has a header
+    /// type: use [`Self::set_with_header`] to create it.
     pub fn set(&self, data: &[T], update: bool) -> Result<()> {
         self.set_inner(data, None, update)
     }
@@ -200,6 +220,10 @@ where
     }
 
     /// Appends elements and optionally requests a client repaint.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the data is not set.
     pub fn add(&self, data: &[T], update: bool) -> Result<()> {
         self.add_inner(data, None, update)
     }
@@ -219,8 +243,8 @@ where
     ///
     /// # Errors
     ///
-    /// Returns an error when the replaced range exceeds the current buffer or
-    /// the update cannot be serialized or queued.
+    /// Returns an error when the data is not set, the replaced range exceeds
+    /// the current buffer or the update cannot be serialized or queued.
     pub fn replace(&self, data: &[T], index: usize, update: bool) -> Result<()> {
         self.replace_inner(data, index, None, update)
     }
@@ -252,8 +276,8 @@ where
     ///
     /// # Errors
     ///
-    /// Returns an error when the removed range exceeds the current buffer or
-    /// the update cannot be queued.
+    /// Returns an error when the data is not set, the removed range exceeds
+    /// the current buffer or the update cannot be queued.
     pub fn remove(&self, index: usize, count: usize, update: bool) -> Result<()> {
         self.inner
             .remove(index, count, None, update)
@@ -275,7 +299,11 @@ where
     }
 
     /// Removes all elements and optionally requests a client repaint. The
-    /// header stays.
+    /// header stays, and the data stays set: the client sees an empty buffer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the data is not set.
     pub fn clear(&self, update: bool) -> Result<()> {
         self.inner.clear(None, update).map_err(ServerError::new)
     }
@@ -295,11 +323,22 @@ where
     /// client reads them queue up, as values do. It is queued after a buffer
     /// change that another thread is still sending, though, and waits as long
     /// as that change waits for the client.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the data is not set: a header comes with data.
     pub fn set_header(&self, header: &H, update: bool) -> Result<()> {
         let header = serialize_bytes(header)?;
         self.inner
             .set_header(&header, update)
             .map_err(ServerError::new)
+    }
+
+    /// Returns the data and its header to "not set", here and on the client;
+    /// data that is not set stays so. Like [`Self::clear`], it is queued
+    /// without waiting for the client.
+    pub fn reset(&self, update: bool) -> Result<()> {
+        self.inner.reset(update).map_err(ServerError::new)
     }
 }
 
@@ -333,11 +372,16 @@ where
         })
     }
 
-    /// Sends `data` to the client; the client takes it with `H::default()`.
+    /// Sends `data` to the client.
     ///
     /// `blocking` waits for the client to consume the previous transfer before
     /// the next send. `cache` retains the last transfer for a newly connecting
     /// client, and `update` requests a repaint.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the state has a header type: every take carries
+    /// a header, so use [`Self::set_with_header`].
     pub fn set(&self, data: &[T], blocking: bool, update: bool, cache: bool) -> Result<()> {
         self.inner
             .set(data_slice(data), blocking, update, cache)
@@ -398,20 +442,18 @@ where
         })
     }
 
-    /// Returns the header at `index`, or `None` if the key is absent or no
-    /// header was set for it.
+    /// Returns the header at `index`, or `None` if the index is absent.
     pub fn header(&self, index: u32) -> Result<Option<H>> {
         self.inner
-            .header(index, |header| decode_header(header.flatten()))
+            .header(index, |header| header.map(decode_header).transpose())
     }
 
     /// Returns a copy of the buffer at `index` and the header that belongs to
-    /// it, read together, or `None` if the index is absent; the header is
-    /// `None` until one is set for the index.
+    /// it, read together, or `None` if the index is absent.
     ///
     /// Separate [`Self::get`] and [`Self::header`] calls can each see a
     /// different change made in between.
-    pub fn get_with_header(&self, index: u32) -> Result<Option<(Vec<T>, Option<H>)>> {
+    pub fn get_with_header(&self, index: u32) -> Result<Option<(Vec<T>, H)>> {
         self.inner.get_with_header(index, |entry| {
             entry
                 .map(|(data, header)| Ok((data_from_bytes(data)?, decode_header(header)?)))
@@ -419,7 +461,13 @@ where
         })
     }
 
-    /// Replaces the buffer at `index`. A new key gets the default header.
+    /// Replaces the buffer at `index`, creating the index when it is absent
+    /// and keeping the current header otherwise.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the index is absent and the state has a header
+    /// type: use [`Self::set_with_header`] to create it.
     pub fn set(&self, index: u32, data: &[T], update: bool) -> Result<()> {
         self.set_inner(index, data, None, update)
     }
@@ -589,11 +637,15 @@ where
         })
     }
 
-    /// Sends a buffer at `index` with blocking, repaint, and caching controls;
-    /// the client takes it with `H::default()`.
+    /// Sends a buffer at `index` with blocking, repaint, and caching controls.
     ///
     /// A reconnected client holds only the cached keys; values it had not
     /// taken before the disconnect are dropped.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the state has a header type: every take carries
+    /// a header, so use [`Self::set_with_header`].
     pub fn set(
         &self,
         index: u32,
@@ -654,13 +706,43 @@ mod tests {
         data.set(&[1, 2, 3], false).unwrap();
         data.add(&[4, 5], false).unwrap();
         data.replace(&[8, 9], 1, false).unwrap();
-        assert_eq!(data.get().unwrap(), vec![1, 8, 9, 4, 5]);
-        assert_eq!(data.read(|values| values.iter().sum::<u16>()).unwrap(), 27);
-        assert_eq!(data.read_bytes(<[u8]>::len), 10);
+        assert_eq!(data.get().unwrap(), Some(vec![1, 8, 9, 4, 5]));
+        let sum = data.read(|values| values.unwrap().iter().sum::<u16>());
+        assert_eq!(sum.unwrap(), 27);
+        assert_eq!(data.read_bytes(|bytes| bytes.map(<[u8]>::len)), Some(10));
         data.remove(2, 2, false).unwrap();
-        assert_eq!(data.get().unwrap(), vec![1, 8, 5]);
+        assert_eq!(data.get().unwrap(), Some(vec![1, 8, 5]));
         data.clear(false).unwrap();
-        assert!(data.get().unwrap().is_empty());
+        assert_eq!(data.get().unwrap(), Some(vec![]));
+        assert_eq!(data.get_with_header().unwrap(), Some((vec![], ())));
+        data.reset(false).unwrap();
+        assert_eq!(data.get().unwrap(), None);
+        assert_eq!(data.header().unwrap(), None);
+    }
+
+    #[test]
+    fn data_that_is_not_set_takes_only_a_set() {
+        let server = StateServer::new().unwrap();
+        let data = Data::<u16>::new(&server, "root.data").unwrap();
+        assert_eq!(data.get().unwrap(), None);
+        assert_eq!(data.read_bytes(|bytes| bytes.is_none()), true);
+
+        for (name, error) in [
+            ("add", data.add(&[1], false).unwrap_err()),
+            ("replace", data.replace(&[], 0, false).unwrap_err()),
+            ("remove", data.remove(0, 1, false).unwrap_err()),
+            ("clear", data.clear(false).unwrap_err()),
+        ] {
+            assert!(error.to_string().contains("is not set"), "{name}: {error}");
+        }
+        // Resetting data that is not set is harmless.
+        data.reset(false).unwrap();
+        assert_eq!(data.get().unwrap(), None);
+
+        data.set(&[], false).unwrap();
+        assert_eq!(data.get().unwrap(), Some(vec![]));
+        data.add(&[7], false).unwrap();
+        assert_eq!(data.get().unwrap(), Some(vec![7]));
     }
 
     #[test]
@@ -687,12 +769,12 @@ mod tests {
         assert!(data.replace(&[9, 9], 2, false).is_err());
         assert!(data.remove(2, 2, false).is_err());
         assert!(data.remove(0, 0, false).is_err());
-        assert_eq!(data.get().unwrap(), [1, 2, 3]);
+        assert_eq!(data.get().unwrap(), Some(vec![1, 2, 3]));
 
         // Empty edits at the end are valid no-ops.
         data.replace(&[], 3, false).unwrap();
         data.add(&[], false).unwrap();
-        assert_eq!(data.get().unwrap(), [1, 2, 3]);
+        assert_eq!(data.get().unwrap(), Some(vec![1, 2, 3]));
     }
 
     /// Range checks must not overflow: a huge index is an ordinary error.
@@ -727,7 +809,7 @@ mod tests {
                 "{name} with a huge index did not return an error"
             );
         }
-        assert_eq!(data.get().unwrap(), [1, 2, 3]);
+        assert_eq!(data.get().unwrap(), Some(vec![1, 2, 3]));
         assert_eq!(multi.get(4).unwrap(), Some(vec![1, 2, 3]));
     }
 
@@ -767,40 +849,58 @@ mod tests {
         let plain = Data::<u16>::new(&server, "root.plain").unwrap();
 
         assert_eq!(data.header().unwrap(), None);
-        assert_eq!(data.get_with_header().unwrap(), (vec![], None));
+        assert_eq!(data.get_with_header().unwrap(), None);
+        // The set that creates the data needs a header.
+        let error = data.set(&[1], false).unwrap_err();
+        assert!(error.to_string().contains("needs a header"), "{error}");
+        assert!(data.set_header(&(0, "z".into()), false).is_err());
         data.set_with_header(&[1, 2], &(1, "a".into()), false)
             .unwrap();
         data.add(&[3], false).unwrap();
         assert_eq!(data.header().unwrap(), Some((1, "a".into())));
         assert_eq!(
             data.get_with_header().unwrap(),
-            (vec![1, 2, 3], Some((1, "a".into())))
+            Some((vec![1, 2, 3], (1, "a".into())))
         );
         data.clear_with_header(&(2, "b".into()), false).unwrap();
         data.set_header(&(3, "c".into()), false).unwrap();
-        assert_eq!(data.get().unwrap(), Vec::<u16>::new());
+        assert_eq!(data.get().unwrap(), Some(vec![]));
         assert_eq!(data.header().unwrap(), Some((3, "c".into())));
+        data.reset(false).unwrap();
+        assert_eq!(data.get_with_header().unwrap(), None);
 
-        multi.set(1, &[1], false).unwrap();
-        assert_eq!(multi.header(1).unwrap(), None);
-        assert_eq!(multi.get_with_header(1).unwrap(), Some((vec![1], None)));
+        assert!(multi.set(1, &[1], false).is_err());
+        assert_eq!(multi.get(1).unwrap(), None);
+        multi
+            .set_with_header(1, &[1], &(0, "y".into()), false)
+            .unwrap();
+        multi.set(1, &[2], false).unwrap();
+        assert_eq!(
+            multi.get_with_header(1).unwrap(),
+            Some((vec![2], (0, "y".into())))
+        );
         multi
             .replace_with_header(1, 0, &[5], &(4, "d".into()), false)
             .unwrap();
         assert_eq!(multi.header(1).unwrap(), Some((4, "d".into())));
         assert_eq!(
             multi.get_with_header(1).unwrap(),
-            Some((vec![5], Some((4, "d".into()))))
+            Some((vec![5], (4, "d".into())))
         );
         assert!(multi.set_header(2, &(5, "e".into()), false).is_err());
         assert_eq!(multi.header(2).unwrap(), None);
         assert_eq!(multi.get_with_header(2).unwrap(), None);
 
+        // Every take carries a header.
+        let error = take.set(&[1], false, false, true).unwrap_err();
+        assert!(error.to_string().contains("needs a header"), "{error}");
         take.set_with_header(&[1], &(6, "f".into()), false, false, true)
             .unwrap();
 
         let error = plain.set_with_header(&[1], &(), false).unwrap_err();
         assert!(error.to_string().contains("without a header"), "{error}");
         assert_eq!(plain.header().unwrap(), None);
+        plain.set(&[1], false).unwrap();
+        assert_eq!(plain.header().unwrap(), Some(()));
     }
 }

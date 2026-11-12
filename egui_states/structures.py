@@ -759,6 +759,11 @@ def _header(header: object) -> tuple[object] | None:
 class Data[T: np.generic](_StaticBase):
     """Contiguous NumPy-compatible numeric buffer mirrored to the client.
 
+    The data starts "not set": :meth:`get` returns ``None``, and the client
+    shows no data, until :meth:`set` creates it, so an empty buffer differs
+    from no data. Every other change needs data that is set and raises
+    ``ValueError`` otherwise; :meth:`reset` returns the data to "not set".
+
     Methods that take a buffer read it until they return, while other Python
     threads keep running. Do not modify the buffer from another thread during
     the call, or the client may receive a mix of old and new contents; pass a
@@ -781,20 +786,21 @@ class Data[T: np.generic](_StaticBase):
     def _initialize(self, name: str, types: list[PyObjectType]) -> None:
         self._value_id = self._server.add_data(name, _get_dtype_id(self._dtype), self._header_type(types))
 
-    def get(self) -> npt.NDArray[T]:
+    def get(self) -> npt.NDArray[T] | None:
         """Return a locally mutable snapshot of the current server buffer.
 
         Mutating the returned array does not update the server state or client;
         call :meth:`set` to publish modified data.
 
         Returns:
-            npt.NDArray[T]: A NumPy view backed by a copied ``bytearray``.
+            npt.NDArray[T] | None: A NumPy view backed by a copied
+                ``bytearray``, or ``None`` while the data is not set.
         """
         data = self._server.data_get(self._value_id)
-        return np.frombuffer(data, dtype=self._dtype)
+        return None if data is None else np.frombuffer(data, dtype=self._dtype)
 
     def set(self, data: Buffer, update: bool = False) -> None:
-        """Set the data in the UI data.
+        """Set the data in the UI data, creating it when it is not set.
 
         Args:
             data (Buffer): Data to set. NumPy arrays and other buffer-protocol
@@ -839,7 +845,7 @@ class Data[T: np.generic](_StaticBase):
         self._server.data_remove(self._value_id, index, count, update, None)
 
     def clear(self, update: bool = False) -> None:
-        """Clear the data in the UI data.
+        """Clear the data in the UI data; the data stays set, but empty.
 
         Args:
             update (bool, optional): Whether to request a client repaint.
@@ -847,15 +853,26 @@ class Data[T: np.generic](_StaticBase):
         """
         self._server.data_clear(self._value_id, update, None)
 
+    def reset(self, update: bool = False) -> None:
+        """Return the data, and its header, to "not set".
+
+        Data that is not set stays so.
+
+        Args:
+            update (bool, optional): Whether to request a client repaint.
+                Defaults to False.
+        """
+        self._server.data_reset(self._value_id, update)
+
 
 class DataWithHeader[T: np.generic, H](Data[T]):
     """:class:`Data` with a typed header ``H`` published together with the buffer.
 
-    Every change can carry a new header; a change without one keeps the current
-    header. The client receives the header with the buffer it belongs to, so it
-    never shows a new header with an old buffer. Until a header is set,
-    :meth:`get_header` returns ``None`` while the client shows the header type's
-    default; once set, a header cannot return to "never set".
+    The data never exists without a header: the :meth:`set` that creates the
+    data must pass one, and :meth:`reset` drops both. After that, every change
+    can carry a new header, and a change without one keeps the current header.
+    The client receives the header with the buffer it belongs to, so it never
+    shows a new header with an old buffer.
 
     Args:
         dtype (type[T]): One of the NumPy scalar types supported by
@@ -872,21 +889,25 @@ class DataWithHeader[T: np.generic, H](Data[T]):
         """Return the current header.
 
         Returns:
-            H | None: The header, or ``None`` until one is set.
+            H | None: The header, or ``None`` while the data is not set.
         """
         return self._server.data_get_header(self._value_id)
 
-    def get_with_header(self) -> tuple[npt.NDArray[T], H | None]:
+    def get_with_header(self) -> tuple[npt.NDArray[T], H] | None:
         """Return a snapshot of the buffer and the header read together.
 
         Separate :meth:`get` and :meth:`get_header` calls can each see a
         different change made in between.
 
         Returns:
-            tuple[npt.NDArray[T], H | None]: A NumPy view backed by a copied
-                ``bytearray``, and the header, or ``None`` until one is set.
+            tuple[npt.NDArray[T], H] | None: A NumPy view backed by a copied
+                ``bytearray`` and the header, or ``None`` while the data is
+                not set.
         """
-        data, header = self._server.data_get_with_header(self._value_id)
+        entry = self._server.data_get_with_header(self._value_id)
+        if entry is None:
+            return None
+        data, header = entry
         return np.frombuffer(data, dtype=self._dtype), header
 
     def set(self, data: Buffer, update: bool = False, header: H | _Unset = UNSET) -> None:
@@ -898,6 +919,9 @@ class DataWithHeader[T: np.generic, H](Data[T]):
                 Defaults to False.
             header (H | _Unset, optional): New header; :data:`UNSET` keeps the
                 current one. Defaults to :data:`UNSET`.
+
+        Raises:
+            ValueError: If the data is not set and no header is given.
         """
         self._server.data_set(self._value_id, data, update, _header(header))
 
@@ -963,6 +987,9 @@ class DataWithHeader[T: np.generic, H](Data[T]):
             header (H): New header.
             update (bool, optional): Whether to request a client repaint.
                 Defaults to False.
+
+        Raises:
+            ValueError: If the data is not set.
         """
         self._server.data_set_header(self._value_id, header, update)
 
@@ -1018,8 +1045,7 @@ class DataTake[T: np.generic](_StaticBase):
 class DataTakeWithHeader[T: np.generic, H](DataTake[T]):
     """:class:`DataTake` whose transfers carry a typed header ``H``.
 
-    A transfer sent without a header reaches the client with the header type's
-    default.
+    Every transfer carries a header.
 
     Args:
         dtype (type[T]): One of the NumPy scalar types supported by
@@ -1040,7 +1066,7 @@ class DataTakeWithHeader[T: np.generic, H](DataTake[T]):
         cache: bool = False,
         header: H | _Unset = UNSET,
     ) -> None:
-        """Send data with an optional header.
+        """Send data with its header.
 
         Args:
             data (Buffer): Data to send.
@@ -1050,8 +1076,11 @@ class DataTakeWithHeader[T: np.generic, H](DataTake[T]):
                 Defaults to False.
             cache (bool, optional): Whether to cache the last sent data and
                 header for a newly initialized client. Defaults to False.
-            header (H | _Unset, optional): Header sent with the data;
-                :data:`UNSET` sends the default. Defaults to :data:`UNSET`.
+            header (H | _Unset, optional): Header sent with the data; it is
+                required, :data:`UNSET` raises. Defaults to :data:`UNSET`.
+
+        Raises:
+            ValueError: If no header is given.
         """
         self._server.data_take_set(self._value_id, data, blocking, update, cache, _header(header))
 
@@ -1144,30 +1173,29 @@ class SingleData[T: np.generic]:
 class SingleDataWithHeader[T: np.generic, H](SingleData[T]):
     """:class:`SingleData` of a :class:`DataMultiWithHeader`, with its header.
 
-    A new index set without a header gets the header type's default.
+    The :meth:`set` that creates the index must pass a header.
     """
 
-    def get_header(self) -> H | None:
+    def get_header(self) -> H:
         """Return the header at this index.
 
         Returns:
-            H | None: The header, or ``None`` until one is set for the index.
+            H: The header.
 
         Raises:
             ValueError: If the index does not exist.
         """
         return self._server.data_multi_get_header(self._value_id, self._index)
 
-    def get_with_header(self) -> tuple[npt.NDArray[T], H | None]:
+    def get_with_header(self) -> tuple[npt.NDArray[T], H]:
         """Return a snapshot of the buffer and its header read together.
 
         Separate :meth:`get` and :meth:`get_header` calls can each see a
         different change made in between.
 
         Returns:
-            tuple[npt.NDArray[T], H | None]: A NumPy view backed by a copied
-                ``bytearray``, and the header, or ``None`` until one is set
-                for the index.
+            tuple[npt.NDArray[T], H]: A NumPy view backed by a copied
+                ``bytearray``, and the header.
 
         Raises:
             ValueError: If the index does not exist.
@@ -1184,6 +1212,9 @@ class SingleDataWithHeader[T: np.generic, H](SingleData[T]):
                 Defaults to False.
             header (H | _Unset, optional): New header; :data:`UNSET` keeps the
                 current one. Defaults to :data:`UNSET`.
+
+        Raises:
+            ValueError: If the index does not exist and no header is given.
         """
         self._server.data_multi_set(self._value_id, self._index, data, update, _header(header))
 
@@ -1391,7 +1422,7 @@ class SingleDataTakeWithHeader[T: np.generic, H](SingleDataTake[T]):
         cache: bool = False,
         header: H | _Unset = UNSET,
     ) -> None:
-        """Send data at this index with an optional header.
+        """Send data at this index with its header.
 
         Args:
             data (Buffer): Data to send.
@@ -1402,8 +1433,11 @@ class SingleDataTakeWithHeader[T: np.generic, H](SingleDataTake[T]):
             cache (bool, optional): Whether to cache the last sent data and
                 header for a newly initialized client, which holds only cached
                 indices. Defaults to False.
-            header (H | _Unset, optional): Header sent with the data;
-                :data:`UNSET` sends the default. Defaults to :data:`UNSET`.
+            header (H | _Unset, optional): Header sent with the data; it is
+                required, :data:`UNSET` raises. Defaults to :data:`UNSET`.
+
+        Raises:
+            ValueError: If no header is given.
         """
         self._server.data_multi_take_set(
             self._value_id,

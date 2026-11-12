@@ -251,12 +251,13 @@ fn checked_range(start: u64, count: u64, len: usize) -> Option<std::ops::Range<u
 /// the buffer, published together with it.
 ///
 /// `()` (the default) means the state has no header, and so does any custom
-/// [`Typed`] type whose [`Typed::get_type`] is [`ObjectType::Empty`]. Until the
-/// server sets a header, the client shows `H::default()`.
-pub trait HeaderValue: Default + Typed + DeserializeOwned + Clone + Send + Sync + 'static {}
+/// [`Typed`] type whose [`Typed::get_type`] is [`ObjectType::Empty`]; such a
+/// type must decode from no bytes. A state with a header type never holds
+/// data without a header: the server sends one with the change that creates
+/// the data, so the type needs no default.
+pub trait HeaderValue: Typed + DeserializeOwned + Clone + Send + Sync + 'static {}
 
-impl<H> HeaderValue for H where H: Default + Typed + DeserializeOwned + Clone + Send + Sync + 'static
-{}
+impl<H> HeaderValue for H where H: Typed + DeserializeOwned + Clone + Send + Sync + 'static {}
 
 /// The type hash a header of `H` carries on the wire, `None` for a state
 /// without a header.
@@ -309,6 +310,22 @@ pub(crate) fn decode_header_bytes<H: HeaderValue>(
     deserialize(bytes).map_err(|e| format!("Header parse error: {e} for Data: {name}"))
 }
 
+/// The header of data that a change creates: the one the change carries, or
+/// for a state without a header type the value no bytes encode. A state with
+/// a header type cannot create data without one.
+pub(crate) fn created_header<H: HeaderValue>(
+    type_id: Option<u32>,
+    header: Option<H>,
+    name: &str,
+) -> Result<H, String> {
+    match (header, type_id) {
+        (Some(header), _) => Ok(header),
+        (None, None) => deserialize(&[])
+            .map_err(|e| format!("Header type of Data {name} without a header: {e}")),
+        (None, Some(_)) => Err(format!("Data {name} was created without a header")),
+    }
+}
+
 /// Decodes a header update; `None` keeps the current header.
 fn decode_header<H: HeaderValue>(
     type_id: Option<u32>,
@@ -318,7 +335,6 @@ fn decode_header<H: HeaderValue>(
 ) -> Result<Option<H>, String> {
     match update {
         HeaderUpdate::Keep => Ok(None),
-        HeaderUpdate::Default => Ok(Some(H::default())),
         HeaderUpdate::Set(header) => decode_header_bytes(type_id, header, bytes, name).map(Some),
     }
 }
@@ -341,7 +357,13 @@ struct Store<T, H> {
 /// with an optional typed header `H`.
 ///
 /// Supported element types are `u8` through `u64`, `i8` through `i64`, `f32`,
-/// and `f64`. The server may send complete or partial updates and split large
+/// and `f64`. The data is "not set", and every getter returns `None`, until
+/// the server sets it, so an empty buffer the server sent differs from no
+/// data. The server sets the header with the data and can return both to
+/// "not set". After a disconnect the client keeps the last data until the
+/// next connection says what it is.
+///
+/// The server may send complete or partial updates and split large
 /// transfers into batches; the client publishes a completed batch as one
 /// buffer. A header that arrives with a transfer is published together with
 /// it, so readers never see the new header with the old buffer. The client
@@ -354,7 +376,7 @@ pub struct Data<T, H = ()> {
     data_type: DataType,
     element_size: usize,
     header_type: Option<u32>,
-    inner: Arc<RwLock<Store<T, H>>>,
+    inner: Arc<RwLock<Option<Store<T, H>>>>,
     buffer: Arc<Mutex<Option<BatchBuffer<T>>>>,
     sender: MessageSender,
 }
@@ -372,25 +394,24 @@ where
             data_type: T::get_type(),
             element_size: T::get_type().item_size(),
             header_type: header_type_id::<H>(),
-            inner: Arc::new(RwLock::new(Store {
-                data: Vec::new(),
-                header: H::default(),
-            })),
+            inner: Arc::new(RwLock::new(None)),
             buffer: Arc::new(Mutex::new(None)),
             sender,
         }
     }
 
-    /// Returns a copy of the complete buffer.
+    /// Returns a copy of the complete buffer, or `None` while the data is not
+    /// set.
     ///
     /// This allocates and copies every element. Use [`Self::read`] to inspect a
     /// large buffer without cloning it, and [`Self::get_with_header`] to copy
     /// the header with the buffer.
-    pub fn get(&self) -> Vec<T> {
-        self.inner.read().data.clone()
+    pub fn get(&self) -> Option<Vec<T>> {
+        self.inner.read().as_ref().map(|store| store.data.clone())
     }
 
-    /// Borrows the complete buffer for the duration of `f` without copying it.
+    /// Borrows the complete buffer for the duration of `f` without copying it;
+    /// `None` while the data is not set.
     ///
     /// The synchronization read lock remains held while `f` runs, so keep the
     /// closure short to avoid delaying incoming server updates.
@@ -399,48 +420,61 @@ where
     /// reentrant, so a nested read waits behind an incoming server update,
     /// which waits for `f`.
     /// Use [`Self::read_with_header`] to read the header with the buffer.
-    pub fn read<R>(&self, f: impl Fn(&[T]) -> R) -> R {
-        f(&self.inner.read().data)
+    pub fn read<R>(&self, f: impl Fn(Option<&[T]>) -> R) -> R {
+        f(self
+            .inner
+            .read()
+            .as_ref()
+            .map(|store| store.data.as_slice()))
     }
 
-    /// Returns a copy of the header; `H::default()` until the server sets one.
-    pub fn header(&self) -> H {
-        self.inner.read().header.clone()
+    /// Returns a copy of the header, or `None` while the data is not set.
+    pub fn header(&self) -> Option<H> {
+        self.inner.read().as_ref().map(|store| store.header.clone())
     }
 
-    /// Borrows the header for the duration of `f`.
+    /// Borrows the header for the duration of `f`; `None` while the data is
+    /// not set.
     ///
     /// Do not call this handle or a clone of it from `f`: the read lock is not
     /// reentrant, so a nested read waits behind an incoming server update,
     /// which waits for `f`.
-    pub fn read_header<R>(&self, f: impl Fn(&H) -> R) -> R {
-        f(&self.inner.read().header)
+    pub fn read_header<R>(&self, f: impl Fn(Option<&H>) -> R) -> R {
+        f(self.inner.read().as_ref().map(|store| &store.header))
     }
 
     /// Returns a copy of the buffer and the header that belongs to it, read
-    /// under one read lock.
+    /// under one read lock; `None` while the data is not set.
     ///
     /// Separate [`Self::get`] and [`Self::header`] calls can each see a
     /// different server update. Use [`Self::read_with_header`] to inspect a
     /// large buffer without cloning it.
-    pub fn get_with_header(&self) -> (Vec<T>, H) {
-        let inner = self.inner.read();
-        (inner.data.clone(), inner.header.clone())
+    pub fn get_with_header(&self) -> Option<(Vec<T>, H)> {
+        self.inner
+            .read()
+            .as_ref()
+            .map(|store| (store.data.clone(), store.header.clone()))
     }
 
     /// Borrows the buffer and the header that belongs to it for the duration
-    /// of `f`, under one read lock.
+    /// of `f`, under one read lock; `None` while the data is not set.
     ///
     /// Do not call this handle or a clone of it from `f`: the read lock is not
     /// reentrant, so a nested read waits behind an incoming server update,
     /// which waits for `f`.
-    pub fn read_with_header<R>(&self, f: impl Fn(&[T], &H) -> R) -> R {
+    pub fn read_with_header<R>(&self, f: impl Fn(Option<(&[T], &H)>) -> R) -> R {
         let inner = self.inner.read();
-        f(&inner.data, &inner.header)
+        f(inner
+            .as_ref()
+            .map(|store| (store.data.as_slice(), &store.header)))
     }
 
     fn decode_header(&self, update: HeaderUpdate, bytes: &[u8]) -> Result<Option<H>, String> {
         decode_header(self.header_type, update, bytes, &self.name)
+    }
+
+    fn not_set(&self, what: &str) -> String {
+        format!("Data {} is not set for {what}", self.name)
     }
 
     fn set_all(
@@ -505,19 +539,45 @@ where
         let header = self.decode_header(header, payload)?;
 
         let mut w = self.inner.write();
-        let Some(range) = checked_range(index, count, w.data.len()) else {
+        let store = w.as_mut().ok_or_else(|| self.not_set("Drain"))?;
+        let Some(range) = checked_range(index, count, store.data.len()) else {
             return Err(format!(
                 "Drain range ({} to {}) exceeds current data size {}",
                 index,
                 index.saturating_add(count),
-                w.data.len()
+                store.data.len()
             ));
         };
-        w.data.drain(range);
+        store.data.drain(range);
         if let Some(header) = header {
-            w.header = header;
+            store.header = header;
         }
 
+        Ok(())
+    }
+
+    /// Empties the buffer, creating the data when it is not set: the
+    /// synchronization of a set, empty buffer is a clear.
+    fn clear(&self, header: HeaderUpdate, payload: &[u8]) -> Result<(), String> {
+        let header = self.decode_header(header, payload)?;
+        let mut w = self.inner.write();
+        match w.as_mut() {
+            Some(store) => {
+                store.data.clear();
+                if let Some(header) = header {
+                    store.header = header;
+                }
+            }
+            None => {
+                let header = created_header(self.header_type, header, &self.name)?;
+                *w = Some(Store {
+                    data: Vec::new(),
+                    header,
+                });
+            }
+        }
+        drop(w);
+        self.buffer.lock().take();
         Ok(())
     }
 
@@ -532,34 +592,47 @@ where
                 check_count(&data, count, "Set")?;
                 let data = data.into_vec();
                 let mut w = self.inner.write();
+                let previous = match w.as_mut() {
+                    Some(store) => {
+                        if let Some(header) = header {
+                            store.header = header;
+                        }
+                        Some(std::mem::replace(&mut store.data, data))
+                    }
+                    None => {
+                        let header = created_header(self.header_type, header, &self.name)?;
+                        *w = Some(Store { data, header });
+                        None
+                    }
+                };
                 // The replaced buffer is freed after the lock is released.
-                let _previous = std::mem::replace(&mut w.data, data);
-                if let Some(header) = header {
-                    w.header = header;
-                }
+                drop(w);
+                drop(previous);
             }
             TransportType::Add(count) => {
                 check_count(&data, count, "Add")?;
                 let mut w = self.inner.write();
-                data.append_to(&mut w.data);
+                let store = w.as_mut().ok_or_else(|| self.not_set("Add"))?;
+                data.append_to(&mut store.data);
                 if let Some(header) = header {
-                    w.header = header;
+                    store.header = header;
                 }
             }
             TransportType::Replace(start, count) => {
                 check_count(&data, count, "Replace")?;
                 let mut w = self.inner.write();
-                let Some(range) = checked_range(start, count, w.data.len()) else {
+                let store = w.as_mut().ok_or_else(|| self.not_set("Replace"))?;
+                let Some(range) = checked_range(start, count, store.data.len()) else {
                     return Err(format!(
                         "Replace range ({} to {}) exceeds current data size {}",
                         start,
                         start.saturating_add(count),
-                        w.data.len()
+                        store.data.len()
                     ));
                 };
-                data.write_to(&mut w.data[range]);
+                data.write_to(&mut store.data[range]);
                 if let Some(header) = header {
-                    w.header = header;
+                    store.header = header;
                 }
             }
         }
@@ -591,20 +664,18 @@ where
                 self.batch_end(&data, transport_type, header)
             }
             DataHeader::Drain(index, count, _, header) => self.drain(index, count, header, &data),
-            DataHeader::Clear(_, header) => {
-                let header = self.decode_header(header, &data)?;
-                let mut w = self.inner.write();
-                w.data.clear();
-                if let Some(header) = header {
-                    w.header = header;
-                }
-                drop(w);
-                self.buffer.lock().take();
-                Ok(())
-            }
+            DataHeader::Clear(_, header) => self.clear(header, &data),
             DataHeader::Header(_, header) => {
                 let header = decode_header_bytes(self.header_type, header, &data, &self.name)?;
-                self.inner.write().header = header;
+                let mut w = self.inner.write();
+                let store = w.as_mut().ok_or_else(|| self.not_set("Header"))?;
+                store.header = header;
+                Ok(())
+            }
+            DataHeader::Reset(_) => {
+                let previous = self.inner.write().take();
+                self.buffer.lock().take();
+                drop(previous);
                 Ok(())
             }
         }
@@ -647,10 +718,10 @@ struct MultiStore<T, H> {
 }
 
 impl<T, H: HeaderValue> MultiStore<T, H> {
+    /// Replaces the header of an existing `key` when one is given.
     fn set_header(&mut self, key: u32, header: Option<H>) {
-        let current = self.headers.entry(key).or_default();
         if let Some(header) = header {
-            *current = header;
+            self.headers.insert(key, header);
         }
     }
 }
@@ -659,8 +730,8 @@ impl<T, H: HeaderValue> MultiStore<T, H> {
 /// with an optional typed header `H`.
 ///
 /// Each buffer is indexed by a `u32` key and updated independently. Missing
-/// keys return `None`; complete batches become visible atomically, together
-/// with their header.
+/// keys return `None`; a key has a header from the change that creates it.
+/// Complete batches become visible atomically, together with their header.
 pub struct DataMulti<T, H = ()> {
     name: Arc<String>,
     id: u64,
@@ -756,7 +827,7 @@ where
     }
 
     /// Returns a copy of the header at `key`, or `None` when the key is
-    /// absent; `H::default()` until the server sets one for the key.
+    /// absent.
     pub fn header(&self, key: u32) -> Option<H> {
         self.inner.read().headers.get(&key).cloned()
     }
@@ -919,9 +990,17 @@ where
                 check_count(&data, count, "Set")?;
                 let data = data.into_vec();
                 let mut w = self.inner.write();
-                // The replaced buffer is freed after the lock is released.
-                let _previous = w.data.insert(key, data);
+                let header = match header {
+                    None if !w.headers.contains_key(&key) => {
+                        Some(created_header(self.header_type, None, &self.name)?)
+                    }
+                    header => header,
+                };
+                let previous = w.data.insert(key, data);
                 w.set_header(key, header);
+                // The replaced buffer is freed after the lock is released.
+                drop(w);
+                drop(previous);
             }
             TransportType::Add(count) => {
                 check_count(&data, count, "Add")?;
@@ -1020,6 +1099,10 @@ where
                 w.set_header(index, Some(header));
                 Ok(())
             }
+            DataHeader::Reset(_) => Err(format!(
+                "A Data reset is not valid for key {} in MultiData: {}",
+                index, self.name
+            )),
         }
     }
 
@@ -1287,10 +1370,10 @@ mod malformed_tests {
             .is_err()
         );
         crate::test_support::ack(&mut receiver, 91);
-        data.read(|v| assert_eq!(v, [7, 8]));
+        data.read(|v| assert_eq!(v, Some(&[7, 8][..])));
         data.update_data((DataHeader::StartBatch(3, 0), Bytes::from_static(&[1])))
             .unwrap();
-        data.read(|v| assert_eq!(v, [7, 8]));
+        data.read(|v| assert_eq!(v, Some(&[7, 8][..])));
         assert!(receiver.try_recv().is_err());
         assert!(
             data.update_data((
@@ -1306,7 +1389,7 @@ mod malformed_tests {
             .is_err()
         );
         crate::test_support::ack(&mut receiver, 91);
-        data.read(|v| assert_eq!(v, [7, 8]));
+        data.read(|v| assert_eq!(v, Some(&[7, 8][..])));
         data.update_data((
             DataHeader::All(
                 DataType::U8,
@@ -1319,7 +1402,7 @@ mod malformed_tests {
         ))
         .unwrap();
         crate::test_support::ack(&mut receiver, 91);
-        data.read(|v| assert_eq!(v, [9]));
+        data.read(|v| assert_eq!(v, Some(&[9][..])));
     }
 
     fn set(data: &Data<u8>, values: &[u8]) {
@@ -1366,7 +1449,7 @@ mod malformed_tests {
         );
         // The server waits for the end of every transfer, failed or not.
         crate::test_support::ack(&mut receiver, 92);
-        data.read(|v| assert_eq!(v, [7, 8]));
+        data.read(|v| assert_eq!(v, Some(&[7, 8][..])));
     }
 
     #[test]
@@ -1389,7 +1472,7 @@ mod malformed_tests {
         ))
         .unwrap();
         crate::test_support::ack(&mut receiver, 93);
-        data.read(|v| assert_eq!(v, [5, 6]));
+        data.read(|v| assert_eq!(v, Some(&[5, 6][..])));
     }
 
     #[test]
@@ -1407,7 +1490,7 @@ mod malformed_tests {
             .is_err()
         );
         crate::test_support::ack(&mut receiver, 94);
-        data.read(|v| assert_eq!(v, [1, 2, 3]));
+        data.read(|v| assert_eq!(v, Some(&[1, 2, 3][..])));
 
         data.update_data((
             DataHeader::Drain(0, 1, false, crate::protocol::data::HeaderUpdate::Keep),
@@ -1415,7 +1498,7 @@ mod malformed_tests {
         ))
         .unwrap();
         crate::test_support::ack(&mut receiver, 94);
-        data.read(|v| assert_eq!(v, [2, 3]));
+        data.read(|v| assert_eq!(v, Some(&[2, 3][..])));
     }
 
     /// Counts and ranges come from the network, so absurd values must be
@@ -1474,7 +1557,7 @@ mod malformed_tests {
             assert!(data.update_data(replace()).is_err());
             assert!(multi.update(4, replace()).is_err());
         }
-        data.read(|v| assert_eq!(v, [1, 2, 3]));
+        data.read(|v| assert_eq!(v, Some(&[1, 2, 3][..])));
         multi.read(4, |v| assert_eq!(v, Some(&[1, 2, 3][..])));
     }
 }
@@ -1556,7 +1639,10 @@ mod header_tests {
         assert!(error.contains("too large"), "{error}");
         assert_eq!(acks(&mut receiver), 1);
 
-        assert_eq!((data.get(), data.header()), (vec![1, 2], meta(1)));
+        assert_eq!(
+            (data.get(), data.header()),
+            (Some(vec![1, 2]), Some(meta(1)))
+        );
 
         // A state without a header refuses one.
         let plain = Data::<u16>::new("root.plain".into(), 8, sender);
@@ -1564,7 +1650,7 @@ mod header_tests {
         let error = plain.update_data((set(update, &[1]), bytes)).unwrap_err();
         assert!(error.contains("has no header"), "{error}");
         assert_eq!(acks(&mut receiver), 1);
-        assert!(plain.get().is_empty());
+        assert_eq!(plain.get(), None);
     }
 
     #[test]
@@ -1575,15 +1661,14 @@ mod header_tests {
             .unwrap();
         data.update_data((DataHeader::Batch(2), Bytes::from_static(&[2, 0])))
             .unwrap();
-        assert_eq!(data.header(), Meta::default());
-        assert!(data.get().is_empty());
+        assert_eq!(data.get_with_header(), None);
 
         let (update, bytes) = payload(&meta(5), type_id(), &[3]);
         let end = DataHeader::End(DataType::U16, TransportType::Set(3), true, 2, update);
         data.update_data((end, bytes)).unwrap();
         assert_eq!(acks(&mut receiver), 1);
-        data.read_with_header(|values, header| {
-            assert_eq!((values, header), (&[1, 2, 3][..], &meta(5)));
+        data.read_with_header(|entry| {
+            assert_eq!(entry, Some((&[1, 2, 3][..], &meta(5))));
         });
     }
 
@@ -1613,16 +1698,77 @@ mod header_tests {
             .unwrap();
         assert_eq!(multi.header(4), None);
 
+        // A new key needs a header, and only a Data takes a reset.
         let (keep, values) = (HeaderUpdate::Keep, Bytes::from_static(&[9, 0]));
-        multi.update(4, (set(keep, &[9]), values)).unwrap();
-        assert_eq!(multi.header(4), Some(Meta::default()));
+        let error = multi.update(4, (set(keep, &[9]), values)).unwrap_err();
+        assert!(error.contains("without a header"), "{error}");
+        assert_eq!(multi.get(4), None);
+        let error = multi
+            .update(4, (DataHeader::Reset(false), Bytes::new()))
+            .unwrap_err();
+        assert!(error.contains("reset"), "{error}");
+
+        let (created, values) = payload(&meta(0), type_id(), &[9]);
+        multi.update(4, (set(created, &[9]), values)).unwrap();
+        assert_eq!(multi.header(4), Some(meta(0)));
         multi
             .update(4, (DataHeader::Header(true, header), bytes))
             .unwrap();
         assert_eq!(multi.header(4), Some(meta(1)));
         assert_eq!(multi.get(4), Some(vec![9]));
-        // Only the set was acknowledged.
-        assert_eq!(acks(&mut receiver), 1);
+        // Only the sets were acknowledged.
+        assert_eq!(acks(&mut receiver), 2);
+    }
+
+    #[test]
+    fn data_is_not_set_until_a_set_or_a_clear_creates_it() {
+        let (sender, mut receiver) = MessageSender::new();
+        let data = Data::<u16, Meta>::new("root.data".into(), 7, sender.clone());
+        assert_eq!(data.get_with_header(), None);
+        data.read(|values| assert_eq!(values, None));
+        data.read_header(|header| assert_eq!(header, None));
+
+        // A change other than a set needs data that is set.
+        let (update, bytes) = payload(&meta(1), type_id(), &[1]);
+        let add = DataHeader::All(DataType::U16, TransportType::Add(1), false, 2, update);
+        let error = data.update_data((add, bytes)).unwrap_err();
+        assert!(error.contains("is not set"), "{error}");
+        let (_, header_bytes) = payload(&meta(1), type_id(), &[]);
+        let HeaderUpdate::Set(header) = update else {
+            unreachable!()
+        };
+        let error = data
+            .update_data((DataHeader::Header(false, header), header_bytes.clone()))
+            .unwrap_err();
+        assert!(error.contains("is not set"), "{error}");
+        let drain = DataHeader::Drain(0, 0, false, HeaderUpdate::Keep);
+        let error = data.update_data((drain, Bytes::new())).unwrap_err();
+        assert!(error.contains("is not set"), "{error}");
+
+        // With a header type, a set needs a header to create the data.
+        let keep = set(HeaderUpdate::Keep, &[1]);
+        let error = data
+            .update_data((keep, Bytes::from_static(&[1, 0])))
+            .unwrap_err();
+        assert!(error.contains("without a header"), "{error}");
+        assert_eq!(data.get(), None);
+        assert_eq!(acks(&mut receiver), 3);
+
+        // The synchronization of an empty buffer is a clear with its header.
+        let clear = DataHeader::Clear(false, update);
+        data.update_data((clear, header_bytes)).unwrap();
+        assert_eq!(data.get_with_header(), Some((vec![], meta(1))));
+        data.update_data((DataHeader::Reset(true), Bytes::new()))
+            .unwrap();
+        assert_eq!(data.get_with_header(), None);
+        assert_eq!(acks(&mut receiver), 0);
+
+        // Without a header type, a set creates the data alone.
+        let plain = Data::<u16>::new("root.plain".into(), 8, sender);
+        plain
+            .update_data((set(HeaderUpdate::Keep, &[]), Bytes::new()))
+            .unwrap();
+        assert_eq!(plain.get_with_header(), Some((vec![], ())));
     }
 
     #[test]

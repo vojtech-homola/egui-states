@@ -567,13 +567,13 @@ mod tests {
             DataType::U8,
             Some(3),
             false,
-            WireHeader::DEFAULT,
+            WireHeader::KEEP,
             8,
         )
         .unwrap();
         assert_eq!(
             plain(&messages),
-            vec![(vec![6, 5, 1, 3, 0, 0, 1, 2, 0, 2, 1, 1, 2], true)]
+            vec![(vec![6, 5, 1, 3, 0, 0, 1, 2, 0, 2, 0, 1, 2], true)]
         );
 
         let header = HeaderBytes {
@@ -598,7 +598,7 @@ mod tests {
         assert_eq!(
             plain(&messages),
             vec![(
-                vec![4, 5, 0, 0, 0, 2, 0, 2, 2, 0xac, 0x02, 3, 7, 8, 9, 1, 2],
+                vec![4, 5, 0, 0, 0, 2, 0, 2, 1, 0xac, 0x02, 3, 7, 8, 9, 1, 2],
                 true
             )]
         );

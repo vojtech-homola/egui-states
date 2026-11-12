@@ -7,6 +7,7 @@ use crate::event::Event;
 use crate::hashing::NoHashMap;
 use crate::protocol::data::{DataMultiTakeHeader, DataTakeHeader, DataType, HeaderBytes};
 use crate::protocol::{FastVec, TRANSFER_CHUNK_SIZE};
+use crate::server_core::error::CoreError;
 use crate::server_core::net::sender::MessageSender;
 use crate::server_core::server::{Acknowledge, SyncTrait};
 use crate::server_core::states::data::{DataSlice, HeaderType, SyncState, check_data_type};
@@ -74,9 +75,11 @@ impl DataTake {
         blocking: bool,
         update: bool,
         cache: bool,
-    ) -> Result<(), String> {
+    ) -> Result<(), CoreError> {
         let elements = check_data_type(&data, self.data_type, self.item_size)?;
         let header = self.header_type.check(&self.name, data.header)?;
+        self.header_type
+            .require(&self.name, header, "with every take")?;
         let slice = data.bytes;
 
         loop {
@@ -216,9 +219,11 @@ impl DataMultiTake {
         blocking: bool,
         update: bool,
         cache: bool,
-    ) -> Result<(), String> {
+    ) -> Result<(), CoreError> {
         let elements = check_data_type(&data, self.data_type, self.item_size)?;
         let header = self.header_type.check(&self.name, data.header)?;
+        self.header_type
+            .require(&self.name, header, "with every take")?;
         let slice = data.bytes;
 
         loop {
@@ -345,7 +350,7 @@ impl SyncTrait for DataMultiTake {
 }
 
 /// A transfer's header as it goes on the wire: its description and bytes,
-/// or `None` for the type's default.
+/// or `None` for a state without a header type.
 type TakeHeader<'a> = Option<(HeaderBytes, &'a [u8])>;
 
 fn take_header<'a>(header_type: &HeaderType, header: Option<&'a [u8]>) -> TakeHeader<'a> {

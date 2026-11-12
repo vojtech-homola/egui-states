@@ -16,17 +16,20 @@ def edit_headers(states, number):
     if number == 35:  # noqa: PLR2004
         h.series.set(np.array([1.0, 2.0], dtype=np.float32), header=HeaderMeta(1.5, "series", [3]))
         h.series.add(np.array([3.0], dtype=np.float32))
-        h.keyed[1].set(np.array([7], dtype=np.uint16))
+        h.keyed[1].set(np.array([7], dtype=np.uint16), header=HeaderMeta(1.0, "first", [1]))
         h.keyed[2].set(np.array([8], dtype=np.uint16), header=HeaderMeta(2.0, "keyed", [1]))
         h.keyed[2].set_header(HeaderMeta(3.0, "renamed", []))
         h.take.set(np.array([5], dtype=np.uint8), cache=True, header=HeaderMeta(0.5, "take", [1]))
-        h.keyed_take[4].set(np.array([6], dtype=np.uint8))
+        h.keyed_take[4].set(np.array([6], dtype=np.uint8), header=HeaderMeta(0.25, "keyed take", []))
+        h.transient.set(np.array([9], dtype=np.uint8), header=HeaderMeta(9.0, "transient", [1]))
         return
     h.series.clear()
     h.series.set_header(HeaderMeta(4.0, "cleared", [0]))
     h.keyed.remove_index(1)
+    h.transient.reset()
     assert h.series.get_header() == HeaderMeta(4.0, "cleared", [0])
     assert h.keyed[2].get_header() == HeaderMeta(3.0, "renamed", [])
+    assert h.transient.get_with_header() is None
 
 
 def set_wire_values(states):
