@@ -971,7 +971,7 @@ impl CServer {
         check_kind(name, *registered, kind)?;
         let header = header_bytes(name, header_type, header)?;
         core.set(with_header(kind, data, &header)?, update)
-            .map_err(core_error(Error::internal))
+            .map_err(unset(name, Error::internal))
     }
 
     /// Appends elements.
@@ -988,7 +988,7 @@ impl CServer {
         check_kind(name, *registered, kind)?;
         let header = header_bytes(name, header_type, header)?;
         core.add(with_header(kind, data, &header)?, update)
-            .map_err(core_error(Error::internal))
+            .map_err(unset(name, Error::internal))
     }
 
     /// Overwrites elements starting at element `index`.
@@ -1006,7 +1006,7 @@ impl CServer {
         check_kind(name, *registered, kind)?;
         let header = header_bytes(name, header_type, header)?;
         core.replace(with_header(kind, data, &header)?, index, update)
-            .map_err(core_error(Error::out_of_range))
+            .map_err(unset(name, Error::out_of_range))
     }
 
     /// Removes `count` elements starting at element `index`.
@@ -1022,7 +1022,7 @@ impl CServer {
         check_count(count)?;
         let header = header_bytes(name, header_type, header)?;
         core.remove(index, count, header.as_deref(), update)
-            .map_err(core_error(Error::out_of_range))
+            .map_err(unset(name, Error::out_of_range))
     }
 
     /// Removes every element; the header stays unless a new one is given.
@@ -1030,7 +1030,7 @@ impl CServer {
         let (name, core, _, header_type) = lookup!(self.states()?, id, Data(core, kind, header));
         let header = header_bytes(name, header_type, header)?;
         core.clear(header.as_deref(), update)
-            .map_err(core_error(Error::internal))
+            .map_err(unset(name, Error::internal))
     }
 
     /// Replaces the header alone. It does not wait for the client itself, but
@@ -1039,14 +1039,14 @@ impl CServer {
         let (name, core, _, header_type) = lookup!(self.states()?, id, Data(core, kind, header));
         let header = header_bytes(name, header_type, Some(header))?.unwrap_or_default();
         core.set_header(&header, update)
-            .map_err(core_error(Error::internal))
+            .map_err(unset(name, Error::internal))
     }
 
     /// Returns the data and its header to "not set"; data that is not set
     /// stays so.
     pub fn data_reset(&self, id: u64, update: bool) -> Result<()> {
-        let (_, core, _, _header) = lookup!(self.states()?, id, Data(core, kind, header));
-        core.reset(update).map_err(core_error(Error::internal))
+        let (name, core, _, _header) = lookup!(self.states()?, id, Data(core, kind, header));
+        core.reset(update).map_err(unset(name, Error::internal))
     }
 
     /// Sends a one-shot buffer; `cache` keeps it for clients that connect
@@ -1067,7 +1067,7 @@ impl CServer {
         check_kind(name, *registered, kind)?;
         let header = header_bytes(name, header_type, header)?;
         core.set(with_header(kind, data, &header)?, blocking, update, cache)
-            .map_err(core_error(Error::internal))
+            .map_err(core_error(Error::not_found, Error::internal))
     }
 
     /// Copies the elements at `index` into `out` when it is large enough.
@@ -1114,7 +1114,7 @@ impl CServer {
         check_kind(name, *registered, kind)?;
         let header = header_bytes(name, header_type, header)?;
         core.set(index, with_header(kind, data, &header)?, update)
-            .map_err(core_error(Error::internal))
+            .map_err(keyed(name, index, Error::internal))
     }
 
     /// Appends elements to the existing buffer at `index`.
@@ -1246,7 +1246,7 @@ impl CServer {
             update,
             cache,
         )
-        .map_err(core_error(Error::internal))
+        .map_err(core_error(Error::not_found, Error::internal))
     }
 
     /// Removes the one-shot buffer at `index`; a missing index is ignored.
@@ -1463,18 +1463,24 @@ fn check_count(count: usize) -> Result<()> {
 /// The core checks the key under its own lock; checking it here first could
 /// race with a concurrent removal and report the wrong error.
 fn keyed(name: &str, index: u32, other: fn(String) -> Error) -> impl Fn(CoreError) -> Error + '_ {
-    move |error| match error.kind {
-        ErrorKind::NotFound => missing_index(name, index),
-        ErrorKind::InvalidArgument => Error::invalid_argument(error.message),
-        ErrorKind::Other => other(error.message),
-    }
+    core_error(move |_| missing_index(name, index), other)
 }
 
-/// Maps a core error by its kind: `NotFound` for data that is not set,
-/// `InvalidArgument` for a missing header, `other` for anything else.
-fn core_error(other: fn(String) -> Error) -> impl Fn(CoreError) -> Error {
+/// Maps an error of a core call on a `Data`: data that is not set to
+/// [`not_set`], the text its getters report, anything else with `other`.
+fn unset(name: &str, other: fn(String) -> Error) -> impl Fn(CoreError) -> Error + '_ {
+    core_error(move |_| not_set(name), other)
+}
+
+/// Maps a core error by its kind: `NotFound` with `not_found`, which gets the
+/// core's message, `InvalidArgument` for a missing header, `other` for
+/// anything else.
+fn core_error(
+    not_found: impl Fn(String) -> Error,
+    other: fn(String) -> Error,
+) -> impl Fn(CoreError) -> Error {
     move |error| match error.kind {
-        ErrorKind::NotFound => Error::not_found(error.message),
+        ErrorKind::NotFound => not_found(error.message),
         ErrorKind::InvalidArgument => Error::invalid_argument(error.message),
         ErrorKind::Other => other(error.message),
     }
@@ -1976,6 +1982,24 @@ mod tests {
         );
         server.data_clear(data, None, false).unwrap();
         assert_eq!(server.data_len(data).unwrap(), 0);
+
+        // Data that is not set reports the same error from every call.
+        server.data_reset(data, false).unwrap();
+        let not_set = server.data_len(data).unwrap_err();
+        assert_eq!(not_set.code, ErrorCode::NotFound);
+        let changes = [
+            server.data_add(data, DataKind::U16, &raw(&[4]), None, false),
+            server.data_replace(data, DataKind::U16, &raw(&[4]), 0, None, false),
+            server.data_remove(data, 0, 1, None, false),
+            server.data_clear(data, None, false),
+        ];
+        for change in changes {
+            let error = change.unwrap_err();
+            assert_eq!(
+                (error.code, &error.message),
+                (not_set.code, &not_set.message)
+            );
+        }
 
         server
             .data_take_set(take, DataKind::U8, &[1, 2], None, true, false, true)

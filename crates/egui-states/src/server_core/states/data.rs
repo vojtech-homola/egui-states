@@ -69,20 +69,13 @@ impl HeaderType {
         Ok(())
     }
 
-    /// The wire form of a checked header, `Keep` without one.
+    /// The wire form of a checked header, `Keep` without one. A
+    /// synchronization gives the stored header, so a state with a header
+    /// type always says what it is.
     pub(crate) fn change<'a>(&self, header: Option<&'a [u8]>) -> WireHeader<'a> {
         match (self.0, header) {
             (Some(type_id), Some(bytes)) => WireHeader::set(type_id, bytes),
             _ => WireHeader::KEEP,
-        }
-    }
-
-    /// The wire form of a stored header for a synchronization: a state with
-    /// a header type always says what it is.
-    pub(crate) fn stored<'a>(&self, header: &'a [u8]) -> WireHeader<'a> {
-        match self.0 {
-            Some(type_id) => WireHeader::set(type_id, header),
-            None => WireHeader::KEEP,
         }
     }
 
@@ -483,14 +476,20 @@ impl Data {
     /// Returns the data and its header to "not set"; data that is not set
     /// stays so. Like a clear, it is queued at once.
     pub(crate) fn reset(&self, update: bool) -> Result<(), CoreError> {
-        let _producer = self.producer.lock();
-        let mut w = self.storage.write();
-        if w.value.take().is_some() && w.sync.sendable(&self.connected).is_some() {
-            let message = DataHeader::Reset(update)
-                .serialize(self.id, false)
-                .map_err(|_| "Failed to serialize reset header".to_string())?;
-            self.sender.send(message);
-        }
+        let message = DataHeader::Reset(update)
+            .serialize(self.id, false)
+            .map_err(|_| "Failed to serialize reset header".to_string())?;
+        let previous = {
+            let _producer = self.producer.lock();
+            let mut w = self.storage.write();
+            let previous = w.value.take();
+            if previous.is_some() && w.sync.sendable(&self.connected).is_some() {
+                self.sender.send(message);
+            }
+            previous
+        };
+        // The buffer is freed after both locks are released.
+        drop(previous);
 
         Ok(())
     }
@@ -555,20 +554,12 @@ impl SyncTrait for Data {
         w.sync.synchronized();
 
         // The client keeps its data across a disconnect, so a synchronization
-        // always says what the data is: not set, empty, or its elements, each
-        // with the stored header.
+        // always says what the data is: not set, or a set of its elements,
+        // also when there are none, with the stored header.
         match &w.value {
             None => {
                 let message = DataHeader::Reset(false)
                     .serialize(self.id, false)
-                    .map_err(|_| ())?;
-                self.sender.send(message);
-                self.event.set();
-            }
-            Some(value) if value.count == 0 => {
-                let header = self.header_type.stored(&value.header);
-                let message = header
-                    .message(|| DataHeader::Clear(false, header.update).serialize(self.id, false))
                     .map_err(|_| ())?;
                 self.sender.send(message);
                 self.event.set();
@@ -583,7 +574,7 @@ impl SyncTrait for Data {
                     self.data_type,
                     None,
                     false,
-                    self.header_type.stored(&value.header),
+                    self.header_type.change(Some(&value.header)),
                 )
                 .map_err(|_| ())?;
 
@@ -1002,7 +993,7 @@ impl SyncTrait for DataMulti {
                     self.data_type,
                     Some(*index),
                     false,
-                    self.header_type.stored(&value.header),
+                    self.header_type.change(Some(&value.header)),
                 )
                 .map_err(|_| ())?;
 
@@ -1353,6 +1344,38 @@ mod tests {
             &u16_bytes(&[8]),
             TransportType::Add(1),
             1,
+            DataType::U16,
+            None,
+            false,
+            WireHeader::KEEP,
+        );
+        assert_eq!(queued(&mut receiver), packed(expected.unwrap()));
+    }
+
+    /// An empty buffer that is set synchronizes as an empty set, which
+    /// creates the data on the client; a clear never does.
+    #[test]
+    fn an_empty_buffer_synchronizes_as_a_set() {
+        let (sender, mut receiver) = MessageSender::new();
+        let connected = Arc::new(AtomicBool::new(false));
+        let data = Data::new(
+            "root.data".into(),
+            5,
+            DataType::U16,
+            None,
+            sender,
+            connected.clone(),
+        );
+        // Not connected yet: the set only stores.
+        data.set(holder(&[]), false).unwrap();
+        connected.store(true, Ordering::Release);
+        data.sync().unwrap();
+
+        let expected = pack_data(
+            5,
+            &[],
+            TransportType::Set(0),
+            0,
             DataType::U16,
             None,
             false,
@@ -2074,13 +2097,19 @@ mod header_tests {
         assert_eq!(client.header(), Some(meta(4)));
         data.header(|header| assert_eq!(header, Some(&encoded(4)[..])));
 
-        // A reconnecting client gets the stored header, with the empty buffer.
+        // A reconnecting client gets the stored header, with the empty
+        // buffer: a set, which creates its data and which it acknowledges.
         Acknowledge::reset(&*data);
-        let (client_sender, _acks) = ClientSender::new();
+        let (client_sender, mut fresh_acks) = ClientSender::new();
         let fresh = ClientData::<u16, Meta>::new("root.data".into(), 5, client_sender);
         data.sync().unwrap();
         deliver(&fresh);
         assert_eq!(fresh.get_with_header(), Some((vec![], meta(4))));
+        assert!(matches!(
+            fresh_acks.try_recv(),
+            Ok(Some(ChannelMessage::Ack(5)))
+        ));
+        data.acknowledge();
 
         data.set(with(&[9], None), false).unwrap();
         deliver(&fresh);

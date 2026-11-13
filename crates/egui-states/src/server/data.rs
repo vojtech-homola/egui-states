@@ -24,7 +24,7 @@ use super::{Result, ServerError};
 /// holds data without a header: the change that creates the data, the first
 /// set of a [`Data`] or of a [`DataMulti`] index, and every take must carry
 /// one. A custom [`Typed`] type whose [`Typed::get_type`] is
-/// [`crate::ObjectType::Empty`] also means no header; it must encode to no
+/// [`crate::ObjectType::Empty`] also means no header; it must decode from no
 /// bytes.
 pub trait HeaderValue: Typed + Serialize + DeserializeOwned + Send + Sync + 'static {}
 

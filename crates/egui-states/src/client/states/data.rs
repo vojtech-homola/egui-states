@@ -556,28 +556,17 @@ where
         Ok(())
     }
 
-    /// Empties the buffer, creating the data when it is not set: the
-    /// synchronization of a set, empty buffer is a clear.
+    /// Empties the buffer of data that is set; only a set creates the data.
     fn clear(&self, header: HeaderUpdate, payload: &[u8]) -> Result<(), String> {
         let header = self.decode_header(header, payload)?;
-        let mut w = self.inner.write();
-        match w.as_mut() {
-            Some(store) => {
-                store.data.clear();
-                if let Some(header) = header {
-                    store.header = header;
-                }
-            }
-            None => {
-                let header = created_header(self.header_type, header, &self.name)?;
-                *w = Some(Store {
-                    data: Vec::new(),
-                    header,
-                });
-            }
-        }
-        drop(w);
+        // A later change must not complete an older batch.
         self.buffer.lock().take();
+        let mut w = self.inner.write();
+        let store = w.as_mut().ok_or_else(|| self.not_set("Clear"))?;
+        store.data.clear();
+        if let Some(header) = header {
+            store.header = header;
+        }
         Ok(())
     }
 
@@ -1721,7 +1710,7 @@ mod header_tests {
     }
 
     #[test]
-    fn data_is_not_set_until_a_set_or_a_clear_creates_it() {
+    fn data_is_not_set_until_a_set_creates_it() {
         let (sender, mut receiver) = MessageSender::new();
         let data = Data::<u16, Meta>::new("root.data".into(), 7, sender.clone());
         assert_eq!(data.get_with_header(), None);
@@ -1754,10 +1743,23 @@ mod header_tests {
         assert_eq!(data.get(), None);
         assert_eq!(acks(&mut receiver), 3);
 
-        // The synchronization of an empty buffer is a clear with its header.
-        let clear = DataHeader::Clear(false, update);
-        data.update_data((clear, header_bytes)).unwrap();
+        // A clear does not create the data, with a header or without one.
+        for clear in [update, HeaderUpdate::Keep] {
+            let bytes = match clear {
+                HeaderUpdate::Keep => Bytes::new(),
+                HeaderUpdate::Set(_) => header_bytes.clone(),
+            };
+            let error = data
+                .update_data((DataHeader::Clear(false, clear), bytes))
+                .unwrap_err();
+            assert!(error.contains("is not set"), "{error}");
+            assert_eq!(data.get_with_header(), None);
+        }
+
+        // The synchronization of an empty buffer is a set with its header.
+        data.update_data((set(update, &[]), header_bytes)).unwrap();
         assert_eq!(data.get_with_header(), Some((vec![], meta(1))));
+        assert_eq!(acks(&mut receiver), 1);
         data.update_data((DataHeader::Reset(true), Bytes::new()))
             .unwrap();
         assert_eq!(data.get_with_header(), None);
@@ -1765,6 +1767,9 @@ mod header_tests {
 
         // Without a header type, a set creates the data alone.
         let plain = Data::<u16>::new("root.plain".into(), 8, sender);
+        let clear = DataHeader::Clear(false, HeaderUpdate::Keep);
+        let error = plain.update_data((clear, Bytes::new())).unwrap_err();
+        assert!(error.contains("is not set"), "{error}");
         plain
             .update_data((set(HeaderUpdate::Keep, &[]), Bytes::new()))
             .unwrap();
