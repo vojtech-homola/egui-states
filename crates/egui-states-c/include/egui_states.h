@@ -697,13 +697,15 @@ egui_states_status_t egui_states_image_multi_indices(const egui_states_server_t 
                                                      size_t capacity,
                                                      size_t *out_required);
 
-// Reports the number of elements of a `Data` state.
+// Reports the number of elements of a `Data` state;
+// `EGUI_STATES_ERROR_NOT_FOUND` while its data is not set.
 egui_states_status_t egui_states_data_len(const egui_states_server_t *server,
                                           uint64_t id,
                                           size_t *out_count);
 
 // Copies the elements of a `Data` state into `out` of `capacity` elements of
-// `data_type`, which must be the registered type.
+// `data_type`, which must be the registered type;
+// `EGUI_STATES_ERROR_NOT_FOUND` while its data is not set.
 //
 // `out_count` receives the element count even when the buffer is too small;
 // a null `out` with zero capacity asks only for it.
@@ -715,14 +717,15 @@ egui_states_status_t egui_states_data_get(const egui_states_server_t *server,
                                           size_t *out_count);
 
 // Loads the header of a `Data` state into `reader`. `EGUI_STATES_ERROR_NOT_FOUND`
-// when the state has no header type or no header was set yet.
+// when the state has no header type or its data is not set.
 egui_states_status_t egui_states_data_get_header(const egui_states_server_t *server,
                                                  uint64_t id,
                                                  egui_states_reader_t *reader);
 
 // Replaces the elements of a `Data` state with `count` elements of
-// `data_type` at `data`, and the header unless `header` is null. `flags` may
-// be `EGUI_STATES_UPDATE`.
+// `data_type` at `data`, and the header unless `header` is null. It creates
+// the data when it is not set, which needs a header with a header type.
+// `flags` may be `EGUI_STATES_UPDATE`.
 egui_states_status_t egui_states_data_set(const egui_states_server_t *server,
                                           uint64_t id,
                                           egui_states_data_type_t data_type,
@@ -762,8 +765,8 @@ egui_states_status_t egui_states_data_remove(const egui_states_server_t *server,
                                              const egui_states_writer_t *header,
                                              uint32_t flags);
 
-// Removes every element; the header stays unless `header` is not null.
-// `flags` may be `EGUI_STATES_UPDATE`.
+// Removes every element; the header stays unless `header` is not null, and
+// the data stays set. `flags` may be `EGUI_STATES_UPDATE`.
 egui_states_status_t egui_states_data_clear(const egui_states_server_t *server,
                                             uint64_t id,
                                             const egui_states_writer_t *header,
@@ -778,8 +781,14 @@ egui_states_status_t egui_states_data_set_header(const egui_states_server_t *ser
                                                  const egui_states_writer_t *header,
                                                  uint32_t flags);
 
-// Sends a one-shot buffer to a `DataTake` state, with `header`, or the
-// header type's default when it is null.
+// Returns the data of a `Data` state and its header to "not set"; data that
+// is not set stays so. `flags` may be `EGUI_STATES_UPDATE`.
+egui_states_status_t egui_states_data_reset(const egui_states_server_t *server,
+                                            uint64_t id,
+                                            uint32_t flags);
+
+// Sends a one-shot buffer to a `DataTake` state, with `header`, which must
+// not be null when the state has a header type.
 //
 // `flags` may combine `EGUI_STATES_BLOCKING`, `EGUI_STATES_UPDATE`, and
 // `EGUI_STATES_CACHE`, which keeps the buffer for clients that connect later.
@@ -802,15 +811,15 @@ egui_states_status_t egui_states_data_multi_get(const egui_states_server_t *serv
                                                 size_t *out_count);
 
 // Loads the header at `index` of a `DataMulti` state into `reader`.
-// `EGUI_STATES_ERROR_NOT_FOUND` when the index is missing, the state has no
-// header type, or no header was set for the index yet.
+// `EGUI_STATES_ERROR_NOT_FOUND` when the index is missing or the state has
+// no header type.
 egui_states_status_t egui_states_data_multi_get_header(const egui_states_server_t *server,
                                                        uint64_t id,
                                                        uint32_t index,
                                                        egui_states_reader_t *reader);
 
 // Replaces or creates the buffer at `index`, and its header unless `header`
-// is null; a new index without one gets the default header. `flags` may be
+// is null; with a header type, a new index needs one. `flags` may be
 // `EGUI_STATES_UPDATE`.
 egui_states_status_t egui_states_data_multi_set(const egui_states_server_t *server,
                                                 uint64_t id,

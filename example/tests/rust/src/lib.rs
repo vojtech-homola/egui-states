@@ -77,10 +77,9 @@ pub fn showcase(port: u16) {
         state.values.title.get() == "Interactive egui-states showcase"
     });
     wait("sample data", || {
-        state
-            .data
-            .samples
-            .read(|v| v.len() == 20 * 1024 && v[0] == 0.0 && v[v.len() - 1] == 1.0)
+        state.data.samples.read(|v| {
+            v.is_some_and(|v| v.len() == 20 * 1024 && v[0] == 0.0 && v[v.len() - 1] == 1.0)
+        })
     });
     wait("sparse images", || {
         state.image.images.indices() == vec![2, 7]

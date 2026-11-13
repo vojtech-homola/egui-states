@@ -154,11 +154,7 @@ mod tests {
         };
         assert_tags(
             "HeaderUpdate",
-            &[
-                HeaderUpdate::Keep,
-                HeaderUpdate::Default,
-                HeaderUpdate::Set(header),
-            ],
+            &[HeaderUpdate::Keep, HeaderUpdate::Set(header)],
         );
         assert_tags(
             "TransportType",
@@ -190,6 +186,7 @@ mod tests {
                 DataHeader::Drain(0, 0, false, HeaderUpdate::Keep),
                 DataHeader::Clear(false, HeaderUpdate::Keep),
                 DataHeader::Header(false, header),
+                DataHeader::Reset(false),
             ],
         );
         assert_tags(
@@ -366,14 +363,11 @@ mod tests {
                 5,
                 DataHeader::Clear(false, HeaderUpdate::Set(header))
             )),
-            [4, 5, 5, 0, 2, 0xac, 0x02, 2]
+            [4, 5, 5, 0, 1, 0xac, 0x02, 2]
         );
         assert_eq!(
-            bytes(&ServerHeader::Data(
-                5,
-                DataHeader::Clear(false, HeaderUpdate::Default)
-            )),
-            [4, 5, 5, 0, 1]
+            bytes(&ServerHeader::Data(5, DataHeader::Reset(true))),
+            [4, 5, 7, 1]
         );
         assert_eq!(
             bytes(&ServerHeader::DataTake(

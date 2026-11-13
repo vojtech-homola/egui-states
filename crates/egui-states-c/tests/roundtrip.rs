@@ -481,7 +481,7 @@ fn client_and_c_server_synchronize_every_state_kind() {
     wait("map", || {
         state.lookup.get() == HashMap::from([("a".into(), vec![-1, 2])])
     });
-    wait("data", || state.samples.get() == samples);
+    wait("data", || state.samples.get() == Some(samples.to_vec()));
     wait("data multi", || {
         state.channels.get(4) == Some(channel.to_vec())
     });
@@ -676,7 +676,37 @@ fn data_headers_cross_the_c_abi() {
     let more = [3.0f32];
     unsafe {
         let get_header = |id| egui_states_data_get_header(s, id, reader.0);
+        let mut count = 0;
+        // The data starts "not set": only a set with a header creates it.
         assert_eq!(get_header(framed), EGUI_STATES_ERROR_NOT_FOUND);
+        assert_eq!(
+            egui_states_data_len(s, framed, &mut count),
+            EGUI_STATES_ERROR_NOT_FOUND
+        );
+        assert_eq!(
+            egui_states_data_set(
+                s,
+                framed,
+                EGUI_STATES_DATA_F32,
+                values.as_ptr().cast(),
+                2,
+                null(),
+                0,
+            ),
+            EGUI_STATES_ERROR_INVALID_ARGUMENT
+        );
+        assert_eq!(
+            egui_states_data_add(
+                s,
+                framed,
+                EGUI_STATES_DATA_F32,
+                more.as_ptr().cast(),
+                1,
+                null(),
+                0,
+            ),
+            EGUI_STATES_ERROR_NOT_FOUND
+        );
         let seven = meta(7, "seven");
         ok(egui_states_data_set(
             s,
@@ -720,21 +750,57 @@ fn data_headers_cross_the_c_abi() {
             egui_states_data_multi_set_header(s, keyed, 1, nine.0, 0),
             EGUI_STATES_ERROR_NOT_FOUND
         );
+        // A new index needs a header.
         let five = [5u16];
-        ok(egui_states_data_multi_set(
-            s,
-            keyed,
-            1,
-            EGUI_STATES_DATA_U16,
-            five.as_ptr().cast(),
-            1,
-            null(),
-            0,
-        ));
+        let set_five = |header| {
+            egui_states_data_multi_set(
+                s,
+                keyed,
+                1,
+                EGUI_STATES_DATA_U16,
+                five.as_ptr().cast(),
+                1,
+                header,
+                0,
+            )
+        };
+        assert_eq!(set_five(null()), EGUI_STATES_ERROR_INVALID_ARGUMENT);
         assert_eq!(keyed_header(1), EGUI_STATES_ERROR_NOT_FOUND);
+        let eight = meta(8, "eight");
+        ok(set_five(eight.0));
+        ok(keyed_header(1));
+        assert_eq!((reader.u32(), reader.string()), (8, "eight".to_string()));
         ok(egui_states_data_multi_set_header(s, keyed, 1, nine.0, 0));
         ok(keyed_header(1));
         assert_eq!((reader.u32(), reader.string()), (9, "nine".to_string()));
+
+        // Without a header type, a set creates the data alone, and a reset
+        // returns it to "not set".
+        let one = [1u8];
+        let set_plain = || {
+            egui_states_data_set(
+                s,
+                plain,
+                EGUI_STATES_DATA_U8,
+                one.as_ptr().cast(),
+                1,
+                null(),
+                0,
+            )
+        };
+        ok(set_plain());
+        ok(egui_states_data_len(s, plain, &mut count));
+        assert_eq!(count, 1);
+        ok(egui_states_data_reset(s, plain, 0));
+        assert_eq!(
+            egui_states_data_len(s, plain, &mut count),
+            EGUI_STATES_ERROR_NOT_FOUND
+        );
+        assert_eq!(
+            egui_states_data_clear(s, plain, null(), 0),
+            EGUI_STATES_ERROR_NOT_FOUND
+        );
+        ok(egui_states_data_reset(s, plain, 0));
     }
 
     // A client gets the stored headers with their buffers.
@@ -747,15 +813,16 @@ fn data_headers_cross_the_c_abi() {
         connection.0.get_state() == ConnectionState::Connected
     });
     wait("headers", || {
-        state.framed.header() == (7, "seven".to_string())
+        state.framed.header() == Some((7, "seven".to_string()))
             && state.keyed.header(1) == Some((9, "nine".to_string()))
     });
-    state.framed.read_with_header(|values, header| {
+    state.framed.read_with_header(|entry| {
+        let (values, header) = entry.expect("framed data is set");
         assert_eq!(values, [1.0, 2.0, 3.0]);
         assert_eq!(header.0, 7);
     });
     assert_eq!(state.keyed.get(1), Some(vec![5]));
-    assert!(state.plain.get().is_empty());
+    assert_eq!(state.plain.get(), None);
     drop(connection);
     unsafe { egui_states_server_stop(s) };
     drop(server);

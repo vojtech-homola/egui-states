@@ -913,13 +913,17 @@ impl CServer {
 
     // data ------------------------------------------------------------------
 
-    /// Returns the number of elements.
+    /// Returns the number of elements; `NotFound` while the data is not set.
     pub fn data_len(&self, id: u64) -> Result<usize> {
-        let (_, core, kind, _header) = lookup!(self.states()?, id, Data(core, kind, header));
-        Ok(core.get(|data| data.len() / kind.size()))
+        let (name, core, kind, _header) = lookup!(self.states()?, id, Data(core, kind, header));
+        core.get(|data| match data {
+            Some(data) => Ok(data.len() / kind.size()),
+            None => Err(not_set(name)),
+        })
     }
 
-    /// Copies the native-endian elements into `out` when it is large enough.
+    /// Copies the native-endian elements into `out` when it is large enough;
+    /// `NotFound` while the data is not set.
     ///
     /// Returns the element count and whether the elements were copied.
     pub fn data_get(
@@ -931,21 +935,29 @@ impl CServer {
         let (name, core, registered, _header) =
             lookup!(self.states()?, id, Data(core, kind, header));
         check_kind(name, *registered, kind)?;
-        Ok(core.get(|data| (data.len() / kind.size(), copy_into(data, out))))
+        core.get(|data| match data {
+            Some(data) => Ok((data.len() / kind.size(), copy_into(data, out))),
+            None => Err(not_set(name)),
+        })
     }
 
     /// Loads the header into `reader`; `NotFound` when the state has no
-    /// header type or no header was set.
+    /// header type or its data is not set.
     pub fn data_get_header(&self, id: u64, reader: &mut Reader) -> Result<()> {
         let (name, core, _, header) = lookup!(self.states()?, id, Data(core, kind, header));
         let header_type = header_type(name, header)?;
-        core.header(|bytes| load_header(name, bytes, header_type, reader))
+        core.header(|bytes| match bytes {
+            Some(bytes) => load_header(bytes, header_type, reader),
+            None => Err(not_set(name)),
+        })
     }
 
     // A data operation takes its new header as a writer; `None` keeps the
-    // current one.
+    // current one. Only a set creates the data, and with a header type it
+    // needs a header to do so (`InvalidArgument` without one); every other
+    // operation reports `NotFound` while the data is not set.
 
-    /// Replaces the elements.
+    /// Replaces the elements, creating the data when it is not set.
     pub fn data_set(
         &self,
         id: u64,
@@ -959,7 +971,7 @@ impl CServer {
         check_kind(name, *registered, kind)?;
         let header = header_bytes(name, header_type, header)?;
         core.set(with_header(kind, data, &header)?, update)
-            .map_err(Error::internal)
+            .map_err(unset(name, Error::internal))
     }
 
     /// Appends elements.
@@ -976,7 +988,7 @@ impl CServer {
         check_kind(name, *registered, kind)?;
         let header = header_bytes(name, header_type, header)?;
         core.add(with_header(kind, data, &header)?, update)
-            .map_err(Error::internal)
+            .map_err(unset(name, Error::internal))
     }
 
     /// Overwrites elements starting at element `index`.
@@ -994,7 +1006,7 @@ impl CServer {
         check_kind(name, *registered, kind)?;
         let header = header_bytes(name, header_type, header)?;
         core.replace(with_header(kind, data, &header)?, index, update)
-            .map_err(Error::out_of_range)
+            .map_err(unset(name, Error::out_of_range))
     }
 
     /// Removes `count` elements starting at element `index`.
@@ -1010,7 +1022,7 @@ impl CServer {
         check_count(count)?;
         let header = header_bytes(name, header_type, header)?;
         core.remove(index, count, header.as_deref(), update)
-            .map_err(Error::out_of_range)
+            .map_err(unset(name, Error::out_of_range))
     }
 
     /// Removes every element; the header stays unless a new one is given.
@@ -1018,7 +1030,7 @@ impl CServer {
         let (name, core, _, header_type) = lookup!(self.states()?, id, Data(core, kind, header));
         let header = header_bytes(name, header_type, header)?;
         core.clear(header.as_deref(), update)
-            .map_err(Error::internal)
+            .map_err(unset(name, Error::internal))
     }
 
     /// Replaces the header alone. It does not wait for the client itself, but
@@ -1026,11 +1038,19 @@ impl CServer {
     pub fn data_set_header(&self, id: u64, header: &Writer, update: bool) -> Result<()> {
         let (name, core, _, header_type) = lookup!(self.states()?, id, Data(core, kind, header));
         let header = header_bytes(name, header_type, Some(header))?.unwrap_or_default();
-        core.set_header(&header, update).map_err(Error::internal)
+        core.set_header(&header, update)
+            .map_err(unset(name, Error::internal))
+    }
+
+    /// Returns the data and its header to "not set"; data that is not set
+    /// stays so.
+    pub fn data_reset(&self, id: u64, update: bool) -> Result<()> {
+        let (name, core, _, _header) = lookup!(self.states()?, id, Data(core, kind, header));
+        core.reset(update).map_err(unset(name, Error::internal))
     }
 
     /// Sends a one-shot buffer; `cache` keeps it for clients that connect
-    /// later. Without a header, the client takes it with the default one.
+    /// later. With a header type, every take needs a header.
     #[allow(clippy::too_many_arguments)]
     pub fn data_take_set(
         &self,
@@ -1047,7 +1067,7 @@ impl CServer {
         check_kind(name, *registered, kind)?;
         let header = header_bytes(name, header_type, header)?;
         core.set(with_header(kind, data, &header)?, blocking, update, cache)
-            .map_err(Error::internal)
+            .map_err(core_error(Error::not_found, Error::internal))
     }
 
     /// Copies the elements at `index` into `out` when it is large enough.
@@ -1068,18 +1088,18 @@ impl CServer {
     }
 
     /// Loads the header at `index` into `reader`; `NotFound` when the index
-    /// is missing, the state has no header type or no header was set.
+    /// is missing or the state has no header type.
     pub fn data_multi_get_header(&self, id: u64, index: u32, reader: &mut Reader) -> Result<()> {
         let (name, core, _, header) = lookup!(self.states()?, id, DataMulti(core, kind, header));
         let header_type = header_type(name, header)?;
         core.header(index, |bytes| match bytes {
-            Some(bytes) => load_header(name, bytes, header_type, reader),
+            Some(bytes) => load_header(bytes, header_type, reader),
             None => Err(missing_index(name, index)),
         })
     }
 
-    /// Replaces or creates the buffer at `index`. A new index without a
-    /// header gets the default one.
+    /// Replaces or creates the buffer at `index`. With a header type, a new
+    /// index needs a header.
     pub fn data_multi_set(
         &self,
         id: u64,
@@ -1094,7 +1114,7 @@ impl CServer {
         check_kind(name, *registered, kind)?;
         let header = header_bytes(name, header_type, header)?;
         core.set(index, with_header(kind, data, &header)?, update)
-            .map_err(Error::internal)
+            .map_err(keyed(name, index, Error::internal))
     }
 
     /// Appends elements to the existing buffer at `index`.
@@ -1201,8 +1221,8 @@ impl CServer {
         core.reset(update).map_err(Error::internal)
     }
 
-    /// Sends a one-shot buffer at `index`; without a header, the client
-    /// takes it with the default one.
+    /// Sends a one-shot buffer at `index`; with a header type, every take
+    /// needs a header.
     #[allow(clippy::too_many_arguments)]
     pub fn data_multi_take_set(
         &self,
@@ -1226,7 +1246,7 @@ impl CServer {
             update,
             cache,
         )
-        .map_err(Error::internal)
+        .map_err(core_error(Error::not_found, Error::internal))
     }
 
     /// Removes the one-shot buffer at `index`; a missing index is ignored.
@@ -1373,14 +1393,8 @@ fn with_header<'a>(
     })
 }
 
-/// Loads a stored header into `reader`; `NotFound` when none was set.
-fn load_header(
-    name: &str,
-    header: Option<&[u8]>,
-    header_type: &TypeRef,
-    reader: &mut Reader,
-) -> Result<()> {
-    let header = header.ok_or_else(|| Error::not_found(format!("'{name}' has no header yet")))?;
+/// Loads a stored header into `reader`.
+fn load_header(header: &[u8], header_type: &TypeRef, reader: &mut Reader) -> Result<()> {
     reader.load(Bytes::copy_from_slice(header), header_type);
     Ok(())
 }
@@ -1419,6 +1433,10 @@ fn missing_index(name: &str, index: u32) -> Error {
     Error::not_found(format!("'{name}' has nothing at index {index}"))
 }
 
+fn not_set(name: &str) -> Error {
+    Error::not_found(format!("'{name}' is not set"))
+}
+
 fn check_kind(name: &str, registered: DataKind, kind: DataKind) -> Result<()> {
     if registered != kind {
         return Err(Error::type_mismatch(format!(
@@ -1445,8 +1463,25 @@ fn check_count(count: usize) -> Result<()> {
 /// The core checks the key under its own lock; checking it here first could
 /// race with a concurrent removal and report the wrong error.
 fn keyed(name: &str, index: u32, other: fn(String) -> Error) -> impl Fn(CoreError) -> Error + '_ {
+    core_error(move |_| missing_index(name, index), other)
+}
+
+/// Maps an error of a core call on a `Data`: data that is not set to
+/// [`not_set`], the text its getters report, anything else with `other`.
+fn unset(name: &str, other: fn(String) -> Error) -> impl Fn(CoreError) -> Error + '_ {
+    core_error(move |_| not_set(name), other)
+}
+
+/// Maps a core error by its kind: `NotFound` with `not_found`, which gets the
+/// core's message, `InvalidArgument` for a missing header, `other` for
+/// anything else.
+fn core_error(
+    not_found: impl Fn(String) -> Error,
+    other: fn(String) -> Error,
+) -> impl Fn(CoreError) -> Error {
     move |error| match error.kind {
-        ErrorKind::NotFound => missing_index(name, index),
+        ErrorKind::NotFound => not_found(error.message),
+        ErrorKind::InvalidArgument => Error::invalid_argument(error.message),
         ErrorKind::Other => other(error.message),
     }
 }
@@ -1947,6 +1982,24 @@ mod tests {
         );
         server.data_clear(data, None, false).unwrap();
         assert_eq!(server.data_len(data).unwrap(), 0);
+
+        // Data that is not set reports the same error from every call.
+        server.data_reset(data, false).unwrap();
+        let not_set = server.data_len(data).unwrap_err();
+        assert_eq!(not_set.code, ErrorCode::NotFound);
+        let changes = [
+            server.data_add(data, DataKind::U16, &raw(&[4]), None, false),
+            server.data_replace(data, DataKind::U16, &raw(&[4]), 0, None, false),
+            server.data_remove(data, 0, 1, None, false),
+            server.data_clear(data, None, false),
+        ];
+        for change in changes {
+            let error = change.unwrap_err();
+            assert_eq!(
+                (error.code, &error.message),
+                (not_set.code, &not_set.message)
+            );
+        }
 
         server
             .data_take_set(take, DataKind::U8, &[1, 2], None, true, false, true)

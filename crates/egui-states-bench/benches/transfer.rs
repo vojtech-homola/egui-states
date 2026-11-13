@@ -106,10 +106,9 @@ fn data_set(c: &mut Criterion, session: &Session) {
                     buffer[0] = marker;
                     session.data.set(&buffer, false).expect("set data");
                     wait_until("data", || {
-                        session
-                            .states
-                            .data
-                            .read(|data| data.len() == len && data[0] == marker)
+                        session.states.data.read(|data| {
+                            data.is_some_and(|data| data.len() == len && data[0] == marker)
+                        })
                     });
                 }
                 start.elapsed()

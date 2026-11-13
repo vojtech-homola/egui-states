@@ -7,7 +7,8 @@ use parking_lot::{Mutex, RwLock};
 
 use crate::client::messages::{ChannelMessage, MessageSender};
 use crate::client::states::data::{
-    BatchBuffer, HeaderValue, decode_header_bytes, elements, header_type_id, private, split_header,
+    BatchBuffer, HeaderValue, created_header, decode_header_bytes, elements, header_type_id,
+    private, split_header,
 };
 use crate::hashing::NoHashMap;
 use crate::protocol::data::{DataTakeHeader, DataType, HeaderBytes};
@@ -17,7 +18,8 @@ use crate::protocol::data::{DataTakeHeader, DataType, HeaderBytes};
 type Completed<T, H> = (Vec<T>, H, bool);
 
 /// Splits a terminal message's payload into its header and its elements and
-/// decodes the header; a transfer without one gets `H::default()`.
+/// decodes the header; only a state without a header type takes a transfer
+/// without one.
 fn take_header<'a, H: HeaderValue>(
     type_id: Option<u32>,
     header: Option<HeaderBytes>,
@@ -25,7 +27,7 @@ fn take_header<'a, H: HeaderValue>(
     name: &str,
 ) -> Result<(H, &'a [u8]), String> {
     match header {
-        None => Ok((H::default(), payload)),
+        None => Ok((created_header(type_id, None, name)?, payload)),
         Some(header) => {
             let (bytes, data) = split_header(payload, header.size, name)?;
             Ok((decode_header_bytes(type_id, header, bytes, name)?, data))
@@ -62,8 +64,8 @@ pub(crate) trait UpdateDataTake: Sync + Send {
 /// optional typed header `H`.
 ///
 /// A transfer becomes available only after every batch has arrived. Taking a
-/// blocking transfer also sends its acknowledgement to the server. A transfer
-/// sent without a header comes with `H::default()`.
+/// blocking transfer also sends its acknowledgement to the server. Every
+/// transfer of a state with a header type comes with its header.
 pub struct DataTake<T, H = ()> {
     name: Arc<String>,
     id: u64,

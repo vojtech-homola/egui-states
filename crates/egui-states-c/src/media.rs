@@ -431,10 +431,15 @@ pub unsafe extern "C" fn egui_states_image_multi_indices(
 // data ------------------------------------------------------------------------
 //
 // A Data function takes the state's new header as `header`, a writer with
-// one value of the header type; null keeps the current header. A take sent
-// with a null header reaches the client with the header type's default.
+// one value of the header type; null keeps the current header. A `Data`
+// starts "not set": only a set creates its data, and a `DataMulti` index
+// likewise. With a header type, the set that creates the data and every take
+// need a header, or the call fails with `EGUI_STATES_ERROR_INVALID_ARGUMENT`.
+// Every other operation on data that is not set fails with
+// `EGUI_STATES_ERROR_NOT_FOUND`.
 
-/// Reports the number of elements of a `Data` state.
+/// Reports the number of elements of a `Data` state;
+/// `EGUI_STATES_ERROR_NOT_FOUND` while its data is not set.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn egui_states_data_len(
     server: *const egui_states_server_t,
@@ -449,7 +454,8 @@ pub unsafe extern "C" fn egui_states_data_len(
 }
 
 /// Copies the elements of a `Data` state into `out` of `capacity` elements of
-/// `data_type`, which must be the registered type.
+/// `data_type`, which must be the registered type;
+/// `EGUI_STATES_ERROR_NOT_FOUND` while its data is not set.
 ///
 /// `out_count` receives the element count even when the buffer is too small;
 /// a null `out` with zero capacity asks only for it.
@@ -470,7 +476,7 @@ pub unsafe extern "C" fn egui_states_data_get(
 }
 
 /// Loads the header of a `Data` state into `reader`. `EGUI_STATES_ERROR_NOT_FOUND`
-/// when the state has no header type or no header was set yet.
+/// when the state has no header type or its data is not set.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn egui_states_data_get_header(
     server: *const egui_states_server_t,
@@ -483,8 +489,9 @@ pub unsafe extern "C" fn egui_states_data_get_header(
 }
 
 /// Replaces the elements of a `Data` state with `count` elements of
-/// `data_type` at `data`, and the header unless `header` is null. `flags` may
-/// be `EGUI_STATES_UPDATE`.
+/// `data_type` at `data`, and the header unless `header` is null. It creates
+/// the data when it is not set, which needs a header with a header type.
+/// `flags` may be `EGUI_STATES_UPDATE`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn egui_states_data_set(
     server: *const egui_states_server_t,
@@ -559,8 +566,8 @@ pub unsafe extern "C" fn egui_states_data_remove(
     })
 }
 
-/// Removes every element; the header stays unless `header` is not null.
-/// `flags` may be `EGUI_STATES_UPDATE`.
+/// Removes every element; the header stays unless `header` is not null, and
+/// the data stays set. `flags` may be `EGUI_STATES_UPDATE`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn egui_states_data_clear(
     server: *const egui_states_server_t,
@@ -591,8 +598,19 @@ pub unsafe extern "C" fn egui_states_data_set_header(
     })
 }
 
-/// Sends a one-shot buffer to a `DataTake` state, with `header`, or the
-/// header type's default when it is null.
+/// Returns the data of a `Data` state and its header to "not set"; data that
+/// is not set stays so. `flags` may be `EGUI_STATES_UPDATE`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn egui_states_data_reset(
+    server: *const egui_states_server_t,
+    id: u64,
+    flags: u32,
+) -> egui_states_status_t {
+    run(server, |server| server.data_reset(id, update_flag(flags)?))
+}
+
+/// Sends a one-shot buffer to a `DataTake` state, with `header`, which must
+/// not be null when the state has a header type.
 ///
 /// `flags` may combine `EGUI_STATES_BLOCKING`, `EGUI_STATES_UPDATE`, and
 /// `EGUI_STATES_CACHE`, which keeps the buffer for clients that connect later.
@@ -637,8 +655,8 @@ pub unsafe extern "C" fn egui_states_data_multi_get(
 }
 
 /// Loads the header at `index` of a `DataMulti` state into `reader`.
-/// `EGUI_STATES_ERROR_NOT_FOUND` when the index is missing, the state has no
-/// header type, or no header was set for the index yet.
+/// `EGUI_STATES_ERROR_NOT_FOUND` when the index is missing or the state has
+/// no header type.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn egui_states_data_multi_get_header(
     server: *const egui_states_server_t,
@@ -652,7 +670,7 @@ pub unsafe extern "C" fn egui_states_data_multi_get_header(
 }
 
 /// Replaces or creates the buffer at `index`, and its header unless `header`
-/// is null; a new index without one gets the default header. `flags` may be
+/// is null; with a header type, a new index needs one. `flags` may be
 /// `EGUI_STATES_UPDATE`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn egui_states_data_multi_set(
