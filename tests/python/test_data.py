@@ -153,10 +153,41 @@ def test_huge_data_indexes_raise_value_error(local_bundle, operation):
     assert_array(multi[4].get(), np.array([1, 2, 3], dtype=np.uint8))
 
 
+def test_data_is_not_set_until_a_set_creates_it(local_bundle):
+    _, states, _ = local_bundle
+    data = states.data.bytes
+    assert data.get() is None
+    changes = {
+        "add": lambda: data.add(np.array([1], dtype=np.uint8)),
+        "replace": lambda: data.replace(np.array([], dtype=np.uint8), 0),
+        "remove": lambda: data.remove(0, 1),
+        "clear": data.clear,
+    }
+    for name, change in changes.items():
+        with pytest.raises(ValueError, match="is not set"):
+            change()
+        assert data.get() is None, name
+    data.reset()
+
+    # Empty data is set, unlike no data.
+    data.set(np.array([], dtype=np.uint8))
+    assert_array(data.get(), np.array([], dtype=np.uint8))
+    data.add(np.array([4], dtype=np.uint8))
+    assert_array(data.get(), np.array([4], dtype=np.uint8))
+    data.reset()
+    assert data.get() is None
+
+
 def test_data_headers_are_stored_with_their_buffer(local_bundle):
     _, states, _ = local_bundle
     series = states.headers.series
     assert series.get_header() is None
+    assert series.get_with_header() is None
+    # The set that creates the data needs a header, and a header needs data.
+    with pytest.raises(ValueError, match="needs a header"):
+        series.set(np.array([1.0], dtype=np.float32))
+    with pytest.raises(ValueError, match="is not set"):
+        series.set_header(HeaderMeta(1.0, "z", []))
     series.set(np.array([1.0], dtype=np.float32), header=HeaderMeta(1.5, "a", [1]))
     series.add(np.array([2.0], dtype=np.float32))
     assert series.get_header() == HeaderMeta(1.5, "a", [1])
@@ -167,11 +198,17 @@ def test_data_headers_are_stored_with_their_buffer(local_bundle):
     series.set_header(HeaderMeta(3.0, "c", [2, 3]))
     assert_array(series.get(), np.array([], dtype=np.float32))
     assert series.get_header() == HeaderMeta(3.0, "c", [2, 3])
+    series.reset()
+    assert series.get_with_header() is None
+    assert series.get_header() is None
 
     keyed = states.headers.keyed
-    keyed[1].set(np.array([7], dtype=np.uint16))
-    assert keyed[1].get_header() is None
-    assert keyed[1].get_with_header()[1] is None
+    with pytest.raises(ValueError, match="needs a header"):
+        keyed[1].set(np.array([7], dtype=np.uint16))
+    keyed[1].set(np.array([7], dtype=np.uint16), header=HeaderMeta(0.5, "y", []))
+    keyed[1].set(np.array([6], dtype=np.uint16))
+    assert keyed[1].get_header() == HeaderMeta(0.5, "y", [])
+    assert keyed[1].get_with_header()[1] == HeaderMeta(0.5, "y", [])
     keyed[1].replace(np.array([8], dtype=np.uint16), 0, header=HeaderMeta(4.0, "d", []))
     assert keyed[1].get_header() == HeaderMeta(4.0, "d", [])
     data, header = keyed[1].get_with_header()
@@ -187,8 +224,14 @@ def test_data_headers_are_stored_with_their_buffer(local_bundle):
     with pytest.raises(ValueError, match="index not found"):
         keyed[1].get_header()
 
-    states.headers.take.set(np.array([1], dtype=np.uint8), header=HeaderMeta(6.0, "f", []))
-    states.headers.keyed_take[3].set(np.array([1], dtype=np.uint8))
+    # Every take carries a header.
+    take, keyed_take = states.headers.take, states.headers.keyed_take
+    with pytest.raises(ValueError, match="needs a header"):
+        take.set(np.array([1], dtype=np.uint8))
+    with pytest.raises(ValueError, match="needs a header"):
+        keyed_take[3].set(np.array([1], dtype=np.uint8))
+    take.set(np.array([1], dtype=np.uint8), header=HeaderMeta(6.0, "f", []))
+    keyed_take[3].set(np.array([1], dtype=np.uint8), header=HeaderMeta(7.0, "g", []))
 
 
 @pytest.mark.parametrize("with_buffer", [False, True])
@@ -202,7 +245,7 @@ def test_a_header_is_decoded_outside_the_storage_lock(local_bundle, monkeypatch,
     _, states, _ = local_bundle
     series = states.headers.series
     keyed = states.headers.keyed
-    series.set_header(HeaderMeta(1.0, "a", []))
+    series.set(np.array([1.0], dtype=np.float32), header=HeaderMeta(1.0, "a", []))
     keyed[1].set(np.array([1], dtype=np.uint16), header=HeaderMeta(1.0, "a", []))
 
     init = HeaderMeta.__init__
@@ -245,8 +288,11 @@ def test_a_header_is_decoded_outside_the_storage_lock(local_bundle, monkeypatch,
 def test_a_header_of_the_wrong_type_changes_nothing(local_bundle):
     _, states, _ = local_bundle
     series = states.headers.series
-    series.set(np.array([1.0], dtype=np.float32))
+    with pytest.raises((TypeError, ValueError)):
+        series.set(np.array([2.0, 3.0], dtype=np.float32), header="not a header")
+    assert series.get_with_header() is None
+    series.set(np.array([1.0], dtype=np.float32), header=HeaderMeta(1.0, "a", []))
     with pytest.raises((TypeError, ValueError)):
         series.set(np.array([2.0, 3.0], dtype=np.float32), header="not a header")
     assert_array(series.get(), np.array([1.0], dtype=np.float32))
-    assert series.get_header() is None
+    assert series.get_header() == HeaderMeta(1.0, "a", [])

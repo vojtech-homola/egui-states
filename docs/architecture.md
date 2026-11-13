@@ -147,24 +147,24 @@ next to its buffer: any `Typed` value up to the size of a value (1 MB), for
 example the shape, the axis scale or the units of the numbers. The header type
 is part of the state type, `Data<f32, Meta>`; `Data<f32>` has no header.
 
+A state with a header type never holds data without a header. The set that
+creates the data of a `Data` or a `DataMulti` key must carry one, and so must
+every take; without it the call fails (`InvalidArgument` in C). The header
+type therefore needs no default, and the client never invents a header.
+
 A change can carry a new header, which the client publishes together with the
 buffer, also when the transfer is split into chunks: readers never see a new
 header with an old buffer. To read the two together, use a `*_with_header`
 getter (not in the C ABI): separate reads of the buffer and the header can each
 see a different change. A change without a header keeps the current one.
-Clearing a buffer keeps its header unless a new one is given; removing a
-`DataMulti` key or resetting the collection drops the headers with the keys,
-and a new key gets the header type's default. A header can also be sent alone.
+Clearing a buffer keeps its header unless a new one is given; resetting a
+`Data`, removing a `DataMulti` key or resetting the collection drops the
+headers with the data. A header can also be sent alone, for data that is set.
 Unlike a buffer change, the client does not acknowledge it, so a header sent
 alone does not wait for the client itself, as with values. It keeps its place
 after the buffer changes of its state, though: while another thread's change
 to the state, or to any key of a `DataMulti`, waits for the client's
 acknowledgement, the header waits behind it.
-
-A header that was never set reads as missing on the server (`None` in Rust and
-Python, `NOT_FOUND` in C), while the client shows the header type's default. A
-`Data` header that was set cannot return to "never set". A take sent without
-a header reaches the client with the default one.
 
 A header that the client cannot accept, because it has the wrong type, is too
 large or does not decode, fails its message like invalid data does: the client
@@ -189,6 +189,14 @@ WASM clients run their synchronization future on the browser executor.
 optional typed header (see [Data headers](#data-headers)). This is
 an efficient same-architecture transport; callers should not treat its raw byte
 form as a portable file format.
+
+A `Data` starts "not set", like a missing `DataMulti` key: its getters return
+`None` on both sides (`NOT_FOUND` in C) until a set creates the data, so an
+empty buffer differs from no data. Only a set creates the data; every other
+change of data that is not set fails, and a reset returns the data to "not
+set". A client keeps its last data across a disconnect, and the
+synchronization of the next connection replaces it with the server's data, or
+returns it to "not set".
 
 Server image shapes use `[height, width]`, origins use `[y, x]`, and public
 server inputs may be gray, gray-alpha, RGB, or RGBA. Client textures expose

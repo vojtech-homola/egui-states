@@ -143,9 +143,10 @@ pub struct NumericStates {
     pub f64_data: Data<f64>,
 }
 
-/// The typed header of the Data header scenario.
+/// The typed header of the Data header scenario. It has no `Default`: a
+/// header type needs none.
 #[egui_states::typed(rust_derive(Debug, PartialEq))]
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct HeaderMeta {
     pub scale: f32,
     pub label: String,
@@ -159,4 +160,6 @@ pub struct HeaderStates {
     pub keyed: DataMulti<u16, HeaderMeta>,
     pub take: DataTake<u8, HeaderMeta>,
     pub keyed_take: DataMultiTake<u8, HeaderMeta>,
+    /// Set by command 35 and reset by command 36.
+    pub transient: Data<u8, HeaderMeta>,
 }

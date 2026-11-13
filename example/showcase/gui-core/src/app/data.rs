@@ -37,25 +37,33 @@ pub(super) fn show_data_take(ui: &mut egui::Ui, state: &mut ViewState) {
     });
 }
 
+/// Describes a Data buffer, which is `None` until the server sets it.
+fn describe<T>(data: Option<&[T]>, preview: impl Fn(&[T]) -> String) -> String {
+    match data {
+        Some(data) => format!("len = {}, preview = {}", data.len(), preview(data)),
+        None => "not set".to_string(),
+    }
+}
+
 pub(super) fn show_data(ui: &mut egui::Ui, state: &mut ViewState) {
     ui.collapsing("data", |ui| {
-        let (bytes_len, bytes_preview) = state
+        let bytes = state
             .schema
             .data
             .bytes
-            .read(|data| (data.len(), preview_slice(data)));
+            .read(|data| describe(data, preview_slice));
         ui.label("Data<u8>: root.data.bytes");
-        ui.label(format!("len = {bytes_len}, preview = {bytes_preview}"));
+        ui.label(bytes);
 
         ui.separator();
 
-        let (samples_len, samples_preview) = state
+        let samples = state
             .schema
             .data
             .samples
-            .read(|data| (data.len(), preview_f32_slice(data)));
+            .read(|data| describe(data, preview_f32_slice));
         ui.label("Data<f32>: root.data.samples");
-        ui.label(format!("len = {samples_len}, preview = {samples_preview}"));
+        ui.label(samples);
 
         ui.separator();
 
@@ -65,15 +73,18 @@ pub(super) fn show_data(ui: &mut egui::Ui, state: &mut ViewState) {
                 .schema
                 .data
                 .measurement
-                .read_with_header(|data, header| {
-                    let summary = format!(
-                        "{}: {} samples at {} Hz in {}",
-                        header.label,
-                        data.len(),
-                        header.sample_rate,
-                        header.unit
-                    );
-                    (summary, preview_f32_slice(data))
+                .read_with_header(|entry| match entry {
+                    Some((data, header)) => {
+                        let summary = format!(
+                            "{}: {} samples at {} Hz in {}",
+                            header.label,
+                            data.len(),
+                            header.sample_rate,
+                            header.unit
+                        );
+                        (summary, preview_f32_slice(data))
+                    }
+                    None => ("not set".to_string(), "[]".to_string()),
                 });
         ui.label("Data<f32, Measurement>: root.data.measurement");
         ui.label(summary);
@@ -81,14 +92,14 @@ pub(super) fn show_data(ui: &mut egui::Ui, state: &mut ViewState) {
 
         ui.separator();
 
-        let (buffer_len, buffer_preview) = state
+        let buffer = state
             .schema
             .data
             .nested
             .buffer
-            .read(|data| (data.len(), preview_slice(data)));
+            .read(|data| describe(data, preview_slice));
         ui.label("Nested Data<u16>: root.data.nested.buffer");
-        ui.label(format!("len = {buffer_len}, preview = {buffer_preview}"));
+        ui.label(buffer);
     });
 }
 

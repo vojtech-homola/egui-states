@@ -102,12 +102,13 @@ pub(crate) struct HeaderBytes {
 }
 
 /// What a Data message does to the state's header.
+///
+/// A message that creates the data of a state with a header type always
+/// sets one; a state without a header type never gets one.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
 pub(crate) enum HeaderUpdate {
     /// The header stays as it is.
     Keep,
-    /// The header returns to its type's default.
-    Default,
     /// The header becomes the one encoded in the payload.
     Set(HeaderBytes),
 }
@@ -118,7 +119,7 @@ impl HeaderUpdate {
     pub(crate) fn len(&self) -> u32 {
         match self {
             Self::Set(header) => header.size,
-            Self::Keep | Self::Default => 0,
+            Self::Keep => 0,
         }
     }
 }
@@ -138,6 +139,9 @@ pub(crate) enum DataHeader {
     Clear(bool, HeaderUpdate),
     /// A new header alone: update flag, header.
     Header(bool, HeaderBytes),
+    /// The data and its header return to "not set": update flag. Only a
+    /// `Data` receives it; a `DataMulti` removes a key instead.
+    Reset(bool),
 }
 
 #[cfg(any(feature = "server", feature = "python"))]
@@ -158,7 +162,7 @@ impl DataHeader {
         match self {
             Self::All(_, _, _, size, _) | Self::End(_, _, _, size, _) => *size,
             Self::StartBatch(_, size) | Self::Batch(size) => *size,
-            Self::Drain(..) | Self::Clear(..) | Self::Header(..) => 0,
+            Self::Drain(..) | Self::Clear(..) | Self::Header(..) | Self::Reset(_) => 0,
         }
     }
 
@@ -168,7 +172,7 @@ impl DataHeader {
             Self::All(.., header) | Self::End(.., header) => header.len(),
             Self::Drain(.., header) | Self::Clear(_, header) => header.len(),
             Self::Header(_, header) => header.size,
-            Self::StartBatch(..) | Self::Batch(_) => 0,
+            Self::StartBatch(..) | Self::Batch(_) | Self::Reset(_) => 0,
         }
     }
 
@@ -177,9 +181,10 @@ impl DataHeader {
     pub(crate) fn update_flag(&self) -> bool {
         match self {
             Self::All(_, _, update, ..) | Self::End(_, _, update, ..) => *update,
-            Self::Drain(_, _, update, _) | Self::Clear(update, _) | Self::Header(update, _) => {
-                *update
-            }
+            Self::Drain(_, _, update, _)
+            | Self::Clear(update, _)
+            | Self::Header(update, _)
+            | Self::Reset(update) => *update,
             Self::StartBatch(..) | Self::Batch(_) => false,
         }
     }
@@ -193,12 +198,12 @@ impl DataHeader {
 #[derive(Serialize, Deserialize)]
 pub(crate) enum DataTakeHeader {
     /// Data type, element count, update flag, element bytes, header (`None`
-    /// for the type's default).
+    /// for a state without a header type).
     All(DataType, u64, bool, u32, Option<HeaderBytes>),
     StartBatch(u64, u32), // total element count, size of first batch
     Batch(u32),           // size of batch
     /// Data type, element count, update flag, element bytes of the last
-    /// batch, header (`None` for the type's default).
+    /// batch, header (`None` for a state without a header type).
     End(DataType, u64, bool, u32, Option<HeaderBytes>),
 }
 

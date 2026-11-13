@@ -34,6 +34,8 @@ numeric buffers, images, custom types, and one-shot transfers are covered in the
 [showcase](example/showcase/README.md). A numeric buffer can carry a typed
 header that describes it, `Data<f32, Meta>`, which the client publishes
 together with the buffer; see [Data headers](docs/architecture.md#data-headers).
+A `Data` reads as `None` until the server sets it, so an empty buffer differs
+from no data; see [numeric data](docs/architecture.md#numeric-and-image-data).
 
 Generate matching server bindings from the same state definition with
 `generate_python` or `generate_rust`. Construct the UI state with

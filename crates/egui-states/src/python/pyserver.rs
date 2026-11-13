@@ -213,22 +213,22 @@ fn encode_single_header(
     Ok(encode_header(Some((header.clone(),)), header_type)?.unwrap_or_default())
 }
 
-/// Decodes a stored header, `None` when none was set.
+/// Decodes a stored header; `None` for a state without a header type.
 ///
 /// The caller copies the header out of the core first: decoding constructs
 /// Python objects, whose code may hand the GIL to a thread that then waits
 /// for the same storage lock.
 fn decode_header<'py>(
     py: Python<'py>,
-    header: Option<Bytes>,
+    header: Bytes,
     header_type: &Option<PyObjectType>,
 ) -> PyResult<Option<Bound<'py, PyAny>>> {
-    match (header, header_type) {
-        (Some(header), Some(object_type)) => {
+    match header_type {
+        Some(object_type) => {
             let mut parser = ValueParser::new(header);
             pyparsing::deserialize_py(py, &mut parser, object_type).map(Some)
         }
-        _ => Ok(None),
+        None => Ok(None),
     }
 }
 
@@ -978,11 +978,16 @@ impl StateServerCore {
     // data -------------------------------------------------------------
     // A Data method takes its new header as `(header,)`, or `None` to keep
     // the current one; the header is encoded before the GIL is released.
-    fn data_get<'py>(&self, py: Python<'py>, value_id: u64) -> PyResult<Bound<'py, PyByteArray>> {
+    // A getter returns `None` while the data is not set.
+    fn data_get<'py>(
+        &self,
+        py: Python<'py>,
+        value_id: u64,
+    ) -> PyResult<Option<Bound<'py, PyByteArray>>> {
         Ok(self
             .inner_data(value_id)?
             .0
-            .get(|data| PyByteArray::new(py, data)))
+            .get(|data| data.map(|data| PyByteArray::new(py, data))))
     }
 
     fn data_get_header<'py>(
@@ -991,25 +996,27 @@ impl StateServerCore {
         value_id: u64,
     ) -> PyResult<Option<Bound<'py, PyAny>>> {
         let (data, header_type) = self.inner_data(value_id)?;
-        let header = data.header(|header| header.map(Bytes::copy_from_slice));
-        decode_header(py, header, header_type)
+        match data.header(|header| header.map(Bytes::copy_from_slice)) {
+            Some(header) => decode_header(py, header, header_type),
+            None => Ok(None),
+        }
     }
 
     /// The buffer and its header under one storage lock; the header is decoded
     /// after the lock is released.
+    #[allow(clippy::type_complexity)]
     fn data_get_with_header<'py>(
         &self,
         py: Python<'py>,
         value_id: u64,
-    ) -> PyResult<(Bound<'py, PyByteArray>, Option<Bound<'py, PyAny>>)> {
+    ) -> PyResult<Option<(Bound<'py, PyByteArray>, Option<Bound<'py, PyAny>>)>> {
         let (data, header_type) = self.inner_data(value_id)?;
-        let (bytes, header) = data.get_with_header(|data, header| {
-            (
-                PyByteArray::new(py, data),
-                header.map(Bytes::copy_from_slice),
-            )
+        let entry = data.get_with_header(|entry| {
+            entry.map(|(data, header)| (PyByteArray::new(py, data), Bytes::copy_from_slice(header)))
         });
-        Ok((bytes, decode_header(py, header, header_type)?))
+        entry
+            .map(|(bytes, header)| Ok((bytes, decode_header(py, header, header_type)?)))
+            .transpose()
     }
 
     fn data_set(
@@ -1133,6 +1140,15 @@ impl StateServerCore {
         })
     }
 
+    fn data_reset(&self, py: Python, value_id: u64, update: bool) -> PyResult<()> {
+        py.detach(|| {
+            self.inner_data(value_id)?
+                .0
+                .reset(update)
+                .map_err(PyValueError::new_err)
+        })
+    }
+
     // data take -------------------------------------------------------
     #[allow(clippy::too_many_arguments)]
     fn data_take_set(
@@ -1182,9 +1198,7 @@ impl StateServerCore {
     ) -> PyResult<Option<Bound<'py, PyAny>>> {
         let (data_multi, header_type) = self.inner_data_multi(value_id)?;
         let header = data_multi
-            .header(index, |header| {
-                header.map(|header| header.map(Bytes::copy_from_slice))
-            })
+            .header(index, |header| header.map(Bytes::copy_from_slice))
             .ok_or_else(|| PyValueError::new_err("DataMulti index not found."))?;
         decode_header(py, header, header_type)
     }
@@ -1201,10 +1215,7 @@ impl StateServerCore {
         let (bytes, header) = data_multi
             .get_with_header(index, |entry| {
                 entry.map(|(data, header)| {
-                    (
-                        PyByteArray::new(py, data),
-                        header.map(Bytes::copy_from_slice),
-                    )
+                    (PyByteArray::new(py, data), Bytes::copy_from_slice(header))
                 })
             })
             .ok_or_else(|| PyValueError::new_err("DataMulti index not found."))?;

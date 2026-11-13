@@ -31,24 +31,41 @@ fn edit_headers(all: &State, command: u32) -> s::Result<()> {
         h.series
             .set_with_header(&[1.0, 2.0], &meta(1.5, "series", &[3]), false)?;
         h.series.add(&[3.0], false)?;
-        h.keyed.set(1, &[7], false)?;
+        h.keyed
+            .set_with_header(1, &[7], &meta(1.0, "first", &[1]), false)?;
         h.keyed
             .set_with_header(2, &[8], &meta(2.0, "keyed", &[1]), false)?;
         h.keyed.set_header(2, &meta(3.0, "renamed", &[]), false)?;
         h.take
             .set_with_header(&[5], &meta(0.5, "take", &[1]), false, false, true)?;
-        h.keyed_take.set(4, &[6], false, false, false)?;
+        h.keyed_take.set_with_header(
+            4,
+            &[6],
+            &meta(0.25, "keyed take", &[]),
+            false,
+            false,
+            false,
+        )?;
+        h.transient
+            .set_with_header(&[9], &meta(9.0, "transient", &[1]), false)?;
         return Ok(());
     }
     h.series.clear(false)?;
     h.series.set_header(&meta(4.0, "cleared", &[0]), false)?;
     h.keyed.remove_index(1, false)?;
+    h.transient.reset(false)?;
     let expected = (
         Some(meta(4.0, "cleared", &[0])),
         None,
         Some(meta(3.0, "renamed", &[])),
+        None,
     );
-    let stored = (h.series.header()?, h.keyed.header(1)?, h.keyed.header(2)?);
+    let stored = (
+        h.series.header()?,
+        h.keyed.header(1)?,
+        h.keyed.header(2)?,
+        h.transient.get_with_header()?,
+    );
     if stored != expected {
         return Err(s::ServerError::new(format!("stored headers: {stored:?}")));
     }

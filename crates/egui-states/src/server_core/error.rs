@@ -6,8 +6,12 @@ use std::fmt;
 /// ABI's status codes. The text is the same whatever the kind.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ErrorKind {
-    /// The state has no entry at the requested key or index.
+    /// The state has no entry at the requested key or index, or its data
+    /// is not set.
     NotFound,
+    /// The call is missing something the state requires, such as the header
+    /// that creates the data of a state with a header type.
+    InvalidArgument,
     /// Any other failure; front-ends report it as they always have.
     Other,
 }
@@ -24,6 +28,13 @@ impl CoreError {
     pub(crate) fn not_found(message: impl Into<String>) -> Self {
         Self {
             kind: ErrorKind::NotFound,
+            message: message.into(),
+        }
+    }
+
+    pub(crate) fn invalid_argument(message: impl Into<String>) -> Self {
+        Self {
+            kind: ErrorKind::InvalidArgument,
             message: message.into(),
         }
     }
