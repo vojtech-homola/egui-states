@@ -720,6 +720,8 @@ mod tests {
         sink.write(b"23").unwrap();
         // Files that follow each other in a folder use the same open folder.
         assert!(Arc::ptr_eq(&first, &folder(&sink)));
+        // On Windows a folder that is still open cannot be removed below.
+        drop(first);
         sink.write(b"456").unwrap();
         sink.finish().unwrap();
         assert!(sink.folders.is_none(), "no folder stays open");
