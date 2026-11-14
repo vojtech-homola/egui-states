@@ -2,6 +2,7 @@ pub mod collections;
 pub mod data;
 pub mod image;
 pub mod sections;
+pub mod transfers;
 
 use collections::{ValueMapStates, ValueVecStates};
 use data::{DataStates, DataTakeStates, MultiDataStates, MultiDataTakeStates, ValueTakeStates};
@@ -22,4 +23,5 @@ pub struct ShowcaseState {
     pub multi_data: MultiDataStates,
     pub data_multi_take: MultiDataTakeStates,
     pub image: ImageStates,
+    pub transfers: transfers::TransferStates,
 }

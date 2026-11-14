@@ -40,6 +40,9 @@
 //! - [`Data`] and [`DataMulti`] efficiently transfer numeric buffers.
 //! - [`Image`] updates one egui texture, while [`ImageMulti`] manages a sparse
 //!   collection of textures indexed by `u32` keys.
+//! - [`Download`] and [`Upload`] transfer files between the peers, next to the
+//!   synchronized state; a transfer only uses the capacity state messages leave
+//!   free.
 //!
 //! # Cargo features
 //!

@@ -68,7 +68,7 @@ uv run --no-sync python -m tests.clean_artifacts --delete  # remove runtime-* on
 
 ## Shared scenarios
 
-The 19 client/server scenarios run against both the Rust and the Python server and
+The 22 client/server scenarios run against both the Rust and the Python server and
 are reported individually by Cargo and pytest. They are registered once in
 `rust-integration/src/scenario_registry.rs`; pytest reads the list from
 `client-probe --list-scenarios`. To add one, register it there, implement it in
@@ -78,6 +78,12 @@ if needed.
 The `*-wire` scenarios send every value shape of the shared schema both ways. Their
 expected values live in `src/scenarios.rs`, `src/fixture.rs`, and
 `integration_server.py`; keep all three equal.
+
+The `file-transfers` and `uploads` scenarios cover file transfers between the
+probe and both servers. The engine, the file sinks, browser downloads over HTTP
+and the zip writer have their own tests in `crates/egui-states`, the
+socket-level ones in `src/server/file_transfer/tests.rs`; the zip test reads the
+archive back with Python's `zipfile` when `python3` is available.
 
 ## Generated code
 

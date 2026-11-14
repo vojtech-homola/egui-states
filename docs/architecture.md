@@ -46,6 +46,9 @@ an application library imported by a separate GUI launcher package.
 - `ValueTake` and `DataTake` carry a server-to-client value that the client
   consumes once. `DataMultiTake` maintains the same lifecycle independently
   for each numeric key.
+- `Download` sends files from the server to the client and `Upload` from the
+  client to the server; see [File transfers](#file-transfers). They hold no
+  value and are never synchronized.
 
 ## Concurrent `Value` writes
 
@@ -135,6 +138,61 @@ value and sends the acknowledgement. For numeric takes, `cache = true` also
 retains the last transfer for synchronization with a newly connected client.
 A reconnected `DataMultiTake` holds only the cached keys: values the client
 had not taken before the disconnect are dropped.
+
+## File transfers
+
+`Download<M>` and `Upload<M>` move files and buffers that are not state. They
+share the WebSocket with the state messages but not its queue.
+
+**Two lanes.** Each peer's writer sends a heartbeat ping first, then any
+queued state message, and a chunk of file data (64 KiB) only when no state
+message waits. The control frames of a transfer (offer, accept, credit,
+cancel, finished) travel with the state messages and keep their order, so a
+state change the server sends after a finished transfer arrives after the
+client sees it done.
+
+**Credit.** The receiver grants a window of 256 KiB and returns credit as its
+sink takes the data. The sender never has more than one window between the
+two applications, wherever the bytes sit: its socket buffer, the network or
+the receiver's queue. A state message therefore waits behind at most about
+`window / link rate` of file data, about 2 ms at 1 Gbit/s, and a slow disk on
+the receiver slows the sender instead of filling memory. The window also caps
+throughput at about one window per round trip, which matters only over long
+round trips.
+
+**Offers.** Nothing flows until the receiver accepts, and the receiver
+chooses the destination; a name from the sender is only a hint. Names are
+checked when an offer arrives (relative, `/` between folders, no `.` or `..`)
+and, before any data flows, against the receiver's system (Windows reserved
+names and characters, names that differ only in letter case). Each file is
+written to a temporary file and renamed over its target when complete, with
+the sender's modification time. When a transfer fails, the partial file is
+removed and complete files of the set stay.
+
+**One at a time.** An endpoint carries at most one unfinished transfer: a
+second send fails with `Busy` or, on the server with `wait`, waits; waiting
+senders are served in call order. Endpoints are independent, but only one
+transfer per direction sends data at a time, so a transfer accepted on a
+second endpoint stays pending until the first finishes. A server endpoint
+without a receiver rejects uploads with "no receiver".
+
+**Disconnects.** A transfer belongs to one connection. A disconnect fails every
+transfer on both sides as disconnected, and nothing is resumed after a
+reconnect. A client process that exits during a transfer can leave a
+temporary `.part` file behind.
+
+**Browsers.** A page cannot write to disk, and the browser's file APIs need
+HTTPS or `localhost`. A browser client therefore accepts a download as browser
+downloads: the server sends a one-time ticket over the WebSocket, and the
+browser fetches `/egui-states/transfer/<ticket>` from the server's port over
+plain HTTP, one download per file (folders flattened into the name) or one
+uncompressed zip of all files. The ticket is the only access control, so it is
+random, works once and expires after 30 seconds. Progress is the server's view
+of the bytes it has sent. These downloads run on their own TCP connection,
+outside the credit window, so they share the link with the state messages
+like any other download. A development server that serves the page must
+forward this path too; the showcase's `Trunk.toml` shows how. Browser uploads
+read `File` objects in slices and travel in the lane like native ones.
 
 ## Data headers
 
