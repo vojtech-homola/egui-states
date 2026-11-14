@@ -607,7 +607,10 @@ fn credit_is_returned_as_the_sink_takes_data() {
                 other => panic!("unexpected {other:?}"),
             }
         }
-        assert!(granted - sent <= FILE_TRANSFER_WINDOW, "outstanding credit");
+        // Each chunk the sink took is returned at once.
+        if sent < total {
+            assert_eq!(granted, (sent + FILE_TRANSFER_WINDOW).min(total));
+        }
     }
     assert_eq!(shared.status(), TransferStatus::Done);
 }

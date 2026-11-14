@@ -241,7 +241,6 @@ struct Transfer {
     sink: Option<Sink>,
     received: u64,
     consumed: u64,
-    granted: u64,
     /// Whether the last chunk has arrived.
     closed: bool,
     /// Chunks waiting for the sink worker. They are part of the transfer, so
@@ -254,6 +253,13 @@ struct Transfer {
 }
 
 impl Transfer {
+    /// Receiver: the bytes the sender may have sent so far. Credit goes back
+    /// as the sink consumes, so this is always a window past the consumed
+    /// bytes.
+    fn granted(&self) -> u64 {
+        (self.consumed + FILE_TRANSFER_WINDOW).min(self.total)
+    }
+
     fn new(serial: u32, shared: Arc<TransferShared>, body: OfferBody, meta: Bytes) -> Self {
         let total = body.files.iter().map(|file| file.size).sum();
         Self {
@@ -271,7 +277,6 @@ impl Transfer {
             sink: None,
             received: 0,
             consumed: 0,
-            granted: 0,
             closed: false,
             #[cfg(not(target_arch = "wasm32"))]
             pending: VecDeque::new(),
@@ -947,7 +952,6 @@ impl Engine {
             let mut transfer = Transfer::new(serial, shared, body, meta);
             transfer.phase = Phase::Receiving;
             transfer.sink = Some(Sink::Discard);
-            transfer.granted = transfer.total.min(FILE_TRANSFER_WINDOW);
             ep.current = Some(transfer);
             state.next_key += 1;
             let mode = AcceptMode::Lane;
@@ -994,7 +998,7 @@ impl Engine {
             Some("an empty chunk")
         } else if t.received + len > t.total {
             Some("more data than announced")
-        } else if t.received + len > t.granted {
+        } else if t.received + len > t.granted() {
             Some("data beyond the granted credit")
         } else if last != (t.received + len == t.total) {
             Some("the last chunk does not end the data")
@@ -1033,6 +1037,7 @@ impl Engine {
         let Some(t) = Self::current_mut(state, endpoint, serial) else {
             return;
         };
+        let granted = t.granted();
         t.consumed += len;
         t.shared.set_done_bytes(t.consumed);
         if t.consumed == t.total {
@@ -1051,7 +1056,10 @@ impl Engine {
             Self::finish_locked(state, endpoint, TransferStatus::Done, fx);
             return;
         }
-        if let Some(bytes) = grant(t) {
+        // What the sink took goes back as credit, so the sender keeps a
+        // steady window in flight instead of refilling it in bursts.
+        let bytes = (t.granted() - granted) as u32;
+        if bytes > 0 {
             self.emit(
                 state,
                 endpoint,
@@ -1551,18 +1559,6 @@ fn cancelled(reason: Option<String>) -> TransferStatus {
     })
 }
 
-/// The credit to return once the receiver's outstanding grant has fallen to
-/// half a window, if any.
-fn grant(t: &mut Transfer) -> Option<u32> {
-    if t.granted >= t.total || t.granted - t.consumed > FILE_TRANSFER_WINDOW / 2 {
-        return None;
-    }
-    let granted = (t.consumed + FILE_TRANSFER_WINDOW).min(t.total);
-    let bytes = granted - t.granted;
-    t.granted = granted;
-    Some(bytes as u32)
-}
-
 impl OfferToken {
     /// The handle the transfer will have.
     #[cfg_attr(any(not(feature = "client"), target_arch = "wasm32"), allow(dead_code))]
@@ -1658,7 +1654,6 @@ impl OfferToken {
             } else {
                 t.phase = Phase::Receiving;
                 t.sink = Some(sink);
-                t.granted = t.total.min(FILE_TRANSFER_WINDOW);
                 if let Some(path) = path {
                     t.shared.set_path(path);
                 }
