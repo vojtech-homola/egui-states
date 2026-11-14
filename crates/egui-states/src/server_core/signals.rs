@@ -40,6 +40,8 @@ struct ChangedInner {
     indexes: Vec<u64>,
     blocked_list: NoHashSet<u64>,     // ids blocked by some thread
     registered: NoHashMap<u64, bool>, // ids registered to be signaled -> wants previous value
+    /// Ids whose pending changes survive a disconnect, like the reserved ones.
+    persistent: NoHashSet<u64>,
 }
 
 impl ChangedInner {
@@ -49,12 +51,14 @@ impl ChangedInner {
             indexes: Vec::new(),
             blocked_list: NoHashSet::default(),
             registered: NoHashMap::default(),
+            persistent: NoHashSet::default(),
         }
     }
 
     fn clear(&mut self) {
+        let persistent = &self.persistent;
         self.values.retain(|id, signal| match signal {
-            _ if *id <= MAX_RESERVED_ID => true,
+            _ if *id <= MAX_RESERVED_ID || persistent.contains(id) => true,
             // An empty queue is what records queue mode, so keep it and drop
             // only the pending changes.
             Signal::Queue(queue) => {
@@ -63,7 +67,8 @@ impl ChangedInner {
             }
             Signal::Single(_) => false,
         });
-        self.indexes.retain(|id| *id <= MAX_RESERVED_ID);
+        self.indexes
+            .retain(|id| *id <= MAX_RESERVED_ID || persistent.contains(id));
         // Keep claimed ids blocked: their callbacks may still be running and are
         // released when the worker passes the id back.
     }
@@ -379,6 +384,21 @@ impl SignalsManager {
 
     pub(crate) fn set_to_queue(&self, id: u64) {
         self.values.lock().set_to_queue(id);
+    }
+
+    /// Keeps every event of `id` in order and through a disconnect: the
+    /// events of a transfer endpoint report transfers that the disconnect
+    /// itself ends.
+    pub(crate) fn set_persistent(&self, id: u64) {
+        let mut values = self.values.lock();
+        values.set_to_queue(id);
+        values.persistent.insert(id);
+    }
+
+    /// Whether `id` has a consumer; an event for an id without one is
+    /// dropped.
+    pub(crate) fn is_registered(&self, id: u64) -> bool {
+        self.values.lock().registered.contains_key(&id)
     }
 
     pub(crate) fn set_to_single(&self, id: u64) {

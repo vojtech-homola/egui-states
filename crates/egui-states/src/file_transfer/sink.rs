@@ -9,6 +9,12 @@ pub(crate) enum Sink {
     /// Drops the data, for benchmarks.
     #[cfg(any(test, feature = "bench"))]
     Discard,
+    /// Files on disk, written by the connection's sink worker.
+    #[cfg(not(target_arch = "wasm32"))]
+    Files {
+        sink: Box<crate::file_transfer::fs::FileSink>,
+        single: bool,
+    },
 }
 
 impl Sink {
@@ -36,6 +42,15 @@ impl Sink {
             }
             #[cfg(any(test, feature = "bench"))]
             Self::Discard => Ok(()),
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::Files { single, .. } => {
+                if *single && files != 1 {
+                    return Err(TransferError::Unsupported(format!(
+                        "the offer has {files} files; accept it into a folder"
+                    )));
+                }
+                Ok(())
+            }
         }
     }
 
@@ -46,6 +61,8 @@ impl Sink {
             Self::Memory { .. } => true,
             #[cfg(any(test, feature = "bench"))]
             Self::Discard => true,
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::Files { .. } => false,
         }
     }
 
@@ -61,6 +78,8 @@ impl Sink {
             }
             #[cfg(any(test, feature = "bench"))]
             Self::Discard => Ok(()),
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::Files { .. } => unreachable!("file sinks are written by the worker"),
         }
     }
 
@@ -70,6 +89,8 @@ impl Sink {
             Self::Memory { data, .. } => Some(data),
             #[cfg(any(test, feature = "bench"))]
             Self::Discard => None,
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::Files { .. } => None,
         }
     }
 }

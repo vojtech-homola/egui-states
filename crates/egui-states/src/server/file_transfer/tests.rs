@@ -249,3 +249,272 @@ fn sending_without_a_client_is_refused() {
         TransferError::InvalidInput("a timeout needs wait".to_string())
     );
 }
+
+fn temp_dir(name: &str) -> std::path::PathBuf {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "egui_states_transfer_{name}_{}_{}",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+fn listing(dir: &std::path::Path) -> Vec<String> {
+    fn walk(dir: &std::path::Path, root: &std::path::Path, out: &mut Vec<String>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                walk(&path, root, out);
+            } else {
+                out.push(
+                    path.strip_prefix(root)
+                        .unwrap()
+                        .to_string_lossy()
+                        .replace('\\', "/"),
+                );
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(dir, dir, &mut out);
+    out.sort();
+    out
+}
+
+#[test]
+fn files_are_saved_with_their_names_and_times() {
+    if crate::test_support::isolated() {
+        return;
+    }
+    let peers = Peers::connect();
+    let source = temp_dir("source");
+    let target = temp_dir("target");
+    std::fs::create_dir_all(source.join("run/frames")).unwrap();
+    std::fs::write(source.join("run/a.bin"), data(700_000)).unwrap();
+    std::fs::write(source.join("run/frames/0001.raw"), data(5)).unwrap();
+    std::fs::write(source.join("run/empty"), b"").unwrap();
+    let time = std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(1_600_000_000);
+    std::fs::File::options()
+        .write(true)
+        .open(source.join("run/a.bin"))
+        .unwrap()
+        .set_modified(time)
+        .unwrap();
+
+    let reported = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen = reported.clone();
+    let _callback = peers.files.connect(move |handle| {
+        seen.lock()
+            .unwrap()
+            .push((handle.name().to_string(), handle.status()));
+    });
+
+    // One file, replacing an existing one.
+    std::fs::write(target.join("saved.bin"), b"old").unwrap();
+    let sent = peers
+        .files
+        .send_file(source.join("run/a.bin"), None, &(), false, None)
+        .unwrap();
+    let offer = wait("offer", || peers.states.files.take_offer());
+    assert_eq!(offer.name(), "a.bin");
+    assert_eq!(
+        offer.files()[0].modified(),
+        Some(time),
+        "the offer carries the time"
+    );
+    let received = offer.accept_file(target.join("saved.bin"));
+    sent.wait(Some(Duration::from_secs(10))).unwrap();
+    assert_eq!(finished(&received), TransferStatus::Done);
+    assert_eq!(
+        std::fs::read(target.join("saved.bin")).unwrap(),
+        data(700_000)
+    );
+    let modified = std::fs::metadata(target.join("saved.bin"))
+        .unwrap()
+        .modified()
+        .unwrap();
+    assert_eq!(modified, time);
+    assert_eq!(listing(&target), ["saved.bin"], "no temporary file is left");
+
+    // Several files with their folders.
+    let paths = [
+        source.join("run/a.bin"),
+        source.join("run/frames/0001.raw"),
+        source.join("run/empty"),
+    ];
+    let sent = peers
+        .files
+        .send_files(&paths, "run", Some(&source), &(), false, None)
+        .unwrap();
+    let offer = wait("offer", || peers.states.files.take_offer());
+    assert_eq!(offer.files().len(), 3);
+    let received = offer.accept_dir(target.join("copy"));
+    sent.wait(Some(Duration::from_secs(10))).unwrap();
+    assert_eq!(finished(&received), TransferStatus::Done);
+    assert_eq!(
+        listing(&target.join("copy")),
+        ["run/a.bin", "run/empty", "run/frames/0001.raw"]
+    );
+    assert_eq!(received.progress().files_done, 3);
+    assert_eq!(
+        std::fs::read(target.join("copy/run/frames/0001.raw")).unwrap(),
+        data(5)
+    );
+
+    // A folder offer cannot go into one file.
+    let sent = peers
+        .files
+        .send_files(&paths, "run", Some(&source), &(), false, None)
+        .unwrap();
+    let refused = wait("offer", || peers.states.files.take_offer()).accept_file(target.join("x"));
+    assert!(matches!(
+        refused.status(),
+        TransferStatus::Failed(TransferError::Unsupported(_))
+    ));
+    assert!(matches!(
+        sent.wait(Some(Duration::from_secs(10))).unwrap_err(),
+        TransferError::Rejected(_)
+    ));
+
+    wait("callbacks", || {
+        (reported.lock().unwrap().len() == 3).then_some(())
+    });
+    let reported = reported.lock().unwrap().clone();
+    assert_eq!(reported[0], ("a.bin".to_string(), TransferStatus::Done));
+    assert_eq!(reported[1], ("run".to_string(), TransferStatus::Done));
+    assert!(matches!(
+        reported[2].1,
+        TransferStatus::Failed(TransferError::Rejected(_))
+    ));
+    let _ = std::fs::remove_dir_all(&source);
+    let _ = std::fs::remove_dir_all(&target);
+}
+
+#[test]
+fn pickers_run_off_the_calling_thread() {
+    if crate::test_support::isolated() {
+        return;
+    }
+    let peers = Peers::connect();
+    let target = temp_dir("picked");
+
+    let sent = peers
+        .files
+        .send_bytes(data(1000), "a.bin", &(), false, None)
+        .unwrap();
+    let offer = wait("offer", || peers.states.files.take_offer());
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let path = target.join("picked.bin");
+    let handle = offer.accept_file_with(move |offer| {
+        assert_eq!(offer.name(), "a.bin");
+        released.recv().unwrap();
+        Some(path)
+    });
+    assert_eq!(handle.status(), TransferStatus::Pending);
+    assert!(
+        peers.states.files.last().is_some(),
+        "last() shows the picking transfer"
+    );
+    release.send(()).unwrap();
+    assert_eq!(finished(&handle), TransferStatus::Done);
+    sent.wait(Some(Duration::from_secs(10))).unwrap();
+    assert_eq!(
+        std::fs::read(target.join("picked.bin")).unwrap(),
+        data(1000)
+    );
+
+    // A closed dialog rejects the offer.
+    let sent = peers
+        .files
+        .send_bytes(data(10), "b.bin", &(), false, None)
+        .unwrap();
+    let handle = wait("offer", || peers.states.files.take_offer()).accept_dir_with(|_| None);
+    assert_eq!(
+        finished(&handle),
+        TransferStatus::Failed(TransferError::Cancelled {
+            by_peer: false,
+            reason: None
+        })
+    );
+    assert_eq!(
+        sent.wait(Some(Duration::from_secs(10))).unwrap_err(),
+        TransferError::Rejected("cancelled by user".to_string())
+    );
+    let _ = std::fs::remove_dir_all(&target);
+}
+
+#[test]
+fn a_cancelled_download_leaves_no_partial_file() {
+    if crate::test_support::isolated() {
+        return;
+    }
+    let peers = Peers::connect();
+    let source = temp_dir("big_source");
+    let target = temp_dir("big_target");
+    let file = std::fs::File::create(source.join("big.bin")).unwrap();
+    file.set_len(512 * 1024 * 1024).unwrap();
+    drop(file);
+
+    let sent = peers
+        .files
+        .send_file(source.join("big.bin"), None, &(), false, None)
+        .unwrap();
+    let received =
+        wait("offer", || peers.states.files.take_offer()).accept_file(target.join("big.bin"));
+    wait("progress", || (received.progress().done > 0).then_some(()));
+    sent.cancel_with("enough");
+    assert_eq!(
+        finished(&received),
+        TransferStatus::Failed(TransferError::Cancelled {
+            by_peer: true,
+            reason: Some("enough".to_string())
+        })
+    );
+    wait("cleanup", || listing(&target).is_empty().then_some(()));
+
+    // A file that changes size after the offer fails both sides.
+    std::fs::write(source.join("small.bin"), data(100)).unwrap();
+    let sent = peers
+        .files
+        .send_file(source.join("small.bin"), None, &(), false, None)
+        .unwrap();
+    std::fs::write(source.join("small.bin"), data(50)).unwrap();
+    let received =
+        wait("offer", || peers.states.files.take_offer()).accept_file(target.join("small.bin"));
+    assert!(matches!(
+        sent.wait(Some(Duration::from_secs(10))).unwrap_err(),
+        TransferError::Io(_)
+    ));
+    assert!(matches!(
+        finished(&received),
+        TransferStatus::Failed(TransferError::Io(_))
+    ));
+    wait("cleanup", || listing(&target).is_empty().then_some(()));
+
+    assert!(matches!(
+        peers
+            .files
+            .send_file(source.join("missing"), None, &(), false, None)
+            .unwrap_err(),
+        TransferError::Io(_)
+    ));
+    assert!(matches!(
+        peers
+            .files
+            .send_files(
+                &[source.join("small.bin")],
+                "x",
+                Some(&target),
+                &(),
+                false,
+                None
+            )
+            .unwrap_err(),
+        TransferError::InvalidInput(_)
+    ));
+    let _ = std::fs::remove_dir_all(&source);
+    let _ = std::fs::remove_dir_all(&target);
+}

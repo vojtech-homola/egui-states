@@ -76,6 +76,8 @@ struct DataLane {
     /// The connection's generation in the engine.
     generation: u64,
     pump: JoinHandle<()>,
+    /// Writes received files.
+    sinks: JoinHandle<()>,
 }
 
 pub(crate) async fn run<L: Listener>(
@@ -206,10 +208,13 @@ pub(crate) async fn run<L: Listener>(
                 pump_engine.detach(generation);
             }
         });
+        let sink_engine = transfers.clone();
+        let sinks = tokio::spawn(async move { sink_engine.sink_worker(generation).await });
         let lane = DataLane {
             chunks,
             generation,
             pump,
+            sinks,
         };
 
         let activity = socket_reader.activity();
@@ -461,6 +466,7 @@ async fn writer<K: FrameSink>(
         mut chunks,
         generation,
         pump,
+        sinks,
     } = lane;
     let mut chunks_open = true;
 
@@ -547,6 +553,7 @@ async fn writer<K: FrameSink>(
     // Every unfinished transfer fails as disconnected.
     transfers.detach(generation);
     pump.abort();
+    sinks.abort();
     // A reader that ends the connection itself drops the client's pending
     // changes; an aborted one never gets there, so their callbacks would
     // otherwise run after the disconnect.

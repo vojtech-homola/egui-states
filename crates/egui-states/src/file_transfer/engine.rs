@@ -92,12 +92,30 @@ struct State {
     queue: VecDeque<(u64, u32)>,
     next_key: u64,
     next_waiter: u64,
+    /// The job queue of the attached connection, until its worker takes it.
+    #[cfg(not(target_arch = "wasm32"))]
+    jobs: Option<(u64, mpsc::UnboundedReceiver<SinkJob>)>,
 }
 
 struct Connection {
     lane: StateLane,
     generation: u64,
+    /// Chunks for the sinks that block, written by [`Engine::sink_worker`].
+    #[cfg(not(target_arch = "wasm32"))]
+    jobs: mpsc::UnboundedSender<SinkJob>,
 }
+
+/// A chunk for a sink that blocks.
+#[cfg(not(target_arch = "wasm32"))]
+struct SinkJob {
+    endpoint: u64,
+    serial: u32,
+    data: Bytes,
+}
+
+/// Bytes the sink worker writes in one blocking call.
+#[cfg(not(target_arch = "wasm32"))]
+const SINK_BATCH: usize = 1024 * 1024;
 
 struct Endpoint {
     role: Role,
@@ -219,6 +237,8 @@ impl Engine {
                 queue: VecDeque::new(),
                 next_key: 0,
                 next_waiter: 0,
+                #[cfg(not(target_arch = "wasm32"))]
+                jobs: None,
             }),
             free: Condvar::new(),
             pump: Notify::new(),
@@ -300,8 +320,134 @@ impl Engine {
         let mut state = self.0.state.lock();
         state.generation += 1;
         let generation = state.generation;
-        state.connection = Some(Connection { lane, generation });
+        #[cfg(not(target_arch = "wasm32"))]
+        let (jobs, jobs_rx) = mpsc::unbounded_channel();
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            state.jobs = Some((generation, jobs_rx));
+        }
+        state.connection = Some(Connection {
+            lane,
+            generation,
+            #[cfg(not(target_arch = "wasm32"))]
+            jobs,
+        });
         generation
+    }
+
+    /// Writes the chunks of sinks that block, for the connection of
+    /// `generation`, until it is detached. Each batch runs on a blocking
+    /// thread; credit goes back once it is written, so a slow disk slows the
+    /// sender down.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) async fn sink_worker(&self, generation: u64) {
+        let jobs = {
+            let mut state = self.0.state.lock();
+            match state.jobs.take() {
+                Some((jobs_generation, jobs)) if jobs_generation == generation => Some(jobs),
+                other => {
+                    state.jobs = other;
+                    None
+                }
+            }
+        };
+        let Some(mut jobs) = jobs else {
+            return;
+        };
+        let mut pending: Option<SinkJob> = None;
+        loop {
+            let first = match pending.take() {
+                Some(job) => job,
+                None => match jobs.recv().await {
+                    Some(job) => job,
+                    None => return,
+                },
+            };
+            let (endpoint, serial) = (first.endpoint, first.serial);
+            let mut len = first.data.len();
+            let mut batch = vec![first.data];
+            while len < SINK_BATCH {
+                match jobs.try_recv() {
+                    Ok(job) if job.endpoint == endpoint && job.serial == serial => {
+                        len += job.data.len();
+                        batch.push(job.data);
+                    }
+                    Ok(job) => {
+                        pending = Some(job);
+                        break;
+                    }
+                    Err(_) => break,
+                }
+            }
+
+            let taken = {
+                let mut state = self.0.state.lock();
+                Self::current_mut(&mut state, endpoint, serial)
+                    .filter(|t| t.phase == Phase::Receiving)
+                    .and_then(|t| {
+                        let finishing = t.consumed + len as u64 == t.total;
+                        match t.sink.take() {
+                            Some(Sink::Files { sink, single }) => Some((sink, single, finishing)),
+                            other => {
+                                t.sink = other;
+                                None
+                            }
+                        }
+                    })
+            };
+            let Some((mut sink, single, finishing)) = taken else {
+                continue;
+            };
+            let written = tokio::task::spawn_blocking(move || {
+                let mut result = Ok(());
+                for data in &batch {
+                    result = sink.write(data);
+                    if result.is_err() {
+                        break;
+                    }
+                }
+                if result.is_ok() && finishing {
+                    result = sink.finish();
+                }
+                (sink, result)
+            })
+            .await;
+
+            let mut fx = Effects::default();
+            {
+                let mut state = self.0.state.lock();
+                if state
+                    .connection
+                    .as_ref()
+                    .is_none_or(|c| c.generation != generation)
+                {
+                    return;
+                }
+                match written {
+                    Ok((sink, Ok(()))) => {
+                        if let Some(t) = Self::current_mut(&mut state, endpoint, serial) {
+                            t.sink = Some(Sink::Files { sink, single });
+                            self.consumed(&mut state, endpoint, serial, len as u64, &mut fx);
+                        }
+                    }
+                    Ok((sink, Err(error))) => {
+                        // Removes the partial file.
+                        drop(sink);
+                        if Self::current_mut(&mut state, endpoint, serial).is_some() {
+                            let error = TransferError::Io(error.to_string());
+                            self.fail_locked(&mut state, endpoint, serial, error, &mut fx);
+                        }
+                    }
+                    Err(error) => {
+                        if Self::current_mut(&mut state, endpoint, serial).is_some() {
+                            let error = TransferError::Io(format!("writing failed: {error}"));
+                            self.fail_locked(&mut state, endpoint, serial, error, &mut fx);
+                        }
+                    }
+                }
+            }
+            self.apply(fx);
+        }
     }
 
     /// Detaches the connection of `generation`: every unfinished transfer
@@ -653,7 +799,7 @@ impl Engine {
         endpoint: u64,
         serial: u32,
         last: bool,
-        payload: &[u8],
+        payload: &Bytes,
         fx: &mut Effects,
     ) {
         let Some(t) = Self::current_mut(state, endpoint, serial) else {
@@ -682,13 +828,32 @@ impl Engine {
         }
         t.received += len;
         t.shared.set_status(TransferStatus::Running);
-        let sink = t.sink.as_mut().expect("an accepted transfer has a sink");
+        let Some(sink) = t.sink.as_mut() else {
+            // The sink worker holds the sink; it takes the chunk in order.
+            #[cfg(not(target_arch = "wasm32"))]
+            self.queue_job(state, endpoint, serial, payload);
+            return;
+        };
         if sink.is_inline() {
             if let Err(error) = sink.write_inline(payload) {
                 self.fail_locked(state, endpoint, serial, error, fx);
                 return;
             }
             self.consumed(state, endpoint, serial, len, fx);
+        } else {
+            #[cfg(not(target_arch = "wasm32"))]
+            self.queue_job(state, endpoint, serial, payload);
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn queue_job(&self, state: &State, endpoint: u64, serial: u32, payload: &Bytes) {
+        if let Some(connection) = &state.connection {
+            let _ = connection.jobs.send(SinkJob {
+                endpoint,
+                serial,
+                data: payload.clone(),
+            });
         }
     }
 

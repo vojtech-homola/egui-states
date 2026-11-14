@@ -155,6 +155,132 @@ impl<M> TransferOffer<M> {
         self.token.is_cancelled()
     }
 
+    /// Accepts a single-file offer into the file at `path`.
+    ///
+    /// The data goes to a temporary file next to `path`, which replaces any
+    /// existing file only once the transfer is complete; a failed transfer
+    /// removes it. Missing folders are created, and the modification time
+    /// the server sent is kept. An offer of several files is rejected, and
+    /// the handle fails. No disk access happens in this call.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn accept_file(self, path: impl Into<std::path::PathBuf>) -> TransferHandle {
+        let path = path.into();
+        self.accept_files(crate::file_transfer::fs::Target::File(path))
+    }
+
+    /// Accepts the offer into the folder `dir`, every file under its own
+    /// name; names like `run42/0001.tiff` create subfolders.
+    ///
+    /// Each file is written as with [`Self::accept_file`]. If the transfer
+    /// fails, files already complete stay. No disk access happens in this
+    /// call.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn accept_dir(self, dir: impl Into<std::path::PathBuf>) -> TransferHandle {
+        let dir = dir.into();
+        self.accept_files(crate::file_transfer::fs::Target::Dir(dir))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn accept_files(self, target: crate::file_transfer::fs::Target) -> TransferHandle {
+        use crate::file_transfer::fs::{FileSink, Target};
+        let single = matches!(target, Target::File(_));
+        let path = FileSink::display_path(&target);
+        let body = OfferBody {
+            name: self.name.clone(),
+            files: self
+                .files
+                .iter()
+                .map(|file| FileEntry {
+                    name: file.name.clone(),
+                    size: file.size,
+                    modified: file.modified.and_then(millis_from_time),
+                })
+                .collect(),
+        };
+        let sink = FileSink::new(target, &body.files);
+        let sink = Sink::Files {
+            sink: Box::new(sink),
+            single,
+        };
+        TransferHandle::new(self.token.accept(sink, AcceptMode::Lane, Some(path)))
+    }
+
+    /// Accepts the offer into a single-file path that `pick` returns, for
+    /// example from a file dialog.
+    ///
+    /// Returns a pending handle at once and runs `pick` on its own thread, so
+    /// a blocking dialog does not stop the UI. `None` rejects the offer as
+    /// cancelled by the user. An offer of several files fails at once, and
+    /// `pick` is not run.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn accept_file_with(
+        self,
+        pick: impl FnOnce(&TransferOffer<M>) -> Option<std::path::PathBuf> + Send + 'static,
+    ) -> TransferHandle
+    where
+        M: Send + 'static,
+    {
+        if self.files.len() != 1 {
+            let error = TransferError::Unsupported(format!(
+                "the offer has {} files; accept it into a folder",
+                self.files.len()
+            ));
+            return TransferHandle::new(self.token.fail(error));
+        }
+        self.pick_then(pick, |offer, path| offer.accept_file(path))
+    }
+
+    /// Accepts the offer into a folder that `pick` returns, for example from
+    /// a folder dialog; see [`Self::accept_dir`] and
+    /// [`Self::accept_file_with`].
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn accept_dir_with(
+        self,
+        pick: impl FnOnce(&TransferOffer<M>) -> Option<std::path::PathBuf> + Send + 'static,
+    ) -> TransferHandle
+    where
+        M: Send + 'static,
+    {
+        self.pick_then(pick, |offer, dir| offer.accept_dir(dir))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn pick_then(
+        self,
+        pick: impl FnOnce(&TransferOffer<M>) -> Option<std::path::PathBuf> + Send + 'static,
+        accept: fn(TransferOffer<M>, std::path::PathBuf) -> TransferHandle,
+    ) -> TransferHandle
+    where
+        M: Send + 'static,
+    {
+        self.token.expose();
+        let handle = TransferHandle::new(self.token.shared().clone());
+        // A thread of its own: a dialog may stay open for minutes, and the
+        // runtime's threads carry the connection.
+        let spawned = std::thread::Builder::new()
+            .name("egui_states_pick".to_string())
+            .spawn(move || match pick(&self) {
+                Some(path) => {
+                    accept(self, path);
+                }
+                None => self.token.reject(
+                    "cancelled by user",
+                    Some(TransferError::Cancelled {
+                        by_peer: false,
+                        reason: None,
+                    }),
+                ),
+            });
+        if let Err(error) = spawned {
+            // The offer was moved into the closure that failed to start;
+            // dropping it rejected the offer.
+            handle
+                .shared
+                .cancel(Some(format!("cannot start the picker: {error}")));
+        }
+        handle
+    }
+
     /// Accepts a single-file offer into memory, up to `limit` bytes; take the
     /// data with [`TransferHandle::take_data`] once it is done.
     ///
@@ -223,6 +349,16 @@ fn encode_meta<M: TransferMeta>(meta: &M) -> Result<Bytes, TransferError> {
     postcard::to_stdvec(meta)
         .map(Bytes::from)
         .map_err(|error| TransferError::Meta(error.to_string()))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn millis_from_time(time: SystemTime) -> Option<i64> {
+    match time.duration_since(SystemTime::UNIX_EPOCH) {
+        Ok(after) => i64::try_from(after.as_millis()).ok(),
+        Err(before) => i64::try_from(before.duration().as_millis())
+            .ok()
+            .map(|ms| -ms),
+    }
 }
 
 fn time_from_millis(millis: i64) -> Option<SystemTime> {

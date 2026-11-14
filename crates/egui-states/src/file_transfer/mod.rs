@@ -12,6 +12,8 @@
 //! message waits behind at most one window of file data.
 
 pub(crate) mod engine;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod fs;
 pub(crate) mod names;
 pub(crate) mod shared;
 pub(crate) mod sink;

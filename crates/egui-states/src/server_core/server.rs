@@ -17,7 +17,7 @@ use crate::file_transfer::engine::{Engine, Role, Side};
 use crate::hashing::{MAX_RESERVED_ID, NoHashMap, generate_value_id};
 use crate::protocol::data::DataType;
 use crate::protocol::{ServerHeader, check_value_size, serialize};
-use crate::server_core::file_transfer::TransferEndpoint;
+use crate::server_core::file_transfer::{TransferEndpoint, TransferEvents};
 use crate::server_core::http::origin::OriginPolicy;
 use crate::server_core::http::web::{WebSite, WebSlot};
 use crate::server_core::net::heartbeat::Heartbeat;
@@ -321,6 +321,7 @@ pub(crate) struct Server {
     web: WebSlot,
     /// The engine of the file transfer endpoints.
     transfers: Engine,
+    transfer_events: Arc<TransferEvents>,
 
     /// Held by `start` and `stop` for their whole run, including the join of
     /// the server thread, so they never overlap. Nothing that a connected
@@ -371,6 +372,10 @@ impl Server {
         let connected = Arc::new(AtomicBool::new(false));
         let (sender, rx) = MessageSender::new();
         let signals = SignalsManager::new();
+        let transfers = Engine::new(Side::Server, None);
+        let transfer_events = Arc::new(TransferEvents::default());
+        let (events, event_signals) = (transfer_events.clone(), signals.clone());
+        transfers.set_event_hook(Arc::new(move |event| events.record(event, &event_signals)));
 
         Self {
             connected,
@@ -381,7 +386,8 @@ impl Server {
             signals,
             config,
             web: WebSlot::default(),
-            transfers: Engine::new(Side::Server, None),
+            transfers,
+            transfer_events,
             runner_state: Mutex::new(RunnerState::Stopped(rx)),
         }
     }
@@ -832,6 +838,11 @@ impl Server {
         &self.transfers
     }
 
+    /// Finished transfers waiting for their callbacks.
+    pub(crate) fn transfer_events(&self) -> &Arc<TransferEvents> {
+        &self.transfer_events
+    }
+
     /// Registers an endpoint that sends files to the client; `meta_type` is
     /// the type id of its metadata, 0 for none.
     pub(crate) fn add_download(&mut self, name: &str, meta_type: u32) -> Result<u64, String> {
@@ -861,6 +872,7 @@ impl Server {
             })
         })?;
         self.transfers.register(id, role, meta_type);
+        self.signals.set_persistent(id);
         Ok(id)
     }
 

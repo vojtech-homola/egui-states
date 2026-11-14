@@ -59,7 +59,7 @@ mod test_support;
 #[cfg(all(test, feature = "server", feature = "client"))]
 mod bench_support_test {
     pub(crate) fn discard(upload: &crate::server::Upload<impl crate::server::TransferMeta>) {
-        upload.engine.discard_offers(upload.id);
+        upload.discard_offers();
     }
 }
 

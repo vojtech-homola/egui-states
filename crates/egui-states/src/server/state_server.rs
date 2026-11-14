@@ -583,7 +583,11 @@ impl StateServer {
         name: String,
         meta_type: u32,
         download: bool,
-    ) -> Result<(u64, crate::file_transfer::engine::Engine)> {
+    ) -> Result<(
+        u64,
+        crate::file_transfer::engine::Engine,
+        Arc<crate::server_core::file_transfer::TransferEvents>,
+    )> {
         let mut server = self.inner.server.write();
         let id = if download {
             server.add_download(&name, meta_type)
@@ -591,7 +595,11 @@ impl StateServer {
             server.add_upload(&name, meta_type)
         }
         .map_err(ServerError::new)?;
-        Ok((id, server.transfers().clone()))
+        Ok((
+            id,
+            server.transfers().clone(),
+            server.transfer_events().clone(),
+        ))
     }
 
     pub(super) fn add_data_take<T>(

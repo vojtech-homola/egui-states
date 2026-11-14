@@ -203,6 +203,8 @@ async fn run_session(
     #[cfg(not(target_arch = "wasm32"))]
     let (recv_end, send_end) = {
         let pump_task = tokio::spawn(pump_future);
+        let sink_engine = transfers.clone();
+        let sink_task = tokio::spawn(async move { sink_engine.sink_worker(generation).await });
         let recv_task = tokio::spawn(recv_future);
         let send_task = tokio::spawn(send_future);
         let recv_end = recv_task.await.unwrap_or_else(|error| {
@@ -213,6 +215,7 @@ async fn run_session(
         let send_end = send_task.await.map_err(join_error_message);
         transfers.detach(generation);
         pump_task.abort();
+        sink_task.abort();
         (recv_end, send_end?)
     };
 
