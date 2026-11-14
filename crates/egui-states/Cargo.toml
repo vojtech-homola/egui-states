@@ -13,7 +13,6 @@ default = ["client"]
 client = ["dep:egui"]
 server = ["tokio/macros", "dep:httparse"]
 python = ["tokio/macros", "dep:pyo3", "dep:httparse"]
-c_abi = ["server"]
 # Exposes internals to the `egui_states_bench` benchmarks; not a public API.
 bench = ["server", "client"]
 build_scripts = ["client"]

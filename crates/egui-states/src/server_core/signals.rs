@@ -343,7 +343,7 @@ impl SignalsManager {
     /// Releases a claimed id that will never be passed back to
     /// [`Self::claim`], because the caller failed before it could use the
     /// value.
-    #[cfg(any(feature = "python", feature = "c_abi", test))]
+    #[cfg(any(feature = "python", test))]
     pub(crate) fn release(&self, id: u64) {
         self.values.lock().blocked_list.remove(&id);
         // Anything that arrived while the id was blocked did not set the event

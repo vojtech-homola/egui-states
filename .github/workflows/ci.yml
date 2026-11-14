@@ -57,8 +57,6 @@ jobs:
         if: ${{ !cancelled() }}
       - run: cargo clippy --locked -p egui_states --features "server build_scripts python" --all-targets -- -D warnings
         if: ${{ !cancelled() }}
-      - run: cargo clippy --locked -p egui_states_c --all-targets -- -D warnings
-        if: ${{ !cancelled() }}
       # Compiles the benchmarks without running them.
       - run: cargo clippy --locked -p egui_states_bench --all-targets -- -D warnings
         if: ${{ !cancelled() }}
@@ -93,25 +91,6 @@ jobs:
         run: uv run --no-sync cargo test --locked -p egui_states --features "server build_scripts python" --lib -- --test-threads=1
       - name: Examples
         run: cargo test --locked -p example_smoke_tests
-
-  c-abi:
-    name: C ABI (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo test --locked -p egui_states --no-default-features --features c_abi --lib -- --test-threads=1
-      - run: cargo test --locked -p egui_states --features "build_scripts c_abi" --test build_scripts_c
-      # Also fails when include/egui_states.h is out of date.
-      - run: cargo test --locked -p egui_states_c -- --test-threads=1
-      - run: cargo test --locked -p counter_c
 
   python-tests:
     name: Python ${{ matrix.python }} (${{ matrix.os }})

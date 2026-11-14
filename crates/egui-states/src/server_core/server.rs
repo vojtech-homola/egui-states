@@ -299,7 +299,7 @@ impl ServerConfig {
 
     /// The defaults: the default heartbeat, no web page and the default
     /// browser access.
-    #[cfg(any(feature = "c_abi", test))]
+    #[cfg(test)]
     pub(crate) fn with_version(version: Option<u64>) -> Self {
         Self {
             version,
@@ -384,20 +384,6 @@ impl Server {
             transfers: Engine::new(Side::Server, None),
             runner_state: Mutex::new(RunnerState::Stopped(rx)),
         }
-    }
-
-    /// Sets the heartbeat used from the next [`Self::start`]; `None` disables it.
-    #[cfg(feature = "c_abi")]
-    pub(crate) fn set_heartbeat(&mut self, heartbeat: Option<Heartbeat>) {
-        self.config.heartbeat = heartbeat;
-    }
-
-    /// Sets which browser pages may connect from the next start; see
-    /// [`ServerConfig::new`].
-    #[cfg(feature = "c_abi")]
-    pub(crate) fn set_allowed_origins(&mut self, origins: &[String]) -> Result<(), String> {
-        self.config.origins = Arc::new(OriginPolicy::new(origins)?);
-        Ok(())
     }
 
     pub(crate) fn finalize(&mut self) -> Option<StatesList> {

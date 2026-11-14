@@ -14,10 +14,6 @@ and synchronization bookkeeping.
    dispatch table.
 3. `generate_python` or `generate_rust` walks the same state definition from a
    build script or a generator executable and writes matching server bindings.
-   The experimental `generate_c` writes a C header that registers the same
-   states through the [C ABI](../crates/egui-states-c/README.md), which computes
-   the same state ids and type hashes from names and Rust type strings at
-   runtime.
 4. The peers always compare the wire-protocol version during the WebSocket
    handshake. They can also compare an application version and token when those
    checks are configured. Before that, the server refuses the WebSocket upgrade
@@ -155,7 +151,7 @@ type therefore needs no default, and the client never invents a header.
 A change can carry a new header, which the client publishes together with the
 buffer, also when the transfer is split into chunks: readers never see a new
 header with an old buffer. To read the two together, use a `*_with_header`
-getter (not in the C ABI): separate reads of the buffer and the header can each
+getter: separate reads of the buffer and the header can each
 see a different change. A change without a header keeps the current one.
 Clearing a buffer keeps its header unless a new one is given; resetting a
 `Data`, removing a `DataMulti` key or resetting the collection drops the

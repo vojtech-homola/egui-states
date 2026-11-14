@@ -353,8 +353,7 @@ impl<M: TransferMeta> Upload<M> {
 
 ## A7. C ABI
 
-Out of scope. Owner's decision: `generate_c` fails with a clear error for a state tree that
-contains `Download` or `Upload` (step C2).
+The C ABI was removed from the library during this work, so no C support is planned.
 
 ---
 
@@ -728,11 +727,10 @@ In dependency order:
    `get_all_enums_struct` (`src/build_scripts/scripts.rs`), without which the metadata's structs
    and enums are silently not emitted.
 5. Generators: `python.rs` (`collect_object_types`, state line), `rust.rs` (`state_field_type`,
-   `state_field_doc`, `state_initializer`), `c.rs` (fail with a clear error, A7).
+   `state_field_doc`, `state_initializer`).
 6. Server core registration (B7), `PyState` variants and `finalize` arm, native Rust server
    handles and `StateServer::add_download` / `add_upload`, re-exports in `src/lib.rs` and
    `src/server/mod.rs`, the kind list in the crate docs.
 7. Tests: a new struct in `crates/egui-states/tests/build_scripts_codegen.rs` using both kinds
    with and without metadata, a hash-match test and a new golden hash. Do not add to `AllKinds`
-   (its golden value would change). A test for the `generate_c` error in
-   `crates/egui-states/tests/build_scripts_c.rs`.
+   (its golden value would change).
