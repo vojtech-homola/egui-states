@@ -15,8 +15,6 @@ pub(crate) enum ClientMessage {
     Ack(u64),
     Message(Bytes),
     Handshake(u16, Option<u64>, Option<String>),
-    // Not routed to the transfer engine yet.
-    #[allow(dead_code)]
     Transfer(u64, TransferFrame, Bytes),
 }
 

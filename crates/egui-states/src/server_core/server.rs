@@ -445,6 +445,7 @@ impl Server {
                 let signals = self.signals.clone();
                 let web = self.web.clone();
                 let heartbeat = self.config.heartbeat;
+                let transfers = self.transfers.clone();
 
                 let listening = Listening {
                     requested: addr,
@@ -467,6 +468,7 @@ impl Server {
                             values,
                             signals,
                             heartbeat,
+                            transfers,
                         };
                         session::run(listener, rx, stop_event, handshake, web, session).await
                     })

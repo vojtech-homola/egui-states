@@ -112,6 +112,9 @@ struct Endpoint {
     last: Option<Arc<TransferShared>>,
     /// Threads waiting for the endpoint to become free, in call order.
     waiters: VecDeque<u64>,
+    /// Accepts every offer and drops the data, for benchmarks.
+    #[cfg(any(test, feature = "bench"))]
+    discard: bool,
 }
 
 impl Endpoint {
@@ -250,8 +253,20 @@ impl Engine {
                 reserved: None,
                 last: None,
                 waiters: VecDeque::new(),
+                #[cfg(any(test, feature = "bench"))]
+                discard: false,
             },
         );
+    }
+
+    /// Accepts every offer of the receiving `endpoint` at once and drops its
+    /// data, for benchmarks.
+    #[cfg(any(test, feature = "bench"))]
+    pub(crate) fn discard_offers(&self, endpoint: u64) {
+        if let Some(ep) = self.0.state.lock().endpoints.get_mut(&endpoint) {
+            ep.has_receiver = true;
+            ep.discard = true;
+        }
     }
 
     /// Sets whether the application takes the offers of `endpoint`. Removing
@@ -607,6 +622,23 @@ impl Engine {
             body.files.iter().map(|f| f.size).collect(),
             meta.clone(),
         );
+        #[cfg(any(test, feature = "bench"))]
+        if ep.discard {
+            let mut transfer = Transfer::new(serial, shared, body, meta);
+            transfer.phase = Phase::Receiving;
+            transfer.sink = Some(Sink::Discard);
+            transfer.granted = transfer.total.min(FILE_TRANSFER_WINDOW);
+            ep.current = Some(transfer);
+            state.next_key += 1;
+            let mode = AcceptMode::Lane;
+            self.emit(
+                state,
+                endpoint,
+                &TransferFrame::Accept { serial, mode },
+                &[],
+            );
+            return;
+        }
         ep.current = Some(Transfer::new(serial, shared, body, meta));
         state.next_key += 1;
         fx.events.push(EngineEvent::Offer { endpoint });

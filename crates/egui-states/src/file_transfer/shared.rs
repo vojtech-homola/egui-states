@@ -299,6 +299,42 @@ impl TransferHandle {
     }
 }
 
+#[cfg(any(feature = "server", feature = "python"))]
+impl TransferHandle {
+    /// Blocks until the transfer has finished, up to `timeout`.
+    ///
+    /// # Errors
+    ///
+    /// The transfer's error when it failed; [`TransferError::Timeout`] when
+    /// the time ran out, which leaves the transfer running.
+    pub fn wait(&self, timeout: Option<Duration>) -> Result<(), TransferError> {
+        if !self.shared.wait(timeout) {
+            return Err(TransferError::Timeout);
+        }
+        match self.shared.error() {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+
+    /// Returns why the transfer failed, `None` while it has not.
+    pub fn error(&self) -> Option<TransferError> {
+        self.shared.error()
+    }
+
+    /// Returns where a received transfer is saved: the file, or the folder of
+    /// several files. `None` for data received into memory and for sent
+    /// transfers.
+    pub fn path(&self) -> Option<PathBuf> {
+        self.shared.path()
+    }
+
+    /// Cancels the transfer, telling the other side `reason`.
+    pub fn cancel_with(&self, reason: impl Into<String>) {
+        self.shared.cancel(Some(reason.into()));
+    }
+}
+
 impl std::fmt::Debug for TransferHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TransferHandle")

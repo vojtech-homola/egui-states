@@ -4,13 +4,15 @@ use std::sync::{
 };
 use std::time::Duration;
 
+use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::{Instant, Interval, MissedTickBehavior, interval_at, timeout_at};
 
 use crate::PROTOCOL_VERSION;
 use crate::event::Event;
-use crate::protocol::{MAX_MSG_COUNT, MSG_SIZE_THRESHOLD, ServerHeader, serialize};
+use crate::file_transfer::engine::Engine;
+use crate::protocol::{FastVec, MAX_MSG_COUNT, MSG_SIZE_THRESHOLD, ServerHeader, serialize};
 use crate::server_core::http::origin::OriginPolicy;
 use crate::server_core::http::web::{WebSite, WebSlot};
 use crate::server_core::net::heartbeat::{Activity, Heartbeat};
@@ -63,6 +65,17 @@ pub(crate) struct Session {
     pub(crate) values: ServerStatesList,
     pub(crate) signals: SignalsManager,
     pub(crate) heartbeat: Option<Heartbeat>,
+    /// The engine of the file transfer endpoints.
+    pub(crate) transfers: Engine,
+}
+
+/// The file data lane of one connection.
+struct DataLane {
+    /// Chunks the engine's pump has prepared.
+    chunks: mpsc::Receiver<Vec<u8>>,
+    /// The connection's generation in the engine.
+    generation: u64,
+    pump: JoinHandle<()>,
 }
 
 pub(crate) async fn run<L: Listener>(
@@ -78,6 +91,7 @@ pub(crate) async fn run<L: Listener>(
         connected,
         values,
         signals,
+        transfers,
         ..
     } = session.clone();
     let mut holder = ChannelHolder::Rx(rx);
@@ -176,6 +190,28 @@ pub(crate) async fn run<L: Listener>(
 
         signals.on_connect(peer_addr);
 
+        // Transfers start only once the connection is synchronized; control
+        // frames share the state queue, so they keep their order with the
+        // state messages.
+        let lane_sender = sender.clone();
+        let generation = transfers.attach(Arc::new(move |message| {
+            lane_sender.send(FastVec::Heap(message));
+        }));
+        let (chunk_tx, chunks) = mpsc::channel(1);
+        let pump_engine = transfers.clone();
+        let pump = tokio::spawn(async move {
+            let pump = std::panic::AssertUnwindSafe(pump_engine.pump(generation, chunk_tx));
+            // A panicking pump would leave the transfers stuck; fail them.
+            if futures_util::FutureExt::catch_unwind(pump).await.is_err() {
+                pump_engine.detach(generation);
+            }
+        });
+        let lane = DataLane {
+            chunks,
+            generation,
+            pump,
+        };
+
         let activity = socket_reader.activity();
         let reader_handler = tokio::spawn(reader(socket_reader, session.clone()));
         let handler = tokio::spawn(writer(
@@ -184,6 +220,7 @@ pub(crate) async fn run<L: Listener>(
             reader_handler,
             activity,
             session.clone(),
+            lane,
         ));
 
         holder = ChannelHolder::Transfer(handler);
@@ -329,6 +366,7 @@ async fn reader<S: FrameSource>(mut socket_rx: SocketReader<S>, session: Session
         connected,
         values,
         signals,
+        transfers,
         ..
     } = session;
     loop {
@@ -385,8 +423,10 @@ async fn reader<S: FrameSource>(mut socket_rx: SocketReader<S>, session: Session
             Ok(ClientMessage::Handshake(_, _, _)) => {
                 signals.error("unexpected handshake message after connection established");
             }
-            // Routed to the transfer engine once it is connected.
-            Ok(ClientMessage::Transfer(..)) => {}
+            // The engine never waits here: sinks that block have a worker.
+            Ok(ClientMessage::Transfer(endpoint, frame, payload)) => {
+                transfers.handle_frame(endpoint, frame, payload);
+            }
         }
     }
 
@@ -402,18 +442,27 @@ async fn writer<K: FrameSink>(
     reader_handle: tokio::task::JoinHandle<()>,
     activity: Arc<Activity>,
     session: Session,
+    lane: DataLane,
 ) -> MessageReceiver {
     let Session {
         connected,
         values,
         signals,
         heartbeat,
+        transfers,
         ..
     } = session;
     enum Next {
         Message(Option<SenderData>),
+        Chunk(Vec<u8>),
         Ping,
     }
+    let DataLane {
+        mut chunks,
+        generation,
+        pump,
+    } = lane;
+    let mut chunks_open = true;
 
     let mut data_receiver = DataReceiver::new(rx);
     // The connection counts as heard from when it starts, however long the
@@ -426,11 +475,21 @@ async fn writer<K: FrameSink>(
     });
 
     loop {
-        // Both branches are cancel safe: `DataReceiver::next` only awaits the
-        // channel, and a missed tick is delivered by the next poll.
+        // Pings go first, so a long burst of state messages cannot starve
+        // the heartbeat; file data goes only when no state message waits.
+        // Every branch is cancel safe: each only awaits a channel or a timer
+        // tick, and a missed tick is delivered by the next poll.
         let next = tokio::select! {
-            message = data_receiver.next() => Next::Message(message),
+            biased;
             () = next_ping(&mut pings) => Next::Ping,
+            message = data_receiver.next() => Next::Message(message),
+            chunk = chunks.recv(), if chunks_open => match chunk {
+                Some(chunk) => Next::Chunk(chunk),
+                None => {
+                    chunks_open = false;
+                    continue;
+                }
+            },
         };
 
         let message = match next {
@@ -441,6 +500,13 @@ async fn writer<K: FrameSink>(
                     break;
                 }
                 Outgoing::Binary(message.into_bytes())
+            }
+            Next::Chunk(chunk) => {
+                if !connected.load(Ordering::Acquire) {
+                    unless_silent(websocket.close(), heartbeat, &activity).await;
+                    break;
+                }
+                Outgoing::Binary(chunk.into())
             }
             // check if message is terminate signal
             Next::Message(None) => {
@@ -478,6 +544,9 @@ async fn writer<K: FrameSink>(
 
     reader_handle.abort();
     let _ = reader_handle.await;
+    // Every unfinished transfer fails as disconnected.
+    transfers.detach(generation);
+    pump.abort();
     // A reader that ends the connection itself drops the client's pending
     // changes; an aborted one never gets there, so their callbacks would
     // otherwise run after the disconnect.
@@ -851,6 +920,7 @@ mod run_tests {
                     values,
                     signals,
                     heartbeat,
+                    transfers: Engine::new(crate::file_transfer::engine::Side::Server, None),
                 },
             ));
             Self {

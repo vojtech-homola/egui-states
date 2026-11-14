@@ -1804,6 +1804,10 @@ mod transfer_tests {
                 values,
                 signals: SignalsManager::new(),
                 heartbeat: None,
+                transfers: crate::file_transfer::engine::Engine::new(
+                    crate::file_transfer::engine::Side::Server,
+                    None,
+                ),
             },
         ));
 

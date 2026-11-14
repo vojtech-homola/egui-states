@@ -12,14 +12,14 @@ use egui::Context;
 use futures_util::FutureExt;
 use futures_util::future::{AbortHandle, Abortable, Either, select};
 use parking_lot::RwLock;
-use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::sync::mpsc::{self, UnboundedReceiver};
 
 use crate::PROTOCOL_VERSION;
 use crate::State;
 use crate::client::messages::{ChannelMessage, MessageSender, MessagesSerializer, handle_message};
 use crate::client::states_creator::{StatesCreatorClient, ValuesList};
 use crate::event::Event;
-use crate::protocol::ClientHeader;
+use crate::protocol::{ClientHeader, FastVec};
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::client::net::websocket::{WsClientRead, WsClientSend, build_ws};
@@ -141,14 +141,40 @@ async fn run_session(
     // the connection open while nothing can be sent.
     let (abort_receive, abort_registration) = AbortHandle::new_pair();
 
+    // File transfers run for this connection only. Their control frames share
+    // the message queue, so they keep their order with the state messages;
+    // file data goes in its own lane, sent only when no message waits.
+    let transfers = vals.transfers.clone();
+    let lane_sender = sender.clone();
+    let generation = transfers.attach(Arc::new(move |message| {
+        lane_sender.send(ChannelMessage::Raw(message));
+    }));
+    let (chunk_tx, chunks) = mpsc::channel(1);
+    let pump_future = {
+        let transfers = transfers.clone();
+        async move {
+            // A panicking pump would leave the transfers stuck; fail them.
+            if catch_panic(transfers.pump(generation, chunk_tx))
+                .await
+                .is_err()
+            {
+                transfers.detach(generation);
+            }
+        }
+    };
+
     let recv_future = {
         let (vals, client, sender) = (vals.clone(), client.clone(), sender.clone());
+        let transfers = transfers.clone();
         async move {
             // A shutdown stops reading at once; the send task still writes the
             // messages queued so far and closes the socket.
             let read =
                 client.until_shutdown(catch_panic(receive(socket_read, &vals, &client, &sender)));
             let end = Abortable::new(read, abort_registration).await;
+            // The connection is over: unfinished transfers fail, which also
+            // ends the pump.
+            transfers.detach(generation);
             // Closing the queue ends the send task.
             sender.close();
             // The read is aborted only after the send task panicked, which is
@@ -165,7 +191,7 @@ async fn run_session(
             let mut serializer = MessagesSerializer::new(rx);
             // After a shutdown the queued messages get a bounded time to go
             // out; a server that stops reading cannot keep the task alive.
-            let write = catch_panic(send(&mut serializer, socket_send));
+            let write = catch_panic(send(&mut serializer, socket_send, chunks));
             let end = client.until_flush_deadline(write).await.unwrap_or(Ok(()));
             if end.is_err() {
                 abort_receive.abort();
@@ -176,6 +202,7 @@ async fn run_session(
 
     #[cfg(not(target_arch = "wasm32"))]
     let (recv_end, send_end) = {
+        let pump_task = tokio::spawn(pump_future);
         let recv_task = tokio::spawn(recv_future);
         let send_task = tokio::spawn(send_future);
         let recv_end = recv_task.await.unwrap_or_else(|error| {
@@ -183,12 +210,17 @@ async fn run_session(
             sender.close();
             Err(join_error_message(error))
         });
-        let send_end = send_task.await.map_err(join_error_message)?;
-        (recv_end, send_end)
+        let send_end = send_task.await.map_err(join_error_message);
+        transfers.detach(generation);
+        pump_task.abort();
+        (recv_end, send_end?)
     };
 
     #[cfg(target_arch = "wasm32")]
-    let (recv_end, send_end) = tokio::join!(recv_future, send_future);
+    let (recv_end, send_end) = {
+        let (recv_end, send_end, ()) = tokio::join!(recv_future, send_future, pump_future);
+        (recv_end, send_end)
+    };
 
     let (rx, send_end) = send_end;
     let end = match (recv_end, send_end) {
@@ -235,9 +267,33 @@ async fn receive(
     }
 }
 
-/// Writes queued messages until the queue closes or the socket fails.
-async fn send(serializer: &mut MessagesSerializer, mut socket_send: WsClientSend) {
-    while let Some(message) = serializer.next().await {
+/// Writes queued messages until the queue closes or the socket fails, and
+/// file data chunks whenever no message waits.
+async fn send(
+    serializer: &mut MessagesSerializer,
+    mut socket_send: WsClientSend,
+    mut chunks: mpsc::Receiver<Vec<u8>>,
+) {
+    let mut chunks_open = true;
+    loop {
+        // `select` polls the message queue first, so messages win over file
+        // data. Both futures only await a channel, so dropping the loser
+        // loses nothing.
+        let message = if chunks_open {
+            match select(pin!(serializer.next()), pin!(chunks.recv())).await {
+                Either::Left((message, _)) => message,
+                Either::Right((Some(chunk), _)) => Some(FastVec::Heap(chunk)),
+                Either::Right((None, _)) => {
+                    chunks_open = false;
+                    continue;
+                }
+            }
+        } else {
+            serializer.next().await
+        };
+        let Some(message) = message else {
+            break;
+        };
         if socket_send.send(message).await.is_err() {
             break;
         }

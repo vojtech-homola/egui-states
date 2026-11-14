@@ -55,10 +55,17 @@ extern crate self as egui_states;
 
 #[cfg(test)]
 mod test_support;
+/// Test access to internals the benchmarks reach through `bench_support`.
+#[cfg(all(test, feature = "server", feature = "client"))]
+mod bench_support_test {
+    pub(crate) fn discard(upload: &crate::server::Upload<impl crate::server::TransferMeta>) {
+        upload.engine.discard_offers(upload.id);
+    }
+}
 
 mod event;
 #[cfg(any(feature = "client", feature = "server", feature = "python"))]
-// Not used by the state endpoints yet.
+// Parts are used only once the file, Python and browser transfer paths exist.
 #[allow(dead_code, unused_imports)]
 mod file_transfer;
 mod hashing;
@@ -91,7 +98,7 @@ pub use client::{
         atomics::{Atomic, AtomicLock, AtomicLockStatic, AtomicStatic, FallbackLock, UpdateLock},
         data::{Data, DataMulti, HeaderValue},
         data_take::{DataMultiTake, DataTake},
-        file_transfer::{Download, Upload},
+        file_transfer::{Download, OfferedFile, TransferOffer, Upload},
         image::{Image, ImageMulti},
         initial_value::{InitValue, InitialValue},
         map::MapState,

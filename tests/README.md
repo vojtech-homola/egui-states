@@ -98,7 +98,17 @@ members so test builds do not compile Criterion:
 ```sh
 cargo bench -p egui_states_bench --bench transfer   # loopback Data/Image sets, client latency
 cargo bench -p egui_states_bench --bench internals  # packers, pixel conversion, client assembly
+cargo bench -p egui_states_bench --bench latency    # state round trips during file transfers
 ```
+
+The `latency` benchmark has its own harness and prints the median, p99 and
+maximum of a state round trip while idle, during a download, during an upload,
+and during large `Data` sets. It runs on loopback and through an in-process
+relay that limits each direction to 1 Gbit/s and 100 Mbit/s; choose the rates
+in Mbit/s with `EGUI_LATENCY_RATES=0,1000` (0 is loopback without a relay). To
+measure a real network, start `cargo bench -p egui_states_bench --bench latency
+-- serve 0.0.0.0:9300` on one machine and `... -- connect HOST:9300` on the
+other.
 
 Save a baseline with `-- --save-baseline <name>` and compare a later run with
 `-- --baseline <name>`. Loopback numbers are noisy: compare three runs, and treat

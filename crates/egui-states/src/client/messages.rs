@@ -15,6 +15,8 @@ pub(crate) enum ChannelMessage {
     Signal(u64, u32, MessageData),
     Message(MessageData),
     Ack(u64),
+    /// An encoded file transfer message.
+    Raw(Vec<u8>),
     /// Panics the send task, to test that its panics are contained.
     #[cfg(test)]
     TestPanic,
@@ -71,6 +73,7 @@ fn parse_to_send(message: ChannelMessage, data: &mut FastVec<64>) {
             serialize_to_data(&header, data).unwrap();
             data.extend_from_data(&msg_data);
         }
+        ChannelMessage::Raw(message) => data.extend_from_data(&FastVec::<0>::Heap(message)),
         #[cfg(test)]
         ChannelMessage::TestPanic => panic!("injected send task panic"),
     }
@@ -240,8 +243,11 @@ pub(crate) async fn handle_message(
             client.update(t);
             return Ok(());
         }
-        // Routed to the transfer engine once it is connected.
-        ServerHeader::Transfer(..) => return Ok(()),
+        // The engine never waits here: sinks that block have a worker.
+        ServerHeader::Transfer(endpoint, frame, _) => {
+            vals.transfers.handle_frame(endpoint, frame, payload);
+            return Ok(());
+        }
         ServerHeader::Value(id, type_id, ..) => match vals.value(id) {
             Some(value) => value.update_value(type_id, &payload)?,
             None => {

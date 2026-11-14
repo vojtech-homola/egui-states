@@ -19,3 +19,7 @@ harness = false
 [[bench]]
 name = "internals"
 harness = false
+
+[[bench]]
+name = "latency"
+harness = false
