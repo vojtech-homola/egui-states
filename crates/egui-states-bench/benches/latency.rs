@@ -2,8 +2,11 @@
 //!
 //! One round trip: the client sets a `Value`, the server's callback copies it
 //! into a `Static`, and the client sees the `Static` change. It is measured
-//! idle, during a download, during an upload, and, for comparison, during
-//! large `Data` sets, which travel with the state messages.
+//! idle, during a download into memory and one into a file, during an
+//! upload, and, for comparison, during large `Data` sets, which travel with
+//! the state messages. The file download goes through the sink worker, which
+//! writes in batches and returns credit per batch; the others consume every
+//! chunk as it arrives.
 //!
 //! On loopback the kernel drains every buffer at once, so the benchmark also
 //! runs through an in-process relay that behaves like a network link: each
@@ -33,6 +36,7 @@ use egui_states::bench_support::{accept_discard, discard_uploads, send_pattern, 
 use egui_states::server::{self, CallbackHandle, StateServer};
 use egui_states::{
     Client, ClientBuilder, ConnectionState, Queue, State, StatesCreator, TransferHandle,
+    TransferOffer,
 };
 use egui_states_bench::{MIB, free_port, wait_until};
 
@@ -283,19 +287,16 @@ impl Peer {
         self.states.command.set(command);
     }
 
-    /// Accepts the server's download into a sink that drops the data.
-    fn accept_download(&self) -> TransferHandle {
-        let offer = {
-            let deadline = Instant::now() + Duration::from_secs(10);
-            loop {
-                if let Some(offer) = self.states.files.take_offer() {
-                    break offer;
-                }
-                assert!(Instant::now() < deadline, "no download offer");
-                thread::sleep(Duration::from_millis(1));
+    /// Waits for the server's download offer.
+    fn download_offer(&self) -> TransferOffer<()> {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(offer) = self.states.files.take_offer() {
+                break offer;
             }
-        };
-        accept_discard(offer)
+            assert!(Instant::now() < deadline, "no download offer");
+            thread::sleep(Duration::from_millis(1));
+        }
     }
 }
 
@@ -339,12 +340,23 @@ fn run_cases(peer: &mut Peer) {
     report("idle", peer.round_trips(), None);
 
     peer.command(START_DOWNLOAD);
-    let download = peer.accept_download();
+    let download = accept_discard(peer.download_offer());
     running(&download);
     let (samples, moved) = measured(&download, || peer.round_trips());
     report("download", samples, Some(moved));
     peer.command(STOP_DOWNLOAD);
     wait_until("download end", || download.is_finished());
+
+    // Under the target folder: the temporary folder may live in memory. The
+    // cancelled download removes its partial file.
+    let path = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("latency-download.bin");
+    peer.command(START_DOWNLOAD);
+    let download = peer.download_offer().accept_file(&path);
+    running(&download);
+    let (samples, moved) = measured(&download, || peer.round_trips());
+    report("to file", samples, Some(moved));
+    peer.command(STOP_DOWNLOAD);
+    wait_until("file download end", || download.is_finished());
 
     let upload = upload_pattern(&peer.states.inputs, ENDLESS);
     running(&upload);
