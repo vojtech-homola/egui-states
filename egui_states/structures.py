@@ -3,8 +3,9 @@
 
 from __future__ import annotations
 
+import os
 from abc import ABC, abstractmethod
-from collections.abc import Buffer, Callable
+from collections.abc import Buffer, Callable, Sequence
 from typing import Any, Final
 
 import numpy as np
@@ -36,6 +37,7 @@ from egui_states._core import (
     vec,
 )
 from egui_states.signals import SignalsManager
+from egui_states.transfer import TransferHandle
 
 #: Gray, gray-alpha, RGB, or RGBA color whose components are in ``0..255``.
 type ImageColor = int | tuple[int, int] | tuple[int, int, int] | tuple[int, int, int, int]
@@ -65,12 +67,14 @@ class _StaticBase(ABC):
         pass
 
 
-class _SignalBase(_StaticBase):
+class _CallbackBase(_StaticBase):
     _signals_manager: SignalsManager
 
     def _initialize_signal(self, signals_manager: SignalsManager) -> None:
         self._signals_manager = signals_manager
 
+
+class _SignalBase(_CallbackBase):
     def signal_set_to_queue(self) -> None:
         """Preserve every signaled change for server callbacks.
 
@@ -1539,25 +1543,250 @@ class DataMultiTakeWithHeader[T: np.generic, H](DataMultiTake[T]):
         raise TypeError("index must be an integer")
 
 
-class Download(_StaticBase):
-    """Endpoint that sends files from the server to the client.
+_TRANSFER_OFFER = 0
+_TRANSFER_FINISHED = 1
 
-    The client receives each offer and decides where the data goes. The
-    endpoint carries at most one unfinished transfer at a time.
-    """
+
+class _TransferEndpoint(_CallbackBase):
+    """The callbacks every transfer endpoint has."""
 
     _meta_id: int | None = None
+    _download: bool
 
     def __init__(self) -> None:
+        self._finished: list[Callable[[TransferHandle], Any]] = []
+        self._dispatching = False
+
+    def _dispatch_event(self, event: tuple[int, int]) -> None:
+        kind, key = event
+        if kind == _TRANSFER_FINISHED:
+            handle = self._server.transfer_finished(self._value_id, self._download, key)
+            if handle is not None:
+                for callback in list(self._finished):
+                    self._signals_manager._invoke(callback, TransferHandle(handle))
+        else:
+            self._dispatch_offer()
+
+    def _dispatch_offer(self) -> None:
         pass
+
+    def _wants_events(self) -> bool:
+        return bool(self._finished)
+
+    def _update_dispatch(self) -> None:
+        wanted = self._wants_events()
+        if wanted and not self._dispatching:
+            self._signals_manager.add_callback(self._value_id, self._dispatch_event)
+        elif not wanted and self._dispatching:
+            self._signals_manager.remove_callback(self._value_id, self._dispatch_event)
+        self._dispatching = wanted
+
+    def last(self) -> TransferHandle | None:
+        """Return the most recent transfer of this endpoint.
+
+        Returns:
+            TransferHandle | None: The transfer, finished or not, or ``None``
+                before the first one.
+        """
+        handle = self._server.transfer_last(self._value_id, self._download)
+        return None if handle is None else TransferHandle(handle)
+
+    def connect(self, callback: Callable[[TransferHandle], Any]) -> None:
+        """Call ``callback`` once for every transfer when it is done or failed.
+
+        The callback runs on a callback worker; exceptions go to the server's
+        error handler.
+
+        Args:
+            callback (Callable[[TransferHandle], Any]): Receives the finished
+                transfer.
+        """
+        self._finished.append(callback)
+        self._update_dispatch()
+
+    def disconnect(self, callback: Callable[[TransferHandle], Any]) -> None:
+        """Remove a callback added with :meth:`connect`.
+
+        Args:
+            callback (Callable[[TransferHandle], Any]): Callback to remove.
+        """
+        if callback in self._finished:
+            self._finished.remove(callback)
+            self._update_dispatch()
+
+    def disconnect_all(self) -> None:
+        """Remove every callback added with :meth:`connect`."""
+        self._finished.clear()
+        self._update_dispatch()
+
+
+class Download(_TransferEndpoint):
+    """Endpoint that sends files from the server to the client.
+
+    The client receives each offer and decides where the data goes; the data
+    is read once the client accepts. The endpoint carries at most one
+    unfinished transfer at a time: a send while it is busy raises, or waits
+    with ``wait=True``. Do not wait inside a callback: it holds a callback
+    worker for as long as it waits.
+    """
+
+    _download = True
 
     def _initialize(self, name: str, types: list[PyObjectType]) -> None:
         meta = None if self._meta_id is None else types[self._meta_id]
         self._value_id = self._server.add_download(name, meta)
 
+    @staticmethod
+    def _meta(meta: object) -> tuple[object] | None:
+        return None
+
+    def send_file(
+        self,
+        path: str | os.PathLike[str],
+        name: str | None = None,
+        wait: bool = False,
+        timeout: float | None = None,
+    ) -> TransferHandle:
+        """Offer one file to the client.
+
+        The size and modification time are read now; the file itself is read
+        once the client accepts, and a file that changed size by then fails
+        the transfer.
+
+        Args:
+            path (str | os.PathLike[str]): The file to send.
+            name (str | None, optional): The name the client sees; ``None``
+                uses the file's own name. Defaults to None.
+            wait (bool, optional): Whether to wait for the endpoint to become
+                free instead of raising. Defaults to False.
+            timeout (float | None, optional): Seconds to wait at most with
+                ``wait``. Defaults to None.
+
+        Returns:
+            TransferHandle: The transfer, pending until the client accepts.
+
+        Raises:
+            TransferError: If the endpoint is busy or no client is connected.
+            TimeoutError: If the wait ran out.
+            OSError: If the file cannot be read.
+            ValueError: If the name or metadata is invalid, or ``timeout`` is
+                given without ``wait``.
+        """
+        return self._send_file(path, name, None, wait, timeout)
+
+    def _send_file(
+        self,
+        path: str | os.PathLike[str],
+        name: str | None,
+        meta: object,
+        wait: bool,
+        timeout: float | None,
+    ) -> TransferHandle:
+        handle = self._server.transfer_send_file(self._value_id, os.fspath(path), name, self._meta(meta), wait, timeout)
+        return TransferHandle(handle)
+
+    def send_files(
+        self,
+        paths: Sequence[str | os.PathLike[str]],
+        name: str,
+        root: str | os.PathLike[str] | None = None,
+        wait: bool = False,
+        timeout: float | None = None,
+    ) -> TransferHandle:
+        """Offer several files to the client as one transfer.
+
+        Each file is offered under its own name or, with ``root``, under its
+        path relative to ``root``, so the client recreates the folders. To
+        send a folder, pass the files below it and the folder as ``root``.
+
+        Args:
+            paths (Sequence[str | os.PathLike[str]]): The files to send.
+            name (str): The name of the set.
+            root (str | os.PathLike[str] | None, optional): The folder the
+                names are relative to. Defaults to None.
+            wait (bool, optional): Whether to wait for the endpoint to become
+                free instead of raising. Defaults to False.
+            timeout (float | None, optional): Seconds to wait at most with
+                ``wait``. Defaults to None.
+
+        Returns:
+            TransferHandle: The transfer, pending until the client accepts.
+
+        Raises:
+            TransferError: If the endpoint is busy or no client is connected.
+            TimeoutError: If the wait ran out.
+            OSError: If a file cannot be read.
+            ValueError: If there are no files, a file lies outside ``root``,
+                two files have the same name, or ``timeout`` is given without
+                ``wait``.
+        """
+        return self._send_files(paths, name, root, None, wait, timeout)
+
+    def _send_files(
+        self,
+        paths: Sequence[str | os.PathLike[str]],
+        name: str,
+        root: str | os.PathLike[str] | None,
+        meta: object,
+        wait: bool,
+        timeout: float | None,
+    ) -> TransferHandle:
+        handle = self._server.transfer_send_files(
+            self._value_id,
+            [os.fspath(path) for path in paths],
+            name,
+            None if root is None else os.fspath(root),
+            self._meta(meta),
+            wait,
+            timeout,
+        )
+        return TransferHandle(handle)
+
+    def send_bytes(
+        self,
+        data: Buffer,
+        name: str,
+        wait: bool = False,
+        timeout: float | None = None,
+    ) -> TransferHandle:
+        """Offer a buffer to the client as one file.
+
+        Args:
+            data (Buffer): The data; ``bytes``, ``bytearray``, ``memoryview``
+                or a NumPy array. It is copied once.
+            name (str): The file name the client sees.
+            wait (bool, optional): Whether to wait for the endpoint to become
+                free instead of raising. Defaults to False.
+            timeout (float | None, optional): Seconds to wait at most with
+                ``wait``. Defaults to None.
+
+        Returns:
+            TransferHandle: The transfer, pending until the client accepts.
+
+        Raises:
+            TransferError: If the endpoint is busy or no client is connected.
+            TimeoutError: If the wait ran out.
+            ValueError: If the name or metadata is invalid, or ``timeout`` is
+                given without ``wait``.
+        """
+        return self._send_bytes(data, name, None, wait, timeout)
+
+    def _send_bytes(
+        self,
+        data: Buffer,
+        name: str,
+        meta: object,
+        wait: bool,
+        timeout: float | None,
+    ) -> TransferHandle:
+        handle = self._server.transfer_send_bytes(self._value_id, data, name, self._meta(meta), wait, timeout)
+        return TransferHandle(handle)
+
 
 class DownloadWithMeta[M](Download):
     """:class:`Download` whose offers carry typed metadata ``M``.
+
+    Every send takes the metadata as the required keyword ``meta``.
 
     Args:
         meta_id (int): Index of the metadata's protocol type in the generated
@@ -1565,20 +1794,101 @@ class DownloadWithMeta[M](Download):
     """
 
     def __init__(self, meta_id: int) -> None:
+        super().__init__()
         self._meta_id = meta_id
 
+    @staticmethod
+    def _meta(meta: object) -> tuple[object] | None:
+        return (meta,)
 
-class Upload(_StaticBase):
+    def send_file(  # type: ignore[override]
+        self,
+        path: str | os.PathLike[str],
+        name: str | None = None,
+        *,
+        meta: M,
+        wait: bool = False,
+        timeout: float | None = None,
+    ) -> TransferHandle:
+        """Offer one file to the client; see :meth:`Download.send_file`.
+
+        Args:
+            path (str | os.PathLike[str]): The file to send.
+            name (str | None, optional): The name the client sees; ``None``
+                uses the file's own name. Defaults to None.
+            meta (M): The metadata sent with the offer.
+            wait (bool, optional): Whether to wait for the endpoint to become
+                free instead of raising. Defaults to False.
+            timeout (float | None, optional): Seconds to wait at most with
+                ``wait``. Defaults to None.
+
+        Returns:
+            TransferHandle: The transfer, pending until the client accepts.
+        """
+        return self._send_file(path, name, meta, wait, timeout)
+
+    def send_files(  # type: ignore[override]
+        self,
+        paths: Sequence[str | os.PathLike[str]],
+        name: str,
+        root: str | os.PathLike[str] | None = None,
+        *,
+        meta: M,
+        wait: bool = False,
+        timeout: float | None = None,
+    ) -> TransferHandle:
+        """Offer several files as one transfer; see :meth:`Download.send_files`.
+
+        Args:
+            paths (Sequence[str | os.PathLike[str]]): The files to send.
+            name (str): The name of the set.
+            root (str | os.PathLike[str] | None, optional): The folder the
+                names are relative to. Defaults to None.
+            meta (M): The metadata sent with the offer.
+            wait (bool, optional): Whether to wait for the endpoint to become
+                free instead of raising. Defaults to False.
+            timeout (float | None, optional): Seconds to wait at most with
+                ``wait``. Defaults to None.
+
+        Returns:
+            TransferHandle: The transfer, pending until the client accepts.
+        """
+        return self._send_files(paths, name, root, meta, wait, timeout)
+
+    def send_bytes(  # type: ignore[override]
+        self,
+        data: Buffer,
+        name: str,
+        *,
+        meta: M,
+        wait: bool = False,
+        timeout: float | None = None,
+    ) -> TransferHandle:
+        """Offer a buffer as one file; see :meth:`Download.send_bytes`.
+
+        Args:
+            data (Buffer): The data; it is copied once.
+            name (str): The file name the client sees.
+            meta (M): The metadata sent with the offer.
+            wait (bool, optional): Whether to wait for the endpoint to become
+                free instead of raising. Defaults to False.
+            timeout (float | None, optional): Seconds to wait at most with
+                ``wait``. Defaults to None.
+
+        Returns:
+            TransferHandle: The transfer, pending until the client accepts.
+        """
+        return self._send_bytes(data, name, meta, wait, timeout)
+
+
+class Upload(_TransferEndpoint):
     """Endpoint that receives files from the client.
 
     The server receives each offer and decides where the data goes. The
     endpoint carries at most one unfinished transfer at a time.
     """
 
-    _meta_id: int | None = None
-
-    def __init__(self) -> None:
-        pass
+    _download = False
 
     def _initialize(self, name: str, types: list[PyObjectType]) -> None:
         meta = None if self._meta_id is None else types[self._meta_id]
@@ -1594,6 +1904,7 @@ class UploadWithMeta[M](Upload):
     """
 
     def __init__(self, meta_id: int) -> None:
+        super().__init__()
         self._meta_id = meta_id
 
 

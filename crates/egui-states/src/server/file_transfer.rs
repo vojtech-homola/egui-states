@@ -1,20 +1,20 @@
 //! The server handles of the file transfer endpoints.
 
 use std::marker::PhantomData;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
 
 use crate::file_transfer::engine::Engine;
-use crate::file_transfer::fs::{FilesSource, modified_millis};
 use crate::file_transfer::source::Source;
 use crate::file_transfer::{TransferError, TransferHandle, TransferMeta, meta_type_id};
-use crate::protocol::file_transfer::{FileEntry, OfferBody};
+use crate::protocol::file_transfer::OfferBody;
 use crate::server::Result;
 use crate::server::callbacks::CallbackHandle;
 use crate::server::state_server::{StateServer, WeakServer};
+use crate::server_core::file_transfer as core;
 use crate::server_core::file_transfer::{EVENT_FINISHED, TransferEvents, decode_event};
 
 /// What every endpoint handle holds.
@@ -107,17 +107,7 @@ impl<M: TransferMeta> Download<M> {
         wait: bool,
         timeout: Option<Duration>,
     ) -> std::result::Result<TransferHandle, TransferError> {
-        let path = path.as_ref();
-        let name = match name {
-            Some(name) => name.to_string(),
-            None => file_name(path)?,
-        };
-        let (entry, size) = stat(path, name)?;
-        let body = OfferBody {
-            name: entry.name.clone(),
-            files: vec![entry],
-        };
-        let source = Source::Files(FilesSource::new(vec![(path.to_path_buf(), size)]));
+        let (body, source) = core::file_offer(path.as_ref(), name)?;
         self.send(body, meta, source, wait, timeout)
     }
 
@@ -140,28 +130,8 @@ impl<M: TransferMeta> Download<M> {
         wait: bool,
         timeout: Option<Duration>,
     ) -> std::result::Result<TransferHandle, TransferError> {
-        let mut files = Vec::with_capacity(paths.len());
-        let mut sources = Vec::with_capacity(paths.len());
-        for path in paths {
-            let file_name = match root {
-                Some(root) => relative_name(path, root)?,
-                None => file_name(path)?,
-            };
-            let (entry, size) = stat(path, file_name)?;
-            files.push(entry);
-            sources.push((path.clone(), size));
-        }
-        let body = OfferBody {
-            name: name.to_string(),
-            files,
-        };
-        self.send(
-            body,
-            meta,
-            Source::Files(FilesSource::new(sources)),
-            wait,
-            timeout,
-        )
+        let (body, source) = core::files_offer(paths, name, root)?;
+        self.send(body, meta, source, wait, timeout)
     }
 
     /// Offers `data` to the client as one file named `name`.
@@ -188,15 +158,8 @@ impl<M: TransferMeta> Download<M> {
         wait: bool,
         timeout: Option<Duration>,
     ) -> std::result::Result<TransferHandle, TransferError> {
-        let body = OfferBody {
-            name: name.to_string(),
-            files: vec![FileEntry {
-                name: name.to_string(),
-                size: data.len() as u64,
-                modified: None,
-            }],
-        };
-        self.send(body, meta, Source::bytes(data), wait, timeout)
+        let (body, source) = core::bytes_offer(data, name);
+        self.send(body, meta, source, wait, timeout)
     }
 
     pub(crate) fn send(
@@ -207,21 +170,12 @@ impl<M: TransferMeta> Download<M> {
         wait: bool,
         timeout: Option<Duration>,
     ) -> std::result::Result<TransferHandle, TransferError> {
-        if timeout.is_some() && !wait {
-            return Err(TransferError::InvalidInput(
-                "a timeout needs wait".to_string(),
-            ));
-        }
         let meta = postcard::to_stdvec(meta)
             .map(Bytes::from)
             .map_err(|error| TransferError::Meta(error.to_string()))?;
         let engine = &self.endpoint.engine;
-        let shared = if wait {
-            engine.send_wait(self.endpoint.id, body, meta, source, timeout)?
-        } else {
-            engine.send(self.endpoint.id, body, meta, source)?
-        };
-        Ok(TransferHandle::new(shared))
+        core::send(engine, self.endpoint.id, body, meta, source, wait, timeout)
+            .map(TransferHandle::new)
     }
 
     /// Returns the most recent transfer of this endpoint, finished or not.
@@ -295,67 +249,6 @@ impl<M> Clone for Upload<M> {
             _meta: PhantomData,
         }
     }
-}
-
-/// The size and offer entry of the file at `path`.
-fn stat(path: &Path, name: String) -> std::result::Result<(FileEntry, u64), TransferError> {
-    let metadata = std::fs::metadata(path)
-        .map_err(|error| TransferError::Io(format!("{}: {error}", path.display())))?;
-    if !metadata.is_file() {
-        return Err(TransferError::Io(format!(
-            "{} is not a file",
-            path.display()
-        )));
-    }
-    let size = metadata.len();
-    let entry = FileEntry {
-        name,
-        size,
-        modified: modified_millis(&metadata),
-    };
-    Ok((entry, size))
-}
-
-fn file_name(path: &Path) -> std::result::Result<String, TransferError> {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .map(str::to_string)
-        .ok_or_else(|| {
-            TransferError::InvalidInput(format!("{} has no UTF-8 file name", path.display()))
-        })
-}
-
-/// The name of `path` relative to `root`, with `/` between folders.
-fn relative_name(path: &Path, root: &Path) -> std::result::Result<String, TransferError> {
-    let relative = path.strip_prefix(root).map_err(|_| {
-        TransferError::InvalidInput(format!(
-            "{} is not inside {}",
-            path.display(),
-            root.display()
-        ))
-    })?;
-    let mut parts = Vec::new();
-    for component in relative.components() {
-        match component {
-            Component::Normal(part) => parts.push(part.to_str().ok_or_else(|| {
-                TransferError::InvalidInput(format!("{} is not UTF-8", path.display()))
-            })?),
-            _ => {
-                return Err(TransferError::InvalidInput(format!(
-                    "{} is not inside {}",
-                    path.display(),
-                    root.display()
-                )));
-            }
-        }
-    }
-    if parts.is_empty() {
-        return Err(TransferError::InvalidInput(format!(
-            "{} is the root itself",
-            path.display()
-        )));
-    }
-    Ok(parts.join("/"))
 }
 
 #[cfg(all(test, feature = "client"))]

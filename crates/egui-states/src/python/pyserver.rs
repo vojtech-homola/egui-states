@@ -16,11 +16,13 @@ use crate::hashing::NoHashMap;
 
 /// A signal event: id, value, whether it blocks, and the previous value.
 type SignalEvent<'py> = (u64, Bound<'py, PyAny>, bool, Option<Bound<'py, PyAny>>);
+use crate::file_transfer::engine::Engine;
 use crate::protocol::data::header_type_id;
 use crate::python::value_parsing::{ValueCreator, ValueParser};
 use crate::python::{
     pydata::{data_buffer, data_slice},
     pyimage, pyparsing,
+    pytransfer::{self, Offer, PyTransferHandle, SendTarget},
     pytypes::{PyObjectClass, PyObjectType},
 };
 use crate::server_core::file_transfer::TransferEndpoint;
@@ -50,10 +52,7 @@ enum PyState {
     DataMulti(Arc<DataMulti>, Option<PyObjectType>),
     DataMultiTake(Arc<DataMultiTake>, Option<PyObjectType>),
     /// The transfer endpoints keep their metadata type, `None` without one.
-    // The metadata type is read once transfers reach Python.
-    #[allow(dead_code)]
     Download(Arc<TransferEndpoint>, Option<PyObjectType>),
-    #[allow(dead_code)]
     Upload(Arc<TransferEndpoint>, Option<PyObjectType>),
 }
 
@@ -177,6 +176,24 @@ impl StateServerCore {
         Ok(value_id)
     }
 
+    /// The engine and metadata type of a transfer endpoint; `download`
+    /// selects the kind.
+    fn transfer_endpoint(
+        &self,
+        value_id: u64,
+        download: bool,
+    ) -> PyResult<(Engine, &Option<PyObjectType>)> {
+        let meta = match self.get_values()?.states.get(&value_id) {
+            Some(PyState::Download(_, meta)) if download => meta,
+            Some(PyState::Upload(_, meta)) if !download => meta,
+            _ => {
+                let kind = if download { "Download" } else { "Upload" };
+                return Err(PyValueError::new_err(format!("{kind} with ID not found.")));
+            }
+        };
+        Ok((self.server.read().transfers().clone(), meta))
+    }
+
     /// Keeps a Data state's header type until the registry is finalized.
     fn keep_header_type(&self, value_id: u64, header: Option<PyObjectType>) {
         if let (Some(header), Some(types)) = (header, self.temps.write().as_mut()) {
@@ -223,7 +240,7 @@ fn header_type(py: Python, header: Option<&PyObjectType>) -> PyResult<Option<u32
 ///
 /// A state without a header type gets empty bytes, which its core rejects
 /// with its error for a header on such a state.
-fn encode_header(
+pub(crate) fn encode_header(
     header: Option<(Bound<PyAny>,)>,
     header_type: &Option<PyObjectType>,
 ) -> PyResult<Option<Bytes>> {
@@ -251,7 +268,7 @@ fn encode_single_header(
 /// The caller copies the header out of the core first: decoding constructs
 /// Python objects, whose code may hand the GIL to a thread that then waits
 /// for the same storage lock.
-fn decode_header<'py>(
+pub(crate) fn decode_header<'py>(
     py: Python<'py>,
     header: Bytes,
     header_type: &Option<PyObjectType>,
@@ -322,6 +339,7 @@ impl StateServerCore {
             PyValueError::new_err(format!("Missing type information for {kind} ID {id}"))
         };
         let mut states = NoHashMap::default();
+        let mut transfer_events = Vec::new();
         for (id, state) in core_states.states {
             // Values, value takes and signals keep their types for signal
             // callbacks; the other kinds take theirs.
@@ -365,12 +383,25 @@ impl StateServerCore {
                 StateRef::DataTake(state) => PyState::DataTake(state, types.remove(&id)),
                 StateRef::DataMulti(state) => PyState::DataMulti(state, types.remove(&id)),
                 StateRef::DataMultiTake(state) => PyState::DataMultiTake(state, types.remove(&id)),
-                StateRef::Download(state) => PyState::Download(state, types.remove(&id)),
-                StateRef::Upload(state) => PyState::Upload(state, types.remove(&id)),
+                StateRef::Download(state) => {
+                    transfer_events.push(id);
+                    PyState::Download(state, types.remove(&id))
+                }
+                StateRef::Upload(state) => {
+                    transfer_events.push(id);
+                    PyState::Upload(state, types.remove(&id))
+                }
             };
             states.insert(id, state);
         }
 
+        // A transfer endpoint's events carry their kind and a key.
+        for id in transfer_events {
+            types.insert(
+                id,
+                PyObjectType::Tuple(vec![PyObjectType::U8, PyObjectType::U64]),
+            );
+        }
         let inner = ValuesInner {
             states,
             signals_types: types,
@@ -1666,6 +1697,107 @@ impl StateServerCore {
             .map_err(|e| PyValueError::new_err(format!("Failed to add DataMulti: {}", e)))?;
         self.keep_header_type(value_id, header);
         Ok(value_id)
+    }
+
+    // file transfers -----------------------------------------------------
+
+    #[pyo3(signature = (value_id, path, name, meta, wait, timeout))]
+    #[allow(clippy::too_many_arguments)]
+    fn transfer_send_file(
+        &self,
+        py: Python,
+        value_id: u64,
+        path: PathBuf,
+        name: Option<String>,
+        meta: Option<(Bound<PyAny>,)>,
+        wait: bool,
+        timeout: Option<f64>,
+    ) -> PyResult<PyTransferHandle> {
+        let (engine, meta_type) = self.transfer_endpoint(value_id, true)?;
+        let target = SendTarget {
+            engine,
+            endpoint: value_id,
+            meta_type,
+        };
+        pytransfer::send(py, target, Offer::File(path, name), meta, wait, timeout)
+    }
+
+    #[pyo3(signature = (value_id, paths, name, root, meta, wait, timeout))]
+    #[allow(clippy::too_many_arguments)]
+    fn transfer_send_files(
+        &self,
+        py: Python,
+        value_id: u64,
+        paths: Vec<PathBuf>,
+        name: String,
+        root: Option<PathBuf>,
+        meta: Option<(Bound<PyAny>,)>,
+        wait: bool,
+        timeout: Option<f64>,
+    ) -> PyResult<PyTransferHandle> {
+        let (engine, meta_type) = self.transfer_endpoint(value_id, true)?;
+        let target = SendTarget {
+            engine,
+            endpoint: value_id,
+            meta_type,
+        };
+        let offer = Offer::Files(paths, name, root);
+        pytransfer::send(py, target, offer, meta, wait, timeout)
+    }
+
+    #[pyo3(signature = (value_id, data, name, meta, wait, timeout))]
+    #[allow(clippy::too_many_arguments)]
+    fn transfer_send_bytes(
+        &self,
+        py: Python,
+        value_id: u64,
+        data: &Bound<PyAny>,
+        name: String,
+        meta: Option<(Bound<PyAny>,)>,
+        wait: bool,
+        timeout: Option<f64>,
+    ) -> PyResult<PyTransferHandle> {
+        let buffer = data_buffer(data)?;
+        // SAFETY: a C-contiguous buffer holds `len_bytes()` bytes from
+        // `buf_ptr()`; they are copied before `buffer` is released.
+        let bytes = unsafe {
+            std::slice::from_raw_parts(buffer.buf_ptr().cast::<u8>(), buffer.len_bytes())
+        }
+        .to_vec();
+        drop(buffer);
+        let (engine, meta_type) = self.transfer_endpoint(value_id, true)?;
+        let target = SendTarget {
+            engine,
+            endpoint: value_id,
+            meta_type,
+        };
+        pytransfer::send(py, target, Offer::Bytes(bytes, name), meta, wait, timeout)
+    }
+
+    /// The most recent transfer of a `Download` (`download`) or `Upload`.
+    fn transfer_last(
+        &self,
+        py: Python,
+        value_id: u64,
+        download: bool,
+    ) -> PyResult<Option<PyTransferHandle>> {
+        let (engine, meta_type) = self.transfer_endpoint(value_id, download)?;
+        Ok(engine
+            .last(value_id)
+            .map(|shared| PyTransferHandle::new(py, shared, meta_type)))
+    }
+
+    /// The finished transfer a transfer event names.
+    fn transfer_finished(
+        &self,
+        py: Python,
+        value_id: u64,
+        download: bool,
+        key: u64,
+    ) -> PyResult<Option<PyTransferHandle>> {
+        let (_, meta_type) = self.transfer_endpoint(value_id, download)?;
+        let finished = self.server.read().transfer_events().finished(key);
+        Ok(finished.map(|shared| PyTransferHandle::new(py, shared, meta_type)))
     }
 
     fn add_download(

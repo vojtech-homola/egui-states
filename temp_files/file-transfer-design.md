@@ -194,10 +194,10 @@ impl<M: TransferMeta> Upload<M> {
 Generated bindings (class pairs follow `Data` / `DataWithHeader`):
 
 ```python
-self.files: s.Download = s.Download()                                   # Download
-self.results: s.DownloadWithMeta[FileInfo] = s.DownloadWithMeta(3)      # Download<FileInfo>
-self.logs: s.Upload = s.Upload()                                        # Upload
-self.inputs: s.UploadWithMeta[InputInfo] = s.UploadWithMeta(4)          # Upload<InputInfo>
+self.files: s.Download = s.Download()  # Download
+self.results: s.DownloadWithMeta[FileInfo] = s.DownloadWithMeta(3)  # Download<FileInfo>
+self.logs: s.Upload = s.Upload()  # Upload
+self.inputs: s.UploadWithMeta[InputInfo] = s.UploadWithMeta(4)  # Upload<InputInfo>
 ```
 
 ### Sending (`Download`)
@@ -205,22 +205,33 @@ self.inputs: s.UploadWithMeta[InputInfo] = s.UploadWithMeta(4)          # Upload
 ```python
 type PathLike = str | os.PathLike[str]
 
+
 class Download:
-    def send_file(self, path: PathLike, name: str | None = None,
-                  wait: bool = False, timeout: float | None = None) -> TransferHandle: ...
-    def send_files(self, paths: Sequence[PathLike], name: str, root: PathLike | None = None,
-                   wait: bool = False, timeout: float | None = None) -> TransferHandle: ...
-    def send_bytes(self, data: Buffer, name: str,
-                   wait: bool = False, timeout: float | None = None) -> TransferHandle: ...
+    def send_file(
+        self, path: PathLike, name: str | None = None, wait: bool = False, timeout: float | None = None
+    ) -> TransferHandle: ...
+    def send_files(
+        self,
+        paths: Sequence[PathLike],
+        name: str,
+        root: PathLike | None = None,
+        wait: bool = False,
+        timeout: float | None = None,
+    ) -> TransferHandle: ...
+    def send_bytes(
+        self, data: Buffer, name: str, wait: bool = False, timeout: float | None = None
+    ) -> TransferHandle: ...
     def last(self) -> TransferHandle | None: ...
-    def connect(self, callback: Callable[[TransferHandle], Any]) -> None: ...     # a transfer finished
+    def connect(self, callback: Callable[[TransferHandle], Any]) -> None: ...  # a transfer finished
     def disconnect(self, callback: Callable[[TransferHandle], Any]) -> None: ...
     def disconnect_all(self) -> None: ...
 
+
 class DownloadWithMeta[M]:
     # same methods; every send_* also takes a REQUIRED KEYWORD `meta: M`
-    def send_file(self, path: PathLike, name: str | None = None, *, meta: M,
-                  wait: bool = False, timeout: float | None = None) -> TransferHandle: ...
+    def send_file(
+        self, path: PathLike, name: str | None = None, *, meta: M, wait: bool = False, timeout: float | None = None
+    ) -> TransferHandle: ...
 ```
 
 - `send_file`: the client sees the file's own name, or `name`.
@@ -245,27 +256,30 @@ class DownloadWithMeta[M]:
 
 ```python
 class Upload:
-    def on_offer(self, func: Callable[[TransferOffer], Any] | None) -> None: ...   # one function; None removes it
+    def on_offer(self, func: Callable[[TransferOffer], Any] | None) -> None: ...  # one function; None removes it
     def last(self) -> TransferHandle | None: ...
-    def connect(self, callback: Callable[[TransferHandle], Any]) -> None: ...      # a transfer finished
+    def connect(self, callback: Callable[[TransferHandle], Any]) -> None: ...  # a transfer finished
     def disconnect(self, callback: Callable[[TransferHandle], Any]) -> None: ...
     def disconnect_all(self) -> None: ...
 
-class UploadWithMeta[M]: ...    # same; offers and handles carry the metadata
+
+class UploadWithMeta[M]: ...  # same; offers and handles carry the metadata
+
 
 class OfferedFile(NamedTuple):
     name: str
     size: int
-    modified: float | None      # seconds since the epoch
+    modified: float | None  # seconds since the epoch
+
 
 class TransferOffer[M]:
     def name(self) -> str: ...
     def files(self) -> list[OfferedFile]: ...
     def total_size(self) -> int | None: ...
-    def meta(self) -> M: ...                                        # None without metadata
-    def accept_file(self, path: PathLike) -> TransferHandle: ...    # single file
-    def accept_dir(self, dir: PathLike) -> TransferHandle: ...      # every file under its own name
-    def accept_memory(self, limit: int) -> TransferHandle: ...      # single file
+    def meta(self) -> M: ...  # None without metadata
+    def accept_file(self, path: PathLike) -> TransferHandle: ...  # single file
+    def accept_dir(self, dir: PathLike) -> TransferHandle: ...  # every file under its own name
+    def accept_memory(self, limit: int) -> TransferHandle: ...  # single file
     def reject(self, reason: str = "") -> None: ...
 ```
 
@@ -285,27 +299,44 @@ class TransferOffer[M]:
 class TransferHandle:
     def name(self) -> str: ...
     def status(self) -> TransferStatus: ...
-    def error(self) -> TransferError | None: ...            # set when Failed
+    def error(self) -> TransferError | None: ...  # set when Failed
     def progress(self) -> TransferProgress: ...
     def is_finished(self) -> bool: ...
-    def wait(self, timeout: float | None = None) -> None: ...     # GIL released
-    def cancel(self, reason: str | None = None) -> None: ...      # idempotent; withdraws an unanswered offer
-    def path(self) -> Path | None: ...       # received: the file, or the folder for accept_dir
-    def take_data(self) -> bytes | None: ... # accept_memory result, once, after Done
-    def meta(self) -> Any: ...               # the transfer's metadata; None without metadata
+    def wait(self, timeout: float | None = None) -> None: ...  # GIL released
+    def cancel(self, reason: str | None = None) -> None: ...  # idempotent; withdraws an unanswered offer
+    def path(self) -> Path | None: ...  # received: the file, or the folder for accept_dir
+    def take_data(self) -> bytes | None: ...  # accept_memory result, once, after Done
+    def meta(self) -> Any: ...  # the transfer's metadata; None without metadata
 
-class TransferStatus(Enum):        # member style as LogLevel
-    Pending = 0; Running = 1; Done = 2; Failed = 3
+
+class TransferStatus(Enum):  # member style as LogLevel
+    Pending = 0
+    Running = 1
+    Done = 2
+    Failed = 3
+
 
 class TransferProgress(NamedTuple):
-    done: int; total: int | None; files_done: int; files_total: int
+    done: int
+    total: int | None
+    files_done: int
+    files_total: int
+
 
 class TransferErrorKind(Enum):
-    Busy = 0; NotConnected = 1; Rejected = 2; Cancelled = 3; Disconnected = 4
-    Io = 5; Unsupported = 6; Protocol = 7; TooLarge = 8
+    Busy = 0
+    NotConnected = 1
+    Rejected = 2
+    Cancelled = 3
+    Disconnected = 4
+    Io = 5
+    Unsupported = 6
+    Protocol = 7
+    TooLarge = 8
+
 
 class TransferError(Exception):
-    kind: TransferErrorKind        # str(e) is the message
+    kind: TransferErrorKind  # str(e) is the message
 ```
 
 - `wait` returns when done, raises the transfer's `TransferError` when it failed, and raises the

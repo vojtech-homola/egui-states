@@ -373,6 +373,11 @@ impl Fixture {
         }));
         let extra_takes = server.states.data_take.clone();
         let extra_multi = server.states.data_multi_take.clone();
+        let finished = Arc::new(Mutex::new(Vec::new()));
+        let seen = finished.clone();
+        callbacks.push(server.states.transfers.files.connect(move |handle| {
+            seen.lock().unwrap().push(handle);
+        }));
         let st = states.clone();
         let all = server.states.clone();
         let on_error = errors.clone();
@@ -479,6 +484,10 @@ impl Fixture {
                         edit_headers(&all, command)?;
                         st.phase.set(command, true)?;
                     }
+                    40..=43 => {
+                        transfers(&all, command, &finished)?;
+                        st.phase.set(command, true)?;
+                    }
                     99 => st.phase.set(99, true)?,
                     _ => panic!("unknown fixture command"),
                 }
@@ -526,4 +535,95 @@ impl Drop for Fixture {
         self.server.stop();
         self.callbacks.clear();
     }
+}
+
+/// Commands 40 to 43: file transfers to the client.
+fn transfers(
+    states: &State,
+    command: u32,
+    finished: &Mutex<Vec<s::TransferHandle>>,
+) -> s::Result<()> {
+    use crate::bindings::structs::TransferInfo;
+    use s::{TransferError, TransferStatus};
+
+    let t = &states.transfers;
+    let failed = |error: TransferError| s::ServerError::new(error.to_string());
+    let timeout = Some(Duration::from_secs(10));
+    match command {
+        40 => {
+            let plain = t
+                .files
+                .send_bytes(b"hello".to_vec(), "hello.txt", &(), false, None)
+                .map_err(failed)?;
+            let info = TransferInfo {
+                run: 42,
+                label: "label".into(),
+            };
+            let typed = t
+                .results
+                .send_bytes(b"meta".to_vec(), "m.bin", &info, false, None)
+                .map_err(failed)?;
+            plain.wait(timeout).map_err(failed)?;
+            typed.wait(timeout).map_err(failed)?;
+        }
+        41 => {
+            let sent = t
+                .files
+                .send_bytes(b"x".to_vec(), "x.bin", &(), false, None)
+                .map_err(failed)?;
+            assert_eq!(
+                t.files
+                    .send_bytes(b"y".to_vec(), "y.bin", &(), false, None)
+                    .unwrap_err(),
+                TransferError::Busy
+            );
+            assert_eq!(
+                sent.wait(timeout).unwrap_err(),
+                TransferError::Rejected("nope".into())
+            );
+        }
+        42 => {
+            let root = std::env::temp_dir().join(format!(
+                "egui_states_fixture_{}_{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            ));
+            let _ = std::fs::remove_dir_all(&root);
+            std::fs::create_dir_all(root.join("run/sub")).unwrap();
+            let files = [
+                ("run/a.txt", &b"alpha"[..]),
+                ("run/sub/b.txt", b"beta"),
+                ("run/empty", b""),
+            ];
+            let mut paths = Vec::new();
+            for (name, data) in files {
+                std::fs::write(root.join(name), data).unwrap();
+                paths.push(root.join(name));
+            }
+            t.files
+                .send_files(&paths, "run", Some(&root), &(), false, None)
+                .map_err(failed)?
+                .wait(timeout)
+                .map_err(failed)?;
+            let _ = std::fs::remove_dir_all(&root);
+        }
+        _ => {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while finished.lock().unwrap().len() < 3 {
+                assert!(Instant::now() < deadline, "finished callbacks missing");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            let reported: Vec<_> = finished
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|handle| (handle.name().to_string(), handle.status()))
+                .collect();
+            assert_eq!(reported[0], ("hello.txt".to_string(), TransferStatus::Done));
+            assert_eq!(reported[1].0, "x.bin");
+            assert!(matches!(reported[1].1, TransferStatus::Failed(_)));
+            assert_eq!(reported[2], ("run".to_string(), TransferStatus::Done));
+        }
+    }
+    Ok(())
 }

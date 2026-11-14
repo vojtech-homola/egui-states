@@ -32,6 +32,53 @@ def edit_headers(states, number):
     assert h.transient.get_with_header() is None
 
 
+def transfers(states, number, finished):
+    """Commands 40 to 43: file transfers to the client."""
+    import os
+    import tempfile
+
+    from egui_states import TransferError, TransferErrorKind, TransferStatus
+    from egui_states_test_bindings.structs import TransferInfo  # ty: ignore[import-not-found]
+
+    t = states.transfers
+    if number == 40:  # noqa: PLR2004
+        plain = t.files.send_bytes(b"hello", "hello.txt")
+        typed = t.results.send_bytes(b"meta", "m.bin", meta=TransferInfo(42, "label"))
+        plain.wait(10)
+        typed.wait(10)
+        assert typed.meta() == TransferInfo(42, "label")
+    elif number == 41:  # noqa: PLR2004
+        sent = t.files.send_bytes(b"x", "x.bin")
+        try:
+            t.files.send_bytes(b"y", "y.bin")
+            raise AssertionError("a second send was not refused")
+        except TransferError as error:
+            assert error.kind is TransferErrorKind.Busy
+        try:
+            sent.wait(10)
+            raise AssertionError("the offer was not rejected")
+        except TransferError as error:
+            assert error.kind is TransferErrorKind.Rejected
+            assert str(error) == "rejected: nope", str(error)
+    elif number == 42:  # noqa: PLR2004
+        root = tempfile.mkdtemp()
+        os.makedirs(os.path.join(root, "run", "sub"))
+        files = {"run/a.txt": b"alpha", "run/sub/b.txt": b"beta", "run/empty": b""}
+        for name, data in files.items():
+            with open(os.path.join(root, *name.split("/")), "wb") as f:
+                f.write(data)
+        paths = [os.path.join(root, *name.split("/")) for name in files]
+        t.files.send_files(paths, "run", root=root).wait(10)
+    else:
+        wait_until(lambda: len(finished) == 3)  # noqa: PLR2004
+        reported = [(handle.name(), handle.status()) for handle in finished]
+        assert reported == [
+            ("hello.txt", TransferStatus.Done),
+            ("x.bin", TransferStatus.Failed),
+            ("run", TransferStatus.Done),
+        ], reported
+
+
 def set_wire_values(states):
     """Command 30: non-default values of every shape for the client to check."""
     from egui_states_test_bindings.enums import TestEnum, TestEnum2  # ty: ignore[import-not-found]
@@ -171,6 +218,8 @@ def configure(states):  # noqa: PLR0915
     from egui_states_test_bindings.enums import TestEnum2  # ty: ignore[import-not-found]
 
     signals = []
+    finished = []
+    states.transfers.files.connect(finished.append)
     states.signals.empty_signal.connect(lambda: signals.append("empty"))
     states.signals.number_signal.connect(lambda value: signals.append(f"number:{value}"))
     states.signals.enum_signal.connect(lambda value: signals.append(f"enum:{value.name}"))
@@ -269,6 +318,9 @@ def configure(states):  # noqa: PLR0915
             st.phase.set(number, update=True)
         elif number in {35, 36}:
             edit_headers(states, number)
+            st.phase.set(number, update=True)
+        elif number in {40, 41, 42, 43}:
+            transfers(states, number, finished)
             st.phase.set(number, update=True)
         elif number == 99:
             st.phase.set(99, update=True)

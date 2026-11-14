@@ -11,13 +11,19 @@ pub(crate) struct TransferEndpoint {
 }
 
 use std::collections::VecDeque;
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use bytes::Bytes;
 use parking_lot::Mutex;
 
-use crate::file_transfer::engine::EngineEvent;
+use crate::file_transfer::TransferError;
+use crate::file_transfer::engine::{Engine, EngineEvent};
+use crate::file_transfer::fs::{FilesSource, modified_millis};
 use crate::file_transfer::shared::TransferShared;
+use crate::file_transfer::source::Source;
+use crate::protocol::file_transfer::{FileEntry, OfferBody};
 use crate::server_core::signals::SignalsManager;
 
 /// Kind of a transfer event in the endpoint's signal queue.
@@ -69,6 +75,145 @@ impl TransferEvents {
 }
 
 /// Decodes the payload of a transfer event.
+#[cfg(feature = "server")]
 pub(crate) fn decode_event(payload: &[u8]) -> Option<(u8, u64)> {
     postcard::from_bytes(payload).ok()
+}
+
+/// Sends an offer; the front-ends share the rules for `wait` and `timeout`.
+pub(crate) fn send(
+    engine: &Engine,
+    endpoint: u64,
+    body: OfferBody,
+    meta: Bytes,
+    source: Source,
+    wait: bool,
+    timeout: Option<Duration>,
+) -> Result<Arc<TransferShared>, TransferError> {
+    if timeout.is_some() && !wait {
+        return Err(TransferError::InvalidInput(
+            "a timeout needs wait".to_string(),
+        ));
+    }
+    if wait {
+        engine.send_wait(endpoint, body, meta, source, timeout)
+    } else {
+        engine.send(endpoint, body, meta, source)
+    }
+}
+
+/// The offer of the file at `path`, under its own name or `name`.
+pub(crate) fn file_offer(
+    path: &Path,
+    name: Option<&str>,
+) -> Result<(OfferBody, Source), TransferError> {
+    let name = match name {
+        Some(name) => name.to_string(),
+        None => file_name(path)?,
+    };
+    let (entry, size) = stat(path, name)?;
+    let body = OfferBody {
+        name: entry.name.clone(),
+        files: vec![entry],
+    };
+    let source = Source::Files(FilesSource::new(vec![(path.to_path_buf(), size)]));
+    Ok((body, source))
+}
+
+/// The offer of several files as one transfer named `name`.
+pub(crate) fn files_offer(
+    paths: &[PathBuf],
+    name: &str,
+    root: Option<&Path>,
+) -> Result<(OfferBody, Source), TransferError> {
+    let mut files = Vec::with_capacity(paths.len());
+    let mut sources = Vec::with_capacity(paths.len());
+    for path in paths {
+        let file_name = match root {
+            Some(root) => relative_name(path, root)?,
+            None => file_name(path)?,
+        };
+        let (entry, size) = stat(path, file_name)?;
+        files.push(entry);
+        sources.push((path.clone(), size));
+    }
+    let body = OfferBody {
+        name: name.to_string(),
+        files,
+    };
+    Ok((body, Source::Files(FilesSource::new(sources))))
+}
+
+/// The offer of `data` as one file named `name`.
+pub(crate) fn bytes_offer(data: Vec<u8>, name: &str) -> (OfferBody, Source) {
+    let body = OfferBody {
+        name: name.to_string(),
+        files: vec![FileEntry {
+            name: name.to_string(),
+            size: data.len() as u64,
+            modified: None,
+        }],
+    };
+    (body, Source::bytes(data))
+}
+
+/// The size and offer entry of the file at `path`.
+fn stat(path: &Path, name: String) -> Result<(FileEntry, u64), TransferError> {
+    let metadata = std::fs::metadata(path)
+        .map_err(|error| TransferError::Io(format!("{}: {error}", path.display())))?;
+    if !metadata.is_file() {
+        return Err(TransferError::Io(format!(
+            "{} is not a file",
+            path.display()
+        )));
+    }
+    let size = metadata.len();
+    let entry = FileEntry {
+        name,
+        size,
+        modified: modified_millis(&metadata),
+    };
+    Ok((entry, size))
+}
+
+fn file_name(path: &Path) -> Result<String, TransferError> {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .map(str::to_string)
+        .ok_or_else(|| {
+            TransferError::InvalidInput(format!("{} has no UTF-8 file name", path.display()))
+        })
+}
+
+/// The name of `path` relative to `root`, with `/` between folders.
+fn relative_name(path: &Path, root: &Path) -> Result<String, TransferError> {
+    let relative = path.strip_prefix(root).map_err(|_| {
+        TransferError::InvalidInput(format!(
+            "{} is not inside {}",
+            path.display(),
+            root.display()
+        ))
+    })?;
+    let mut parts = Vec::new();
+    for component in relative.components() {
+        match component {
+            Component::Normal(part) => parts.push(part.to_str().ok_or_else(|| {
+                TransferError::InvalidInput(format!("{} is not UTF-8", path.display()))
+            })?),
+            _ => {
+                return Err(TransferError::InvalidInput(format!(
+                    "{} is not inside {}",
+                    path.display(),
+                    root.display()
+                )));
+            }
+        }
+    }
+    if parts.is_empty() {
+        return Err(TransferError::InvalidInput(format!(
+            "{} is the root itself",
+            path.display()
+        )));
+    }
+    Ok(parts.join("/"))
 }

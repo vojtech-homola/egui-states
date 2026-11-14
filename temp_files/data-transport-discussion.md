@@ -118,9 +118,10 @@ files = server.states.results
 t = files.send_file(Path("out/result.h5"), FileInfo(name="result.h5"))
 t = files.send_bytes(payload, FileInfo(...))
 t = files.send_iter(chunks(), FileInfo(...), size=None)  # generator, size unknown
-t.progress()          # (done, total | None)
-t.wait(timeout=60)    # raises TransferError on cancel or disconnect
+t.progress()  # (done, total | None)
+t.wait(timeout=60)  # raises TransferError on cancel or disconnect
 t.cancel()
+
 
 # client → server
 def on_incoming(incoming: Incoming[FileInfo]) -> None:
@@ -128,6 +129,7 @@ def on_incoming(incoming: Incoming[FileInfo]) -> None:
         incoming.reject("too large")
         return
     incoming.accept_file(upload_dir / safe_name(incoming.meta.name))
+
 
 files.on_incoming(on_incoming)
 ```
@@ -364,17 +366,19 @@ ds = server.states.datasets
 
 # server → client
 h = ds.send_file("/data/run42.h5", DatasetInfo(run=42), verify=True)  # file_name taken from the path
-h.status()      # QUEUED / OFFERED / RUNNING / DONE / FAILED / CANCELLED / REJECTED
-h.progress()    # (done_bytes, total_bytes | None)
-h.wait()        # releases the GIL, raises TransferError
+h.status()  # QUEUED / OFFERED / RUNNING / DONE / FAILED / CANCELLED / REJECTED
+h.progress()  # (done_bytes, total_bytes | None)
+h.wait()  # releases the GIL, raises TransferError
 h.cancel()
 ds.send_bytes(payload, meta, file_name="x.bin")
 ds.send_iter(chunks(), meta, file_name="x.bin", size=None)
+
 
 # client → server
 def on_incoming(incoming: Incoming[DatasetInfo]) -> None:
     h = incoming.accept_file(UPLOADS / safe_name(incoming.file_name))
     h.on_done(lambda result: process(result))
+
 
 ds.on_incoming(on_incoming)
 ```
