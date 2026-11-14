@@ -16,7 +16,9 @@ use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, 
 use tokio_tungstenite::tungstenite::http::StatusCode;
 use tokio_tungstenite::tungstenite::{Message, protocol::WebSocketConfig};
 
+use crate::file_transfer::engine::Engine;
 use crate::protocol::WEBSOCKET_MAX_SIZE;
+use crate::server_core::http::download;
 use crate::server_core::http::origin::OriginPolicy;
 use crate::server_core::http::web::{self, Dispatch, WebSite};
 use crate::server_core::signals::SignalsManager;
@@ -74,11 +76,13 @@ pub(crate) trait Listener: Send + 'static {
     /// after which the run loop pauses briefly.
     fn accept(&mut self) -> impl Future<Output = Result<Self::Connection, String>> + Send;
 
-    /// While `site` is served, answers plain HTTP requests on `connection`
-    /// until `deadline`. Returns the connection when it asks to be opened.
+    /// While `site` is served or browser downloads can arrive, answers plain
+    /// HTTP requests on `connection`; the request head must arrive by
+    /// `deadline`. Returns the connection when it asks to be opened.
     fn serve_web(
         connection: Self::Connection,
         site: Option<Arc<WebSite>>,
+        transfers: &Engine,
         deadline: Instant,
         signals: &SignalsManager,
     ) -> impl Future<Output = Option<Self::Connection>> + Send;
@@ -112,20 +116,30 @@ impl Listener for TcpListener {
     async fn serve_web(
         stream: TcpStream,
         site: Option<Arc<WebSite>>,
+        transfers: &Engine,
         deadline: Instant,
         signals: &SignalsManager,
     ) -> Option<TcpStream> {
-        let Some(site) = site else {
+        // Without a page or downloads, every connection is a WebSocket.
+        let downloads = transfers.has_downloads();
+        if site.is_none() && !downloads {
             return Some(stream);
-        };
+        }
         match timeout_at(deadline, web::dispatch(stream)).await {
             Ok(Ok(Dispatch::WebSocket(stream))) => Some(stream),
             Ok(Ok(Dispatch::Http(stream, request))) => {
                 // Browsers abort downloads on navigation, so failures here are
                 // not server errors.
-                if let Err(_e) = web::serve(stream, request, &site).await {
+                let served = if downloads && download::is_download(&request) {
+                    download::serve(stream, request, transfers).await
+                } else if let Some(site) = site {
+                    web::serve(stream, request, &site).await
+                } else {
+                    download::not_found(stream, request).await
+                };
+                if let Err(_e) = served {
                     #[cfg(debug_assertions)]
-                    signals.debug(format!("serving web page failed: {:?}", _e));
+                    signals.debug(format!("serving HTTP failed: {:?}", _e));
                 }
                 None
             }
@@ -308,6 +322,7 @@ pub(crate) mod memory {
         async fn serve_web(
             connection: MemoryConnection,
             _site: Option<Arc<WebSite>>,
+            _transfers: &Engine,
             _deadline: Instant,
             _signals: &SignalsManager,
         ) -> Option<MemoryConnection> {

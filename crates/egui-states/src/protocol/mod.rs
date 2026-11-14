@@ -14,6 +14,7 @@ mod server_side;
 
 pub(crate) mod collections;
 pub(crate) mod data;
+pub(crate) mod file_transfer;
 pub(crate) mod image;
 
 #[cfg(feature = "client")]

@@ -9,6 +9,7 @@ mod data;
 mod helpers;
 mod image;
 mod sections;
+mod transfers;
 
 use crate::state::{ShowcaseState, sections::PrimaryChoice};
 
@@ -23,6 +24,8 @@ struct ViewState {
     last_multi_take_bytes: Vec<(u32, Vec<u8>)>,
     last_multi_take_samples: Vec<(u32, Vec<f32>)>,
     last_multi_take_nested: Vec<(u32, Vec<u16>)>,
+    download_dir: Option<String>,
+    last_offer_note: String,
 }
 
 impl ViewState {
@@ -38,6 +41,8 @@ impl ViewState {
             last_multi_take_bytes: Vec::new(),
             last_multi_take_samples: Vec::new(),
             last_multi_take_nested: Vec::new(),
+            download_dir: None,
+            last_offer_note: String::new(),
         }
     }
 }
@@ -105,6 +110,8 @@ impl eframe::App for MainApp {
 }
 
 fn poll_take_values(state: &mut ViewState) {
+    transfers::poll_offers(state);
+
     if let Some(value) = state.schema.value_take.take_text.take() {
         state.last_take_text = value;
     }
@@ -182,4 +189,6 @@ fn show_content(ui: &mut egui::Ui, state: &mut ViewState) {
     data::show_multi_data_take(ui, state);
     ui.separator();
     image::show_image_section(ui, state);
+    ui.separator();
+    transfers::show_transfers(ui, state);
 }

@@ -4,13 +4,16 @@ use std::sync::{
 };
 use std::time::Duration;
 
+use parking_lot::Mutex;
+use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::{Instant, Interval, MissedTickBehavior, interval_at, timeout_at};
 
 use crate::PROTOCOL_VERSION;
 use crate::event::Event;
-use crate::protocol::{MAX_MSG_COUNT, MSG_SIZE_THRESHOLD, ServerHeader, serialize};
+use crate::file_transfer::engine::Engine;
+use crate::protocol::{FastVec, MAX_MSG_COUNT, MSG_SIZE_THRESHOLD, ServerHeader, serialize};
 use crate::server_core::http::origin::OriginPolicy;
 use crate::server_core::http::web::{WebSite, WebSlot};
 use crate::server_core::net::heartbeat::{Activity, Heartbeat};
@@ -63,6 +66,21 @@ pub(crate) struct Session {
     pub(crate) values: ServerStatesList,
     pub(crate) signals: SignalsManager,
     pub(crate) heartbeat: Option<Heartbeat>,
+    /// The engine of the file transfer endpoints.
+    pub(crate) transfers: Engine,
+}
+
+/// The file data lane of one connection.
+struct DataLane {
+    /// Chunks the engine's pump has prepared.
+    chunks: mpsc::Receiver<Vec<u8>>,
+    /// The connection's generation in the engine.
+    generation: u64,
+    pump: JoinHandle<()>,
+    /// Writes received files.
+    sinks: JoinHandle<()>,
+    /// Expires the tickets of browser downloads the browser did not fetch.
+    tickets: JoinHandle<()>,
 }
 
 pub(crate) async fn run<L: Listener>(
@@ -78,6 +96,7 @@ pub(crate) async fn run<L: Listener>(
         connected,
         values,
         signals,
+        transfers,
         ..
     } = session.clone();
     let mut holder = ChannelHolder::Rx(rx);
@@ -115,6 +134,7 @@ pub(crate) async fn run<L: Listener>(
                             site,
                             handshake.clone(),
                             signals.clone(),
+                            transfers.clone(),
                         ));
                     }
                     Err(e) => {
@@ -149,6 +169,20 @@ pub(crate) async fn run<L: Listener>(
             let _ = rx.recv().await;
         }
 
+        // Transfers are attached before the connection is published, so a
+        // send never finds a client without them. Their control frames share
+        // the state queue and are held back until the initial state is in
+        // it: the client learns of an offer only after that state.
+        let held = Arc::new(Mutex::new(Some(Vec::new())));
+        let (lane_sender, lane_held) = (sender.clone(), held.clone());
+        let generation = transfers.attach(Arc::new(move |message| {
+            let mut held = lane_held.lock();
+            match held.as_mut() {
+                Some(held) => held.push(message),
+                None => lane_sender.send(FastVec::Heap(message)),
+            }
+        }));
+
         connected.store(true, Ordering::Release);
         let failure = if values.sync.iter().any(|v| v.sync().is_err()) {
             Some("failed to sync value after handshake")
@@ -167,6 +201,7 @@ pub(crate) async fn run<L: Listener>(
             // client's acknowledgements, so release them.
             signals.error(error);
             connected.store(false, Ordering::Release);
+            transfers.detach(generation);
             for v in values.ack.values() {
                 v.reset();
             }
@@ -174,6 +209,42 @@ pub(crate) async fn run<L: Listener>(
             continue;
         }
 
+        // The initial state is queued; the frames held back follow it, in
+        // their order, and later ones go straight into the queue.
+        {
+            let mut held = held.lock();
+            for message in held.take().into_iter().flatten() {
+                sender.send(FastVec::Heap(message));
+            }
+        }
+        let (chunk_tx, chunks) = mpsc::channel(1);
+        let pump_engine = transfers.clone();
+        let pump = tokio::spawn(async move {
+            let pump = std::panic::AssertUnwindSafe(pump_engine.pump(generation, chunk_tx));
+            // A panicking pump would leave the transfers stuck; fail them.
+            if futures_util::FutureExt::catch_unwind(pump).await.is_err() {
+                pump_engine.detach(generation);
+            }
+        });
+        let sink_engine = transfers.clone();
+        let sinks = tokio::spawn(async move { sink_engine.sink_worker(generation).await });
+        let ticket_engine = transfers.clone();
+        let tickets = tokio::spawn(async move {
+            let mut every = tokio::time::interval(Duration::from_secs(1));
+            loop {
+                every.tick().await;
+                ticket_engine.expire_tickets();
+            }
+        });
+        let lane = DataLane {
+            chunks,
+            generation,
+            pump,
+            sinks,
+            tickets,
+        };
+
+        // After the transfers are attached, so a connect callback can send.
         signals.on_connect(peer_addr);
 
         let activity = socket_reader.activity();
@@ -184,6 +255,7 @@ pub(crate) async fn run<L: Listener>(
             reader_handler,
             activity,
             session.clone(),
+            lane,
         ));
 
         holder = ChannelHolder::Transfer(handler);
@@ -211,9 +283,12 @@ async fn accept_client<L: Listener>(
     site: Option<Arc<WebSite>>,
     handshake: Handshake,
     signals: SignalsManager,
+    transfers: Engine,
 ) -> Option<ClientReady<L>> {
     let deadline = Instant::now() + HANDSHAKE_TIMEOUT;
-    let connection = L::serve_web(connection, site, deadline, &signals).await?;
+    // A browser download streams here for its whole length. Downloads run one
+    // at a time, so it holds at most one of the pending connections.
+    let connection = L::serve_web(connection, site, &transfers, deadline, &signals).await?;
 
     match timeout_at(
         deadline,
@@ -329,6 +404,7 @@ async fn reader<S: FrameSource>(mut socket_rx: SocketReader<S>, session: Session
         connected,
         values,
         signals,
+        transfers,
         ..
     } = session;
     loop {
@@ -385,6 +461,10 @@ async fn reader<S: FrameSource>(mut socket_rx: SocketReader<S>, session: Session
             Ok(ClientMessage::Handshake(_, _, _)) => {
                 signals.error("unexpected handshake message after connection established");
             }
+            // The engine never waits here: sinks that block have a worker.
+            Ok(ClientMessage::Transfer(endpoint, frame, payload)) => {
+                transfers.handle_frame(endpoint, frame, payload);
+            }
         }
     }
 
@@ -400,18 +480,29 @@ async fn writer<K: FrameSink>(
     reader_handle: tokio::task::JoinHandle<()>,
     activity: Arc<Activity>,
     session: Session,
+    lane: DataLane,
 ) -> MessageReceiver {
     let Session {
         connected,
         values,
         signals,
         heartbeat,
+        transfers,
         ..
     } = session;
     enum Next {
         Message(Option<SenderData>),
+        Chunk(Vec<u8>),
         Ping,
     }
+    let DataLane {
+        mut chunks,
+        generation,
+        pump,
+        sinks,
+        tickets,
+    } = lane;
+    let mut chunks_open = true;
 
     let mut data_receiver = DataReceiver::new(rx);
     // The connection counts as heard from when it starts, however long the
@@ -424,11 +515,21 @@ async fn writer<K: FrameSink>(
     });
 
     loop {
-        // Both branches are cancel safe: `DataReceiver::next` only awaits the
-        // channel, and a missed tick is delivered by the next poll.
+        // Pings go first, so a long burst of state messages cannot starve
+        // the heartbeat; file data goes only when no state message waits.
+        // Every branch is cancel safe: each only awaits a channel or a timer
+        // tick, and a missed tick is delivered by the next poll.
         let next = tokio::select! {
-            message = data_receiver.next() => Next::Message(message),
+            biased;
             () = next_ping(&mut pings) => Next::Ping,
+            message = data_receiver.next() => Next::Message(message),
+            chunk = chunks.recv(), if chunks_open => match chunk {
+                Some(chunk) => Next::Chunk(chunk),
+                None => {
+                    chunks_open = false;
+                    continue;
+                }
+            },
         };
 
         let message = match next {
@@ -439,6 +540,13 @@ async fn writer<K: FrameSink>(
                     break;
                 }
                 Outgoing::Binary(message.into_bytes())
+            }
+            Next::Chunk(chunk) => {
+                if !connected.load(Ordering::Acquire) {
+                    unless_silent(websocket.close(), heartbeat, &activity).await;
+                    break;
+                }
+                Outgoing::Binary(chunk.into())
             }
             // check if message is terminate signal
             Next::Message(None) => {
@@ -476,6 +584,11 @@ async fn writer<K: FrameSink>(
 
     reader_handle.abort();
     let _ = reader_handle.await;
+    // Every unfinished transfer fails as disconnected.
+    transfers.detach(generation);
+    pump.abort();
+    sinks.abort();
+    tickets.abort();
     // A reader that ends the connection itself drops the client's pending
     // changes; an aborted one never gets there, so their callbacks would
     // otherwise run after the disconnect.
@@ -712,11 +825,17 @@ mod run_tests {
     use std::net::{Ipv4Addr, SocketAddr};
     use std::sync::atomic::AtomicUsize;
 
+    use bytes::Bytes;
     use futures_util::SinkExt;
     use parking_lot::RwLock;
     use tokio_tungstenite::tungstenite::Message;
 
     use super::*;
+    use crate::file_transfer::TransferError;
+    use crate::file_transfer::engine::Role;
+    use crate::file_transfer::shared::TransferShared;
+    use crate::file_transfer::source::Source;
+    use crate::protocol::file_transfer::{FileEntry, OfferBody};
     use crate::protocol::{ClientHeader, FastVec};
     use crate::server_core::net::transport::Incoming;
     use crate::server_core::net::transport::memory::{self, MemoryClient, MemoryConnector};
@@ -763,6 +882,8 @@ mod run_tests {
         timeout: Duration::from_millis(400),
     };
     const DEADLINE: Duration = Duration::from_secs(5);
+    /// The endpoint the tests send transfers on.
+    const ENDPOINT: u64 = 1000;
 
     fn block_on<F: Future>(future: F) -> F::Output {
         tokio::runtime::Builder::new_multi_thread()
@@ -790,6 +911,7 @@ mod run_tests {
         connected: Arc<AtomicBool>,
         stop_event: Event,
         probe: Arc<ResetProbe>,
+        transfers: Engine,
         handle: JoinHandle<MessageReceiver>,
     }
 
@@ -833,6 +955,7 @@ mod run_tests {
                 ..Default::default()
             };
             values.ack.insert(1, probe.clone());
+            let transfers = Engine::new(crate::file_transfer::engine::Side::Server, None);
             let handle = tokio::spawn(run(
                 listener,
                 rx,
@@ -849,6 +972,7 @@ mod run_tests {
                     values,
                     signals,
                     heartbeat,
+                    transfers: transfers.clone(),
                 },
             ));
             Self {
@@ -856,12 +980,27 @@ mod run_tests {
                 connected,
                 stop_event,
                 probe,
+                transfers,
                 handle,
             }
         }
 
         fn connected(&self) -> bool {
             self.connected.load(Ordering::Acquire)
+        }
+
+        /// Offers one byte on [`ENDPOINT`].
+        fn send_transfer(&self) -> Result<Arc<TransferShared>, TransferError> {
+            let body = OfferBody {
+                name: "a".to_string(),
+                files: vec![FileEntry {
+                    name: "a".to_string(),
+                    size: 1,
+                    modified: None,
+                }],
+            };
+            self.transfers
+                .send(ENDPOINT, body, Bytes::new(), Source::bytes(vec![1]))
         }
 
         fn released(&self) -> bool {
@@ -886,6 +1025,7 @@ mod run_tests {
             let (server, connector) =
                 TestServer::memory_with(None, SignalsManager::new(), vec![sync]);
 
+            server.transfers.register(ENDPOINT, Role::Send, 0);
             let mut rejected = connect(&connector);
             let closed = tokio::time::timeout(DEADLINE, rejected.frames.recv())
                 .await
@@ -893,6 +1033,11 @@ mod run_tests {
             assert!(closed.is_none(), "the rejected client received a frame");
             assert!(server.released(), "pending states were not reset");
             assert!(!server.connected());
+            // Its transfers are detached with it.
+            assert_eq!(
+                server.send_transfer().err(),
+                Some(TransferError::NotConnected)
+            );
 
             let mut accepted = connect(&connector);
             let update = tokio::time::timeout(DEADLINE, accepted.frames.recv())
@@ -900,6 +1045,75 @@ mod run_tests {
                 .expect("the next client was not synchronized");
             assert!(matches!(update, Some(Outgoing::Binary(_))));
             assert!(server.connected());
+            server.stop().await;
+        });
+    }
+
+    /// Stays in the sync of a connection until it is released.
+    struct HeldSync {
+        entered: AtomicBool,
+        release: Mutex<std::sync::mpsc::Receiver<()>>,
+    }
+
+    impl SyncTrait for HeldSync {
+        fn sync(&self) -> Result<(), ()> {
+            self.entered.store(true, Ordering::Release);
+            self.release.lock().recv_timeout(DEADLINE).map_err(|_| ())
+        }
+    }
+
+    #[test]
+    fn a_transfer_sent_during_the_initial_sync_is_offered_after_it() {
+        use crate::protocol::file_transfer::TransferFrame;
+
+        block_on(async {
+            let (release, released) = std::sync::mpsc::channel();
+            let sync = Arc::new(HeldSync {
+                entered: AtomicBool::new(false),
+                release: Mutex::new(released),
+            });
+            let (server, connector) =
+                TestServer::memory_with(None, SignalsManager::new(), vec![sync.clone()]);
+            server.transfers.register(ENDPOINT, Role::Send, 0);
+            let mut client = connect(&connector);
+            assert!(
+                until(DEADLINE, || sync.entered.load(Ordering::Acquire)).await,
+                "the client was not accepted"
+            );
+
+            // The connection is published while its state is still queued;
+            // a transfer can be sent from then on.
+            assert!(server.connected());
+            let sent = server.send_transfer();
+            assert!(sent.is_ok(), "{:?}", sent.err());
+            release.send(()).unwrap();
+
+            // The client gets the offer, after the state.
+            let mut received = Vec::new();
+            let mut headers = Vec::new();
+            while headers.len() < 2 {
+                let frame = tokio::time::timeout(DEADLINE, client.frames.recv())
+                    .await
+                    .expect("the client was not synchronized");
+                let Some(Outgoing::Binary(frame)) = frame else {
+                    panic!("the connection ended");
+                };
+                received.extend_from_slice(&frame);
+                let mut rest = &received[..];
+                headers.clear();
+                while let Ok((header, after)) = postcard::take_from_bytes::<ServerHeader>(rest) {
+                    rest = match header {
+                        ServerHeader::Transfer(_, _, len) => &after[len as usize..],
+                        _ => after,
+                    };
+                    headers.push(header);
+                }
+            }
+            assert!(matches!(headers[0], ServerHeader::Update(_)));
+            assert!(matches!(
+                headers[1],
+                ServerHeader::Transfer(ENDPOINT, TransferFrame::Offer { .. }, _)
+            ));
             server.stop().await;
         });
     }
@@ -932,8 +1146,6 @@ mod run_tests {
     #[cfg(feature = "server")]
     #[test]
     fn heartbeat_disconnect_drops_pending_client_changes() {
-        use bytes::Bytes;
-
         block_on(async {
             const STATE_ID: u64 = 100;
             let signals = SignalsManager::new();

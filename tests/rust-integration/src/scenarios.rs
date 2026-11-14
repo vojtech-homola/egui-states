@@ -294,8 +294,87 @@ pub fn run(port: u16, scenario: &str) {
         "collections-wire" => collections_wire(&state),
         "numeric-wire" => numeric_wire(&state),
         "data-headers" => data_headers(port, &state, connection),
+        "file-transfers" => file_transfers(&state),
+        "uploads" => uploads(&state),
         _ => panic!("unknown scenario: {scenario}"),
     }
+}
+
+/// Downloads in memory, with metadata, rejected, and as a folder of files;
+/// the servers send on commands 40 to 42 and check their finished callbacks
+/// on command 43.
+fn file_transfers(state: &State) {
+    use egui_states_test_schema::transfers::TransferInfo;
+
+    let s = &state.integration;
+    let t = &state.transfers;
+    s.command.set(40u32);
+    let plain = wait("plain offer", || t.files.take_offer());
+    assert_eq!(plain.name(), "hello.txt");
+    assert_eq!(plain.total_size(), Some(5));
+    let plain = plain.accept_memory(1024);
+    let typed = wait("typed offer", || t.results.take_offer());
+    assert_eq!(
+        typed.meta(),
+        &TransferInfo {
+            run: 42,
+            label: "label".into()
+        }
+    );
+    let typed = typed.accept_memory(1024);
+    phase(s, 40);
+    assert_eq!(plain.take_data().unwrap(), b"hello");
+    assert_eq!(typed.take_data().unwrap(), b"meta");
+
+    s.command.set(41u32);
+    wait("offer to reject", || t.files.take_offer()).reject("nope");
+    phase(s, 41);
+
+    s.command.set(42u32);
+    let offer = wait("folder offer", || t.files.take_offer());
+    let mut names: Vec<_> = offer.files().iter().map(|f| f.name().to_string()).collect();
+    names.sort();
+    assert_eq!(names, ["run/a.txt", "run/empty", "run/sub/b.txt"]);
+    let dir = std::env::temp_dir().join(format!("egui_states_probe_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let handle = offer.accept_dir(&dir);
+    phase(s, 42);
+    wait("saved", || handle.is_finished().then_some(()));
+    assert_eq!(handle.status(), egui_states::TransferStatus::Done);
+    assert_eq!(std::fs::read(dir.join("run/a.txt")).unwrap(), b"alpha");
+    assert_eq!(std::fs::read(dir.join("run/sub/b.txt")).unwrap(), b"beta");
+    assert_eq!(std::fs::read(dir.join("run/empty")).unwrap(), b"");
+    let _ = std::fs::remove_dir_all(&dir);
+
+    s.command.set(43u32);
+    phase(s, 43);
+}
+
+/// Uploads: the servers accept the typed endpoint's offers into memory and
+/// have no receiver on the other; they check the upload on command 44.
+fn uploads(state: &State) {
+    use egui_states::{TransferError, TransferStatus};
+    use egui_states_test_schema::transfers::TransferInfo;
+
+    let s = &state.integration;
+    let t = &state.transfers;
+    let info = TransferInfo {
+        run: 7,
+        label: "up".into(),
+    };
+    let sent = t.inputs.send_bytes(b"upload".to_vec(), "u.bin", info);
+    let status = wait("upload", || sent.is_finished().then(|| sent.status()));
+    assert_eq!(status, TransferStatus::Done);
+    let refused = t.logs.send_bytes(b"log".to_vec(), "log.txt", ());
+    let status = wait("refusal", || {
+        refused.is_finished().then(|| refused.status())
+    });
+    assert_eq!(
+        status,
+        TransferStatus::Failed(TransferError::Rejected("no receiver".into()))
+    );
+    s.command.set(44u32);
+    phase(s, 44);
 }
 
 /// Every value shape crosses the wire in both directions. The servers set the

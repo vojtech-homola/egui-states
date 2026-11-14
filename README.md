@@ -44,13 +44,63 @@ server port, start the server, and call `client.connect()` to synchronize.
 Rebuild bindings after changing the state definition; generated files should
 not be edited.
 
-For other languages, the experimental [C ABI](crates/egui-states-c/README.md)
-exposes a low-level server for wrappers to build on, and `generate_c` writes a
-C header that registers the same state tree. It is opt-in and does not change
-the Rust or Python servers.
-
 On the client, `set_signal` changes a value and invokes server callbacks.
 Server setters can request an egui repaint with their `update` flag.
+
+## File transfers
+
+`Download<M>` sends files from the server to the client and `Upload<M>` from
+the client to the server, alongside the synchronized state. `M` is typed
+metadata sent with each transfer, `()` for none. Each transfer is an offer
+that the receiver accepts or rejects, and the receiver chooses where the data
+goes: into a file, into a folder for several files, or into memory.
+
+```rust
+#[derive(egui_states::State)]
+pub struct FilesState {
+    pub files: Download,
+    pub request: Signal<String>,
+}
+```
+
+A Python server answers the client's request by sending the file:
+
+```python
+def send(name: str) -> None:
+    # The client only names a file; the server decides what it may send.
+    server.states.files.send_file(DATA / safe_name(name))
+
+
+server.states.request.connect(send)
+```
+
+and the client takes the offer in `update`, asking for a path without stopping
+the UI:
+
+```rust
+if let Some(offer) = state.files.take_offer() {
+    offer.accept_file_with(|offer| {
+        rfd::FileDialog::new().set_file_name(offer.name()).save_file()
+    });
+}
+if let Some(handle) = state.files.last() {
+    ui.add(egui::ProgressBar::new(handle.progress().fraction().unwrap_or(0.0)));
+}
+```
+
+- **The GUI stays responsive.** File data only uses capacity the state
+  messages leave free, so a transfer adds about 2 ms to a state update on a
+  1 Gbit/s link.
+- **One transfer per endpoint.** A send while an endpoint is busy fails, or
+  waits with `wait=True`. Several files go as one transfer with `send_files`.
+- **Files are saved atomically.** A file appears under its name only once it
+  is complete, with the sender's modification time.
+- **Browsers** upload `File` objects from a file picker, and download through
+  the browser's download manager over plain HTTP from the server's port, one
+  file at a time or as one zip. A browser chooses the location itself.
+
+Transfers end when the connection does and are not resumed. See
+[file transfers](docs/architecture.md#file-transfers) for the details.
 
 ## Browser clients
 
@@ -129,8 +179,6 @@ when built.
 - `server`: native Rust server API.
 - `build_scripts`: Python and Rust binding generators.
 - `python`: PyO3 support for building the Python extension.
-- `c_abi` (experimental): support for the `egui_states_c` C ABI library; with
-  `build_scripts`, also the `generate_c` header generator.
 
 See the [API reference](https://docs.rs/egui_states),
 [synchronization model](docs/architecture.md), and [test commands](tests/README.md)

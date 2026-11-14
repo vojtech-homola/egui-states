@@ -14,6 +14,7 @@ use crate::client::states::data::{
 use crate::client::states::data_take::{
     DataMultiTake, DataTake, UpdateDataMultiTake, UpdateDataTake,
 };
+use crate::client::states::file_transfer::{Download, Upload};
 use crate::client::states::image::{Image, ImageMulti};
 use crate::client::states::initial_value::InitialValue;
 use crate::client::states::map::{MapState, UpdateMap};
@@ -22,6 +23,8 @@ use crate::client::states::values::{
     ValueTake,
 };
 use crate::client::states::vec::{UpdateList, VecState};
+use crate::file_transfer::engine::{Engine, Repaint, Role, Side};
+use crate::file_transfer::{TransferMeta, meta_type_id};
 use crate::hashing::{NoHashMap, StableHasher, generate_value_id};
 use crate::typed::{ObjectType, Typed};
 
@@ -161,6 +164,14 @@ pub trait StatesCreator {
     where
         T: GetDataType + Send + Sync + 'static,
         H: HeaderValue;
+
+    /// Creates an endpoint that receives files from the server, with the
+    /// metadata type `M` (`()` for none).
+    fn download<M: TransferMeta>(&mut self, name: &'static str) -> Download<M>;
+
+    /// Creates an endpoint that sends files to the server, with the metadata
+    /// type `M` (`()` for none).
+    fn upload<M: TransferMeta>(&mut self, name: &'static str) -> Upload<M>;
 }
 
 /// A client state the receive task updates.
@@ -200,12 +211,15 @@ macro_rules! lookups {
 #[derive(Clone)]
 pub(crate) struct ValuesList {
     pub(crate) states: NoHashMap<u64, ClientState>,
+    /// The engine of the file transfer endpoints.
+    pub(crate) transfers: Engine,
 }
 
 impl ValuesList {
-    fn new() -> Self {
+    fn new(transfers: Engine) -> Self {
         Self {
             states: NoHashMap::default(),
+            transfers,
         }
     }
 
@@ -266,6 +280,8 @@ pub(crate) const DATA_MULTI_HASH_ID: u8 = 9;
 pub(crate) const DATA_TAKE_HASH_ID: u8 = 10;
 pub(crate) const DATA_MULTI_TAKE_HASH_ID: u8 = 11;
 pub(crate) const IMAGE_MULTI_HASH_ID: u8 = 12;
+pub(crate) const DOWNLOAD_HASH_ID: u8 = 13;
+pub(crate) const UPLOAD_HASH_ID: u8 = 14;
 
 /// Runtime state factory used internally by [`crate::ClientBuilder`].
 pub struct StatesCreatorClient {
@@ -278,8 +294,23 @@ pub struct StatesCreatorClient {
 
 impl StatesCreatorClient {
     pub(crate) fn new(sender: MessageSender, context: egui::Context, parent: String) -> Self {
+        let repaint_context = context.clone();
+        let repaint: Repaint = Arc::new(move |delay| match delay {
+            Some(delay) => repaint_context.request_repaint_after(delay),
+            None => repaint_context.request_repaint(),
+        });
+        let transfers = Engine::new(Side::Client, Some(repaint));
+        Self::with_transfers(sender, context, parent, transfers)
+    }
+
+    fn with_transfers(
+        sender: MessageSender,
+        context: egui::Context,
+        parent: String,
+        transfers: Engine,
+    ) -> Self {
         Self {
-            val: ValuesList::new(),
+            val: ValuesList::new(transfers),
             sender,
             context,
             parent,
@@ -302,8 +333,12 @@ impl StatesCreatorClient {
 impl StatesCreator for StatesCreatorClient {
     fn substate<S: State>(&mut self, name: &str) -> S {
         let parent = format!("{}.{}", self.parent, name);
-        let mut creator =
-            StatesCreatorClient::new(self.sender.clone(), self.context.clone(), parent);
+        let mut creator = StatesCreatorClient::with_transfers(
+            self.sender.clone(),
+            self.context.clone(),
+            parent,
+            self.val.transfers.clone(),
+        );
         let substate = S::new(&mut creator);
         creator
             .version_hasher
@@ -577,5 +612,33 @@ impl StatesCreator for StatesCreatorClient {
             ClientState::DataMultiTake(Arc::new(data_multi_take.clone())),
         );
         data_multi_take
+    }
+
+    fn download<M: TransferMeta>(&mut self, name: &str) -> Download<M> {
+        let (_, id) = state_path(&self.parent, name);
+        hash_id_type(
+            &mut self.version_hasher,
+            id,
+            meta_type_id::<M>(),
+            DOWNLOAD_HASH_ID,
+        );
+        self.val
+            .transfers
+            .register(id, Role::Receive, meta_type_id::<M>());
+        Download::new(id, self.val.transfers.clone())
+    }
+
+    fn upload<M: TransferMeta>(&mut self, name: &str) -> Upload<M> {
+        let (_, id) = state_path(&self.parent, name);
+        hash_id_type(
+            &mut self.version_hasher,
+            id,
+            meta_type_id::<M>(),
+            UPLOAD_HASH_ID,
+        );
+        self.val
+            .transfers
+            .register(id, Role::Send, meta_type_id::<M>());
+        Upload::new(id, self.val.transfers.clone())
     }
 }

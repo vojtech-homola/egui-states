@@ -40,14 +40,16 @@
 //! - [`Data`] and [`DataMulti`] efficiently transfer numeric buffers.
 //! - [`Image`] updates one egui texture, while [`ImageMulti`] manages a sparse
 //!   collection of textures indexed by `u32` keys.
+//! - [`Download`] and [`Upload`] transfer files between the peers, next to the
+//!   synchronized state; a transfer only uses the capacity state messages leave
+//!   free.
 //!
 //! # Cargo features
 //!
 //! `client` is enabled by default. Enable `server` for the native Rust server
 //! API, `python` when building the PyO3 extension module, or `build_scripts` for
 //! `generate_python` and `generate_rust`. Native and WebAssembly egui clients
-//! use the same state API. The experimental `c_abi` feature supports the
-//! `egui_states_c` library and, with `build_scripts`, `generate_c`.
+//! use the same state API.
 //!
 //! See the [project README](https://github.com/vojtech-homola/egui-states) for
 //! complete setup instructions and runnable examples.
@@ -56,8 +58,17 @@ extern crate self as egui_states;
 
 #[cfg(test)]
 mod test_support;
+/// Test access to internals the benchmarks reach through `bench_support`.
+#[cfg(all(test, feature = "server", feature = "client"))]
+mod bench_support_test {
+    pub(crate) fn discard(upload: &crate::server::Upload<impl crate::server::TransferMeta>) {
+        upload.discard_offers();
+    }
+}
 
 mod event;
+#[cfg(any(feature = "client", feature = "server", feature = "python"))]
+mod file_transfer;
 mod hashing;
 mod protocol;
 mod typed;
@@ -69,10 +80,6 @@ pub mod bench_support;
 /// Build-time generators for typed Rust and Python server bindings.
 #[cfg(feature = "build_scripts")]
 pub mod build_scripts;
-/// Experimental support for the `egui_states_c` crate; not a stable Rust API.
-#[cfg(feature = "c_abi")]
-#[doc(hidden)]
-pub mod c_abi;
 #[cfg(feature = "client")]
 mod client;
 /// Python extension-module support used by the `egui-states` Python package.
@@ -92,6 +99,7 @@ pub use client::{
         atomics::{Atomic, AtomicLock, AtomicLockStatic, AtomicStatic, FallbackLock, UpdateLock},
         data::{Data, DataMulti, HeaderValue},
         data_take::{DataMultiTake, DataTake},
+        file_transfer::{Download, LocalFile, OfferedFile, TransferOffer, Upload},
         image::{Image, ImageMulti},
         initial_value::{InitValue, InitialValue},
         map::MapState,
@@ -102,6 +110,10 @@ pub use client::{
         vec::VecState,
     },
     states_creator::StatesCreator,
+};
+#[cfg(feature = "client")]
+pub use file_transfer::{
+    TransferError, TransferHandle, TransferMeta, TransferProgress, TransferStatus,
 };
 
 /// A root or nested group of client-side states.

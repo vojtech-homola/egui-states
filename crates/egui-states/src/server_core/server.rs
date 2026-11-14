@@ -13,9 +13,11 @@ use tokio::net::TcpListener;
 use tokio::runtime::Builder;
 
 use crate::event::Event;
+use crate::file_transfer::engine::{Engine, Role, Side};
 use crate::hashing::{MAX_RESERVED_ID, NoHashMap, generate_value_id};
 use crate::protocol::data::DataType;
 use crate::protocol::{ServerHeader, check_value_size, serialize};
+use crate::server_core::file_transfer::{TransferEndpoint, record_event};
 use crate::server_core::http::origin::OriginPolicy;
 use crate::server_core::http::web::{WebSite, WebSlot};
 use crate::server_core::net::heartbeat::Heartbeat;
@@ -57,6 +59,12 @@ pub(crate) enum StateRef {
     DataMulti(Arc<DataMulti>),
     DataTake(Arc<DataTake>),
     DataMultiTake(Arc<DataMultiTake>),
+    // The front-ends reach endpoints through the transfer engine; only the
+    // Python registry reads these.
+    #[cfg_attr(not(feature = "python"), allow(dead_code))]
+    Download(Arc<TransferEndpoint>),
+    #[cfg_attr(not(feature = "python"), allow(dead_code))]
+    Upload(Arc<TransferEndpoint>),
 }
 
 impl StateRef {
@@ -75,7 +83,7 @@ impl StateRef {
             Self::DataMulti(_) => 8,
             Self::DataTake(_) => 9,
             Self::DataMultiTake(_) => 10,
-            Self::Signal(_) => return None,
+            Self::Signal(_) | Self::Download(_) | Self::Upload(_) => return None,
         })
     }
 
@@ -92,7 +100,7 @@ impl StateRef {
             Self::DataMulti(state) => state.clone(),
             Self::DataTake(state) => state.clone(),
             Self::DataMultiTake(state) => state.clone(),
-            Self::Signal(_) => return None,
+            Self::Signal(_) | Self::Download(_) | Self::Upload(_) => return None,
         })
     }
 
@@ -107,7 +115,12 @@ impl StateRef {
             Self::DataMulti(state) => state.clone(),
             Self::DataTake(state) => state.clone(),
             Self::DataMultiTake(state) => state.clone(),
-            Self::Static(_) | Self::Vec(_) | Self::Map(_) | Self::Signal(_) => return None,
+            Self::Static(_)
+            | Self::Vec(_)
+            | Self::Map(_)
+            | Self::Signal(_)
+            | Self::Download(_)
+            | Self::Upload(_) => return None,
         })
     }
 }
@@ -286,7 +299,7 @@ impl ServerConfig {
 
     /// The defaults: the default heartbeat, no web page and the default
     /// browser access.
-    #[cfg(any(feature = "c_abi", test))]
+    #[cfg(test)]
     pub(crate) fn with_version(version: Option<u64>) -> Self {
         Self {
             version,
@@ -306,6 +319,8 @@ pub(crate) struct Server {
     signals: SignalsManager,
     config: ServerConfig,
     web: WebSlot,
+    /// The engine of the file transfer endpoints.
+    transfers: Engine,
 
     /// Held by `start` and `stop` for their whole run, including the join of
     /// the server thread, so they never overlap. Nothing that a connected
@@ -356,6 +371,9 @@ impl Server {
         let connected = Arc::new(AtomicBool::new(false));
         let (sender, rx) = MessageSender::new();
         let signals = SignalsManager::new();
+        let transfers = Engine::new(Side::Server, None);
+        let event_signals = signals.clone();
+        transfers.set_event_hook(Arc::new(move |event| record_event(event, &event_signals)));
 
         Self {
             connected,
@@ -366,22 +384,9 @@ impl Server {
             signals,
             config,
             web: WebSlot::default(),
+            transfers,
             runner_state: Mutex::new(RunnerState::Stopped(rx)),
         }
-    }
-
-    /// Sets the heartbeat used from the next [`Self::start`]; `None` disables it.
-    #[cfg(feature = "c_abi")]
-    pub(crate) fn set_heartbeat(&mut self, heartbeat: Option<Heartbeat>) {
-        self.config.heartbeat = heartbeat;
-    }
-
-    /// Sets which browser pages may connect from the next start; see
-    /// [`ServerConfig::new`].
-    #[cfg(feature = "c_abi")]
-    pub(crate) fn set_allowed_origins(&mut self, origins: &[String]) -> Result<(), String> {
-        self.config.origins = Arc::new(OriginPolicy::new(origins)?);
-        Ok(())
     }
 
     pub(crate) fn finalize(&mut self) -> Option<StatesList> {
@@ -443,6 +448,7 @@ impl Server {
                 let signals = self.signals.clone();
                 let web = self.web.clone();
                 let heartbeat = self.config.heartbeat;
+                let transfers = self.transfers.clone();
 
                 let listening = Listening {
                     requested: addr,
@@ -465,6 +471,7 @@ impl Server {
                             values,
                             signals,
                             heartbeat,
+                            transfers,
                         };
                         session::run(listener, rx, stop_event, handshake, web, session).await
                     })
@@ -821,6 +828,44 @@ impl Server {
                 connected,
             )))
         })
+    }
+
+    /// The engine of the file transfer endpoints.
+    pub(crate) fn transfers(&self) -> &Engine {
+        &self.transfers
+    }
+
+    /// Registers an endpoint that sends files to the client; `meta_type` is
+    /// the type id of its metadata, 0 for none.
+    pub(crate) fn add_download(&mut self, name: &str, meta_type: u32) -> Result<u64, String> {
+        self.add_transfer(name, "Download", Role::Send, meta_type)
+    }
+
+    /// Registers an endpoint that receives files from the client; `meta_type`
+    /// is the type id of its metadata, 0 for none.
+    pub(crate) fn add_upload(&mut self, name: &str, meta_type: u32) -> Result<u64, String> {
+        self.add_transfer(name, "Upload", Role::Receive, meta_type)
+    }
+
+    fn add_transfer(
+        &mut self,
+        name: &str,
+        kind: &str,
+        role: Role,
+        meta_type: u32,
+    ) -> Result<u64, String> {
+        let id = self.register(name, kind, |_| {
+            let endpoint = Arc::new(TransferEndpoint {
+                name: name.to_string(),
+            });
+            Ok(match role {
+                Role::Send => StateRef::Download(endpoint),
+                Role::Receive => StateRef::Upload(endpoint),
+            })
+        })?;
+        self.transfers.register(id, role, meta_type);
+        self.signals.set_persistent(id);
+        Ok(id)
     }
 
     #[cfg(feature = "server")]

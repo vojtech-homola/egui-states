@@ -25,18 +25,6 @@ uv run cargo test --locked -p egui_states --features "server build_scripts pytho
 cargo test --locked -p example_smoke_tests                                      # Rust examples
 ```
 
-The experimental C ABI is not part of the default packages and has its own runs:
-
-```sh
-cargo test --locked -p egui_states --no-default-features --features c_abi --lib -- --test-threads=1
-cargo test --locked -p egui_states --features "build_scripts c_abi" --test build_scripts_c
-cargo test --locked -p egui_states_c -- --test-threads=1   # also checks include/egui_states.h
-cargo test --locked -p counter_c                           # C counter example; needs a C and C++ compiler
-```
-
-Regenerate the header with `EGUI_STATES_BLESS=1 cargo test -p egui_states_c --test header`.
-Set `EGUI_STATES_SKIP_C_TESTS=1` to skip the C compiler test.
-
 The `python` feature links against `libpython`. If the linker cannot find it,
 install the Python development package or put its directory in `LIBRARY_PATH`;
 set `PYO3_PYTHON` to choose another interpreter.
@@ -80,7 +68,7 @@ uv run --no-sync python -m tests.clean_artifacts --delete  # remove runtime-* on
 
 ## Shared scenarios
 
-The 19 client/server scenarios run against both the Rust and the Python server and
+The 22 client/server scenarios run against both the Rust and the Python server and
 are reported individually by Cargo and pytest. They are registered once in
 `rust-integration/src/scenario_registry.rs`; pytest reads the list from
 `client-probe --list-scenarios`. To add one, register it there, implement it in
@@ -90,6 +78,12 @@ if needed.
 The `*-wire` scenarios send every value shape of the shared schema both ways. Their
 expected values live in `src/scenarios.rs`, `src/fixture.rs`, and
 `integration_server.py`; keep all three equal.
+
+The `file-transfers` and `uploads` scenarios cover file transfers between the
+probe and both servers. The engine, the file sinks, browser downloads over HTTP
+and the zip writer have their own tests in `crates/egui-states`, the
+socket-level ones in `src/server/file_transfer/tests.rs`; the zip test reads the
+archive back with Python's `zipfile` when `python3` is available.
 
 ## Generated code
 
@@ -101,8 +95,6 @@ expected values live in `src/scenarios.rs`, `src/fixture.rs`, and
   and a unit struct.
 - `crates/egui-states/tests/build_scripts_codegen.rs` checks the generated files
   themselves: determinism, ordering, layout hashes, and validation panics.
-  `build_scripts_c.rs` does the same for the experimental C header (with
-  `c_abi`) and parses its type strings with the C ABI.
 
 ## Benchmarks
 
@@ -112,7 +104,17 @@ members so test builds do not compile Criterion:
 ```sh
 cargo bench -p egui_states_bench --bench transfer   # loopback Data/Image sets, client latency
 cargo bench -p egui_states_bench --bench internals  # packers, pixel conversion, client assembly
+cargo bench -p egui_states_bench --bench latency    # state round trips during file transfers
 ```
+
+The `latency` benchmark has its own harness and prints the median, p99 and
+maximum of a state round trip while idle, during a download, during an upload,
+and during large `Data` sets. It runs on loopback and through an in-process
+relay that limits each direction to 1 Gbit/s and 100 Mbit/s; choose the rates
+in Mbit/s with `EGUI_LATENCY_RATES=0,1000` (0 is loopback without a relay). To
+measure a real network, start `cargo bench -p egui_states_bench --bench latency
+-- serve 0.0.0.0:9300` on one machine and `... -- connect HOST:9300` on the
+other.
 
 Save a baseline with `-- --save-baseline <name>` and compare a later run with
 `-- --baseline <name>`. Loopback numbers are noisy: compare three runs, and treat

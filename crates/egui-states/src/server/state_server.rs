@@ -404,6 +404,7 @@ impl StateServer {
             server: Arc::downgrade(&self.inner),
             value_id,
             callback_id,
+            cleanup: parking_lot::Mutex::new(None),
         }
     }
 
@@ -574,6 +575,28 @@ impl StateServer {
             ServerError::new(format!("data not found after registration: {name}"))
         })?;
         Ok((id, value))
+    }
+
+    /// Registers a `Download` (`download`) or `Upload` endpoint; returns its
+    /// id, the server's transfer engine and the signals its events go through.
+    pub(super) fn add_transfer(
+        &self,
+        name: String,
+        meta_type: u32,
+        download: bool,
+    ) -> Result<(
+        u64,
+        crate::file_transfer::engine::Engine,
+        CoreSignalsManager,
+    )> {
+        let mut server = self.inner.server.write();
+        let id = if download {
+            server.add_download(&name, meta_type)
+        } else {
+            server.add_upload(&name, meta_type)
+        }
+        .map_err(ServerError::new)?;
+        Ok((id, server.transfers().clone(), self.inner.signals.clone()))
     }
 
     pub(super) fn add_data_take<T>(

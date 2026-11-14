@@ -9,6 +9,7 @@ use crate::client::states::data::{
     Data, DataMulti, HeaderValue, data_type_hash, private::GetDataType,
 };
 use crate::client::states::data_take::{DataMultiTake, DataTake};
+use crate::client::states::file_transfer::{Download, Upload};
 use crate::client::states::image::{Image, ImageMulti};
 use crate::client::states::initial_value::{InitValue, InitialValue};
 
@@ -21,6 +22,8 @@ use crate::client::states::vec::VecState;
 use crate::client::states_creator::{
     self, StatesCreator, hash_id, hash_id_kind, hash_id_type, state_path,
 };
+use crate::file_transfer::engine::{Engine, Side};
+use crate::file_transfer::{TransferMeta, meta_type_id};
 use crate::hashing::StableHasher;
 use crate::protocol::data::DataType;
 use crate::typed::{ObjectType, RustDerive, Typed};
@@ -138,6 +141,9 @@ pub(crate) enum StateType {
     DataTake(String, DataType, Option<ObjectType>),
     DataMulti(String, DataType, Option<ObjectType>),
     DataMultiTake(String, DataType, Option<ObjectType>),
+    /// Name and metadata type (`None` for an endpoint without metadata).
+    Download(String, Option<ObjectType>),
+    Upload(String, Option<ObjectType>),
     SubState(String, &'static str, Vec<StateType>),
 }
 
@@ -156,6 +162,8 @@ impl StateType {
             | Self::DataTake(name, ..)
             | Self::DataMulti(name, ..)
             | Self::DataMultiTake(name, ..)
+            | Self::Download(name, ..)
+            | Self::Upload(name, ..)
             | Self::SubState(name, ..) => name,
         }
     }
@@ -193,6 +201,17 @@ impl StatesCreatorBuild {
     fn collect_rust_derives<T: Typed>(&mut self) {
         for derive in T::rust_derives() {
             self.rust_derives.insert(derive);
+        }
+    }
+
+    /// The metadata type of a transfer endpoint, collecting its Rust derives.
+    fn meta_type<M: TransferMeta>(&mut self) -> Option<ObjectType> {
+        match M::get_type() {
+            ObjectType::Empty => None,
+            object_type => {
+                self.collect_rust_derives::<M>();
+                Some(object_type)
+            }
         }
     }
 
@@ -541,5 +560,32 @@ impl StatesCreator for StatesCreatorBuild {
             header,
         ));
         value
+    }
+
+    fn download<M: TransferMeta>(&mut self, name: &str) -> Download<M> {
+        let (_, id) = state_path(&self.parent, name);
+        hash_id_type(
+            &mut self.version_hasher,
+            id,
+            meta_type_id::<M>(),
+            states_creator::DOWNLOAD_HASH_ID,
+        );
+        let meta = self.meta_type::<M>();
+        self.states.push(StateType::Download(name.to_owned(), meta));
+        // The handle is discarded; no connection ever runs.
+        Download::new(id, Engine::new(Side::Client, None))
+    }
+
+    fn upload<M: TransferMeta>(&mut self, name: &str) -> Upload<M> {
+        let (_, id) = state_path(&self.parent, name);
+        hash_id_type(
+            &mut self.version_hasher,
+            id,
+            meta_type_id::<M>(),
+            states_creator::UPLOAD_HASH_ID,
+        );
+        let meta = self.meta_type::<M>();
+        self.states.push(StateType::Upload(name.to_owned(), meta));
+        Upload::new(id, Engine::new(Side::Client, None))
     }
 }

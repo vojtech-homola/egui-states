@@ -10,7 +10,7 @@ from typing import Any
 from egui_states._core import PyObjectType, StateServerCore
 from egui_states.logging import LoggingSignal
 from egui_states.signals import SignalsManager
-from egui_states.structures import ISubStates, _SignalBase, _StaticBase
+from egui_states.structures import ISubStates, _CallbackBase, _StaticBase
 
 _ON_CONNECT_ID = 1
 _ON_DISCONNECT_ID = 2
@@ -41,7 +41,7 @@ def _initialize(
         full_name = f"{parent}.{wire_names.get(name, name)}"
         if isinstance(o, _StaticBase):
             o._initialize_base(server)
-            if isinstance(o, _SignalBase):
+            if isinstance(o, _CallbackBase):
                 o._initialize_signal(signals_manager)
             o._initialize(full_name, types)
         elif isinstance(o, ISubStates):

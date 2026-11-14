@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::protocol::collections::{MapHeader, VecHeader};
 use crate::protocol::data::{DataHeader, DataMultiTakeHeader, DataTakeHeader, MultiDataHeader};
+use crate::protocol::file_transfer::TransferFrame;
 use crate::protocol::image::{ImageHeader, ImageMultiHeader};
 
 // ServerHeader ---------------------------------------------------------------
@@ -23,6 +24,8 @@ pub(crate) enum ServerHeader {
     ValueMap(u64, u32, bool, MapHeader, u32),
     Update(f32),
     ImageMulti(u64, ImageMultiHeader),
+    /// A file transfer frame: endpoint id, frame, payload length.
+    Transfer(u64, TransferFrame, u32),
 }
 
 #[derive(Serialize, Deserialize)]
@@ -32,6 +35,8 @@ pub(crate) enum ClientHeader {
     Ack(u64),
     Message(u32),
     Handshake(u16, Option<u64>, Option<String>),
+    /// A file transfer frame: endpoint id, frame, payload length.
+    Transfer(u64, TransferFrame, u32),
 }
 
 #[cfg(test)]
@@ -86,6 +91,7 @@ mod tests {
             ServerHeader::ValueMap(1, 2, false, MapHeader::Set, 0),
             ServerHeader::Update(0.0),
             ServerHeader::ImageMulti(1, ImageMultiHeader::Reset(false)),
+            ServerHeader::Transfer(1, TransferFrame::Reject { serial: 0 }, 0),
         ];
         for (index, header) in server.iter().enumerate() {
             let data: FastVec<32> = serialize(header).unwrap();
@@ -102,6 +108,7 @@ mod tests {
             ClientHeader::Ack(1),
             ClientHeader::Message(0),
             ClientHeader::Handshake(1, None, None),
+            ClientHeader::Transfer(1, TransferFrame::Reject { serial: 0 }, 0),
         ];
         for (index, header) in client.iter().enumerate() {
             let data: FastVec<32> = serialize(header).unwrap();

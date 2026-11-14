@@ -1,4 +1,5 @@
 pub(crate) mod error;
+pub(crate) mod file_transfer;
 pub(crate) mod http;
 pub(crate) mod net;
 #[cfg(test)]
