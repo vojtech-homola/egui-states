@@ -341,8 +341,8 @@ def configure(states):  # noqa: PLR0915
         elif number == 44:
             check_uploads(uploaded)
             st.phase.set(44, update=True)
-        elif number == 99:
-            st.phase.set(99, update=True)
+        elif number in {98, 99}:
+            st.phase.set(number, update=True)
         else:
             raise AssertionError(f"unknown command: {number}")
 

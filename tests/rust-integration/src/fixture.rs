@@ -500,7 +500,7 @@ impl Fixture {
                         check_uploads(&uploaded);
                         st.phase.set(44, true)?;
                     }
-                    99 => st.phase.set(99, true)?,
+                    98 | 99 => st.phase.set(command, true)?,
                     _ => panic!("unknown fixture command"),
                 }
                 Ok(())

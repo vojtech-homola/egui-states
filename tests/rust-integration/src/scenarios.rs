@@ -59,7 +59,14 @@ fn phase(s: &IntegrationState, n: u32) {
     wait("server phase", || (s.phase.get() == n).then_some(()));
 }
 
+/// Waits until the server has handled every earlier command and the client
+/// has everything the server sent for them.
+///
+/// It takes two commands: after a reconnect the phase can still hold 99 from
+/// an earlier barrier, so waiting for 99 alone would not wait for anything.
 fn barrier(s: &IntegrationState) {
+    s.command.set(98u32);
+    phase(s, 98);
     s.command.set(99u32);
     phase(s, 99);
 }
