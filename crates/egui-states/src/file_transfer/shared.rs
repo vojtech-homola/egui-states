@@ -65,6 +65,7 @@ impl TransferShared {
     }
 
     /// A transfer that failed before it started, with no engine behind it.
+    #[cfg_attr(not(feature = "client"), allow(dead_code))]
     pub(crate) fn failed(error: TransferError, repaint: Option<Repaint>) -> Arc<Self> {
         let shared = Self::new(Weak::new(), 0, u64::MAX, repaint);
         shared.state.lock().status = TransferStatus::Failed(error);
@@ -165,7 +166,7 @@ impl TransferShared {
         self.state.lock().path.clone()
     }
 
-    #[cfg_attr(not(any(feature = "server", feature = "python")), allow(dead_code))]
+    #[cfg_attr(not(feature = "python"), allow(dead_code))]
     pub(crate) fn meta(&self) -> Option<Bytes> {
         self.state.lock().meta.clone()
     }
@@ -175,6 +176,7 @@ impl TransferShared {
         self.key
     }
 
+    #[cfg_attr(not(any(feature = "server", feature = "python")), allow(dead_code))]
     pub(crate) fn error(&self) -> Option<TransferError> {
         match &self.state.lock().status {
             TransferStatus::Failed(error) => Some(error.clone()),
@@ -251,11 +253,13 @@ fn files_done(sizes: &[u64], done: u64) -> u32 {
 ///
 /// A handle is cheap to clone, and every clone shows the same transfer.
 /// Dropping it does not cancel the transfer.
+#[cfg(any(feature = "client", feature = "server"))]
 #[derive(Clone)]
 pub struct TransferHandle {
     pub(crate) shared: Arc<TransferShared>,
 }
 
+#[cfg(any(feature = "client", feature = "server"))]
 impl TransferHandle {
     pub(crate) fn new(shared: Arc<TransferShared>) -> Self {
         Self { shared }
@@ -299,7 +303,7 @@ impl TransferHandle {
     }
 }
 
-#[cfg(any(feature = "server", feature = "python"))]
+#[cfg(feature = "server")]
 impl TransferHandle {
     /// Blocks until the transfer has finished, up to `timeout`.
     ///
@@ -335,6 +339,7 @@ impl TransferHandle {
     }
 }
 
+#[cfg(any(feature = "client", feature = "server"))]
 impl std::fmt::Debug for TransferHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TransferHandle")

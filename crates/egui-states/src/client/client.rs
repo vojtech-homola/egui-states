@@ -654,6 +654,15 @@ where
 
         let url = server_url(host.as_deref(), port);
         let values = creator.get_values();
+        #[cfg(target_arch = "wasm32")]
+        {
+            use crate::client::states::file_transfer::{download_base, start_browser_download};
+            let base = download_base(&url);
+            values.transfers.set_ticket_hook(Arc::new(move |download| {
+                let path = crate::file_transfer::engine::DOWNLOAD_PATH;
+                start_browser_download(&format!("{base}{path}{}", download.ticket), &download.name);
+            }));
+        }
         let client = ClientCore::new(context, sender.clone());
         let client_out = Client::new(client.clone());
 

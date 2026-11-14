@@ -18,14 +18,18 @@ pub(crate) mod names;
 pub(crate) mod shared;
 pub(crate) mod sink;
 pub(crate) mod source;
+#[cfg(target_arch = "wasm32")]
+pub(crate) mod web;
 
 use std::fmt;
 
-use serde::Serialize;
-use serde::de::DeserializeOwned;
+#[cfg(any(feature = "client", feature = "server"))]
+use serde::{Serialize, de::DeserializeOwned};
 
+#[cfg(any(feature = "client", feature = "server"))]
 use crate::typed::Typed;
 
+#[cfg(any(feature = "client", feature = "server"))]
 pub use shared::TransferHandle;
 
 /// Bytes of file data the sender may have in flight before the receiver
@@ -41,12 +45,15 @@ pub(crate) const FILE_TRANSFER_CHUNK: usize = 64 * 1024;
 /// Any type made with `#[egui_states::typed]` qualifies, and `()` for an
 /// endpoint without metadata. An encoded value may be at most 1 MB, the size
 /// limit of a value.
+#[cfg(any(feature = "client", feature = "server"))]
 pub trait TransferMeta: Typed + Serialize + DeserializeOwned + Send + Sync + 'static {}
 
+#[cfg(any(feature = "client", feature = "server"))]
 impl<M> TransferMeta for M where M: Typed + Serialize + DeserializeOwned + Send + Sync + 'static {}
 
 /// The wire type id of the metadata type `M`; 0 for an endpoint without
 /// metadata.
+#[cfg(any(feature = "client", feature = "server"))]
 pub(crate) fn meta_type_id<M: Typed>() -> u32 {
     crate::protocol::data::header_type_id(&M::get_type()).unwrap_or(0)
 }
@@ -82,6 +89,7 @@ pub struct TransferProgress {
 impl TransferProgress {
     /// The completed fraction in `0.0..=1.0`, or `None` while the total is
     /// unknown. A transfer of zero bytes counts as complete.
+    #[cfg_attr(not(any(feature = "client", feature = "server")), allow(dead_code))]
     pub fn fraction(&self) -> Option<f32> {
         let total = self.total?;
         if total == 0 {

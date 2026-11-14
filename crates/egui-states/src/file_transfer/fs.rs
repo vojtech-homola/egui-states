@@ -151,6 +151,7 @@ impl FileSink {
     }
 
     /// The folder or file the transfer is saved to.
+    #[cfg_attr(not(any(feature = "client", feature = "server")), allow(dead_code))]
     pub(crate) fn display_path(target: &Target) -> PathBuf {
         match target {
             Target::File(path) | Target::Dir(path) => path.clone(),

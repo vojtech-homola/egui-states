@@ -41,9 +41,29 @@ pub(crate) type Repaint = Arc<dyn Fn(Option<Duration>) + Send + Sync>;
 /// Receives the engine's events, outside the engine's lock.
 pub(crate) type EventHook = Arc<dyn Fn(EngineEvent) + Send + Sync>;
 
+/// Starts a browser download, outside the engine's lock.
+pub(crate) type TicketHook = Arc<dyn Fn(BrowserDownload) + Send + Sync>;
+
+/// A file the browser should fetch from the server.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct BrowserDownload {
+    /// The ticket, as the 32 hex digits of the download path.
+    pub(crate) ticket: String,
+    /// The name the browser saves the file under.
+    pub(crate) name: String,
+}
+
+/// The path of a browser download below the server's root.
+#[cfg_attr(
+    not(any(feature = "server", feature = "python", target_arch = "wasm32")),
+    allow(dead_code)
+)]
+pub(crate) const DOWNLOAD_PATH: &str = "/egui-states/transfer/";
+
 /// Which peer the engine runs on; it decides how frames are encoded.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Side {
+    #[cfg_attr(not(any(feature = "server", feature = "python")), allow(dead_code))]
     Server,
     Client,
 }
@@ -76,6 +96,7 @@ pub(crate) struct Inner {
     pump: Notify,
     repaint: Option<Repaint>,
     events: OnceLock<EventHook>,
+    tickets: OnceLock<TicketHook>,
     this: Weak<Inner>,
 }
 
@@ -91,6 +112,7 @@ struct State {
     /// head sends data.
     queue: VecDeque<(u64, u32)>,
     next_key: u64,
+    #[cfg_attr(not(any(feature = "server", feature = "python")), allow(dead_code))]
     next_waiter: u64,
     /// The job queue of the attached connection, until its worker takes it.
     #[cfg(not(target_arch = "wasm32"))]
@@ -151,6 +173,9 @@ enum Phase {
     AwaitFinish,
     /// Receiver: accepted, taking chunks.
     Receiving,
+    /// Sender: accepted as browser downloads over HTTP.
+    #[cfg_attr(not(any(feature = "server", feature = "python")), allow(dead_code))]
+    Http,
 }
 
 struct Transfer {
@@ -175,6 +200,9 @@ struct Transfer {
     received: u64,
     consumed: u64,
     granted: u64,
+    /// Sender, browser downloads: the tickets and the next file.
+    #[cfg(any(feature = "server", feature = "python"))]
+    http: Option<http::HttpState>,
 }
 
 impl Transfer {
@@ -196,7 +224,14 @@ impl Transfer {
             received: 0,
             consumed: 0,
             granted: 0,
+            #[cfg(any(feature = "server", feature = "python"))]
+            http: None,
         }
+    }
+
+    /// Whether the receiver hands the data to the browser.
+    fn is_browser(&self) -> bool {
+        matches!(self.sink, Some(Sink::Browser))
     }
 }
 
@@ -204,6 +239,7 @@ impl Transfer {
 #[derive(Default)]
 struct Effects {
     events: Vec<EngineEvent>,
+    downloads: Vec<BrowserDownload>,
     wake_pump: bool,
     wake_free: bool,
 }
@@ -244,12 +280,19 @@ impl Engine {
             pump: Notify::new(),
             repaint,
             events: OnceLock::new(),
+            tickets: OnceLock::new(),
             this: this.clone(),
         }))
     }
 
     pub(super) fn from_inner(inner: Arc<Inner>) -> Self {
         Self(inner)
+    }
+
+    /// Sets how browser downloads start; only the first call has an effect.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub(crate) fn set_ticket_hook(&self, hook: TicketHook) {
+        let _ = self.0.tickets.set(hook);
     }
 
     /// Sets where events go; only the first call has an effect.
@@ -283,6 +326,7 @@ impl Engine {
     /// Accepts every offer of the receiving `endpoint` at once and drops its
     /// data, for benchmarks.
     #[cfg(any(test, feature = "bench"))]
+    #[cfg_attr(not(feature = "client"), allow(dead_code))]
     pub(crate) fn discard_offers(&self, endpoint: u64) {
         if let Some(ep) = self.0.state.lock().endpoints.get_mut(&endpoint) {
             ep.receivers = 1;
@@ -487,10 +531,6 @@ impl Engine {
         self.apply(fx);
     }
 
-    pub(crate) fn is_connected(&self) -> bool {
-        self.0.state.lock().connection.is_some()
-    }
-
     /// Sends the data of accepted transfers into `data`, one chunk at a time
     /// and only within the receiver's credit, until the connection of
     /// `generation` is detached or `data` is closed.
@@ -677,6 +717,18 @@ impl Engine {
                         Self::finish_locked(&mut state, endpoint, status, &mut fx);
                     }
                 }
+                (
+                    Role::Receive,
+                    TransferFrame::Finished {
+                        serial,
+                        error: None,
+                    },
+                ) if Self::current_mut(&mut state, endpoint, serial)
+                    .is_some_and(|t| t.phase == Phase::Receiving && t.is_browser()) =>
+                {
+                    // The server sent every browser download.
+                    Self::finish_locked(&mut state, endpoint, TransferStatus::Done, &mut fx);
+                }
                 (Role::Receive, TransferFrame::Finished { serial, error }) => {
                     if self.current(&state, endpoint, serial, &[]) {
                         let error = match error {
@@ -711,9 +763,40 @@ impl Engine {
                         );
                     }
                 }
-                // Browser downloads; handled once they are supported.
-                (Role::Receive, TransferFrame::Ticket { .. })
-                | (Role::Receive, TransferFrame::HttpProgress { .. }) => {}
+                (
+                    Role::Receive,
+                    TransferFrame::Ticket {
+                        serial,
+                        file,
+                        ticket,
+                    },
+                ) => {
+                    if let Some(t) = Self::current_mut(&mut state, endpoint, serial)
+                        .filter(|t| t.phase == Phase::Receiving && t.is_browser())
+                    {
+                        let name = match t.body.files.get(file as usize) {
+                            Some(entry) => names::flatten(&entry.name),
+                            None => zip_name(&t.body.name),
+                        };
+                        let ticket = ticket.iter().map(|b| format!("{b:02x}")).collect();
+                        fx.downloads.push(BrowserDownload { ticket, name });
+                    }
+                }
+                (
+                    Role::Receive,
+                    TransferFrame::HttpProgress {
+                        serial,
+                        done,
+                        files_done: _,
+                    },
+                ) => {
+                    if let Some(t) = Self::current_mut(&mut state, endpoint, serial)
+                        .filter(|t| t.phase == Phase::Receiving && t.is_browser())
+                    {
+                        t.shared.set_done_bytes(done.min(t.total));
+                        t.shared.set_status(TransferStatus::Running);
+                    }
+                }
                 // A frame the endpoint's role does not use.
                 (_, frame) => {
                     let serial = frame.serial();
@@ -910,9 +993,13 @@ impl Engine {
             return;
         }
         if mode != AcceptMode::Lane {
-            let error =
-                TransferError::Unsupported("browser downloads are not supported yet".to_string());
-            self.fail_locked(state, endpoint, serial, error, fx);
+            #[cfg(any(feature = "server", feature = "python"))]
+            self.start_http(state, endpoint, serial, mode == AcceptMode::HttpBundled, fx);
+            #[cfg(not(any(feature = "server", feature = "python")))]
+            {
+                let error = TransferError::Unsupported("browser downloads need a server".into());
+                self.fail_locked(state, endpoint, serial, error, fx);
+            }
             return;
         }
         let t = Self::current_mut(state, endpoint, serial).expect("checked above");
@@ -1013,6 +1100,7 @@ impl Engine {
     /// Makes the endpoint busy while the files of a send are picked; the
     /// handle stays pending until [`Self::send_reserved`] or
     /// [`Self::release`].
+    #[cfg_attr(not(feature = "client"), allow(dead_code))]
     pub(crate) fn reserve(&self, endpoint: u64) -> Result<Arc<TransferShared>, TransferError> {
         let mut state = self.0.state.lock();
         let key = state.next_key;
@@ -1030,6 +1118,7 @@ impl Engine {
 
     /// Offers the files picked for a reserved send. A failure ends the
     /// handle.
+    #[cfg_attr(not(feature = "client"), allow(dead_code))]
     pub(crate) fn send_reserved(
         &self,
         shared: &Arc<TransferShared>,
@@ -1073,6 +1162,7 @@ impl Engine {
     }
 
     /// Ends a reserved send without an offer.
+    #[cfg_attr(not(feature = "client"), allow(dead_code))]
     pub(crate) fn release(&self, shared: &Arc<TransferShared>, error: TransferError) {
         {
             let mut state = self.0.state.lock();
@@ -1193,6 +1283,7 @@ impl Engine {
     }
 
     /// Whether `endpoint` has an unfinished transfer or a send being picked.
+    #[cfg_attr(not(feature = "client"), allow(dead_code))]
     pub(crate) fn is_busy(&self, endpoint: u64) -> bool {
         self.0
             .state
@@ -1336,6 +1427,11 @@ impl Engine {
     }
 
     fn apply(&self, fx: Effects) {
+        if let Some(hook) = self.0.tickets.get() {
+            for download in fx.downloads {
+                hook(download);
+            }
+        }
         if fx.wake_pump {
             self.0.pump.notify_one();
         }
@@ -1349,6 +1445,16 @@ impl Engine {
                 hook(event);
             }
         }
+    }
+}
+
+/// The name of the zip a set of files is bundled into.
+fn zip_name(set: &str) -> String {
+    let flat = names::flatten(set);
+    if flat.to_ascii_lowercase().ends_with(".zip") {
+        flat
+    } else {
+        format!("{flat}.zip")
     }
 }
 
@@ -1373,12 +1479,13 @@ fn grant(t: &mut Transfer) -> Option<u32> {
 
 impl OfferToken {
     /// The handle the transfer will have.
-    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    #[cfg_attr(any(not(feature = "client"), target_arch = "wasm32"), allow(dead_code))]
     pub(crate) fn shared(&self) -> &Arc<TransferShared> {
         &self.shared
     }
 
     /// Whether the offer was withdrawn by the sender or lost to a disconnect.
+    #[cfg_attr(not(feature = "client"), allow(dead_code))]
     pub(crate) fn is_cancelled(&self) -> bool {
         let state = self.engine.0.state.lock();
         !(state.connection.is_some()
@@ -1389,7 +1496,7 @@ impl OfferToken {
 
     /// Makes the handle the endpoint's last one while the destination is
     /// still being picked.
-    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    #[cfg_attr(any(not(feature = "client"), target_arch = "wasm32"), allow(dead_code))]
     pub(crate) fn expose(&self) {
         let mut state = self.engine.0.state.lock();
         let Some(ep) = state.endpoints.get_mut(&self.endpoint) else {
@@ -1472,6 +1579,7 @@ impl OfferToken {
     }
 
     /// Fails the offer with `error` and returns the failed handle.
+    #[cfg_attr(not(any(feature = "client", feature = "server")), allow(dead_code))]
     pub(crate) fn fail(mut self, error: TransferError) -> Arc<TransferShared> {
         self.answered = true;
         self.expose();
@@ -1514,5 +1622,9 @@ impl Drop for OfferToken {
     }
 }
 
+#[cfg(any(feature = "server", feature = "python"))]
+mod http;
+#[cfg(any(feature = "server", feature = "python"))]
+pub(crate) use http::HttpJob;
 #[cfg(test)]
 mod tests;

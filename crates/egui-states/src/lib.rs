@@ -65,8 +65,6 @@ mod bench_support_test {
 
 mod event;
 #[cfg(any(feature = "client", feature = "server", feature = "python"))]
-// Parts are used only once the file, Python and browser transfer paths exist.
-#[allow(dead_code, unused_imports)]
 mod file_transfer;
 mod hashing;
 mod protocol;

@@ -11,8 +11,8 @@ readme = "../../README.md"
 [features]
 default = ["client"]
 client = ["dep:egui"]
-server = ["tokio/macros", "dep:httparse"]
-python = ["tokio/macros", "dep:pyo3", "dep:httparse"]
+server = ["tokio/macros", "dep:httparse", "dep:getrandom", "dep:crc32fast"]
+python = ["tokio/macros", "dep:pyo3", "dep:httparse", "dep:getrandom", "dep:crc32fast"]
 # Exposes internals to the `egui_states_bench` benchmarks; not a public API.
 bench = ["server", "client"]
 build_scripts = ["client"]
@@ -35,10 +35,24 @@ egui_states_macros = { workspace = true }
 tokio = { version = "1.52", features = ["sync", "rt-multi-thread", "net", "time", "io-util"] }
 tokio-tungstenite = { version = "0.30" }
 httparse = { version = "1.10", optional = true }
+# Tickets and zip checksums of browser downloads.
+getrandom = { version = "0.4", optional = true }
+crc32fast = { version = "1.5", optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 tokio = { version = "1.52", features = ["sync", "macros"] }
 ws_stream_wasm = { version = "0.7" }
 wasm-bindgen-futures = { version = "0.4" }
-web-sys = { workspace = true, features = ["Window", "Location"] }
+web-sys = { workspace = true, features = [
+    "Window",
+    "Location",
+    # File uploads and browser downloads.
+    "Blob",
+    "Document",
+    "Element",
+    "File",
+    "HtmlAnchorElement",
+    "HtmlElement",
+    "Node",
+] }
 log = { version = "0.4" }

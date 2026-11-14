@@ -1154,10 +1154,12 @@ name = "egui_states"
 version = "0.16.0"
 dependencies = [
  "bytes",
+ "crc32fast",
  "egui",
  "egui_states_macros",
  "event-listener",
  "futures-util",
+ "getrandom 0.4.3",
  "httparse",
  "log",
  "parking_lot 0.13.0",

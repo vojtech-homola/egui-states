@@ -9,6 +9,13 @@ pub(crate) enum Sink {
     /// Drops the data, for benchmarks.
     #[cfg(any(test, feature = "bench"))]
     Discard,
+    /// The browser fetches the data over HTTP, one download per file or one
+    /// zip; nothing arrives over the connection.
+    #[cfg_attr(
+        not(any(target_arch = "wasm32", all(test, feature = "client"))),
+        allow(dead_code)
+    )]
+    Browser,
     /// Files on disk, written by the connection's sink worker.
     #[cfg(not(target_arch = "wasm32"))]
     Files {
@@ -42,6 +49,7 @@ impl Sink {
             }
             #[cfg(any(test, feature = "bench"))]
             Self::Discard => Ok(()),
+            Self::Browser => Ok(()),
             #[cfg(not(target_arch = "wasm32"))]
             Self::Files { single, .. } => {
                 if *single && files != 1 {
@@ -58,7 +66,7 @@ impl Sink {
     /// it while it handles the frame.
     pub(crate) fn is_inline(&self) -> bool {
         match self {
-            Self::Memory { .. } => true,
+            Self::Memory { .. } | Self::Browser => true,
             #[cfg(any(test, feature = "bench"))]
             Self::Discard => true,
             #[cfg(not(target_arch = "wasm32"))]
@@ -78,6 +86,9 @@ impl Sink {
             }
             #[cfg(any(test, feature = "bench"))]
             Self::Discard => Ok(()),
+            Self::Browser => Err(TransferError::Protocol(
+                "data arrived for a browser download".to_string(),
+            )),
             #[cfg(not(target_arch = "wasm32"))]
             Self::Files { .. } => unreachable!("file sinks are written by the worker"),
         }
@@ -89,6 +100,7 @@ impl Sink {
             Self::Memory { data, .. } => Some(data),
             #[cfg(any(test, feature = "bench"))]
             Self::Discard => None,
+            Self::Browser => None,
             #[cfg(not(target_arch = "wasm32"))]
             Self::Files { .. } => None,
         }

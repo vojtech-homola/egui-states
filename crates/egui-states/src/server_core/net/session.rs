@@ -78,6 +78,8 @@ struct DataLane {
     pump: JoinHandle<()>,
     /// Writes received files.
     sinks: JoinHandle<()>,
+    /// Expires the tickets of browser downloads the browser did not fetch.
+    tickets: JoinHandle<()>,
 }
 
 pub(crate) async fn run<L: Listener>(
@@ -131,6 +133,7 @@ pub(crate) async fn run<L: Listener>(
                             site,
                             handshake.clone(),
                             signals.clone(),
+                            transfers.clone(),
                         ));
                     }
                     Err(e) => {
@@ -210,11 +213,20 @@ pub(crate) async fn run<L: Listener>(
         });
         let sink_engine = transfers.clone();
         let sinks = tokio::spawn(async move { sink_engine.sink_worker(generation).await });
+        let ticket_engine = transfers.clone();
+        let tickets = tokio::spawn(async move {
+            let mut every = tokio::time::interval(Duration::from_secs(1));
+            loop {
+                every.tick().await;
+                ticket_engine.expire_tickets();
+            }
+        });
         let lane = DataLane {
             chunks,
             generation,
             pump,
             sinks,
+            tickets,
         };
 
         let activity = socket_reader.activity();
@@ -253,9 +265,12 @@ async fn accept_client<L: Listener>(
     site: Option<Arc<WebSite>>,
     handshake: Handshake,
     signals: SignalsManager,
+    transfers: Engine,
 ) -> Option<ClientReady<L>> {
     let deadline = Instant::now() + HANDSHAKE_TIMEOUT;
-    let connection = L::serve_web(connection, site, deadline, &signals).await?;
+    // A browser download streams here for its whole length. Downloads run one
+    // at a time, so it holds at most one of the pending connections.
+    let connection = L::serve_web(connection, site, &transfers, deadline, &signals).await?;
 
     match timeout_at(
         deadline,
@@ -467,6 +482,7 @@ async fn writer<K: FrameSink>(
         generation,
         pump,
         sinks,
+        tickets,
     } = lane;
     let mut chunks_open = true;
 
@@ -554,6 +570,7 @@ async fn writer<K: FrameSink>(
     transfers.detach(generation);
     pump.abort();
     sinks.abort();
+    tickets.abort();
     // A reader that ends the connection itself drops the client's pending
     // changes; an aborted one never gets there, so their callbacks would
     // otherwise run after the disconnect.

@@ -15,3 +15,8 @@ ignore = ["./example/showcase/gui/web/"]
 [[proxy]]
 backend = "ws://127.0.0.1:8091/ws"
 ws = true
+
+# Browser downloads of file transfers are plain HTTP requests to the same
+# server, so they need a proxy rule of their own.
+[[proxy]]
+backend = "http://127.0.0.1:8091/egui-states/transfer/"

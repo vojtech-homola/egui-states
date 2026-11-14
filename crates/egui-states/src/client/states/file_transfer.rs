@@ -46,6 +46,17 @@ pub struct LocalFile(LocalFileInner);
 enum LocalFileInner {
     #[cfg(not(target_arch = "wasm32"))]
     Path(std::path::PathBuf),
+    #[cfg(target_arch = "wasm32")]
+    Web(crate::file_transfer::web::WebFile),
+}
+
+#[cfg(target_arch = "wasm32")]
+impl From<web_sys::File> for LocalFile {
+    fn from(file: web_sys::File) -> Self {
+        Self(LocalFileInner::Web(crate::file_transfer::web::WebFile(
+            file,
+        )))
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -111,10 +122,34 @@ fn local_offer(
     }
     #[cfg(target_arch = "wasm32")]
     {
-        let _ = (files, name);
-        Err(TransferError::Unsupported(
-            "file uploads from the browser are not supported yet".to_string(),
-        ))
+        use crate::file_transfer::web::WebSource;
+        let single = files.len() == 1;
+        let mut entries = Vec::with_capacity(files.len());
+        let mut sources = Vec::with_capacity(files.len());
+        for file in files {
+            let LocalFileInner::Web(file) = file.0;
+            let size = file.0.size() as u64;
+            entries.push(FileEntry {
+                name: file.0.name(),
+                size,
+                modified: Some(file.0.last_modified() as i64),
+            });
+            sources.push((file, size));
+        }
+        let name = match (name, single) {
+            (Some(name), _) => name,
+            (None, true) => entries[0].name.clone(),
+            (None, false) => {
+                return Err(TransferError::InvalidInput(
+                    "a set of files needs a name".to_string(),
+                ));
+            }
+        };
+        let body = OfferBody {
+            name,
+            files: entries,
+        };
+        Ok((body, Source::Web(WebSource::new(sources))))
     }
 }
 
@@ -261,12 +296,9 @@ impl<M> TransferOffer<M> {
         self.accept_files(crate::file_transfer::fs::Target::Dir(dir))
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    fn accept_files(self, target: crate::file_transfer::fs::Target) -> TransferHandle {
-        use crate::file_transfer::fs::{FileSink, Target};
-        let single = matches!(target, Target::File(_));
-        let path = FileSink::display_path(&target);
-        let body = OfferBody {
+    /// The offer as it came from the server.
+    fn body(&self) -> OfferBody {
+        OfferBody {
             name: self.name.clone(),
             files: self
                 .files
@@ -277,7 +309,51 @@ impl<M> TransferOffer<M> {
                     modified: file.modified.and_then(millis_from_time),
                 })
                 .collect(),
+        }
+    }
+
+    /// Accepts the offer as browser downloads: the browser's download
+    /// manager saves every file on its own, under its name with folders
+    /// replaced by `_` (`run42/0001.tiff` becomes `run42_0001.tiff`).
+    ///
+    /// The data comes over plain HTTP from the server's port, so its size is
+    /// not limited by memory. The browser decides where files go and may ask
+    /// once to allow several downloads. Progress is the server's view of the
+    /// bytes it has sent. Names that collide once folders are removed fail
+    /// the handle.
+    #[cfg(target_arch = "wasm32")]
+    pub fn accept_download(self) -> TransferHandle {
+        self.accept_browser(false)
+    }
+
+    /// Accepts the offer as exactly one browser download: a single file as
+    /// it is, several files as one uncompressed zip named after the set,
+    /// which keeps their folders. See [`Self::accept_download`].
+    #[cfg(target_arch = "wasm32")]
+    pub fn accept_download_bundled(self) -> TransferHandle {
+        self.accept_browser(true)
+    }
+
+    #[cfg(any(target_arch = "wasm32", test))]
+    pub(crate) fn accept_browser(self, bundled: bool) -> TransferHandle {
+        let bundled = bundled && self.files.len() > 1;
+        if !bundled && let Err(error) = crate::file_transfer::names::check_flattened(&self.body()) {
+            return TransferHandle::new(self.token.fail(TransferError::Unsupported(error)));
+        }
+        let mode = if bundled {
+            AcceptMode::HttpBundled
+        } else {
+            AcceptMode::Http
         };
+        TransferHandle::new(self.token.accept(Sink::Browser, mode, None))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn accept_files(self, target: crate::file_transfer::fs::Target) -> TransferHandle {
+        use crate::file_transfer::fs::{FileSink, Target};
+        let single = matches!(target, Target::File(_));
+        let path = FileSink::display_path(&target);
+        let body = self.body();
         let sink = FileSink::new(target, &body.files);
         let sink = Sink::Files {
             sink: Box::new(sink),
@@ -467,6 +543,68 @@ impl<M: TransferMeta> Upload<M> {
         self.send_picked(move || block_on(pick).map(|file| vec![file]), None, meta)
     }
 
+    /// Offers the file that the future `pick` resolves to, for example from
+    /// an async file dialog such as a browser file picker.
+    ///
+    /// Returns a pending handle at once; the endpoint counts as busy while
+    /// the future runs. `None` ends the handle as cancelled and sends nothing.
+    #[cfg(target_arch = "wasm32")]
+    pub fn send_file_with_async<F>(&self, pick: F, meta: M) -> TransferHandle
+    where
+        F: std::future::Future<Output = Option<LocalFile>> + 'static,
+    {
+        self.send_picked_async(async move { pick.await.map(|file| vec![file]) }, None, meta)
+    }
+
+    /// Offers the files that the future `pick` resolves to as one transfer
+    /// named `name`; see [`Self::send_file_with_async`].
+    #[cfg(target_arch = "wasm32")]
+    pub fn send_files_with_async<F>(
+        &self,
+        pick: F,
+        name: impl Into<String>,
+        meta: M,
+    ) -> TransferHandle
+    where
+        F: std::future::Future<Output = Option<Vec<LocalFile>>> + 'static,
+    {
+        self.send_picked_async(pick, Some(name.into()), meta)
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn send_picked_async(
+        &self,
+        pick: impl std::future::Future<Output = Option<Vec<LocalFile>>> + 'static,
+        name: Option<String>,
+        meta: M,
+    ) -> TransferHandle {
+        let meta = match encode_meta(&meta) {
+            Ok(meta) => meta,
+            Err(error) => return TransferHandle::new(TransferShared::failed(error, None)),
+        };
+        let shared = match self.engine.reserve(self.endpoint) {
+            Ok(shared) => shared,
+            Err(error) => return TransferHandle::new(TransferShared::failed(error, None)),
+        };
+        let (engine, reserved) = (self.engine.clone(), shared.clone());
+        wasm_bindgen_futures::spawn_local(async move {
+            match pick.await {
+                None => engine.release(
+                    &reserved,
+                    TransferError::Cancelled {
+                        by_peer: false,
+                        reason: None,
+                    },
+                ),
+                Some(files) => match local_offer(files, name) {
+                    Ok((body, source)) => engine.send_reserved(&reserved, body, meta, source),
+                    Err(error) => engine.release(&reserved, error),
+                },
+            }
+        });
+        TransferHandle::new(shared)
+    }
+
     /// Offers the files that the future `pick` resolves to as one transfer
     /// named `name`; see [`Self::send_file_with_async`].
     #[cfg(not(target_arch = "wasm32"))]
@@ -539,6 +677,41 @@ impl<M: TransferMeta> Upload<M> {
     }
 }
 
+/// The HTTP origin of the WebSocket URL `url`, where browser downloads come
+/// from.
+#[cfg(any(target_arch = "wasm32", test))]
+pub(crate) fn download_base(url: &str) -> String {
+    let (scheme, rest) = url.split_once("://").unwrap_or(("ws", url));
+    let scheme = if scheme == "wss" { "https" } else { "http" };
+    let authority = rest.split('/').next().unwrap_or(rest);
+    format!("{scheme}://{authority}")
+}
+
+/// Lets the browser's download manager fetch `url` and save it as `name`.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn start_browser_download(url: &str, name: &str) {
+    use web_sys::wasm_bindgen::JsCast;
+    let Some(document) = web_sys::window().and_then(|window| window.document()) else {
+        return;
+    };
+    let Some(body) = document.body() else {
+        return;
+    };
+    let Ok(anchor) = document
+        .create_element("a")
+        .map(|element| element.unchecked_into::<web_sys::HtmlAnchorElement>())
+    else {
+        return;
+    };
+    anchor.set_href(url);
+    anchor.set_download(name);
+    // A link with `download` keeps the page and its WebSocket open.
+    if body.append_child(&anchor).is_ok() {
+        anchor.click();
+        let _ = body.remove_child(&anchor);
+    }
+}
+
 /// Runs `work` on a thread of its own: a dialog may stay open for minutes,
 /// and the client runtime's threads carry the connection.
 #[cfg(not(target_arch = "wasm32"))]
@@ -583,7 +756,6 @@ fn encode_meta<M: TransferMeta>(meta: &M) -> Result<Bytes, TransferError> {
         .map_err(|error| TransferError::Meta(error.to_string()))
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn millis_from_time(time: SystemTime) -> Option<i64> {
     match time.duration_since(SystemTime::UNIX_EPOCH) {
         Ok(after) => i64::try_from(after.as_millis()).ok(),
@@ -619,5 +791,20 @@ impl<M> Clone for Upload<M> {
             engine: self.engine.clone(),
             _meta: PhantomData,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn downloads_come_from_the_websocket_origin() {
+        assert_eq!(
+            download_base("ws://127.0.0.1:8091/ws"),
+            "http://127.0.0.1:8091"
+        );
+        assert_eq!(download_base("wss://example.org/ws"), "https://example.org");
+        assert_eq!(download_base("ws://[::1]:9000/ws"), "http://[::1]:9000");
     }
 }

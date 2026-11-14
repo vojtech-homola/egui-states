@@ -29,6 +29,7 @@ struct Peers {
     inputs: super::Upload<u32>,
     states: ClientStates,
     client: Client,
+    port: u16,
 }
 
 fn wait<T>(label: &str, mut check: impl FnMut() -> Option<T>) -> T {
@@ -73,6 +74,7 @@ impl Peers {
             inputs,
             states,
             client,
+            port,
         }
     }
 
@@ -637,4 +639,204 @@ fn uploads_reach_the_server_receiver() {
     );
     let _ = std::fs::remove_dir_all(&source);
     let _ = std::fs::remove_dir_all(&target);
+}
+
+/// A minimal browser: one HTTP request, the status, headers and body.
+fn http(port: u16, method: &str, path: &str) -> (u16, Vec<(String, String)>, Vec<u8>) {
+    use std::io::{Read, Write};
+    let mut stream = std::net::TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
+    write!(
+        stream,
+        "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"
+    )
+    .unwrap();
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).unwrap();
+    let split = response.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+    let head = String::from_utf8(response[..split].to_vec()).unwrap();
+    let mut lines = head.split("\r\n");
+    let status = lines
+        .next()
+        .unwrap()
+        .split(' ')
+        .nth(1)
+        .unwrap()
+        .parse()
+        .unwrap();
+    let headers = lines
+        .map(|line| {
+            let (name, value) = line.split_once(": ").unwrap();
+            (name.to_ascii_lowercase(), value.to_string())
+        })
+        .collect();
+    (status, headers, response[split + 4..].to_vec())
+}
+
+fn header<'a>(headers: &'a [(String, String)], name: &str) -> &'a str {
+    headers
+        .iter()
+        .find(|(header, _)| header == name)
+        .map(|(_, value)| value.as_str())
+        .unwrap_or("")
+}
+
+/// Collects the downloads the client would hand to the browser.
+fn browser(
+    peers: &Peers,
+) -> std::sync::mpsc::Receiver<crate::file_transfer::engine::BrowserDownload> {
+    let (sender, downloads) = std::sync::mpsc::channel();
+    let sender = std::sync::Mutex::new(sender);
+    peers
+        .states
+        .files
+        .engine
+        .set_ticket_hook(std::sync::Arc::new(move |download| {
+            let _ = sender.lock().unwrap().send(download);
+        }));
+    downloads
+}
+
+fn path(download: &crate::file_transfer::engine::BrowserDownload) -> String {
+    format!(
+        "{}{}",
+        crate::file_transfer::engine::DOWNLOAD_PATH,
+        download.ticket
+    )
+}
+
+#[test]
+fn browser_downloads_stream_over_http() {
+    if crate::test_support::isolated() {
+        return;
+    }
+    let peers = Peers::connect();
+    let downloads = browser(&peers);
+    let next = || downloads.recv_timeout(Duration::from_secs(10)).unwrap();
+
+    // One file.
+    let payload = data(1_500_000);
+    let sent = peers
+        .files
+        .send_bytes(payload.clone(), "ünï a.bin", &(), false, None)
+        .unwrap();
+    let received = wait("offer", || peers.states.files.take_offer()).accept_browser(false);
+    let download = next();
+    assert_eq!(download.name, "ünï a.bin");
+    // A HEAD does not use the ticket up.
+    assert_eq!(http(peers.port, "HEAD", &path(&download)).0, 405);
+    let (status, headers, body) = http(peers.port, "GET", &path(&download));
+    assert_eq!(status, 200);
+    assert_eq!(body, payload);
+    assert_eq!(
+        header(&headers, "content-length"),
+        payload.len().to_string()
+    );
+    assert!(
+        header(&headers, "content-disposition").contains("filename*=UTF-8''%C3%BCn%C3%AF%20a.bin")
+    );
+    sent.wait(Some(Duration::from_secs(10))).unwrap();
+    assert_eq!(finished(&received), TransferStatus::Done);
+    assert_eq!(received.progress().done, payload.len() as u64);
+    // A ticket works once, and unknown paths are not found.
+    assert_eq!(http(peers.port, "GET", &path(&download)).0, 404);
+    assert_eq!(http(peers.port, "GET", "/other").0, 404);
+
+    // Several files, one download each, folders flattened.
+    let source = temp_dir("browser_source");
+    std::fs::create_dir_all(source.join("run")).unwrap();
+    std::fs::write(source.join("run/a.txt"), b"alpha").unwrap();
+    std::fs::write(source.join("run/b.txt"), b"beta").unwrap();
+    let paths = [source.join("run/a.txt"), source.join("run/b.txt")];
+    let sent = peers
+        .files
+        .send_files(&paths, "run", Some(&source), &(), false, None)
+        .unwrap();
+    let received = wait("offer", || peers.states.files.take_offer()).accept_browser(false);
+    let first = next();
+    assert_eq!(first.name, "run_a.txt");
+    assert_eq!(http(peers.port, "GET", &path(&first)).2, b"alpha");
+    let second = next();
+    assert_eq!(second.name, "run_b.txt");
+    assert_eq!(http(peers.port, "GET", &path(&second)).2, b"beta");
+    sent.wait(Some(Duration::from_secs(10))).unwrap();
+    assert_eq!(finished(&received), TransferStatus::Done);
+    assert_eq!(received.progress().files_done, 2);
+
+    // Several files as one zip.
+    let sent = peers
+        .files
+        .send_files(&paths, "run", Some(&source), &(), false, None)
+        .unwrap();
+    let received = wait("offer", || peers.states.files.take_offer()).accept_browser(true);
+    let bundle = next();
+    assert_eq!(bundle.name, "run.zip");
+    let (status, headers, body) = http(peers.port, "GET", &path(&bundle));
+    assert_eq!(status, 200);
+    assert_eq!(header(&headers, "content-type"), "application/zip");
+    assert_eq!(header(&headers, "content-length"), body.len().to_string());
+    assert_eq!(&body[..2], b"PK");
+    sent.wait(Some(Duration::from_secs(10))).unwrap();
+    assert_eq!(finished(&received), TransferStatus::Done);
+    let zip = source.join("bundle.zip");
+    std::fs::write(&zip, &body).unwrap();
+    let script = "import sys, zipfile\nz = zipfile.ZipFile(sys.argv[1])\nassert z.testzip() is None\nprint(sorted((i.filename, z.read(i).decode()) for i in z.infolist()))\n";
+    if let Ok(output) = std::process::Command::new("python3")
+        .args(["-c", script])
+        .arg(&zip)
+        .output()
+    {
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap().trim(),
+            "[('run/a.txt', 'alpha'), ('run/b.txt', 'beta')]"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&source);
+}
+
+#[test]
+fn a_browser_that_stops_cancels_the_download() {
+    if crate::test_support::isolated() {
+        return;
+    }
+    let peers = Peers::connect();
+    let downloads = browser(&peers);
+    let sent = peers
+        .files
+        .send_bytes(vec![0; 64 * 1024 * 1024], "big.bin", &(), false, None)
+        .unwrap();
+    let received = wait("offer", || peers.states.files.take_offer()).accept_browser(false);
+    let download = downloads.recv_timeout(Duration::from_secs(10)).unwrap();
+    {
+        use std::io::{Read, Write};
+        let mut stream = std::net::TcpStream::connect((Ipv4Addr::LOCALHOST, peers.port)).unwrap();
+        write!(
+            stream,
+            "GET {} HTTP/1.1\r\nHost: x\r\n\r\n",
+            path(&download)
+        )
+        .unwrap();
+        let mut start = [0u8; 4096];
+        stream.read_exact(&mut start).unwrap();
+        // The browser closes the connection, as a cancel in its download list does.
+    }
+    let reason = Some("the browser stopped the download".to_string());
+    assert_eq!(
+        finished(&sent),
+        TransferStatus::Failed(TransferError::Cancelled {
+            by_peer: true,
+            reason: reason.clone()
+        })
+    );
+    assert_eq!(
+        finished(&received),
+        TransferStatus::Failed(TransferError::Cancelled {
+            by_peer: true,
+            reason
+        })
+    );
 }
