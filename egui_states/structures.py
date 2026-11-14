@@ -1620,15 +1620,8 @@ class _TransferEndpoint(_CallbackBase):
         self._update_dispatch()
 
 
-class Download(_TransferEndpoint):
-    """Endpoint that sends files from the server to the client.
-
-    The client receives each offer and decides where the data goes; the data
-    is read once the client accepts. The endpoint carries at most one
-    unfinished transfer at a time: a send while it is busy raises, or waits
-    with ``wait=True``. Do not wait inside a callback: it holds a callback
-    worker for as long as it waits.
-    """
+class _DownloadBase(_TransferEndpoint):
+    """What :class:`Download` and :class:`DownloadWithMeta` share."""
 
     _download = True
 
@@ -1639,6 +1632,59 @@ class Download(_TransferEndpoint):
     @staticmethod
     def _meta(meta: object) -> tuple[object] | None:
         return None
+
+    def _send_file(
+        self,
+        path: str | os.PathLike[str],
+        name: str | None,
+        meta: object,
+        wait: bool,
+        timeout: float | None,
+    ) -> TransferHandle:
+        handle = self._server.transfer_send_file(self._value_id, os.fspath(path), name, self._meta(meta), wait, timeout)
+        return TransferHandle(handle)
+
+    def _send_files(
+        self,
+        paths: Sequence[str | os.PathLike[str]],
+        name: str,
+        root: str | os.PathLike[str] | None,
+        meta: object,
+        wait: bool,
+        timeout: float | None,
+    ) -> TransferHandle:
+        handle = self._server.transfer_send_files(
+            self._value_id,
+            [os.fspath(path) for path in paths],
+            name,
+            None if root is None else os.fspath(root),
+            self._meta(meta),
+            wait,
+            timeout,
+        )
+        return TransferHandle(handle)
+
+    def _send_bytes(
+        self,
+        data: Buffer,
+        name: str,
+        meta: object,
+        wait: bool,
+        timeout: float | None,
+    ) -> TransferHandle:
+        handle = self._server.transfer_send_bytes(self._value_id, data, name, self._meta(meta), wait, timeout)
+        return TransferHandle(handle)
+
+
+class Download(_DownloadBase):
+    """Endpoint that sends files from the server to the client.
+
+    The client receives each offer and decides where the data goes; the data
+    is read once the client accepts. The endpoint carries at most one
+    unfinished transfer at a time: a send while it is busy raises, or waits
+    with ``wait=True``. Do not wait inside a callback: it holds a callback
+    worker for as long as it waits.
+    """
 
     def send_file(
         self,
@@ -1673,17 +1719,6 @@ class Download(_TransferEndpoint):
                 given without ``wait``.
         """
         return self._send_file(path, name, None, wait, timeout)
-
-    def _send_file(
-        self,
-        path: str | os.PathLike[str],
-        name: str | None,
-        meta: object,
-        wait: bool,
-        timeout: float | None,
-    ) -> TransferHandle:
-        handle = self._server.transfer_send_file(self._value_id, os.fspath(path), name, self._meta(meta), wait, timeout)
-        return TransferHandle(handle)
 
     def send_files(
         self,
@@ -1722,26 +1757,6 @@ class Download(_TransferEndpoint):
         """
         return self._send_files(paths, name, root, None, wait, timeout)
 
-    def _send_files(
-        self,
-        paths: Sequence[str | os.PathLike[str]],
-        name: str,
-        root: str | os.PathLike[str] | None,
-        meta: object,
-        wait: bool,
-        timeout: float | None,
-    ) -> TransferHandle:
-        handle = self._server.transfer_send_files(
-            self._value_id,
-            [os.fspath(path) for path in paths],
-            name,
-            None if root is None else os.fspath(root),
-            self._meta(meta),
-            wait,
-            timeout,
-        )
-        return TransferHandle(handle)
-
     def send_bytes(
         self,
         data: Buffer,
@@ -1771,19 +1786,8 @@ class Download(_TransferEndpoint):
         """
         return self._send_bytes(data, name, None, wait, timeout)
 
-    def _send_bytes(
-        self,
-        data: Buffer,
-        name: str,
-        meta: object,
-        wait: bool,
-        timeout: float | None,
-    ) -> TransferHandle:
-        handle = self._server.transfer_send_bytes(self._value_id, data, name, self._meta(meta), wait, timeout)
-        return TransferHandle(handle)
 
-
-class DownloadWithMeta[M](Download):
+class DownloadWithMeta[M](_DownloadBase):
     """:class:`Download` whose offers carry typed metadata ``M``.
 
     Every send takes the metadata as the required keyword ``meta``.
@@ -1801,7 +1805,7 @@ class DownloadWithMeta[M](Download):
     def _meta(meta: object) -> tuple[object] | None:
         return (meta,)
 
-    def send_file(  # type: ignore[override]
+    def send_file(
         self,
         path: str | os.PathLike[str],
         name: str | None = None,
@@ -1827,7 +1831,7 @@ class DownloadWithMeta[M](Download):
         """
         return self._send_file(path, name, meta, wait, timeout)
 
-    def send_files(  # type: ignore[override]
+    def send_files(
         self,
         paths: Sequence[str | os.PathLike[str]],
         name: str,
@@ -1855,7 +1859,7 @@ class DownloadWithMeta[M](Download):
         """
         return self._send_files(paths, name, root, meta, wait, timeout)
 
-    def send_bytes(  # type: ignore[override]
+    def send_bytes(
         self,
         data: Buffer,
         name: str,
