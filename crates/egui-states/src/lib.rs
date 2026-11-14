@@ -98,7 +98,7 @@ pub use client::{
         atomics::{Atomic, AtomicLock, AtomicLockStatic, AtomicStatic, FallbackLock, UpdateLock},
         data::{Data, DataMulti, HeaderValue},
         data_take::{DataMultiTake, DataTake},
-        file_transfer::{Download, OfferedFile, TransferOffer, Upload},
+        file_transfer::{Download, LocalFile, OfferedFile, TransferOffer, Upload},
         image::{Image, ImageMulti},
         initial_value::{InitValue, InitialValue},
         map::MapState,

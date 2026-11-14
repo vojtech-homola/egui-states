@@ -404,6 +404,7 @@ impl StateServer {
             server: Arc::downgrade(&self.inner),
             value_id,
             callback_id,
+            cleanup: parking_lot::Mutex::new(None),
         }
     }
 

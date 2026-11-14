@@ -295,6 +295,7 @@ pub fn run(port: u16, scenario: &str) {
         "numeric-wire" => numeric_wire(&state),
         "data-headers" => data_headers(port, &state, connection),
         "file-transfers" => file_transfers(&state),
+        "uploads" => uploads(&state),
         _ => panic!("unknown scenario: {scenario}"),
     }
 }
@@ -347,6 +348,33 @@ fn file_transfers(state: &State) {
 
     s.command.set(43u32);
     phase(s, 43);
+}
+
+/// Uploads: the servers accept the typed endpoint's offers into memory and
+/// have no receiver on the other; they check the upload on command 44.
+fn uploads(state: &State) {
+    use egui_states::{TransferError, TransferStatus};
+    use egui_states_test_schema::transfers::TransferInfo;
+
+    let s = &state.integration;
+    let t = &state.transfers;
+    let info = TransferInfo {
+        run: 7,
+        label: "up".into(),
+    };
+    let sent = t.inputs.send_bytes(b"upload".to_vec(), "u.bin", info);
+    let status = wait("upload", || sent.is_finished().then(|| sent.status()));
+    assert_eq!(status, TransferStatus::Done);
+    let refused = t.logs.send_bytes(b"log".to_vec(), "log.txt", ());
+    let status = wait("refusal", || {
+        refused.is_finished().then(|| refused.status())
+    });
+    assert_eq!(
+        status,
+        TransferStatus::Failed(TransferError::Rejected("no receiver".into()))
+    );
+    s.command.set(44u32);
+    phase(s, 44);
 }
 
 /// Every value shape crosses the wire in both directions. The servers set the

@@ -121,6 +121,8 @@ pub struct CallbackHandle {
     pub(super) server: Weak<ServerInner>,
     pub(super) value_id: u64,
     pub(super) callback_id: u64,
+    /// Runs once when the callback is disconnected.
+    pub(super) cleanup: parking_lot::Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 impl CallbackHandle {
@@ -131,7 +133,14 @@ impl CallbackHandle {
             server: Weak::new(),
             value_id,
             callback_id: 0,
+            cleanup: parking_lot::Mutex::new(None),
         }
+    }
+
+    /// Runs `cleanup` when the callback is disconnected.
+    pub(super) fn on_disconnect(self, cleanup: impl FnOnce() + Send + 'static) -> Self {
+        *self.cleanup.lock() = Some(Box::new(cleanup));
+        self
     }
 
     /// Disconnects the callback.
@@ -142,6 +151,9 @@ impl CallbackHandle {
             server
                 .callbacks
                 .remove(&server.signals, self.value_id, self.callback_id);
+        }
+        if let Some(cleanup) = self.cleanup.lock().take() {
+            cleanup();
         }
     }
 }

@@ -37,6 +37,87 @@ pub struct Upload<M = ()> {
     _meta: PhantomData<fn() -> M>,
 }
 
+/// A file on the user's machine to upload: a path on native clients, a
+/// browser `File` on the web.
+#[derive(Clone, Debug)]
+pub struct LocalFile(LocalFileInner);
+
+#[derive(Clone, Debug)]
+enum LocalFileInner {
+    #[cfg(not(target_arch = "wasm32"))]
+    Path(std::path::PathBuf),
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl From<std::path::PathBuf> for LocalFile {
+    fn from(path: std::path::PathBuf) -> Self {
+        Self(LocalFileInner::Path(path))
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl From<&std::path::Path> for LocalFile {
+    fn from(path: &std::path::Path) -> Self {
+        Self(LocalFileInner::Path(path.to_path_buf()))
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl From<&str> for LocalFile {
+    fn from(path: &str) -> Self {
+        Self(LocalFileInner::Path(path.into()))
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl From<String> for LocalFile {
+    fn from(path: String) -> Self {
+        Self(LocalFileInner::Path(path.into()))
+    }
+}
+
+/// Builds the offer of `files`, named `name` for several files. It reads the
+/// files' sizes, so it runs off the UI thread.
+fn local_offer(
+    files: Vec<LocalFile>,
+    name: Option<String>,
+) -> Result<(OfferBody, Source), TransferError> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use crate::file_transfer::fs::{FilesSource, file_name, stat};
+        let single = files.len() == 1;
+        let mut entries = Vec::with_capacity(files.len());
+        let mut sources = Vec::with_capacity(files.len());
+        for file in files {
+            let LocalFileInner::Path(path) = file.0;
+            let (entry, size) = stat(&path, file_name(&path)?)?;
+            entries.push(entry);
+            sources.push((path, size));
+        }
+        let name = match (name, single) {
+            (Some(name), _) => name,
+            (None, true) => entries[0].name.clone(),
+            (None, false) => {
+                return Err(TransferError::InvalidInput(
+                    "a set of files needs a name".to_string(),
+                ));
+            }
+        };
+        let body = OfferBody {
+            name,
+            files: entries,
+        };
+        Ok((body, Source::Files(FilesSource::new(sources))))
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (files, name);
+        Err(TransferError::Unsupported(
+            "file uploads from the browser are not supported yet".to_string(),
+        ))
+    }
+}
+
 /// One file of an offer.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OfferedFile {
@@ -326,6 +407,119 @@ impl<M: TransferMeta> Upload<M> {
         self.send(body, meta, Source::bytes(data))
     }
 
+    /// Offers `file` to the server under its own file name.
+    ///
+    /// Returns at once: the file's size is read on a thread of its own and
+    /// the data once the server accepts, so a missing file shows as a failed
+    /// handle. A send while the endpoint is busy or the client is not
+    /// connected returns a handle that has already failed.
+    pub fn send_file(&self, file: impl Into<LocalFile>, meta: M) -> TransferHandle {
+        self.send_local(vec![file.into()], None, meta)
+    }
+
+    /// Offers several files as one transfer named `name`, each under its own
+    /// file name; see [`Self::send_file`].
+    pub fn send_files(
+        &self,
+        files: Vec<LocalFile>,
+        name: impl Into<String>,
+        meta: M,
+    ) -> TransferHandle {
+        self.send_local(files, Some(name.into()), meta)
+    }
+
+    /// Offers the file that `pick` returns, for example from a file dialog.
+    ///
+    /// Returns a pending handle at once and runs `pick` on a thread of its
+    /// own, so a blocking dialog does not stop the UI; the endpoint counts as
+    /// busy meanwhile. `None` ends the handle as cancelled and sends nothing.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn send_file_with(
+        &self,
+        pick: impl FnOnce() -> Option<LocalFile> + Send + 'static,
+        meta: M,
+    ) -> TransferHandle {
+        self.send_picked(move || pick().map(|file| vec![file]), None, meta)
+    }
+
+    /// Offers the files that `pick` returns as one transfer named `name`;
+    /// see [`Self::send_file_with`].
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn send_files_with(
+        &self,
+        pick: impl FnOnce() -> Option<Vec<LocalFile>> + Send + 'static,
+        name: impl Into<String>,
+        meta: M,
+    ) -> TransferHandle {
+        self.send_picked(pick, Some(name.into()), meta)
+    }
+
+    /// Offers the file that the future `pick` resolves to, for example from
+    /// an async file dialog; it works in the browser too.
+    ///
+    /// On native clients the future runs on a thread of its own. Otherwise it
+    /// behaves like [`Self::send_file_with`].
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn send_file_with_async<F>(&self, pick: F, meta: M) -> TransferHandle
+    where
+        F: std::future::Future<Output = Option<LocalFile>> + Send + 'static,
+    {
+        self.send_picked(move || block_on(pick).map(|file| vec![file]), None, meta)
+    }
+
+    /// Offers the files that the future `pick` resolves to as one transfer
+    /// named `name`; see [`Self::send_file_with_async`].
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn send_files_with_async<F>(
+        &self,
+        pick: F,
+        name: impl Into<String>,
+        meta: M,
+    ) -> TransferHandle
+    where
+        F: std::future::Future<Output = Option<Vec<LocalFile>>> + Send + 'static,
+    {
+        self.send_picked(move || block_on(pick), Some(name.into()), meta)
+    }
+
+    fn send_local(&self, files: Vec<LocalFile>, name: Option<String>, meta: M) -> TransferHandle {
+        self.send_picked(move || Some(files), name, meta)
+    }
+
+    /// Reserves the endpoint, then picks and reads the files off the
+    /// calling thread.
+    fn send_picked(
+        &self,
+        pick: impl FnOnce() -> Option<Vec<LocalFile>> + Send + 'static,
+        name: Option<String>,
+        meta: M,
+    ) -> TransferHandle {
+        let meta = match encode_meta(&meta) {
+            Ok(meta) => meta,
+            Err(error) => return TransferHandle::new(TransferShared::failed(error, None)),
+        };
+        let shared = match self.engine.reserve(self.endpoint) {
+            Ok(shared) => shared,
+            Err(error) => return TransferHandle::new(TransferShared::failed(error, None)),
+        };
+        let (engine, reserved) = (self.engine.clone(), shared.clone());
+        let work = move || match pick() {
+            None => engine.release(
+                &reserved,
+                TransferError::Cancelled {
+                    by_peer: false,
+                    reason: None,
+                },
+            ),
+            Some(files) => match local_offer(files, name) {
+                Ok((body, source)) => engine.send_reserved(&reserved, body, meta, source),
+                Err(error) => engine.release(&reserved, error),
+            },
+        };
+        spawn_work(work, &self.engine, &shared);
+        TransferHandle::new(shared)
+    }
+
     pub(crate) fn send(&self, body: OfferBody, meta: M, source: Source) -> TransferHandle {
         let sent =
             encode_meta(&meta).and_then(|meta| self.engine.send(self.endpoint, body, meta, source));
@@ -343,6 +537,44 @@ impl<M: TransferMeta> Upload<M> {
     pub fn is_busy(&self) -> bool {
         self.engine.is_busy(self.endpoint)
     }
+}
+
+/// Runs `work` on a thread of its own: a dialog may stay open for minutes,
+/// and the client runtime's threads carry the connection.
+#[cfg(not(target_arch = "wasm32"))]
+fn spawn_work(
+    work: impl FnOnce() + Send + 'static,
+    engine: &Engine,
+    shared: &std::sync::Arc<TransferShared>,
+) {
+    let spawned = std::thread::Builder::new()
+        .name("egui_states_pick".to_string())
+        .spawn(work);
+    if let Err(error) = spawned {
+        engine.release(
+            shared,
+            TransferError::Io(format!("cannot start a thread: {error}")),
+        );
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn spawn_work(
+    work: impl FnOnce() + 'static,
+    _engine: &Engine,
+    _shared: &std::sync::Arc<TransferShared>,
+) {
+    work();
+}
+
+/// Runs a picker future to completion on the current thread.
+#[cfg(not(target_arch = "wasm32"))]
+fn block_on<F: std::future::Future>(future: F) -> F::Output {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("a runtime for the picker")
+        .block_on(future)
 }
 
 fn encode_meta<M: TransferMeta>(meta: &M) -> Result<Bytes, TransferError> {

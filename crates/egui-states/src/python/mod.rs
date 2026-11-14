@@ -16,6 +16,7 @@ pub fn init_module(m: &Bound<PyModule>) -> PyResult<()> {
     m.add_class::<pyserver::StateServerCore>()?;
     m.add_class::<pytypes::PyObjectClass>()?;
     m.add_class::<pytransfer::PyTransferHandle>()?;
+    m.add_class::<pytransfer::PyTransferOffer>()?;
 
     m.add("u8", pytypes::U8)?;
     m.add("u16", pytypes::U16)?;

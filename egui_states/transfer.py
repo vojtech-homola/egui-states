@@ -7,7 +7,9 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from egui_states._core import _TransferHandle
+from os import PathLike, fspath
+
+from egui_states._core import _TransferHandle, _TransferOffer
 
 
 class TransferStatus(Enum):
@@ -192,7 +194,133 @@ class TransferHandle:
         return f"TransferHandle(name={self.name()!r}, status={self.status().name})"
 
 
+class OfferedFile(NamedTuple):
+    """One file of an offer."""
+
+    #: The name the client gave the file: a relative path with ``/`` between
+    #: folders. The library has checked that it stays inside a folder it is
+    #: saved to.
+    name: str
+    #: The size in bytes; the client cannot send more.
+    size: int
+    #: The time the file was last modified on the client, in seconds since
+    #: the epoch, if known.
+    modified: float | None
+
+
+class TransferOffer:
+    """A transfer the client offers, not answered yet.
+
+    Answer it inside the receiver function by accepting or rejecting it; an
+    offer left unanswered when the function returns is rejected.
+    """
+
+    __slots__ = ("_inner",)
+
+    def __init__(self, inner: _TransferOffer) -> None:
+        self._inner = inner
+
+    def name(self) -> str:
+        """Return the file name, or the name of the set for several files.
+
+        Returns:
+            str: The name the client gave the transfer.
+        """
+        return self._inner.name()
+
+    def files(self) -> list[OfferedFile]:
+        """Return the files of the offer; there is at least one.
+
+        Returns:
+            list[OfferedFile]: Name, size and modification time of each file.
+        """
+        return [OfferedFile(*file) for file in self._inner.files()]
+
+    def total_size(self) -> int | None:
+        """Return the size of all files together; the client cannot send more.
+
+        Returns:
+            int | None: The size in bytes.
+        """
+        return self._inner.total_size()
+
+    def meta(self) -> Any:
+        """Return the metadata the client sent with the offer.
+
+        Returns:
+            Any: The metadata, or ``None`` for an endpoint without metadata.
+        """
+        return self._inner.meta()
+
+    def accept_file(self, path: str | PathLike[str]) -> TransferHandle:
+        """Accept a single-file offer into the file at ``path``.
+
+        The data goes to a temporary file next to ``path``, which replaces any
+        existing file only once the transfer is complete. Missing folders are
+        created and the client's modification time is kept.
+
+        Args:
+            path (str | PathLike[str]): Where to save the file.
+
+        Returns:
+            TransferHandle: The transfer.
+
+        Raises:
+            ValueError: If the offer has several files; it stays open.
+            RuntimeError: If the offer was already answered.
+        """
+        return TransferHandle(self._inner.accept_file(fspath(path)))
+
+    def accept_dir(self, dir: str | PathLike[str]) -> TransferHandle:  # noqa: A002
+        """Accept the offer into the folder ``dir``, each file under its own name.
+
+        Names like ``run42/0001.tiff`` create subfolders. If the transfer
+        fails, files already complete stay.
+
+        Args:
+            dir (str | PathLike[str]): The folder to save the files in.
+
+        Returns:
+            TransferHandle: The transfer.
+
+        Raises:
+            RuntimeError: If the offer was already answered.
+        """
+        return TransferHandle(self._inner.accept_dir(fspath(dir)))
+
+    def accept_memory(self, limit: int) -> TransferHandle:
+        """Accept a single-file offer into memory, up to ``limit`` bytes.
+
+        Take the data with :meth:`TransferHandle.take_data` once it is done.
+        An offer larger than ``limit`` is rejected and the handle fails.
+
+        Args:
+            limit (int): The largest size accepted.
+
+        Returns:
+            TransferHandle: The transfer.
+
+        Raises:
+            ValueError: If the offer has several files; it stays open.
+            RuntimeError: If the offer was already answered.
+        """
+        return TransferHandle(self._inner.accept_memory(limit))
+
+    def reject(self, reason: str = "") -> None:
+        """Reject the offer; the client's transfer fails with ``reason``.
+
+        Args:
+            reason (str, optional): Told to the client. Defaults to "".
+
+        Raises:
+            RuntimeError: If the offer was already answered.
+        """
+        self._inner.reject(reason)
+
+
 __all__ = [
+    "OfferedFile",
+    "TransferOffer",
     "TransferError",
     "TransferErrorKind",
     "TransferHandle",

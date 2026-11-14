@@ -120,9 +120,9 @@ const SINK_BATCH: usize = 1024 * 1024;
 struct Endpoint {
     role: Role,
     meta_type: u32,
-    /// Whether an application takes the offers; without one, offers are
-    /// rejected at once.
-    has_receiver: bool,
+    /// How many receivers take the offers; without one, offers are rejected
+    /// at once.
+    receivers: usize,
     next_serial: u32,
     current: Option<Transfer>,
     /// A send whose files are still being picked.
@@ -261,13 +261,14 @@ impl Engine {
     /// Adds an endpoint. A client takes the offers of its receiving
     /// endpoints itself; a server needs a receiver set first.
     pub(crate) fn register(&self, endpoint: u64, role: Role, meta_type: u32) {
-        let has_receiver = self.0.side == Side::Client;
+        // A client takes its offers with `take_offer` at any time.
+        let receivers = usize::from(self.0.side == Side::Client);
         self.0.state.lock().endpoints.insert(
             endpoint,
             Endpoint {
                 role,
                 meta_type,
-                has_receiver,
+                receivers,
                 next_serial: 0,
                 current: None,
                 reserved: None,
@@ -284,13 +285,13 @@ impl Engine {
     #[cfg(any(test, feature = "bench"))]
     pub(crate) fn discard_offers(&self, endpoint: u64) {
         if let Some(ep) = self.0.state.lock().endpoints.get_mut(&endpoint) {
-            ep.has_receiver = true;
+            ep.receivers = 1;
             ep.discard = true;
         }
     }
 
-    /// Sets whether the application takes the offers of `endpoint`. Removing
-    /// the receiver rejects an offer that is waiting.
+    /// Adds (`present`) or removes a receiver of the offers of `endpoint`.
+    /// Removing the last one rejects an offer that is waiting.
     #[cfg_attr(not(any(feature = "server", feature = "python")), allow(dead_code))]
     pub(crate) fn set_receiver(&self, endpoint: u64, present: bool) {
         let mut fx = Effects::default();
@@ -299,13 +300,19 @@ impl Engine {
             let Some(ep) = state.endpoints.get_mut(&endpoint) else {
                 return;
             };
-            ep.has_receiver = present;
+            if present {
+                ep.receivers += 1;
+            } else {
+                ep.receivers = ep.receivers.saturating_sub(1);
+            }
             let waiting = ep
                 .current
                 .as_ref()
                 .filter(|t| t.phase == Phase::Offered && !t.taken)
                 .map(|t| t.serial);
-            if !present && let Some(serial) = waiting {
+            if ep.receivers == 0
+                && let Some(serial) = waiting
+            {
                 self.reject_locked(&mut state, endpoint, serial, "no receiver", None, &mut fx);
             }
         }
@@ -757,7 +764,7 @@ impl Engine {
         if ep.current.is_some() {
             return reject(state, "the endpoint already has an unfinished transfer");
         }
-        if !ep.has_receiver {
+        if ep.receivers == 0 {
             return reject(state, "no receiver");
         }
         let shared =

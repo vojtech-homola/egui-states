@@ -518,3 +518,123 @@ fn a_cancelled_download_leaves_no_partial_file() {
     let _ = std::fs::remove_dir_all(&source);
     let _ = std::fs::remove_dir_all(&target);
 }
+
+#[test]
+fn uploads_reach_the_server_receiver() {
+    if crate::test_support::isolated() {
+        return;
+    }
+    let peers = Peers::connect();
+    let source = temp_dir("upload_source");
+    let target = temp_dir("upload_target");
+    std::fs::write(source.join("a.bin"), data(300_000)).unwrap();
+    std::fs::write(source.join("b.bin"), data(7)).unwrap();
+
+    // Without a receiver, offers are rejected.
+    let refused = peers.states.inputs.send_bytes(vec![1], "x", 0);
+    assert_eq!(
+        finished(&refused),
+        TransferStatus::Failed(TransferError::Rejected("no receiver".to_string()))
+    );
+
+    let dir = target.clone();
+    let offers = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen = offers.clone();
+    let receiver = peers.inputs.on_offer(move |offer| {
+        seen.lock()
+            .unwrap()
+            .push((offer.name().to_string(), *offer.meta()));
+        if offer.total_size() > Some(1_000_000) {
+            offer.reject("too large");
+        } else if offer.files().len() == 1 && offer.name() == "mem.bin" {
+            offer.accept_memory(1024).unwrap();
+        } else {
+            offer.accept_dir(&dir).unwrap();
+        }
+    });
+
+    let uploaded = peers.states.inputs.send_files(
+        vec![source.join("a.bin").into(), source.join("b.bin").into()],
+        "set",
+        5,
+    );
+    assert_eq!(finished(&uploaded), TransferStatus::Done);
+    assert_eq!(listing(&target), ["a.bin", "b.bin"]);
+    assert_eq!(std::fs::read(target.join("a.bin")).unwrap(), data(300_000));
+    let server_side = wait("server handle", || peers.inputs.last());
+    assert_eq!(server_side.status(), TransferStatus::Done);
+    assert_eq!(server_side.path(), Some(target.clone()));
+
+    let in_memory = peers
+        .states
+        .inputs
+        .send_bytes(b"small".to_vec(), "mem.bin", 6);
+    assert_eq!(finished(&in_memory), TransferStatus::Done);
+    let server_side = wait("server handle", || {
+        peers.inputs.last().filter(|h| h.name() == "mem.bin")
+    });
+    server_side.wait(Some(Duration::from_secs(10))).unwrap();
+    assert_eq!(server_side.take_data().unwrap(), b"small");
+
+    let too_large = peers
+        .states
+        .inputs
+        .send_bytes(vec![0; 2_000_000], "big.bin", 7);
+    assert_eq!(
+        finished(&too_large),
+        TransferStatus::Failed(TransferError::Rejected("too large".to_string()))
+    );
+    assert_eq!(
+        *offers.lock().unwrap(),
+        [
+            ("set".to_string(), 5),
+            ("mem.bin".to_string(), 6),
+            ("big.bin".to_string(), 7)
+        ]
+    );
+
+    // Client-side failures: a missing file and a closed dialog.
+    let missing = peers.states.inputs.send_file(source.join("missing"), 0);
+    assert!(matches!(
+        finished(&missing),
+        TransferStatus::Failed(TransferError::Io(_))
+    ));
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let picking = peers.states.inputs.send_file_with(
+        move || {
+            released.recv().unwrap();
+            None
+        },
+        0,
+    );
+    assert!(peers.states.inputs.is_busy());
+    let busy = peers.states.inputs.send_bytes(vec![1], "x", 0);
+    assert_eq!(busy.status(), TransferStatus::Failed(TransferError::Busy));
+    release.send(()).unwrap();
+    assert_eq!(
+        finished(&picking),
+        TransferStatus::Failed(TransferError::Cancelled {
+            by_peer: false,
+            reason: None
+        })
+    );
+    wait("free", || (!peers.states.inputs.is_busy()).then_some(()));
+
+    // An async picker on its own thread.
+    let path = source.join("b.bin");
+    let picked = peers
+        .states
+        .inputs
+        .send_file_with_async(async move { Some(path.into()) }, 8);
+    assert_eq!(finished(&picked), TransferStatus::Done);
+
+    // Dropping the receiver rejects offers again.
+    drop(receiver);
+    let refused = peers.states.inputs.send_bytes(vec![1], "x", 0);
+    assert_eq!(
+        finished(&refused),
+        TransferStatus::Failed(TransferError::Rejected("no receiver".to_string()))
+    );
+    let _ = std::fs::remove_dir_all(&source);
+    let _ = std::fs::remove_dir_all(&target);
+}

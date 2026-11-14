@@ -20,7 +20,7 @@ use parking_lot::Mutex;
 
 use crate::file_transfer::TransferError;
 use crate::file_transfer::engine::{Engine, EngineEvent};
-use crate::file_transfer::fs::{FilesSource, modified_millis};
+use crate::file_transfer::fs::{FilesSource, file_name, stat};
 use crate::file_transfer::shared::TransferShared;
 use crate::file_transfer::source::Source;
 use crate::protocol::file_transfer::{FileEntry, OfferBody};
@@ -155,34 +155,6 @@ pub(crate) fn bytes_offer(data: Vec<u8>, name: &str) -> (OfferBody, Source) {
         }],
     };
     (body, Source::bytes(data))
-}
-
-/// The size and offer entry of the file at `path`.
-fn stat(path: &Path, name: String) -> Result<(FileEntry, u64), TransferError> {
-    let metadata = std::fs::metadata(path)
-        .map_err(|error| TransferError::Io(format!("{}: {error}", path.display())))?;
-    if !metadata.is_file() {
-        return Err(TransferError::Io(format!(
-            "{} is not a file",
-            path.display()
-        )));
-    }
-    let size = metadata.len();
-    let entry = FileEntry {
-        name,
-        size,
-        modified: modified_millis(&metadata),
-    };
-    Ok((entry, size))
-}
-
-fn file_name(path: &Path) -> Result<String, TransferError> {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .map(str::to_string)
-        .ok_or_else(|| {
-            TransferError::InvalidInput(format!("{} has no UTF-8 file name", path.display()))
-        })
 }
 
 /// The name of `path` relative to `root`, with `/` between folders.

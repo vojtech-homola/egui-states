@@ -37,7 +37,7 @@ from egui_states._core import (
     vec,
 )
 from egui_states.signals import SignalsManager
-from egui_states.transfer import TransferHandle
+from egui_states.transfer import TransferHandle, TransferOffer
 
 #: Gray, gray-alpha, RGB, or RGBA color whose components are in ``0..255``.
 type ImageColor = int | tuple[int, int] | tuple[int, int, int] | tuple[int, int, int, int]
@@ -1884,11 +1884,49 @@ class DownloadWithMeta[M](Download):
 class Upload(_TransferEndpoint):
     """Endpoint that receives files from the client.
 
-    The server receives each offer and decides where the data goes. The
-    endpoint carries at most one unfinished transfer at a time.
+    The receiver set with :meth:`on_offer` decides where each offer goes;
+    without one, offers are rejected with "no receiver". The endpoint carries
+    at most one unfinished transfer at a time.
     """
 
     _download = False
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._receiver: Callable[[TransferOffer], Any] | None = None
+
+    def _wants_events(self) -> bool:
+        return self._receiver is not None or bool(self._finished)
+
+    def _dispatch_offer(self) -> None:
+        receiver = self._receiver
+        offer = self._server.transfer_take_offer(self._value_id)
+        if offer is None:
+            return
+        try:
+            if receiver is not None:
+                self._signals_manager._invoke(receiver, TransferOffer(offer))
+        finally:
+            offer.close("the offer was not answered")
+
+    def on_offer(self, func: Callable[[TransferOffer], Any] | None) -> None:
+        """Set the function that answers the client's offers.
+
+        It runs on a callback worker and must accept or reject the offer
+        before it returns; an offer it leaves unanswered, or one it raises
+        for, is rejected. Exceptions go to the server's error handler.
+
+        Args:
+            func (Callable[[TransferOffer], Any] | None): The receiver, or
+                ``None`` to reject offers again.
+        """
+        had_receiver = self._receiver is not None
+        self._receiver = func
+        self._update_dispatch()
+        if func is not None and not had_receiver:
+            self._server.transfer_set_receiver(self._value_id, True)
+        elif func is None and had_receiver:
+            self._server.transfer_set_receiver(self._value_id, False)
 
     def _initialize(self, name: str, types: list[PyObjectType]) -> None:
         meta = None if self._meta_id is None else types[self._meta_id]

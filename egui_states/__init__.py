@@ -32,9 +32,11 @@ from egui_states.structures import (
     Vec,
 )
 from egui_states.transfer import (
+    OfferedFile,
     TransferError,
     TransferErrorKind,
     TransferHandle,
+    TransferOffer,
     TransferProgress,
     TransferStatus,
 )
@@ -66,9 +68,11 @@ __all__ = [
     "UploadWithMeta",
     "UNSET",
     "LogLevel",
+    "OfferedFile",
     "TransferError",
     "TransferErrorKind",
     "TransferHandle",
+    "TransferOffer",
     "TransferProgress",
     "TransferStatus",
 ]

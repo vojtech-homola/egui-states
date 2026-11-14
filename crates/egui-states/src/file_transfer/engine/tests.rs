@@ -810,3 +810,26 @@ fn waiting_sends_are_served_in_call_order() {
         TransferError::NotConnected
     );
 }
+
+#[test]
+fn removing_the_last_receiver_rejects_a_waiting_offer() {
+    let mut link = Link::new();
+    link.connect();
+    let sent = send_bytes(&link.client, UP, vec![1; 4]);
+    until(|| {
+        link.server
+            .0
+            .state
+            .lock()
+            .endpoints
+            .get(&UP)
+            .and_then(|ep| ep.current.as_ref())
+            .map(|_| ())
+    })
+    .unwrap();
+    link.server.set_receiver(UP, false);
+    assert_eq!(
+        finished(&sent),
+        TransferStatus::Failed(TransferError::Rejected("no receiver".to_string()))
+    );
+}

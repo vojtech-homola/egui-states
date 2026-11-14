@@ -8,14 +8,20 @@ use std::time::Duration;
 use bytes::Bytes;
 
 use crate::file_transfer::engine::Engine;
+use crate::file_transfer::engine::OfferToken;
+use crate::file_transfer::fs::{FileSink, Target};
+use crate::file_transfer::sink::Sink;
 use crate::file_transfer::source::Source;
 use crate::file_transfer::{TransferError, TransferHandle, TransferMeta, meta_type_id};
+use crate::protocol::file_transfer::AcceptMode;
 use crate::protocol::file_transfer::OfferBody;
 use crate::server::Result;
 use crate::server::callbacks::CallbackHandle;
 use crate::server::state_server::{StateServer, WeakServer};
 use crate::server_core::file_transfer as core;
-use crate::server_core::file_transfer::{EVENT_FINISHED, TransferEvents, decode_event};
+use crate::server_core::file_transfer::{
+    EVENT_FINISHED, EVENT_OFFER, TransferEvents, decode_event,
+};
 
 /// What every endpoint handle holds.
 struct EndpointRef {
@@ -227,9 +233,195 @@ impl<M: TransferMeta> Upload<M> {
         self.endpoint.connect(callback)
     }
 
+    /// Calls `receiver` on a callback worker with every offer the client
+    /// sends.
+    ///
+    /// Answer the offer by accepting or rejecting it; dropping it rejects it.
+    /// It may be moved elsewhere and answered later. While no receiver is
+    /// connected, offers are rejected with "no receiver". Retain the returned
+    /// handle; dropping it unregisters the receiver.
+    pub fn on_offer(
+        &self,
+        receiver: impl Fn(TransferOffer<M>) + Send + Sync + 'static,
+    ) -> CallbackHandle {
+        let engine = self.endpoint.engine.clone();
+        let id = self.endpoint.id;
+        let handle = self
+            .endpoint
+            .server
+            .add_raw_callback(id, move |payload, _| {
+                if let Some((EVENT_OFFER, _)) = decode_event(&payload)
+                    && let Some(raw) = engine.take_offer(id)
+                {
+                    match postcard::from_bytes::<M>(&raw.meta) {
+                        Ok(meta) => receiver(TransferOffer::new(raw.token, &raw.body, meta)),
+                        Err(error) => {
+                            raw.token.fail(TransferError::Meta(error.to_string()));
+                        }
+                    }
+                }
+                Ok(())
+            });
+        self.endpoint.engine.set_receiver(id, true);
+        let engine = self.endpoint.engine.clone();
+        handle.on_disconnect(move || engine.set_receiver(id, false))
+    }
+
     #[cfg(any(all(test, feature = "client"), feature = "bench"))]
     pub(crate) fn discard_offers(&self) {
         self.endpoint.engine.discard_offers(self.endpoint.id);
+    }
+}
+
+/// A transfer the client offers, not answered yet.
+///
+/// Dropping it rejects the offer.
+pub struct TransferOffer<M> {
+    token: OfferToken,
+    name: String,
+    files: Vec<OfferedFile>,
+    total: u64,
+    meta: M,
+    body: OfferBody,
+}
+
+/// One file of an offer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OfferedFile {
+    name: String,
+    size: u64,
+    modified: Option<std::time::SystemTime>,
+}
+
+impl OfferedFile {
+    /// Returns the name the client gave the file: a relative path with `/`
+    /// between folders. The library has checked that it stays inside a
+    /// folder it is saved to.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Returns the size in bytes; the client cannot send more.
+    pub fn size(&self) -> u64 {
+        self.size
+    }
+
+    /// Returns the time the file was last modified on the client, if known.
+    pub fn modified(&self) -> Option<std::time::SystemTime> {
+        self.modified
+    }
+}
+
+impl<M> TransferOffer<M> {
+    fn new(token: OfferToken, body: &OfferBody, meta: M) -> Self {
+        let files: Vec<OfferedFile> = body
+            .files
+            .iter()
+            .map(|file| OfferedFile {
+                name: file.name.clone(),
+                size: file.size,
+                modified: file
+                    .modified
+                    .and_then(crate::file_transfer::fs::time_from_millis),
+            })
+            .collect();
+        let total = files.iter().map(|file| file.size).sum();
+        Self {
+            token,
+            name: body.name.clone(),
+            files,
+            total,
+            meta,
+            body: body.clone(),
+        }
+    }
+
+    /// Returns the file name, or the name of the set for several files.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Returns the files of the offer; there is at least one.
+    pub fn files(&self) -> &[OfferedFile] {
+        &self.files
+    }
+
+    /// Returns the size of all files together; the client cannot send more.
+    pub fn total_size(&self) -> Option<u64> {
+        Some(self.total)
+    }
+
+    /// Returns the metadata the client sent with the offer.
+    pub fn meta(&self) -> &M {
+        &self.meta
+    }
+
+    /// Accepts a single-file offer into the file at `path`.
+    ///
+    /// The data goes to a temporary file next to `path`, which replaces any
+    /// existing file only once the transfer is complete; missing folders are
+    /// created and the client's modification time is kept.
+    ///
+    /// # Errors
+    ///
+    /// [`TransferError::Unsupported`] for an offer of several files; the
+    /// offer is then rejected.
+    pub fn accept_file(
+        self,
+        path: impl Into<PathBuf>,
+    ) -> std::result::Result<TransferHandle, TransferError> {
+        self.accept_into(Target::File(path.into()))
+    }
+
+    /// Accepts the offer into the folder `dir`, every file under its own
+    /// name; names like `run42/0001.tiff` create subfolders. If the transfer
+    /// fails, files already complete stay.
+    pub fn accept_dir(
+        self,
+        dir: impl Into<PathBuf>,
+    ) -> std::result::Result<TransferHandle, TransferError> {
+        self.accept_into(Target::Dir(dir.into()))
+    }
+
+    /// Accepts a single-file offer into memory, up to `limit` bytes; take the
+    /// data with [`TransferHandle::take_data`] once it is done.
+    ///
+    /// # Errors
+    ///
+    /// [`TransferError::Unsupported`] for an offer of several files and
+    /// [`TransferError::TooLarge`] for one larger than `limit`; the offer is
+    /// then rejected.
+    pub fn accept_memory(self, limit: u64) -> std::result::Result<TransferHandle, TransferError> {
+        self.accept_sink(Sink::memory(limit), None)
+    }
+
+    /// Rejects the offer; the client's transfer fails with `reason`.
+    pub fn reject(self, reason: impl Into<String>) {
+        self.token.reject(&reason.into(), None);
+    }
+
+    fn accept_into(self, target: Target) -> std::result::Result<TransferHandle, TransferError> {
+        let single = matches!(target, Target::File(_));
+        let path = FileSink::display_path(&target);
+        let sink = Sink::Files {
+            sink: Box::new(FileSink::new(target, &self.body.files)),
+            single,
+        };
+        self.accept_sink(sink, Some(path))
+    }
+
+    fn accept_sink(
+        self,
+        sink: Sink,
+        path: Option<PathBuf>,
+    ) -> std::result::Result<TransferHandle, TransferError> {
+        let shared = self.token.accept(sink, AcceptMode::Lane, path);
+        match shared.status() {
+            crate::file_transfer::TransferStatus::Failed(
+                error @ (TransferError::Unsupported(_) | TransferError::TooLarge),
+            ) => Err(error),
+            _ => Ok(TransferHandle::new(shared)),
+        }
     }
 }
 

@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
+use crate::file_transfer::TransferError;
 use crate::protocol::file_transfer::FileEntry;
 
 /// Bytes read from or written to disk at once.
@@ -250,6 +251,34 @@ impl Drop for FileSink {
             let _ = std::fs::remove_file(&open.temp);
         }
     }
+}
+
+/// The size and offer entry of the file at `path`.
+pub(crate) fn stat(path: &Path, name: String) -> Result<(FileEntry, u64), TransferError> {
+    let metadata = std::fs::metadata(path)
+        .map_err(|error| TransferError::Io(format!("{}: {error}", path.display())))?;
+    if !metadata.is_file() {
+        return Err(TransferError::Io(format!(
+            "{} is not a file",
+            path.display()
+        )));
+    }
+    let size = metadata.len();
+    let entry = FileEntry {
+        name,
+        size,
+        modified: modified_millis(&metadata),
+    };
+    Ok((entry, size))
+}
+
+pub(crate) fn file_name(path: &Path) -> Result<String, TransferError> {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .map(str::to_string)
+        .ok_or_else(|| {
+            TransferError::InvalidInput(format!("{} has no UTF-8 file name", path.display()))
+        })
 }
 
 /// The modification time of `path` in milliseconds since the Unix epoch.

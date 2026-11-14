@@ -378,6 +378,14 @@ impl Fixture {
         callbacks.push(server.states.transfers.files.connect(move |handle| {
             seen.lock().unwrap().push(handle);
         }));
+        callbacks.push(server.states.transfers.inputs.on_offer(|offer| {
+            offer.accept_memory(1024).unwrap();
+        }));
+        let uploaded = Arc::new(Mutex::new(Vec::new()));
+        let seen = uploaded.clone();
+        callbacks.push(server.states.transfers.inputs.connect(move |handle| {
+            seen.lock().unwrap().push(handle);
+        }));
         let st = states.clone();
         let all = server.states.clone();
         let on_error = errors.clone();
@@ -487,6 +495,10 @@ impl Fixture {
                     40..=43 => {
                         transfers(&all, command, &finished)?;
                         st.phase.set(command, true)?;
+                    }
+                    44 => {
+                        check_uploads(&uploaded);
+                        st.phase.set(44, true)?;
                     }
                     99 => st.phase.set(99, true)?,
                     _ => panic!("unknown fixture command"),
@@ -626,4 +638,17 @@ fn transfers(
         }
     }
     Ok(())
+}
+
+/// Command 44: the upload the client sent arrived with its metadata.
+fn check_uploads(uploaded: &Mutex<Vec<s::TransferHandle>>) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while uploaded.lock().unwrap().is_empty() {
+        assert!(Instant::now() < deadline, "upload callback missing");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let handle = uploaded.lock().unwrap()[0].clone();
+    assert_eq!(handle.status(), s::TransferStatus::Done);
+    assert_eq!(handle.name(), "u.bin");
+    assert_eq!(handle.take_data().unwrap(), b"upload");
 }

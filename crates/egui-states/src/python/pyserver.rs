@@ -22,7 +22,7 @@ use crate::python::value_parsing::{ValueCreator, ValueParser};
 use crate::python::{
     pydata::{data_buffer, data_slice},
     pyimage, pyparsing,
-    pytransfer::{self, Offer, PyTransferHandle, SendTarget},
+    pytransfer::{self, Offer, PyTransferHandle, PyTransferOffer, SendTarget},
     pytypes::{PyObjectClass, PyObjectType},
 };
 use crate::server_core::file_transfer::TransferEndpoint;
@@ -1785,6 +1785,21 @@ impl StateServerCore {
         Ok(engine
             .last(value_id)
             .map(|shared| PyTransferHandle::new(py, shared, meta_type)))
+    }
+
+    /// Takes the offer waiting on an `Upload`, once.
+    fn transfer_take_offer(&self, py: Python, value_id: u64) -> PyResult<Option<PyTransferOffer>> {
+        let (engine, meta_type) = self.transfer_endpoint(value_id, false)?;
+        Ok(engine
+            .take_offer(value_id)
+            .map(|offer| PyTransferOffer::new(py, offer, meta_type)))
+    }
+
+    /// Adds (`present`) or removes the receiver of an `Upload`'s offers.
+    fn transfer_set_receiver(&self, value_id: u64, present: bool) -> PyResult<()> {
+        let (engine, _) = self.transfer_endpoint(value_id, false)?;
+        engine.set_receiver(value_id, present);
+        Ok(())
     }
 
     /// The finished transfer a transfer event names.

@@ -79,6 +79,19 @@ def transfers(states, number, finished):
         ], reported
 
 
+def check_uploads(uploaded):
+    """Command 44: the upload the client sent arrived with its metadata."""
+    from egui_states import TransferStatus
+    from egui_states_test_bindings.structs import TransferInfo  # ty: ignore[import-not-found]
+
+    wait_until(lambda: len(uploaded) == 1)
+    handle = uploaded[0]
+    assert handle.status() is TransferStatus.Done
+    assert handle.name() == "u.bin"
+    assert handle.meta() == TransferInfo(7, "up")
+    assert handle.take_data() == b"upload"
+
+
 def set_wire_values(states):
     """Command 30: non-default values of every shape for the client to check."""
     from egui_states_test_bindings.enums import TestEnum, TestEnum2  # ty: ignore[import-not-found]
@@ -219,7 +232,10 @@ def configure(states):  # noqa: PLR0915
 
     signals = []
     finished = []
+    uploaded = []
     states.transfers.files.connect(finished.append)
+    states.transfers.inputs.on_offer(lambda offer: offer.accept_memory(1024))
+    states.transfers.inputs.connect(uploaded.append)
     states.signals.empty_signal.connect(lambda: signals.append("empty"))
     states.signals.number_signal.connect(lambda value: signals.append(f"number:{value}"))
     states.signals.enum_signal.connect(lambda value: signals.append(f"enum:{value.name}"))
@@ -322,6 +338,9 @@ def configure(states):  # noqa: PLR0915
         elif number in {40, 41, 42, 43}:
             transfers(states, number, finished)
             st.phase.set(number, update=True)
+        elif number == 44:
+            check_uploads(uploaded)
+            st.phase.set(44, update=True)
         elif number == 99:
             st.phase.set(99, update=True)
         else:

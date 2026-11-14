@@ -25,6 +25,7 @@ macro_rules! for_each_scenario {
             rejected_client => "rejected-client",
             data_headers => "data-headers",
             file_transfers => "file-transfers",
+            uploads => "uploads",
         }
     };
 }

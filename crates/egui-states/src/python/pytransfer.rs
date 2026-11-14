@@ -198,3 +198,144 @@ pub(crate) fn send(
         .map_err(to_py_error)?;
     Ok(PyTransferHandle::new(py, shared, target.meta_type))
 }
+
+/// One offer from the client; `egui_states.transfer.TransferOffer` wraps it.
+///
+/// The offer is answered at most once. An offer the receiver did not answer
+/// is rejected when `close` runs after the receiver returned.
+#[pyclass(frozen, name = "_TransferOffer", module = "egui_states._core")]
+pub(crate) struct PyTransferOffer {
+    offer: parking_lot::Mutex<Option<crate::file_transfer::engine::RawOffer>>,
+    meta: Option<PyObjectType>,
+}
+
+impl PyTransferOffer {
+    pub(crate) fn new(
+        py: Python,
+        offer: crate::file_transfer::engine::RawOffer,
+        meta: &Option<PyObjectType>,
+    ) -> Self {
+        Self {
+            offer: parking_lot::Mutex::new(Some(offer)),
+            meta: meta.as_ref().map(|meta| meta.clone_py(py)),
+        }
+    }
+
+    fn with<T>(
+        &self,
+        read: impl FnOnce(&crate::file_transfer::engine::RawOffer) -> T,
+    ) -> PyResult<T> {
+        match self.offer.lock().as_ref() {
+            Some(offer) => Ok(read(offer)),
+            None => Err(pyo3::exceptions::PyRuntimeError::new_err(
+                "the offer was already answered",
+            )),
+        }
+    }
+
+    /// Takes the offer to answer it; `single` refuses an offer of several
+    /// files and leaves it open.
+    fn take(&self, single: bool) -> PyResult<crate::file_transfer::engine::RawOffer> {
+        let mut offer = self.offer.lock();
+        match offer.as_ref() {
+            None => Err(pyo3::exceptions::PyRuntimeError::new_err(
+                "the offer was already answered",
+            )),
+            Some(raw) if single && raw.body.files.len() != 1 => {
+                Err(PyValueError::new_err(format!(
+                    "the offer has {} files; accept it into a folder",
+                    raw.body.files.len()
+                )))
+            }
+            Some(_) => Ok(offer.take().expect("checked above")),
+        }
+    }
+
+    fn accept(
+        &self,
+        py: Python,
+        raw: crate::file_transfer::engine::RawOffer,
+        sink: crate::file_transfer::sink::Sink,
+        path: Option<PathBuf>,
+    ) -> PyTransferHandle {
+        use crate::protocol::file_transfer::AcceptMode;
+        let shared = py.detach(move || raw.token.accept(sink, AcceptMode::Lane, path));
+        PyTransferHandle::new(py, shared, &self.meta)
+    }
+}
+
+#[pymethods]
+impl PyTransferOffer {
+    fn name(&self) -> PyResult<String> {
+        self.with(|offer| offer.body.name.clone())
+    }
+
+    /// `(name, size, modified seconds since the epoch)` of every file.
+    fn files(&self) -> PyResult<Vec<(String, u64, Option<f64>)>> {
+        self.with(|offer| {
+            offer
+                .body
+                .files
+                .iter()
+                .map(|file| {
+                    let modified = file.modified.map(|ms| ms as f64 / 1000.0);
+                    (file.name.clone(), file.size, modified)
+                })
+                .collect()
+        })
+    }
+
+    fn total_size(&self) -> PyResult<u64> {
+        self.with(|offer| offer.body.files.iter().map(|file| file.size).sum())
+    }
+
+    fn meta<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyAny>>> {
+        let meta = self.with(|offer| offer.meta.clone())?;
+        decode_header(py, meta, &self.meta)
+    }
+
+    fn accept_file(&self, py: Python, path: PathBuf) -> PyResult<PyTransferHandle> {
+        use crate::file_transfer::fs::{FileSink, Target};
+        let raw = self.take(true)?;
+        let sink = crate::file_transfer::sink::Sink::Files {
+            sink: Box::new(FileSink::new(Target::File(path.clone()), &raw.body.files)),
+            single: true,
+        };
+        Ok(self.accept(py, raw, sink, Some(path)))
+    }
+
+    fn accept_dir(&self, py: Python, dir: PathBuf) -> PyResult<PyTransferHandle> {
+        use crate::file_transfer::fs::{FileSink, Target};
+        let raw = self.take(false)?;
+        let sink = crate::file_transfer::sink::Sink::Files {
+            sink: Box::new(FileSink::new(Target::Dir(dir.clone()), &raw.body.files)),
+            single: false,
+        };
+        Ok(self.accept(py, raw, sink, Some(dir)))
+    }
+
+    fn accept_memory(&self, py: Python, limit: u64) -> PyResult<PyTransferHandle> {
+        let raw = self.take(true)?;
+        let sink = crate::file_transfer::sink::Sink::memory(limit);
+        Ok(self.accept(py, raw, sink, None))
+    }
+
+    #[pyo3(signature = (reason=String::new()))]
+    fn reject(&self, py: Python, reason: String) -> PyResult<()> {
+        let raw = self.take(false)?;
+        py.detach(move || raw.token.reject(&reason, None));
+        Ok(())
+    }
+
+    /// Rejects the offer unless it was answered; returns whether it was open.
+    fn close(&self, py: Python, reason: String) -> bool {
+        let raw = self.offer.lock().take();
+        match raw {
+            Some(raw) => {
+                py.detach(move || raw.token.reject(&reason, None));
+                true
+            }
+            None => false,
+        }
+    }
+}
