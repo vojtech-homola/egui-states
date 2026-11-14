@@ -58,6 +58,10 @@ extern crate self as egui_states;
 mod test_support;
 
 mod event;
+#[cfg(any(feature = "client", feature = "server", feature = "python"))]
+// Not used by the state endpoints yet.
+#[allow(dead_code, unused_imports)]
+mod file_transfer;
 mod hashing;
 mod protocol;
 mod typed;

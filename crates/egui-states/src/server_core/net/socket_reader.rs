@@ -3,6 +3,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 
 use crate::protocol::ClientHeader;
+use crate::protocol::file_transfer::TransferFrame;
 use crate::server_core::net::heartbeat::Activity;
 use crate::server_core::net::transport::{FrameSource, Incoming};
 
@@ -14,6 +15,9 @@ pub(crate) enum ClientMessage {
     Ack(u64),
     Message(Bytes),
     Handshake(u16, Option<u64>, Option<String>),
+    // Not routed to the transfer engine yet.
+    #[allow(dead_code)]
+    Transfer(u64, TransferFrame, Bytes),
 }
 
 pub(crate) struct SocketReader<S> {
@@ -86,6 +90,9 @@ impl<S: FrameSource> SocketReader<S> {
             ClientHeader::Message(_) => ClientMessage::Message(payload),
             ClientHeader::Handshake(protocol_version, client_version, hash) => {
                 ClientMessage::Handshake(protocol_version, client_version, hash)
+            }
+            ClientHeader::Transfer(endpoint, frame, _) => {
+                ClientMessage::Transfer(endpoint, frame, payload)
             }
         })
     }

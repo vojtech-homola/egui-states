@@ -25,6 +25,7 @@ impl ServerHeader {
                 header.payload_len()
             }
             Self::ImageMulti(_, ImageMultiHeader::Modify(_, _, size)) => *size,
+            Self::Transfer(.., size) => *size,
             Self::MultiData(..) | Self::DataMultiTake(..) | Self::ImageMulti(..) => 0,
             Self::Update(_) => 0,
         }
@@ -65,7 +66,7 @@ impl ServerHeader {
                 }
                 DataMultiTakeHeader::Modify(_, header, _) => header.update_flag(),
             },
-            Self::Update(_) => false,
+            Self::Update(_) | Self::Transfer(..) => false,
         }
     }
 
@@ -81,6 +82,7 @@ impl ServerHeader {
             Self::Data(..) | Self::MultiData(..) => "Incomplete data for Data/DataStatic message",
             Self::DataTake(..) | Self::DataMultiTake(..) => "Incomplete data for DataTake message",
             Self::Update(_) => "Incomplete Update message",
+            Self::Transfer(..) => "Incomplete data for Transfer message",
         }
     }
 

@@ -385,6 +385,8 @@ async fn reader<S: FrameSource>(mut socket_rx: SocketReader<S>, session: Session
             Ok(ClientMessage::Handshake(_, _, _)) => {
                 signals.error("unexpected handshake message after connection established");
             }
+            // Routed to the transfer engine once it is connected.
+            Ok(ClientMessage::Transfer(..)) => {}
         }
     }
 

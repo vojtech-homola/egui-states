@@ -240,6 +240,8 @@ pub(crate) async fn handle_message(
             client.update(t);
             return Ok(());
         }
+        // Routed to the transfer engine once it is connected.
+        ServerHeader::Transfer(..) => return Ok(()),
         ServerHeader::Value(id, type_id, ..) => match vals.value(id) {
             Some(value) => value.update_value(type_id, &payload)?,
             None => {
@@ -813,7 +815,8 @@ mod serializer_tests {
             let payload = match header {
                 ClientHeader::Value(_, _, _, size)
                 | ClientHeader::Signal(_, _, size)
-                | ClientHeader::Message(size) => size as usize,
+                | ClientHeader::Message(size)
+                | ClientHeader::Transfer(_, _, size) => size as usize,
                 ClientHeader::Ack(_) | ClientHeader::Handshake(..) => 0,
             };
             rest = &after[payload..];
