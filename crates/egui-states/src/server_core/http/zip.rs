@@ -6,6 +6,11 @@
 //! in a data descriptor. Every record uses the zip64 form, so archives and
 //! entries can exceed 4 GB, and the total size is known before the first
 //! byte, which gives the response its `Content-Length`.
+//!
+//! A modification time is written twice. The date and time fields every
+//! reader knows have no time zone and are read as local time; they hold UTC,
+//! as the server cannot know the zone of the reader. The extended timestamp
+//! field holds the exact time, and readers that know it use it instead.
 
 use crate::protocol::file_transfer::FileEntry;
 
@@ -21,9 +26,16 @@ const VERSION: u16 = 45;
 /// Bit 3: sizes and checksum follow the data; bit 11: UTF-8 names.
 const FLAGS: u16 = (1 << 3) | (1 << 11);
 
+/// The extra field with the modification time in seconds since the Unix
+/// epoch, in UTC.
+const EXTENDED_TIMESTAMP: u16 = 0x5455;
+/// The zip64 extra field.
+const ZIP64_EXTRA: u16 = 0x0001;
+
 const LOCAL_FIXED: u64 = 30 + 20;
 const DESCRIPTOR_LEN: u64 = 24;
 const CENTRAL_FIXED: u64 = 46 + 28;
+const TIMESTAMP_LEN: u64 = 9;
 const TAIL_LEN: u64 = 56 + 20 + 22;
 
 struct Entry {
@@ -31,57 +43,87 @@ struct Entry {
     size: u64,
     time: u16,
     date: u16,
+    /// The modification time for the extended timestamp, which holds 32
+    /// signed bits.
+    seconds: Option<i32>,
+    /// Where the local header starts.
+    offset: u64,
+}
+
+impl Entry {
+    /// The length of the extended timestamp field, in either header.
+    fn timestamp_len(&self) -> u64 {
+        self.seconds.map_or(0, |_| TIMESTAMP_LEN)
+    }
+
+    /// The length of the entry in the archive, without the central header.
+    fn len(&self) -> u64 {
+        LOCAL_FIXED + self.timestamp_len() + self.name.len() as u64 + self.size + DESCRIPTOR_LEN
+    }
+
+    fn central_len(&self) -> u64 {
+        CENTRAL_FIXED + self.timestamp_len() + self.name.len() as u64
+    }
+
+    /// Appends the extended timestamp field, which has the same form in both
+    /// headers when it holds the modification time only.
+    fn timestamp(&self, out: &mut Vec<u8>) {
+        if let Some(seconds) = self.seconds {
+            u16le(out, EXTENDED_TIMESTAMP);
+            u16le(out, 5);
+            out.push(1); // the modification time follows
+            out.extend_from_slice(&seconds.to_le_bytes());
+        }
+    }
 }
 
 /// The layout of the zip of a set of files.
 pub(crate) struct ZipLayout {
     entries: Vec<Entry>,
+    /// Where the central directory starts.
+    central_start: u64,
 }
 
 impl ZipLayout {
     pub(crate) fn new(files: &[FileEntry]) -> Self {
+        // Each entry starts where the one before ends: one running sum, as a
+        // set may have very many files.
+        let mut offset = 0;
         let entries = files
             .iter()
             .map(|file| {
                 let (date, time) = file.modified.map_or((DOS_EPOCH_DATE, 0), dos_date_time);
-                Entry {
+                let seconds = file
+                    .modified
+                    .and_then(|millis| i32::try_from(millis.div_euclid(1000)).ok());
+                let entry = Entry {
                     name: file.name.as_bytes().to_vec(),
                     size: file.size,
                     time,
                     date,
-                }
+                    seconds,
+                    offset,
+                };
+                offset += entry.len();
+                entry
             })
             .collect();
-        Self { entries }
+        Self {
+            entries,
+            central_start: offset,
+        }
     }
 
     /// The size of the whole archive.
     pub(crate) fn total_size(&self) -> u64 {
-        let entries: u64 = self
-            .entries
-            .iter()
-            .map(|e| LOCAL_FIXED + e.name.len() as u64 + e.size + DESCRIPTOR_LEN)
-            .sum();
-        let central: u64 = self
-            .entries
-            .iter()
-            .map(|e| CENTRAL_FIXED + e.name.len() as u64)
-            .sum();
-        entries + central + TAIL_LEN
-    }
-
-    /// Where the local header of entry `index` starts.
-    fn offset(&self, index: usize) -> u64 {
-        self.entries[..index]
-            .iter()
-            .map(|e| LOCAL_FIXED + e.name.len() as u64 + e.size + DESCRIPTOR_LEN)
-            .sum()
+        let central: u64 = self.entries.iter().map(Entry::central_len).sum();
+        self.central_start + central + TAIL_LEN
     }
 
     /// The local header of entry `index`, which comes before its data.
     pub(crate) fn local_header(&self, index: usize) -> Vec<u8> {
         let entry = &self.entries[index];
-        let mut out = Vec::with_capacity(LOCAL_FIXED as usize + entry.name.len());
+        let mut out = Vec::with_capacity((entry.len() - entry.size - DESCRIPTOR_LEN) as usize);
         u32le(&mut out, LOCAL_HEADER);
         u16le(&mut out, VERSION);
         u16le(&mut out, FLAGS);
@@ -92,13 +134,14 @@ impl ZipLayout {
         u32le(&mut out, u32::MAX);
         u32le(&mut out, u32::MAX);
         u16le(&mut out, entry.name.len() as u16);
-        u16le(&mut out, 20);
+        u16le(&mut out, (20 + entry.timestamp_len()) as u16);
         out.extend_from_slice(&entry.name);
         // The zip64 sizes: in the data descriptor.
-        u16le(&mut out, 1);
+        u16le(&mut out, ZIP64_EXTRA);
         u16le(&mut out, 16);
         u64le(&mut out, 0);
         u64le(&mut out, 0);
+        entry.timestamp(&mut out);
         out
     }
 
@@ -115,8 +158,8 @@ impl ZipLayout {
 
     /// The central directory and end records, given every entry's checksum.
     pub(crate) fn central_directory(&self, crcs: &[u32]) -> Vec<u8> {
-        let start = self.offset(self.entries.len());
-        let mut out = Vec::new();
+        let start = self.central_start;
+        let mut out = Vec::with_capacity((self.total_size() - start) as usize);
         for (index, entry) in self.entries.iter().enumerate() {
             u32le(&mut out, CENTRAL_HEADER);
             u16le(&mut out, (3 << 8) | VERSION); // made by Unix
@@ -129,18 +172,19 @@ impl ZipLayout {
             u32le(&mut out, u32::MAX);
             u32le(&mut out, u32::MAX);
             u16le(&mut out, entry.name.len() as u16);
-            u16le(&mut out, 28);
+            u16le(&mut out, (28 + entry.timestamp_len()) as u16);
             u16le(&mut out, 0); // comment
             u16le(&mut out, 0); // disk
             u16le(&mut out, 0); // internal attributes
             u32le(&mut out, 0o100644 << 16); // a regular file, rw-r--r--
             u32le(&mut out, u32::MAX);
             out.extend_from_slice(&entry.name);
-            u16le(&mut out, 1);
+            u16le(&mut out, ZIP64_EXTRA);
             u16le(&mut out, 24);
             u64le(&mut out, entry.size);
             u64le(&mut out, entry.size);
-            u64le(&mut out, self.offset(index));
+            u64le(&mut out, entry.offset);
+            entry.timestamp(&mut out);
         }
         let central_size = out.len() as u64;
         let count = self.entries.len() as u64;
@@ -177,7 +221,8 @@ impl ZipLayout {
 /// 1980-01-01, the earliest date a zip can hold.
 const DOS_EPOCH_DATE: u16 = 0x21;
 
-/// The DOS date and time of `millis` since the Unix epoch, in UTC.
+/// The DOS date and time of `millis` since the Unix epoch, in UTC: the
+/// fields have no zone, and the zone of the reader is not known here.
 fn dos_date_time(millis: i64) -> (u16, u16) {
     let seconds = millis.div_euclid(1000);
     let days = seconds.div_euclid(86_400);
@@ -237,7 +282,11 @@ mod tests {
             .iter()
             .map(|(name, data)| entry(name, data.len() as u64))
             .collect();
-        let layout = ZipLayout::new(&entries);
+        write_entries(&entries, files)
+    }
+
+    fn write_entries(entries: &[FileEntry], files: &[(&str, &[u8])]) -> Vec<u8> {
+        let layout = ZipLayout::new(entries);
         let mut out = Vec::new();
         let mut crcs = Vec::new();
         for (index, (_, data)) in files.iter().enumerate() {
@@ -291,17 +340,35 @@ mod tests {
             ("run/sub/empty", b""),
             ("ünï.bin", &[7; 1000]),
         ];
-        let zip = write_zip(&files);
+        // An exact time, none, and one past what the exact field holds.
+        let times = [Some(1_700_000_000_000), None, Some(4_000_000_000_000)];
+        let entries: Vec<_> = std::iter::zip(&files, times)
+            .map(|((name, data), modified)| FileEntry {
+                modified,
+                ..entry(name, data.len() as u64)
+            })
+            .collect();
+        let zip = write_entries(&entries, &files);
         let path = std::env::temp_dir().join(format!("egui_states_zip_{}.zip", std::process::id()));
         std::fs::write(&path, &zip).unwrap();
         // Written as UTF-8 bytes: `print` would use the console's encoding
         // and line ends, which on Windows are neither UTF-8 nor `\n`.
-        let script = "import sys, zipfile\n\
-            z = zipfile.ZipFile(sys.argv[1])\n\
-            assert z.testzip() is None\n\
-            for i in z.infolist():\n    \
-            line = f'{i.filename} {len(z.read(i))} {i.date_time[0]}\\n'\n    \
-            sys.stdout.buffer.write(line.encode('utf-8'))\n";
+        let script = r#"
+import struct, sys, zipfile
+
+def exact(extra):
+    while len(extra) >= 4:
+        tag, size = struct.unpack("<HH", extra[:4])
+        if tag == 0x5455:
+            return struct.unpack("<bi", extra[4:9])
+        extra = extra[4 + size:]
+
+z = zipfile.ZipFile(sys.argv[1])
+assert z.testzip() is None
+for i in z.infolist():
+    line = f"{i.filename} {len(z.read(i))} {i.date_time} {exact(i.extra)}\n"
+    sys.stdout.buffer.write(line.encode("utf-8"))
+"#;
         let output = std::process::Command::new("python3")
             .args(["-c", script])
             .arg(&path)
@@ -316,9 +383,36 @@ mod tests {
             "{}",
             String::from_utf8_lossy(&output.stderr)
         );
+        // The reader reports the fields without a zone, which hold UTC, and
+        // the extended timestamp: its flag and the seconds since the epoch.
         assert_eq!(
             String::from_utf8(output.stdout).unwrap(),
-            "run/a.txt 5 2023\nrun/sub/empty 0 2023\nünï.bin 1000 2023\n"
+            "run/a.txt 5 (2023, 11, 14, 22, 13, 20) (1, 1700000000)\n\
+             run/sub/empty 0 (1980, 1, 1, 0, 0, 0) None\n\
+             ünï.bin 1000 (2096, 10, 2, 7, 6, 40) None\n"
         );
+    }
+
+    /// Every entry is found where the directory says, in work that grows
+    /// with the number of files and not with its square.
+    #[test]
+    fn many_files_have_a_directory_in_one_pass() {
+        let entries: Vec<_> = (0..200_000)
+            .map(|i| entry(&format!("{i}"), i % 7))
+            .collect();
+        let started = std::time::Instant::now();
+        let layout = ZipLayout::new(&entries);
+        let directory = layout.central_directory(&vec![0; entries.len()]);
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        assert_eq!(
+            layout.central_start + directory.len() as u64,
+            layout.total_size()
+        );
+        let mut offset = 0;
+        for (index, entry) in layout.entries.iter().enumerate() {
+            assert_eq!(entry.offset, offset);
+            offset += layout.local_header(index).len() as u64 + entry.size + DESCRIPTOR_LEN;
+        }
+        assert_eq!(offset, layout.central_start);
     }
 }

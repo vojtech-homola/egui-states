@@ -52,6 +52,10 @@ def test_invalid_sends_raise_builtin_errors(
         t.files.send_bytes(b"x", "x.bin", wait=True, timeout=-1.0)
     with pytest.raises(TypeError):
         t.results.send_bytes(b"x", "x.bin")  # meta is required
+    # The bytes of a reversed or stepped view are not one block of memory.
+    for view in (memoryview(b"abcdef")[::-1], memoryview(b"abcdef")[::2]):
+        with pytest.raises(ValueError, match="C-contiguous"):
+            t.files.send_bytes(view, "x.bin")
 
 
 def test_public_types() -> None:

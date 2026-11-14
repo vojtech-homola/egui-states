@@ -223,6 +223,9 @@ class TransferOffer:
     def name(self) -> str:
         """Return the file name, or the name of the set for several files.
 
+        The library has checked it like the name of a file: it is a relative
+        path with ``/`` between folders and without ``..``.
+
         Returns:
             str: The name the client gave the transfer.
         """
@@ -274,10 +277,14 @@ class TransferOffer:
     def accept_dir(self, dir: str | PathLike[str]) -> TransferHandle:  # noqa: A002
         """Accept the offer into the folder ``dir``, each file under its own name.
 
-        Names like ``run42/0001.tiff`` create subfolders. Files are not saved
-        through a symbolic link or junction inside ``dir``: if a folder a
-        file goes into is one, the transfer fails before any file is written.
-        If the transfer fails later, files already complete stay.
+        Names like ``run42/0001.tiff`` create subfolders. No file is saved
+        outside of ``dir``, whatever happens to the folders inside it while
+        the transfer runs. A symbolic link or junction among those folders
+        fails the transfer: one that is there when the first data arrives,
+        before any file is written; one put there later, at the file it is
+        in the way of. If the transfer fails later, files already complete
+        stay. On Windows ``dir`` cannot be renamed or removed while the
+        transfer runs.
 
         Args:
             dir (str | PathLike[str]): The folder to save the files in.

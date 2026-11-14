@@ -893,6 +893,45 @@ fn an_offer_token_from_an_earlier_connection_does_not_touch_a_new_offer() {
     assert_eq!(received.status(), TransferStatus::Pending);
 }
 
+/// A client has no port to fetch from: an answer that asks for its upload
+/// over HTTP fails the upload, it does not leave it waiting.
+#[test]
+fn a_client_fails_an_upload_accepted_over_http() {
+    for mode in [AcceptMode::Http, AcceptMode::HttpBundled] {
+        let engine = Engine::new(Side::Client, None);
+        engine.register(UP, Role::Send, 0);
+        let (tx, out) = std::sync::mpsc::channel();
+        engine.attach(Arc::new(move |message| {
+            let _ = tx.send(message);
+        }));
+        let sent = engine
+            .send(UP, single("x", 4), Bytes::new(), Source::bytes(vec![0; 4]))
+            .unwrap();
+        let (_, offer, _) = decode(Side::Client, &out.try_recv().unwrap());
+        let TransferFrame::Offer { serial, .. } = offer else {
+            panic!("{offer:?}");
+        };
+        engine.handle_frame(UP, TransferFrame::Accept { serial, mode }, Bytes::new());
+        assert!(
+            matches!(
+                sent.status(),
+                TransferStatus::Failed(TransferError::Unsupported(_))
+            ),
+            "{:?}",
+            sent.status()
+        );
+        let (_, told, _) = decode(Side::Client, &out.try_recv().unwrap());
+        assert!(
+            matches!(told, TransferFrame::Finished { error: Some(_), .. }),
+            "{told:?}"
+        );
+        // The endpoint is free again.
+        engine
+            .send(UP, single("y", 1), Bytes::new(), Source::bytes(vec![0]))
+            .unwrap();
+    }
+}
+
 #[test]
 fn a_disconnect_ends_a_send_whose_files_are_being_picked() {
     let mut link = Link::new();
@@ -1150,6 +1189,46 @@ fn chunks_waiting_for_the_disk_end_with_their_transfer() {
         assert!(shared.is_finished());
         assert!(window.is_unique(), "a cancelled transfer kept its data");
     }
+}
+
+/// The other peer chooses the serial. A transfer that takes the serial of
+/// one whose batch is still being written gets nothing of it: not its sink,
+/// and not its bytes.
+#[test]
+fn a_written_batch_goes_only_to_its_own_transfer() {
+    let dir = std::env::temp_dir().join(format!("egui_states_serial_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let rx = Receiver::new();
+    let write_next = || {
+        let (job, batch) = Engine::next_sink_job(&mut rx.engine.0.state.lock()).unwrap();
+        (job, batch.write())
+    };
+
+    let first = rx.accepted_file(5, 4, dir.join("first"));
+    rx.chunk(5, false, 2);
+    let (job, written) = write_next();
+    // While the disk is busy, the serial comes back with another transfer.
+    rx.engine
+        .handle_frame(DOWN, TransferFrame::Cancel { serial: 5 }, Bytes::new());
+    assert!(first.is_finished());
+    let second = rx.accepted_file(5, 2, dir.join("second"));
+    assert!(rx.engine.sink_written(rx.generation, job, Ok(written)));
+    assert!(
+        !second.is_finished(),
+        "it got the bytes of another transfer"
+    );
+    assert_eq!(second.progress().done, 0);
+    assert!(rx.frames().is_empty(), "no credit for bytes it did not get");
+
+    // Its own data still goes to its own file.
+    rx.chunk(5, true, 2);
+    let (job, written) = write_next();
+    assert!(rx.engine.sink_written(rx.generation, job, Ok(written)));
+    assert_eq!(finished(&second), TransferStatus::Done);
+    assert_eq!(std::fs::read(dir.join("second")).unwrap(), [0; 2]);
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "only its file");
+    std::fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]

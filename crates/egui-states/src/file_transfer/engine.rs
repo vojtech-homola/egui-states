@@ -124,18 +124,48 @@ struct Connection {
     generation: u64,
 }
 
-/// The chunks of one transfer that [`Engine::sink_worker`] writes in one
-/// blocking call, with the sink they go to.
+/// The chunks of one transfer that [`Engine::sink_worker`] took to write
+/// in one blocking call.
 #[cfg(not(target_arch = "wasm32"))]
 struct SinkJob {
     endpoint: u64,
     serial: u32,
-    sink: Box<crate::file_transfer::fs::FileSink>,
+    /// The transfer itself: the other peer chooses the serial and may use it
+    /// again while the batch is written.
+    shared: Arc<TransferShared>,
     single: bool,
-    batch: Vec<Bytes>,
     len: u64,
+}
+
+/// What a [`SinkJob`] writes, and the sink it goes to.
+#[cfg(not(target_arch = "wasm32"))]
+struct SinkBatch {
+    sink: Box<crate::file_transfer::fs::FileSink>,
+    chunks: Vec<Bytes>,
     /// Whether the batch ends the data.
     finishing: bool,
+}
+
+/// A sink after a batch, with what writing it came to.
+#[cfg(not(target_arch = "wasm32"))]
+type SinkWritten = (Box<crate::file_transfer::fs::FileSink>, std::io::Result<()>);
+
+#[cfg(not(target_arch = "wasm32"))]
+impl SinkBatch {
+    /// Writes the chunks; this blocks on the disk.
+    fn write(mut self) -> SinkWritten {
+        let mut result = Ok(());
+        for data in &self.chunks {
+            result = self.sink.write(data);
+            if result.is_err() {
+                break;
+            }
+        }
+        if result.is_ok() && self.finishing {
+            result = self.sink.finish();
+        }
+        (self.sink, result)
+    }
 }
 
 /// Bytes the sink worker writes in one blocking call.
@@ -416,75 +446,75 @@ impl Engine {
                 }
                 Self::next_sink_job(&mut state)
             };
-            let Some(job) = job else {
+            let Some((job, batch)) = job else {
                 self.0.sinks.notified().await;
                 continue;
             };
-            let SinkJob {
-                endpoint,
-                serial,
-                mut sink,
-                single,
-                batch,
-                len,
-                finishing,
-            } = job;
-            let written = tokio::task::spawn_blocking(move || {
-                let mut result = Ok(());
-                for data in &batch {
-                    result = sink.write(data);
-                    if result.is_err() {
-                        break;
-                    }
-                }
-                if result.is_ok() && finishing {
-                    result = sink.finish();
-                }
-                (sink, result)
-            })
-            .await;
-
-            let mut fx = Effects::default();
-            {
-                let mut state = self.0.state.lock();
-                if state
-                    .connection
-                    .as_ref()
-                    .is_none_or(|c| c.generation != generation)
-                {
-                    return;
-                }
-                match written {
-                    Ok((sink, Ok(()))) => {
-                        if let Some(t) = Self::current_mut(&mut state, endpoint, serial) {
-                            t.sink = Some(Sink::Files { sink, single });
-                            self.consumed(&mut state, endpoint, serial, len, &mut fx);
-                        }
-                    }
-                    Ok((sink, Err(error))) => {
-                        // Removes the partial file.
-                        drop(sink);
-                        if Self::current_mut(&mut state, endpoint, serial).is_some() {
-                            let error = TransferError::Io(error.to_string());
-                            self.fail_locked(&mut state, endpoint, serial, error, &mut fx);
-                        }
-                    }
-                    Err(error) => {
-                        if Self::current_mut(&mut state, endpoint, serial).is_some() {
-                            let error = TransferError::Io(format!("writing failed: {error}"));
-                            self.fail_locked(&mut state, endpoint, serial, error, &mut fx);
-                        }
-                    }
-                }
+            let written = tokio::task::spawn_blocking(move || batch.write())
+                .await
+                .map_err(|error| error.to_string());
+            if !self.sink_written(generation, job, written) {
+                return;
             }
-            self.apply(fx);
         }
+    }
+
+    /// Takes the outcome of a written batch: the sink goes back to its
+    /// transfer and the bytes count as consumed, or the transfer fails.
+    /// Returns whether the connection of `generation` is still attached.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn sink_written(
+        &self,
+        generation: u64,
+        job: SinkJob,
+        written: Result<SinkWritten, String>,
+    ) -> bool {
+        let SinkJob {
+            endpoint,
+            serial,
+            shared,
+            single,
+            len,
+        } = job;
+        let mut fx = Effects::default();
+        {
+            let mut state = self.0.state.lock();
+            if state
+                .connection
+                .as_ref()
+                .is_none_or(|c| c.generation != generation)
+            {
+                return false;
+            }
+            // The transfer the batch was taken from, unless it ended
+            // meanwhile; another one with its serial is not it.
+            let current = Self::current_mut(&mut state, endpoint, serial)
+                .filter(|t| Arc::ptr_eq(&t.shared, &shared));
+            match (written, current) {
+                (Ok((sink, Ok(()))), Some(t)) => {
+                    t.sink = Some(Sink::Files { sink, single });
+                    self.consumed(&mut state, endpoint, serial, len, &mut fx);
+                }
+                (Ok((_, Err(error))), Some(_)) => {
+                    let error = TransferError::Io(error.to_string());
+                    self.fail_locked(&mut state, endpoint, serial, error, &mut fx);
+                }
+                (Err(error), Some(_)) => {
+                    let error = TransferError::Io(format!("writing failed: {error}"));
+                    self.fail_locked(&mut state, endpoint, serial, error, &mut fx);
+                }
+                // Dropping the sink removes the partial file.
+                (_, None) => {}
+            }
+        }
+        self.apply(fx);
+        true
     }
 
     /// Takes the sink of a transfer that has chunks to write, with up to a
     /// batch of them.
     #[cfg(not(target_arch = "wasm32"))]
-    fn next_sink_job(state: &mut State) -> Option<SinkJob> {
+    fn next_sink_job(state: &mut State) -> Option<(SinkJob, SinkBatch)> {
         for (&endpoint, ep) in &mut state.endpoints {
             let Some(t) = ep
                 .current
@@ -500,24 +530,28 @@ impl Engine {
                     continue;
                 }
             };
-            let mut batch = Vec::new();
+            let mut chunks = Vec::new();
             let mut len = 0;
             while len < SINK_BATCH
                 && let Some(data) = t.pending.pop_front()
             {
                 len += data.len();
-                batch.push(data);
+                chunks.push(data);
             }
             let len = len as u64;
-            return Some(SinkJob {
+            let job = SinkJob {
                 endpoint,
                 serial: t.serial,
-                sink,
+                shared: t.shared.clone(),
                 single,
-                batch,
                 len,
+            };
+            let batch = SinkBatch {
+                sink,
+                chunks,
                 finishing: t.consumed + len == t.total,
-            });
+            };
+            return Some((job, batch));
         }
         None
     }
@@ -1039,13 +1073,15 @@ impl Engine {
             return;
         }
         if mode != AcceptMode::Lane {
+            // Only a server has the port a browser fetches from, whatever
+            // this build can do.
             #[cfg(any(feature = "server", feature = "python"))]
-            self.start_http(state, endpoint, serial, mode == AcceptMode::HttpBundled, fx);
-            #[cfg(not(any(feature = "server", feature = "python")))]
-            {
-                let error = TransferError::Unsupported("browser downloads need a server".into());
-                self.fail_locked(state, endpoint, serial, error, fx);
+            if self.0.side == Side::Server {
+                self.start_http(state, endpoint, serial, mode == AcceptMode::HttpBundled, fx);
+                return;
             }
+            let error = TransferError::Unsupported("browser downloads need a server".into());
+            self.fail_locked(state, endpoint, serial, error, fx);
             return;
         }
         let t = Self::current_mut(state, endpoint, serial).expect("checked above");

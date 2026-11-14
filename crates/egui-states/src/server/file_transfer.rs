@@ -111,12 +111,15 @@ impl<M: TransferMeta> Download<M> {
     ///
     /// Each file is offered under its own file name or, with `root`, under
     /// its path relative to `root`, so the client recreates the folders.
-    /// `wait` and `timeout` work as in [`Self::send_bytes`].
+    /// `name` follows the rules of a file name: relative, with `/` between
+    /// folders, without `..` or a backslash. `wait` and `timeout` work as in
+    /// [`Self::send_bytes`].
     ///
     /// # Errors
     ///
     /// As [`Self::send_file`], and [`TransferError::InvalidInput`] for no
-    /// files, a file outside `root` or two files with the same name.
+    /// files, a file outside `root`, two files with the same name or a
+    /// `name` that breaks the rules.
     pub fn send_files(
         &self,
         paths: &[PathBuf],
@@ -327,6 +330,9 @@ impl<M> TransferOffer<M> {
     }
 
     /// Returns the file name, or the name of the set for several files.
+    ///
+    /// The library has checked it like the name of a file: it is a relative
+    /// path with `/` between folders and without `..`.
     pub fn name(&self) -> &str {
         &self.name
     }
@@ -366,10 +372,13 @@ impl<M> TransferOffer<M> {
     /// Accepts the offer into the folder `dir`, every file under its own
     /// name; names like `run42/0001.tiff` create subfolders.
     ///
-    /// Files are not saved through a symbolic link or junction inside `dir`:
-    /// if a folder a file goes into is one, the transfer fails before any
-    /// file is written. If the transfer fails later, files already complete
-    /// stay.
+    /// No file is saved outside of `dir`, whatever happens to the folders
+    /// inside it while the transfer runs. A symbolic link or junction among
+    /// those folders fails the transfer: one that is there when the first
+    /// data arrives, before any file is written; one put there later, at the
+    /// file it is in the way of. If the transfer fails later, files already
+    /// complete stay. On Windows `dir` cannot be renamed or removed while
+    /// the transfer runs.
     pub fn accept_dir(
         self,
         dir: impl Into<PathBuf>,

@@ -246,6 +246,9 @@ impl<M> TransferOffer<M> {
     }
 
     /// Returns the file name, or the name of the set for several files.
+    ///
+    /// The library has checked it like the name of a file: it is a relative
+    /// path with `/` between folders and without `..`.
     pub fn name(&self) -> &str {
         &self.name
     }
@@ -287,11 +290,14 @@ impl<M> TransferOffer<M> {
     /// Accepts the offer into the folder `dir`, every file under its own
     /// name; names like `run42/0001.tiff` create subfolders.
     ///
-    /// Each file is written as with [`Self::accept_file`]. Files are not
-    /// saved through a symbolic link or junction inside `dir`: if a folder a
-    /// file goes into is one, the transfer fails before any file is written.
-    /// If the transfer fails later, files already complete stay. No disk
-    /// access happens in this call.
+    /// Each file is written as with [`Self::accept_file`]. No file is saved
+    /// outside of `dir`, whatever happens to the folders inside it while the
+    /// transfer runs. A symbolic link or junction among those folders fails
+    /// the transfer: one that is there when the first data arrives, before
+    /// any file is written; one put there later, at the file it is in the
+    /// way of. If the transfer fails later, files already complete stay. On
+    /// Windows `dir` cannot be renamed or removed while the transfer runs.
+    /// No disk access happens in this call.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn accept_dir(self, dir: impl Into<std::path::PathBuf>) -> TransferHandle {
         let dir = dir.into();
@@ -330,7 +336,10 @@ impl<M> TransferOffer<M> {
 
     /// Accepts the offer as exactly one browser download: a single file as
     /// it is, several files as one uncompressed zip named after the set,
-    /// which keeps their folders. See [`Self::accept_download`].
+    /// which keeps their folders and modification times. The times are
+    /// exact for tools that read the zip's extended timestamp; the classic
+    /// time fields hold UTC, which other tools show as local time. See
+    /// [`Self::accept_download`].
     #[cfg(target_arch = "wasm32")]
     pub fn accept_download_bundled(self) -> TransferHandle {
         self.accept_browser(true)
@@ -415,27 +424,35 @@ impl<M> TransferOffer<M> {
         self.token.expose();
         let handle = TransferHandle::new(self.token.shared().clone());
         // A thread of its own: a dialog may stay open for minutes, and the
-        // runtime's threads carry the connection.
+        // runtime's threads carry the connection. The offer is shared with
+        // the thread, so that it is still here to fail when the thread does
+        // not start.
+        let offer = std::sync::Arc::new(parking_lot::Mutex::new(Some(self)));
+        let taken = offer.clone();
         let spawned = std::thread::Builder::new()
             .name("egui_states_pick".to_string())
-            .spawn(move || match pick(&self) {
-                Some(path) => {
-                    accept(self, path);
+            .spawn(move || {
+                let Some(offer) = taken.lock().take() else {
+                    return;
+                };
+                match pick(&offer) {
+                    Some(path) => {
+                        accept(offer, path);
+                    }
+                    None => offer.token.reject(
+                        "cancelled by user",
+                        Some(TransferError::Cancelled {
+                            by_peer: false,
+                            reason: None,
+                        }),
+                    ),
                 }
-                None => self.token.reject(
-                    "cancelled by user",
-                    Some(TransferError::Cancelled {
-                        by_peer: false,
-                        reason: None,
-                    }),
-                ),
             });
-        if let Err(error) = spawned {
-            // The offer was moved into the closure that failed to start;
-            // dropping it rejected the offer.
-            handle
-                .shared
-                .cancel(Some(format!("cannot start the picker: {error}")));
+        if let Err(error) = spawned
+            && let Some(offer) = offer.lock().take()
+        {
+            let error = TransferError::Io(format!("cannot start a thread: {error}"));
+            offer.token.fail(error);
         }
         handle
     }
@@ -496,7 +513,9 @@ impl<M: TransferMeta> Upload<M> {
     }
 
     /// Offers several files as one transfer named `name`, each under its own
-    /// file name; see [`Self::send_file`].
+    /// file name; see [`Self::send_file`]. `name` follows the rules of a file
+    /// name: relative, with `/` between folders, without `..` or a
+    /// backslash; one that breaks them fails the handle.
     pub fn send_files(
         &self,
         files: Vec<LocalFile>,

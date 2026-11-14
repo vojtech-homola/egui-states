@@ -20,7 +20,7 @@ use crate::file_transfer::engine::Engine;
 use crate::protocol::data::header_type_id;
 use crate::python::value_parsing::{ValueCreator, ValueParser};
 use crate::python::{
-    pydata::{data_buffer, data_slice},
+    pydata::{contiguous_bytes, data_buffer, data_slice},
     pyimage, pyparsing,
     pytransfer::{self, Offer, PyTransferHandle, PyTransferOffer, SendTarget},
     pytypes::{PyObjectClass, PyObjectType},
@@ -1755,12 +1755,7 @@ impl StateServerCore {
         timeout: Option<f64>,
     ) -> PyResult<PyTransferHandle> {
         let buffer = data_buffer(data)?;
-        // SAFETY: a C-contiguous buffer holds `len_bytes()` bytes from
-        // `buf_ptr()`; they are copied before `buffer` is released.
-        let bytes = unsafe {
-            std::slice::from_raw_parts(buffer.buf_ptr().cast::<u8>(), buffer.len_bytes())
-        }
-        .to_vec();
+        let bytes = contiguous_bytes(&buffer)?.to_vec();
         drop(buffer);
         let (engine, meta_type) = self.transfer_endpoint(value_id, true)?;
         let target = SendTarget {

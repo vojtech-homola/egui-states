@@ -1,3 +1,5 @@
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -19,7 +21,9 @@ use crate::server_core::http::web::{WebSite, WebSlot};
 use crate::server_core::net::heartbeat::{Activity, Heartbeat};
 use crate::server_core::net::sender::{MessageReceiver, MessageSender, SenderData};
 use crate::server_core::net::socket_reader::{ClientMessage, SocketReader};
-use crate::server_core::net::transport::{FrameSink, FrameSource, Listener, Opened, Outgoing};
+use crate::server_core::net::transport::{
+    FrameSink, FrameSource, Listener, Opened, Outgoing, Served,
+};
 use crate::server_core::server::ServerStatesList;
 use crate::server_core::signals::SignalsManager;
 
@@ -56,6 +60,16 @@ struct ClientReady<L: Listener> {
     socket_tx: L::Sink,
     socket_reader: SocketReader<L::Source>,
     peer_addr: String,
+}
+
+/// What a new connection came to.
+enum Accepted<L: Listener> {
+    /// It passed the handshake.
+    Client(ClientReady<L>),
+    /// It claimed a browser download, whose data is still to be streamed.
+    Download(Pin<Box<dyn Future<Output = ()> + Send>>),
+    /// It was answered or refused.
+    Nothing,
 }
 
 /// What the run loop shares with the tasks of each connection.
@@ -104,7 +118,12 @@ pub(crate) async fn run<L: Listener>(
     // concurrently so an idle connection cannot hold up the others; dropping
     // the set on shutdown aborts them. At most `MAX_PENDING_CONNECTIONS` run at
     // once.
-    let mut pending: JoinSet<Option<ClientReady<L>>> = JoinSet::new();
+    let mut pending: JoinSet<Accepted<L>> = JoinSet::new();
+    // Browser downloads that are streaming. A stream takes as long as the
+    // browser does, so it leaves the pending connections once it has claimed
+    // its transfer; each transfer has one stream at a time. Dropping the set
+    // on shutdown aborts them.
+    let mut downloads: JoinSet<()> = JoinSet::new();
 
     loop {
         // check for stop event, a finished handshake or incoming connection
@@ -115,8 +134,12 @@ pub(crate) async fn run<L: Listener>(
             }
             Some(result) = pending.join_next(), if !pending.is_empty() => {
                 match result {
-                    Ok(Some(client)) => client,
-                    Ok(None) => continue,
+                    Ok(Accepted::Client(client)) => client,
+                    Ok(Accepted::Download(streaming)) => {
+                        downloads.spawn(streaming);
+                        continue;
+                    }
+                    Ok(Accepted::Nothing) => continue,
                     Err(e) => {
                         if e.is_panic() {
                             signals.error("connection task panicked");
@@ -124,6 +147,12 @@ pub(crate) async fn run<L: Listener>(
                         continue;
                     }
                 }
+            }
+            Some(result) = downloads.join_next(), if !downloads.is_empty() => {
+                if result.is_err_and(|e| e.is_panic()) {
+                    signals.error("download task panicked");
+                }
+                continue;
             }
             s = listener.accept(), if pending.len() < MAX_PENDING_CONNECTIONS => {
                 match s {
@@ -284,11 +313,13 @@ async fn accept_client<L: Listener>(
     handshake: Handshake,
     signals: SignalsManager,
     transfers: Engine,
-) -> Option<ClientReady<L>> {
+) -> Accepted<L> {
     let deadline = Instant::now() + HANDSHAKE_TIMEOUT;
-    // A browser download streams here for its whole length. Downloads run one
-    // at a time, so it holds at most one of the pending connections.
-    let connection = L::serve_web(connection, site, &transfers, deadline, &signals).await?;
+    let connection = match L::serve_web(connection, site, &transfers, deadline, &signals).await {
+        Served::Connection(connection) => connection,
+        Served::Download(streaming) => return Accepted::Download(streaming),
+        Served::Done => return Accepted::Nothing,
+    };
 
     match timeout_at(
         deadline,
@@ -296,10 +327,11 @@ async fn accept_client<L: Listener>(
     )
     .await
     {
-        Ok(client) => client,
+        Ok(Some(client)) => Accepted::Client(client),
+        Ok(None) => Accepted::Nothing,
         Err(_) => {
             signals.warning("client handshake timed out");
-            None
+            Accepted::Nothing
         }
     }
 }

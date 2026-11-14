@@ -38,27 +38,31 @@ pub(crate) async fn not_found(stream: TcpStream, request: HttpRequest) -> io::Re
     respond_error(stream, &request, status).await
 }
 
-/// Streams the browser download `request` asks for.
-pub(crate) async fn serve(
+/// Claims the browser download `request` asks for.
+///
+/// Returns the stream of its data, which runs for as long as the browser
+/// takes, for the caller to run apart from what must stay short. A request
+/// that claims nothing is answered here and yields `None`.
+pub(crate) async fn claim(
     stream: TcpStream,
     request: HttpRequest,
     transfers: &Engine,
-) -> io::Result<()> {
+) -> io::Result<Option<impl Future<Output = io::Result<()>> + Send + 'static>> {
     if let Some(status) = request.error_status() {
-        return respond_error(stream, &request, status).await;
+        return respond_error(stream, &request, status).await.map(|()| None);
     }
     // Only a GET claims the ticket; a HEAD or a probe must not use it up.
     if request.method() != Some("GET") {
-        return respond_error(stream, &request, 405).await;
+        return respond_error(stream, &request, 405).await.map(|()| None);
     }
     let ticket = request
         .path()
         .and_then(|path| path.strip_prefix(DOWNLOAD_PATH))
         .and_then(parse_ticket);
     let Some(job) = ticket.and_then(|ticket| transfers.claim_ticket(&ticket)) else {
-        return respond_error(stream, &request, 404).await;
+        return respond_error(stream, &request, 404).await.map(|()| None);
     };
-    stream_job(stream, &request, job, transfers).await
+    Ok(Some(stream_job(stream, request, job, transfers.clone())))
 }
 
 fn parse_ticket(hex: &str) -> Option<[u8; 16]> {
@@ -159,13 +163,13 @@ enum Stop {
 
 async fn stream_job(
     mut stream: TcpStream,
-    request: &HttpRequest,
+    request: HttpRequest,
     mut job: HttpJob,
-    transfers: &Engine,
+    transfers: Engine,
 ) -> io::Result<()> {
     let (endpoint, serial) = (job.endpoint, job.serial);
     let result = async {
-        consume_head(&mut stream, request).await.map_err(Stop::Browser)?;
+        consume_head(&mut stream, &request).await.map_err(Stop::Browser)?;
         let layout = job.bundled.then(|| ZipLayout::new(&job.files));
         let length = match &layout {
             Some(layout) => layout.total_size(),

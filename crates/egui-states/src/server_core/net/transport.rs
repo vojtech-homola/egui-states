@@ -5,6 +5,7 @@
 //! does not depend on WebSockets over TCP. Tests drive it in memory.
 
 use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -65,6 +66,17 @@ pub(crate) struct Opened<L: Listener + ?Sized> {
     pub(crate) peer_addr: String,
 }
 
+/// What became of a connection that may have carried a plain HTTP request.
+pub(crate) enum Served<C> {
+    /// It asks to be opened as a frame channel.
+    Connection(C),
+    /// It claimed a browser download. The stream of its data runs for as
+    /// long as the browser takes, unlike everything else before a handshake.
+    Download(Pin<Box<dyn Future<Output = ()> + Send>>),
+    /// It was answered, or it is gone.
+    Done,
+}
+
 /// Where the run loop takes its connections from.
 pub(crate) trait Listener: Send + 'static {
     /// A connection that has been accepted but not opened yet.
@@ -78,14 +90,15 @@ pub(crate) trait Listener: Send + 'static {
 
     /// While `site` is served or browser downloads can arrive, answers plain
     /// HTTP requests on `connection`; the request head must arrive by
-    /// `deadline`. Returns the connection when it asks to be opened.
+    /// `deadline`. Returns the connection when it asks to be opened, or the
+    /// stream of the browser download it claimed.
     fn serve_web(
         connection: Self::Connection,
         site: Option<Arc<WebSite>>,
         transfers: &Engine,
         deadline: Instant,
         signals: &SignalsManager,
-    ) -> impl Future<Output = Option<Self::Connection>> + Send;
+    ) -> impl Future<Output = Served<Self::Connection>> + Send;
 
     /// Opens the frame channel of `connection`, refusing pages `origins` does
     /// not allow.
@@ -119,36 +132,48 @@ impl Listener for TcpListener {
         transfers: &Engine,
         deadline: Instant,
         signals: &SignalsManager,
-    ) -> Option<TcpStream> {
+    ) -> Served<TcpStream> {
         // Without a page or downloads, every connection is a WebSocket.
         let downloads = transfers.has_downloads();
         if site.is_none() && !downloads {
-            return Some(stream);
+            return Served::Connection(stream);
         }
+        // Browsers abort downloads on navigation, so failures here are not
+        // server errors.
+        let report = |_served: std::io::Result<()>, _signals: &SignalsManager| {
+            #[cfg(debug_assertions)]
+            if let Err(error) = _served {
+                _signals.debug(format!("serving HTTP failed: {error:?}"));
+            }
+        };
         match timeout_at(deadline, web::dispatch(stream)).await {
-            Ok(Ok(Dispatch::WebSocket(stream))) => Some(stream),
+            Ok(Ok(Dispatch::WebSocket(stream))) => Served::Connection(stream),
             Ok(Ok(Dispatch::Http(stream, request))) => {
-                // Browsers abort downloads on navigation, so failures here are
-                // not server errors.
                 let served = if downloads && download::is_download(&request) {
-                    download::serve(stream, request, transfers).await
+                    match download::claim(stream, request, transfers).await {
+                        Ok(Some(streaming)) => {
+                            let signals = signals.clone();
+                            return Served::Download(Box::pin(async move {
+                                report(streaming.await, &signals);
+                            }));
+                        }
+                        Ok(None) => Ok(()),
+                        Err(error) => Err(error),
+                    }
                 } else if let Some(site) = site {
                     web::serve(stream, request, &site).await
                 } else {
                     download::not_found(stream, request).await
                 };
-                if let Err(_e) = served {
-                    #[cfg(debug_assertions)]
-                    signals.debug(format!("serving HTTP failed: {:?}", _e));
-                }
-                None
+                report(served, signals);
+                Served::Done
             }
             // Browsers open speculative connections that may stay idle and be
             // closed unused, so these are not reported.
-            Ok(Ok(Dispatch::Closed)) | Err(_) => None,
+            Ok(Ok(Dispatch::Closed)) | Err(_) => Served::Done,
             Ok(Err(e)) => {
                 signals.error(format!("reading request failed: {:?}", e));
-                None
+                Served::Done
             }
         }
     }
@@ -325,8 +350,8 @@ pub(crate) mod memory {
             _transfers: &Engine,
             _deadline: Instant,
             _signals: &SignalsManager,
-        ) -> Option<MemoryConnection> {
-            Some(connection)
+        ) -> Served<MemoryConnection> {
+            Served::Connection(connection)
         }
 
         async fn open(

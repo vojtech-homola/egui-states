@@ -1736,7 +1736,9 @@ class Download(_DownloadBase):
 
         Args:
             paths (Sequence[str | os.PathLike[str]]): The files to send.
-            name (str): The name of the set.
+            name (str): The name of the set. It follows the rules of a file
+                name: relative, with ``/`` between folders, without ``..`` or
+                a backslash.
             root (str | os.PathLike[str] | None, optional): The folder the
                 names are relative to. Defaults to None.
             wait (bool, optional): Whether to wait for the endpoint to become
@@ -1752,8 +1754,8 @@ class Download(_DownloadBase):
             TimeoutError: If the wait ran out.
             OSError: If a file cannot be read.
             ValueError: If there are no files, a file lies outside ``root``,
-                two files have the same name, or ``timeout`` is given without
-                ``wait``.
+                two files have the same name, ``name`` breaks the rules, or
+                ``timeout`` is given without ``wait``.
         """
         return self._send_files(paths, name, root, None, wait, timeout)
 
@@ -1768,7 +1770,9 @@ class Download(_DownloadBase):
 
         Args:
             data (Buffer): The data; ``bytes``, ``bytearray``, ``memoryview``
-                or a NumPy array. It is copied once.
+                or a NumPy array. It must be C-contiguous: pass
+                ``np.ascontiguousarray(a)`` for a reversed or stepped view.
+                It is copied once.
             name (str): The file name the client sees.
             wait (bool, optional): Whether to wait for the endpoint to become
                 free instead of raising. Defaults to False.
@@ -1781,8 +1785,8 @@ class Download(_DownloadBase):
         Raises:
             TransferError: If the endpoint is busy or no client is connected.
             TimeoutError: If the wait ran out.
-            ValueError: If the name or metadata is invalid, or ``timeout`` is
-                given without ``wait``.
+            ValueError: If the data is not C-contiguous, the name or metadata
+                is invalid, or ``timeout`` is given without ``wait``.
         """
         return self._send_bytes(data, name, None, wait, timeout)
 
@@ -1871,7 +1875,7 @@ class DownloadWithMeta[M](_DownloadBase):
         """Offer a buffer as one file; see :meth:`Download.send_bytes`.
 
         Args:
-            data (Buffer): The data; it is copied once.
+            data (Buffer): The C-contiguous data; it is copied once.
             name (str): The file name the client sees.
             meta (M): The metadata sent with the offer.
             wait (bool, optional): Whether to wait for the endpoint to become

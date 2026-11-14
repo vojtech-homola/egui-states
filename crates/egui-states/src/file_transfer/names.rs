@@ -14,24 +14,16 @@ use crate::protocol::file_transfer::OfferBody;
 pub(crate) const NAME_MAX_LEN: usize = 4096;
 
 /// Checks the names that every peer must accept: relative, `/` between
-/// components, no `.` or `..`, no control characters, no duplicates, no
-/// file that is also the folder of another, and none longer than
-/// [`NAME_MAX_LEN`].
+/// components, no `.` or `..`, no backslash or control characters, and none
+/// longer than [`NAME_MAX_LEN`], for the files and the transfer alike; among
+/// the files no duplicates and no file that is also the folder of another.
 ///
 /// It runs on what the other peer sent, so its work grows only in proportion
 /// to the size of the offer.
 pub(crate) fn validate_offer(body: &OfferBody) -> Result<(), String> {
-    if body.name.is_empty() {
-        return Err("the transfer has no name".to_string());
-    }
-    if body.name.len() > NAME_MAX_LEN {
-        return Err(format!(
-            "the transfer name is longer than {NAME_MAX_LEN} bytes"
-        ));
-    }
-    if body.name.chars().any(char::is_control) {
-        return Err("the transfer name contains control characters".to_string());
-    }
+    // The name of the transfer is a file name too: the receiver may save
+    // under it, so it cannot lead out of a folder either.
+    validate_name(&body.name, "transfer name")?;
     if body.files.is_empty() {
         return Err("the transfer has no files".to_string());
     }
@@ -44,7 +36,7 @@ pub(crate) fn validate_offer(body: &OfferBody) -> Result<(), String> {
 
     let mut files = HashSet::with_capacity(body.files.len());
     for file in &body.files {
-        validate_name(&file.name)?;
+        validate_name(&file.name, "file name")?;
         if !files.insert(file.name.as_str()) {
             return Err(format!("the file name '{}' appears twice", file.name));
         }
@@ -69,31 +61,32 @@ pub(crate) fn validate_offer(body: &OfferBody) -> Result<(), String> {
     Ok(())
 }
 
-/// Checks one relative file name.
-pub(crate) fn validate_name(name: &str) -> Result<(), String> {
+/// Checks one relative name; `what` it names, a "file name" or the
+/// "transfer name", only words the error.
+fn validate_name(name: &str, what: &str) -> Result<(), String> {
     if name.is_empty() {
-        return Err("a file name is empty".to_string());
+        return Err(format!("a {what} is empty"));
     }
     if name.len() > NAME_MAX_LEN {
-        return Err(format!("a file name is longer than {NAME_MAX_LEN} bytes"));
+        return Err(format!("a {what} is longer than {NAME_MAX_LEN} bytes"));
     }
     if name.chars().any(|c| c.is_control() || c == '\\') {
         return Err(format!(
-            "the file name '{}' contains a backslash or control characters",
+            "the {what} '{}' contains a backslash or control characters",
             name.escape_debug()
         ));
     }
     if name.starts_with('/') {
-        return Err(format!("the file name '{name}' is absolute"));
+        return Err(format!("the {what} '{name}' is absolute"));
     }
     for component in name.split('/') {
         if component.is_empty() || component == "." || component == ".." {
-            return Err(format!("the file name '{name}' has an invalid component"));
+            return Err(format!("the {what} '{name}' has an invalid component"));
         }
     }
     // A drive prefix such as "C:" would make a Windows path absolute.
     if name.as_bytes().get(1) == Some(&b':') {
-        return Err(format!("the file name '{name}' starts with a drive"));
+        return Err(format!("the {what} '{name}' starts with a drive"));
     }
     Ok(())
 }
@@ -277,6 +270,34 @@ mod tests {
         let deep: Vec<&str> = deep.iter().map(String::as_str).collect();
         assert!(deep.iter().all(|name| name.len() == NAME_MAX_LEN));
         assert!(validate_offer(&body(&deep)).is_ok());
+    }
+
+    /// A receiver may save a transfer under its name, so the name cannot
+    /// lead out of a folder any more than the name of a file.
+    #[test]
+    fn the_transfer_name_is_checked_like_a_file_name() {
+        let named = |name: &str| {
+            let mut body = body(&["a"]);
+            body.name = name.to_string();
+            validate_offer(&body)
+        };
+        for good in ["set", "run 42", "run42/results", "a.tar.gz"] {
+            assert!(named(good).is_ok(), "{good:?}");
+        }
+        for bad in [
+            "",
+            ".",
+            "../x",
+            "a/../b",
+            "/etc/passwd",
+            "a\\b",
+            "C:x",
+            "a//b",
+            "a\nb",
+        ] {
+            let error = named(bad).unwrap_err();
+            assert!(error.contains("transfer name"), "{bad:?}: {error}");
+        }
     }
 
     #[test]

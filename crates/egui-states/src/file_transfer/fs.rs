@@ -3,14 +3,16 @@
 //! Disk calls block, so they run on Tokio's blocking threads and in blocks
 //! larger than a chunk: the credit window still decides what is sent.
 
-use std::collections::HashMap;
-use std::collections::hash_map::Entry;
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsStr;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
+
+use cap_std::ambient_authority;
+use cap_std::fs::{Dir, OpenOptions as DirOpenOptions};
 
 use crate::file_transfer::TransferError;
 use crate::protocol::file_transfer::FileEntry;
@@ -114,53 +116,37 @@ pub(crate) enum Target {
 /// The rename replaces whatever has the name, a symbolic link included, and
 /// never writes through it. Files finished before a failure stay. Dropping
 /// the sink before it finished removes the temporary file.
+///
+/// A folder target is opened once, and every folder below it is reached by
+/// its name from the open folder above it, never by a path. A file is created
+/// and renamed by its name in its open folder. So whatever happens to the
+/// folders while the transfer runs, a link put in the place of one included,
+/// no file lands outside of the folder the receiver chose.
 pub(crate) struct FileSink {
+    /// The path of each file: the whole path for a file target, the path
+    /// below `root` for a folder target.
     targets: Vec<(PathBuf, u64, Option<SystemTime>)>,
-    /// For a folder target, the folder the receiver chose: no folder below it
-    /// may be a symbolic link, or a file could land outside of it.
+    /// For a folder target, the folder the receiver chose.
     root: Option<PathBuf>,
-    /// What is known of the folders below `root`; each is looked at once.
-    folders: Folders,
+    /// The open folders of a folder target, while files are written.
+    folders: Option<Folders>,
     next: usize,
     open: Option<OpenFile>,
 }
 
-/// The folders below the chosen one that were looked at.
-///
-/// A folder is kept as its name and the number of its parent, not as its
-/// path, so what is remembered grows with the offer and not with the depth of
-/// its folders.
-#[derive(Default)]
+/// The open folders of a folder target.
 struct Folders {
-    /// The number of the folder with a name in a parent; the chosen folder
-    /// is the parent `None`.
-    numbers: HashMap<(Option<usize>, OsString), usize>,
-    /// By number, whether the folder is on disk as a real folder; otherwise
-    /// nothing was there.
-    exists: Vec<bool>,
-}
-
-impl Folders {
-    /// The number of the folder `name` in `parent`. A folder seen for the
-    /// first time exists if `look` says so.
-    fn number(
-        &mut self,
-        parent: Option<usize>,
-        name: &OsStr,
-        look: impl FnOnce() -> io::Result<bool>,
-    ) -> io::Result<usize> {
-        match self.numbers.entry((parent, name.to_os_string())) {
-            Entry::Occupied(known) => Ok(*known.get()),
-            Entry::Vacant(new) => {
-                self.exists.push(look()?);
-                Ok(*new.insert(self.exists.len() - 1))
-            }
-        }
-    }
+    root: Arc<Dir>,
+    /// The folder of the last file with its path below the root; files that
+    /// follow each other in one folder share it.
+    last: Option<(PathBuf, Arc<Dir>)>,
 }
 
 struct OpenFile {
     file: File,
+    /// The open folder the file is in, where `temp` and `target` are names.
+    /// A file target has none, and they are paths.
+    folder: Option<Arc<Dir>>,
     temp: PathBuf,
     target: PathBuf,
     left: u64,
@@ -177,11 +163,7 @@ impl FileSink {
             .map(|file| {
                 let path = match &target {
                     Target::File(path) => path.clone(),
-                    Target::Dir(dir) => {
-                        let mut path = dir.clone();
-                        path.extend(file.name.split('/'));
-                        path
-                    }
+                    Target::Dir(_) => file.name.split('/').collect(),
                 };
                 let modified = file.modified.and_then(time_from_millis);
                 (path, file.size, modified)
@@ -194,53 +176,33 @@ impl FileSink {
         Self {
             targets,
             root,
-            folders: Folders::default(),
+            folders: None,
             next: 0,
             open: None,
         }
     }
 
-    /// Looks at the folders that already exist below the chosen one, for
-    /// every file, before the first is written: a link in the way of a later
-    /// file fails the transfer at its start, not halfway.
-    fn check_existing(&mut self) -> io::Result<()> {
+    /// Opens the chosen folder and looks at the folders that already exist
+    /// below it, for every file, before the first is written: a link in the
+    /// way of a later file fails the transfer at its start, not halfway.
+    fn open_root(&mut self) -> io::Result<()> {
         let Some(root) = &self.root else {
             return Ok(());
         };
         std::fs::create_dir_all(root)?;
+        let folder = Arc::new(Dir::open_ambient_dir(root, ambient_authority())?);
+        let mut looked = None;
         for (target, _, _) in &self.targets {
-            let mut path = root.clone();
-            let mut parent = None;
-            for name in folder_names(root, target)? {
-                path.push(name);
-                let folder = self.folders.number(parent, name, || is_folder(&path))?;
-                // Nothing exists below a folder that is missing.
-                if !self.folders.exists[folder] {
-                    break;
-                }
-                parent = Some(folder);
+            let parent = target.parent().unwrap_or(Path::new(""));
+            if looked != Some(parent) {
+                open_folder(&folder, root, parent, false)?;
+                looked = Some(parent);
             }
         }
-        Ok(())
-    }
-
-    /// Creates the folders between the chosen folder and `target`, refusing
-    /// to follow a symbolic link or junction on the way.
-    fn create_parents(&mut self, target: &Path) -> io::Result<()> {
-        let Some(root) = &self.root else {
-            return std::fs::create_dir_all(parent_of(target));
-        };
-        let mut path = root.clone();
-        let mut parent = None;
-        for name in folder_names(root, target)? {
-            path.push(name);
-            let folder = self.folders.number(parent, name, || Ok(false))?;
-            if !self.folders.exists[folder] {
-                ensure_folder(&path)?;
-                self.folders.exists[folder] = true;
-            }
-            parent = Some(folder);
-        }
+        self.folders = Some(Folders {
+            root: folder,
+            last: None,
+        });
         Ok(())
     }
 
@@ -267,7 +229,8 @@ impl FileSink {
             if data.is_empty() && open.left > 0 {
                 return Ok(());
             }
-            let take = (open.left as usize).min(data.len());
+            // The smaller of the two fits a `usize`, the size alone may not.
+            let take = open.left.min(data.len() as u64) as usize;
             open.file.write_all(&data[..take])?;
             open.left -= take as u64;
             data = &data[take..];
@@ -289,26 +252,54 @@ impl FileSink {
     fn open_next_if_needed(&mut self) -> io::Result<()> {
         while self.open.is_none() && self.next < self.targets.len() {
             if self.next == 0 {
-                self.check_existing()?;
+                self.open_root()?;
             }
             let (target, size, modified) = self.targets[self.next].clone();
             self.next += 1;
-            self.create_parents(&target)?;
-            let temp = parent_of(&target).join(temp_name(&target));
-            let file = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&temp)?;
-            self.open = Some(OpenFile {
-                file,
-                temp,
-                target,
-                left: size,
-                modified,
-            });
+            let temp = temp_name(&target);
+            let open = match &self.root {
+                None => {
+                    let parent = parent_of(&target);
+                    std::fs::create_dir_all(parent)?;
+                    let temp = parent.join(temp);
+                    let file = OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(&temp)?;
+                    OpenFile {
+                        file,
+                        folder: None,
+                        temp,
+                        target,
+                        left: size,
+                        modified,
+                    }
+                }
+                Some(root) => {
+                    let folders = self.folders.as_mut().expect("opened with the first file");
+                    let folder = folders.folder_of(root, &target)?;
+                    let file = folder
+                        .open_with(&temp, DirOpenOptions::new().write(true).create_new(true))?
+                        .into_std();
+                    OpenFile {
+                        file,
+                        folder: Some(folder),
+                        temp: temp.into(),
+                        target: target.file_name().map(PathBuf::from).unwrap_or_default(),
+                        left: size,
+                        modified,
+                    }
+                }
+            };
+            self.open = Some(open);
             if size == 0 {
                 self.complete()?;
             }
+        }
+        if self.open.is_none() {
+            // Nothing more is written: an open folder cannot be moved or
+            // removed on Windows.
+            self.folders = None;
         }
         Ok(())
     }
@@ -321,10 +312,13 @@ impl FileSink {
                 open.file.set_modified(modified)?;
             }
             drop(open.file);
-            std::fs::rename(&open.temp, &open.target)
+            match &open.folder {
+                Some(folder) => folder.rename(&open.temp, folder, &open.target),
+                None => std::fs::rename(&open.temp, &open.target),
+            }
         })();
         if result.is_err() {
-            let _ = std::fs::remove_file(&open.temp);
+            remove_temp(open.folder.as_deref(), &open.temp);
         }
         result
     }
@@ -334,9 +328,97 @@ impl Drop for FileSink {
     fn drop(&mut self) {
         if let Some(open) = self.open.take() {
             drop(open.file);
-            let _ = std::fs::remove_file(&open.temp);
+            remove_temp(open.folder.as_deref(), &open.temp);
         }
     }
+}
+
+impl Folders {
+    /// The open folder `target` goes into, with its missing folders made.
+    fn folder_of(&mut self, root: &Path, target: &Path) -> io::Result<Arc<Dir>> {
+        let parent = target.parent().unwrap_or(Path::new(""));
+        if parent.as_os_str().is_empty() {
+            return Ok(self.root.clone());
+        }
+        if let Some((path, folder)) = &self.last
+            && path == parent
+        {
+            return Ok(folder.clone());
+        }
+        let folder =
+            open_folder(&self.root, root, parent, true)?.expect("missing folders are made");
+        self.last = Some((parent.to_path_buf(), folder.clone()));
+        Ok(folder)
+    }
+}
+
+/// Opens the folder `path` below the open folder `root`, name by name, each
+/// from the open folder above it.
+///
+/// A folder that is missing is made with `create`; without it the answer is
+/// `None`, as nothing exists below a missing folder. A symbolic link or
+/// junction on the way is an error, and so is a file. `root_path` only names
+/// the folders in errors.
+fn open_folder(
+    root: &Arc<Dir>,
+    root_path: &Path,
+    path: &Path,
+    create: bool,
+) -> io::Result<Option<Arc<Dir>>> {
+    let mut folder = root.clone();
+    for (depth, name) in path.iter().enumerate() {
+        let shown = || root_path.join(path.iter().take(depth + 1).collect::<PathBuf>());
+        if !is_folder(&folder, name, shown)? {
+            if !create {
+                return Ok(None);
+            }
+            // A folder that appears between the look and the creation, as
+            // when two transfers save into the same place, is looked at like
+            // one that was there.
+            match folder.create_dir(name) {
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                    if !is_folder(&folder, name, shown)? {
+                        return Err(error);
+                    }
+                }
+                result => result?,
+            }
+        }
+        // Whatever has the name by now, it is opened inside of `folder`: a
+        // link that took the name since the look cannot lead out of it.
+        let opened = folder.open_dir(name).map_err(|error| {
+            io::Error::new(error.kind(), format!("{}: {error}", shown().display()))
+        })?;
+        folder = Arc::new(opened);
+    }
+    Ok(Some(folder))
+}
+
+/// Whether `name` in `folder` is a folder, `false` if nothing is there. A
+/// symbolic link or junction, even one to a folder, is an error, and so is a
+/// file; `shown` is the path the error names.
+fn is_folder(folder: &Dir, name: &OsStr, shown: impl Fn() -> PathBuf) -> io::Result<bool> {
+    match folder.symlink_metadata(name) {
+        Ok(metadata) if metadata.file_type().is_symlink() => Err(io::Error::other(format!(
+            "{} is a symbolic link; files are not saved through it",
+            shown().display()
+        ))),
+        Ok(metadata) if metadata.is_dir() => Ok(true),
+        Ok(_) => Err(io::Error::other(format!(
+            "{} is not a folder",
+            shown().display()
+        ))),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+/// Removes a temporary file, by its name in `folder` or by its path.
+fn remove_temp(folder: Option<&Dir>, temp: &Path) {
+    let _ = match folder {
+        Some(folder) => folder.remove_file(temp),
+        None => std::fs::remove_file(temp),
+    };
 }
 
 /// How much of a target's name its temporary file keeps.
@@ -368,50 +450,6 @@ fn parent_of(target: &Path) -> &Path {
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or(Path::new("."))
-}
-
-/// The names of the folders between `root` and `target`, outermost first.
-fn folder_names<'a>(
-    root: &Path,
-    target: &'a Path,
-) -> io::Result<impl Iterator<Item = &'a OsStr> + use<'a>> {
-    let relative = target.strip_prefix(root).map_err(io::Error::other)?;
-    let folders = relative.parent().into_iter().flat_map(Path::components);
-    Ok(folders.map(|component| component.as_os_str()))
-}
-
-/// Whether `path` is a folder, `false` if nothing is there. A symbolic link
-/// or junction, even one to a folder, is an error, and so is a file.
-fn is_folder(path: &Path) -> io::Result<bool> {
-    match std::fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.file_type().is_symlink() => Err(io::Error::other(format!(
-            "{} is a symbolic link; files are not saved through it",
-            path.display()
-        ))),
-        Ok(metadata) if metadata.is_dir() => Ok(true),
-        Ok(_) => Err(io::Error::other(format!(
-            "{} is not a folder",
-            path.display()
-        ))),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(error),
-    }
-}
-
-/// Makes `path` a folder unless it is one. A folder that appears between the
-/// look and the creation, as when two transfers save into the same place, is
-/// looked at like one that was there.
-fn ensure_folder(path: &Path) -> io::Result<()> {
-    if is_folder(path)? {
-        return Ok(());
-    }
-    match std::fs::create_dir(path) {
-        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => match is_folder(path)? {
-            true => Ok(()),
-            false => Err(error),
-        },
-        result => result,
-    }
 }
 
 /// The size and offer entry of the file at `path`.
@@ -647,35 +685,107 @@ mod tests {
         first.finish().unwrap();
         second.finish().unwrap();
         assert_eq!(entries(&dir), ["a", "b", "run/a", "run/b"]);
-
-        ensure_folder(&dir.join("run")).unwrap();
-        ensure_folder(&dir.join("new")).unwrap();
-        assert!(dir.join("new").is_dir());
-        let error = ensure_folder(&dir.join("a")).unwrap_err();
-        assert!(error.to_string().contains("not a folder"), "{error}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
-    fn deep_folders_are_looked_at_once() {
+    fn a_file_in_the_place_of_a_folder_fails_the_transfer() {
+        let dir = temp_dir("not_a_folder");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("run"), b"a file").unwrap();
+        let files = [entry("first", 1, None), entry("run/a", 1, None)];
+        let mut sink = FileSink::new(Target::Dir(dir.clone()), &files);
+        let error = sink.write(b"1").unwrap_err();
+        assert!(error.to_string().contains("not a folder"), "{error}");
+        drop(sink);
+        assert_eq!(entries(&dir), ["run"]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn deep_folders_are_made_and_shared() {
         let dir = temp_dir("deep");
         std::fs::create_dir_all(dir.join("d/d")).unwrap();
         let deep = "d/".repeat(40);
         let files = [
-            entry(&format!("{deep}a"), 1, None),
-            entry("d/b", 1, None),
-            entry(&format!("{deep}c"), 1, None),
+            entry(&format!("{deep}a"), 2, None),
+            entry(&format!("{deep}b"), 2, None),
+            entry("d/c", 1, None),
+            entry("top", 1, None),
         ];
         let mut sink = FileSink::new(Target::Dir(dir.clone()), &files);
-        sink.write(b"123").unwrap();
+        let folder = |sink: &FileSink| sink.open.as_ref().unwrap().folder.clone().unwrap();
+        sink.write(b"1").unwrap();
+        let first = folder(&sink);
+        sink.write(b"23").unwrap();
+        // Files that follow each other in a folder use the same open folder.
+        assert!(Arc::ptr_eq(&first, &folder(&sink)));
+        sink.write(b"456").unwrap();
         sink.finish().unwrap();
-        // Each folder is remembered once, whether it was there or created.
-        assert_eq!(sink.folders.exists, [true; 40]);
+        assert!(sink.folders.is_none(), "no folder stays open");
         assert_eq!(
             entries(&dir),
-            ["d/b".to_string(), format!("{deep}a"), format!("{deep}c")]
+            [
+                "d/c".to_string(),
+                format!("{deep}a"),
+                format!("{deep}b"),
+                "top".to_string()
+            ]
         );
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A folder that was a real one at the start and is a link by the time a
+    /// file goes into it: the link is not followed.
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_replaced_by_a_link_during_the_transfer_is_not_followed() {
+        let dir = temp_dir("swapped");
+        let outside = temp_dir("swapped_outside");
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("victim"), b"untouched").unwrap();
+
+        let files = [entry("head", 2, None), entry("sub/victim", 1, None)];
+        let mut sink = FileSink::new(Target::Dir(dir.clone()), &files);
+        // `sub` is looked at while `head` is still incomplete.
+        sink.write(b"a").unwrap();
+        std::fs::rename(dir.join("sub"), dir.join("saved")).unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join("sub")).unwrap();
+        let error = sink.write(b"bc").unwrap_err();
+        assert!(error.to_string().contains("symbolic link"), "{error}");
+        drop(sink);
+        assert_eq!(std::fs::read(outside.join("victim")).unwrap(), b"untouched");
+        assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    /// A file that is open belongs to its open folder: when the name of the
+    /// folder becomes a link, the file still completes in the real folder.
+    #[cfg(unix)]
+    #[test]
+    fn an_open_file_stays_in_its_folder_when_the_name_becomes_a_link() {
+        let dir = temp_dir("moved");
+        let outside = temp_dir("moved_outside");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("a"), b"untouched").unwrap();
+
+        let files = [entry("sub/a", 2, None), entry("sub/b", 1, None)];
+        let mut sink = FileSink::new(Target::Dir(dir.clone()), &files);
+        sink.write(b"1").unwrap();
+        std::fs::rename(dir.join("sub"), dir.join("saved")).unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join("sub")).unwrap();
+        // The second file is in the same folder and uses the same open one.
+        sink.write(b"23").unwrap();
+        sink.finish().unwrap();
+        assert_eq!(std::fs::read(dir.join("saved/a")).unwrap(), b"12");
+        assert_eq!(std::fs::read(dir.join("saved/b")).unwrap(), b"3");
+        assert_eq!(std::fs::read(outside.join("a")).unwrap(), b"untouched");
+        assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&outside);
     }
 
     #[test]

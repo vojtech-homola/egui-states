@@ -161,17 +161,21 @@ throughput at about one window per round trip, which matters only over long
 round trips.
 
 **Offers.** Nothing flows until the receiver accepts, and the receiver
-chooses the destination; a name from the sender is only a hint. Names are
-checked when an offer arrives (relative, `/` between folders, no `.` or `..`,
-at most 4096 bytes) and, before any data flows, against the receiver's system (Windows reserved
-names and characters, names that differ only in letter case). Inside the
-folder the receiver chose, a file is never saved through a symbolic link: the
-folders the files go into are looked at when the first data arrives, and a
-link among them fails the transfer before a file is written. Each file is
-written to a temporary file and renamed over its target when complete, with
-the sender's modification time; the rename replaces what was there, a link
-included. When a transfer fails, the partial file is
-removed and complete files of the set stay.
+chooses the destination; a name from the sender is only a hint. The names of
+the files and of the transfer are checked when an offer arrives (relative, `/`
+between folders, no `.` or `..`, at most 4096 bytes), and the names of the
+files, before any data flows, against the receiver's system (Windows reserved
+names and characters, names that differ only in letter case). No file is
+saved outside the folder the receiver chose. The folder is opened once, every
+folder below it is reached by its name from the open folder above it, and a
+file is created and renamed by its name in its open folder, never by a path.
+A symbolic link among the folders fails the transfer: one that is there when
+the first data arrives, before a file is written; one put there while the
+transfer runs, at the file it is in the way of. Each
+file is written to a temporary file and renamed over its target when
+complete, with the sender's modification time; the rename replaces what was
+there, a link included. When a transfer fails, the partial file is removed
+and complete files of the set stay.
 
 **One at a time.** An endpoint carries at most one unfinished transfer: a
 second send fails with `Busy` or, on the server with `wait`, waits; waiting
@@ -190,7 +194,10 @@ HTTPS or `localhost`. A browser client therefore accepts a download as browser
 downloads: the server sends a one-time ticket over the WebSocket, and the
 browser fetches `/egui-states/transfer/<ticket>` from the server's port over
 plain HTTP, one download per file (folders flattened into the name) or one
-uncompressed zip of all files. The ticket is the only access control, so it is
+uncompressed zip of all files. The zip holds each modification time twice:
+exactly, in the extended timestamp that most unzip tools read, and as UTC in
+the classic fields, which have no time zone and which other tools show as
+local time. The ticket is the only access control, so it is
 random, works once and expires after 30 seconds. Progress is the server's view
 of the bytes it has sent. These downloads run on their own TCP connection,
 outside the credit window, so they share the link with the state messages

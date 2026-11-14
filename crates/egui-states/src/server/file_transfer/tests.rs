@@ -841,6 +841,51 @@ fn a_browser_that_stops_cancels_the_download() {
     );
 }
 
+/// A download streams for as long as the browser takes. It must not hold one
+/// of the places for connections that are new, or enough slow downloads
+/// would keep everyone else out.
+#[test]
+fn a_streaming_download_leaves_room_for_new_connections() {
+    use std::io::{Read, Write};
+    if crate::test_support::isolated() {
+        return;
+    }
+    let peers = Peers::connect();
+    let downloads = browser(&peers);
+    let sent = peers
+        .files
+        .send_bytes(vec![0; 64 * 1024 * 1024], "big.bin", &(), false, None)
+        .unwrap();
+    let _received = wait("offer", || peers.states.files.take_offer()).accept_browser(false);
+    let download = downloads.recv_timeout(Duration::from_secs(10)).unwrap();
+    let connect = || std::net::TcpStream::connect((Ipv4Addr::LOCALHOST, peers.port)).unwrap();
+
+    // A browser that took the start of the download and reads no further.
+    let mut slow = connect();
+    write!(slow, "GET {} HTTP/1.1\r\nHost: x\r\n\r\n", path(&download)).unwrap();
+    let mut start = [0u8; 4096];
+    slow.read_exact(&mut start).unwrap();
+
+    // Idle peers take every place for a new connection but one.
+    let idle: Vec<_> = (0..crate::server_core::MAX_PENDING_CONNECTIONS - 1)
+        .map(|_| connect())
+        .collect();
+    let mut request = connect();
+    request
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    write!(request, "GET /other HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
+    let mut answer = [0u8; 12];
+    request
+        .read_exact(&mut answer)
+        .expect("the download held the last place");
+    assert_eq!(&answer, b"HTTP/1.1 404");
+
+    drop(idle);
+    drop(slow);
+    assert!(matches!(finished(&sent), TransferStatus::Failed(_)));
+}
+
 /// Waits until only `holders` still hold the transfer: the callback workers
 /// let go of a finished transfer once its event is delivered.
 fn released(handle: &crate::TransferHandle, holders: usize) {

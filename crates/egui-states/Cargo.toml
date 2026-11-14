@@ -34,6 +34,9 @@ egui_states_macros = { workspace = true }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { version = "1.52", features = ["sync", "rt-multi-thread", "net", "time", "io-util"] }
 tokio-tungstenite = { version = "0.30" }
+# Saves received files relative to an open folder, so that no link in the
+# folder can lead a file outside of it.
+cap-std = "4.0"
 httparse = { version = "1.10", optional = true }
 # Tickets and zip checksums of browser downloads.
 getrandom = { version = "0.4", optional = true }
