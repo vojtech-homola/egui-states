@@ -294,10 +294,14 @@ mod tests {
         let zip = write_zip(&files);
         let path = std::env::temp_dir().join(format!("egui_states_zip_{}.zip", std::process::id()));
         std::fs::write(&path, &zip).unwrap();
+        // Written as UTF-8 bytes: `print` would use the console's encoding
+        // and line ends, which on Windows are neither UTF-8 nor `\n`.
         let script = "import sys, zipfile\n\
             z = zipfile.ZipFile(sys.argv[1])\n\
             assert z.testzip() is None\n\
-            for i in z.infolist(): print(i.filename, len(z.read(i)), i.date_time[0])\n";
+            for i in z.infolist():\n    \
+            line = f'{i.filename} {len(z.read(i))} {i.date_time[0]}\\n'\n    \
+            sys.stdout.buffer.write(line.encode('utf-8'))\n";
         let output = std::process::Command::new("python3")
             .args(["-c", script])
             .arg(&path)
