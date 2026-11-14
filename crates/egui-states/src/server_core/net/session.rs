@@ -4,6 +4,7 @@ use std::sync::{
 };
 use std::time::Duration;
 
+use parking_lot::Mutex;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::task::{JoinHandle, JoinSet};
@@ -168,6 +169,20 @@ pub(crate) async fn run<L: Listener>(
             let _ = rx.recv().await;
         }
 
+        // Transfers are attached before the connection is published, so a
+        // send never finds a client without them. Their control frames share
+        // the state queue and are held back until the initial state is in
+        // it: the client learns of an offer only after that state.
+        let held = Arc::new(Mutex::new(Some(Vec::new())));
+        let (lane_sender, lane_held) = (sender.clone(), held.clone());
+        let generation = transfers.attach(Arc::new(move |message| {
+            let mut held = lane_held.lock();
+            match held.as_mut() {
+                Some(held) => held.push(message),
+                None => lane_sender.send(FastVec::Heap(message)),
+            }
+        }));
+
         connected.store(true, Ordering::Release);
         let failure = if values.sync.iter().any(|v| v.sync().is_err()) {
             Some("failed to sync value after handshake")
@@ -186,6 +201,7 @@ pub(crate) async fn run<L: Listener>(
             // client's acknowledgements, so release them.
             signals.error(error);
             connected.store(false, Ordering::Release);
+            transfers.detach(generation);
             for v in values.ack.values() {
                 v.reset();
             }
@@ -193,13 +209,14 @@ pub(crate) async fn run<L: Listener>(
             continue;
         }
 
-        // Transfers start only once the connection is synchronized; control
-        // frames share the state queue, so they keep their order with the
-        // state messages.
-        let lane_sender = sender.clone();
-        let generation = transfers.attach(Arc::new(move |message| {
-            lane_sender.send(FastVec::Heap(message));
-        }));
+        // The initial state is queued; the frames held back follow it, in
+        // their order, and later ones go straight into the queue.
+        {
+            let mut held = held.lock();
+            for message in held.take().into_iter().flatten() {
+                sender.send(FastVec::Heap(message));
+            }
+        }
         let (chunk_tx, chunks) = mpsc::channel(1);
         let pump_engine = transfers.clone();
         let pump = tokio::spawn(async move {
@@ -808,11 +825,17 @@ mod run_tests {
     use std::net::{Ipv4Addr, SocketAddr};
     use std::sync::atomic::AtomicUsize;
 
+    use bytes::Bytes;
     use futures_util::SinkExt;
     use parking_lot::RwLock;
     use tokio_tungstenite::tungstenite::Message;
 
     use super::*;
+    use crate::file_transfer::TransferError;
+    use crate::file_transfer::engine::Role;
+    use crate::file_transfer::shared::TransferShared;
+    use crate::file_transfer::source::Source;
+    use crate::protocol::file_transfer::{FileEntry, OfferBody};
     use crate::protocol::{ClientHeader, FastVec};
     use crate::server_core::net::transport::Incoming;
     use crate::server_core::net::transport::memory::{self, MemoryClient, MemoryConnector};
@@ -859,6 +882,8 @@ mod run_tests {
         timeout: Duration::from_millis(400),
     };
     const DEADLINE: Duration = Duration::from_secs(5);
+    /// The endpoint the tests send transfers on.
+    const ENDPOINT: u64 = 1000;
 
     fn block_on<F: Future>(future: F) -> F::Output {
         tokio::runtime::Builder::new_multi_thread()
@@ -886,6 +911,7 @@ mod run_tests {
         connected: Arc<AtomicBool>,
         stop_event: Event,
         probe: Arc<ResetProbe>,
+        transfers: Engine,
         handle: JoinHandle<MessageReceiver>,
     }
 
@@ -929,6 +955,7 @@ mod run_tests {
                 ..Default::default()
             };
             values.ack.insert(1, probe.clone());
+            let transfers = Engine::new(crate::file_transfer::engine::Side::Server, None);
             let handle = tokio::spawn(run(
                 listener,
                 rx,
@@ -945,7 +972,7 @@ mod run_tests {
                     values,
                     signals,
                     heartbeat,
-                    transfers: Engine::new(crate::file_transfer::engine::Side::Server, None),
+                    transfers: transfers.clone(),
                 },
             ));
             Self {
@@ -953,12 +980,27 @@ mod run_tests {
                 connected,
                 stop_event,
                 probe,
+                transfers,
                 handle,
             }
         }
 
         fn connected(&self) -> bool {
             self.connected.load(Ordering::Acquire)
+        }
+
+        /// Offers one byte on [`ENDPOINT`].
+        fn send_transfer(&self) -> Result<Arc<TransferShared>, TransferError> {
+            let body = OfferBody {
+                name: "a".to_string(),
+                files: vec![FileEntry {
+                    name: "a".to_string(),
+                    size: 1,
+                    modified: None,
+                }],
+            };
+            self.transfers
+                .send(ENDPOINT, body, Bytes::new(), Source::bytes(vec![1]))
         }
 
         fn released(&self) -> bool {
@@ -983,6 +1025,7 @@ mod run_tests {
             let (server, connector) =
                 TestServer::memory_with(None, SignalsManager::new(), vec![sync]);
 
+            server.transfers.register(ENDPOINT, Role::Send, 0);
             let mut rejected = connect(&connector);
             let closed = tokio::time::timeout(DEADLINE, rejected.frames.recv())
                 .await
@@ -990,6 +1033,11 @@ mod run_tests {
             assert!(closed.is_none(), "the rejected client received a frame");
             assert!(server.released(), "pending states were not reset");
             assert!(!server.connected());
+            // Its transfers are detached with it.
+            assert_eq!(
+                server.send_transfer().err(),
+                Some(TransferError::NotConnected)
+            );
 
             let mut accepted = connect(&connector);
             let update = tokio::time::timeout(DEADLINE, accepted.frames.recv())
@@ -997,6 +1045,75 @@ mod run_tests {
                 .expect("the next client was not synchronized");
             assert!(matches!(update, Some(Outgoing::Binary(_))));
             assert!(server.connected());
+            server.stop().await;
+        });
+    }
+
+    /// Stays in the sync of a connection until it is released.
+    struct HeldSync {
+        entered: AtomicBool,
+        release: Mutex<std::sync::mpsc::Receiver<()>>,
+    }
+
+    impl SyncTrait for HeldSync {
+        fn sync(&self) -> Result<(), ()> {
+            self.entered.store(true, Ordering::Release);
+            self.release.lock().recv_timeout(DEADLINE).map_err(|_| ())
+        }
+    }
+
+    #[test]
+    fn a_transfer_sent_during_the_initial_sync_is_offered_after_it() {
+        use crate::protocol::file_transfer::TransferFrame;
+
+        block_on(async {
+            let (release, released) = std::sync::mpsc::channel();
+            let sync = Arc::new(HeldSync {
+                entered: AtomicBool::new(false),
+                release: Mutex::new(released),
+            });
+            let (server, connector) =
+                TestServer::memory_with(None, SignalsManager::new(), vec![sync.clone()]);
+            server.transfers.register(ENDPOINT, Role::Send, 0);
+            let mut client = connect(&connector);
+            assert!(
+                until(DEADLINE, || sync.entered.load(Ordering::Acquire)).await,
+                "the client was not accepted"
+            );
+
+            // The connection is published while its state is still queued;
+            // a transfer can be sent from then on.
+            assert!(server.connected());
+            let sent = server.send_transfer();
+            assert!(sent.is_ok(), "{:?}", sent.err());
+            release.send(()).unwrap();
+
+            // The client gets the offer, after the state.
+            let mut received = Vec::new();
+            let mut headers = Vec::new();
+            while headers.len() < 2 {
+                let frame = tokio::time::timeout(DEADLINE, client.frames.recv())
+                    .await
+                    .expect("the client was not synchronized");
+                let Some(Outgoing::Binary(frame)) = frame else {
+                    panic!("the connection ended");
+                };
+                received.extend_from_slice(&frame);
+                let mut rest = &received[..];
+                headers.clear();
+                while let Ok((header, after)) = postcard::take_from_bytes::<ServerHeader>(rest) {
+                    rest = match header {
+                        ServerHeader::Transfer(_, _, len) => &after[len as usize..],
+                        _ => after,
+                    };
+                    headers.push(header);
+                }
+            }
+            assert!(matches!(headers[0], ServerHeader::Update(_)));
+            assert!(matches!(
+                headers[1],
+                ServerHeader::Transfer(ENDPOINT, TransferFrame::Offer { .. }, _)
+            ));
             server.stop().await;
         });
     }
@@ -1029,8 +1146,6 @@ mod run_tests {
     #[cfg(feature = "server")]
     #[test]
     fn heartbeat_disconnect_drops_pending_client_changes() {
-        use bytes::Bytes;
-
         block_on(async {
             const STATE_ID: u64 = 100;
             let signals = SignalsManager::new();

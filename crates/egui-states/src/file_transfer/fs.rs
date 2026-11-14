@@ -3,7 +3,9 @@
 //! Disk calls block, so they run on Tokio's blocking threads and in blocks
 //! larger than a chunk: the credit window still decides what is sent.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
+use std::collections::hash_map::Entry;
+use std::ffi::{OsStr, OsString};
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -117,10 +119,44 @@ pub(crate) struct FileSink {
     /// For a folder target, the folder the receiver chose: no folder below it
     /// may be a symbolic link, or a file could land outside of it.
     root: Option<PathBuf>,
-    /// Folders below `root` known to be real folders; each is looked at once.
-    folders: HashSet<PathBuf>,
+    /// What is known of the folders below `root`; each is looked at once.
+    folders: Folders,
     next: usize,
     open: Option<OpenFile>,
+}
+
+/// The folders below the chosen one that were looked at.
+///
+/// A folder is kept as its name and the number of its parent, not as its
+/// path, so what is remembered grows with the offer and not with the depth of
+/// its folders.
+#[derive(Default)]
+struct Folders {
+    /// The number of the folder with a name in a parent; the chosen folder
+    /// is the parent `None`.
+    numbers: HashMap<(Option<usize>, OsString), usize>,
+    /// By number, whether the folder is on disk as a real folder; otherwise
+    /// nothing was there.
+    exists: Vec<bool>,
+}
+
+impl Folders {
+    /// The number of the folder `name` in `parent`. A folder seen for the
+    /// first time exists if `look` says so.
+    fn number(
+        &mut self,
+        parent: Option<usize>,
+        name: &OsStr,
+        look: impl FnOnce() -> io::Result<bool>,
+    ) -> io::Result<usize> {
+        match self.numbers.entry((parent, name.to_os_string())) {
+            Entry::Occupied(known) => Ok(*known.get()),
+            Entry::Vacant(new) => {
+                self.exists.push(look()?);
+                Ok(*new.insert(self.exists.len() - 1))
+            }
+        }
+    }
 }
 
 struct OpenFile {
@@ -141,10 +177,11 @@ impl FileSink {
             .map(|file| {
                 let path = match &target {
                     Target::File(path) => path.clone(),
-                    Target::Dir(dir) => file
-                        .name
-                        .split('/')
-                        .fold(dir.clone(), |path, part| path.join(part)),
+                    Target::Dir(dir) => {
+                        let mut path = dir.clone();
+                        path.extend(file.name.split('/'));
+                        path
+                    }
                 };
                 let modified = file.modified.and_then(time_from_millis);
                 (path, file.size, modified)
@@ -157,7 +194,7 @@ impl FileSink {
         Self {
             targets,
             root,
-            folders: HashSet::new(),
+            folders: Folders::default(),
             next: 0,
             open: None,
         }
@@ -171,25 +208,17 @@ impl FileSink {
             return Ok(());
         };
         std::fs::create_dir_all(root)?;
-        let mut missing = HashSet::new();
         for (target, _, _) in &self.targets {
-            if self.folders.contains(parent_of(target)) {
-                continue;
-            }
-            for folder in folders_between(root, target)? {
-                if self.folders.contains(&folder) {
-                    continue;
-                }
+            let mut path = root.clone();
+            let mut parent = None;
+            for name in folder_names(root, target)? {
+                path.push(name);
+                let folder = self.folders.number(parent, name, || is_folder(&path))?;
                 // Nothing exists below a folder that is missing.
-                if missing.contains(&folder) {
+                if !self.folders.exists[folder] {
                     break;
                 }
-                if is_folder(&folder)? {
-                    self.folders.insert(folder);
-                } else {
-                    missing.insert(folder);
-                    break;
-                }
+                parent = Some(folder);
             }
         }
         Ok(())
@@ -198,18 +227,19 @@ impl FileSink {
     /// Creates the folders between the chosen folder and `target`, refusing
     /// to follow a symbolic link or junction on the way.
     fn create_parents(&mut self, target: &Path) -> io::Result<()> {
-        let parent = parent_of(target);
         let Some(root) = &self.root else {
-            return std::fs::create_dir_all(parent);
+            return std::fs::create_dir_all(parent_of(target));
         };
-        if parent == root || self.folders.contains(parent) {
-            return Ok(());
-        }
-        for folder in folders_between(root, target)? {
-            if !self.folders.contains(&folder) {
-                ensure_folder(&folder)?;
-                self.folders.insert(folder);
+        let mut path = root.clone();
+        let mut parent = None;
+        for name in folder_names(root, target)? {
+            path.push(name);
+            let folder = self.folders.number(parent, name, || Ok(false))?;
+            if !self.folders.exists[folder] {
+                ensure_folder(&path)?;
+                self.folders.exists[folder] = true;
             }
+            parent = Some(folder);
         }
         Ok(())
     }
@@ -340,16 +370,14 @@ fn parent_of(target: &Path) -> &Path {
         .unwrap_or(Path::new("."))
 }
 
-/// The folders between `root` and `target`, outermost first.
-fn folders_between(root: &Path, target: &Path) -> io::Result<Vec<PathBuf>> {
+/// The names of the folders between `root` and `target`, outermost first.
+fn folder_names<'a>(
+    root: &Path,
+    target: &'a Path,
+) -> io::Result<impl Iterator<Item = &'a OsStr> + use<'a>> {
     let relative = target.strip_prefix(root).map_err(io::Error::other)?;
-    let mut path = root.to_path_buf();
-    let mut folders = Vec::new();
-    for component in relative.parent().into_iter().flat_map(Path::components) {
-        path.push(component);
-        folders.push(path.clone());
-    }
-    Ok(folders)
+    let folders = relative.parent().into_iter().flat_map(Path::components);
+    Ok(folders.map(|component| component.as_os_str()))
 }
 
 /// Whether `path` is a folder, `false` if nothing is there. A symbolic link
@@ -625,6 +653,28 @@ mod tests {
         assert!(dir.join("new").is_dir());
         let error = ensure_folder(&dir.join("a")).unwrap_err();
         assert!(error.to_string().contains("not a folder"), "{error}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn deep_folders_are_looked_at_once() {
+        let dir = temp_dir("deep");
+        std::fs::create_dir_all(dir.join("d/d")).unwrap();
+        let deep = "d/".repeat(40);
+        let files = [
+            entry(&format!("{deep}a"), 1, None),
+            entry("d/b", 1, None),
+            entry(&format!("{deep}c"), 1, None),
+        ];
+        let mut sink = FileSink::new(Target::Dir(dir.clone()), &files);
+        sink.write(b"123").unwrap();
+        sink.finish().unwrap();
+        // Each folder is remembered once, whether it was there or created.
+        assert_eq!(sink.folders.exists, [true; 40]);
+        assert_eq!(
+            entries(&dir),
+            ["d/b".to_string(), format!("{deep}a"), format!("{deep}c")]
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

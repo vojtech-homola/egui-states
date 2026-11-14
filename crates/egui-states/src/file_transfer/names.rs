@@ -8,12 +8,26 @@ use std::collections::HashSet;
 
 use crate::protocol::file_transfer::OfferBody;
 
+/// The longest name of a transfer or a file, in bytes. No system stores a
+/// longer path, and the limit bounds the work a name from the other peer
+/// can cause.
+pub(crate) const NAME_MAX_LEN: usize = 4096;
+
 /// Checks the names that every peer must accept: relative, `/` between
-/// components, no `.` or `..`, no control characters, no duplicates, and no
-/// file that is also the folder of another.
+/// components, no `.` or `..`, no control characters, no duplicates, no
+/// file that is also the folder of another, and none longer than
+/// [`NAME_MAX_LEN`].
+///
+/// It runs on what the other peer sent, so its work grows only in proportion
+/// to the size of the offer.
 pub(crate) fn validate_offer(body: &OfferBody) -> Result<(), String> {
     if body.name.is_empty() {
         return Err("the transfer has no name".to_string());
+    }
+    if body.name.len() > NAME_MAX_LEN {
+        return Err(format!(
+            "the transfer name is longer than {NAME_MAX_LEN} bytes"
+        ));
     }
     if body.name.chars().any(char::is_control) {
         return Err("the transfer name contains control characters".to_string());
@@ -35,17 +49,21 @@ pub(crate) fn validate_offer(body: &OfferBody) -> Result<(), String> {
             return Err(format!("the file name '{}' appears twice", file.name));
         }
     }
-    // A file "a" and a file "a/b" cannot both exist.
-    for file in &body.files {
-        let mut prefix = file.name.as_str();
-        while let Some((parent, _)) = prefix.rsplit_once('/') {
-            if files.contains(parent) {
-                return Err(format!(
-                    "'{parent}' is both a file and the folder of '{}'",
-                    file.name
-                ));
-            }
-            prefix = parent;
+    // A file "a" and a file "a/b" cannot both exist. In sorted names, the
+    // files of the folder "a" start at the first name that is not before
+    // "a/", so one look per name finds them.
+    let mut sorted: Vec<&str> = files.into_iter().collect();
+    sorted.sort_unstable();
+    for name in &sorted {
+        let below = || name.bytes().chain(std::iter::once(b'/'));
+        let first = sorted.partition_point(|other| other.bytes().lt(below()));
+        if let Some(other) = sorted.get(first)
+            && let Some(rest) = other.strip_prefix(name)
+            && rest.starts_with('/')
+        {
+            return Err(format!(
+                "'{name}' is both a file and the folder of '{other}'"
+            ));
         }
     }
     Ok(())
@@ -55,6 +73,9 @@ pub(crate) fn validate_offer(body: &OfferBody) -> Result<(), String> {
 pub(crate) fn validate_name(name: &str) -> Result<(), String> {
     if name.is_empty() {
         return Err("a file name is empty".to_string());
+    }
+    if name.len() > NAME_MAX_LEN {
+        return Err(format!("a file name is longer than {NAME_MAX_LEN} bytes"));
     }
     if name.chars().any(|c| c.is_control() || c == '\\') {
         return Err(format!(
@@ -211,6 +232,51 @@ mod tests {
         let mut unnamed = body(&["a"]);
         unnamed.name.clear();
         assert!(validate_offer(&unnamed).is_err());
+    }
+
+    #[test]
+    fn a_file_cannot_be_the_folder_of_another() {
+        // Names that sort between a file and the files of its folder do not
+        // hide them.
+        for bad in [
+            &["a", "a-b", "a/b"][..],
+            &["a/b", "a"],
+            &["a/b/c/d", "x", "a/b"],
+            &["a.b/c", "a", "a.b"],
+        ] {
+            let error = validate_offer(&body(bad)).unwrap_err();
+            assert!(error.contains("is both a file and the folder"), "{error}");
+        }
+        for good in [
+            &["a", "a-b", "ab/c", "a.b/c"][..],
+            &["a/b", "a/c", "ab"],
+            &["a/b/c", "a/b/d", "a/e"],
+        ] {
+            assert!(validate_offer(&body(good)).is_ok(), "{good:?}");
+        }
+    }
+
+    #[test]
+    fn names_have_a_length_limit() {
+        let longest = format!("{}ab", "a/".repeat(NAME_MAX_LEN / 2 - 1));
+        assert_eq!(longest.len(), NAME_MAX_LEN);
+        assert!(validate_offer(&body(&[&longest])).is_ok());
+
+        // The error does not repeat a name of any length.
+        let error = validate_offer(&body(&[&format!("{longest}c")])).unwrap_err();
+        assert!(error.len() < 100, "{error}");
+
+        let mut named = body(&["a"]);
+        named.name = "a".repeat(NAME_MAX_LEN + 1);
+        assert!(validate_offer(&named).is_err());
+
+        // As many of the deepest names as an offer holds.
+        let deep: Vec<String> = (0..240)
+            .map(|i| format!("{i:04}/{}", "a/".repeat(NAME_MAX_LEN / 2 - 3)) + "a")
+            .collect();
+        let deep: Vec<&str> = deep.iter().map(String::as_str).collect();
+        assert!(deep.iter().all(|name| name.len() == NAME_MAX_LEN));
+        assert!(validate_offer(&body(&deep)).is_ok());
     }
 
     #[test]

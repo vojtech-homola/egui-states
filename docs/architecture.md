@@ -162,8 +162,8 @@ round trips.
 
 **Offers.** Nothing flows until the receiver accepts, and the receiver
 chooses the destination; a name from the sender is only a hint. Names are
-checked when an offer arrives (relative, `/` between folders, no `.` or `..`)
-and, before any data flows, against the receiver's system (Windows reserved
+checked when an offer arrives (relative, `/` between folders, no `.` or `..`,
+at most 4096 bytes) and, before any data flows, against the receiver's system (Windows reserved
 names and characters, names that differ only in letter case). Inside the
 folder the receiver chose, a file is never saved through a symbolic link: the
 folders the files go into are looked at when the first data arrives, and a
