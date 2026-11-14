@@ -833,3 +833,155 @@ fn removing_the_last_receiver_rejects_a_waiting_offer() {
         TransferStatus::Failed(TransferError::Rejected("no receiver".to_string()))
     );
 }
+
+#[test]
+fn an_offer_token_from_an_earlier_connection_does_not_touch_a_new_offer() {
+    let engine = Engine::new(Side::Client, None);
+    engine.register(DOWN, Role::Receive, 0);
+    let lane: StateLane = Arc::new(|_| {});
+    let first = engine.attach(lane.clone());
+    let offer = |serial| {
+        let payload = encode_offer(&single("x", 4), &[]).unwrap();
+        engine.handle_frame(
+            DOWN,
+            TransferFrame::Offer {
+                serial,
+                meta_type: 0,
+            },
+            Bytes::from(payload),
+        );
+    };
+    offer(0);
+    let old = engine.take_offer(DOWN).unwrap();
+    engine.detach(first);
+    engine.attach(lane);
+    // The new connection's sender starts its serials again at 0.
+    offer(0);
+    let new = engine.take_offer(DOWN).unwrap();
+    assert!(old.token.is_cancelled());
+    assert!(!new.token.is_cancelled());
+    let failed = old.token.accept(Sink::memory(4), AcceptMode::Lane, None);
+    assert!(failed.is_finished());
+    assert!(
+        !new.token.is_cancelled(),
+        "accepting the old token left the new offer alone"
+    );
+    let received = new.token.accept(Sink::memory(4), AcceptMode::Lane, None);
+    assert_eq!(received.status(), TransferStatus::Pending);
+}
+
+#[test]
+fn a_disconnect_ends_a_send_whose_files_are_being_picked() {
+    let mut link = Link::new();
+    link.connect();
+    let picking = link.client.reserve(UP).unwrap();
+    link.disconnect();
+    assert_eq!(
+        picking.status(),
+        TransferStatus::Failed(TransferError::Disconnected)
+    );
+    assert!(!link.client.is_busy(UP));
+    link.connect();
+    link.client.send_reserved(
+        &picking,
+        single("a", 1),
+        Bytes::new(),
+        Source::bytes(vec![1]),
+    );
+    std::thread::sleep(Duration::from_millis(50));
+    assert!(
+        link.server.take_offer(UP).is_none(),
+        "nothing reaches the new connection"
+    );
+}
+
+#[test]
+fn the_next_transfer_waits_until_the_receiver_confirmed_the_last() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap();
+    let engine = Engine::new(Side::Server, None);
+    engine.register(DOWN, Role::Send, 0);
+    engine.register(DOWN2, Role::Send, 0);
+    let generation = engine.attach(Arc::new(|_| {}));
+    let first = send_bytes(&engine, DOWN, vec![1; 10]);
+    let second = send_bytes(&engine, DOWN2, vec![2; 10]);
+    for endpoint in [DOWN, DOWN2] {
+        engine.handle_frame(
+            endpoint,
+            TransferFrame::Accept {
+                serial: 0,
+                mode: AcceptMode::Lane,
+            },
+            Bytes::new(),
+        );
+    }
+    let (data, mut chunks) = mpsc::channel(4);
+    let pump = engine.clone();
+    runtime.block_on(async {
+        let pumping = tokio::spawn(async move { pump.pump(generation, data).await });
+        let (endpoint, _, _) = decode(Side::Server, &chunks.recv().await.unwrap());
+        assert_eq!(endpoint, DOWN);
+        // The second transfer's data waits for the first's confirmation.
+        let early = tokio::time::timeout(Duration::from_millis(100), chunks.recv()).await;
+        assert!(early.is_err(), "the second transfer started early");
+        engine.handle_frame(
+            DOWN,
+            TransferFrame::Finished {
+                serial: 0,
+                error: None,
+            },
+            Bytes::new(),
+        );
+        let (endpoint, _, _) = decode(Side::Server, &chunks.recv().await.unwrap());
+        assert_eq!(endpoint, DOWN2);
+        engine.detach(generation);
+        let _ = pumping.await;
+    });
+    assert_eq!(first.status(), TransferStatus::Done);
+    assert!(second.is_finished());
+}
+
+#[test]
+fn offers_beyond_the_size_limits_are_rejected_on_receipt() {
+    let rx = Receiver::new();
+    let payload = encode_offer(&single("x", 1), &vec![0; VALUE_MAX_SIZE + 1]).unwrap();
+    rx.engine.handle_frame(
+        DOWN,
+        TransferFrame::Offer {
+            serial: 1,
+            meta_type: 0,
+        },
+        Bytes::from(payload),
+    );
+    assert_eq!(rx.frames(), [TransferFrame::Reject { serial: 1 }]);
+    assert!(rx.engine.take_offer(DOWN).is_none());
+
+    // Sizes that overflow together.
+    let rx = Receiver::new();
+    let body = OfferBody {
+        name: "set".to_string(),
+        files: vec![
+            FileEntry {
+                name: "a".to_string(),
+                size: u64::MAX,
+                modified: None,
+            },
+            FileEntry {
+                name: "b".to_string(),
+                size: 1,
+                modified: None,
+            },
+        ],
+    };
+    rx.engine.handle_frame(
+        DOWN,
+        TransferFrame::Offer {
+            serial: 2,
+            meta_type: 0,
+        },
+        Bytes::from(encode_offer(&body, &[]).unwrap()),
+    );
+    assert_eq!(rx.frames(), [TransferFrame::Reject { serial: 2 }]);
+}

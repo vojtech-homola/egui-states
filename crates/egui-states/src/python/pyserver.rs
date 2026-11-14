@@ -1811,7 +1811,7 @@ impl StateServerCore {
         key: u64,
     ) -> PyResult<Option<PyTransferHandle>> {
         let (_, meta_type) = self.transfer_endpoint(value_id, download)?;
-        let finished = self.server.read().transfer_events().finished(key);
+        let finished = self.server.read().transfer_events().take(key);
         Ok(finished.map(|shared| PyTransferHandle::new(py, shared, meta_type)))
     }
 

@@ -22,6 +22,12 @@ pub(crate) fn validate_offer(body: &OfferBody) -> Result<(), String> {
         return Err("the transfer has no files".to_string());
     }
 
+    // Every total of the transfer must fit, or the accounting would wrap.
+    body.files
+        .iter()
+        .try_fold(0u64, |total, file| total.checked_add(file.size))
+        .ok_or("the files are too large together")?;
+
     let mut files = HashSet::with_capacity(body.files.len());
     for file in &body.files {
         validate_name(&file.name)?;

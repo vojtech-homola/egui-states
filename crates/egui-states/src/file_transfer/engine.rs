@@ -524,6 +524,15 @@ impl Engine {
                     TransferStatus::Failed(TransferError::Disconnected),
                     &mut fx,
                 );
+                // A send whose files are still being picked ends too; the files
+                // must not go to whatever connection comes next.
+                if let Some(reserved) = state
+                    .endpoints
+                    .get_mut(&id)
+                    .and_then(|ep| ep.reserved.take())
+                {
+                    reserved.set_status(TransferStatus::Failed(TransferError::Disconnected));
+                }
             }
             fx.wake_free = true;
             fx.wake_pump = true;
@@ -583,11 +592,17 @@ impl Engine {
                 .endpoints
                 .get_mut(&endpoint)
                 .and_then(|ep| ep.current.as_mut())
-                .filter(|t| t.serial == serial && t.phase == Phase::Sending);
+                .filter(|t| t.serial == serial);
             let Some(transfer) = transfer else {
                 state.queue.pop_front();
                 continue;
             };
+            // The next transfer starts only once the receiver confirmed this
+            // one: its last window may still be in flight, and starting the
+            // next would put a second window on the connection.
+            if transfer.phase != Phase::Sending {
+                return None;
+            }
             // The pump holds the source while it reads; it takes one chunk at a time.
             transfer.source.as_ref()?;
             let remaining = transfer.total - transfer.sent;
@@ -638,9 +653,9 @@ impl Engine {
         transfer.shared.set_done_bytes(transfer.sent);
         let last = transfer.sent == transfer.total;
         if last {
+            // It leaves the queue once the receiver confirms it.
             transfer.phase = Phase::AwaitFinish;
             transfer.source = None;
-            state.queue.pop_front();
         }
         fx.wake_pump = true;
         Some(self.encode(endpoint, &TransferFrame::Chunk { serial, last }, &chunk))
@@ -836,6 +851,11 @@ impl Engine {
             Ok(decoded) => decoded,
             Err(error) => return reject(state, &error),
         };
+        // The same limits a local send checks, so a peer cannot make this
+        // endpoint hold more.
+        if meta.len() > VALUE_MAX_SIZE || payload.len() - meta.len() > VALUE_MAX_SIZE {
+            return reject(state, "the offer is too large");
+        }
         if let Err(error) = names::validate_offer(&body) {
             return reject(state, &format!("invalid offer: {error}"));
         }
@@ -1484,14 +1504,26 @@ impl OfferToken {
         &self.shared
     }
 
+    /// Whether the endpoint still holds this offer, unanswered. A serial is
+    /// reused by the next connection, so the transfer itself is compared.
+    fn is_open(&self, state: &State) -> bool {
+        state.connection.is_some()
+            && state
+                .endpoints
+                .get(&self.endpoint)
+                .and_then(|ep| ep.current.as_ref())
+                .is_some_and(|t| {
+                    t.serial == self.serial
+                        && t.phase == Phase::Offered
+                        && Arc::ptr_eq(&t.shared, &self.shared)
+                })
+    }
+
     /// Whether the offer was withdrawn by the sender or lost to a disconnect.
     #[cfg_attr(not(feature = "client"), allow(dead_code))]
     pub(crate) fn is_cancelled(&self) -> bool {
         let state = self.engine.0.state.lock();
-        !(state.connection.is_some()
-            && self
-                .engine
-                .current(&state, self.endpoint, self.serial, &[Phase::Offered]))
+        !self.is_open(&state)
     }
 
     /// Makes the handle the endpoint's last one while the destination is
@@ -1502,9 +1534,13 @@ impl OfferToken {
         let Some(ep) = state.endpoints.get_mut(&self.endpoint) else {
             return;
         };
-        ep.last = Some(self.shared.clone());
-        if let Some(t) = ep.current.as_mut().filter(|t| t.serial == self.serial) {
+        if let Some(t) = ep
+            .current
+            .as_mut()
+            .filter(|t| Arc::ptr_eq(&t.shared, &self.shared))
+        {
             t.exposed = true;
+            ep.last = Some(self.shared.clone());
         }
     }
 
@@ -1522,17 +1558,16 @@ impl OfferToken {
         let mut fx = Effects::default();
         {
             let mut state = engine.0.state.lock();
-            let ep = state.endpoints.get_mut(&self.endpoint);
-            if let Some(ep) = ep {
-                ep.last = Some(self.shared.clone());
-            }
-            if !engine.current(&state, self.endpoint, self.serial, &[Phase::Offered]) {
+            if !self.is_open(&state) {
                 drop(state);
                 if !self.shared.is_finished() {
                     self.shared
                         .set_status(TransferStatus::Failed(TransferError::Disconnected));
                 }
                 return self.shared.clone();
+            }
+            if let Some(ep) = state.endpoints.get_mut(&self.endpoint) {
+                ep.last = Some(self.shared.clone());
             }
             let t = Self::transfer(&mut state, self.endpoint, self.serial);
             t.exposed = true;
@@ -1592,10 +1627,7 @@ impl OfferToken {
         let mut fx = Effects::default();
         {
             let mut state = self.engine.0.state.lock();
-            if self
-                .engine
-                .current(&state, self.endpoint, self.serial, &[Phase::Offered])
-            {
+            if self.is_open(&state) {
                 self.engine.reject_locked(
                     &mut state,
                     self.endpoint,

@@ -112,6 +112,9 @@ pub(crate) enum Target {
 /// removes the temporary file.
 pub(crate) struct FileSink {
     targets: Vec<(PathBuf, u64, Option<SystemTime>)>,
+    /// For a folder target, the folder the receiver chose: nothing below it
+    /// may be a symbolic link, or a file could land outside of it.
+    root: Option<PathBuf>,
     next: usize,
     open: Option<OpenFile>,
 }
@@ -143,11 +146,61 @@ impl FileSink {
                 (path, file.size, modified)
             })
             .collect();
+        let root = match target {
+            Target::File(_) => None,
+            Target::Dir(dir) => Some(dir),
+        };
         Self {
             targets,
+            root,
             next: 0,
             open: None,
         }
+    }
+
+    /// Creates the folders between the chosen folder and `target`, refusing
+    /// to follow a symbolic link or junction on the way.
+    fn create_parents(&self, target: &Path) -> io::Result<()> {
+        let Some(root) = &self.root else {
+            let parent = target
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+                .unwrap_or(Path::new("."));
+            return std::fs::create_dir_all(parent);
+        };
+        std::fs::create_dir_all(root)?;
+        let relative = target.strip_prefix(root).map_err(io::Error::other)?;
+        let mut path = root.clone();
+        let components: Vec<_> = relative.components().collect();
+        for component in &components[..components.len().saturating_sub(1)] {
+            path.push(component);
+            match std::fs::symlink_metadata(&path) {
+                Ok(metadata) if metadata.file_type().is_symlink() => {
+                    return Err(io::Error::other(format!(
+                        "{} is a symbolic link; files are not saved through it",
+                        path.display()
+                    )));
+                }
+                Ok(metadata) if metadata.is_dir() => {}
+                Ok(_) => {
+                    return Err(io::Error::other(format!(
+                        "{} is not a folder",
+                        path.display()
+                    )));
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    std::fs::create_dir(&path)?;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        if std::fs::symlink_metadata(target).is_ok_and(|m| m.file_type().is_symlink()) {
+            return Err(io::Error::other(format!(
+                "{} is a symbolic link; it is not replaced",
+                target.display()
+            )));
+        }
+        Ok(())
     }
 
     /// The folder or file the transfer is saved to.
@@ -196,11 +249,11 @@ impl FileSink {
         while self.open.is_none() && self.next < self.targets.len() {
             let (target, size, modified) = self.targets[self.next].clone();
             self.next += 1;
+            self.create_parents(&target)?;
             let parent = target
                 .parent()
                 .filter(|parent| !parent.as_os_str().is_empty())
                 .unwrap_or(Path::new("."));
-            std::fs::create_dir_all(parent)?;
             let name = target
                 .file_name()
                 .map(|name| name.to_string_lossy().into_owned())
@@ -403,6 +456,39 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), b"new");
         assert_eq!(entries(&dir), ["target.txt"]);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_target_does_not_follow_symbolic_links() {
+        let dir = temp_dir("links");
+        let outside = temp_dir("outside");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join("link")).unwrap();
+        std::os::unix::fs::symlink(outside.join("target"), dir.join("direct")).unwrap();
+
+        let mut sink = FileSink::new(Target::Dir(dir.clone()), &[entry("link/file", 3, None)]);
+        let error = sink.write(b"abc").unwrap_err();
+        assert!(error.to_string().contains("symbolic link"), "{error}");
+        let mut sink = FileSink::new(Target::Dir(dir.clone()), &[entry("direct", 3, None)]);
+        assert!(sink.write(b"abc").is_err());
+        drop(sink);
+        assert!(
+            std::fs::read_dir(&outside).unwrap().next().is_none(),
+            "nothing outside"
+        );
+
+        // The chosen folder itself may be a link: the user picked it.
+        let chosen = temp_dir("chosen");
+        std::os::unix::fs::symlink(&outside, &chosen).unwrap();
+        let mut sink = FileSink::new(Target::Dir(chosen.clone()), &[entry("sub/a", 1, None)]);
+        sink.write(b"x").unwrap();
+        sink.finish().unwrap();
+        assert_eq!(std::fs::read(outside.join("sub/a")).unwrap(), b"x");
+        let _ = std::fs::remove_file(&chosen);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&outside);
     }
 
     #[test]

@@ -23,12 +23,23 @@ use crate::server_core::file_transfer::{
     EVENT_FINISHED, EVENT_OFFER, TransferEvents, decode_event,
 };
 
+type Listener = Arc<dyn Fn(TransferHandle) + Send + Sync>;
+
+/// The `connect` callbacks of one endpoint, run by one dispatcher.
+#[derive(Default)]
+struct Listeners {
+    next: u64,
+    list: Vec<(u64, Listener)>,
+    dispatcher: Option<CallbackHandle>,
+}
+
 /// What every endpoint handle holds.
 struct EndpointRef {
     id: u64,
     engine: Engine,
     server: WeakServer,
     events: Arc<TransferEvents>,
+    listeners: Arc<parking_lot::Mutex<Listeners>>,
 }
 
 impl EndpointRef {
@@ -39,18 +50,68 @@ impl EndpointRef {
             engine,
             server: server.downgrade(),
             events,
+            listeners: Arc::default(),
         })
     }
 
+    /// Adds a `connect` callback. One dispatcher per endpoint takes each
+    /// finished transfer and runs every callback, so the event releases the
+    /// transfer once all of them ran.
     fn connect(&self, callback: impl Fn(TransferHandle) + Send + Sync + 'static) -> CallbackHandle {
-        let events = self.events.clone();
-        self.server.add_raw_callback(self.id, move |payload, _| {
-            if let Some((EVENT_FINISHED, key)) = decode_event(&payload)
-                && let Some(handle) = events.finished(key)
-            {
-                callback(TransferHandle::new(handle));
-            }
-            Ok(())
+        let mut listeners = self.listeners.lock();
+        let listener_id = listeners.next;
+        listeners.next += 1;
+        listeners.list.push((listener_id, Arc::new(callback)));
+        if listeners.dispatcher.is_none() {
+            let events = self.events.clone();
+            let weak = Arc::downgrade(&self.listeners);
+            let dispatcher = self.server.add_raw_callback(self.id, move |payload, _| {
+                let Some((EVENT_FINISHED, key)) = decode_event(&payload) else {
+                    return Ok(());
+                };
+                let Some(handle) = events.take(key) else {
+                    return Ok(());
+                };
+                let callbacks: Vec<Listener> = weak
+                    .upgrade()
+                    .map(|listeners| {
+                        listeners
+                            .lock()
+                            .list
+                            .iter()
+                            .map(|(_, c)| c.clone())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let mut panicked = false;
+                for callback in callbacks {
+                    let handle = TransferHandle::new(handle.clone());
+                    let run = std::panic::AssertUnwindSafe(|| callback(handle));
+                    panicked |= std::panic::catch_unwind(run).is_err();
+                }
+                if panicked {
+                    return Err(crate::server::ServerError::new(
+                        "a transfer callback panicked",
+                    ));
+                }
+                Ok(())
+            });
+            listeners.dispatcher = Some(dispatcher);
+        }
+        drop(listeners);
+        let listeners = self.listeners.clone();
+        CallbackHandle::detached(self.id).on_disconnect(move || {
+            let mut guard = listeners.lock();
+            guard.list.retain(|(id, _)| *id != listener_id);
+            let dispatcher = if guard.list.is_empty() {
+                guard.dispatcher.take()
+            } else {
+                None
+            };
+            drop(guard);
+            // Unregisters the dispatcher, so finished transfers are no longer
+            // kept for it.
+            drop(dispatcher);
         })
     }
 }
@@ -62,6 +123,7 @@ impl Clone for EndpointRef {
             engine: self.engine.clone(),
             server: self.server.clone(),
             events: self.events.clone(),
+            listeners: self.listeners.clone(),
         }
     }
 }

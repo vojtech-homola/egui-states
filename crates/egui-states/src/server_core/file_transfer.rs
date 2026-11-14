@@ -64,13 +64,13 @@ impl TransferEvents {
         }
     }
 
-    /// The finished transfer an event names.
-    pub(crate) fn finished(&self, key: u64) -> Option<Arc<TransferShared>> {
-        self.finished
-            .lock()
-            .iter()
-            .find(|(entry, _)| *entry == key)
-            .map(|(_, handle)| handle.clone())
+    /// Takes the finished transfer an event names. Each front-end has one
+    /// dispatcher per endpoint that takes it and runs every callback, so the
+    /// event releases the transfer once it is delivered.
+    pub(crate) fn take(&self, key: u64) -> Option<Arc<TransferShared>> {
+        let mut finished = self.finished.lock();
+        let index = finished.iter().position(|(entry, _)| *entry == key)?;
+        finished.remove(index).map(|(_, handle)| handle)
     }
 }
 

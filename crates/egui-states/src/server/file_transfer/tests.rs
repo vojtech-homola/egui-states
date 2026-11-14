@@ -840,3 +840,80 @@ fn a_browser_that_stops_cancels_the_download() {
         })
     );
 }
+
+#[test]
+fn connect_callbacks_all_run_and_release_the_transfer() {
+    if crate::test_support::isolated() {
+        return;
+    }
+    let peers = Peers::connect();
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (first, second) = (calls.clone(), calls.clone());
+    let a = peers.files.connect(move |_| {
+        first.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    });
+    let b = peers.files.connect(move |_| {
+        second.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    });
+    let sent = peers
+        .files
+        .send_bytes(vec![1; 10], "a", &(), false, None)
+        .unwrap();
+    wait("offer", || peers.states.files.take_offer()).accept_memory(10);
+    sent.wait(Some(Duration::from_secs(10))).unwrap();
+    wait("callbacks", || {
+        (calls.load(std::sync::atomic::Ordering::SeqCst) == 2).then_some(())
+    });
+    let key = sent.shared.key();
+    assert!(
+        peers.files.endpoint.events.take(key).is_none(),
+        "the event released it"
+    );
+
+    // Without callbacks, finished transfers are not kept at all.
+    drop((a, b));
+    let sent = peers
+        .files
+        .send_bytes(vec![1; 10], "b", &(), false, None)
+        .unwrap();
+    wait("offer", || peers.states.files.take_offer()).accept_memory(10);
+    sent.wait(Some(Duration::from_secs(10))).unwrap();
+    assert!(
+        peers
+            .files
+            .endpoint
+            .events
+            .take(sent.shared.key())
+            .is_none()
+    );
+}
+
+#[test]
+fn a_connect_callback_can_send_at_once() {
+    if crate::test_support::isolated() {
+        return;
+    }
+    let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    let server = StateServer::new().unwrap();
+    let files = super::Download::<()>::new(&server, "root.files").unwrap();
+    let _inputs = super::Upload::<u32>::new(&server, "root.inputs").unwrap();
+    server.finalize().unwrap();
+    let (sender, results) = std::sync::mpsc::channel();
+    let sender = std::sync::Mutex::new(sender);
+    let _callback = server.on_connect(move |_| {
+        let sent = files.send_bytes(vec![1], "hello", &(), false, None);
+        let _ = sender.lock().unwrap().send(sent.map(|_| ()));
+    });
+    server.start(port, Some(Ipv4Addr::LOCALHOST), None).unwrap();
+    let (_states, client) =
+        ClientBuilder::<ClientStates>::new(egui::Context::default(), port).build();
+    client.connect();
+    assert_eq!(
+        results.recv_timeout(Duration::from_secs(10)).unwrap(),
+        Ok(())
+    );
+    client.disconnect();
+    server.stop();
+}

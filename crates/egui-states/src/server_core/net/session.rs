@@ -193,8 +193,6 @@ pub(crate) async fn run<L: Listener>(
             continue;
         }
 
-        signals.on_connect(peer_addr);
-
         // Transfers start only once the connection is synchronized; control
         // frames share the state queue, so they keep their order with the
         // state messages.
@@ -228,6 +226,9 @@ pub(crate) async fn run<L: Listener>(
             sinks,
             tickets,
         };
+
+        // After the transfers are attached, so a connect callback can send.
+        signals.on_connect(peer_addr);
 
         let activity = socket_reader.activity();
         let reader_handler = tokio::spawn(reader(socket_reader, session.clone()));
