@@ -223,9 +223,19 @@ fn state_field_type(state: &StateType) -> String {
         StateType::DataMultiTake(_, typ, header) => {
             format!("s::DataMultiTake<{}>", data_parameters(typ, header))
         }
+        StateType::Download(_, meta) => format!("s::Download{}", meta_parameter(meta)),
+        StateType::Upload(_, meta) => format!("s::Upload{}", meta_parameter(meta)),
         StateType::Image(_) => "s::Image".to_string(),
         StateType::ImageMulti(_) => "s::ImageMulti".to_string(),
         StateType::SubState(_, state_class, _) => state_class.to_string(),
+    }
+}
+
+/// The type parameter of a transfer endpoint: empty without metadata.
+fn meta_parameter(meta: &Option<ObjectType>) -> String {
+    match meta {
+        None => String::new(),
+        Some(meta) => format!("<{}>", type_to_rust_type(meta, RustTypeContext::States)),
     }
 }
 
@@ -239,6 +249,15 @@ fn data_parameters(data_type: &DataType, header: &Option<ObjectType>) -> String 
             "{element}, {}",
             type_to_rust_type(header, RustTypeContext::States)
         ),
+    }
+}
+
+/// The turbofish of a transfer endpoint's constructor: `<()>::` without
+/// metadata.
+fn turbofish(meta: &Option<ObjectType>) -> String {
+    match meta {
+        None => "<()>::".to_string(),
+        Some(meta) => format!("<{}>::", type_to_rust_type(meta, RustTypeContext::States)),
     }
 }
 
@@ -256,6 +275,8 @@ fn state_field_doc(state: &StateType) -> &'static str {
         StateType::DataTake(..) => "One-shot numeric buffer consumed by the client.",
         StateType::DataMulti(..) => "Server-controlled keyed numeric buffers.",
         StateType::DataMultiTake(..) => "Keyed one-shot numeric buffers consumed by the client.",
+        StateType::Download(..) => "Endpoint that sends files to the client.",
+        StateType::Upload(..) => "Endpoint that receives files from the client.",
         StateType::SubState(..) => "Nested group of synchronized states.",
     }
 }
@@ -313,6 +334,16 @@ fn state_initializer(state: &StateType) -> String {
         StateType::DataMultiTake(name, typ, header) => format!(
             "s::DataMultiTake::<{}>::new(server, format!(\"{{parent}}.{}\"))?",
             data_parameters(typ, header),
+            name
+        ),
+        StateType::Download(name, meta) => format!(
+            "s::Download::{}new(server, format!(\"{{parent}}.{}\"))?",
+            turbofish(meta),
+            name
+        ),
+        StateType::Upload(name, meta) => format!(
+            "s::Upload::{}new(server, format!(\"{{parent}}.{}\"))?",
+            turbofish(meta),
             name
         ),
         StateType::Image(name) => {

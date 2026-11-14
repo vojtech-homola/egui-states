@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 
 use egui_states::build_scripts::generate_c;
 use egui_states::{
-    ClientBuilder, Data, DataMulti, Image, MapState, Queue, Signal, State, StatesCreator, Static,
-    Value, ValueTake, VecState,
+    ClientBuilder, Data, DataMulti, Download, Image, MapState, Queue, Signal, State, StatesCreator,
+    Static, Upload, Value, ValueTake, VecState,
 };
 
 #[egui_states::typed]
@@ -311,4 +311,41 @@ fn emitted_type_strings_parse_and_match_the_rust_types() {
         egui_states::c_abi::state_id("root.nested.value")
     );
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+struct TransferLeaf;
+
+impl State for TransferLeaf {
+    const NAME: &'static str = "TransferLeaf";
+
+    fn new(c: &mut impl StatesCreator) -> Self {
+        let _: Download = c.download("files");
+        let _: Upload<u32> = c.upload("inputs");
+        Self
+    }
+}
+
+struct WithTransfers;
+
+impl State for WithTransfers {
+    const NAME: &'static str = "WithTransfers";
+
+    fn new(c: &mut impl StatesCreator) -> Self {
+        let _: Value<bool> = c.value("value", true);
+        let _: TransferLeaf = c.substate("nested");
+        Self
+    }
+}
+
+/// A C server would connect with the client's layout hash and never answer a
+/// transfer, so the generator refuses the endpoints instead of skipping them.
+#[test]
+fn transfer_endpoints_are_refused() {
+    let dir = std::env::temp_dir().join(format!("egui_states_c_transfers_{}", std::process::id()));
+    let error = generate_c::<WithTransfers>(&dir).unwrap_err();
+    assert!(
+        error.contains("root.nested.files") && error.contains("not supported by the C ABI"),
+        "{error}"
+    );
+    assert!(!dir.exists(), "nothing is written");
 }

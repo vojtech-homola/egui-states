@@ -13,9 +13,11 @@ use tokio::net::TcpListener;
 use tokio::runtime::Builder;
 
 use crate::event::Event;
+use crate::file_transfer::engine::{Engine, Role, Side};
 use crate::hashing::{MAX_RESERVED_ID, NoHashMap, generate_value_id};
 use crate::protocol::data::DataType;
 use crate::protocol::{ServerHeader, check_value_size, serialize};
+use crate::server_core::file_transfer::TransferEndpoint;
 use crate::server_core::http::origin::OriginPolicy;
 use crate::server_core::http::web::{WebSite, WebSlot};
 use crate::server_core::net::heartbeat::Heartbeat;
@@ -57,6 +59,12 @@ pub(crate) enum StateRef {
     DataMulti(Arc<DataMulti>),
     DataTake(Arc<DataTake>),
     DataMultiTake(Arc<DataMultiTake>),
+    // The front-ends reach endpoints through the transfer engine; only the
+    // Python registry reads these.
+    #[cfg_attr(not(feature = "python"), allow(dead_code))]
+    Download(Arc<TransferEndpoint>),
+    #[cfg_attr(not(feature = "python"), allow(dead_code))]
+    Upload(Arc<TransferEndpoint>),
 }
 
 impl StateRef {
@@ -75,7 +83,7 @@ impl StateRef {
             Self::DataMulti(_) => 8,
             Self::DataTake(_) => 9,
             Self::DataMultiTake(_) => 10,
-            Self::Signal(_) => return None,
+            Self::Signal(_) | Self::Download(_) | Self::Upload(_) => return None,
         })
     }
 
@@ -92,7 +100,7 @@ impl StateRef {
             Self::DataMulti(state) => state.clone(),
             Self::DataTake(state) => state.clone(),
             Self::DataMultiTake(state) => state.clone(),
-            Self::Signal(_) => return None,
+            Self::Signal(_) | Self::Download(_) | Self::Upload(_) => return None,
         })
     }
 
@@ -107,7 +115,12 @@ impl StateRef {
             Self::DataMulti(state) => state.clone(),
             Self::DataTake(state) => state.clone(),
             Self::DataMultiTake(state) => state.clone(),
-            Self::Static(_) | Self::Vec(_) | Self::Map(_) | Self::Signal(_) => return None,
+            Self::Static(_)
+            | Self::Vec(_)
+            | Self::Map(_)
+            | Self::Signal(_)
+            | Self::Download(_)
+            | Self::Upload(_) => return None,
         })
     }
 }
@@ -306,6 +319,8 @@ pub(crate) struct Server {
     signals: SignalsManager,
     config: ServerConfig,
     web: WebSlot,
+    /// The engine of the file transfer endpoints.
+    transfers: Engine,
 
     /// Held by `start` and `stop` for their whole run, including the join of
     /// the server thread, so they never overlap. Nothing that a connected
@@ -366,6 +381,7 @@ impl Server {
             signals,
             config,
             web: WebSlot::default(),
+            transfers: Engine::new(Side::Server, None),
             runner_state: Mutex::new(RunnerState::Stopped(rx)),
         }
     }
@@ -821,6 +837,43 @@ impl Server {
                 connected,
             )))
         })
+    }
+
+    /// The engine of the file transfer endpoints.
+    pub(crate) fn transfers(&self) -> &Engine {
+        &self.transfers
+    }
+
+    /// Registers an endpoint that sends files to the client; `meta_type` is
+    /// the type id of its metadata, 0 for none.
+    pub(crate) fn add_download(&mut self, name: &str, meta_type: u32) -> Result<u64, String> {
+        self.add_transfer(name, "Download", Role::Send, meta_type)
+    }
+
+    /// Registers an endpoint that receives files from the client; `meta_type`
+    /// is the type id of its metadata, 0 for none.
+    pub(crate) fn add_upload(&mut self, name: &str, meta_type: u32) -> Result<u64, String> {
+        self.add_transfer(name, "Upload", Role::Receive, meta_type)
+    }
+
+    fn add_transfer(
+        &mut self,
+        name: &str,
+        kind: &str,
+        role: Role,
+        meta_type: u32,
+    ) -> Result<u64, String> {
+        let id = self.register(name, kind, |_| {
+            let endpoint = Arc::new(TransferEndpoint {
+                name: name.to_string(),
+            });
+            Ok(match role {
+                Role::Send => StateRef::Download(endpoint),
+                Role::Receive => StateRef::Upload(endpoint),
+            })
+        })?;
+        self.transfers.register(id, role, meta_type);
+        Ok(id)
     }
 
     #[cfg(feature = "server")]

@@ -576,6 +576,24 @@ impl StateServer {
         Ok((id, value))
     }
 
+    /// Registers a `Download` (`download`) or `Upload` endpoint; returns its
+    /// id and the server's transfer engine.
+    pub(super) fn add_transfer(
+        &self,
+        name: String,
+        meta_type: u32,
+        download: bool,
+    ) -> Result<(u64, crate::file_transfer::engine::Engine)> {
+        let mut server = self.inner.server.write();
+        let id = if download {
+            server.add_download(&name, meta_type)
+        } else {
+            server.add_upload(&name, meta_type)
+        }
+        .map_err(ServerError::new)?;
+        Ok((id, server.transfers().clone()))
+    }
+
     pub(super) fn add_data_take<T>(
         &self,
         name: String,

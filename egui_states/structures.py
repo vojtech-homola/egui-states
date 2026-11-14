@@ -1539,6 +1539,64 @@ class DataMultiTakeWithHeader[T: np.generic, H](DataMultiTake[T]):
         raise TypeError("index must be an integer")
 
 
+class Download(_StaticBase):
+    """Endpoint that sends files from the server to the client.
+
+    The client receives each offer and decides where the data goes. The
+    endpoint carries at most one unfinished transfer at a time.
+    """
+
+    _meta_id: int | None = None
+
+    def __init__(self) -> None:
+        pass
+
+    def _initialize(self, name: str, types: list[PyObjectType]) -> None:
+        meta = None if self._meta_id is None else types[self._meta_id]
+        self._value_id = self._server.add_download(name, meta)
+
+
+class DownloadWithMeta[M](Download):
+    """:class:`Download` whose offers carry typed metadata ``M``.
+
+    Args:
+        meta_id (int): Index of the metadata's protocol type in the generated
+            type list.
+    """
+
+    def __init__(self, meta_id: int) -> None:
+        self._meta_id = meta_id
+
+
+class Upload(_StaticBase):
+    """Endpoint that receives files from the client.
+
+    The server receives each offer and decides where the data goes. The
+    endpoint carries at most one unfinished transfer at a time.
+    """
+
+    _meta_id: int | None = None
+
+    def __init__(self) -> None:
+        pass
+
+    def _initialize(self, name: str, types: list[PyObjectType]) -> None:
+        meta = None if self._meta_id is None else types[self._meta_id]
+        self._value_id = self._server.add_upload(name, meta)
+
+
+class UploadWithMeta[M](Upload):
+    """:class:`Upload` whose offers carry typed metadata ``M``.
+
+    Args:
+        meta_id (int): Index of the metadata's protocol type in the generated
+            type list.
+    """
+
+    def __init__(self, meta_id: int) -> None:
+        self._meta_id = meta_id
+
+
 __all__ = [
     "i8",
     "i16",

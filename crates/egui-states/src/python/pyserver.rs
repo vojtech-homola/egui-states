@@ -23,6 +23,7 @@ use crate::python::{
     pyimage, pyparsing,
     pytypes::{PyObjectClass, PyObjectType},
 };
+use crate::server_core::file_transfer::TransferEndpoint;
 use crate::server_core::http::web::{LoadError, WebSite};
 use crate::server_core::net::heartbeat::{self, Heartbeat};
 use crate::server_core::server::{Server, ServerConfig, StateRef};
@@ -48,6 +49,12 @@ enum PyState {
     DataTake(Arc<DataTake>, Option<PyObjectType>),
     DataMulti(Arc<DataMulti>, Option<PyObjectType>),
     DataMultiTake(Arc<DataMultiTake>, Option<PyObjectType>),
+    /// The transfer endpoints keep their metadata type, `None` without one.
+    // The metadata type is read once transfers reach Python.
+    #[allow(dead_code)]
+    Download(Arc<TransferEndpoint>, Option<PyObjectType>),
+    #[allow(dead_code)]
+    Upload(Arc<TransferEndpoint>, Option<PyObjectType>),
 }
 
 impl PyState {
@@ -65,6 +72,7 @@ impl PyState {
             Self::DataTake(state, _) => &state.name,
             Self::DataMulti(state, _) => &state.name,
             Self::DataMultiTake(state, _) => &state.name,
+            Self::Download(state, _) | Self::Upload(state, _) => &state.name,
         }
     }
 }
@@ -142,6 +150,31 @@ impl StateServerCore {
     #[inline]
     fn inner_image_multi(&self, value_id: u64) -> PyResult<&Arc<ImageMulti>> {
         lookup!(self, value_id, PyState::ImageMulti(images) => images, "ImageMulti with ID not found.")
+    }
+
+    /// Registers a `Download` (`download`) or `Upload` endpoint with the
+    /// metadata type `meta`, `None` for none.
+    fn add_transfer(
+        &self,
+        py: Python,
+        name: String,
+        meta: Option<&Bound<PyObjectClass>>,
+        download: bool,
+    ) -> PyResult<u64> {
+        let meta = meta.map(|meta| meta.borrow().object_type.clone_py(py));
+        let meta_type = header_type(py, meta.as_ref())?.unwrap_or(0);
+        let mut server = self.server.write();
+        let added = if download {
+            server.add_download(&name, meta_type)
+        } else {
+            server.add_upload(&name, meta_type)
+        };
+        let kind = if download { "Download" } else { "Upload" };
+        let value_id =
+            added.map_err(|e| PyValueError::new_err(format!("Failed to add {kind}: {e}")))?;
+        drop(server);
+        self.keep_header_type(value_id, meta);
+        Ok(value_id)
     }
 
     /// Keeps a Data state's header type until the registry is finalized.
@@ -332,6 +365,8 @@ impl StateServerCore {
                 StateRef::DataTake(state) => PyState::DataTake(state, types.remove(&id)),
                 StateRef::DataMulti(state) => PyState::DataMulti(state, types.remove(&id)),
                 StateRef::DataMultiTake(state) => PyState::DataMultiTake(state, types.remove(&id)),
+                StateRef::Download(state) => PyState::Download(state, types.remove(&id)),
+                StateRef::Upload(state) => PyState::Upload(state, types.remove(&id)),
             };
             states.insert(id, state);
         }
@@ -1631,6 +1666,24 @@ impl StateServerCore {
             .map_err(|e| PyValueError::new_err(format!("Failed to add DataMulti: {}", e)))?;
         self.keep_header_type(value_id, header);
         Ok(value_id)
+    }
+
+    fn add_download(
+        &self,
+        py: Python,
+        name: String,
+        meta: Option<&Bound<PyObjectClass>>,
+    ) -> PyResult<u64> {
+        self.add_transfer(py, name, meta, true)
+    }
+
+    fn add_upload(
+        &self,
+        py: Python,
+        name: String,
+        meta: Option<&Bound<PyObjectClass>>,
+    ) -> PyResult<u64> {
+        self.add_transfer(py, name, meta, false)
     }
 
     fn add_data_take(

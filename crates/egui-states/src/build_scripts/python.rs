@@ -120,6 +120,26 @@ fn data_state(
     }
 }
 
+/// The attribute of a transfer endpoint of kind `kind`; with metadata, the
+/// `WithMeta` class of the kind.
+fn transfer_state(
+    attr: &str,
+    kind: &str,
+    meta: Option<&ObjectType>,
+    object_types: &[ObjectType],
+) -> String {
+    match meta {
+        None => format!("        self.{attr}: s.{kind} = s.{kind}()\n"),
+        Some(meta) => {
+            let index = object_type_index(object_types, meta);
+            let py_type = type_info_to_python_type(meta, false, PythonTypeContext::States);
+            format!(
+                "        self.{attr}: s.{kind}WithMeta[{py_type}] = s.{kind}WithMeta({index})\n"
+            )
+        }
+    }
+}
+
 fn collect_object_types(values: &[StateType]) -> Vec<ObjectType> {
     let mut type_list = Vec::new();
 
@@ -145,14 +165,18 @@ fn collect_object_types(values: &[StateType]) -> Vec<ObjectType> {
             StateType::Data(_, _, Some(header))
             | StateType::DataTake(_, _, Some(header))
             | StateType::DataMulti(_, _, Some(header))
-            | StateType::DataMultiTake(_, _, Some(header)) => push_type(header),
+            | StateType::DataMultiTake(_, _, Some(header))
+            | StateType::Download(_, Some(header))
+            | StateType::Upload(_, Some(header)) => push_type(header),
             StateType::SubState(_, _, _)
             | StateType::Image(_)
             | StateType::ImageMulti(_)
             | StateType::Data(..)
             | StateType::DataTake(..)
             | StateType::DataMulti(..)
-            | StateType::DataMultiTake(..) => {}
+            | StateType::DataMultiTake(..)
+            | StateType::Download(..)
+            | StateType::Upload(..) => {}
         }
     }
 
@@ -424,6 +448,10 @@ fn state_to_line(state: &StateType, object_types: &[ObjectType]) -> String {
             header.as_ref(),
             object_types,
         ),
+        StateType::Download(_, meta) => {
+            transfer_state(&attr, "Download", meta.as_ref(), object_types)
+        }
+        StateType::Upload(_, meta) => transfer_state(&attr, "Upload", meta.as_ref(), object_types),
         StateType::Image(_) => format!("        self.{attr}: s.Image = s.Image()\n"),
         StateType::ImageMulti(_) => {
             format!("        self.{attr}: s.ImageMulti = s.ImageMulti()\n")

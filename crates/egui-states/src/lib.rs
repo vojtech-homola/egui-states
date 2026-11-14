@@ -96,6 +96,7 @@ pub use client::{
         atomics::{Atomic, AtomicLock, AtomicLockStatic, AtomicStatic, FallbackLock, UpdateLock},
         data::{Data, DataMulti, HeaderValue},
         data_take::{DataMultiTake, DataTake},
+        file_transfer::{Download, Upload},
         image::{Image, ImageMulti},
         initial_value::{InitValue, InitialValue},
         map::MapState,
@@ -106,6 +107,10 @@ pub use client::{
         vec::VecState,
     },
     states_creator::StatesCreator,
+};
+#[cfg(feature = "client")]
+pub use file_transfer::{
+    TransferError, TransferHandle, TransferMeta, TransferProgress, TransferStatus,
 };
 
 /// A root or nested group of client-side states.

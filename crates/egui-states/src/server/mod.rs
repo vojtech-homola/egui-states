@@ -18,16 +18,21 @@ mod callbacks;
 mod collections;
 mod data;
 mod error;
+mod file_transfer;
 mod image;
 mod logging;
 mod options;
 mod state_server;
 mod values;
 
+pub use crate::file_transfer::{
+    TransferError, TransferHandle, TransferMeta, TransferProgress, TransferStatus,
+};
 pub use callbacks::CallbackHandle;
 pub use collections::{MapState, VecState};
 pub use data::{Data, DataElement, DataMulti, DataMultiTake, DataTake, HeaderValue};
 pub use error::{Result, ServerError};
+pub use file_transfer::{Download, Upload};
 pub use image::{Image, ImageColor, ImageFormat, ImageMulti};
 pub use logging::{LogLevel, LoggingSignal};
 pub use options::{ErrorHandler, ServerOptions};

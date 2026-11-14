@@ -17,6 +17,8 @@ from egui_states.structures import (
     DataTake,
     DataTakeWithHeader,
     DataWithHeader,
+    Download,
+    DownloadWithMeta,
     Image,
     ImageColor,
     ImageMulti,
@@ -24,6 +26,8 @@ from egui_states.structures import (
     Signal,
     SignalEmpty,
     Static,
+    Upload,
+    UploadWithMeta,
     Value,
     Vec,
 )
@@ -49,6 +53,10 @@ __all__ = [
     "DataTakeWithHeader",
     "DataMultiWithHeader",
     "DataMultiTakeWithHeader",
+    "Download",
+    "DownloadWithMeta",
+    "Upload",
+    "UploadWithMeta",
     "UNSET",
     "LogLevel",
 ]
