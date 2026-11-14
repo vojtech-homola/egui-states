@@ -6,14 +6,16 @@
 //! large `Data` sets, which travel with the state messages.
 //!
 //! On loopback the kernel drains every buffer at once, so the benchmark also
-//! runs through an in-process relay that limits the rate in each direction,
-//! like a network link with a queue in front of it.
+//! runs through an in-process relay that behaves like a network link: each
+//! direction carries a limited rate packet by packet, with a queue in front
+//! of it, and every packet arrives a propagation delay later. The relay does
+//! not lose or reorder packets.
 //!
 //! ```sh
-//! # In one process: loopback, a 1 Gbit/s and a 100 Mbit/s relay.
+//! # In one process: loopback, a 1 Gbit/s LAN and a 100 Mbit/s WAN.
 //! cargo bench -p egui_states_bench --bench latency
-//! # Choose the relay rates in Mbit/s; 0 means no relay.
-//! EGUI_LATENCY_RATES=0,1000 cargo bench -p egui_states_bench --bench latency
+//! # Choose the links as `Mbit/s[:one-way delay in ms]`; 0 means no relay.
+//! EGUI_LATENCY_LINKS=0,1000:0.1,20:25 cargo bench -p egui_states_bench --bench latency
 //! # On two machines: start the server, then the client.
 //! cargo bench -p egui_states_bench --bench latency -- serve 0.0.0.0:9300
 //! cargo bench -p egui_states_bench --bench latency -- connect 192.168.1.20:9300
@@ -22,6 +24,7 @@
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, Shutdown, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -121,9 +124,45 @@ fn start_server(port: u16, addr: Ipv4Addr) -> Server {
     }
 }
 
-/// Forwards connections to `target`, limiting each direction to `rate`
-/// bytes per second like a link that sends one chunk after another.
-fn relay(target: u16, rate: f64) -> u16 {
+/// A simulated network link; both directions behave the same.
+#[derive(Clone, Copy)]
+struct Link {
+    /// Bytes per second.
+    rate: f64,
+    /// The propagation delay in one direction.
+    delay: Duration,
+}
+
+impl Link {
+    /// Parses `Mbit/s[:one-way delay in ms]`; `None` for 0, which means no
+    /// relay.
+    fn parse(spec: &str) -> Option<Self> {
+        let (rate, delay) = spec.trim().split_once(':').unwrap_or((spec.trim(), "0"));
+        let rate: f64 = rate.parse().expect("rate in Mbit/s");
+        let delay: f64 = delay.parse().expect("one-way delay in ms");
+        (rate > 0.0).then(|| Self {
+            rate: rate * 1e6 / 8.0,
+            delay: Duration::from_secs_f64(delay / 1e3),
+        })
+    }
+
+    fn label(&self) -> String {
+        format!(
+            "relay {} Mbit/s, {} ms each way",
+            self.rate * 8.0 / 1e6,
+            self.delay.as_secs_f64() * 1e3
+        )
+    }
+}
+
+/// Bytes of one packet on the simulated link.
+const PACKET: usize = 1500;
+/// Link time of the packets the relay queues in front of the link. What does
+/// not fit waits in the socket buffers, like in those of a real sender.
+const LINK_QUEUE: Duration = Duration::from_millis(5);
+
+/// Forwards connections to `target` over `link`.
+fn relay(target: u16, link: Link) -> u16 {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("relay bind");
     let port = listener.local_addr().unwrap().port();
     thread::spawn(move || {
@@ -137,29 +176,65 @@ fn relay(target: u16, rate: f64) -> u16 {
             }
             let (client_read, server_read) =
                 (client.try_clone().unwrap(), server.try_clone().unwrap());
-            thread::spawn(move || pipe(client_read, server, rate));
-            thread::spawn(move || pipe(server_read, client, rate));
+            thread::spawn(move || pipe(client_read, server, link));
+            thread::spawn(move || pipe(server_read, client, link));
         }
     });
     port
 }
 
-fn pipe(mut from: TcpStream, mut to: TcpStream, rate: f64) {
+/// One direction of the link: schedules every packet read from `from` and
+/// hands it to the thread that delivers it into `to`.
+fn pipe(mut from: TcpStream, to: TcpStream, link: Link) {
+    // Room for the packets in the queue and on the wire; a receiver that
+    // stops reading fills it and so holds the sender up.
+    let in_transit = (LINK_QUEUE + link.delay).as_secs_f64() * link.rate;
+    let (packets, arriving) = sync_channel(in_transit as usize / PACKET + 16);
+    thread::spawn(move || deliver(arriving, to));
+
     let mut buffer = vec![0; 16 * 1024];
+    // When the link has sent everything scheduled so far.
     let mut link_free = Instant::now();
-    loop {
+    'link: loop {
         let len = match from.read(&mut buffer) {
             Ok(0) | Err(_) => break,
             Ok(len) => len,
         };
-        // The chunk leaves once the link is free and arrives after its
-        // serialization time.
-        let start = link_free.max(Instant::now());
-        link_free = start + Duration::from_secs_f64(len as f64 / rate);
-        if let Some(wait) = link_free.checked_duration_since(Instant::now()) {
-            thread::sleep(wait);
+        for packet in buffer[..len].chunks(PACKET) {
+            // A packet leaves once the link has sent the ones before it and
+            // arrives after its serialization time and the delay. The times
+            // are absolute, so a late wake-up costs no rate.
+            let start = link_free.max(Instant::now());
+            link_free = start + Duration::from_secs_f64(packet.len() as f64 / link.rate);
+            if packets
+                .send((link_free + link.delay, packet.to_vec()))
+                .is_err()
+            {
+                break 'link;
+            }
         }
-        if to.write_all(&buffer[..len]).is_err() {
+        // Stop reading while the queue is full.
+        if let Some(queued) = link_free.checked_duration_since(Instant::now())
+            && queued > LINK_QUEUE
+        {
+            thread::sleep(queued - LINK_QUEUE / 2);
+        }
+    }
+}
+
+/// Writes every packet into `to` at its arrival time.
+fn deliver(arriving: Receiver<(Instant, Vec<u8>)>, mut to: TcpStream) {
+    // `thread::sleep` wakes tens of microseconds late; the rest is spun.
+    const SPIN: Duration = Duration::from_micros(200);
+    for (due, packet) in arriving {
+        while let Some(wait) = due.checked_duration_since(Instant::now()) {
+            if wait > SPIN {
+                thread::sleep(wait - SPIN);
+            } else {
+                std::hint::spin_loop();
+            }
+        }
+        if to.write_all(&packet).is_err() {
             break;
         }
     }
@@ -307,20 +382,14 @@ fn main() {
             peer.client.disconnect();
         }
         _ => {
-            let rates = std::env::var("EGUI_LATENCY_RATES").unwrap_or_else(|_| "0,1000,100".into());
-            for rate in rates
-                .split(',')
-                .map(|r| r.trim().parse::<f64>().expect("rate in Mbit/s"))
-            {
+            let links =
+                std::env::var("EGUI_LATENCY_LINKS").unwrap_or_else(|_| "0,1000:0.1,100:10".into());
+            for link in links.split(',').map(Link::parse) {
                 let port = free_port();
                 let server = start_server(port, Ipv4Addr::LOCALHOST);
-                let (label, port) = if rate > 0.0 {
-                    (
-                        format!("relay {rate} Mbit/s"),
-                        relay(port, rate * 1e6 / 8.0),
-                    )
-                } else {
-                    ("loopback".to_string(), port)
+                let (label, port) = match link {
+                    Some(link) => (link.label(), relay(port, link)),
+                    None => ("loopback".to_string(), port),
                 };
                 let mut peer = connect_client("127.0.0.1", port);
                 println!("== {label}");
