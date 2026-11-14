@@ -483,6 +483,7 @@ fn a_server_without_receiver_rejects_offers() {
 /// sender that breaks the protocol.
 struct Receiver {
     engine: Engine,
+    generation: u64,
     out: std::sync::mpsc::Receiver<Vec<u8>>,
 }
 
@@ -491,10 +492,14 @@ impl Receiver {
         let engine = Engine::new(Side::Client, None);
         engine.register(DOWN, Role::Receive, 0);
         let (tx, out) = std::sync::mpsc::channel();
-        engine.attach(Arc::new(move |message| {
+        let generation = engine.attach(Arc::new(move |message| {
             let _ = tx.send(message);
         }));
-        Self { engine, out }
+        Self {
+            engine,
+            generation,
+            out,
+        }
     }
 
     fn offer(&self, serial: u32, size: u64) {
@@ -535,6 +540,24 @@ impl Receiver {
                 mode: AcceptMode::Lane
             }]
         );
+        shared
+    }
+}
+
+impl Receiver {
+    /// Accepts an offer of `size` bytes into the file `path`. Its chunks wait
+    /// for a sink worker.
+    fn accepted_file(&self, serial: u32, size: u64, path: PathBuf) -> Arc<TransferShared> {
+        use crate::file_transfer::fs::{FileSink, Target};
+        self.offer(serial, size);
+        let offer = self.engine.take_offer(DOWN).unwrap();
+        let sink = FileSink::new(Target::File(path), &offer.body.files);
+        let sink = Sink::Files {
+            sink: Box::new(sink),
+            single: true,
+        };
+        let shared = offer.token.accept(sink, AcceptMode::Lane, None);
+        self.frames();
         shared
     }
 }
@@ -1048,4 +1071,113 @@ fn a_handle_for_an_ended_offer_is_the_last_one() {
     let stale = late.token.accept(Sink::memory(4), AcceptMode::Lane, None);
     assert!(stale.is_finished());
     assert!(Arc::ptr_eq(&rx.engine.last(DOWN).unwrap(), &newer));
+}
+
+#[cfg(any(feature = "server", feature = "python"))]
+#[test]
+fn a_waiting_send_does_not_cross_a_reconnect() {
+    let engine = Engine::new(Side::Server, None);
+    engine.register(DOWN, Role::Send, 0);
+    for _ in 0..32 {
+        let generation = engine.attach(Arc::new(|_| {}));
+        let _busy = send_bytes(&engine, DOWN, vec![0]);
+        let waiting = engine.clone();
+        let waiter = std::thread::spawn(move || {
+            waiting.send_wait(
+                DOWN,
+                single("a", 1),
+                Bytes::new(),
+                Source::bytes(vec![1]),
+                Some(DEADLINE),
+            )
+        });
+        until(|| (!engine.0.state.lock().endpoints[&DOWN].waiters.is_empty()).then_some(()))
+            .expect("the send waits");
+        // The next client is there before the waiting thread runs again.
+        engine.detach(generation);
+        let next = engine.attach(Arc::new(|_| {}));
+        assert_eq!(
+            waiter.join().unwrap().unwrap_err(),
+            TransferError::NotConnected
+        );
+        assert!(!engine.is_busy(DOWN));
+        engine.detach(next);
+    }
+}
+
+#[test]
+fn chunks_that_carry_nothing_fail_the_transfer() {
+    // An empty chunk would cost the sender no credit.
+    let rx = Receiver::new();
+    let shared = rx.accepted(1, 10);
+    rx.chunk(1, false, 0);
+    assert!(protocol_error(&shared), "{:?}", shared.status());
+
+    // Nothing follows the last chunk, also while it waits for the disk.
+    let rx = Receiver::new();
+    let path = std::env::temp_dir().join("egui_states_engine_never_written");
+    let shared = rx.accepted_file(2, 0, path.clone());
+    rx.chunk(2, true, 0);
+    assert!(!shared.is_finished());
+    rx.chunk(2, true, 0);
+    assert!(protocol_error(&shared), "{:?}", shared.status());
+
+    let shared = rx.accepted_file(3, 4, path);
+    rx.chunk(3, true, 4);
+    assert!(!shared.is_finished());
+    rx.chunk(3, true, 0);
+    assert!(protocol_error(&shared), "{:?}", shared.status());
+}
+
+#[test]
+fn chunks_waiting_for_the_disk_end_with_their_transfer() {
+    // No sink worker runs, as with a disk that does not answer.
+    let rx = Receiver::new();
+    let path = std::env::temp_dir().join("egui_states_engine_never_written");
+    for serial in 1..=4 {
+        let shared = rx.accepted_file(serial, 2 * FILE_TRANSFER_WINDOW, path.clone());
+        let window = Bytes::from(vec![0; FILE_TRANSFER_WINDOW as usize]);
+        let frame = TransferFrame::Chunk {
+            serial,
+            last: false,
+        };
+        rx.engine.handle_frame(DOWN, frame, window.clone());
+        assert!(!window.is_unique(), "the chunk waits for the disk");
+        assert!(!shared.is_finished());
+
+        rx.engine
+            .handle_frame(DOWN, TransferFrame::Cancel { serial }, Bytes::new());
+        assert!(shared.is_finished());
+        assert!(window.is_unique(), "a cancelled transfer kept its data");
+    }
+}
+
+#[test]
+fn the_sink_worker_writes_the_chunks_and_ends_with_its_connection() {
+    let dir = std::env::temp_dir().join(format!("egui_states_engine_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let rx = Receiver::new();
+    let (engine, generation) = (rx.engine.clone(), rx.generation);
+    let worker = std::thread::spawn(move || {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(engine.sink_worker(generation));
+    });
+
+    let shared = rx.accepted_file(1, 5, dir.join("a"));
+    rx.chunk(1, false, 2);
+    rx.chunk(1, true, 3);
+    assert_eq!(finished(&shared), TransferStatus::Done);
+    assert_eq!(std::fs::read(dir.join("a")).unwrap(), [0; 5]);
+
+    let shared = rx.accepted_file(2, 0, dir.join("empty"));
+    rx.chunk(2, true, 0);
+    assert_eq!(finished(&shared), TransferStatus::Done);
+    assert_eq!(std::fs::read(dir.join("empty")).unwrap(), [0; 0]);
+
+    rx.engine.detach(rx.generation);
+    worker.join().unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
 }

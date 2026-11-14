@@ -510,7 +510,8 @@ impl<M: TransferMeta> Upload<M> {
     ///
     /// Returns a pending handle at once and runs `pick` on a thread of its
     /// own, so a blocking dialog does not stop the UI; the endpoint counts as
-    /// busy meanwhile. `None` ends the handle as cancelled and sends nothing.
+    /// busy meanwhile. `None` ends the handle as cancelled and sends nothing,
+    /// and a `pick` that panics fails it.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn send_file_with(
         &self,
@@ -643,18 +644,25 @@ impl<M: TransferMeta> Upload<M> {
             Err(error) => return TransferHandle::new(TransferShared::failed(error, None)),
         };
         let (engine, reserved) = (self.engine.clone(), shared.clone());
-        let work = move || match pick() {
-            None => engine.release(
-                &reserved,
-                TransferError::Cancelled {
-                    by_peer: false,
-                    reason: None,
+        let work = move || {
+            // A picker that panics must not leave the endpoint busy.
+            let _guard = PickGuard {
+                engine: &engine,
+                reserved: &reserved,
+            };
+            match pick() {
+                None => engine.release(
+                    &reserved,
+                    TransferError::Cancelled {
+                        by_peer: false,
+                        reason: None,
+                    },
+                ),
+                Some(files) => match local_offer(files, name) {
+                    Ok((body, source)) => engine.send_reserved(&reserved, body, meta, source),
+                    Err(error) => engine.release(&reserved, error),
                 },
-            ),
-            Some(files) => match local_offer(files, name) {
-                Ok((body, source)) => engine.send_reserved(&reserved, body, meta, source),
-                Err(error) => engine.release(&reserved, error),
-            },
+            }
         };
         spawn_work(work, &self.engine, &shared);
         TransferHandle::new(shared)
@@ -733,6 +741,21 @@ fn spawn_work(
     }
 }
 
+/// Ends a reserved send when the thread that picks its files panics.
+struct PickGuard<'a> {
+    engine: &'a Engine,
+    reserved: &'a std::sync::Arc<TransferShared>,
+}
+
+impl Drop for PickGuard<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            let error = TransferError::Io("picking the files panicked".to_string());
+            self.engine.release(self.reserved, error);
+        }
+    }
+}
+
 #[cfg(target_arch = "wasm32")]
 fn spawn_work(
     work: impl FnOnce() + 'static,
@@ -808,5 +831,40 @@ mod tests {
         );
         assert_eq!(download_base("wss://example.org/ws"), "https://example.org");
         assert_eq!(download_base("ws://[::1]:9000/ws"), "http://[::1]:9000");
+    }
+
+    #[test]
+    fn a_panicking_picker_ends_the_send_and_frees_the_endpoint() {
+        use crate::file_transfer::engine::{Role, Side};
+        use crate::file_transfer::{TransferError, TransferStatus};
+
+        let engine = Engine::new(Side::Client, None);
+        engine.register(7, Role::Send, 0);
+        engine.attach(std::sync::Arc::new(|_| {}));
+        let upload = Upload::<()>::new(7, engine);
+        let finished = |handle: &TransferHandle| {
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            while !handle.is_finished() {
+                assert!(std::time::Instant::now() < deadline, "the send never ends");
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            handle.status()
+        };
+        let handle = upload.send_file_with(|| panic!("the picker fails, as the test expects"), ());
+        let status = finished(&handle);
+        assert!(
+            matches!(status, TransferStatus::Failed(TransferError::Io(_))),
+            "{status:?}"
+        );
+        assert!(!upload.is_busy());
+        // The endpoint takes the next send.
+        let status = finished(&upload.send_file_with(|| None, ()));
+        assert!(
+            matches!(
+                status,
+                TransferStatus::Failed(TransferError::Cancelled { .. })
+            ),
+            "{status:?}"
+        );
     }
 }

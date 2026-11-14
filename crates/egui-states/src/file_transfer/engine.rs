@@ -94,6 +94,9 @@ pub(crate) struct Inner {
     free: Condvar,
     /// Wakes the pump.
     pump: Notify,
+    /// Wakes the writer of file sinks.
+    #[cfg(not(target_arch = "wasm32"))]
+    sinks: Notify,
     repaint: Option<Repaint>,
     events: OnceLock<EventHook>,
     tickets: OnceLock<TicketHook>,
@@ -114,25 +117,25 @@ struct State {
     next_key: u64,
     #[cfg_attr(not(any(feature = "server", feature = "python")), allow(dead_code))]
     next_waiter: u64,
-    /// The job queue of the attached connection, until its worker takes it.
-    #[cfg(not(target_arch = "wasm32"))]
-    jobs: Option<(u64, mpsc::UnboundedReceiver<SinkJob>)>,
 }
 
 struct Connection {
     lane: StateLane,
     generation: u64,
-    /// Chunks for the sinks that block, written by [`Engine::sink_worker`].
-    #[cfg(not(target_arch = "wasm32"))]
-    jobs: mpsc::UnboundedSender<SinkJob>,
 }
 
-/// A chunk for a sink that blocks.
+/// The chunks of one transfer that [`Engine::sink_worker`] writes in one
+/// blocking call, with the sink they go to.
 #[cfg(not(target_arch = "wasm32"))]
 struct SinkJob {
     endpoint: u64,
     serial: u32,
-    data: Bytes,
+    sink: Box<crate::file_transfer::fs::FileSink>,
+    single: bool,
+    batch: Vec<Bytes>,
+    len: u64,
+    /// Whether the batch ends the data.
+    finishing: bool,
 }
 
 /// Bytes the sink worker writes in one blocking call.
@@ -209,6 +212,12 @@ struct Transfer {
     received: u64,
     consumed: u64,
     granted: u64,
+    /// Whether the last chunk has arrived.
+    closed: bool,
+    /// Chunks waiting for the sink worker. They are part of the transfer, so
+    /// they never exceed its credit and are freed when it ends.
+    #[cfg(not(target_arch = "wasm32"))]
+    pending: VecDeque<Bytes>,
     /// Sender, browser downloads: the tickets and the next file.
     #[cfg(any(feature = "server", feature = "python"))]
     http: Option<http::HttpState>,
@@ -233,6 +242,9 @@ impl Transfer {
             received: 0,
             consumed: 0,
             granted: 0,
+            closed: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            pending: VecDeque::new(),
             #[cfg(any(feature = "server", feature = "python"))]
             http: None,
         }
@@ -251,6 +263,8 @@ struct Effects {
     downloads: Vec<BrowserDownload>,
     wake_pump: bool,
     wake_free: bool,
+    #[cfg(not(target_arch = "wasm32"))]
+    wake_sinks: bool,
 }
 
 /// An offer handed to the application.
@@ -282,11 +296,11 @@ impl Engine {
                 queue: VecDeque::new(),
                 next_key: 0,
                 next_waiter: 0,
-                #[cfg(not(target_arch = "wasm32"))]
-                jobs: None,
             }),
             free: Condvar::new(),
             pump: Notify::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            sinks: Notify::new(),
             repaint,
             events: OnceLock::new(),
             tickets: OnceLock::new(),
@@ -380,18 +394,7 @@ impl Engine {
         let mut state = self.0.state.lock();
         state.generation += 1;
         let generation = state.generation;
-        #[cfg(not(target_arch = "wasm32"))]
-        let (jobs, jobs_rx) = mpsc::unbounded_channel();
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            state.jobs = Some((generation, jobs_rx));
-        }
-        state.connection = Some(Connection {
-            lane,
-            generation,
-            #[cfg(not(target_arch = "wasm32"))]
-            jobs,
-        });
+        state.connection = Some(Connection { lane, generation });
         generation
     }
 
@@ -401,63 +404,31 @@ impl Engine {
     /// sender down.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn sink_worker(&self, generation: u64) {
-        let jobs = {
-            let mut state = self.0.state.lock();
-            match state.jobs.take() {
-                Some((jobs_generation, jobs)) if jobs_generation == generation => Some(jobs),
-                other => {
-                    state.jobs = other;
-                    None
-                }
-            }
-        };
-        let Some(mut jobs) = jobs else {
-            return;
-        };
-        let mut pending: Option<SinkJob> = None;
         loop {
-            let first = match pending.take() {
-                Some(job) => job,
-                None => match jobs.recv().await {
-                    Some(job) => job,
-                    None => return,
-                },
-            };
-            let (endpoint, serial) = (first.endpoint, first.serial);
-            let mut len = first.data.len();
-            let mut batch = vec![first.data];
-            while len < SINK_BATCH {
-                match jobs.try_recv() {
-                    Ok(job) if job.endpoint == endpoint && job.serial == serial => {
-                        len += job.data.len();
-                        batch.push(job.data);
-                    }
-                    Ok(job) => {
-                        pending = Some(job);
-                        break;
-                    }
-                    Err(_) => break,
-                }
-            }
-
-            let taken = {
+            let job = {
                 let mut state = self.0.state.lock();
-                Self::current_mut(&mut state, endpoint, serial)
-                    .filter(|t| t.phase == Phase::Receiving)
-                    .and_then(|t| {
-                        let finishing = t.consumed + len as u64 == t.total;
-                        match t.sink.take() {
-                            Some(Sink::Files { sink, single }) => Some((sink, single, finishing)),
-                            other => {
-                                t.sink = other;
-                                None
-                            }
-                        }
-                    })
+                if state
+                    .connection
+                    .as_ref()
+                    .is_none_or(|c| c.generation != generation)
+                {
+                    return;
+                }
+                Self::next_sink_job(&mut state)
             };
-            let Some((mut sink, single, finishing)) = taken else {
+            let Some(job) = job else {
+                self.0.sinks.notified().await;
                 continue;
             };
+            let SinkJob {
+                endpoint,
+                serial,
+                mut sink,
+                single,
+                batch,
+                len,
+                finishing,
+            } = job;
             let written = tokio::task::spawn_blocking(move || {
                 let mut result = Ok(());
                 for data in &batch {
@@ -487,7 +458,7 @@ impl Engine {
                     Ok((sink, Ok(()))) => {
                         if let Some(t) = Self::current_mut(&mut state, endpoint, serial) {
                             t.sink = Some(Sink::Files { sink, single });
-                            self.consumed(&mut state, endpoint, serial, len as u64, &mut fx);
+                            self.consumed(&mut state, endpoint, serial, len, &mut fx);
                         }
                     }
                     Ok((sink, Err(error))) => {
@@ -508,6 +479,47 @@ impl Engine {
             }
             self.apply(fx);
         }
+    }
+
+    /// Takes the sink of a transfer that has chunks to write, with up to a
+    /// batch of them.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn next_sink_job(state: &mut State) -> Option<SinkJob> {
+        for (&endpoint, ep) in &mut state.endpoints {
+            let Some(t) = ep
+                .current
+                .as_mut()
+                .filter(|t| t.phase == Phase::Receiving && !t.pending.is_empty())
+            else {
+                continue;
+            };
+            let (sink, single) = match t.sink.take() {
+                Some(Sink::Files { sink, single }) => (sink, single),
+                other => {
+                    t.sink = other;
+                    continue;
+                }
+            };
+            let mut batch = Vec::new();
+            let mut len = 0;
+            while len < SINK_BATCH
+                && let Some(data) = t.pending.pop_front()
+            {
+                len += data.len();
+                batch.push(data);
+            }
+            let len = len as u64;
+            return Some(SinkJob {
+                endpoint,
+                serial: t.serial,
+                sink,
+                single,
+                batch,
+                len,
+                finishing: t.consumed + len == t.total,
+            });
+        }
+        None
     }
 
     /// Detaches the connection of `generation`: every unfinished transfer
@@ -545,6 +557,10 @@ impl Engine {
             }
             fx.wake_free = true;
             fx.wake_pump = true;
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                fx.wake_sinks = true;
+            }
         }
         self.apply(fx);
     }
@@ -936,7 +952,13 @@ impl Engine {
             return;
         }
         let len = payload.len() as u64;
-        let error = if t.received + len > t.total {
+        // A sender never sends an empty chunk, except as the whole of an empty
+        // transfer; one that carries nothing would cost the peer no credit.
+        let error = if t.closed {
+            Some("data after the last chunk")
+        } else if len == 0 && t.total > 0 {
+            Some("an empty chunk")
+        } else if t.received + len > t.total {
             Some("more data than announced")
         } else if t.received + len > t.granted {
             Some("data beyond the granted credit")
@@ -951,33 +973,23 @@ impl Engine {
             return;
         }
         t.received += len;
+        t.closed = last;
         t.shared.set_status(TransferStatus::Running);
-        let Some(sink) = t.sink.as_mut() else {
-            // The sink worker holds the sink; it takes the chunk in order.
-            #[cfg(not(target_arch = "wasm32"))]
-            self.queue_job(state, endpoint, serial, payload);
-            return;
-        };
-        if sink.is_inline() {
+        // Without a sink here, the sink worker holds it.
+        if t.sink.as_ref().is_some_and(Sink::is_inline) {
+            let sink = t.sink.as_mut().expect("checked above");
             if let Err(error) = sink.write_inline(payload) {
                 self.fail_locked(state, endpoint, serial, error, fx);
                 return;
             }
             self.consumed(state, endpoint, serial, len, fx);
-        } else {
-            #[cfg(not(target_arch = "wasm32"))]
-            self.queue_job(state, endpoint, serial, payload);
+            return;
         }
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn queue_job(&self, state: &State, endpoint: u64, serial: u32, payload: &Bytes) {
-        if let Some(connection) = &state.connection {
-            let _ = connection.jobs.send(SinkJob {
-                endpoint,
-                serial,
-                data: payload.clone(),
-            });
+        // The sink worker writes it, in order.
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            t.pending.push_back(payload.clone());
+            fx.wake_sinks = true;
         }
     }
 
@@ -1080,6 +1092,12 @@ impl Engine {
         let deadline = timeout.map(|timeout| std::time::Instant::now() + timeout);
         let mut state = self.0.state.lock();
         Self::sending_endpoint(&mut state, endpoint)?;
+        // The send belongs to the connection it was called on: after a
+        // reconnect it fails, also when the new client is already there.
+        let generation = state.connection.as_ref().map(|c| c.generation);
+        let connected = |state: &State| {
+            generation.is_some() && state.connection.as_ref().map(|c| c.generation) == generation
+        };
         let ticket = state.next_waiter;
         state.next_waiter += 1;
         let leave = |state: &mut State| {
@@ -1094,7 +1112,7 @@ impl Engine {
             .waiters
             .push_back(ticket);
         loop {
-            if state.connection.is_none() {
+            if !connected(&state) {
                 leave(&mut state);
                 drop(state);
                 self.0.free.notify_all();
@@ -1113,10 +1131,7 @@ impl Engine {
             };
             if timed_out {
                 let ep = state.endpoints.get(&endpoint).expect("checked above");
-                if !(state.connection.is_some()
-                    && !ep.is_busy()
-                    && ep.waiters.front() == Some(&ticket))
-                {
+                if !(connected(&state) && !ep.is_busy() && ep.waiters.front() == Some(&ticket)) {
                     leave(&mut state);
                     drop(state);
                     self.0.free.notify_all();
@@ -1468,6 +1483,10 @@ impl Engine {
         }
         if fx.wake_free {
             self.0.free.notify_all();
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if fx.wake_sinks {
+            self.0.sinks.notify_one();
         }
         if !fx.events.is_empty()
             && let Some(hook) = self.0.events.get()

@@ -264,15 +264,7 @@ impl FileSink {
             let (target, size, modified) = self.targets[self.next].clone();
             self.next += 1;
             self.create_parents(&target)?;
-            let name = target
-                .file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            let temp = parent_of(&target).join(format!(
-                ".{name}.{}-{}.part",
-                std::process::id(),
-                TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
-            ));
+            let temp = parent_of(&target).join(temp_name(&target));
             let file = OpenOptions::new()
                 .write(true)
                 .create_new(true)
@@ -315,6 +307,29 @@ impl Drop for FileSink {
             let _ = std::fs::remove_file(&open.temp);
         }
     }
+}
+
+/// How much of a target's name its temporary file keeps.
+const TEMP_NAME_KEPT: usize = 96;
+
+/// The name of the temporary file of `target`: hidden, unique in this
+/// process, and recognisable by the start of the target's name. Only the
+/// start, so a name near the file system's limit still has a temporary file.
+fn temp_name(target: &Path) -> String {
+    let name = target
+        .file_name()
+        .map(|name| name.to_string_lossy())
+        .unwrap_or_default();
+    let mut kept = name.len().min(TEMP_NAME_KEPT);
+    while !name.is_char_boundary(kept) {
+        kept -= 1;
+    }
+    format!(
+        ".{}.{}-{}.part",
+        &name[..kept],
+        std::process::id(),
+        TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+    )
 }
 
 /// The folder `target` is in.
@@ -610,6 +625,36 @@ mod tests {
         assert!(dir.join("new").is_dir());
         let error = ensure_folder(&dir.join("a")).unwrap_err();
         assert!(error.to_string().contains("not a folder"), "{error}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_temporary_name_keeps_only_the_start_of_a_long_name() {
+        let temp = temp_name(Path::new("dir/run.tiff"));
+        assert!(temp.starts_with(".run.tiff."), "{temp}");
+        assert!(temp.ends_with(".part"), "{temp}");
+        assert_ne!(temp, temp_name(Path::new("dir/run.tiff")));
+
+        // 255 bytes are the limit of the common file systems.
+        for name in ["a".repeat(255), "\u{17e}".repeat(127)] {
+            let temp = temp_name(Path::new(&name));
+            assert!(temp.len() < 160, "{temp}");
+            assert!(temp.starts_with(&format!(".{}", &name[..2])), "{temp}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_name_at_the_length_limit_is_saved() {
+        let dir = temp_dir("long_name");
+        let name = "a".repeat(255);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(&name), b"old").unwrap();
+        let mut sink = FileSink::new(Target::Dir(dir.clone()), &[entry(&name, 3, None)]);
+        sink.write(b"new").unwrap();
+        sink.finish().unwrap();
+        assert_eq!(std::fs::read(dir.join(&name)).unwrap(), b"new");
+        assert_eq!(entries(&dir), [name]);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
