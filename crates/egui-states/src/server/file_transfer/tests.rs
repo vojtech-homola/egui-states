@@ -841,19 +841,27 @@ fn a_browser_that_stops_cancels_the_download() {
     );
 }
 
+/// Waits until only `holders` still hold the transfer: the callback workers
+/// let go of a finished transfer once its event is delivered.
+fn released(handle: &crate::TransferHandle, holders: usize) {
+    wait("release", || {
+        (std::sync::Arc::strong_count(&handle.shared) == holders).then_some(())
+    });
+}
+
 #[test]
 fn connect_callbacks_all_run_and_release_the_transfer() {
     if crate::test_support::isolated() {
         return;
     }
     let peers = Peers::connect();
-    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let (first, second) = (calls.clone(), calls.clone());
-    let a = peers.files.connect(move |_| {
-        first.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let names = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (first, second) = (names.clone(), names.clone());
+    let a = peers.files.connect(move |transfer| {
+        first.lock().unwrap().push(transfer.name().to_string());
     });
-    let b = peers.files.connect(move |_| {
-        second.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let b = peers.files.connect(move |transfer| {
+        second.lock().unwrap().push(transfer.name().to_string());
     });
     let sent = peers
         .files
@@ -862,13 +870,11 @@ fn connect_callbacks_all_run_and_release_the_transfer() {
     wait("offer", || peers.states.files.take_offer()).accept_memory(10);
     sent.wait(Some(Duration::from_secs(10))).unwrap();
     wait("callbacks", || {
-        (calls.load(std::sync::atomic::Ordering::SeqCst) == 2).then_some(())
+        (names.lock().unwrap().len() == 2).then_some(())
     });
-    let key = sent.shared.key();
-    assert!(
-        peers.files.endpoint.events.take(key).is_none(),
-        "the event released it"
-    );
+    assert_eq!(*names.lock().unwrap(), ["a", "a"]);
+    // This handle and the endpoint's last one.
+    released(&sent, 2);
 
     // Without callbacks, finished transfers are not kept at all.
     drop((a, b));
@@ -878,14 +884,31 @@ fn connect_callbacks_all_run_and_release_the_transfer() {
         .unwrap();
     wait("offer", || peers.states.files.take_offer()).accept_memory(10);
     sent.wait(Some(Duration::from_secs(10))).unwrap();
-    assert!(
-        peers
-            .files
-            .endpoint
-            .events
-            .take(sent.shared.key())
-            .is_none()
-    );
+    released(&sent, 2);
+    assert_eq!(names.lock().unwrap().len(), 2);
+}
+
+/// A receiver of offers gets the endpoint's finished events too and ignores
+/// them; the transfers, with the data taken into memory, must still be let
+/// go.
+#[test]
+fn a_receiver_without_connect_callbacks_keeps_no_finished_transfers() {
+    if crate::test_support::isolated() {
+        return;
+    }
+    let peers = Peers::connect();
+    let accepted = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let slot = accepted.clone();
+    let _receiver = peers.inputs.on_offer(move |offer| {
+        *slot.lock().unwrap() = offer.accept_memory(1024).ok();
+    });
+    let uploaded = peers.states.inputs.send_bytes(vec![7; 100], "mem.bin", 1);
+    assert_eq!(finished(&uploaded), TransferStatus::Done);
+    let received = wait("accept", || accepted.lock().unwrap().take());
+    assert_eq!(finished(&received), TransferStatus::Done);
+    // This handle and the endpoint's last one.
+    released(&received, 2);
+    assert_eq!(received.take_data().unwrap(), vec![7; 100]);
 }
 
 #[test]

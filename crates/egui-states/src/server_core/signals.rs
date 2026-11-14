@@ -1,3 +1,4 @@
+use std::any::Any;
 use std::collections::{VecDeque, hash_map::Entry};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -15,12 +16,16 @@ pub(crate) const ON_CONNECT_ID: u64 = 1;
 pub(crate) const ON_DISCONNECT_ID: u64 = 2;
 pub(crate) const CLIENT_MESSAGE_ID: u64 = 3;
 
+/// What a change carries for its callbacks besides its bytes.
+pub(crate) type Attachment = Arc<dyn Any + Send + Sync>;
+
 /// A stored change. `previous` is only ever set by a `Value`, which is the sole
 /// state that keeps a value to be replaced; a `Signal` stores nothing, so it has
 /// no previous value to report.
 struct Change {
     value: Bytes,
     previous: Option<Bytes>,
+    attachment: Option<Attachment>,
 }
 
 enum Signal {
@@ -38,7 +43,11 @@ struct ChangedInner {
     /// change. Entries beyond that are stale (left behind by `set_to_single` or by a
     /// drained queue); `get` drops them when it reaches them.
     indexes: Vec<u64>,
-    blocked_list: NoHashSet<u64>,     // ids blocked by some thread
+    blocked_list: NoHashSet<u64>, // ids blocked by some thread
+    /// The attachment of the change each blocked id is delivering. It goes
+    /// when the id is released, so it lives exactly as long as the callbacks
+    /// of its change run, whether or not one of them looks at it.
+    delivering: NoHashMap<u64, Attachment>,
     registered: NoHashMap<u64, bool>, // ids registered to be signaled -> wants previous value
     /// Ids whose pending changes survive a disconnect, like the reserved ones.
     persistent: NoHashSet<u64>,
@@ -50,6 +59,7 @@ impl ChangedInner {
             values: NoHashMap::default(),
             indexes: Vec::new(),
             blocked_list: NoHashSet::default(),
+            delivering: NoHashMap::default(),
             registered: NoHashMap::default(),
             persistent: NoHashSet::default(),
         }
@@ -73,14 +83,25 @@ impl ChangedInner {
         // released when the worker passes the id back.
     }
 
-    fn set(&mut self, id: u64, value: Bytes, previous: Option<Bytes>, event: &Event) {
+    fn set(
+        &mut self,
+        id: u64,
+        value: Bytes,
+        previous: Option<Bytes>,
+        attachment: Option<Attachment>,
+        event: &Event,
+    ) {
         if !self.registered.contains_key(&id) {
             return;
         }
 
         match self.values.entry(id) {
             Entry::Vacant(e) => {
-                e.insert(Signal::Single(Change { value, previous }));
+                e.insert(Signal::Single(Change {
+                    value,
+                    previous,
+                    attachment,
+                }));
                 self.indexes.push(id);
             }
             Entry::Occupied(mut e) => match e.get_mut() {
@@ -91,13 +112,21 @@ impl ChangedInner {
                     // only c is delivered, it sees (c, a) and can still diff against its
                     // own view. Reporting b would name a value it never received.
                     let previous = v.previous.take().or(previous);
-                    *v = Change { value, previous };
+                    *v = Change {
+                        value,
+                        previous,
+                        attachment,
+                    };
                     // Already scheduled (see `indexes`), and it keeps its place, so
                     // nothing is pushed. While a callback holds the id, a stream of
                     // changes would otherwise pile up entries every `get` walks past.
                 }
                 Signal::Queue(v) => {
-                    v.push_back(Change { value, previous });
+                    v.push_back(Change {
+                        value,
+                        previous,
+                        attachment,
+                    });
                     self.indexes.push(id);
                 }
             },
@@ -106,6 +135,12 @@ impl ChangedInner {
         if !self.blocked_list.contains(&id) {
             event.set_one();
         }
+    }
+
+    /// Ends the delivery `id` was blocked for.
+    fn release(&mut self, id: u64) {
+        self.blocked_list.remove(&id);
+        self.delivering.remove(&id);
     }
 
     fn get_id(&mut self, id: u64) -> Option<Change> {
@@ -125,7 +160,7 @@ impl ChangedInner {
 
     fn get(&mut self, last_id: Option<u64>) -> Option<(u64, Bytes, Option<Bytes>)> {
         if let Some(last_id) = last_id {
-            self.blocked_list.remove(&last_id);
+            self.release(last_id);
         }
 
         let mut pos = 0;
@@ -146,6 +181,9 @@ impl ChangedInner {
 
             if let Some(change) = self.get_id(id) {
                 self.blocked_list.insert(id);
+                if let Some(attachment) = change.attachment {
+                    self.delivering.insert(id, attachment);
+                }
                 let previous = match wants_previous {
                     true => change.previous,
                     false => None,
@@ -234,7 +272,23 @@ impl SignalsManager {
     }
 
     pub(crate) fn set(&self, id: u64, value: Bytes) {
-        self.values.lock().set(id, value, None, &self.event);
+        self.values.lock().set(id, value, None, None, &self.event);
+    }
+
+    /// Like [`Self::set`], but the change carries `attachment`: the callbacks
+    /// that run for it read it with [`Self::attachment`]. It is dropped when
+    /// they have run, or with the change if it is never delivered.
+    pub(crate) fn set_attached(&self, id: u64, value: Bytes, attachment: Attachment) {
+        self.values
+            .lock()
+            .set(id, value, None, Some(attachment), &self.event);
+    }
+
+    /// The attachment of the change the callbacks of `id` are running for.
+    /// Only a callback of `id` may ask: outside of one the answer is `None`,
+    /// or belongs to a delivery the caller is not part of.
+    pub(crate) fn attachment(&self, id: u64) -> Option<Attachment> {
+        self.values.lock().delivering.get(&id).cloned()
     }
 
     /// Like [`Self::set`], but records the value being replaced. Only a `Value` has
@@ -243,7 +297,7 @@ impl SignalsManager {
     pub(crate) fn set_with_previous(&self, id: u64, value: Bytes, previous: Bytes) {
         self.values
             .lock()
-            .set(id, value, Some(previous), &self.event);
+            .set(id, value, Some(previous), None, &self.event);
     }
 
     pub(crate) fn reset(&self) {
@@ -315,6 +369,11 @@ impl SignalsManager {
     pub(crate) fn claim(&self, mut release: Option<u64>, deadline: Option<Instant>) -> Claim {
         loop {
             if self.closed.load(Ordering::Acquire) {
+                // Nothing is claimed any more, but the delivery the caller
+                // comes back from has ended, and so has its attachment.
+                if let Some(id) = release.take() {
+                    self.values.lock().release(id);
+                }
                 return Claim::Closed;
             }
             if let Some((id, value, previous)) = self.values.lock().get(release.take()) {
@@ -350,7 +409,7 @@ impl SignalsManager {
     /// value.
     #[cfg(any(feature = "python", test))]
     pub(crate) fn release(&self, id: u64) {
-        self.values.lock().blocked_list.remove(&id);
+        self.values.lock().release(id);
         // Anything that arrived while the id was blocked did not set the event
         // (`ChangedInner::set` skips blocked ids), so wake a waiter to drain it.
         // A spurious wake-up is harmless: the waiter just finds nothing.
@@ -393,12 +452,6 @@ impl SignalsManager {
         let mut values = self.values.lock();
         values.set_to_queue(id);
         values.persistent.insert(id);
-    }
-
-    /// Whether `id` has a consumer; an event for an id without one is
-    /// dropped.
-    pub(crate) fn is_registered(&self, id: u64) -> bool {
-        self.values.lock().registered.contains_key(&id)
     }
 
     pub(crate) fn set_to_single(&self, id: u64) {
@@ -733,6 +786,54 @@ mod tests {
             last = Some(id);
         }
         assert_eq!(delivered, [b("a1"), b("s2"), b("a2"), b("c1")]);
+    }
+
+    /// An attachment lives as long as the callbacks of its change run: it is
+    /// there for them, and gone once the id is passed back, whether or not a
+    /// callback looked at it.
+    #[test]
+    fn an_attachment_lives_until_its_change_is_delivered() {
+        let manager = SignalsManager::new();
+        manager.set_register(40, true, false);
+        manager.set_to_queue(40);
+        let (first, second) = (Arc::new(1_u32), Arc::new(2_u32));
+        let value = |manager: &SignalsManager| {
+            manager
+                .attachment(40)
+                .and_then(|attachment| attachment.downcast::<u32>().ok())
+                .map(|value| *value)
+        };
+
+        manager.set_attached(40, b("first"), first.clone());
+        manager.set(40, b("plain"));
+        manager.set_attached(40, b("second"), second.clone());
+        assert_eq!(value(&manager), None, "nothing is delivered yet");
+
+        assert_eq!(next(&manager, None).1, b("first"));
+        assert_eq!(value(&manager), Some(1));
+        assert_eq!(next(&manager, Some(40)).1, b("plain"));
+        assert_eq!(value(&manager), None);
+        assert_eq!(Arc::strong_count(&first), 1, "released without being read");
+        assert_eq!(next(&manager, Some(40)).1, b("second"));
+        assert_eq!(value(&manager), Some(2));
+        manager.release(40);
+        assert_eq!(value(&manager), None);
+        assert_eq!(Arc::strong_count(&second), 1);
+
+        // A change nobody takes releases its attachment as well.
+        manager.set_attached(40, b("dropped"), first.clone());
+        manager.set_register(40, false, false);
+        assert_eq!(Arc::strong_count(&first), 1);
+        manager.set_attached(40, b("unregistered"), first.clone());
+        assert_eq!(Arc::strong_count(&first), 1);
+
+        // A worker that comes back to closed signals ends its delivery too.
+        manager.set_register(40, true, false);
+        manager.set_attached(40, b("closing"), first.clone());
+        assert_eq!(next(&manager, None).1, b("closing"));
+        manager.close();
+        assert!(matches!(manager.claim(Some(40), None), Claim::Closed));
+        assert_eq!(Arc::strong_count(&first), 1);
     }
 
     fn claim_ready(manager: &SignalsManager, deadline: Option<Instant>) -> (u64, Bytes) {

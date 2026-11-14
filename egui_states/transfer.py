@@ -274,8 +274,10 @@ class TransferOffer:
     def accept_dir(self, dir: str | PathLike[str]) -> TransferHandle:  # noqa: A002
         """Accept the offer into the folder ``dir``, each file under its own name.
 
-        Names like ``run42/0001.tiff`` create subfolders. If the transfer
-        fails, files already complete stay.
+        Names like ``run42/0001.tiff`` create subfolders. Files are not saved
+        through a symbolic link or junction inside ``dir``: if a folder a
+        file goes into is one, the transfer fails before any file is written.
+        If the transfer fails later, files already complete stay.
 
         Args:
             dir (str | PathLike[str]): The folder to save the files in.

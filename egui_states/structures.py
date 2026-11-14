@@ -1557,10 +1557,10 @@ class _TransferEndpoint(_CallbackBase):
         self._finished: list[Callable[[TransferHandle], Any]] = []
         self._dispatching = False
 
-    def _dispatch_event(self, event: tuple[int, int]) -> None:
-        kind, key = event
+    def _dispatch_event(self, kind: int) -> None:
         if kind == _TRANSFER_FINISHED:
-            handle = self._server.transfer_finished(self._value_id, self._download, key)
+            # The transfer travels with the event this worker is delivering.
+            handle = self._server.transfer_finished(self._value_id, self._download)
             if handle is not None:
                 for callback in list(self._finished):
                     self._signals_manager._invoke(callback, TransferHandle(handle))

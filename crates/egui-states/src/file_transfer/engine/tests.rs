@@ -984,4 +984,68 @@ fn offers_beyond_the_size_limits_are_rejected_on_receipt() {
         Bytes::from(encode_offer(&body, &[]).unwrap()),
     );
     assert_eq!(rx.frames(), [TransferFrame::Reject { serial: 2 }]);
+
+    // A payload over both limits together is refused before it is decoded:
+    // this one would not decode.
+    let rx = Receiver::new();
+    rx.engine.handle_frame(
+        DOWN,
+        TransferFrame::Offer {
+            serial: 3,
+            meta_type: 0,
+        },
+        Bytes::from(vec![0xff; 2 * VALUE_MAX_SIZE + 1]),
+    );
+    let (_, frame, reason) = decode(Side::Client, &rx.out.try_recv().unwrap());
+    assert_eq!(frame, TransferFrame::Reject { serial: 3 });
+    assert_eq!(&reason[..], b"the offer is too large");
+}
+
+/// `last` is the handle the application was given last, also when the offer
+/// behind it had already ended; only a later transfer's handle stays.
+#[test]
+fn a_handle_for_an_ended_offer_is_the_last_one() {
+    let rx = Receiver::new();
+    let cancel = |serial| {
+        rx.engine
+            .handle_frame(DOWN, TransferFrame::Cancel { serial }, Bytes::new());
+    };
+    let done = rx.accepted(1, 0);
+    rx.chunk(1, true, 0);
+    assert_eq!(done.status(), TransferStatus::Done);
+    assert!(Arc::ptr_eq(&rx.engine.last(DOWN).unwrap(), &done));
+
+    // The sender withdraws the offer while the destination is chosen.
+    rx.offer(2, 4);
+    let withdrawn = rx.engine.take_offer(DOWN).unwrap();
+    cancel(2);
+    let failed = withdrawn
+        .token
+        .accept(Sink::memory(4), AcceptMode::Lane, None);
+    assert!(matches!(
+        failed.status(),
+        TransferStatus::Failed(TransferError::Cancelled { by_peer: true, .. })
+    ));
+    assert!(Arc::ptr_eq(&rx.engine.last(DOWN).unwrap(), &failed));
+
+    // The same for a destination picked off the calling thread.
+    rx.offer(3, 4);
+    let picked = rx.engine.take_offer(DOWN).unwrap();
+    cancel(3);
+    picked.token.expose();
+    assert!(Arc::ptr_eq(
+        &rx.engine.last(DOWN).unwrap(),
+        picked.token.shared()
+    ));
+
+    // An offer answered after a later transfer got its handle does not
+    // replace it.
+    rx.offer(4, 4);
+    let late = rx.engine.take_offer(DOWN).unwrap();
+    cancel(4);
+    rx.frames();
+    let newer = rx.accepted(5, 4);
+    let stale = late.token.accept(Sink::memory(4), AcceptMode::Lane, None);
+    assert!(stale.is_finished());
+    assert!(Arc::ptr_eq(&rx.engine.last(DOWN).unwrap(), &newer));
 }

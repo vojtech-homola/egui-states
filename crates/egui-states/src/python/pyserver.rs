@@ -25,7 +25,7 @@ use crate::python::{
     pytransfer::{self, Offer, PyTransferHandle, PyTransferOffer, SendTarget},
     pytypes::{PyObjectClass, PyObjectType},
 };
-use crate::server_core::file_transfer::TransferEndpoint;
+use crate::server_core::file_transfer::{TransferEndpoint, finished_transfer};
 use crate::server_core::http::web::{LoadError, WebSite};
 use crate::server_core::net::heartbeat::{self, Heartbeat};
 use crate::server_core::server::{Server, ServerConfig, StateRef};
@@ -395,12 +395,9 @@ impl StateServerCore {
             states.insert(id, state);
         }
 
-        // A transfer endpoint's events carry their kind and a key.
+        // A transfer endpoint's events carry their kind.
         for id in transfer_events {
-            types.insert(
-                id,
-                PyObjectType::Tuple(vec![PyObjectType::U8, PyObjectType::U64]),
-            );
+            types.insert(id, PyObjectType::U8);
         }
         let inner = ValuesInner {
             states,
@@ -1802,16 +1799,16 @@ impl StateServerCore {
         Ok(())
     }
 
-    /// The finished transfer a transfer event names.
+    /// The finished transfer of the event the endpoint's callbacks are
+    /// running for; `None` outside of them.
     fn transfer_finished(
         &self,
         py: Python,
         value_id: u64,
         download: bool,
-        key: u64,
     ) -> PyResult<Option<PyTransferHandle>> {
         let (_, meta_type) = self.transfer_endpoint(value_id, download)?;
-        let finished = self.server.read().transfer_events().take(key);
+        let finished = finished_transfer(&self.signals, value_id);
         Ok(finished.map(|shared| PyTransferHandle::new(py, shared, meta_type)))
     }
 

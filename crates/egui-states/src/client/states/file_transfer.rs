@@ -287,9 +287,11 @@ impl<M> TransferOffer<M> {
     /// Accepts the offer into the folder `dir`, every file under its own
     /// name; names like `run42/0001.tiff` create subfolders.
     ///
-    /// Each file is written as with [`Self::accept_file`]. If the transfer
-    /// fails, files already complete stay. No disk access happens in this
-    /// call.
+    /// Each file is written as with [`Self::accept_file`]. Files are not
+    /// saved through a symbolic link or junction inside `dir`: if a folder a
+    /// file goes into is one, the transfer fails before any file is written.
+    /// If the transfer fails later, files already complete stay. No disk
+    /// access happens in this call.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn accept_dir(self, dir: impl Into<std::path::PathBuf>) -> TransferHandle {
         let dir = dir.into();

@@ -25,7 +25,8 @@ pub(crate) struct TransferShared {
     pub(super) engine: Weak<engine::Inner>,
     /// The endpoint of the transfer.
     pub(super) endpoint: u64,
-    /// A key that is unique for the life of the engine.
+    /// The place of the transfer among all the engine has created; a later
+    /// transfer has a larger key.
     pub(super) key: u64,
 }
 
@@ -169,11 +170,6 @@ impl TransferShared {
     #[cfg_attr(not(feature = "python"), allow(dead_code))]
     pub(crate) fn meta(&self) -> Option<Bytes> {
         self.state.lock().meta.clone()
-    }
-
-    #[cfg_attr(not(any(feature = "server", feature = "python")), allow(dead_code))]
-    pub(crate) fn key(&self) -> u64 {
-        self.key
     }
 
     #[cfg_attr(not(any(feature = "server", feature = "python")), allow(dead_code))]

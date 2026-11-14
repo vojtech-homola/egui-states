@@ -578,7 +578,7 @@ impl StateServer {
     }
 
     /// Registers a `Download` (`download`) or `Upload` endpoint; returns its
-    /// id and the server's transfer engine.
+    /// id, the server's transfer engine and the signals its events go through.
     pub(super) fn add_transfer(
         &self,
         name: String,
@@ -587,7 +587,7 @@ impl StateServer {
     ) -> Result<(
         u64,
         crate::file_transfer::engine::Engine,
-        Arc<crate::server_core::file_transfer::TransferEvents>,
+        CoreSignalsManager,
     )> {
         let mut server = self.inner.server.write();
         let id = if download {
@@ -596,11 +596,7 @@ impl StateServer {
             server.add_upload(&name, meta_type)
         }
         .map_err(ServerError::new)?;
-        Ok((
-            id,
-            server.transfers().clone(),
-            server.transfer_events().clone(),
-        ))
+        Ok((id, server.transfers().clone(), self.inner.signals.clone()))
     }
 
     pub(super) fn add_data_take<T>(

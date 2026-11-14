@@ -161,6 +161,15 @@ impl Endpoint {
     fn is_busy(&self) -> bool {
         self.current.is_some() || self.reserved.is_some()
     }
+
+    /// Makes `shared` the last transfer the application has a handle for,
+    /// unless it already has one for a later transfer: an offer answered
+    /// late does not hide what came after it.
+    fn show(&mut self, shared: &Arc<TransferShared>) {
+        if self.last.as_ref().is_none_or(|last| last.key <= shared.key) {
+            self.last = Some(shared.clone());
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -847,14 +856,19 @@ impl Engine {
                 reason.as_bytes(),
             );
         };
+        // The same limits a local send checks, so a peer cannot make this
+        // endpoint hold more. A payload over both limits together is not even
+        // decoded.
+        const TOO_LARGE: &str = "the offer is too large";
+        if payload.len() > 2 * VALUE_MAX_SIZE {
+            return reject(state, TOO_LARGE);
+        }
         let (body, meta) = match decode_offer(payload) {
             Ok(decoded) => decoded,
             Err(error) => return reject(state, &error),
         };
-        // The same limits a local send checks, so a peer cannot make this
-        // endpoint hold more.
         if meta.len() > VALUE_MAX_SIZE || payload.len() - meta.len() > VALUE_MAX_SIZE {
-            return reject(state, "the offer is too large");
+            return reject(state, TOO_LARGE);
         }
         if let Err(error) = names::validate_offer(&body) {
             return reject(state, &format!("invalid offer: {error}"));
@@ -1158,12 +1172,9 @@ impl Engine {
             .and_then(|ep| ep.reserved.as_ref())
             .is_some_and(|reserved| Arc::ptr_eq(reserved, shared));
         if !reserved {
-            // Cancelled while the files were picked.
+            // Cancelled, or ended by a disconnect, while the files were
+            // picked. A reservation never outlives its connection.
             return;
-        }
-        if state.connection.is_none() {
-            drop(state);
-            return self.release(shared, TransferError::NotConnected);
         }
         state
             .endpoints
@@ -1527,7 +1538,8 @@ impl OfferToken {
     }
 
     /// Makes the handle the endpoint's last one while the destination is
-    /// still being picked.
+    /// still being picked, also when the offer has ended meanwhile: the
+    /// application holds the handle either way.
     #[cfg_attr(any(not(feature = "client"), target_arch = "wasm32"), allow(dead_code))]
     pub(crate) fn expose(&self) {
         let mut state = self.engine.0.state.lock();
@@ -1540,8 +1552,8 @@ impl OfferToken {
             .filter(|t| Arc::ptr_eq(&t.shared, &self.shared))
         {
             t.exposed = true;
-            ep.last = Some(self.shared.clone());
         }
+        ep.show(&self.shared);
     }
 
     /// Accepts the offer into `sink`. An offer the sink cannot take is
@@ -1559,6 +1571,10 @@ impl OfferToken {
         {
             let mut state = engine.0.state.lock();
             if !self.is_open(&state) {
+                // The caller gets the failed handle back, so `last` shows it.
+                if let Some(ep) = state.endpoints.get_mut(&self.endpoint) {
+                    ep.show(&self.shared);
+                }
                 drop(state);
                 if !self.shared.is_finished() {
                     self.shared

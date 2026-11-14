@@ -165,10 +165,12 @@ chooses the destination; a name from the sender is only a hint. Names are
 checked when an offer arrives (relative, `/` between folders, no `.` or `..`)
 and, before any data flows, against the receiver's system (Windows reserved
 names and characters, names that differ only in letter case). Inside the
-folder the receiver chose, a file is never saved through, or over, a symbolic
-link that already exists there. Each file is
+folder the receiver chose, a file is never saved through a symbolic link: the
+folders the files go into are looked at when the first data arrives, and a
+link among them fails the transfer before a file is written. Each file is
 written to a temporary file and renamed over its target when complete, with
-the sender's modification time. When a transfer fails, the partial file is
+the sender's modification time; the rename replaces what was there, a link
+included. When a transfer fails, the partial file is
 removed and complete files of the set stay.
 
 **One at a time.** An endpoint carries at most one unfinished transfer: a

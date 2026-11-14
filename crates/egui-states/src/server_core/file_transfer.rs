@@ -10,13 +10,11 @@ pub(crate) struct TransferEndpoint {
     pub(crate) name: String,
 }
 
-use std::collections::VecDeque;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
-use parking_lot::Mutex;
 
 use crate::file_transfer::TransferError;
 use crate::file_transfer::engine::{Engine, EngineEvent};
@@ -26,58 +24,35 @@ use crate::file_transfer::source::Source;
 use crate::protocol::file_transfer::{FileEntry, OfferBody};
 use crate::server_core::signals::SignalsManager;
 
-/// Kind of a transfer event in the endpoint's signal queue.
+/// Kind of a transfer event in the endpoint's signal queue; the event's
+/// payload is this one byte.
 pub(crate) const EVENT_OFFER: u8 = 0;
 pub(crate) const EVENT_FINISHED: u8 = 1;
 
-/// Finished transfers kept until their callbacks have run. The newest win
-/// when more pile up than this, which only a callback that never returns
-/// would cause.
-const KEPT: usize = 1024;
-
-/// Delivers the engine's events through the endpoints' signal queues, so the
-/// callback workers of every front-end run them.
-#[derive(Default)]
-pub(crate) struct TransferEvents {
-    finished: Mutex<VecDeque<(u64, Arc<TransferShared>)>>,
-}
-
-impl TransferEvents {
-    pub(crate) fn record(&self, event: EngineEvent, signals: &SignalsManager) {
-        let (endpoint, kind, key) = match event {
-            EngineEvent::Offer { endpoint } => (endpoint, EVENT_OFFER, 0),
-            EngineEvent::Finished { endpoint, handle } => {
-                if !signals.is_registered(endpoint) {
-                    return;
-                }
-                let key = handle.key();
-                let mut finished = self.finished.lock();
-                if finished.len() == KEPT {
-                    finished.pop_front();
-                }
-                finished.push_back((key, handle));
-                (endpoint, EVENT_FINISHED, key)
-            }
-        };
-        if let Ok(payload) = postcard::to_stdvec(&(kind, key)) {
-            signals.set(endpoint, Bytes::from(payload));
+/// Delivers an engine event through the endpoint's signal queue, so the
+/// callback workers of every front-end run it.
+///
+/// A finished transfer travels with its event: the queue releases it once the
+/// event's callbacks have run, or with the event when the endpoint has no
+/// callback, so no front-end has to release it.
+pub(crate) fn record_event(event: EngineEvent, signals: &SignalsManager) {
+    match event {
+        EngineEvent::Offer { endpoint } => {
+            signals.set(endpoint, Bytes::from_static(&[EVENT_OFFER]));
+        }
+        EngineEvent::Finished { endpoint, handle } => {
+            signals.set_attached(endpoint, Bytes::from_static(&[EVENT_FINISHED]), handle);
         }
     }
-
-    /// Takes the finished transfer an event names. Each front-end has one
-    /// dispatcher per endpoint that takes it and runs every callback, so the
-    /// event releases the transfer once it is delivered.
-    pub(crate) fn take(&self, key: u64) -> Option<Arc<TransferShared>> {
-        let mut finished = self.finished.lock();
-        let index = finished.iter().position(|(entry, _)| *entry == key)?;
-        finished.remove(index).map(|(_, handle)| handle)
-    }
 }
 
-/// Decodes the payload of a transfer event.
-#[cfg(feature = "server")]
-pub(crate) fn decode_event(payload: &[u8]) -> Option<(u8, u64)> {
-    postcard::from_bytes(payload).ok()
+/// The finished transfer of the event the callbacks of `endpoint` are
+/// running for; only a callback of the endpoint may ask.
+pub(crate) fn finished_transfer(
+    signals: &SignalsManager,
+    endpoint: u64,
+) -> Option<Arc<TransferShared>> {
+    signals.attachment(endpoint)?.downcast().ok()
 }
 
 /// Sends an offer; the front-ends share the rules for `wait` and `timeout`.
