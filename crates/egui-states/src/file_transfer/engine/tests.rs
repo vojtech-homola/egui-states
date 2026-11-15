@@ -1368,7 +1368,9 @@ fn a_written_batch_goes_only_to_its_own_transfer() {
     assert!(rx.engine.sink_written(rx.generation, job, Ok(written)));
     assert_eq!(finished(&second), TransferStatus::Done);
     assert_eq!(std::fs::read(dir.join("second")).unwrap(), [0; 2]);
-    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "only its file");
+    // The partial file of the first is removed on another thread.
+    let only_its_file = || (std::fs::read_dir(&dir).unwrap().count() == 1).then_some(());
+    assert!(until(only_its_file).is_some(), "only its file");
     std::fs::remove_dir_all(&dir).unwrap();
 }
 

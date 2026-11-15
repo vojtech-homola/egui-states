@@ -101,6 +101,16 @@ impl FilesSource {
     }
 }
 
+impl Drop for FilesSource {
+    fn drop(&mut self) {
+        // Closing a file may block on a network disk, and a source is
+        // dropped wherever its transfer ends.
+        if let Some(open) = self.open.take() {
+            drop_off_thread(open);
+        }
+    }
+}
+
 /// Where a received transfer is saved.
 pub(crate) enum Target {
     /// The single file of the offer, under this path.
@@ -115,7 +125,8 @@ pub(crate) enum Target {
 /// the target once complete, so a failed transfer never leaves half a file.
 /// The rename replaces whatever has the name, a symbolic link included, and
 /// never writes through it. Files finished before a failure stay. Dropping
-/// the sink before it finished removes the temporary file.
+/// the sink before it finished removes the temporary file, on another thread:
+/// the drop itself does not wait for the disk.
 ///
 /// A folder target is opened once, and every folder below it is reached by
 /// its name from the open folder above it, never by a path. A file is created
@@ -326,9 +337,45 @@ impl FileSink {
 
 impl Drop for FileSink {
     fn drop(&mut self) {
+        // Closing the unfinished file and removing it block on the disk, a
+        // network disk for long. A sink is dropped wherever its transfer
+        // ends: on the UI thread, in the connection's reader, under the
+        // engine's lock.
+        if let Some(open) = self.open.take() {
+            drop_off_thread(Unfinished {
+                open: Some(open),
+                _folders: self.folders.take(),
+            });
+        }
+    }
+}
+
+/// The file a sink did not finish; dropping it removes the temporary file.
+struct Unfinished {
+    open: Option<OpenFile>,
+    /// Closed after the file.
+    _folders: Option<Folders>,
+}
+
+impl Drop for Unfinished {
+    fn drop(&mut self) {
         if let Some(open) = self.open.take() {
             drop(open.file);
             remove_temp(open.folder.as_deref(), &open.temp);
+        }
+    }
+}
+
+/// Drops `value` on a thread that may block on the disk: one of the
+/// runtime's, or outside of a runtime one of its own. Where no thread takes
+/// it, it is dropped here.
+fn drop_off_thread<T: Send + 'static>(value: T) {
+    match tokio::runtime::Handle::try_current() {
+        Ok(runtime) => drop(runtime.spawn_blocking(move || drop(value))),
+        Err(_) => {
+            let _ = std::thread::Builder::new()
+                .name("egui_states_cleanup".to_string())
+                .spawn(move || drop(value));
         }
     }
 }
@@ -585,6 +632,11 @@ mod tests {
         let mut sink = FileSink::new(Target::Dir(dir.clone()), &files);
         sink.write(b"xyz").unwrap();
         drop(sink);
+        // The partial file is removed on another thread.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while entries(&dir) != ["a"] && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(2));
+        }
         assert_eq!(entries(&dir), ["a"]);
         std::fs::remove_dir_all(&dir).unwrap();
     }
