@@ -716,6 +716,43 @@ fn an_upload_offered_before_the_limits_arrive_takes_their_window() {
     assert_eq!(received.take_data().unwrap(), data);
 }
 
+/// An offer the sink cannot take: with a handle, the application holds a
+/// failed transfer of the endpoint; without one, it holds only the error.
+#[test]
+fn an_offer_refused_without_a_handle_is_no_transfer_of_the_endpoint() {
+    let rx = Receiver::new();
+    let finished = Arc::new(Mutex::new(0));
+    let count = finished.clone();
+    rx.engine.set_event_hook(Arc::new(move |event| {
+        if matches!(event, EngineEvent::Finished { .. }) {
+            *count.lock() += 1;
+        }
+    }));
+    let reject = |serial| [TransferFrame::Reject { serial }];
+
+    rx.offer(1, 10);
+    let offer = rx.engine.take_offer(DOWN).unwrap();
+    let refused = offer
+        .token
+        .try_accept(Sink::memory(5), AcceptMode::Lane, None);
+    assert_eq!(refused.err(), Some(TransferError::TooLarge));
+    assert_eq!(rx.frames(), reject(1));
+    assert!(!rx.engine.is_busy(DOWN));
+    assert!(rx.engine.last(DOWN).is_none());
+    assert_eq!(*finished.lock(), 0);
+
+    rx.offer(2, 10);
+    let offer = rx.engine.take_offer(DOWN).unwrap();
+    let shared = offer.token.accept(Sink::memory(5), AcceptMode::Lane, None);
+    assert_eq!(
+        shared.status(),
+        TransferStatus::Failed(TransferError::TooLarge)
+    );
+    assert_eq!(rx.frames(), reject(2));
+    assert!(Arc::ptr_eq(&rx.engine.last(DOWN).unwrap(), &shared));
+    assert_eq!(*finished.lock(), 1);
+}
+
 #[test]
 fn more_data_than_announced_or_a_wrong_last_flag_fail_the_transfer() {
     let rx = Receiver::new();

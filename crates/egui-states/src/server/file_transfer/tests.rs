@@ -642,6 +642,47 @@ fn uploads_reach_the_server_receiver() {
 }
 
 /// A minimal browser: one HTTP request, the status, headers and body.
+/// An offer the receiver cannot accept the way it asks is rejected: the
+/// receiver gets the error, and the endpoint no transfer.
+#[test]
+fn a_refused_accept_is_not_a_transfer_of_the_endpoint() {
+    if crate::test_support::isolated() {
+        return;
+    }
+    let peers = Peers::connect();
+    let errors = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen = errors.clone();
+    let _receiver = peers.inputs.on_offer(move |offer| {
+        seen.lock().unwrap().push(offer.accept_memory(4).err());
+    });
+    let ended = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen = ended.clone();
+    let _callback = peers.inputs.connect(move |handle| {
+        seen.lock().unwrap().push(handle.status());
+    });
+
+    let refused = peers.states.inputs.send_bytes(data(5), "big.bin", 0);
+    assert_eq!(
+        finished(&refused),
+        TransferStatus::Failed(TransferError::Rejected(TransferError::TooLarge.to_string()))
+    );
+    assert_eq!(*errors.lock().unwrap(), [Some(TransferError::TooLarge)]);
+    assert!(peers.inputs.last().is_none());
+
+    // The callbacks run in order: the one of the refused offer would be
+    // first.
+    let accepted = peers.states.inputs.send_bytes(data(4), "small.bin", 0);
+    assert_eq!(finished(&accepted), TransferStatus::Done);
+    wait("callback", || {
+        (!ended.lock().unwrap().is_empty()).then_some(())
+    });
+    assert_eq!(*ended.lock().unwrap(), [TransferStatus::Done]);
+    assert_eq!(
+        *errors.lock().unwrap(),
+        [Some(TransferError::TooLarge), None]
+    );
+}
+
 fn http(port: u16, method: &str, path: &str) -> (u16, Vec<(String, String)>, Vec<u8>) {
     use std::io::{Read, Write};
     let mut stream = std::net::TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();

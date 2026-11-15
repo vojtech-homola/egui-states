@@ -1636,15 +1636,43 @@ impl OfferToken {
     /// Accepts the offer into `sink`. An offer the sink cannot take is
     /// rejected and the handle fails; an offer that was cancelled meanwhile
     /// returns its failed handle.
+    #[cfg_attr(not(any(feature = "client", feature = "python")), allow(dead_code))]
     pub(crate) fn accept(
-        mut self,
+        self,
         sink: Sink,
         mode: AcceptMode,
         path: Option<PathBuf>,
     ) -> Arc<TransferShared> {
+        let shared = self.shared.clone();
+        self.accept_inner(sink, mode, path, true).unwrap_or(shared)
+    }
+
+    /// Accepts the offer into `sink`, like [`Self::accept`], but an offer
+    /// the sink cannot take is rejected without a handle: the application
+    /// gets the error, and no transfer of the endpoint to see or to hear of.
+    #[cfg_attr(not(feature = "server"), allow(dead_code))]
+    pub(crate) fn try_accept(
+        self,
+        sink: Sink,
+        mode: AcceptMode,
+        path: Option<PathBuf>,
+    ) -> Result<Arc<TransferShared>, TransferError> {
+        self.accept_inner(sink, mode, path, false)
+    }
+
+    /// Accepts the offer; `refused_handle` tells whether the application
+    /// holds the handle of an offer the sink cannot take.
+    fn accept_inner(
+        mut self,
+        sink: Sink,
+        mode: AcceptMode,
+        path: Option<PathBuf>,
+        refused_handle: bool,
+    ) -> Result<Arc<TransferShared>, TransferError> {
         self.answered = true;
         let engine = self.engine.clone();
         let mut fx = Effects::default();
+        let mut refused = None;
         {
             let mut state = engine.0.state.lock();
             if !self.is_open(&state) {
@@ -1657,18 +1685,26 @@ impl OfferToken {
                     self.shared
                         .set_status(TransferStatus::Failed(TransferError::Disconnected));
                 }
-                return self.shared.clone();
-            }
-            if let Some(ep) = state.endpoints.get_mut(&self.endpoint) {
-                ep.last = Some(self.shared.clone());
+                return Ok(self.shared.clone());
             }
             let t = Self::transfer(&mut state, self.endpoint, self.serial);
-            t.exposed = true;
             let check = sink
                 .check(t.body.files.len(), t.total)
                 .and_then(|()| names::check_platform(&t.body).map_err(TransferError::Unsupported));
+            // The transfer is the application's from here on, unless it is
+            // refused and the application gets only the error.
+            if check.is_ok() || refused_handle {
+                t.exposed = true;
+                if let Some(ep) = state.endpoints.get_mut(&self.endpoint) {
+                    ep.last = Some(self.shared.clone());
+                }
+            }
+            let t = Self::transfer(&mut state, self.endpoint, self.serial);
             if let Err(error) = check {
                 let reason = error.to_string();
+                if !refused_handle {
+                    refused = Some(error.clone());
+                }
                 engine.reject_locked(
                     &mut state,
                     self.endpoint,
@@ -1695,7 +1731,10 @@ impl OfferToken {
             }
         }
         engine.apply(fx);
-        self.shared.clone()
+        match refused {
+            Some(error) => Err(error),
+            None => Ok(self.shared.clone()),
+        }
     }
 
     /// Rejects the offer; the handle, if the application holds one, ends with

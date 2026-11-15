@@ -418,13 +418,9 @@ impl<M> TransferOffer<M> {
         sink: Sink,
         path: Option<PathBuf>,
     ) -> std::result::Result<TransferHandle, TransferError> {
-        let shared = self.token.accept(sink, AcceptMode::Lane, path);
-        match shared.status() {
-            crate::file_transfer::TransferStatus::Failed(
-                error @ (TransferError::Unsupported(_) | TransferError::TooLarge),
-            ) => Err(error),
-            _ => Ok(TransferHandle::new(shared)),
-        }
+        self.token
+            .try_accept(sink, AcceptMode::Lane, path)
+            .map(TransferHandle::new)
     }
 }
 
