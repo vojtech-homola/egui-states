@@ -41,24 +41,28 @@ pub(crate) fn validate_offer(body: &OfferBody) -> Result<(), String> {
             return Err(format!("the file name '{}' appears twice", file.name));
         }
     }
-    // A file "a" and a file "a/b" cannot both exist. In sorted names, the
-    // files of the folder "a" start at the first name that is not before
-    // "a/", so one look per name finds them.
+    // A file "a" and a file "a/b" cannot both exist.
     let mut sorted: Vec<&str> = files.into_iter().collect();
     sorted.sort_unstable();
-    for name in &sorted {
-        let below = || name.bytes().chain(std::iter::once(b'/'));
-        let first = sorted.partition_point(|other| other.bytes().lt(below()));
-        if let Some(other) = sorted.get(first)
-            && let Some(rest) = other.strip_prefix(name)
-            && rest.starts_with('/')
-        {
-            return Err(format!(
-                "'{name}' is both a file and the folder of '{other}'"
-            ));
-        }
+    if let Some((file, below)) = file_and_folder(&sorted) {
+        return Err(format!(
+            "'{}' is both a file and the folder of '{}'",
+            sorted[file], sorted[below]
+        ));
     }
     Ok(())
+}
+
+/// Finds a name in `sorted` that is also the folder of another one; returns
+/// the positions of both. The files of the folder "a" start at the first
+/// name that is not before "a/", so one look per name finds them.
+fn file_and_folder(sorted: &[&str]) -> Option<(usize, usize)> {
+    sorted.iter().enumerate().find_map(|(file, name)| {
+        let below = || name.bytes().chain(std::iter::once(b'/'));
+        let first = sorted.partition_point(|other| other.bytes().lt(below()));
+        let rest = sorted.get(first)?.strip_prefix(name)?;
+        rest.starts_with('/').then_some((file, first))
+    })
 }
 
 /// Checks one relative name; `what` it names, a "file name" or the
@@ -105,18 +109,33 @@ fn check_names<'a>(
     windows: bool,
     case_insensitive: bool,
 ) -> Result<(), String> {
-    let mut folded = HashSet::new();
+    // Each name without its letter case, with the name itself.
+    let mut folded = Vec::new();
     for name in names {
         if windows {
             for component in name.split('/') {
                 check_windows_component(name, component)?;
             }
         }
-        if case_insensitive && !folded.insert(name.to_lowercase()) {
-            return Err(format!(
-                "the file name '{name}' differs from another only in letter case"
-            ));
+        if case_insensitive {
+            folded.push((name.to_lowercase(), name));
         }
+    }
+    folded.sort_unstable();
+    if let Some(pair) = folded.windows(2).find(|pair| pair[0].0 == pair[1].0) {
+        return Err(format!(
+            "the file name '{}' differs from another only in letter case",
+            pair[1].1
+        ));
+    }
+    // The offer has no file that is the folder of another, but here "Data"
+    // is also the folder of "data/a".
+    let keys: Vec<&str> = folded.iter().map(|(key, _)| key.as_str()).collect();
+    if let Some((file, below)) = file_and_folder(&keys) {
+        return Err(format!(
+            "'{}' is a file and, in another letter case, the folder of '{}'",
+            folded[file].1, folded[below].1
+        ));
     }
     Ok(())
 }
@@ -324,6 +343,26 @@ mod tests {
     fn case_sensitive_systems_accept_case_variants() {
         assert!(check_names(["A", "a"].into_iter(), false, false).is_ok());
         assert!(check_names(["A", "a"].into_iter(), false, true).is_err());
+    }
+
+    /// On a system without letter case, a folder is the file of the same
+    /// name in another case.
+    #[test]
+    fn a_file_cannot_be_the_folder_of_another_in_another_case() {
+        let check =
+            |names: &[&str], insensitive| check_names(names.iter().copied(), false, insensitive);
+        for bad in [
+            &["Data/a.bin", "data"][..],
+            &["data", "Data/a.bin"],
+            &["a/B", "x", "A/b/c"],
+        ] {
+            assert!(validate_offer(&body(bad)).is_ok(), "{bad:?}");
+            assert!(check(bad, false).is_ok(), "{bad:?}");
+            let error = check(bad, true).unwrap_err();
+            assert!(error.contains("in another letter case"), "{error}");
+        }
+        // Folders that differ only in case are one folder there.
+        assert!(check(&["Data/a", "data/b", "DATA-c"], true).is_ok());
     }
 
     #[test]
