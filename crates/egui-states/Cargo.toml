@@ -8,9 +8,14 @@ repository = "https://github.com/vojtech-homola/egui-states"
 license = "MIT"
 readme = "../../README.md"
 
+[package.metadata.docs.rs]
+features = ["rfd"]
+
 [features]
 default = ["client"]
 client = ["dep:egui"]
+# File dialogs for file transfers, through `rfd`.
+rfd = ["client", "dep:rfd"]
 server = ["tokio/macros", "dep:httparse", "dep:getrandom", "dep:crc32fast"]
 python = ["tokio/macros", "dep:pyo3", "dep:httparse", "dep:getrandom", "dep:crc32fast"]
 # Exposes internals to the `egui_states_bench` benchmarks; not a public API.
@@ -20,6 +25,13 @@ build_scripts = ["client"]
 [dependencies]
 egui = { workspace = true, optional = true }
 pyo3 = { workspace = true, optional = true }
+# The browser `File` of a picked file needs `file-handle-inner`. rfd's
+# default `wayland` feature is left out: it links the system Wayland library
+# at build time and only attaches a dialog to its parent window on Wayland.
+rfd = { version = "0.18", optional = true, default-features = false, features = [
+    "xdg-portal",
+    "file-handle-inner",
+] }
 
 postcard = { version = "1.1", features = ["use-std"] }
 futures-util = "0.3"

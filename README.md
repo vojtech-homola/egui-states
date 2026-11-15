@@ -79,14 +79,25 @@ the UI:
 
 ```rust
 if let Some(offer) = state.files.take_offer() {
-    offer.accept_file_with(|offer| {
-        rfd::FileDialog::new().set_file_name(offer.name()).save_file()
-    });
+    offer.accept_with_dialog();
 }
 if let Some(handle) = state.files.last() {
     ui.add(egui::ProgressBar::new(handle.progress().fraction().unwrap_or(0.0)));
 }
 ```
+
+`accept_with_dialog` and `Upload::send_file_with_dialog` come with the `rfd`
+feature and show [rfd](https://docs.rs/rfd) file dialogs: on native clients a
+save dialog that suggests the file's name, or a folder dialog for several
+files; in a browser the download manager saves the data and uploads use the
+browser's file picker. Their `_config` variants let a closure adjust the
+dialog, for example `|dialog| dialog.add_filter("HDF5", &["h5"])`. On Linux
+the dialogs come from the XDG desktop portal; add `rfd = "0.18"` to your own
+dependencies with its `wayland` feature to attach them to the window on
+Wayland (it needs the system Wayland library to build), or with `gtk3` to use
+GTK instead. Without
+the feature, `accept_file_with`, `accept_dir_with` and `send_file_with` take
+a path from any dialog.
 
 - **The GUI stays responsive.** File data only uses capacity the state
   messages leave free, so a transfer adds about 2 ms to a state update on a

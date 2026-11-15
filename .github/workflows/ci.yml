@@ -32,8 +32,8 @@ jobs:
       - run: cargo fmt --all --check
       - run: uvx ruff@0.17.3 check .
       - run: uvx ruff@0.17.3 format --check .
-      # docs.rs builds the default features.
-      - run: cargo doc --locked --no-deps -p egui_states -p egui_states_macros
+      # docs.rs builds the default features and `rfd`.
+      - run: cargo doc --locked --no-deps -p egui_states -p egui_states_macros --features egui_states/rfd
         env:
           RUSTDOCFLAGS: -D warnings
 
@@ -56,6 +56,8 @@ jobs:
       - run: cargo clippy --locked -p egui_states --no-default-features --features server --all-targets -- -D warnings
         if: ${{ !cancelled() }}
       - run: cargo clippy --locked -p egui_states --features "server build_scripts python" --all-targets -- -D warnings
+        if: ${{ !cancelled() }}
+      - run: cargo clippy --locked -p egui_states --features "server rfd" --all-targets -- -D warnings
         if: ${{ !cancelled() }}
       # Compiles the benchmarks without running them.
       - run: cargo clippy --locked -p egui_states_bench --all-targets -- -D warnings
@@ -133,4 +135,5 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo check --locked --target wasm32-unknown-unknown -p egui_states
+      - run: cargo check --locked --target wasm32-unknown-unknown -p egui_states --features rfd
       - run: cargo check --locked --target wasm32-unknown-unknown -p showcase_gui

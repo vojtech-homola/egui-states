@@ -24,7 +24,6 @@ struct ViewState {
     last_multi_take_bytes: Vec<(u32, Vec<u8>)>,
     last_multi_take_samples: Vec<(u32, Vec<f32>)>,
     last_multi_take_nested: Vec<(u32, Vec<u16>)>,
-    download_dir: Option<String>,
     last_offer_note: String,
 }
 
@@ -41,7 +40,6 @@ impl ViewState {
             last_multi_take_bytes: Vec::new(),
             last_multi_take_samples: Vec::new(),
             last_multi_take_nested: Vec::new(),
-            download_dir: None,
             last_offer_note: String::new(),
         }
     }

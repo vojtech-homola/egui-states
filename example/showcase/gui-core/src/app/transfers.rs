@@ -9,16 +9,9 @@ pub(super) fn poll_offers(state: &mut ViewState) {
         return;
     };
     state.last_offer_note = offer.meta().note.clone();
-    // A native client saves into a folder of its own; a browser hands the
-    // file to its download manager.
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let dir = std::env::temp_dir().join("egui-states-showcase");
-        state.download_dir = Some(dir.display().to_string());
-        offer.accept_dir(dir);
-    }
-    #[cfg(target_arch = "wasm32")]
-    offer.accept_download();
+    // A native client asks where to save the file; a browser hands it to its
+    // download manager.
+    offer.accept_with_dialog();
 }
 
 pub(super) fn show_transfers(ui: &mut egui::Ui, state: &mut ViewState) {
@@ -32,9 +25,6 @@ pub(super) fn show_transfers(ui: &mut egui::Ui, state: &mut ViewState) {
                 }
             }
         });
-        if let Some(dir) = &state.download_dir {
-            ui.label(format!("saved into {dir}"));
-        }
         if !state.last_offer_note.is_empty() {
             ui.label(format!("offer note: {}", state.last_offer_note));
         }
@@ -43,13 +33,21 @@ pub(super) fn show_transfers(ui: &mut egui::Ui, state: &mut ViewState) {
         ui.separator();
 
         ui.label("Upload: root.transfers.upload");
-        if ui
-            .add_enabled(!t.upload.is_busy(), egui::Button::new("upload 8 MiB"))
-            .clicked()
-        {
-            let data = (0..8 * 1024 * 1024).map(|i| (i % 251) as u8).collect();
-            t.upload.send_bytes(data, "upload.bin", ());
-        }
+        ui.add_enabled_ui(!t.upload.is_busy(), |ui| {
+            ui.horizontal(|ui| {
+                if ui.button("upload 8 MiB").clicked() {
+                    let data = (0..8 * 1024 * 1024).map(|i| (i % 251) as u8).collect();
+                    t.upload.send_bytes(data, "upload.bin", ());
+                }
+                // The servers keep an upload in memory, up to 64 MiB.
+                if ui.button("upload a file…").clicked() {
+                    t.upload.send_file_with_dialog_config(
+                        |dialog| dialog.set_title("Upload a file to the server"),
+                        (),
+                    );
+                }
+            });
+        });
         show_handle(ui, t.upload.last());
         ui.label(format!("server: {}", t.upload_result.get()));
     });

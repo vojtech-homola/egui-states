@@ -475,6 +475,62 @@ impl<M> TransferOffer<M> {
     }
 }
 
+#[cfg(feature = "rfd")]
+impl<M: Send + 'static> TransferOffer<M> {
+    /// Accepts the offer where the user chooses in a file dialog.
+    ///
+    /// On native clients a single file goes where the user saves it, in a
+    /// save dialog that suggests its name, as with [`Self::accept_file`];
+    /// several files go into the folder the user picks, as with
+    /// [`Self::accept_dir`]. Returns a pending handle at once and shows the
+    /// dialog from a thread of its own; closing the dialog rejects the offer
+    /// as cancelled by the user. A browser shows no dialog: the download
+    /// manager saves the data, several files as one zip, as with
+    /// `accept_download_bundled`.
+    ///
+    /// Needs the `rfd` feature. On Linux the dialog comes from the XDG
+    /// desktop portal, or from GTK when the application turns on rfd's
+    /// `gtk3` or `gtk4` feature.
+    pub fn accept_with_dialog(self) -> TransferHandle {
+        self.accept_with_dialog_config(|dialog| dialog)
+    }
+
+    /// Accepts the offer like [`Self::accept_with_dialog`], in a dialog that
+    /// `config` adjusts, for example with a title, a filter, a starting
+    /// folder, or the parent window.
+    ///
+    /// `config` runs at once on the calling thread and gets a dialog that
+    /// already suggests the name of a single file. A browser shows no
+    /// dialog and does not run `config`.
+    pub fn accept_with_dialog_config(
+        self,
+        config: impl FnOnce(rfd::AsyncFileDialog) -> rfd::AsyncFileDialog,
+    ) -> TransferHandle {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if let [file] = self.files.as_slice() {
+                let name = file.name.rsplit('/').next().unwrap_or(&file.name);
+                let dialog = config(rfd::AsyncFileDialog::new().set_file_name(name));
+                let pick = move |_: &TransferOffer<M>| {
+                    block_on(dialog.save_file()).map(|picked| picked.path().to_path_buf())
+                };
+                self.pick_then(pick, |offer, path| offer.accept_file(path))
+            } else {
+                let dialog = config(rfd::AsyncFileDialog::new());
+                let pick = move |_: &TransferOffer<M>| {
+                    block_on(dialog.pick_folder()).map(|picked| picked.path().to_path_buf())
+                };
+                self.pick_then(pick, |offer, dir| offer.accept_dir(dir))
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = config;
+            self.accept_browser(true)
+        }
+    }
+}
+
 impl<M: TransferMeta> Upload<M> {
     pub(crate) fn new(endpoint: u64, engine: Engine) -> Self {
         Self {
@@ -703,6 +759,74 @@ impl<M: TransferMeta> Upload<M> {
     /// whose file is still being picked.
     pub fn is_busy(&self) -> bool {
         self.engine.is_busy(self.endpoint)
+    }
+}
+
+#[cfg(feature = "rfd")]
+impl<M: TransferMeta> Upload<M> {
+    /// Offers the file the user picks in a file dialog; it works in the
+    /// browser too.
+    ///
+    /// Returns a pending handle at once; the endpoint counts as busy while
+    /// the dialog is open. Closing the dialog ends the handle as cancelled
+    /// and sends nothing. Otherwise it behaves like [`Self::send_file`].
+    ///
+    /// Needs the `rfd` feature. On Linux the dialog comes from the XDG
+    /// desktop portal, or from GTK when the application turns on rfd's
+    /// `gtk3` or `gtk4` feature.
+    pub fn send_file_with_dialog(&self, meta: M) -> TransferHandle {
+        self.send_file_with_dialog_config(|dialog| dialog, meta)
+    }
+
+    /// Offers the file the user picks like [`Self::send_file_with_dialog`],
+    /// in a dialog that `config` adjusts, for example with a title, a
+    /// filter, a starting folder, or the parent window. `config` runs at
+    /// once on the calling thread.
+    pub fn send_file_with_dialog_config(
+        &self,
+        config: impl FnOnce(rfd::AsyncFileDialog) -> rfd::AsyncFileDialog,
+        meta: M,
+    ) -> TransferHandle {
+        let dialog = config(rfd::AsyncFileDialog::new());
+        let pick = async move { dialog.pick_file().await.map(picked_file) };
+        self.send_file_with_async(pick, meta)
+    }
+
+    /// Offers the files the user picks in a file dialog as one transfer
+    /// named `name`; see [`Self::send_file_with_dialog`] and
+    /// [`Self::send_files`].
+    pub fn send_files_with_dialog(&self, name: impl Into<String>, meta: M) -> TransferHandle {
+        self.send_files_with_dialog_config(|dialog| dialog, name, meta)
+    }
+
+    /// Offers the files the user picks like [`Self::send_files_with_dialog`],
+    /// in a dialog that `config` adjusts; see
+    /// [`Self::send_file_with_dialog_config`].
+    pub fn send_files_with_dialog_config(
+        &self,
+        config: impl FnOnce(rfd::AsyncFileDialog) -> rfd::AsyncFileDialog,
+        name: impl Into<String>,
+        meta: M,
+    ) -> TransferHandle {
+        let dialog = config(rfd::AsyncFileDialog::new());
+        let pick = async move {
+            let picked = dialog.pick_files().await?;
+            Some(picked.into_iter().map(picked_file).collect())
+        };
+        self.send_files_with_async(pick, name, meta)
+    }
+}
+
+/// The file behind a handle that a file dialog returned.
+#[cfg(feature = "rfd")]
+fn picked_file(picked: rfd::FileHandle) -> LocalFile {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        LocalFile::from(picked.path())
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        LocalFile::from(picked.inner().clone())
     }
 }
 
