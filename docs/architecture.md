@@ -145,20 +145,33 @@ had not taken before the disconnect are dropped.
 share the WebSocket with the state messages but not its queue.
 
 **Two lanes.** Each peer's writer sends a heartbeat ping first, then any
-queued state message, and a chunk of file data (64 KiB) only when no state
-message waits. The control frames of a transfer (offer, accept, credit,
+queued state message, and a chunk of file data only when no state message
+waits. The control frames of a transfer (offer, accept, credit,
 cancel, finished) travel with the state messages and keep their order, so a
 state change the server sends after a finished transfer arrives after the
 client sees it done.
 
-**Credit.** The receiver grants a window of 256 KiB and returns credit as its
-sink takes the data. The sender never has more than one window between the
-two applications, wherever the bytes sit: its socket buffer, the network or
-the receiver's queue. A state message therefore waits behind at most about
-`window / link rate` of file data, about 2 ms at 1 Gbit/s, and a slow disk on
-the receiver slows the sender instead of filling memory. The window also caps
-throughput at about one window per round trip, which matters only over long
-round trips.
+**Credit.** The receiver grants a window of credit and returns it chunk by
+chunk as its sink takes the data. The sender never has more than one window
+between the two applications, wherever the bytes sit: its socket buffer, the
+network or the receiver's queue. A state message therefore waits behind at
+most about `window / link rate` of file data, about 2 ms at 1 Gbit/s with the
+default window, and a slow disk on the receiver slows the sender instead of
+filling memory. The window also caps throughput at about one window per round
+trip, which matters only over long round trips.
+
+**Profiles.** The window and the chunk size come from the server's transfer
+profile, which the server announces as the first message of every connection,
+so both peers use the same:
+
+| Profile | Window | Chunk | For |
+| --- | --- | --- | --- |
+| `Responsive` | 64 KiB | 16 KiB | slow links, where the UI must stay responsive |
+| `Balanced` (default) | 256 KiB | 32 KiB | links from 100 Mbit/s up |
+| `Throughput` | 1 MiB | 128 KiB | a client on the same machine, or bulk transfers |
+
+A smaller chunk returns credit in smaller steps, which keeps the flow steady
+on slow links; a larger one costs less per chunk on fast ones.
 
 **Offers.** Nothing flows until the receiver accepts, and the receiver
 chooses the destination; a name from the sender is only a hint. The names of

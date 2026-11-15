@@ -12,6 +12,30 @@ from os import PathLike, fspath
 from egui_states._core import _TransferHandle, _TransferOffer
 
 
+class TransferProfile(Enum):
+    """How file transfers share the connection with state synchronization.
+
+    File data takes a low-priority lane: a state change never waits behind
+    more than one window of it. A larger window lets transfers fill faster and
+    more distant links, but a state change may then wait longer behind file
+    data. The client uses the server's profile.
+    """
+
+    #: For slow links (VPN, mobile, under about 20 Mbit/s), where the UI must
+    #: stay responsive during transfers. At most 64 KiB of file data waits
+    #: ahead of a state change, but a transfer moves at most 64 KiB per round
+    #: trip, about 3 MB/s at 20 ms.
+    Responsive = 0
+    #: The default: close to full speed on links from 100 Mbit/s up, with at
+    #: most 256 KiB of file data ahead of a state change. On slow links the
+    #: wait becomes noticeable, about 0.2 s at 10 Mbit/s.
+    Balanced = 1
+    #: The fastest transfers, for a client on the same machine or when
+    #: transfers matter more than the UI. On a network, a state change may
+    #: wait behind up to 1 MiB of file data, about 8 ms at 1 Gbit/s.
+    Throughput = 2
+
+
 class TransferStatus(Enum):
     """Where a transfer stands."""
 

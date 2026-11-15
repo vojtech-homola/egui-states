@@ -6,6 +6,7 @@ use tokio::runtime::Runtime;
 use tokio::sync::mpsc::unbounded_channel;
 
 use super::*;
+use crate::file_transfer::{FILE_TRANSFER_CHUNK, FILE_TRANSFER_WINDOW};
 use crate::protocol::file_transfer::FileEntry;
 use crate::protocol::{ClientHeader, ServerHeader};
 
@@ -613,6 +614,81 @@ fn credit_is_returned_as_the_sink_takes_data() {
         }
     }
     assert_eq!(shared.status(), TransferStatus::Done);
+}
+
+#[test]
+fn the_sender_takes_the_chunk_size_and_the_window_from_its_limits() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_time()
+        .build()
+        .unwrap();
+    let sender = Engine::new(Side::Server, None);
+    sender.register(DOWN, Role::Send, 0);
+    sender.set_limits(TransferLimits {
+        window: 64 * 1024,
+        chunk: 16 * 1024,
+    });
+    let (state_tx, state_rx) = std::sync::mpsc::channel();
+    let generation = sender.attach(Arc::new(move |message| {
+        let _ = state_tx.send(message);
+    }));
+    let (data_tx, mut data_rx) = mpsc::channel::<Vec<u8>>(1);
+    let pump = sender.clone();
+    runtime.spawn(async move { pump.pump(generation, data_tx).await });
+
+    let _sent = send_bytes(&sender, DOWN, vec![7; 200 * 1024]);
+    let (_, offer, _) = decode(Side::Server, &state_rx.recv_timeout(DEADLINE).unwrap());
+    let TransferFrame::Offer { serial, .. } = offer else {
+        panic!("expected an offer, got {offer:?}");
+    };
+    let accept = TransferFrame::Accept {
+        serial,
+        mode: AcceptMode::Lane,
+    };
+    sender.handle_frame(DOWN, accept, Bytes::new());
+
+    let mut next_chunk = |wait| {
+        runtime
+            .block_on(async { tokio::time::timeout(wait, data_rx.recv()).await })
+            .ok()
+            .flatten()
+            .map(|message| decode(Side::Server, &message).2.len())
+    };
+    // One window goes out in chunks of the configured size; then the sender
+    // waits for credit.
+    for _ in 0..4 {
+        assert_eq!(next_chunk(DEADLINE), Some(16 * 1024));
+    }
+    assert_eq!(next_chunk(Duration::from_millis(100)), None);
+    let credit = TransferFrame::Credit {
+        serial,
+        bytes: 16 * 1024,
+    };
+    sender.handle_frame(DOWN, credit, Bytes::new());
+    assert_eq!(next_chunk(DEADLINE), Some(16 * 1024));
+    assert_eq!(next_chunk(Duration::from_millis(100)), None);
+}
+
+#[test]
+fn the_receiver_grants_the_window_of_its_limits() {
+    let rx = Receiver::new();
+    rx.engine.set_limits(TransferLimits {
+        window: 64 * 1024,
+        chunk: 16 * 1024,
+    });
+    let shared = rx.accepted(1, 1024 * 1024);
+    rx.chunk(1, false, 16 * 1024);
+    assert_eq!(
+        rx.frames(),
+        [TransferFrame::Credit {
+            serial: 1,
+            bytes: 16 * 1024
+        }]
+    );
+    // One byte more than the window allows is a protocol error.
+    rx.chunk(1, false, 64 * 1024 + 1);
+    assert!(protocol_error(&shared));
 }
 
 #[test]

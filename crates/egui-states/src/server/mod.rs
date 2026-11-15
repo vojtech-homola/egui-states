@@ -26,7 +26,7 @@ mod state_server;
 mod values;
 
 pub use crate::file_transfer::{
-    TransferError, TransferHandle, TransferMeta, TransferProgress, TransferStatus,
+    TransferError, TransferHandle, TransferMeta, TransferProfile, TransferProgress, TransferStatus,
 };
 pub use callbacks::CallbackHandle;
 pub use collections::{MapState, VecState};

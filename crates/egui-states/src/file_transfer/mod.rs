@@ -32,13 +32,100 @@ use crate::typed::Typed;
 #[cfg(any(feature = "client", feature = "server"))]
 pub use shared::TransferHandle;
 
-/// Bytes of file data the sender may have in flight before the receiver
-/// returns credit. It bounds how long a state message waits behind file data:
-/// about `FILE_TRANSFER_WINDOW / link rate`.
+/// The window of the default profile, `TransferProfile::Balanced`.
 pub(crate) const FILE_TRANSFER_WINDOW: u64 = 256 * 1024;
 
-/// Payload bytes of one data chunk.
-pub(crate) const FILE_TRANSFER_CHUNK: usize = 64 * 1024;
+/// The chunk size of the default profile, `TransferProfile::Balanced`.
+pub(crate) const FILE_TRANSFER_CHUNK: usize = 32 * 1024;
+
+/// How file data flows on one connection. The server chooses them and
+/// announces them to the client, so both peers use the same.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct TransferLimits {
+    /// Bytes of file data the sender may have in flight before the receiver
+    /// returns credit. A state message waits behind at most about
+    /// `window / link rate` of file data, and a transfer moves at most one
+    /// window per round trip.
+    pub(crate) window: u64,
+    /// Payload bytes of one data chunk. The receiver returns credit chunk by
+    /// chunk, so a smaller chunk smooths the flow on slow links and costs
+    /// throughput on fast ones.
+    pub(crate) chunk: usize,
+}
+
+impl TransferLimits {
+    /// The largest chunk a peer accepts; a chunk travels in one frame.
+    pub(crate) const MAX_CHUNK: usize = 1024 * 1024;
+
+    /// Checks limits that came from the other peer.
+    #[cfg_attr(not(feature = "client"), allow(dead_code))]
+    pub(crate) fn new(window: u64, chunk: usize) -> Result<Self, String> {
+        if chunk == 0 || chunk > Self::MAX_CHUNK || chunk as u64 > window {
+            return Err(format!(
+                "invalid file transfer limits: window {window} bytes, chunk {chunk} bytes"
+            ));
+        }
+        Ok(Self { window, chunk })
+    }
+}
+
+impl Default for TransferLimits {
+    fn default() -> Self {
+        Self {
+            window: FILE_TRANSFER_WINDOW,
+            chunk: FILE_TRANSFER_CHUNK,
+        }
+    }
+}
+
+/// How file transfers share the connection with state synchronization.
+///
+/// File data takes a low-priority lane: a state change is never queued behind
+/// more than one window of it. A larger window lets transfers fill faster and
+/// more distant links, but a state change may then wait longer behind file
+/// data. The server's profile applies to the connection in both directions.
+#[cfg(any(feature = "server", feature = "python"))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum TransferProfile {
+    /// For slow links (VPN, mobile, under about 20 Mbit/s), where the UI must
+    /// stay responsive during transfers. At most 64 KiB of file data waits
+    /// ahead of a state change, but a transfer moves at most 64 KiB per round
+    /// trip, about 3 MB/s at 20 ms.
+    Responsive,
+    /// The default: close to full speed on links from 100 Mbit/s up, with at
+    /// most 256 KiB of file data ahead of a state change. On slow links the
+    /// wait becomes noticeable, about 0.2 s at 10 Mbit/s.
+    #[default]
+    Balanced,
+    /// The fastest transfers, for a client on the same machine or when
+    /// transfers matter more than the UI. On a network, a state change may
+    /// wait behind up to 1 MiB of file data, about 8 ms at 1 Gbit/s.
+    Throughput,
+}
+
+#[cfg(any(feature = "server", feature = "python"))]
+impl TransferProfile {
+    pub(crate) fn limits(self) -> TransferLimits {
+        let (window, chunk) = match self {
+            Self::Responsive => (64 * 1024, 16 * 1024),
+            Self::Balanced => (FILE_TRANSFER_WINDOW, FILE_TRANSFER_CHUNK),
+            Self::Throughput => (1024 * 1024, 128 * 1024),
+        };
+        TransferLimits { window, chunk }
+    }
+
+    /// The profile of a number, the value of the Python `TransferProfile`.
+    #[cfg(feature = "python")]
+    pub(crate) fn from_code(code: u8) -> Option<Self> {
+        match code {
+            0 => Some(Self::Responsive),
+            1 => Some(Self::Balanced),
+            2 => Some(Self::Throughput),
+            _ => None,
+        }
+    }
+}
 
 /// The metadata type of a `Download<M>` or `Upload<M>` endpoint.
 ///
@@ -191,5 +278,48 @@ impl TransferError {
             ErrorCode::Meta => Self::Meta(message),
             ErrorCode::Protocol => Self::Protocol(message),
         }
+    }
+}
+
+#[cfg(all(test, any(feature = "server", feature = "python")))]
+mod tests {
+    use super::*;
+
+    /// A client accepts the limits of every profile, and they grow from
+    /// responsive to throughput.
+    #[test]
+    fn every_profile_has_limits_a_client_accepts() {
+        let profiles = [
+            TransferProfile::Responsive,
+            TransferProfile::Balanced,
+            TransferProfile::Throughput,
+        ];
+        for profile in profiles {
+            let limits = profile.limits();
+            assert_eq!(TransferLimits::new(limits.window, limits.chunk), Ok(limits));
+        }
+        for pair in profiles.windows(2) {
+            let (smaller, larger) = (pair[0].limits(), pair[1].limits());
+            assert!(smaller.window < larger.window && smaller.chunk < larger.chunk);
+        }
+        assert_eq!(
+            TransferProfile::default().limits(),
+            TransferLimits::default()
+        );
+    }
+
+    /// The numbers are the values of the Python `TransferProfile` enum.
+    #[cfg(feature = "python")]
+    #[test]
+    fn python_profile_numbers_match_the_python_enum() {
+        let profiles = [
+            TransferProfile::Responsive,
+            TransferProfile::Balanced,
+            TransferProfile::Throughput,
+        ];
+        for (code, profile) in profiles.into_iter().enumerate() {
+            assert_eq!(TransferProfile::from_code(code as u8), Some(profile));
+        }
+        assert_eq!(TransferProfile::from_code(3), None);
     }
 }

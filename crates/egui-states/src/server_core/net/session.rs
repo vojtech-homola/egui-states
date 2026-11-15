@@ -212,8 +212,19 @@ pub(crate) async fn run<L: Listener>(
             }
         }));
 
+        // The client takes the transfer limits from the first message, before
+        // any transfer frame; nothing else is queued while disconnected.
+        let limits = transfers.limits();
+        let limits = ServerHeader::TransferLimits(
+            u32::try_from(limits.window).unwrap_or(u32::MAX),
+            limits.chunk as u32,
+        );
+        let announced = serialize(&limits).map(|data| sender.send(data)).is_ok();
+
         connected.store(true, Ordering::Release);
-        let failure = if values.sync.iter().any(|v| v.sync().is_err()) {
+        let failure = if !announced {
+            Some("failed to serialize the transfer limits")
+        } else if values.sync.iter().any(|v| v.sync().is_err()) {
             Some("failed to sync value after handshake")
         } else {
             match serialize(&ServerHeader::Update(0.0)) {
@@ -863,10 +874,10 @@ mod run_tests {
     use tokio_tungstenite::tungstenite::Message;
 
     use super::*;
-    use crate::file_transfer::TransferError;
     use crate::file_transfer::engine::Role;
     use crate::file_transfer::shared::TransferShared;
     use crate::file_transfer::source::Source;
+    use crate::file_transfer::{TransferError, TransferProfile};
     use crate::protocol::file_transfer::{FileEntry, OfferBody};
     use crate::protocol::{ClientHeader, FastVec};
     use crate::server_core::net::transport::Incoming;
@@ -1107,6 +1118,8 @@ mod run_tests {
             let (server, connector) =
                 TestServer::memory_with(None, SignalsManager::new(), vec![sync.clone()]);
             server.transfers.register(ENDPOINT, Role::Send, 0);
+            let limits = TransferProfile::Responsive.limits();
+            server.transfers.set_limits(limits);
             let mut client = connect(&connector);
             assert!(
                 until(DEADLINE, || sync.entered.load(Ordering::Acquire)).await,
@@ -1120,10 +1133,11 @@ mod run_tests {
             assert!(sent.is_ok(), "{:?}", sent.err());
             release.send(()).unwrap();
 
-            // The client gets the offer, after the state.
+            // The client gets the transfer limits first and the offer after
+            // the state.
             let mut received = Vec::new();
             let mut headers = Vec::new();
-            while headers.len() < 2 {
+            while headers.len() < 3 {
                 let frame = tokio::time::timeout(DEADLINE, client.frames.recv())
                     .await
                     .expect("the client was not synchronized");
@@ -1141,9 +1155,14 @@ mod run_tests {
                     headers.push(header);
                 }
             }
-            assert!(matches!(headers[0], ServerHeader::Update(_)));
             assert!(matches!(
-                headers[1],
+                headers[0],
+                ServerHeader::TransferLimits(window, chunk)
+                    if u64::from(window) == limits.window && chunk as usize == limits.chunk
+            ));
+            assert!(matches!(headers[1], ServerHeader::Update(_)));
+            assert!(matches!(
+                headers[2],
                 ServerHeader::Transfer(ENDPOINT, TransferFrame::Offer { .. }, _)
             ));
             server.stop().await;

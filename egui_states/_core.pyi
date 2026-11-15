@@ -78,6 +78,7 @@ class StateServerCore:
         heartbeat_timeout: float | None = 20.0,
         web_path: str | PathLike[str] | None = None,
         allowed_origins: Sequence[str] = (),
+        transfer_profile: int = 1,
     ) -> None: ...
     def start(
         self,

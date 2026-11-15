@@ -1716,7 +1716,7 @@ mod transfer_tests {
                 let mut next = Some(first);
                 while let Some((header, payload)) = next {
                     match header {
-                        ServerHeader::Update(_) => {}
+                        ServerHeader::Update(_) | ServerHeader::TransferLimits(..) => {}
                         ServerHeader::Data(51, header) => {
                             self.single.update_data((header, payload)).unwrap()
                         }

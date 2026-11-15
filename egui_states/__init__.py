@@ -37,6 +37,7 @@ from egui_states.transfer import (
     TransferErrorKind,
     TransferHandle,
     TransferOffer,
+    TransferProfile,
     TransferProgress,
     TransferStatus,
 )
@@ -73,6 +74,7 @@ __all__ = [
     "TransferErrorKind",
     "TransferHandle",
     "TransferOffer",
+    "TransferProfile",
     "TransferProgress",
     "TransferStatus",
 ]

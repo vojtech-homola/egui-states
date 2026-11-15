@@ -101,7 +101,10 @@ a path from any dialog.
 
 - **The GUI stays responsive.** File data only uses capacity the state
   messages leave free, so a transfer adds about 2 ms to a state update on a
-  1 Gbit/s link.
+  1 Gbit/s link. The server's `transfer_profile`, a `TransferProfile` in
+  Python and in the Rust `ServerOptions`, shifts that balance: `Responsive`
+  for slow links such as a VPN, `Balanced` by default, or `Throughput` for a
+  client on the same machine.
 - **One transfer per endpoint.** A send while an endpoint is busy fails, or
   waits with `wait=True`. Several files go as one transfer with `send_files`.
 - **Files are saved atomically.** A file appears under its name only once it

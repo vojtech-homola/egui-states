@@ -13,6 +13,7 @@ use tokio::net::TcpListener;
 use tokio::runtime::Builder;
 
 use crate::event::Event;
+use crate::file_transfer::TransferProfile;
 use crate::file_transfer::engine::{Engine, Role, Side};
 use crate::hashing::{MAX_RESERVED_ID, NoHashMap, generate_value_id};
 use crate::protocol::data::DataType;
@@ -266,6 +267,8 @@ pub(crate) struct ServerConfig {
     /// The absolute directory of the web page that `start_web` serves.
     web_path: Option<PathBuf>,
     origins: Arc<OriginPolicy>,
+    /// How file transfers share the connection.
+    transfer_profile: TransferProfile,
 }
 
 impl ServerConfig {
@@ -282,6 +285,7 @@ impl ServerConfig {
         heartbeat: Option<Heartbeat>,
         web_path: Option<&Path>,
         allowed_origins: &[String],
+        transfer_profile: TransferProfile,
     ) -> Result<Self, String> {
         let web_path = web_path
             .map(|path| {
@@ -294,6 +298,7 @@ impl ServerConfig {
             heartbeat,
             web_path,
             origins: Arc::new(OriginPolicy::new(allowed_origins)?),
+            transfer_profile,
         })
     }
 
@@ -306,6 +311,7 @@ impl ServerConfig {
             heartbeat: Some(Heartbeat::default()),
             web_path: None,
             origins: Arc::default(),
+            transfer_profile: TransferProfile::default(),
         }
     }
 }
@@ -372,6 +378,7 @@ impl Server {
         let (sender, rx) = MessageSender::new();
         let signals = SignalsManager::new();
         let transfers = Engine::new(Side::Server, None);
+        transfers.set_limits(config.transfer_profile.limits());
         let event_signals = signals.clone();
         transfers.set_event_hook(Arc::new(move |event| record_event(event, &event_signals)));
 

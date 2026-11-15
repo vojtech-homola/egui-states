@@ -121,7 +121,7 @@ impl StateServer {
     }
 
     /// Creates a server with explicit application, worker, heartbeat, web
-    /// page, and browser access options.
+    /// page, browser access, and file transfer options.
     ///
     /// # Errors
     ///
@@ -137,6 +137,7 @@ impl StateServer {
             heartbeat,
             options.web_path.as_deref(),
             &options.allowed_origins,
+            options.transfer_profile,
         )
         .map_err(ServerError::new)?;
         let server = CoreServer::new(config);
@@ -1662,10 +1663,20 @@ mod wire_tests {
         .unwrap();
         let response = ws.next().await;
         if valid {
-            let Some(Ok(Message::Binary(bytes))) = response else {
+            let Some(Ok(Message::Binary(mut bytes))) = response else {
                 panic!("valid handshake did not synchronize");
             };
-            let (header, offset) = ServerHeader::deserialize(&bytes).unwrap();
+            // The transfer limits come first, in the same frame or alone.
+            let (limits, mut offset) = ServerHeader::deserialize(&bytes).unwrap();
+            assert!(matches!(limits, ServerHeader::TransferLimits(..)));
+            if offset == bytes.len() {
+                let Some(Ok(Message::Binary(next))) = ws.next().await else {
+                    panic!("valid handshake did not synchronize");
+                };
+                (bytes, offset) = (next, 0);
+            }
+            let (header, length) = ServerHeader::deserialize(&bytes[offset..]).unwrap();
+            offset += length;
             match header {
                 ServerHeader::Value(_, _, false, length) => {
                     assert_eq!(
@@ -1922,7 +1933,7 @@ mod connection_tests {
                     *length as usize
                 }
                 ServerHeader::ValueVec(.., length) => *length as usize,
-                ServerHeader::Update(_) => 0,
+                ServerHeader::Update(_) | ServerHeader::TransferLimits(..) => 0,
                 _ => panic!("unexpected message kind in a connection test"),
             };
             messages.push((header, rest[size..size + payload].to_vec()));

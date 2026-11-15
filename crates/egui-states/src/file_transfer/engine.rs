@@ -24,9 +24,7 @@ use tokio::sync::{Notify, mpsc};
 use crate::file_transfer::shared::TransferShared;
 use crate::file_transfer::sink::Sink;
 use crate::file_transfer::source::Source;
-use crate::file_transfer::{
-    FILE_TRANSFER_CHUNK, FILE_TRANSFER_WINDOW, TransferError, TransferStatus, names,
-};
+use crate::file_transfer::{TransferError, TransferLimits, TransferStatus, names};
 use crate::protocol::VALUE_MAX_SIZE;
 use crate::protocol::file_transfer::{
     AcceptMode, OfferBody, TransferFrame, decode_offer, encode_client, encode_offer, encode_server,
@@ -117,6 +115,8 @@ struct State {
     next_key: u64,
     #[cfg_attr(not(any(feature = "server", feature = "python")), allow(dead_code))]
     next_waiter: u64,
+    /// The window and chunk of new transfers.
+    limits: TransferLimits,
 }
 
 struct Connection {
@@ -241,6 +241,8 @@ struct Transfer {
     sink: Option<Sink>,
     received: u64,
     consumed: u64,
+    /// The window of credit, fixed when the transfer is created.
+    window: u64,
     /// Whether the last chunk has arrived.
     closed: bool,
     /// Chunks waiting for the sink worker. They are part of the transfer, so
@@ -257,10 +259,16 @@ impl Transfer {
     /// as the sink consumes, so this is always a window past the consumed
     /// bytes.
     fn granted(&self) -> u64 {
-        (self.consumed + FILE_TRANSFER_WINDOW).min(self.total)
+        (self.consumed + self.window).min(self.total)
     }
 
-    fn new(serial: u32, shared: Arc<TransferShared>, body: OfferBody, meta: Bytes) -> Self {
+    fn new(
+        serial: u32,
+        shared: Arc<TransferShared>,
+        body: OfferBody,
+        meta: Bytes,
+        window: u64,
+    ) -> Self {
         let total = body.files.iter().map(|file| file.size).sum();
         Self {
             serial,
@@ -277,6 +285,7 @@ impl Transfer {
             sink: None,
             received: 0,
             consumed: 0,
+            window,
             closed: false,
             #[cfg(not(target_arch = "wasm32"))]
             pending: VecDeque::new(),
@@ -331,6 +340,7 @@ impl Engine {
                 queue: VecDeque::new(),
                 next_key: 0,
                 next_waiter: 0,
+                limits: TransferLimits::default(),
             }),
             free: Condvar::new(),
             pump: Notify::new(),
@@ -425,6 +435,18 @@ impl Engine {
 
     /// Attaches a new connection; returns its generation for [`Self::pump`]
     /// and [`Self::detach`].
+    /// The window and chunk of the transfers that start from now on.
+    #[cfg_attr(not(any(feature = "server", feature = "python")), allow(dead_code))]
+    pub(crate) fn limits(&self) -> TransferLimits {
+        self.0.state.lock().limits
+    }
+
+    /// Sets the window and chunk of the transfers that start from now on; a
+    /// running transfer keeps its window.
+    pub(crate) fn set_limits(&self, limits: TransferLimits) {
+        self.0.state.lock().limits = limits;
+    }
+
     pub(crate) fn attach(&self, lane: StateLane) -> u64 {
         let mut state = self.0.state.lock();
         state.generation += 1;
@@ -651,6 +673,7 @@ impl Engine {
     /// Takes the source of the head transfer and the length of its next
     /// chunk, or `None` when nothing may be sent now.
     fn next_job(&self, state: &mut State) -> Option<(u64, u32, Source, usize)> {
+        let chunk = state.limits.chunk as u64;
         while let Some(&(endpoint, serial)) = state.queue.front() {
             let transfer = state
                 .endpoints
@@ -670,9 +693,7 @@ impl Engine {
             // The pump holds the source while it reads; it takes one chunk at a time.
             transfer.source.as_ref()?;
             let remaining = transfer.total - transfer.sent;
-            let len = remaining
-                .min(transfer.credit)
-                .min(FILE_TRANSFER_CHUNK as u64);
+            let len = remaining.min(transfer.credit).min(chunk);
             // An empty transfer still sends one empty last chunk.
             if len == 0 && remaining > 0 {
                 return None;
@@ -929,6 +950,7 @@ impl Engine {
             return reject(state, &format!("invalid offer: {error}"));
         }
         let key = state.next_key;
+        let window = state.limits.window;
         let ep = state.endpoints.get_mut(&endpoint).expect("endpoint exists");
         if ep.meta_type != meta_type {
             return reject(state, "the metadata type does not match");
@@ -949,7 +971,7 @@ impl Engine {
         );
         #[cfg(any(test, feature = "bench"))]
         if ep.discard {
-            let mut transfer = Transfer::new(serial, shared, body, meta);
+            let mut transfer = Transfer::new(serial, shared, body, meta, window);
             transfer.phase = Phase::Receiving;
             transfer.sink = Some(Sink::Discard);
             ep.current = Some(transfer);
@@ -963,7 +985,7 @@ impl Engine {
             );
             return;
         }
-        ep.current = Some(Transfer::new(serial, shared, body, meta));
+        ep.current = Some(Transfer::new(serial, shared, body, meta, window));
         state.next_key += 1;
         fx.events.push(EngineEvent::Offer { endpoint });
         if let Some(repaint) = &self.0.repaint {
@@ -1094,7 +1116,7 @@ impl Engine {
         }
         let t = Self::current_mut(state, endpoint, serial).expect("checked above");
         t.phase = Phase::Sending;
-        t.credit = t.total.min(FILE_TRANSFER_WINDOW);
+        t.credit = t.total.min(t.window);
         state.queue.push_back((endpoint, serial));
         fx.wake_pump = true;
     }
@@ -1327,7 +1349,7 @@ impl Engine {
         let serial = ep.next_serial;
         ep.next_serial = ep.next_serial.wrapping_add(1);
         let meta_type = ep.meta_type;
-        let mut transfer = Transfer::new(serial, shared.clone(), body, meta);
+        let mut transfer = Transfer::new(serial, shared.clone(), body, meta, state.limits.window);
         transfer.source = Some(source);
         transfer.exposed = true;
         ep.current = Some(transfer);

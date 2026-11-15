@@ -26,6 +26,9 @@ pub(crate) enum ServerHeader {
     ImageMulti(u64, ImageMultiHeader),
     /// A file transfer frame: endpoint id, frame, payload length.
     Transfer(u64, TransferFrame, u32),
+    /// The window and the chunk size of file transfers on this connection, in
+    /// bytes. The first message of every connection.
+    TransferLimits(u32, u32),
 }
 
 #[derive(Serialize, Deserialize)]
@@ -92,6 +95,7 @@ mod tests {
             ServerHeader::Update(0.0),
             ServerHeader::ImageMulti(1, ImageMultiHeader::Reset(false)),
             ServerHeader::Transfer(1, TransferFrame::Reject { serial: 0 }, 0),
+            ServerHeader::TransferLimits(1, 1),
         ];
         for (index, header) in server.iter().enumerate() {
             let data: FastVec<32> = serialize(header).unwrap();

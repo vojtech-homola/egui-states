@@ -16,6 +16,7 @@ use crate::hashing::NoHashMap;
 
 /// A signal event: id, value, whether it blocks, and the previous value.
 type SignalEvent<'py> = (u64, Bound<'py, PyAny>, bool, Option<Bound<'py, PyAny>>);
+use crate::file_transfer::TransferProfile;
 use crate::file_transfer::engine::Engine;
 use crate::protocol::data::header_type_id;
 use crate::python::value_parsing::{ValueCreator, ValueParser};
@@ -291,6 +292,7 @@ impl StateServerCore {
         heartbeat_timeout=Some(heartbeat::DEFAULT_TIMEOUT.as_secs_f64()),
         web_path=None,
         allowed_origins=Vec::new(),
+        transfer_profile=1,
     ))]
     fn new(
         version: Option<u64>,
@@ -298,11 +300,21 @@ impl StateServerCore {
         heartbeat_timeout: Option<f64>,
         web_path: Option<PathBuf>,
         allowed_origins: Vec<String>,
+        transfer_profile: u8,
     ) -> PyResult<Self> {
         let heartbeat = Heartbeat::from_secs(heartbeat_interval, heartbeat_timeout)
             .map_err(PyValueError::new_err)?;
-        let config = ServerConfig::new(version, heartbeat, web_path.as_deref(), &allowed_origins)
-            .map_err(PyValueError::new_err)?;
+        let transfer_profile = TransferProfile::from_code(transfer_profile).ok_or_else(|| {
+            PyValueError::new_err(format!("unknown transfer profile {transfer_profile}"))
+        })?;
+        let config = ServerConfig::new(
+            version,
+            heartbeat,
+            web_path.as_deref(),
+            &allowed_origins,
+            transfer_profile,
+        )
+        .map_err(PyValueError::new_err)?;
         let server = Server::new(config);
         let signals = server.get_signals_manager();
 
@@ -1894,7 +1906,7 @@ mod tests {
     ) {
         Python::initialize();
         let core = Python::attach(|py| {
-            let core = StateServerCore::new(None, 60.0, None, None, Vec::new()).unwrap();
+            let core = StateServerCore::new(None, 60.0, None, None, Vec::new(), 1).unwrap();
             Py::new(py, core).unwrap()
         });
         let port = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
