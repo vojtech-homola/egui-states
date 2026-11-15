@@ -241,7 +241,7 @@ struct Transfer {
     sink: Option<Sink>,
     received: u64,
     consumed: u64,
-    /// The window of credit, fixed when the transfer is created.
+    /// The window of credit, fixed when the offer arrives.
     window: u64,
     /// Whether the last chunk has arrived.
     closed: bool,
@@ -442,7 +442,8 @@ impl Engine {
     }
 
     /// Sets the window and chunk of the transfers that start from now on; a
-    /// running transfer keeps its window.
+    /// running transfer keeps its window. An offer this peer made and that
+    /// is not accepted yet takes the new window.
     pub(crate) fn set_limits(&self, limits: TransferLimits) {
         self.0.state.lock().limits = limits;
     }
@@ -1114,9 +1115,12 @@ impl Engine {
             self.fail_locked(state, endpoint, serial, error, fx);
             return;
         }
+        // The window of now, not of the offer: a client may offer before the
+        // server's limits reach it, but the accept always comes after them.
+        let window = state.limits.window;
         let t = Self::current_mut(state, endpoint, serial).expect("checked above");
         t.phase = Phase::Sending;
-        t.credit = t.total.min(t.window);
+        t.credit = t.total.min(window);
         state.queue.push_back((endpoint, serial));
         fx.wake_pump = true;
     }

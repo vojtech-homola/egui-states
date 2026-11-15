@@ -691,6 +691,31 @@ fn the_receiver_grants_the_window_of_its_limits() {
     assert!(protocol_error(&shared));
 }
 
+/// A client is attached before the server's limits reach it, so it can offer
+/// an upload with the limits it had before.
+#[test]
+fn an_upload_offered_before_the_limits_arrive_takes_their_window() {
+    let limits = TransferLimits {
+        window: 4 * FILE_TRANSFER_WINDOW,
+        chunk: 4 * FILE_TRANSFER_CHUNK,
+    };
+    let mut link = Link::new();
+    link.server.set_limits(limits);
+    link.connect();
+    // More than the client's window, less than the server's: the server has
+    // granted all of it and returns no credit.
+    let data = vec![7; 2 * FILE_TRANSFER_WINDOW as usize];
+    let sent = send_bytes(&link.client, UP, data.clone());
+    link.client.set_limits(limits);
+
+    let offer = until(|| link.server.take_offer(UP)).unwrap();
+    let received = offer
+        .token
+        .accept(Sink::memory(u64::MAX), AcceptMode::Lane, None);
+    assert_eq!(finished(&sent), TransferStatus::Done);
+    assert_eq!(received.take_data().unwrap(), data);
+}
+
 #[test]
 fn more_data_than_announced_or_a_wrong_last_flag_fail_the_transfer() {
     let rx = Receiver::new();
