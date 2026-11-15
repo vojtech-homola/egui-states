@@ -15,7 +15,8 @@
 //! not lose or reorder packets.
 //!
 //! ```sh
-//! # In one process: loopback, a 1 Gbit/s LAN and a 100 Mbit/s WAN.
+//! # In one process: loopback, a 10 Gbit/s and a 1 Gbit/s LAN, and a
+//! # 100 Mbit/s WAN.
 //! cargo bench -p egui_states_bench --bench latency
 //! # Choose the links as `Mbit/s[:one-way delay in ms]`; 0 means no relay.
 //! EGUI_LATENCY_LINKS=0,1000:0.1,20:25 cargo bench -p egui_states_bench --bench latency
@@ -159,8 +160,12 @@ impl Link {
     }
 }
 
-/// Bytes of one packet on the simulated link.
+/// Bytes of the smallest packet on the simulated link.
 const PACKET: usize = 1500;
+/// Link time of the largest packet. Faster links forward larger packets, as
+/// network cards with segmentation offload do, so the relay keeps up with
+/// 10 Gbit/s; a packet stays shorter than the delays the benchmark measures.
+const PACKET_TIME: Duration = Duration::from_micros(10);
 /// Link time of the packets the relay queues in front of the link. What does
 /// not fit waits in the socket buffers, like in those of a real sender.
 const LINK_QUEUE: Duration = Duration::from_millis(5);
@@ -192,11 +197,12 @@ fn relay(target: u16, link: Link) -> u16 {
 fn pipe(mut from: TcpStream, to: TcpStream, link: Link) {
     // Room for the packets in the queue and on the wire; a receiver that
     // stops reading fills it and so holds the sender up.
+    let packet_len = PACKET.max((PACKET_TIME.as_secs_f64() * link.rate) as usize);
     let in_transit = (LINK_QUEUE + link.delay).as_secs_f64() * link.rate;
-    let (packets, arriving) = sync_channel(in_transit as usize / PACKET + 16);
+    let (packets, arriving) = sync_channel(in_transit as usize / packet_len + 16);
     thread::spawn(move || deliver(arriving, to));
 
-    let mut buffer = vec![0; 16 * 1024];
+    let mut buffer = vec![0; 64 * 1024];
     // When the link has sent everything scheduled so far.
     let mut link_free = Instant::now();
     'link: loop {
@@ -204,7 +210,7 @@ fn pipe(mut from: TcpStream, to: TcpStream, link: Link) {
             Ok(0) | Err(_) => break,
             Ok(len) => len,
         };
-        for packet in buffer[..len].chunks(PACKET) {
+        for packet in buffer[..len].chunks(packet_len) {
             // A packet leaves once the link has sent the ones before it and
             // arrives after its serialization time and the delay. The times
             // are absolute, so a late wake-up costs no rate.
@@ -394,8 +400,8 @@ fn main() {
             peer.client.disconnect();
         }
         _ => {
-            let links =
-                std::env::var("EGUI_LATENCY_LINKS").unwrap_or_else(|_| "0,1000:0.1,100:10".into());
+            let links = std::env::var("EGUI_LATENCY_LINKS")
+                .unwrap_or_else(|_| "0,10000:0.05,1000:0.1,100:10".into());
             for link in links.split(',').map(Link::parse) {
                 let port = free_port();
                 let server = start_server(port, Ipv4Addr::LOCALHOST);
