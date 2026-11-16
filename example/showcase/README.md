@@ -32,6 +32,37 @@ Click **Connect** and expand the feature sections to edit values, emit signals,
 and explore collection and data controls. Both servers use loopback port
 **8091**; run only one at a time. Stop the server with Ctrl+C.
 
+## IPython console
+
+After building the Python bindings, start IPython from the repository root:
+
+```sh
+uv run ipython
+```
+
+Run the same script with `--interactive` to return to the prompt with
+`server` and `states` available:
+
+```ipython
+%run example/showcase/python/run.py --interactive
+states.values.count.get()
+states.values.count.set(42, update=True)
+```
+
+Connect the GUI as usual. Interactive mode also accepts `--port` and the `--web`
+switch to serve the built browser GUI.
+It leaves the server running and preserves the console's signal handlers, so
+Ctrl+C interrupts console input. Stop the server explicitly when finished or
+before rerunning:
+
+```python
+server.stop()
+```
+
+To load the setup functions without starting a server, use
+`%run -n example/showcase/python/run.py`, then call `server = setup_server()` and
+`server.start(8091)` yourself.
+
 ## Browser GUI
 
 Install Trunk, then run from the repository root:
@@ -47,13 +78,18 @@ forwards that WebSocket to the server on 8091 (see the repository's
 `Trunk.toml`).
 
 To serve the page from the showcase server on its single port instead, build it
-and pass the output directory to either server, still from the repository root:
+and enable serving, still from the repository root:
 
 ```sh
 trunk build
+uv run python example/showcase/python/run.py --web
+# or:
 cargo run -p showcase_server --bin showcase-server -- --web example/showcase/gui/web
-# or: uv run python example/showcase/python/run.py --web example/showcase/gui/web
 ```
+
+The Python server always uses `example/showcase/gui/web`, resolved relative to
+`run.py`, so its web directory is independent of the current working directory.
+`--web` enables serving and takes no path argument.
 
 Then open [localhost:8091](http://localhost:8091) and click **Connect**.
 

@@ -6,12 +6,13 @@ import signal
 import socket
 import subprocess
 import sys
+import textwrap
 import threading
 import time
 
 import pytest
 
-from tests.preparation import ROOT
+from tests.preparation import ROOT, run
 from tests.python_test_helpers.network import free_port
 
 
@@ -67,3 +68,60 @@ def test_entrypoint_shutdown(request, example, language):
             process.wait(timeout=5)
         reader.join(timeout=1)
         process.stdout.close()
+
+
+def test_showcase_interactive_mode(tmp_path):
+    """Expose a live server to IPython without replacing its signal handlers."""
+    entrypoint = ROOT / "example" / "showcase" / "python" / "run.py"
+    script = textwrap.dedent(f"""\
+        import signal
+        import socket
+
+        original_handlers = {{sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}}
+        get_ipython().run_line_magic("run", {f'"{entrypoint}" --interactive --port 0'!r})
+        try:
+            assert server.is_running()
+            assert states is server.states
+            assert states.values.count.get() == 7
+            states.values.count.set(42, update=True)
+            assert states.values.count.get() == 42
+            assert all(signal.getsignal(sig) == handler for sig, handler in original_handlers.items())
+            ip_addr, port = server.address()
+        finally:
+            server.stop()
+        assert not server.is_running()
+        with socket.socket() as probe:
+            probe.bind((".".join(map(str, ip_addr)), port))
+        """)
+    run(
+        [
+            sys.executable,
+            "-m",
+            "IPython",
+            f"--ipython-dir={tmp_path}",
+            "--HistoryManager.hist_file=:memory:",
+            "-c",
+            script,
+        ],
+        timeout=15,
+    )
+
+
+@pytest.mark.parametrize("example_server", ["showcase"], indirect=True)
+@pytest.mark.parametrize("interactive", [False, True])
+def test_showcase_startup_failure_restores_signal_handlers(example_server, monkeypatch, tmp_path, interactive):
+    """Restore console signal handlers when serving the browser page fails."""
+    _, module, _ = example_server
+    monkeypatch.setattr(module, "WEB_PATH", tmp_path / "missing")
+    args = ["run.py", "--web"]
+    if interactive:
+        args.append("--interactive")
+    monkeypatch.setattr(sys, "argv", args)
+    original_handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
+    try:
+        with pytest.raises(FileNotFoundError):
+            module.main()
+        assert all(signal.getsignal(sig) == handler for sig, handler in original_handlers.items())
+    finally:
+        for signum, handler in original_handlers.items():
+            signal.signal(signum, handler)

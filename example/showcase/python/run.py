@@ -2,6 +2,7 @@
 
 import argparse
 from collections.abc import Callable
+from pathlib import Path
 import signal
 import threading
 
@@ -12,6 +13,7 @@ from showcase_bindings.structs import Measurement, Point, SampleInfo, Summary
 from egui_states import LogLevel, TransferError, TransferHandle, TransferOffer, TransferStatus
 
 PORT = 8091
+WEB_PATH = Path(__file__).resolve().parents[1] / "gui" / "web"
 DEFAULT_VEC = [10, -3, 27]
 DEFAULT_MAP = {1: 100, 2: 200, 5: 500}
 
@@ -216,50 +218,65 @@ def populate_initial_data(states: ShowcaseState) -> None:  # noqa: PLR0915
     states.image.images[7].update(image_patch, origin=(96, 96), update=True)
 
 
-def setup_server(
-    *,
-    error_handler: Callable[[Exception], None] | None = None,
-    web_path: str | None = None,
-) -> StatesServer:
-    """Create and configure a server without opening a listening socket.
+def setup_server(*, error_handler: Callable[[Exception], None] | None = None) -> StatesServer:
+    """Configure a server using the showcase's fixed browser GUI directory.
+
+    No listening socket is opened and the browser GUI is not loaded until
+    ``start_web()`` is called.
 
     Args:
         error_handler (Callable[[Exception], None] | None, optional): Handler
             for asynchronous callback errors; None uses the default handler.
-        web_path (str | None, optional): Directory of a built browser GUI that
-            start_web serves on the server port; None serves no page.
 
     Returns:
         StatesServer: Configured server; call start to listen for a client.
     """
-    server = StatesServer(error_handler=error_handler, web_path=web_path)
+    server = StatesServer(error_handler=error_handler, web_path=WEB_PATH)
     register_callbacks(server)
     populate_initial_data(server.states)
     return server
 
 
-def main() -> None:
-    """Run until interrupted and release the listening socket on exit."""
+def main() -> StatesServer:
+    """Start the showcase, returning to the console with ``--interactive``.
+
+    Returns:
+        StatesServer: The server, still running when ``--interactive`` is used.
+    """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=PORT)
-    parser.add_argument("--web", help="directory of a built browser GUI to serve on the port")
+    parser.add_argument("--web", action="store_true", help="serve the built browser GUI on the server port")
+    parser.add_argument("--interactive", action="store_true", help="leave the server running and return to the console")
     args = parser.parse_args()
+    server = setup_server()
     stopped = threading.Event()
-    signal.signal(signal.SIGINT, lambda *_: stopped.set())
-    signal.signal(signal.SIGTERM, lambda *_: stopped.set())
-    server = setup_server(web_path=args.web)
-    if args.web is not None:
-        server.start_web()
+    previous_handlers = {}
+    keep_running = False
     try:
+        if not args.interactive:
+            for signum in (signal.SIGINT, signal.SIGTERM):
+                previous_handlers[signum] = signal.signal(signum, lambda *_: stopped.set())
+        if args.web:
+            server.start_web()
         server.start(args.port, (127, 0, 0, 1))
         print(f"Showcase server listening on {args.port}", flush=True)
-        # Another thread may take the signal, which only flags it for the
-        # main thread; a timed wait lets the main thread run the handler.
-        while not stopped.wait(0.5):
-            pass
+        if args.interactive:
+            keep_running = True
+        else:
+            # Another thread may take the signal, which only flags it for the
+            # main thread; a timed wait lets the main thread run the handler.
+            while not stopped.wait(0.5):
+                pass
     finally:
-        server.stop()
+        try:
+            if not keep_running:
+                server.stop()
+        finally:
+            for signum, handler in previous_handlers.items():
+                signal.signal(signum, handler)
+    return server
 
 
 if __name__ == "__main__":
-    main()
+    server = main()
+    states = server.states

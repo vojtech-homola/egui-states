@@ -17,7 +17,29 @@
             "name": "Showcase Python server",
             "type": "debugpy",
             "request": "launch",
-            "program": "${workspaceFolder}/example/showcase/python/run.py",
+            "module": "IPython",
+            "args": [
+                "-i",
+                "--",
+                "${workspaceFolder}/example/showcase/python/run.py",
+                "--interactive"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "name": "Showcase Python server with web",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "IPython",
+            "args": [
+                "-i",
+                "--",
+                "${workspaceFolder}/example/showcase/python/run.py",
+                "--interactive",
+                "--web"
+            ],
+            "console": "integratedTerminal",
             "cwd": "${workspaceFolder}"
         }
     ]

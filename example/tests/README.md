@@ -17,7 +17,8 @@ cargo test --locked -p example_smoke_tests
 
 With a prepared, activated Python environment, `python -m pytest` or `pytest` can
 replace `uv run python -m pytest`. Both suites require Cargo, native example build
-dependencies, and local TCP sockets. Python tests also require pytest and NumPy.
+dependencies, and local TCP sockets. Python tests also require pytest, NumPy, and
+IPython.
 See the [test guide](../../tests/README.md) for complete prerequisites, offline
 settings, and custom Cargo target directories.
 
