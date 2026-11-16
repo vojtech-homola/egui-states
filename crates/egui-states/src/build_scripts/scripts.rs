@@ -197,7 +197,9 @@ pub(crate) fn get_all_enums_struct(values: &[StateType]) -> (Enums, Structs) {
             StateType::Data(_, _, Some(info))
             | StateType::DataTake(_, _, Some(info))
             | StateType::DataMulti(_, _, Some(info))
-            | StateType::DataMultiTake(_, _, Some(info)) => {
+            | StateType::DataMultiTake(_, _, Some(info))
+            | StateType::Download(_, Some(info))
+            | StateType::Upload(_, Some(info)) => {
                 collect_enums(info, &mut enums);
                 collect_structs(info, &mut structs);
             }

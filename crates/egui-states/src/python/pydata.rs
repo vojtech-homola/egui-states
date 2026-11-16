@@ -11,13 +11,23 @@ pub(crate) fn data_buffer(data: &Bound<PyAny>) -> PyResult<PyUntypedBuffer> {
         .map_err(|_| PyValueError::new_err("Data must be a bytes-like object."))
 }
 
+/// Views the bytes of `buffer`, which must be C-contiguous: a buffer with
+/// steps, such as a reversed or sliced NumPy array, has its bytes elsewhere.
+pub(crate) fn contiguous_bytes(buffer: &PyUntypedBuffer) -> PyResult<&[u8]> {
+    if !buffer.is_c_contiguous() {
+        return Err(PyValueError::new_err(NOT_CONTIGUOUS));
+    }
+    // SAFETY: a C-contiguous buffer holds `len_bytes()` bytes from
+    // `buf_ptr()`, and `buffer` keeps them alive while the view is borrowed.
+    Ok(unsafe { std::slice::from_raw_parts(buffer.buf_ptr().cast::<u8>(), buffer.len_bytes()) })
+}
+
+const NOT_CONTIGUOUS: &str = "Data buffer must be C-contiguous.";
+
 /// Checks `buffer` against a Data state's element type and views its bytes.
 pub(crate) fn data_slice(buffer: &PyUntypedBuffer, data_type: DataType) -> PyResult<DataSlice<'_>> {
     check_data_type(buffer, data_type).map_err(PyValueError::new_err)?;
-    // SAFETY: a C-contiguous buffer holds `len_bytes()` bytes from
-    // `buf_ptr()`, and `buffer` keeps them alive while the view is borrowed.
-    let bytes =
-        unsafe { std::slice::from_raw_parts(buffer.buf_ptr().cast::<u8>(), buffer.len_bytes()) };
+    let bytes = contiguous_bytes(buffer)?;
     Ok(DataSlice {
         bytes,
         data_type,
@@ -27,7 +37,7 @@ pub(crate) fn data_slice(buffer: &PyUntypedBuffer, data_type: DataType) -> PyRes
 
 fn check_data_type(buffer: &PyUntypedBuffer, data_type: DataType) -> Result<(), String> {
     if !buffer.is_c_contiguous() {
-        return Err("Data buffer must be C-contiguous.".to_string());
+        return Err(NOT_CONTIGUOUS.to_string());
     }
 
     let format = buffer.format();

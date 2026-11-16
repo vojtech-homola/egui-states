@@ -2,6 +2,8 @@
 """Native worker regressions run outside pytest so leaked threads cannot accumulate."""
 
 import sys
+from typing import Any, cast
+
 from tests.preparation import ROOT, run
 
 
@@ -29,6 +31,20 @@ def test_heartbeat_settings_are_validated():
     ]:
         with pytest.raises(ValueError, match="heartbeat"):
             StatesServer(signals_workers=1, heartbeat_interval=interval, heartbeat_timeout=timeout)
+
+
+def test_transfer_profiles_are_validated():
+    """Accept every transfer profile and reject anything else."""
+    import pytest
+    from egui_states import TransferProfile
+    from egui_states_test_bindings import StatesServer  # ty: ignore[import-not-found]
+
+    for profile in TransferProfile:
+        StatesServer(signals_workers=1, transfer_profile=profile)
+    # Values an untyped caller might pass.
+    for profile in ["balanced", "Balanced", 3, -1]:
+        with pytest.raises(ValueError, match="TransferProfile"):
+            StatesServer(signals_workers=1, transfer_profile=cast(Any, profile))
 
 
 def test_server_restarts_on_a_different_port():

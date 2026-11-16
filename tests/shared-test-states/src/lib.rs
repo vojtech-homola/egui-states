@@ -3,6 +3,7 @@ pub mod data;
 pub mod image;
 pub mod integration;
 pub mod sections;
+pub mod transfers;
 pub mod wire;
 
 use collections::{ValueMapStates, ValueVecStates};
@@ -28,4 +29,5 @@ pub struct State {
     pub image: ImageStates,
     pub wire_types: wire::WireTypeStates,
     pub headers: data::HeaderStates,
+    pub transfers: transfers::TransferStates,
 }

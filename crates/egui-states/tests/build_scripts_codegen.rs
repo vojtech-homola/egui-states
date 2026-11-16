@@ -5,8 +5,9 @@ use std::path::PathBuf;
 
 use egui_states::build_scripts::{generate_python, generate_rust};
 use egui_states::{
-    ClientBuilder, Data, DataMulti, DataMultiTake, DataTake, Image, ImageMulti, MapState, Queue,
-    Signal, State, StatesCreator, Static, StaticAtomic, Value, ValueAtomic, ValueTake, VecState,
+    ClientBuilder, Data, DataMulti, DataMultiTake, DataTake, Download, Image, ImageMulti, MapState,
+    Queue, Signal, State, StatesCreator, Static, StaticAtomic, Upload, Value, ValueAtomic,
+    ValueTake, VecState,
 };
 
 #[egui_states::typed(rust_derive(Debug, PartialEq, Eq, Hash))]
@@ -412,6 +413,65 @@ fn bindings_carry_data_header_types() {
     );
     assert_eq!(generated_hash(&python, "VERSION_HASH: int = "), client);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// File transfer endpoints with and without metadata.
+#[derive(State)]
+#[allow(dead_code)]
+struct WithTransfers {
+    files: Download,
+    results: Download<GeneratedOuter>,
+    logs: Upload,
+    inputs: Upload<GeneratedEnum>,
+}
+
+#[test]
+fn bindings_carry_transfer_endpoints() {
+    let dir = output_dir("with_transfers", 0);
+    generate_rust::<WithTransfers>(&dir).unwrap();
+    generate_python::<WithTransfers>(dir.join("python")).unwrap();
+    let rust = std::fs::read_to_string(dir.join("mod.rs")).unwrap();
+    let structs = std::fs::read_to_string(dir.join("structs.rs")).unwrap();
+    for expected in [
+        "pub files: s::Download,",
+        "pub results: s::Download<structs::GeneratedOuter>,",
+        "pub logs: s::Upload,",
+        "pub inputs: s::Upload<enums::GeneratedEnum>,",
+        "s::Download::<()>::new(server, format!(\"{parent}.files\"))?",
+        "s::Upload::<enums::GeneratedEnum>::new(server, format!(\"{parent}.inputs\"))?",
+    ] {
+        assert!(rust.contains(expected), "missing {expected} in\n{rust}");
+    }
+    assert!(structs.contains("pub struct GeneratedOuter"));
+
+    let python = std::fs::read_to_string(dir.join("python/__init__.py")).unwrap();
+    for expected in [
+        "self.files: s.Download = s.Download()",
+        "self.results: s.DownloadWithMeta[structs.GeneratedOuter] = s.DownloadWithMeta(",
+        "self.logs: s.Upload = s.Upload()",
+        "self.inputs: s.UploadWithMeta[enums.GeneratedEnum] = s.UploadWithMeta(",
+    ] {
+        assert!(python.contains(expected), "missing {expected} in\n{python}");
+    }
+
+    let client =
+        ClientBuilder::<WithTransfers>::new(egui::Context::default(), 0).get_version_hash();
+    assert_eq!(
+        generated_hash(&rust, "pub const VERSION_HASH: u64 = "),
+        client
+    );
+    assert_eq!(generated_hash(&python, "VERSION_HASH: int = "), client);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Pins the kind tags and metadata type ids of the transfer endpoints.
+#[test]
+fn layout_hash_of_transfer_endpoints_is_stable() {
+    const GOLDEN: u64 = 2088561202456885291;
+    assert_eq!(
+        ClientBuilder::<WithTransfers>::new(egui::Context::default(), 0).get_version_hash(),
+        GOLDEN
+    );
 }
 
 struct Golden;

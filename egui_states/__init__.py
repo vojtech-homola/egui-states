@@ -17,6 +17,8 @@ from egui_states.structures import (
     DataTake,
     DataTakeWithHeader,
     DataWithHeader,
+    Download,
+    DownloadWithMeta,
     Image,
     ImageColor,
     ImageMulti,
@@ -24,8 +26,20 @@ from egui_states.structures import (
     Signal,
     SignalEmpty,
     Static,
+    Upload,
+    UploadWithMeta,
     Value,
     Vec,
+)
+from egui_states.transfer import (
+    OfferedFile,
+    TransferError,
+    TransferErrorKind,
+    TransferHandle,
+    TransferOffer,
+    TransferProfile,
+    TransferProgress,
+    TransferStatus,
 )
 from egui_states.version import __version__
 
@@ -49,6 +63,18 @@ __all__ = [
     "DataTakeWithHeader",
     "DataMultiWithHeader",
     "DataMultiTakeWithHeader",
+    "Download",
+    "DownloadWithMeta",
+    "Upload",
+    "UploadWithMeta",
     "UNSET",
     "LogLevel",
+    "OfferedFile",
+    "TransferError",
+    "TransferErrorKind",
+    "TransferHandle",
+    "TransferOffer",
+    "TransferProfile",
+    "TransferProgress",
+    "TransferStatus",
 ]

@@ -22,14 +22,14 @@ use tokio::net::TcpStream;
 pub(crate) type WebSlot = Arc<RwLock<Option<Arc<WebSite>>>>;
 
 // Large enough for browser requests carrying cookies of other localhost apps.
-const MAX_REQUEST_HEAD: usize = 16 * 1024;
+pub(super) const MAX_REQUEST_HEAD: usize = 16 * 1024;
 const MAX_HEADERS: usize = 64;
 const MAX_DIRECTORY_DEPTH: usize = 32;
 // A built WASM client takes a few MB, so this only stops a mistaken path such
 // as a repository root from being read into memory.
 const MAX_PAGE_SIZE: u64 = 128 * 1024 * 1024;
 const PARTIAL_HEAD_RETRY: Duration = Duration::from_millis(5);
-const LINGER_TIMEOUT: Duration = Duration::from_secs(1);
+pub(super) const LINGER_TIMEOUT: Duration = Duration::from_secs(1);
 // A slow link still makes progress; a peer that accepts nothing for this long
 // has stalled and would otherwise hold its socket and page snapshot forever.
 const WRITE_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -280,6 +280,28 @@ pub(crate) enum Dispatch {
 
 /// Parsed request head, or the error status to answer with.
 pub(crate) struct HttpRequest(Result<RequestHead, u16>);
+
+impl HttpRequest {
+    /// The request path, as sent.
+    pub(crate) fn path(&self) -> Option<&str> {
+        self.0.as_ref().ok().map(|head| head.path.as_str())
+    }
+
+    /// The request method.
+    pub(super) fn method(&self) -> Option<&str> {
+        self.0.as_ref().ok().map(|head| head.method.as_str())
+    }
+
+    /// The bytes of the request head, still queued on the socket.
+    pub(super) fn head_len(&self) -> Option<usize> {
+        self.0.as_ref().ok().map(|head| head.length)
+    }
+
+    /// The status a request that could not be parsed is answered with.
+    pub(super) fn error_status(&self) -> Option<u16> {
+        self.0.as_ref().err().copied()
+    }
+}
 
 /// Peeks at the request head to tell WebSocket upgrades from HTTP requests.
 ///

@@ -39,6 +39,7 @@ pub(crate) enum DataType {
 
 impl DataType {
     /// The protocol type id.
+    #[cfg(any(feature = "client", feature = "server", test))]
     pub(crate) const fn id(self) -> u8 {
         self as u8
     }

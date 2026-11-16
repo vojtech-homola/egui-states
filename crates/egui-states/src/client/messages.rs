@@ -3,6 +3,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, error, unbounded_cha
 
 use crate::client::client::ClientCore;
 use crate::client::states_creator::ValuesList;
+use crate::file_transfer::TransferLimits;
 use crate::protocol::data::{DataMultiTakeHeader, MultiDataHeader};
 use crate::protocol::image::{ImageHeader, ImageMultiHeader};
 use crate::protocol::{
@@ -15,6 +16,8 @@ pub(crate) enum ChannelMessage {
     Signal(u64, u32, MessageData),
     Message(MessageData),
     Ack(u64),
+    /// An encoded file transfer message.
+    Raw(Vec<u8>),
     /// Panics the send task, to test that its panics are contained.
     #[cfg(test)]
     TestPanic,
@@ -71,6 +74,7 @@ fn parse_to_send(message: ChannelMessage, data: &mut FastVec<64>) {
             serialize_to_data(&header, data).unwrap();
             data.extend_from_data(&msg_data);
         }
+        ChannelMessage::Raw(message) => data.extend_from_data(&FastVec::<0>::Heap(message)),
         #[cfg(test)]
         ChannelMessage::TestPanic => panic!("injected send task panic"),
     }
@@ -238,6 +242,17 @@ pub(crate) async fn handle_message(
     match header {
         ServerHeader::Update(t) => {
             client.update(t);
+            return Ok(());
+        }
+        // Every transfer frame of the connection comes after it.
+        ServerHeader::TransferLimits(window, chunk) => {
+            let limits = TransferLimits::new(u64::from(window), chunk as usize)?;
+            vals.transfers.set_limits(limits);
+            return Ok(());
+        }
+        // The engine never waits here: sinks that block have a worker.
+        ServerHeader::Transfer(endpoint, frame, _) => {
+            vals.transfers.handle_frame(endpoint, frame, payload);
             return Ok(());
         }
         ServerHeader::Value(id, type_id, ..) => match vals.value(id) {
@@ -443,6 +458,35 @@ mod tests {
         for header in headers {
             let bytes = postcard::to_stdvec(&header).unwrap();
             assert!(MessagesParser::from_bytes(Bytes::from(bytes)).is_err());
+        }
+    }
+
+    #[test]
+    fn transfer_limits_from_the_server_apply_to_new_transfers() {
+        let (sender, _receiver) = MessageSender::new();
+        let context = egui::Context::default();
+        let creator = StatesCreatorClient::new(sender.clone(), context.clone(), "root".to_string());
+        let values = creator.get_values();
+        let client = ClientCore::new(context, sender);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let handle = |window, chunk| {
+            let header = ServerHeader::TransferLimits(window, chunk);
+            runtime.block_on(handle_message((header, Bytes::new()), &values, &client))
+        };
+
+        assert!(handle(64 * 1024, 16 * 1024).is_ok());
+        let limits = TransferLimits {
+            window: 64 * 1024,
+            chunk: 16 * 1024,
+        };
+        assert_eq!(values.transfers.limits(), limits);
+
+        // Invalid limits are refused and change nothing.
+        for (window, chunk) in [(1024, 0), (1024, 2048), (u32::MAX, 2 * 1024 * 1024)] {
+            assert!(handle(window, chunk).is_err(), "{window} / {chunk}");
+            assert_eq!(values.transfers.limits(), limits);
         }
     }
 
@@ -813,7 +857,8 @@ mod serializer_tests {
             let payload = match header {
                 ClientHeader::Value(_, _, _, size)
                 | ClientHeader::Signal(_, _, size)
-                | ClientHeader::Message(size) => size as usize,
+                | ClientHeader::Message(size)
+                | ClientHeader::Transfer(_, _, size) => size as usize,
                 ClientHeader::Ack(_) | ClientHeader::Handshake(..) => 0,
             };
             rest = &after[payload..];

@@ -10,7 +10,8 @@ from typing import Any
 from egui_states._core import PyObjectType, StateServerCore
 from egui_states.logging import LoggingSignal
 from egui_states.signals import SignalsManager
-from egui_states.structures import ISubStates, _SignalBase, _StaticBase
+from egui_states.structures import ISubStates, _CallbackBase, _StaticBase
+from egui_states.transfer import TransferProfile
 
 _ON_CONNECT_ID = 1
 _ON_DISCONNECT_ID = 2
@@ -41,7 +42,7 @@ def _initialize(
         full_name = f"{parent}.{wire_names.get(name, name)}"
         if isinstance(o, _StaticBase):
             o._initialize_base(server)
-            if isinstance(o, _SignalBase):
+            if isinstance(o, _CallbackBase):
                 o._initialize_signal(signals_manager)
             o._initialize(full_name, types)
         elif isinstance(o, ISubStates):
@@ -90,6 +91,7 @@ class StateServerBase[T: StatesBase]:
         heartbeat_timeout: float | None = 20.0,
         web_path: str | PathLike[str] | None = None,
         allowed_origins: Sequence[str] = (),
+        transfer_profile: TransferProfile = TransferProfile.Balanced,
     ) -> None:
         """Initialize the state server.
 
@@ -135,12 +137,23 @@ class StateServerBase[T: StatesBase]:
                 including local files; any site open in the browser can then
                 connect, so set a token as well. Native clients send no origin
                 and are not affected.
+            transfer_profile (TransferProfile, optional): How file transfers
+                share the connection with state synchronization; the client
+                uses the server's profile. ``Responsive`` keeps at most 64 KiB
+                of file data ahead of a state change, for slow links (VPN,
+                mobile, under about 20 Mbit/s), but moves at most 64 KiB per
+                round trip. ``Balanced`` keeps at most 256 KiB ahead and is
+                close to full speed from 100 Mbit/s up. ``Throughput`` gives
+                the fastest transfers, for a client on the same machine or
+                when transfers matter more than the UI; a state change may
+                wait behind up to 1 MiB of file data.
 
         Raises:
             ValueError: If ``heartbeat_interval`` is not positive,
                 ``heartbeat_timeout`` is not greater than it, ``web_path``
-                cannot be made absolute (for example because it is empty), or
-                an allowed origin is malformed.
+                cannot be made absolute (for example because it is empty), an
+                allowed origin is malformed, or ``transfer_profile`` is not a
+                :class:`TransferProfile`.
         """
         self._server = StateServerCore(
             version,
@@ -148,6 +161,8 @@ class StateServerBase[T: StatesBase]:
             heartbeat_timeout,
             web_path,
             list(allowed_origins),
+            # The native core takes the profile's number.
+            TransferProfile(transfer_profile).value,
         )
         self._signals_manager = SignalsManager(self._server, signals_workers, error_handler)
         self._states: T = state_class(self)

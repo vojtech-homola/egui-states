@@ -92,6 +92,8 @@ fn field_initializer(field: &syn::Field) -> syn::Result<proc_macro2::TokenStream
         "DataTake" => quote!(c.data_take(#field_name)),
         "DataMulti" => quote!(c.data_multi(#field_name)),
         "DataMultiTake" => quote!(c.data_multi_take(#field_name)),
+        "Download" => quote!(c.download(#field_name)),
+        "Upload" => quote!(c.upload(#field_name)),
         _ => quote!(c.substate(#field_name)),
     };
 

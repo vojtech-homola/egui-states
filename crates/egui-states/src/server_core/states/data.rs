@@ -1716,7 +1716,7 @@ mod transfer_tests {
                 let mut next = Some(first);
                 while let Some((header, payload)) = next {
                     match header {
-                        ServerHeader::Update(_) => {}
+                        ServerHeader::Update(_) | ServerHeader::TransferLimits(..) => {}
                         ServerHeader::Data(51, header) => {
                             self.single.update_data((header, payload)).unwrap()
                         }
@@ -1804,6 +1804,10 @@ mod transfer_tests {
                 values,
                 signals: SignalsManager::new(),
                 heartbeat: None,
+                transfers: crate::file_transfer::engine::Engine::new(
+                    crate::file_transfer::engine::Side::Server,
+                    None,
+                ),
             },
         ));
 

@@ -72,7 +72,10 @@ impl ClientHeader {
     /// Bytes of payload that follow this header in the frame.
     pub(crate) fn payload_len(&self) -> u32 {
         match self {
-            Self::Value(.., size) | Self::Signal(.., size) | Self::Message(size) => *size,
+            Self::Value(.., size)
+            | Self::Signal(.., size)
+            | Self::Message(size)
+            | Self::Transfer(.., size) => *size,
             Self::Ack(_) | Self::Handshake(..) => 0,
         }
     }

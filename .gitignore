@@ -18,8 +18,7 @@ __pycache__
 /build
 **/web/
 
-# Generated fixtures and example Python and C bindings
+# Generated fixtures and example Python bindings
 /tests/build-artifacts/
 /example/showcase/python/showcase_bindings/
 /example/counter/python/counter_bindings/
-/example/counter/c/bindings/
