@@ -111,6 +111,16 @@ pub(crate) enum ImageSetHeader {
     End(u32, bool),       // pixels, update
 }
 
+/// Chunk framing of a rectangle update; it mirrors [`ImageSetHeader`]. The
+/// client applies the rectangle once, at `All` or `End`.
+#[derive(Serialize, Deserialize)]
+pub(crate) enum ImageUpdateHeader {
+    All([u32; 4], bool),  // [x, y, w, h], update
+    Start([u32; 4], u32), // [x, y, w, h], pixels
+    Batch(u32),           // pixels
+    End(u32, bool),       // pixels, update
+}
+
 #[derive(Serialize, Deserialize)]
 pub(crate) enum ImageMultiHeader {
     Remove(u32, bool),             // index, update
@@ -161,22 +171,25 @@ impl ImageMultiHeader {
 
 #[derive(Serialize, Deserialize)]
 pub(crate) enum ImageHeader {
-    Set(ImageSetHeader, ImageType),    // header
-    Update([u32; 4], ImageType, bool), // [x, y, w, h], image_type, update
-    Fill([u32; 2], [u8; 4], bool),     // [width, height], RGBA, update
+    Set(ImageSetHeader, ImageType),       // header
+    Update(ImageUpdateHeader, ImageType), // header
+    Fill([u32; 2], [u8; 4], bool),        // [width, height], RGBA, update
 }
 
 #[cfg(feature = "client")]
 impl ImageHeader {
     /// Whether the message asks for a repaint; the first and middle chunks of
-    /// an image set never do.
+    /// an image set or update never do.
     pub(crate) fn update_flag(&self) -> bool {
         match self {
-            Self::Set(ImageSetHeader::All(_, update) | ImageSetHeader::End(_, update), _) => {
-                *update
-            }
-            Self::Set(ImageSetHeader::Start(..) | ImageSetHeader::Batch(_), _) => false,
-            Self::Update(_, _, update) | Self::Fill(_, _, update) => *update,
+            Self::Set(ImageSetHeader::All(_, update) | ImageSetHeader::End(_, update), _)
+            | Self::Update(
+                ImageUpdateHeader::All(_, update) | ImageUpdateHeader::End(_, update),
+                _,
+            )
+            | Self::Fill(_, _, update) => *update,
+            Self::Set(ImageSetHeader::Start(..) | ImageSetHeader::Batch(_), _)
+            | Self::Update(ImageUpdateHeader::Start(..) | ImageUpdateHeader::Batch(_), _) => false,
         }
     }
 
@@ -185,7 +198,7 @@ impl ImageHeader {
         matches!(
             self,
             Self::Set(ImageSetHeader::All(..) | ImageSetHeader::End(..), _)
-                | Self::Update(..)
+                | Self::Update(ImageUpdateHeader::All(..) | ImageUpdateHeader::End(..), _)
                 | Self::Fill(..)
         )
     }

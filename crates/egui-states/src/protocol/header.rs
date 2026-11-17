@@ -157,7 +157,7 @@ mod tests {
             DataHeader, DataMultiTakeHeader, DataTakeHeader, DataType, HeaderBytes, HeaderUpdate,
             MultiDataHeader, TransportType,
         };
-        use crate::protocol::image::{ImageSetHeader, ImageType};
+        use crate::protocol::image::{ImageSetHeader, ImageType, ImageUpdateHeader};
 
         let header = HeaderBytes {
             type_id: 0,
@@ -244,10 +244,19 @@ mod tests {
             ],
         );
         assert_tags(
+            "ImageUpdateHeader",
+            &[
+                ImageUpdateHeader::All([0; 4], false),
+                ImageUpdateHeader::Start([0; 4], 0),
+                ImageUpdateHeader::Batch(0),
+                ImageUpdateHeader::End(0, false),
+            ],
+        );
+        assert_tags(
             "ImageHeader",
             &[
                 ImageHeader::Set(ImageSetHeader::Batch(0), ImageType::Color),
-                ImageHeader::Update([0; 4], ImageType::Color, false),
+                ImageHeader::Update(ImageUpdateHeader::Batch(0), ImageType::Color),
                 ImageHeader::Fill([0; 2], [0; 4], false),
             ],
         );
@@ -293,7 +302,7 @@ mod tests {
             DataHeader, DataMultiTakeHeader, DataTakeHeader, DataType, HeaderBytes, HeaderUpdate,
             MultiDataHeader, TransportType,
         };
-        use crate::protocol::image::{ImageSetHeader, ImageType};
+        use crate::protocol::image::{ImageSetHeader, ImageType, ImageUpdateHeader};
 
         fn bytes<T: Serialize>(value: &T) -> Vec<u8> {
             contents(&serialize::<T, 64>(value).unwrap())
@@ -401,11 +410,14 @@ mod tests {
                 5,
                 ImageMultiHeader::Modify(
                     1,
-                    ImageHeader::Update([0, 1, 2, 3], ImageType::ColorAlpha, true),
+                    ImageHeader::Update(
+                        ImageUpdateHeader::All([0, 1, 2, 3], true),
+                        ImageType::ColorAlpha
+                    ),
                     24
                 )
             )),
-            [11, 5, 1, 1, 1, 0, 1, 2, 3, 1, 1, 24]
+            [11, 5, 1, 1, 1, 0, 0, 1, 2, 3, 1, 1, 24]
         );
         assert_eq!(
             bytes(&ServerHeader::ValueVec(

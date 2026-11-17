@@ -278,8 +278,8 @@ pub(crate) async fn handle_message(
         ServerHeader::Image(id, header, _) => match vals.image(id) {
             Some(image) => match header {
                 ImageHeader::Set(set, image_type) => image.set_image(set, image_type, &payload)?,
-                ImageHeader::Update(rect, image_type, _) => {
-                    image.update_image(rect, image_type, &payload)?
+                ImageHeader::Update(update, image_type) => {
+                    image.update_image(update, image_type, &payload)?
                 }
                 ImageHeader::Fill(size, rgba, _) => image.fill_image(size, rgba, &payload)?,
             },
@@ -353,8 +353,8 @@ pub(crate) async fn handle_message(
                 ImageMultiHeader::Modify(index, ImageHeader::Set(set, image_type), _) => {
                     images.set_image(index, set, image_type, &payload)?
                 }
-                ImageMultiHeader::Modify(index, ImageHeader::Update(rect, image_type, _), _) => {
-                    images.update_image(index, rect, image_type, &payload)?
+                ImageMultiHeader::Modify(index, ImageHeader::Update(update, image_type), _) => {
+                    images.update_image(index, update, image_type, &payload)?
                 }
                 ImageMultiHeader::Modify(index, ImageHeader::Fill(size, rgba, _), _) => {
                     images.fill_image(index, size, rgba, &payload)?
@@ -384,8 +384,8 @@ mod tests {
     use crate::protocol::collections::VecHeader;
     use crate::protocol::data::{DataHeader, DataTakeHeader};
     use crate::protocol::data::{DataType, TransportType};
-    use crate::protocol::image::ImageSetHeader;
     use crate::protocol::image::ImageType;
+    use crate::protocol::image::{ImageSetHeader, ImageUpdateHeader};
     use tokio::sync::mpsc::{UnboundedReceiver, error::TryRecvError};
 
     /// Frames that were queued in advance.
@@ -665,7 +665,10 @@ mod tests {
             91,
             ImageMultiHeader::Modify(
                 3,
-                ImageHeader::Update([0, 0, 1, 1], ImageType::GrayAlpha, true),
+                ImageHeader::Update(
+                    ImageUpdateHeader::All([0, 0, 1, 1], true),
+                    ImageType::GrayAlpha,
+                ),
                 2,
             ),
         );

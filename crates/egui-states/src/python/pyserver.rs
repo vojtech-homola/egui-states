@@ -873,19 +873,20 @@ impl StateServerCore {
         Ok((array, size))
     }
 
-    #[pyo3(signature = (value_id, image, update))]
+    #[pyo3(signature = (value_id, image, update, force=false))]
     fn image_set(
         &self,
         py: Python,
         value_id: u64,
         image: PyBuffer<u8>,
         update: bool,
+        force: bool,
     ) -> PyResult<()> {
         py.detach(|| {
             let image_val = self.inner_image(value_id)?;
             let image_data = pyimage::image_data(&image)?;
             image_val
-                .set_image(image_data, update)
+                .set_image(image_data, update, force)
                 .map_err(PyValueError::new_err)
         })
     }
@@ -907,7 +908,8 @@ impl StateServerCore {
         })
     }
 
-    #[pyo3(signature = (value_id, image, origin, update, force=false))]
+    #[pyo3(signature = (value_id, image, origin, update, force=false, max_lines=None))]
+    #[allow(clippy::too_many_arguments)]
     fn image_update(
         &self,
         py: Python,
@@ -916,7 +918,9 @@ impl StateServerCore {
         origin: [u32; 2],
         update: bool,
         force: bool,
+        max_lines: Option<i64>,
     ) -> PyResult<()> {
+        let max_lines = pyimage::max_lines(max_lines)?;
         py.detach(|| {
             let image_val = self.inner_image(value_id)?;
             let image_data = pyimage::image_data(&image)?;
@@ -926,6 +930,7 @@ impl StateServerCore {
                     image_data,
                     update,
                     force,
+                    max_lines,
                 )
                 .map_err(PyValueError::new_err)
         })
@@ -953,7 +958,7 @@ impl StateServerCore {
         })
     }
 
-    #[pyo3(signature = (value_id, index, image, update))]
+    #[pyo3(signature = (value_id, index, image, update, force=false))]
     fn image_multi_set(
         &self,
         py: Python,
@@ -961,12 +966,13 @@ impl StateServerCore {
         index: u32,
         image: PyBuffer<u8>,
         update: bool,
+        force: bool,
     ) -> PyResult<()> {
         py.detach(|| {
             let images = self.inner_image_multi(value_id)?;
             let image_data = pyimage::image_data(&image)?;
             images
-                .set_image(index, image_data, update)
+                .set_image(index, image_data, update, force)
                 .map_err(PyValueError::new_err)
         })
     }
@@ -989,7 +995,7 @@ impl StateServerCore {
         })
     }
 
-    #[pyo3(signature = (value_id, index, image, origin, update, force=false))]
+    #[pyo3(signature = (value_id, index, image, origin, update, force=false, max_lines=None))]
     #[allow(clippy::too_many_arguments)]
     fn image_multi_update(
         &self,
@@ -1000,7 +1006,9 @@ impl StateServerCore {
         origin: [u32; 2],
         update: bool,
         force: bool,
+        max_lines: Option<i64>,
     ) -> PyResult<()> {
+        let max_lines = pyimage::max_lines(max_lines)?;
         py.detach(|| {
             let images = self.inner_image_multi(value_id)?;
             let image_data = pyimage::image_data(&image)?;
@@ -1011,6 +1019,7 @@ impl StateServerCore {
                     image_data,
                     update,
                     force,
+                    max_lines,
                 )
                 .map_err(PyValueError::new_err)
         })

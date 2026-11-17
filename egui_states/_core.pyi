@@ -168,6 +168,7 @@ class StateServerCore:
         value_id: int,
         image: Buffer,
         update: bool,
+        force: bool = False,
     ) -> None: ...
     def image_set_all(
         self,
@@ -183,6 +184,7 @@ class StateServerCore:
         origin: list[int] | tuple[int, int],
         update: bool,
         force: bool = False,
+        max_lines: int | None = None,
     ) -> None: ...
     def image_get(self, value_id: int) -> tuple[bytearray, tuple[int, int]]: ...
     def image_size(self, value_id: int) -> tuple[int, int]: ...
@@ -194,6 +196,7 @@ class StateServerCore:
         index: int,
         image: Buffer,
         update: bool,
+        force: bool = False,
     ) -> None: ...
     def image_multi_set_all(
         self,
@@ -211,6 +214,7 @@ class StateServerCore:
         origin: list[int] | tuple[int, int],
         update: bool,
         force: bool = False,
+        max_lines: int | None = None,
     ) -> None: ...
     def image_multi_get(self, value_id: int, index: int) -> tuple[bytearray, tuple[int, int]]: ...
     def image_multi_size(self, value_id: int, index: int) -> tuple[int, int]: ...

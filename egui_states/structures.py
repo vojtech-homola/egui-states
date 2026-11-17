@@ -351,15 +351,23 @@ class Image(_StaticBase):
         self,
         image: Buffer,
         update: bool = False,
+        force: bool = False,
     ) -> None:
         """Set the image in the UI image.
+
+        The client shows the image once all of it has arrived. One more image
+        may wait behind the one being sent; a further call blocks until the
+        waiting image has been sent, unless ``force`` is set.
 
         Args:
             image (Buffer): The image to set.
             update (bool, optional): Whether to request a client repaint.
                 Defaults to False.
+            force (bool, optional): Whether to replace an image still waiting
+                to be sent instead of waiting for it. The image being sent
+                always completes. Defaults to False.
         """
-        self._server.image_set(self._value_id, image, update)
+        self._server.image_set(self._value_id, image, update, force)
 
     def update(
         self,
@@ -367,18 +375,32 @@ class Image(_StaticBase):
         origin: list[int] | tuple[int, int],
         update: bool = False,
         force: bool = False,
+        max_lines: int | None = None,
     ) -> None:
         """Update a rectangular part of the image.
+
+        One more update may wait behind the one being sent; a further call
+        blocks until the waiting update has been sent, unless ``force``
+        applies.
 
         Args:
             image (Buffer): The image rectangle to write.
             origin (list[int] | tuple[int, int]): Top-left origin as ``(y, x)``.
-            update (bool, optional): Whether to request a client repaint.
-                Defaults to False.
-            force (bool, optional): Whether to replace a pending update for the
-                same rectangle. Defaults to False.
+            update (bool, optional): Whether to request a client repaint, after
+                every part when ``max_lines`` is set. Defaults to False.
+            force (bool, optional): Whether to drop the parts of a waiting
+                update that are not sent yet, if this rectangle covers it;
+                otherwise the call waits as without ``force``. The part being
+                sent always completes. Defaults to False.
+            max_lines (int | None, optional): Send the rectangle as parts of at
+                most this many rows, each applied by the client as it arrives.
+                ``None`` applies the whole rectangle at once. Defaults to None.
+
+        Raises:
+            ValueError: If ``max_lines`` is less than 1, or the rectangle is
+                invalid.
         """
-        self._server.image_update(self._value_id, image, origin, update, force)
+        self._server.image_update(self._value_id, image, origin, update, force, max_lines)
 
     def set_all(
         self,
@@ -435,16 +457,22 @@ class SingleImage:
         self._value_id = value_id
         self._index = index
 
-    def set(self, image: Buffer, update: bool = False) -> None:
+    def set(self, image: Buffer, update: bool = False, force: bool = False) -> None:
         """Create or replace this indexed image.
+
+        All indices share one transfer stream, so a set waits behind work of
+        any index. ``force`` replaces only a waiting set of this index.
 
         Args:
             image (Buffer): Image data shaped as ``(height, width)`` or
                 ``(height, width, channels)``.
             update (bool, optional): Whether to request a client repaint.
                 Defaults to False.
+            force (bool, optional): Whether to replace an image still waiting
+                to be sent instead of waiting for it. The image being sent
+                always completes. Defaults to False.
         """
-        self._server.image_multi_set(self._value_id, self._index, image, update)
+        self._server.image_multi_set(self._value_id, self._index, image, update, force)
 
     def update(
         self,
@@ -452,18 +480,31 @@ class SingleImage:
         origin: list[int] | tuple[int, int],
         update: bool = False,
         force: bool = False,
+        max_lines: int | None = None,
     ) -> None:
         """Update a rectangular part of this existing indexed image.
+
+        All indices share one transfer stream. ``force`` drops only a waiting
+        update of this index; updates of other indices are never dropped.
 
         Args:
             image (Buffer): The image rectangle to write.
             origin (list[int] | tuple[int, int]): Top-left origin as ``(y, x)``.
-            update (bool, optional): Whether to request a client repaint.
-                Defaults to False.
-            force (bool, optional): Whether to replace a pending update for the
-                same image and rectangle. Defaults to False.
+            update (bool, optional): Whether to request a client repaint, after
+                every part when ``max_lines`` is set. Defaults to False.
+            force (bool, optional): Whether to drop the parts of a waiting
+                update that are not sent yet, if this rectangle covers it;
+                otherwise the call waits as without ``force``. The part being
+                sent always completes. Defaults to False.
+            max_lines (int | None, optional): Send the rectangle as parts of at
+                most this many rows, each applied by the client as it arrives.
+                ``None`` applies the whole rectangle at once. Defaults to None.
+
+        Raises:
+            ValueError: If ``max_lines`` is less than 1, or the rectangle is
+                invalid.
         """
-        self._server.image_multi_update(self._value_id, self._index, image, origin, update, force)
+        self._server.image_multi_update(self._value_id, self._index, image, origin, update, force, max_lines)
 
     def set_all(
         self,

@@ -9,18 +9,24 @@ use crate::protocol::ServerHeader;
 use crate::protocol::image::{
     ImageHeader, ImageType, checked_image_bounds, checked_image_bytes, checked_image_shape,
 };
-use crate::protocol::{FastVec, MSG_SIZE_THRESHOLD, TRANSFER_CHUNK_SIZE};
+use crate::protocol::{FastVec, TRANSFER_CHUNK_SIZE};
 use crate::server_core::net::sender::MessageSender;
 use crate::server_core::server::{Acknowledge, SyncTrait};
 use crate::server_core::states::data::SyncState;
 pub(crate) use crate::server_core::states::image::common::ImageData;
 use crate::server_core::states::image::common::{
-    checked_fill_size, pack_image_set, pack_image_update, store_rgba, write_rectangle,
+    checked_fill_size, checked_max_lines, covers, pack_image_set, pack_image_update, store_rgba,
+    write_rectangle,
 };
+use crate::server_core::transfer::Messages;
 
+/// Work waiting behind the transfer in flight.
 enum Buffer {
-    Set(Vec<(FastVec<32>, bool)>),
-    Update([usize; 4], VecDeque<(FastVec<32>, bool)>),
+    /// The messages of one waiting set; empty when none waits.
+    Set(Messages),
+    /// The rectangle (`[y, x, height, width]`) of the last update and its
+    /// sub-rectangles not sent yet, one group of messages each.
+    Update([usize; 4], VecDeque<Messages>),
 }
 
 struct ImageDataInner {
@@ -76,7 +82,12 @@ impl Image {
         getter((&w.data, &w.size))
     }
 
-    pub(crate) fn set_image(&self, image: ImageData, update: bool) -> Result<(), String> {
+    pub(crate) fn set_image(
+        &self,
+        image: ImageData,
+        update: bool,
+        force: bool,
+    ) -> Result<(), String> {
         checked_fill_size(image.size)?;
         // Prepare data to send if connected before locking
         let to_send = if self.connected.load(Ordering::Acquire) {
@@ -107,7 +118,7 @@ impl Image {
             None => pack_set_data(self.id, &image, update)?,
         };
 
-        self.send_or_buffer_set(lock, w, to_send)
+        self.send_or_buffer_set(lock, w, to_send, force)
     }
 
     pub(crate) fn set_all_image(
@@ -156,35 +167,41 @@ impl Image {
             None => pack_fill_data(self.id, wire_size, rgba, update)?,
         };
 
-        self.send_or_buffer_set(lock, w, to_send)
+        self.send_or_buffer_set(lock, w, to_send, false)
     }
 
+    /// Sends a set now, or stores it behind the transfer in flight. With
+    /// `force`, a set already waiting there is replaced; otherwise the call
+    /// waits until that set has been sent.
     fn send_or_buffer_set(
         &self,
         _lock: MutexGuard<'_, ()>,
         mut w: RwLockWriteGuard<'_, ImageDataInner>,
-        to_send: Vec<(FastVec<32>, bool)>,
+        to_send: Messages,
+        force: bool,
     ) -> Result<(), String> {
         if let Buffer::Set(ref mut dat) = w.buffer {
             if dat.is_empty() {
                 if self.event.is_set() {
                     self.event.clear();
-                    for (message, send_now) in to_send {
-                        self.sender.send_set(message, send_now);
-                    }
+                    self.send_all(to_send);
                     return Ok(());
                 } else {
                     dat.extend(to_send);
                     return Ok(());
                 }
             }
+            // The waiting set is complete and never partly sent, so the newer
+            // complete image can take its place.
+            if force {
+                *dat = to_send;
+                return Ok(());
+            }
         } else {
             //rewrite any update buffer, set has always priority over update
             if self.event.is_set() {
                 self.event.clear();
-                for (message, send_now) in to_send {
-                    self.sender.send_set(message, send_now);
-                }
+                self.send_all(to_send);
                 return Ok(());
             } else {
                 w.buffer = Buffer::Set(to_send);
@@ -211,25 +228,35 @@ impl Image {
             return Ok(());
         }
 
-        for (message, send_now) in to_send {
-            self.sender.send_set(message, send_now);
-        }
-
+        self.send_all(to_send);
         Ok(())
     }
 
+    fn send_all(&self, messages: Messages) {
+        for (message, send_now) in messages {
+            self.sender.send_set(message, send_now);
+        }
+    }
+
+    /// Writes a rectangle and sends it, in groups of at most `max_lines`
+    /// rows. With `force`, a waiting update is dropped when the new rectangle
+    /// covers it; otherwise the call waits until it has been sent.
     pub(crate) fn update_image(
         &self,
         origin: &[usize; 2],
         image: ImageData,
         update: bool,
         force: bool,
+        max_lines: Option<usize>,
     ) -> Result<(), String> {
         checked_fill_size(image.size)?;
         checked_image_bounds(*origin, image.size)?;
+        checked_max_lines(max_lines)?;
         // Prepare data to send if connected before locking
         let to_send = if self.connected.load(Ordering::Acquire) {
-            Some(pack_update_data(self.id, origin, &image, update)?)
+            Some(pack_update_data(
+                self.id, origin, &image, update, max_lines,
+            )?)
         } else {
             None
         };
@@ -259,35 +286,30 @@ impl Image {
         // connected while the local image was being updated.
         let mut to_send = match to_send {
             Some(data) => data,
-            None => pack_update_data(self.id, origin, &image, update)?,
+            None => pack_update_data(self.id, origin, &image, update, max_lines)?,
         };
 
         let new_rect = [origin[0], origin[1], image.size[0], image.size[1]];
 
         match w.buffer {
-            Buffer::Update(ref mut rect, ref mut dat) => {
-                if dat.is_empty() {
+            Buffer::Update(ref mut rect, ref mut groups) => {
+                if groups.is_empty() {
                     *rect = new_rect;
                     if self.event.is_set() {
                         self.event.clear();
-                        if let Some((message, send_now)) = to_send.pop_front() {
-                            self.sender.send_set(message, send_now);
+                        if let Some(group) = to_send.pop_front() {
+                            self.send_all(group);
                         }
-
-                        if !to_send.is_empty() {
-                            dat.extend(to_send);
-                        }
-
-                        return Ok(());
-                    } else {
-                        dat.extend(to_send);
-                        return Ok(());
                     }
+                    *groups = to_send;
+                    return Ok(());
                 }
 
-                if force && new_rect == *rect {
-                    dat.clear();
-                    dat.extend(to_send);
+                // The new rectangle overwrites everything still waiting, so
+                // the client ends as it would after sending both.
+                if force && covers(new_rect, *rect) {
+                    *rect = new_rect;
+                    *groups = to_send;
                     return Ok(());
                 }
             }
@@ -295,16 +317,12 @@ impl Image {
                 if dat.is_empty() {
                     if self.event.is_set() {
                         self.event.clear();
-                        if let Some((message, send_now)) = to_send.pop_front() {
-                            self.sender.send_set(message, send_now);
+                        if let Some(group) = to_send.pop_front() {
+                            self.send_all(group);
                         }
-                        w.buffer = Buffer::Update(new_rect, to_send);
-
-                        return Ok(());
-                    } else {
-                        w.buffer = Buffer::Update(new_rect, to_send);
-                        return Ok(());
                     }
+                    w.buffer = Buffer::Update(new_rect, to_send);
+                    return Ok(());
                 }
             }
         }
@@ -322,8 +340,8 @@ impl Image {
             return Ok(());
         }
 
-        if let Some((message, send_now)) = to_send.pop_front() {
-            self.sender.send_set(message, send_now);
+        if let Some(group) = to_send.pop_front() {
+            self.send_all(group);
         }
         w.buffer = Buffer::Update(new_rect, to_send);
 
@@ -342,17 +360,12 @@ impl Acknowledge for Image {
                     return;
                 }
 
-                for (message, send_now) in dat.drain(..) {
-                    self.sender.send_set(message, send_now);
-                }
+                let messages = std::mem::take(dat);
+                self.send_all(messages);
             }
-            Buffer::Update(_, ref mut dat) => match dat.pop_front() {
-                Some((message, send_now)) => {
-                    self.sender.send_set(message, send_now);
-                }
-                None => {
-                    self.event.set();
-                }
+            Buffer::Update(_, ref mut groups) => match groups.pop_front() {
+                Some(group) => self.send_all(group),
+                None => self.event.set(),
             },
         }
     }
@@ -395,9 +408,7 @@ impl SyncTrait for Image {
         w.buffer = Buffer::Set(Vec::new());
         w.sync.synchronized();
         self.event.clear();
-        for (message, send_now) in data {
-            self.sender.send_set(message, send_now);
-        }
+        self.send_all(data);
         Ok(())
     }
 }
@@ -446,8 +457,9 @@ fn pack_update_data(
     origin: &[usize; 2],
     image: &ImageData,
     update: bool,
-) -> Result<VecDeque<(FastVec<32>, bool)>, String> {
-    pack_update_data_chunked(id, origin, image, update, MSG_SIZE_THRESHOLD)
+    max_lines: Option<usize>,
+) -> Result<VecDeque<Messages>, String> {
+    pack_update_data_chunked(id, origin, image, update, max_lines, TRANSFER_CHUNK_SIZE)
 }
 
 pub(in crate::server_core) fn pack_update_data_chunked(
@@ -455,8 +467,9 @@ pub(in crate::server_core) fn pack_update_data_chunked(
     origin: &[usize; 2],
     image: &ImageData,
     update: bool,
+    max_lines: Option<usize>,
     chunk_limit: usize,
-) -> Result<VecDeque<(FastVec<32>, bool)>, String> {
+) -> Result<VecDeque<Messages>, String> {
     checked_image_bounds(*origin, image.size)?;
     checked_image_bytes(image.size, 4)?;
     let [height, width] = checked_image_shape(image.size)?;
@@ -466,6 +479,7 @@ pub(in crate::server_core) fn pack_update_data_chunked(
         image,
         [x, y, width, height],
         update,
+        max_lines,
         chunk_limit,
         |header, len| crate::protocol::serialize_heap(&ServerHeader::Image(id, header, len)),
     )
@@ -507,21 +521,25 @@ mod tests {
             for size in [[65_537, 1], [1, 65_537]] {
                 let data = || image_data(&[], size, ImageType::Gray);
                 for result in [
-                    image.set_image(data(), false),
+                    image.set_image(data(), false, false),
                     image.set_all_image(size, [0; 4], false),
-                    image.update_image(&[0, 0], data(), false, false),
+                    image.update_image(&[0, 0], data(), false, false, None),
                     pack_set_data(1, &data(), false).map(|_| ()),
                     pack_fill_data(1, [size[0] as u32, size[1] as u32], [0; 4], false).map(|_| ()),
-                    pack_update_data(1, &[0, 0], &data(), false).map(|_| ()),
+                    pack_update_data(1, &[0, 0], &data(), false, None).map(|_| ()),
                 ] {
                     assert!(result.unwrap_err().contains("65536"));
                 }
             }
             for origin in [[65_536, 0], [0, 65_536], [usize::MAX, 0]] {
                 let data = image_data(&[0], [1, 1], ImageType::Gray);
-                assert!(image.update_image(&origin, data, false, false).is_err());
+                assert!(
+                    image
+                        .update_image(&origin, data, false, false, None)
+                        .is_err()
+                );
                 let data = image_data(&[0], [1, 1], ImageType::Gray);
-                assert!(pack_update_data(1, &origin, &data, false).is_err());
+                assert!(pack_update_data(1, &origin, &data, false, None).is_err());
             }
             assert_eq!(
                 image.get_image(|(data, size)| (data.clone(), *size)),
@@ -549,7 +567,11 @@ mod tests {
         let pixels = [10, 20, 30, 255];
 
         image
-            .set_image(image_data(&pixels, [1, 1], ImageType::ColorAlpha), false)
+            .set_image(
+                image_data(&pixels, [1, 1], ImageType::ColorAlpha),
+                false,
+                false,
+            )
             .unwrap();
 
         assert_no_message(&mut receiver);
@@ -572,7 +594,11 @@ mod tests {
         let replacement = [40, 50, 60, 255];
 
         image
-            .set_image(image_data(&initial, [1, 1], ImageType::ColorAlpha), false)
+            .set_image(
+                image_data(&initial, [1, 1], ImageType::ColorAlpha),
+                false,
+                false,
+            )
             .unwrap();
         connected.store(true, Ordering::Release);
         image.sync().unwrap();
@@ -581,6 +607,7 @@ mod tests {
         image
             .set_image(
                 image_data(&replacement, [1, 1], ImageType::ColorAlpha),
+                false,
                 false,
             )
             .unwrap();
@@ -601,7 +628,11 @@ mod tests {
         let update = [7, 8];
 
         image
-            .set_image(image_data(&initial, [1, 2], ImageType::ColorAlpha), false)
+            .set_image(
+                image_data(&initial, [1, 2], ImageType::ColorAlpha),
+                false,
+                false,
+            )
             .unwrap();
         connected.store(true, Ordering::Release);
         image
@@ -610,6 +641,7 @@ mod tests {
                 image_data(&update, [1, 1], ImageType::GrayAlpha),
                 false,
                 false,
+                None,
             )
             .unwrap();
 
@@ -680,8 +712,13 @@ mod tests {
             image.set_all_image([1, 1], [9; 4], false).unwrap();
             for size in [[0, 5], [5, 0], [0, 0]] {
                 let data = || image_data(&[], size, ImageType::Gray);
-                assert!(image.set_image(data(), false).unwrap_err().contains("zero"));
-                let result = image.update_image(&[0, 0], data(), false, false);
+                assert!(
+                    image
+                        .set_image(data(), false, false)
+                        .unwrap_err()
+                        .contains("zero")
+                );
+                let result = image.update_image(&[0, 0], data(), false, false, None);
                 assert!(result.unwrap_err().contains("zero"));
             }
             assert_eq!(
@@ -710,7 +747,11 @@ mod tests {
         let replacement = [40, 50, 60, 255];
 
         image
-            .set_image(image_data(&initial, [1, 1], ImageType::ColorAlpha), false)
+            .set_image(
+                image_data(&initial, [1, 1], ImageType::ColorAlpha),
+                false,
+                false,
+            )
             .unwrap();
         connected.store(true, Ordering::Release);
         image.sync().unwrap();
@@ -724,6 +765,7 @@ mod tests {
         image
             .set_image(
                 image_data(&replacement, [1, 1], ImageType::ColorAlpha),
+                false,
                 false,
             )
             .unwrap();
@@ -745,14 +787,22 @@ mod tests {
         let buffered = [40, 50, 60, 255];
 
         image
-            .set_image(image_data(&initial, [1, 1], ImageType::ColorAlpha), false)
+            .set_image(
+                image_data(&initial, [1, 1], ImageType::ColorAlpha),
+                false,
+                false,
+            )
             .unwrap();
         connected.store(true, Ordering::Release);
         image.sync().unwrap();
         assert_message(&mut receiver);
 
         image
-            .set_image(image_data(&buffered, [1, 1], ImageType::ColorAlpha), false)
+            .set_image(
+                image_data(&buffered, [1, 1], ImageType::ColorAlpha),
+                false,
+                false,
+            )
             .unwrap();
         assert_no_message(&mut receiver);
 
@@ -760,8 +810,11 @@ mod tests {
         let (done_sender, done_receiver) = std::sync::mpsc::channel();
         let waiter = std::thread::spawn(move || {
             let latest = [70, 80, 90, 255];
-            let result =
-                waiting_image.set_image(image_data(&latest, [1, 1], ImageType::ColorAlpha), false);
+            let result = waiting_image.set_image(
+                image_data(&latest, [1, 1], ImageType::ColorAlpha),
+                false,
+                false,
+            );
             done_sender.send(result).unwrap();
         });
 
@@ -801,14 +854,22 @@ mod tests {
         let buffered = [15, 25, 35, 255, 45, 55, 65, 255];
 
         image
-            .set_image(image_data(&initial, [1, 2], ImageType::ColorAlpha), false)
+            .set_image(
+                image_data(&initial, [1, 2], ImageType::ColorAlpha),
+                false,
+                false,
+            )
             .unwrap();
         connected.store(true, Ordering::Release);
         image.sync().unwrap();
         assert_message(&mut receiver);
 
         image
-            .set_image(image_data(&buffered, [1, 2], ImageType::ColorAlpha), false)
+            .set_image(
+                image_data(&buffered, [1, 2], ImageType::ColorAlpha),
+                false,
+                false,
+            )
             .unwrap();
         assert_no_message(&mut receiver);
 
@@ -821,6 +882,7 @@ mod tests {
                 image_data(&update, [1, 1], ImageType::GrayAlpha),
                 false,
                 false,
+                None,
             );
             done_sender.send(result).unwrap();
         });
@@ -850,6 +912,237 @@ mod tests {
         assert_message(&mut receiver);
         assert_no_message(&mut receiver);
     }
+
+    fn bytes(message: &FastVec<32>) -> Vec<u8> {
+        match message {
+            FastVec::Heap(data) => data.clone(),
+            FastVec::Stack(data) => data.as_ref().to_vec(),
+        }
+    }
+
+    fn assert_sent(receiver: &mut MessageReceiver, expected: &Messages) {
+        for (message, _) in expected {
+            let (sent, _) = receiver.try_recv().unwrap().unwrap();
+            assert_eq!(bytes(&sent), bytes(message));
+        }
+    }
+
+    /// An image of four gray rows, synchronized and acknowledged.
+    fn synced_image(rows: [u8; 4]) -> (Arc<Image>, MessageReceiver) {
+        let (image, connected, mut receiver) = new_image(false);
+        image
+            .set_image(image_data(&rows, [4, 1], ImageType::Gray), false, false)
+            .unwrap();
+        connected.store(true, Ordering::Release);
+        image.sync().unwrap();
+        assert_message(&mut receiver);
+        image.acknowledge();
+        assert!(image.event.is_set());
+        (image, receiver)
+    }
+
+    /// Runs `operation` on another thread and returns a receiver for its
+    /// result, after checking that it is still blocked.
+    fn spawn_blocked(
+        image: &Arc<Image>,
+        operation: impl FnOnce(&Image) -> Result<(), String> + Send + 'static,
+    ) -> std::sync::mpsc::Receiver<Result<(), String>> {
+        let image = image.clone();
+        let (done_sender, done_receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || done_sender.send(operation(&image)).unwrap());
+        assert!(matches!(
+            done_receiver.recv_timeout(std::time::Duration::from_millis(100)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ));
+        done_receiver
+    }
+
+    fn finished(done: &std::sync::mpsc::Receiver<Result<(), String>>) {
+        done.recv_timeout(std::time::Duration::from_secs(5))
+            .expect("blocked image operation did not finish")
+            .unwrap();
+    }
+
+    #[test]
+    fn force_set_replaces_a_waiting_set_and_never_the_one_in_flight() {
+        let (image, mut receiver) = synced_image([0; 4]);
+        let sets = [[1; 4], [2; 4], [3; 4]];
+        let packed = |rows: &[u8; 4]| {
+            pack_set_data(1, &image_data(rows, [4, 1], ImageType::Gray), false).unwrap()
+        };
+        for (n, rows) in sets.iter().enumerate() {
+            image
+                .set_image(image_data(rows, [4, 1], ImageType::Gray), false, n > 0)
+                .unwrap();
+        }
+        // The first set went out at once; the third replaced the second.
+        assert_sent(&mut receiver, &packed(&sets[0]));
+        assert_no_message(&mut receiver);
+        image.acknowledge();
+        assert_sent(&mut receiver, &packed(&sets[2]));
+        assert_no_message(&mut receiver);
+        image.acknowledge();
+        assert!(image.event.is_set());
+        assert_eq!(
+            image.get_image(|(data, _)| data.clone()),
+            [3, 3, 3, 255].repeat(4)
+        );
+    }
+
+    #[test]
+    fn a_split_update_sends_each_part_after_an_ack() {
+        let (image, mut receiver) = synced_image([0; 4]);
+        let rows = [1, 2, 3, 4];
+        let data = || image_data(&rows, [4, 1], ImageType::Gray);
+        let groups = pack_update_data(1, &[0, 0], &data(), true, Some(2)).unwrap();
+        assert_eq!(groups.len(), 2);
+        image
+            .update_image(&[0, 0], data(), true, false, Some(2))
+            .unwrap();
+        for group in groups {
+            assert_sent(&mut receiver, &group);
+            assert_no_message(&mut receiver);
+            assert!(!image.event.is_set());
+            image.acknowledge();
+        }
+        assert_no_message(&mut receiver);
+        assert!(image.event.is_set());
+
+        assert!(
+            image
+                .update_image(&[0, 0], data(), true, false, Some(0))
+                .is_err()
+        );
+        assert_no_message(&mut receiver);
+    }
+
+    #[test]
+    fn force_update_drops_waiting_parts_it_covers() {
+        let (image, mut receiver) = synced_image([0; 4]);
+        let old = [1, 1, 1, 1];
+        let new = [2, 2, 2, 2];
+        let old_groups = pack_update_data(
+            1,
+            &[0, 0],
+            &image_data(&old, [4, 1], ImageType::Gray),
+            false,
+            Some(1),
+        )
+        .unwrap();
+        let new_groups = pack_update_data(
+            1,
+            &[0, 0],
+            &image_data(&new, [4, 1], ImageType::Gray),
+            false,
+            Some(1),
+        )
+        .unwrap();
+        image
+            .update_image(
+                &[0, 0],
+                image_data(&old, [4, 1], ImageType::Gray),
+                false,
+                false,
+                Some(1),
+            )
+            .unwrap();
+        assert_sent(&mut receiver, &old_groups[0]);
+        // Covers the old rectangle: its three waiting parts are dropped.
+        image
+            .update_image(
+                &[0, 0],
+                image_data(&new, [4, 1], ImageType::Gray),
+                false,
+                true,
+                Some(1),
+            )
+            .unwrap();
+        assert_no_message(&mut receiver);
+        for group in new_groups {
+            image.acknowledge();
+            assert_sent(&mut receiver, &group);
+            assert_no_message(&mut receiver);
+        }
+        image.acknowledge();
+        assert!(image.event.is_set());
+        assert_eq!(
+            image.get_image(|(data, _)| data.clone()),
+            [2, 2, 2, 255].repeat(4)
+        );
+    }
+
+    #[test]
+    fn force_update_waits_for_work_it_does_not_cover() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let (image, mut receiver) = synced_image([0; 4]);
+        let rows = [1, 2, 3, 4];
+        let groups = pack_update_data(
+            1,
+            &[0, 0],
+            &image_data(&rows, [4, 1], ImageType::Gray),
+            false,
+            Some(2),
+        )
+        .unwrap();
+        image
+            .update_image(
+                &[0, 0],
+                image_data(&rows, [4, 1], ImageType::Gray),
+                false,
+                false,
+                Some(2),
+            )
+            .unwrap();
+        assert_sent(&mut receiver, &groups[0]);
+
+        // Rows 0..2 do not cover the waiting update's rows 0..4.
+        let done = spawn_blocked(&image, |image| {
+            image.update_image(
+                &[0, 0],
+                image_data(&[9, 9], [2, 1], ImageType::Gray),
+                false,
+                true,
+                None,
+            )
+        });
+        image.acknowledge();
+        assert_sent(&mut receiver, &groups[1]);
+        assert!(done.try_recv().is_err());
+        image.acknowledge();
+        finished(&done);
+        assert_message(&mut receiver);
+        image.acknowledge();
+        assert!(image.event.is_set());
+
+        // A waiting set is never dropped by a forced update.
+        image
+            .set_image(image_data(&[5; 4], [4, 1], ImageType::Gray), false, false)
+            .unwrap();
+        assert_message(&mut receiver);
+        image
+            .set_image(image_data(&[6; 4], [4, 1], ImageType::Gray), false, false)
+            .unwrap();
+        let done = spawn_blocked(&image, |image| {
+            image.update_image(
+                &[0, 0],
+                image_data(&[7; 4], [4, 1], ImageType::Gray),
+                false,
+                true,
+                None,
+            )
+        });
+        image.acknowledge();
+        assert_sent(
+            &mut receiver,
+            &pack_set_data(1, &image_data(&[6; 4], [4, 1], ImageType::Gray), false).unwrap(),
+        );
+        assert!(done.try_recv().is_err());
+        image.acknowledge();
+        finished(&done);
+        assert_message(&mut receiver);
+    }
 }
 
 #[cfg(all(test, feature = "client"))]
@@ -858,15 +1151,58 @@ mod packing_tests {
     use crate::client::messages::{MessageSender as ClientSender, MessagesParser};
     use crate::client::states::image::Image as ClientImage;
 
+    type ClientReceiver =
+        tokio::sync::mpsc::UnboundedReceiver<Option<crate::client::messages::ChannelMessage>>;
+
+    /// Feeds one group of update messages to `client`, checks that nothing is
+    /// published or acknowledged before its last message, and returns the
+    /// single texture change it made as its position and RGBA bytes.
+    fn apply_update_group(
+        client: &ClientImage,
+        receiver: &mut ClientReceiver,
+        context: &egui::Context,
+        group: Messages,
+        update: bool,
+    ) -> (Option<[usize; 2]>, [usize; 2], Vec<u8>) {
+        let total = group.len();
+        for (n, (message, _)) in group.into_iter().enumerate() {
+            let last = n + 1 == total;
+            let (mut parser, (header, payload)) =
+                MessagesParser::from_bytes(message.into_bytes()).unwrap();
+            assert_eq!(header.update_flag(), last && update);
+            match header {
+                ServerHeader::Image(71, ImageHeader::Update(message, kind), _) => {
+                    client.update_image(message, kind, &payload).unwrap();
+                }
+                _ => panic!("unexpected packed image update"),
+            }
+            assert!(parser.next().unwrap().is_none());
+            if !last {
+                assert!(receiver.try_recv().is_err());
+                assert!(
+                    crate::test_support::texture_updates(context).is_empty(),
+                    "partial update was published"
+                );
+            }
+        }
+        crate::test_support::ack(receiver, 71);
+        let delta = crate::test_support::texture_updates(context);
+        let changes = &delta[&client.get_id().unwrap()];
+        assert_eq!(changes.len(), 1);
+        let egui::ImageData::Color(pixels) = &changes[0].image;
+        let bytes = pixels.pixels.iter().flat_map(|p| p.to_array()).collect();
+        (changes[0].pos, pixels.size, bytes)
+    }
+
     #[test]
     fn real_image_set_and_update_chunks_preserve_pixels_and_publication_boundaries() {
         let width = 1024;
-        let threshold_rows = MSG_SIZE_THRESHOLD / (width * 4);
+        let chunk_rows = TRANSFER_CHUNK_SIZE / (width * 4);
         for height in [
-            threshold_rows - 1,
-            threshold_rows,
-            threshold_rows + 1,
-            2 * threshold_rows + 3,
+            chunk_rows - 1,
+            chunk_rows,
+            chunk_rows + 1,
+            2 * chunk_rows + 3,
         ] {
             let context = egui::Context::default();
             let (sender, mut receiver) = ClientSender::new();
@@ -919,48 +1255,43 @@ mod packing_tests {
             );
             drop(delta);
 
-            // Update messages publish complete row strips individually. The last
-            // strip requests repaint; every strip is acknowledged.
+            // An update is chunked like a set and published once, at its last
+            // chunk, with one acknowledgement.
             expected.iter_mut().for_each(|v| *v = 255 - *v);
             let image = ImageData::packed(&expected, shape, ImageType::ColorAlpha);
-            let packed = pack_update_data(71, &[0, 0], &image, true).unwrap();
-            let total = packed.len();
-            let mut reconstructed = vec![0; expected.len()];
-            let mut next_row = 0;
-            for (n, (message, _)) in packed.into_iter().enumerate() {
-                let (_, (header, payload)) =
-                    MessagesParser::from_bytes(message.into_bytes()).unwrap();
-                assert_eq!(header.update_flag(), n + 1 == total);
-                match header {
-                    ServerHeader::Image(71, ImageHeader::Update(rect, kind, _), _) => {
-                        assert_eq!(rect[0], 0);
-                        assert_eq!(rect[1] as usize, next_row);
-                        assert_eq!(rect[2] as usize, width);
-                        client.update_image(rect, kind, &payload).unwrap();
-                        next_row += rect[3] as usize;
-                    }
-                    _ => panic!("unexpected packed image update"),
+            let mut groups = pack_update_data(71, &[0, 0], &image, true, None).unwrap();
+            assert_eq!(groups.len(), 1);
+            let group = groups.pop_front().unwrap();
+            assert_eq!(group.len(), expected.len().div_ceil(TRANSFER_CHUNK_SIZE));
+            let (pos, size, bytes) =
+                apply_update_group(&client, &mut receiver, &context, group, true);
+            assert_eq!(pos, None, "an update of the whole texture replaces it");
+            assert_eq!(size, [width, height]);
+            assert_eq!(bytes, expected);
+
+            // With max_lines, every part of at most that many rows is chunked
+            // and published on its own, and requests a repaint.
+            for max_lines in [50, 200] {
+                expected.iter_mut().for_each(|v| *v = 255 - *v);
+                let image = ImageData::packed(&expected, shape, ImageType::ColorAlpha);
+                let groups = pack_update_data(71, &[0, 0], &image, true, Some(max_lines)).unwrap();
+                assert_eq!(groups.len(), height.div_ceil(max_lines));
+                let mut reconstructed = vec![0; expected.len()];
+                let mut next_row = 0;
+                for group in groups {
+                    let (pos, size, bytes) =
+                        apply_update_group(&client, &mut receiver, &context, group, true);
+                    let pos = pos.unwrap_or([0, 0]);
+                    assert_eq!(pos, [0, next_row]);
+                    assert_eq!(size[0], width);
+                    assert!(size[1] <= max_lines);
+                    let offset = next_row * width * 4;
+                    reconstructed[offset..offset + bytes.len()].copy_from_slice(&bytes);
+                    next_row += size[1];
                 }
-                crate::test_support::ack(&mut receiver, 71);
-                let delta = crate::test_support::texture_updates(&context);
-                let changes = &delta[&client.get_id().unwrap()];
-                assert_eq!(changes.len(), 1);
-                let patch = &changes[0];
-                let egui::ImageData::Color(pixels) = &patch.image;
-                let pos = patch.pos.unwrap_or_else(|| {
-                    assert_eq!(
-                        pixels.size,
-                        [width, height],
-                        "a full delta must cover the texture"
-                    );
-                    [0, 0]
-                });
-                let bytes: Vec<u8> = pixels.pixels.iter().flat_map(|p| p.to_array()).collect();
-                let offset = pos[1] * width * 4;
-                reconstructed[offset..offset + bytes.len()].copy_from_slice(&bytes);
+                assert_eq!(next_row, height);
+                assert_eq!(reconstructed, expected);
             }
-            assert_eq!(next_row, height);
-            assert_eq!(reconstructed, expected);
             assert_eq!(client.get_size(), Some([width, height]));
         }
     }

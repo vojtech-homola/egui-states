@@ -184,7 +184,7 @@ pub fn populate_initial_data(states: &ShowcaseState) -> s::Result<()> {
     states
         .image
         .image
-        .set(&image, [256, 256], s::ImageFormat::Color, true)?;
+        .set(&image, [256, 256], s::ImageFormat::Color, true, false)?;
 
     let mut image_patch = vec![0u8; 64 * 64 * 4];
     for pixel in image_patch.chunks_exact_mut(4) {
@@ -198,12 +198,13 @@ pub fn populate_initial_data(states: &ShowcaseState) -> s::Result<()> {
         s::ImageFormat::ColorAlpha,
         true,
         false,
+        None,
     )?;
 
     states
         .image
         .images
-        .set(2, &image, [256, 256], s::ImageFormat::Color, true)?;
+        .set(2, &image, [256, 256], s::ImageFormat::Color, true, false)?;
     states
         .image
         .images
@@ -216,6 +217,7 @@ pub fn populate_initial_data(states: &ShowcaseState) -> s::Result<()> {
         s::ImageFormat::ColorAlpha,
         true,
         false,
+        None,
     )?;
 
     Ok(())

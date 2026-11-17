@@ -163,7 +163,13 @@ fn image_set(c: &mut Criterion, session: &Session) {
                     };
                     session
                         .image
-                        .set(&pixels, [height, width], ImageFormat::ColorAlpha, false)
+                        .set(
+                            &pixels,
+                            [height, width],
+                            ImageFormat::ColorAlpha,
+                            false,
+                            false,
+                        )
                         .expect("set image");
                     wait_until("image", || {
                         session.states.image.get_size() == Some([width, height])
@@ -186,7 +192,13 @@ fn image_update(c: &mut Criterion, session: &Session) {
     let base = pattern(50 * 256 * width * 4);
     session
         .image
-        .set(&base, [50 * 256, width], ImageFormat::ColorAlpha, false)
+        .set(
+            &base,
+            [50 * 256, width],
+            ImageFormat::ColorAlpha,
+            false,
+            false,
+        )
         .expect("set base image");
     wait_until("base image", || {
         session.states.image.get_size() == Some([width, 50 * 256])
@@ -202,11 +214,20 @@ fn image_update(c: &mut Criterion, session: &Session) {
                 for _ in 0..iterations {
                     session
                         .image
-                        .update(&pixels, [0, 0], size, ImageFormat::ColorAlpha, false, true)
+                        .update(
+                            &pixels,
+                            [0, 0],
+                            size,
+                            ImageFormat::ColorAlpha,
+                            false,
+                            true,
+                            None,
+                        )
                         .expect("update image");
-                    // Update chunks go out one per client acknowledgement. A
-                    // second update elsewhere waits until the client has
-                    // acknowledged them all, and the marker follows it.
+                    // The update's chunks are queued at once and acknowledged
+                    // once. A second update elsewhere waits behind it, and the
+                    // marker queued after both arrives once the client has
+                    // applied the first.
                     session
                         .image
                         .update(
@@ -216,6 +237,7 @@ fn image_update(c: &mut Criterion, session: &Session) {
                             ImageFormat::ColorAlpha,
                             false,
                             false,
+                            None,
                         )
                         .expect("update corner");
                     marker += 1;

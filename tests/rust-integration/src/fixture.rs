@@ -256,22 +256,34 @@ fn edit_numeric(all: &State) -> s::Result<()> {
     m.nested.buffer.replace(3, 1, &[6], false)
 }
 
-/// Command 34: a full image, a partial update, and sparse images.
+/// Command 34: a full image, partial updates, and sparse images. The split
+/// update finishes before the remove, which waits for every acknowledgement.
 fn edit_images(all: &State) -> s::Result<()> {
     let pixels: Vec<u8> = (0..18).collect();
     let image = &all.image.image;
-    image.set(&pixels, [2, 3], s::ImageFormat::Color, false)?;
+    image.set(&pixels, [2, 3], s::ImageFormat::Color, false, true)?;
     image.update(
         &[200, 201, 202, 210, 211, 212],
         [1, 1],
         [1, 2],
         s::ImageFormat::Color,
         false,
-        false,
+        true,
+        None,
     )?;
     let images = &all.image.images;
-    images.set(2, &[9], [1, 1], s::ImageFormat::Gray, false)?;
+    images.set(2, &[9], [1, 1], s::ImageFormat::Gray, false, false)?;
     images.set_all(7, [2, 2], s::ImageColor::Color(1, 2, 3), false)?;
+    images.update(
+        7,
+        &[4, 5, 6].repeat(4),
+        [0, 0],
+        [2, 2],
+        s::ImageFormat::Color,
+        false,
+        false,
+        Some(1),
+    )?;
     images.remove_index(2, false)
 }
 

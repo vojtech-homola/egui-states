@@ -95,9 +95,9 @@ if `a -> b -> c` coalesces to `c`, the callback receives `(c, a)`.
 
 ## Transfers and acknowledgements
 
-Large numeric buffers, image sets and collection replacements are split into
-chunks of 512 KiB and published to a client handle only after the last chunk
-arrives. Small messages queued together are merged into one frame of up to
+Large numeric buffers, image sets, image updates and collection replacements
+are split into chunks of 512 KiB and published to a client handle only after
+the last chunk arrives. Small messages queued together are merged into one frame of up to
 10 MB, but a chunk is never merged: the WebSocket library moves the unsent rest
 of a message after every partial socket write, so large frames cost time
 quadratic in their size. Acknowledgements provide backpressure and release
@@ -114,7 +114,23 @@ A whole-collection replacement of a `VecState` or `MapState` larger than one
 message is split at item boundaries and applied on the client only after its
 last part arrives. These parts need no acknowledgement.
 
-All keys in an `ImageMulti` share one ordered transfer stream. Sets and updates
+An image sends one transfer at a time, and one more may wait behind it until
+the client acknowledges the one in flight; a further producer blocks. A set
+always replaces a waiting update. An image update is applied on the client
+once, like a set, unless `max_lines` splits its rectangle into parts of at most
+that many rows from the top. Each part is a complete update, chunked like any
+other, applied and acknowledged on its own; the next part is sent only after
+that acknowledgement, and `update` requests a repaint after every part.
+
+`force` replaces work that has not been sent and never what is in flight. A
+forced set replaces a waiting set. A forced update drops the parts of the
+waiting update that are not sent yet, provided its rectangle covers that
+update's whole rectangle; otherwise it waits like any other. Either way the
+client ends with the server's pixels, because what is dropped is overwritten.
+
+All keys in an `ImageMulti` share one ordered transfer stream; a set replaces
+only a waiting update of the same key, and `force` only ever replaces waiting
+work of the same key. Sets and updates
 that require multiple messages finish before a later remove or reset is sent;
 controls do not cancel preceding chunks. A disconnect invalidates pending work
 with a transfer generation, and reconnect synchronization resets the client
