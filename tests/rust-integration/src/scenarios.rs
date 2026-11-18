@@ -660,7 +660,12 @@ fn images_wire(port: u16) {
     phase(s, 34);
 
     assert_eq!(state.image.image.get_size(), Some([3, 2]));
-    assert_eq!(state.image.images.indices(), [7]);
+    // `images` uses the low-priority lane, so the phase can arrive before the
+    // removal. The lane keeps its own order: once the removal is in, so is
+    // everything sent before it.
+    wait("sparse image removal", || {
+        (state.image.images.indices() == [7]).then_some(())
+    });
     assert_eq!(state.image.images.get_size(7), Some([2, 2]));
 
     let mut textures = std::collections::HashMap::new();
