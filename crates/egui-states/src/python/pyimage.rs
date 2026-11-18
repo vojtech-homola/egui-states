@@ -2,7 +2,10 @@ use pyo3::buffer::PyBuffer;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
+use pyo3::types::PyByteArray;
+
 use crate::protocol::image::{ImageType, checked_image_bytes};
+use crate::server_core::states::image::common::{ImageFill, StoredImage};
 use crate::server_core::states::image::single::ImageData;
 
 fn check_image_type(shape: &[usize], strides: &[isize]) -> PyResult<ImageType> {
@@ -97,23 +100,39 @@ pub(crate) fn image_data(image: &PyBuffer<u8>) -> PyResult<ImageData<'_>> {
     })
 }
 
-pub(crate) fn image_color(color: &Bound<'_, PyAny>) -> PyResult<[u8; 4]> {
+/// The fill of a color, in the format it is stored in: an integer is gray,
+/// and a tuple of 2, 3 or 4 integers gray-alpha, RGB or RGBA.
+pub(crate) fn image_color(color: &Bound<'_, PyAny>) -> PyResult<ImageFill> {
     if let Ok(gray) = color.extract::<u8>() {
-        return Ok([gray, gray, gray, 255]);
+        return Ok(ImageFill::Gray([gray]));
     }
-    if let Ok((gray, alpha)) = color.extract::<(u8, u8)>() {
-        return Ok([gray, gray, gray, alpha]);
+    if let Ok(pixel) = color.extract::<(u8, u8)>() {
+        return Ok(ImageFill::GrayAlpha(pixel.into()));
     }
-    if let Ok((red, green, blue)) = color.extract::<(u8, u8, u8)>() {
-        return Ok([red, green, blue, 255]);
+    if let Ok(pixel) = color.extract::<(u8, u8, u8)>() {
+        return Ok(ImageFill::Color(pixel.into()));
     }
-    if let Ok((red, green, blue, alpha)) = color.extract::<(u8, u8, u8, u8)>() {
-        return Ok([red, green, blue, alpha]);
+    if let Ok(pixel) = color.extract::<(u8, u8, u8, u8)>() {
+        return Ok(ImageFill::ColorAlpha(pixel.into()));
     }
 
     Err(PyValueError::new_err(
         "color must be an integer or a tuple of 2, 3, or 4 integers in the range 0..=255",
     ))
+}
+
+/// A copy of a stored image for Python: its pixels, `(height, width)` and
+/// channel count.
+pub(crate) fn stored_image<'py>(
+    py: Python<'py>,
+    image: &StoredImage,
+) -> (Bound<'py, PyByteArray>, (usize, usize), usize) {
+    let [height, width] = image.size();
+    (
+        PyByteArray::new(py, image.data()),
+        (height, width),
+        image.image_type().bytes_per_pixel(),
+    )
 }
 
 /// Converts the `max_lines` option of an image update, which must be at

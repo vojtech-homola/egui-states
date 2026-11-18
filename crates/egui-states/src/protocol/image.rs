@@ -43,7 +43,7 @@ pub(crate) fn checked_image_bounds(origin: [usize; 2], shape: [usize; 2]) -> Res
     Ok(())
 }
 
-#[derive(Clone, Copy, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum ImageType {
     Color,
     ColorAlpha,
@@ -61,6 +61,82 @@ impl ImageType {
             Self::GrayAlpha => 2,
         }
     }
+
+    #[cfg(any(feature = "server", feature = "python"))]
+    fn has_color(self) -> bool {
+        matches!(self, Self::Color | Self::ColorAlpha)
+    }
+
+    #[cfg(any(feature = "server", feature = "python"))]
+    fn has_alpha(self) -> bool {
+        matches!(self, Self::GrayAlpha | Self::ColorAlpha)
+    }
+
+    /// The smallest format that holds every pixel of both: color if either
+    /// has color, alpha if either has alpha.
+    #[cfg(any(feature = "server", feature = "python"))]
+    pub(crate) fn union(self, other: Self) -> Self {
+        match (
+            self.has_color() || other.has_color(),
+            self.has_alpha() || other.has_alpha(),
+        ) {
+            (false, false) => Self::Gray,
+            (false, true) => Self::GrayAlpha,
+            (true, false) => Self::Color,
+            (true, true) => Self::ColorAlpha,
+        }
+    }
+}
+
+/// Converts `source` pixels in `from` to the format `to`, which must hold
+/// `from` (see [`ImageType::union`]), into `target`, which holds exactly that
+/// many bytes.
+///
+/// Bytes are copied as they are, as [`to_rgba`] does: gray becomes equal
+/// color channels and a missing alpha becomes 255. `target` may be
+/// uninitialized; every byte of it is written. Bytes of `source` after its
+/// last whole pixel are ignored.
+#[cfg(any(feature = "server", feature = "python"))]
+pub(crate) fn widen(
+    from: ImageType,
+    to: ImageType,
+    source: &[u8],
+    target: &mut [std::mem::MaybeUninit<u8>],
+) {
+    assert_eq!(from.union(to), to, "{to:?} does not hold {from:?}");
+    let pixels = source.len() / from.bytes_per_pixel();
+    assert_eq!(target.len(), pixels * to.bytes_per_pixel(), "target size");
+    // Only whole pixels: the copies below write as many bytes as they read.
+    let source = &source[..pixels * from.bytes_per_pixel()];
+    let out = target.as_mut_ptr().cast::<u8>();
+    // SAFETY (all arms): `target` holds `pixels` pixels of `to` that do not
+    // overlap `source`; byte writes need no alignment.
+    match (from, to) {
+        _ if from == to => unsafe {
+            std::ptr::copy_nonoverlapping(source.as_ptr(), out, source.len())
+        },
+        (_, ImageType::ColorAlpha) => to_rgba(from, source, target),
+        (ImageType::Gray, ImageType::GrayAlpha) => {
+            for (i, &gray) in source.iter().enumerate() {
+                unsafe { out.cast::<[u8; 2]>().add(i).write_unaligned([gray, 255]) };
+            }
+        }
+        (ImageType::Gray, ImageType::Color) => {
+            for (i, &gray) in source.iter().enumerate() {
+                unsafe { out.cast::<[u8; 3]>().add(i).write_unaligned([gray; 3]) };
+            }
+        }
+        _ => unreachable!("{to:?} does not hold {from:?}"),
+    }
+}
+
+/// [`widen`] into a target that is already initialized.
+#[cfg(any(feature = "server", feature = "python"))]
+pub(crate) fn widen_into(from: ImageType, to: ImageType, source: &[u8], target: &mut [u8]) {
+    // SAFETY: `MaybeUninit<u8>` has the layout of `u8`, and `widen` writes
+    // only initialized bytes.
+    let target = unsafe { &mut *(target as *mut [u8] as *mut [std::mem::MaybeUninit<u8>]) };
+    widen(from, to, source, target);
 }
 
 /// Converts `source` pixels in `image_type` to RGBA, four bytes per pixel,
@@ -68,7 +144,8 @@ impl ImageType {
 ///
 /// Bytes are copied as they are: gray becomes `(g, g, g, 255)`, gray-alpha
 /// `(g, g, g, a)` and color gets an opaque alpha. `target` may be
-/// uninitialized; every byte of it is written.
+/// uninitialized; every byte of it is written. Bytes of `source` after its
+/// last whole pixel are ignored.
 pub(crate) fn to_rgba(
     image_type: ImageType,
     source: &[u8],
@@ -76,6 +153,8 @@ pub(crate) fn to_rgba(
 ) {
     let pixels = source.len() / image_type.bytes_per_pixel();
     assert_eq!(target.len(), pixels * 4, "RGBA target size");
+    // Only whole pixels: the RGBA copy below writes as many bytes as it reads.
+    let source = &source[..pixels * image_type.bytes_per_pixel()];
     let out = target.as_mut_ptr().cast::<[u8; 4]>();
     // SAFETY (all arms): `target` holds `pixels` four-byte slots that do not
     // overlap `source`; unaligned writes need no alignment.
@@ -243,6 +322,60 @@ mod tests {
         assert_eq!(convert(ImageType::GrayAlpha, &[7, 3]), [7, 7, 7, 3]);
         assert_eq!(convert(ImageType::Color, &[1, 2, 3]), [1, 2, 3, 255]);
         assert_eq!(convert(ImageType::ColorAlpha, &[1, 2, 3, 4]), [1, 2, 3, 4]);
+        // The bytes of an incomplete last pixel are not copied past the target.
+        assert_eq!(
+            convert(ImageType::ColorAlpha, &[1, 2, 3, 4, 5]),
+            [1, 2, 3, 4]
+        );
+        assert_eq!(convert(ImageType::Color, &[1, 2, 3, 4]), [1, 2, 3, 255]);
+    }
+
+    #[cfg(any(feature = "server", feature = "python"))]
+    #[test]
+    fn pixels_widen_to_every_format_that_holds_them() {
+        use ImageType::*;
+
+        let widened = |from, to, source: &[u8]| {
+            let pixels = source.len() / ImageType::bytes_per_pixel(&from);
+            let mut target = vec![0; pixels * ImageType::bytes_per_pixel(&to)];
+            widen_into(from, to, source, &mut target);
+            target
+        };
+        let gray: &[u8] = &[7, 9];
+        assert_eq!(widened(Gray, Gray, gray), [7, 9]);
+        assert_eq!(widened(Gray, GrayAlpha, gray), [7, 255, 9, 255]);
+        assert_eq!(widened(Gray, Color, gray), [7, 7, 7, 9, 9, 9]);
+        assert_eq!(
+            widened(Gray, ColorAlpha, gray),
+            [7, 7, 7, 255, 9, 9, 9, 255]
+        );
+        assert_eq!(widened(GrayAlpha, GrayAlpha, &[7, 3]), [7, 3]);
+        assert_eq!(widened(GrayAlpha, ColorAlpha, &[7, 3]), [7, 7, 7, 3]);
+        assert_eq!(widened(Color, Color, &[1, 2, 3]), [1, 2, 3]);
+        assert_eq!(widened(Color, ColorAlpha, &[1, 2, 3]), [1, 2, 3, 255]);
+        assert_eq!(widened(ColorAlpha, ColorAlpha, &[1, 2, 3, 4]), [1, 2, 3, 4]);
+        // The bytes of an incomplete last pixel are not copied past the target.
+        assert_eq!(
+            widened(ColorAlpha, ColorAlpha, &[1, 2, 3, 4, 5]),
+            [1, 2, 3, 4]
+        );
+        assert_eq!(widened(GrayAlpha, GrayAlpha, &[7, 3, 9]), [7, 3]);
+        assert_eq!(widened(Color, Color, &[1, 2, 3, 4]), [1, 2, 3]);
+    }
+
+    #[cfg(any(feature = "server", feature = "python"))]
+    #[test]
+    fn the_union_of_two_formats_holds_both() {
+        use ImageType::*;
+
+        let all = [Gray, GrayAlpha, Color, ColorAlpha];
+        for a in all {
+            assert_eq!(a.union(a), a);
+            assert_eq!(a.union(Gray), a);
+            assert_eq!(a.union(ColorAlpha), ColorAlpha);
+        }
+        assert_eq!(GrayAlpha.union(Color), ColorAlpha);
+        assert_eq!(Color.union(GrayAlpha), ColorAlpha);
     }
 
     #[test]

@@ -5,7 +5,7 @@ use std::mem::MaybeUninit;
 use crate::protocol::FastVec;
 use crate::protocol::image::{
     ImageHeader, ImageSetHeader, ImageType, ImageUpdateHeader, checked_image_bounds,
-    checked_image_bytes, checked_image_shape, to_rgba,
+    checked_image_bytes, checked_image_shape, to_rgba, widen, widen_into,
 };
 use crate::server_core::transfer::{Chunk, Messages, chunk_transfer};
 
@@ -104,15 +104,6 @@ pub(crate) fn checked_max_lines(max_lines: Option<usize>) -> Result<(), String> 
     }
 }
 
-/// Whether the server rectangle `outer` (`[y, x, height, width]`) contains
-/// `inner`.
-pub(crate) fn covers(outer: [usize; 4], inner: [usize; 4]) -> bool {
-    outer[0] <= inner[0]
-        && outer[1] <= inner[1]
-        && outer[0] + outer[2] >= inner[0] + inner[2]
-        && outer[1] + outer[3] >= inner[1] + inner[3]
-}
-
 /// Packs an update of the validated `image` into the wire rectangle `rect`
 /// (`[x, y, width, height]`). `header` serializes an image header with its
 /// payload length for the image's state.
@@ -191,60 +182,206 @@ pub(crate) fn checked_image_rect(
     Ok([x, y, width, height])
 }
 
-pub(crate) fn checked_fill_size(size: [usize; 2]) -> Result<([u32; 2], usize), String> {
+/// Checks that an image of `size` (`[height, width]`) can be stored and
+/// returns its wire size (`[width, height]`). The size is checked at four
+/// bytes per pixel whatever the format, because an update can widen the
+/// stored image up to RGBA and the client always stores RGBA.
+pub(crate) fn checked_stored_size(size: [usize; 2]) -> Result<[u32; 2], String> {
     let wire_size = checked_image_size(size)?;
-    let rgba_size = checked_image_bytes(size, 4)?;
+    checked_image_bytes(size, 4)?;
 
-    Ok((wire_size, rgba_size))
+    Ok(wire_size)
 }
 
-/// Converts `image` to RGBA into `target`, four bytes per pixel.
-fn write_rgba(image: &ImageData, target: &mut [MaybeUninit<u8>]) {
+/// Converts `image` to `to`, which holds its format, into `target`, as if
+/// its rows were contiguous.
+fn write_pixels(image: &ImageData, to: ImageType, target: &mut [MaybeUninit<u8>]) {
     if image.contiguous() {
         let len = image.size[0] * image.row_bytes();
-        to_rgba(image.image_type, &image.data[..len], target);
+        widen(image.image_type, to, &image.data[..len], target);
         return;
     }
 
-    let row = image.size[1] * 4;
+    let row = image.size[1] * to.bytes_per_pixel();
     for (i, target) in target.chunks_exact_mut(row).enumerate() {
-        to_rgba(image.image_type, image.row(i), target);
+        widen(image.image_type, to, image.row(i), target);
     }
 }
 
-/// Stores the validated `image` as RGBA in `target`. The allocation is
-/// reused unless the image was `resized`, so a smaller image frees memory.
-pub(crate) fn store_rgba(target: &mut Vec<u8>, image: &ImageData, resized: bool) {
-    let len = image.size[0] * image.size[1] * 4;
-    if resized {
-        *target = Vec::with_capacity(len);
-    } else {
+/// Replaces `target` with `len` bytes written by `write`. The allocation is
+/// reused for the same length, so a smaller image frees memory.
+fn replace_bytes(target: &mut Vec<u8>, len: usize, write: impl FnOnce(&mut [MaybeUninit<u8>])) {
+    if target.len() == len {
         target.clear();
-        target.reserve_exact(len);
+    } else {
+        *target = Vec::with_capacity(len);
     }
-    write_rgba(image, &mut target.spare_capacity_mut()[..len]);
-    // SAFETY: `write_rgba` initialized the first `len` bytes.
+    write(&mut target.spare_capacity_mut()[..len]);
+    // SAFETY: `write` initialized the first `len` bytes.
     unsafe { target.set_len(len) };
 }
 
-/// Converts the validated `image` to RGBA into the rectangle at `origin`
-/// (`[y, x]`) of the RGBA image `target`, which is `width` pixels wide and
-/// contains the rectangle.
-pub(crate) fn write_rectangle(
-    image: &ImageData,
-    target: &mut [u8],
-    width: usize,
-    origin: &[usize; 2],
-) {
-    let [top, left] = *origin;
-    let row = image.size[1] * 4;
-    for i in 0..image.size[0] {
-        let start = ((top + i) * width + left) * 4;
-        let target = &mut target[start..start + row];
-        // SAFETY: `MaybeUninit<u8>` has the layout of `u8`, and `to_rgba`
-        // writes only initialized bytes.
-        let target = unsafe { &mut *(target as *mut [u8] as *mut [MaybeUninit<u8>]) };
-        to_rgba(image.image_type, image.row(i), target);
+/// The color of a fill, as the pixel of the format the image is then stored
+/// in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ImageFill {
+    Gray([u8; 1]),
+    GrayAlpha([u8; 2]),
+    Color([u8; 3]),
+    ColorAlpha([u8; 4]),
+}
+
+impl ImageFill {
+    pub(crate) fn image_type(self) -> ImageType {
+        match self {
+            Self::Gray(_) => ImageType::Gray,
+            Self::GrayAlpha(_) => ImageType::GrayAlpha,
+            Self::Color(_) => ImageType::Color,
+            Self::ColorAlpha(_) => ImageType::ColorAlpha,
+        }
+    }
+
+    /// The color the client fills its texture with: the stored pixel
+    /// expanded to RGBA, so the two cannot differ.
+    pub(crate) fn rgba(self) -> [u8; 4] {
+        let pixel: &[u8] = match &self {
+            Self::Gray(pixel) => pixel,
+            Self::GrayAlpha(pixel) => pixel,
+            Self::Color(pixel) => pixel,
+            Self::ColorAlpha(pixel) => pixel,
+        };
+        let mut rgba = [MaybeUninit::uninit(); 4];
+        to_rgba(self.image_type(), pixel, &mut rgba);
+        // SAFETY: `to_rgba` wrote all four bytes.
+        rgba.map(|byte| unsafe { byte.assume_init() })
+    }
+}
+
+/// A server image: its pixels in the format of the last set or fill,
+/// widened by updates with more channels.
+pub(crate) struct StoredImage {
+    data: Vec<u8>,
+    /// `[height, width]`.
+    size: [usize; 2],
+    image_type: ImageType,
+}
+
+impl StoredImage {
+    /// An image without pixels, for a [`set`](Self::set) or
+    /// [`fill`](Self::fill) that follows at once and gives it its format.
+    pub(crate) fn empty() -> Self {
+        Self {
+            data: Vec::new(),
+            size: [0, 0],
+            image_type: ImageType::Gray,
+        }
+    }
+
+    #[cfg(test)]
+    fn new(image: &ImageData) -> Self {
+        let mut stored = Self::empty();
+        stored.set(image);
+        stored
+    }
+
+    #[cfg(test)]
+    fn filled(size: [usize; 2], fill: ImageFill) -> Self {
+        let mut stored = Self::empty();
+        stored.fill(size, fill);
+        stored
+    }
+
+    pub(crate) fn data(&self) -> &[u8] {
+        &self.data
+    }
+
+    pub(crate) fn size(&self) -> [usize; 2] {
+        self.size
+    }
+
+    pub(crate) fn image_type(&self) -> ImageType {
+        self.image_type
+    }
+
+    /// The stored pixels, for packing a whole-image set.
+    pub(crate) fn image_data(&self) -> ImageData<'_> {
+        ImageData::packed(&self.data, self.size, self.image_type)
+    }
+
+    /// Replaces the image with the validated `image`, in its format.
+    pub(crate) fn set(&mut self, image: &ImageData) {
+        let len = image.size[0] * image.row_bytes();
+        replace_bytes(&mut self.data, len, |target| {
+            write_pixels(image, image.image_type, target)
+        });
+        self.size = image.size;
+        self.image_type = image.image_type;
+    }
+
+    /// Fills the image with `fill`, in its format.
+    pub(crate) fn fill(&mut self, size: [usize; 2], fill: ImageFill) {
+        fn repeat<const N: usize>(target: &mut [MaybeUninit<u8>], pixel: [u8; N]) {
+            for target in target.as_chunks_mut::<N>().0 {
+                *target = pixel.map(MaybeUninit::new);
+            }
+        }
+
+        let image_type = fill.image_type();
+        let len = size[0] * size[1] * image_type.bytes_per_pixel();
+        replace_bytes(&mut self.data, len, |target| match fill {
+            ImageFill::Gray(pixel) => repeat(target, pixel),
+            ImageFill::GrayAlpha(pixel) => repeat(target, pixel),
+            ImageFill::Color(pixel) => repeat(target, pixel),
+            ImageFill::ColorAlpha(pixel) => repeat(target, pixel),
+        });
+        self.size = size;
+        self.image_type = image_type;
+    }
+
+    /// Whether the rectangle of `size` at `origin` (`[y, x]`) lies inside.
+    pub(crate) fn contains(&self, origin: &[usize; 2], size: [usize; 2]) -> bool {
+        let inside = |axis: usize| {
+            origin[axis]
+                .checked_add(size[axis])
+                .is_some_and(|end| end <= self.size[axis])
+        };
+        inside(0) && inside(1)
+    }
+
+    /// Writes the validated `image` at `origin` (`[y, x]`), which
+    /// [`contains`](Self::contains) it. With channels the stored image lacks,
+    /// the whole image is widened first, so it holds both formats.
+    pub(crate) fn update(&mut self, image: &ImageData, origin: &[usize; 2]) {
+        let wider = self.image_type.union(image.image_type);
+        if image.size == self.size {
+            // The rectangle is the whole image, so no stored pixel survives:
+            // nothing is widened only to be overwritten.
+            let len = self.size[0] * self.size[1] * wider.bytes_per_pixel();
+            replace_bytes(&mut self.data, len, |target| {
+                write_pixels(image, wider, target)
+            });
+            self.image_type = wider;
+            return;
+        }
+        if wider != self.image_type {
+            let from = self.image_type;
+            let mut data = Vec::new();
+            let len = self.size[0] * self.size[1] * wider.bytes_per_pixel();
+            replace_bytes(&mut data, len, |target| {
+                widen(from, wider, &self.data, target)
+            });
+            self.data = data;
+            self.image_type = wider;
+        }
+
+        let pixel_size = self.image_type.bytes_per_pixel();
+        let [top, left] = *origin;
+        let row = image.size[1] * pixel_size;
+        for i in 0..image.size[0] {
+            let start = ((top + i) * self.size[1] + left) * pixel_size;
+            let target = &mut self.data[start..start + row];
+            widen_into(image.image_type, self.image_type, image.row(i), target);
+        }
     }
 }
 
@@ -272,25 +409,129 @@ mod tests {
         image.append(&mut message, 1, 3);
         assert_eq!(message.into_bytes().as_ref(), [2, 3, 4]);
 
-        let mut rgba = Vec::new();
-        store_rgba(&mut rgba, &image, true);
-        let pixel = |gray| [gray, gray, gray, 255];
-        assert_eq!(rgba, [pixel(1), pixel(2), pixel(3), pixel(4)].concat());
+        let stored = StoredImage::new(&image);
+        assert_eq!(stored.data(), [1, 2, 3, 4]);
+        assert_eq!(stored.image_type(), ImageType::Gray);
 
-        let mut target = vec![0; 3 * 2 * 4];
-        write_rectangle(&image, &mut target, 2, &[1, 0]);
-        assert_eq!(&target[..8], [0; 8]);
-        assert_eq!(&target[8..], rgba);
+        let mut target = StoredImage::filled([3, 2], ImageFill::Gray([0]));
+        target.update(&image, &[1, 0]);
+        assert_eq!(target.data(), [0, 0, 1, 2, 3, 4]);
     }
 
     #[test]
-    fn same_size_reuses_the_allocation() {
+    fn the_same_byte_length_reuses_the_allocation() {
         let image = ImageData::packed(&[7; 6], [2, 3], ImageType::Gray);
-        let mut rgba = Vec::new();
-        store_rgba(&mut rgba, &image, true);
-        let allocation = rgba.as_ptr();
-        store_rgba(&mut rgba, &image, false);
-        assert_eq!(rgba.as_ptr(), allocation);
-        assert_eq!(rgba.len(), 24);
+        let mut stored = StoredImage::new(&image);
+        let allocation = stored.data().as_ptr();
+        stored.set(&image);
+        assert_eq!(stored.data().as_ptr(), allocation);
+        // Three gray-alpha pixels hold the six bytes of six gray ones.
+        stored.fill([1, 3], ImageFill::GrayAlpha([5, 8]));
+        assert_eq!(stored.data().as_ptr(), allocation);
+        assert_eq!(stored.data(), [5, 8, 5, 8, 5, 8]);
+        stored.set(&ImageData::packed(&[1; 3], [1, 3], ImageType::Gray));
+        assert_eq!(stored.data(), [1; 3]);
+    }
+
+    #[test]
+    fn a_fill_is_stored_in_its_format_and_sent_as_the_same_color() {
+        for (fill, image_type, pixel, rgba) in [
+            (
+                ImageFill::Gray([1]),
+                ImageType::Gray,
+                &[1][..],
+                [1, 1, 1, 255],
+            ),
+            (
+                ImageFill::GrayAlpha([1, 4]),
+                ImageType::GrayAlpha,
+                &[1, 4],
+                [1, 1, 1, 4],
+            ),
+            (
+                ImageFill::Color([1, 2, 3]),
+                ImageType::Color,
+                &[1, 2, 3],
+                [1, 2, 3, 255],
+            ),
+            (
+                ImageFill::ColorAlpha([1, 2, 3, 4]),
+                ImageType::ColorAlpha,
+                &[1, 2, 3, 4],
+                [1, 2, 3, 4],
+            ),
+        ] {
+            let stored = StoredImage::filled([2, 1], fill);
+            assert_eq!(stored.image_type(), image_type);
+            assert_eq!(stored.data(), pixel.repeat(2));
+            assert_eq!(fill.rgba(), rgba);
+        }
+    }
+
+    #[test]
+    fn an_update_with_fewer_channels_keeps_the_stored_format() {
+        let mut stored = StoredImage::filled([1, 2], ImageFill::ColorAlpha([1, 2, 3, 4]));
+        stored.update(&ImageData::packed(&[9], [1, 1], ImageType::Gray), &[0, 1]);
+        assert_eq!(stored.image_type(), ImageType::ColorAlpha);
+        assert_eq!(stored.data(), [1, 2, 3, 4, 9, 9, 9, 255]);
+    }
+
+    #[test]
+    fn an_update_with_more_channels_widens_the_whole_image_first() {
+        let mut stored = StoredImage::filled([1, 2], ImageFill::Gray([7]));
+        stored.update(
+            &ImageData::packed(&[1, 2, 3], [1, 1], ImageType::Color),
+            &[0, 1],
+        );
+        assert_eq!(stored.image_type(), ImageType::Color);
+        assert_eq!(stored.data(), [7, 7, 7, 1, 2, 3]);
+
+        // Gray-alpha and color meet at color-alpha.
+        stored.update(
+            &ImageData::packed(&[5, 6], [1, 1], ImageType::GrayAlpha),
+            &[0, 0],
+        );
+        assert_eq!(stored.image_type(), ImageType::ColorAlpha);
+        assert_eq!(stored.data(), [5, 5, 5, 6, 1, 2, 3, 255]);
+
+        // Only a set narrows it again.
+        stored.set(&ImageData::packed(&[4, 4], [1, 2], ImageType::Gray));
+        assert_eq!(stored.image_type(), ImageType::Gray);
+        assert_eq!(stored.data(), [4, 4]);
+    }
+
+    #[test]
+    fn an_update_of_the_whole_image_replaces_every_pixel() {
+        // Widening: the format still holds both, as for any update.
+        let mut stored = StoredImage::filled([2, 1], ImageFill::GrayAlpha([7, 8]));
+        let rows = ImageData {
+            size: [2, 1],
+            stride: 4,
+            image_type: ImageType::Color,
+            data: &[1, 2, 3, 0, 4, 5, 6],
+        };
+        stored.update(&rows, &[0, 0]);
+        assert_eq!(stored.image_type(), ImageType::ColorAlpha);
+        assert_eq!(stored.data(), [1, 2, 3, 255, 4, 5, 6, 255]);
+
+        // Fewer channels: converted to the stored format, in place.
+        let allocation = stored.data().as_ptr();
+        stored.update(
+            &ImageData::packed(&[9, 10], [2, 1], ImageType::Gray),
+            &[0, 0],
+        );
+        assert_eq!(stored.image_type(), ImageType::ColorAlpha);
+        assert_eq!(stored.data(), [9, 9, 9, 255, 10, 10, 10, 255]);
+        assert_eq!(stored.data().as_ptr(), allocation);
+    }
+
+    #[test]
+    fn contains_checks_both_axes_and_overflow() {
+        let stored = StoredImage::filled([2, 3], ImageFill::Gray([0]));
+        assert!(stored.contains(&[0, 0], [2, 3]));
+        assert!(stored.contains(&[1, 2], [1, 1]));
+        assert!(!stored.contains(&[1, 0], [2, 1]));
+        assert!(!stored.contains(&[0, 3], [1, 1]));
+        assert!(!stored.contains(&[usize::MAX, 0], [1, 1]));
     }
 }

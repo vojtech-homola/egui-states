@@ -6,7 +6,7 @@ use parking_lot::RwLock;
 
 use crate::hashing::NoHashMap;
 use crate::protocol::image::{
-    ImageHeader, ImageMultiHeader, ImageType, checked_image_bytes, checked_image_shape,
+    ImageHeader, ImageMultiHeader, checked_image_bytes, checked_image_shape,
     serialize_image_multi_header,
 };
 use crate::protocol::{FastVec, TRANSFER_CHUNK_SIZE};
@@ -14,16 +14,11 @@ use crate::server_core::error::CoreError;
 use crate::server_core::net::sender::MessageSender;
 use crate::server_core::server::{Acknowledge, SyncTrait};
 use crate::server_core::states::image::common::{
-    ImageData, checked_fill_size, checked_image_rect, checked_image_size, checked_max_lines,
-    pack_image_set, pack_image_update, store_rgba, write_rectangle,
+    ImageData, ImageFill, StoredImage, checked_image_rect, checked_image_size, checked_max_lines,
+    checked_stored_size, pack_image_set, pack_image_update,
 };
-use crate::server_core::states::image::scheduler::Scheduler;
+use crate::server_core::states::scheduler::Scheduler;
 use crate::server_core::transfer::Messages;
-
-struct StoredImage {
-    data: Vec<u8>,
-    size: [usize; 2],
-}
 
 struct ImageMultiInner {
     images: NoHashMap<u32, StoredImage>,
@@ -67,21 +62,16 @@ impl ImageMulti {
     }
 
     pub(crate) fn get_size(&self, index: u32) -> Option<[usize; 2]> {
-        self.inner.read().images.get(&index).map(|image| image.size)
+        self.inner.read().images.get(&index).map(StoredImage::size)
     }
 
+    /// Calls `getter` with the image at `index`, `None` for a missing key.
     pub(crate) fn get_image<R>(
         &self,
         index: u32,
-        getter: impl FnOnce(Option<(&Vec<u8>, &[usize; 2])>) -> R,
+        getter: impl FnOnce(Option<&StoredImage>) -> R,
     ) -> R {
-        let inner = self.inner.read();
-        getter(
-            inner
-                .images
-                .get(&index)
-                .map(|image| (&image.data, &image.size)),
-        )
+        getter(self.inner.read().images.get(&index))
     }
 
     /// Whether nothing is in flight and nothing waits, for any key.
@@ -99,7 +89,7 @@ impl ImageMulti {
         update: bool,
         wait: bool,
     ) -> Result<(), String> {
-        checked_fill_size(image.size)?;
+        checked_stored_size(image.size)?;
         let to_send = if self.transfer.is_connected() {
             Some(pack_set_data(self.transfer.id, index, &image, update)?)
         } else {
@@ -107,13 +97,8 @@ impl ImageMulti {
         };
         let lock = self.transfer.lock.lock();
         let mut inner = self.inner.write();
-        let stored = inner.images.entry(index).or_insert_with(|| StoredImage {
-            data: Vec::new(),
-            size: image.size,
-        });
-        let resized = stored.size != image.size;
-        stored.size = image.size;
-        store_rgba(&mut stored.data, &image, resized);
+        let stored = inner.images.entry(index);
+        stored.or_insert_with(StoredImage::empty).set(&image);
         let Some(generation) = self.transfer.sendable() else {
             return Ok(());
         };
@@ -127,15 +112,18 @@ impl ImageMulti {
         Ok(())
     }
 
+    /// Fills the image at `index` with `fill`, stored in its format; the
+    /// client gets only the color.
     pub(crate) fn set_all_image(
         &self,
         index: u32,
         size: [usize; 2],
-        rgba: [u8; 4],
+        fill: ImageFill,
         update: bool,
         wait: bool,
     ) -> Result<(), String> {
-        let (wire_size, rgba_size) = checked_fill_size(size)?;
+        let rgba = fill.rgba();
+        let wire_size = checked_stored_size(size)?;
         let to_send = if self.transfer.is_connected() {
             Some(pack_fill_data(
                 self.transfer.id,
@@ -149,20 +137,8 @@ impl ImageMulti {
         };
         let lock = self.transfer.lock.lock();
         let mut inner = self.inner.write();
-        let stored = inner.images.entry(index).or_insert_with(|| StoredImage {
-            data: Vec::new(),
-            size,
-        });
-        stored.size = size;
-        stored.data.clear();
-        stored.data.reserve(rgba_size);
-        let ptr = stored.data.as_mut_ptr().cast::<[u8; 4]>();
-        unsafe {
-            for pixel in 0..(size[0] * size[1]) {
-                ptr.add(pixel).write(rgba);
-            }
-            stored.data.set_len(rgba_size);
-        }
+        let stored = inner.images.entry(index);
+        stored.or_insert_with(StoredImage::empty).fill(size, fill);
         let Some(generation) = self.transfer.sendable() else {
             return Ok(());
         };
@@ -190,7 +166,7 @@ impl ImageMulti {
         max_lines: Option<usize>,
         wait: bool,
     ) -> Result<(), CoreError> {
-        checked_fill_size(image.size)?;
+        checked_stored_size(image.size)?;
         checked_image_rect(origin, image.size)?;
         checked_max_lines(max_lines)?;
         let to_send = if self.transfer.is_connected() {
@@ -211,15 +187,11 @@ impl ImageMulti {
             .images
             .get_mut(&index)
             .ok_or_else(|| CoreError::not_found("ImageMulti index not found."))?;
-        let end_row = origin[0].checked_add(image.size[0]);
-        let end_column = origin[1].checked_add(image.size[1]);
-        if end_row.is_none_or(|end| end > stored.size[0])
-            || end_column.is_none_or(|end| end > stored.size[1])
-        {
+        if !stored.contains(origin, image.size) {
             return Err(format!("ImageMulti index {} update exceeds bounds", index).into());
         }
-        let width = stored.size[1];
-        write_rectangle(&image, &mut stored.data, width, origin);
+        // Widens the stored image first when the update has more channels.
+        stored.update(&image, origin);
         let Some(generation) = self.transfer.sendable() else {
             return Ok(());
         };
@@ -302,9 +274,10 @@ impl SyncTrait for ImageMulti {
         let mut messages = Vec::new();
         for index in indices {
             let image = inner.images.get(&index).ok_or(())?;
-            let image_data = ImageData::packed(&image.data, image.size, ImageType::ColorAlpha);
+            // Sent in the stored format; the client expands it to RGBA.
             messages.extend(
-                pack_set_data(self.transfer.id, index, &image_data, false).map_err(|_| ())?,
+                pack_set_data(self.transfer.id, index, &image.image_data(), false)
+                    .map_err(|_| ())?,
             );
         }
         let ack_count = inner.images.len();
@@ -399,6 +372,7 @@ mod tests {
     use super::*;
     #[cfg(feature = "client")]
     use crate::protocol::ServerHeader;
+    use crate::protocol::image::ImageType;
     #[cfg(feature = "client")]
     use crate::protocol::image::{ImageHeader, ImageSetHeader, ImageUpdateHeader};
     use crate::server_core::net::sender::MessageReceiver;
@@ -427,14 +401,14 @@ mod tests {
         for connected in [false, true] {
             let (images, _, mut receiver) = new_image_multi(connected);
             images
-                .set_all_image(7, [1, 1], [9; 4], false, false)
+                .set_all_image(7, [1, 1], ImageFill::ColorAlpha([9; 4]), false, false)
                 .unwrap();
             for size in [[65_537, 1], [1, 65_537]] {
                 let data = || image_data(&[], size, ImageType::Gray);
                 for result in [
                     images.set_image(7, data(), false, false),
                     images.set_image(9, data(), false, false),
-                    images.set_all_image(7, size, [0; 4], false, false),
+                    images.set_all_image(7, size, ImageFill::ColorAlpha([0; 4]), false, false),
                     images
                         .update_image(7, &[0, 0], data(), false, false, None, false)
                         .map_err(String::from),
@@ -457,7 +431,8 @@ mod tests {
                 assert!(pack_update_data(1, 7, &origin, &data, false, None).is_err());
             }
             assert_eq!(
-                images.get_image(7, |image| image.map(|(data, size)| (data.clone(), *size))),
+                images.get_image(7, |image| image
+                    .map(|image| (image.data().to_vec(), image.size()))),
                 Some((vec![9; 4], [1, 1]))
             );
             assert_eq!(images.indices(), vec![7]);
@@ -487,7 +462,7 @@ mod tests {
             )
             .unwrap();
         // Pointer stability is a limited allocation regression, not an allocation counter.
-        let allocation = images.inner.read().images[&4].data.as_ptr();
+        let allocation = images.inner.read().images[&4].data().as_ptr();
 
         let second = [8, 7, 6, 5, 4, 3, 2, 1];
         images
@@ -498,15 +473,15 @@ mod tests {
                 false,
             )
             .unwrap();
-        assert_eq!(images.inner.read().images[&4].data.as_ptr(), allocation);
-        assert_eq!(images.get_image(4, |v| v.unwrap().0.clone()), second);
+        assert_eq!(images.inner.read().images[&4].data().as_ptr(), allocation);
+        assert_eq!(images.get_image(4, |v| v.unwrap().data().to_vec()), second);
 
         images
-            .set_all_image(4, [1, 2], [9, 8, 7, 6], false, false)
+            .set_all_image(4, [1, 2], ImageFill::ColorAlpha([9, 8, 7, 6]), false, false)
             .unwrap();
-        assert_eq!(images.inner.read().images[&4].data.as_ptr(), allocation);
+        assert_eq!(images.inner.read().images[&4].data().as_ptr(), allocation);
         assert_eq!(
-            images.get_image(4, |v| v.unwrap().0.clone()),
+            images.get_image(4, |v| v.unwrap().data().to_vec()),
             [9, 8, 7, 6].repeat(2)
         );
     }
@@ -542,9 +517,9 @@ mod tests {
         }
 
         images
-            .set_all_image(1, [1, 1], [1, 2, 3, 4], false, false)
+            .set_all_image(1, [1, 1], ImageFill::ColorAlpha([1, 2, 3, 4]), false, false)
             .unwrap();
-        let before = images.get_image(1, |image| image.unwrap().0.clone());
+        let before = images.get_image(1, |image| image.unwrap().data().to_vec());
         assert!(
             images
                 .update_image(
@@ -559,7 +534,7 @@ mod tests {
                 .is_err()
         );
         assert_eq!(
-            images.get_image(1, |image| image.unwrap().0.clone()),
+            images.get_image(1, |image| image.unwrap().data().to_vec()),
             before
         );
         assert_no_message(&mut receiver);
@@ -573,10 +548,16 @@ mod tests {
         }
         let (images, connected, mut receiver) = new_image_multi(false);
         images
-            .set_all_image(7, [1, 1], [7, 7, 7, 255], false, false)
+            .set_all_image(
+                7,
+                [1, 1],
+                ImageFill::ColorAlpha([7, 7, 7, 255]),
+                false,
+                false,
+            )
             .unwrap();
         images
-            .set_all_image(2, [1, 1], [2, 2, 2, 255], false, false)
+            .set_all_image(2, [1, 1], ImageFill::Gray([2]), false, false)
             .unwrap();
         assert_eq!(images.indices(), vec![2, 7]);
 
@@ -590,7 +571,11 @@ mod tests {
             ServerHeader::ImageMulti(1, ImageMultiHeader::Reset(false))
         ));
 
-        for expected_index in [2, 7] {
+        // Every key is sent in its own stored format.
+        for (expected_index, expected_type, expected_pixels) in [
+            (2, ImageType::Gray, &[2][..]),
+            (7, ImageType::ColorAlpha, &[7, 7, 7, 255]),
+        ] {
             let (message, _) = receiver.try_recv().unwrap().unwrap();
             let bytes = message.into_bytes();
             let (header, header_size) = ServerHeader::deserialize(&bytes).unwrap();
@@ -599,21 +584,17 @@ mod tests {
                     1,
                     ImageMultiHeader::Modify(
                         index,
-                        ImageHeader::Set(ImageSetHeader::All([1, 1], false), ImageType::ColorAlpha),
-                        4,
+                        ImageHeader::Set(ImageSetHeader::All([1, 1], false), image_type),
+                        size,
                     ),
-                ) => assert_eq!(index, expected_index),
+                ) => {
+                    assert_eq!(index, expected_index);
+                    assert_eq!(image_type, expected_type);
+                    assert_eq!(size as usize, expected_pixels.len());
+                }
                 _ => panic!("unexpected ImageMulti sync header"),
             }
-            assert_eq!(
-                &bytes[header_size..],
-                &[
-                    expected_index as u8,
-                    expected_index as u8,
-                    expected_index as u8,
-                    255
-                ]
-            );
+            assert_eq!(&bytes[header_size..], expected_pixels);
         }
         assert_no_message(&mut receiver);
         assert!(!images.is_idle());
@@ -621,7 +602,13 @@ mod tests {
         // A set waits until every image of the synchronization is acknowledged.
         let waiting_images = images.clone();
         let waiter = std::thread::spawn(move || {
-            waiting_images.set_all_image(9, [1, 1], [9, 9, 9, 255], true, false)
+            waiting_images.set_all_image(
+                9,
+                [1, 1],
+                ImageFill::ColorAlpha([9, 9, 9, 255]),
+                true,
+                false,
+            )
         });
         wait_until(|| images.contains(9));
         assert_no_message(&mut receiver);
@@ -649,7 +636,13 @@ mod tests {
         let (images, connected, mut receiver) = new_image_multi(false);
         for index in [8, 3, 5] {
             images
-                .set_all_image(index, [1, 1], [index as u8; 4], false, false)
+                .set_all_image(
+                    index,
+                    [1, 1],
+                    ImageFill::ColorAlpha([index as u8; 4]),
+                    false,
+                    false,
+                )
                 .unwrap();
         }
 
@@ -666,10 +659,10 @@ mod tests {
         images.remove_index(5, false).unwrap();
         images.reset_images(false).unwrap();
         images
-            .set_all_image(13, [1, 1], [13; 4], false, false)
+            .set_all_image(13, [1, 1], ImageFill::ColorAlpha([13; 4]), false, false)
             .unwrap();
         images
-            .set_all_image(1, [1, 1], [1; 4], false, false)
+            .set_all_image(1, [1, 1], ImageFill::ColorAlpha([1; 4]), false, false)
             .unwrap();
 
         connected.store(true, Ordering::Release);
@@ -697,7 +690,13 @@ mod tests {
         }
         let (images, connected, mut receiver) = new_image_multi(false);
         images
-            .set_all_image(1, [1, 1], [1, 1, 1, 255], false, false)
+            .set_all_image(
+                1,
+                [1, 1],
+                ImageFill::ColorAlpha([1, 1, 1, 255]),
+                false,
+                false,
+            )
             .unwrap();
         connected.store(true, Ordering::Release);
         images.sync().unwrap();
@@ -706,7 +705,13 @@ mod tests {
         images.acknowledge();
 
         images
-            .set_all_image(1, [1, 1], [2, 2, 2, 255], false, false)
+            .set_all_image(
+                1,
+                [1, 1],
+                ImageFill::ColorAlpha([2, 2, 2, 255]),
+                false,
+                false,
+            )
             .unwrap();
         assert_message(&mut receiver);
         let removing_images = images.clone();
@@ -719,7 +724,13 @@ mod tests {
         assert!(images.is_idle());
 
         images
-            .set_all_image(2, [1, 1], [3, 3, 3, 255], false, false)
+            .set_all_image(
+                2,
+                [1, 1],
+                ImageFill::ColorAlpha([3, 3, 3, 255]),
+                false,
+                false,
+            )
             .unwrap();
         assert_message(&mut receiver);
         let resetting_images = images.clone();
@@ -732,7 +743,13 @@ mod tests {
         assert!(images.is_idle());
 
         images
-            .set_all_image(3, [1, 1], [4, 4, 4, 255], false, false)
+            .set_all_image(
+                3,
+                [1, 1],
+                ImageFill::ColorAlpha([4, 4, 4, 255]),
+                false,
+                false,
+            )
             .unwrap();
         assert_message(&mut receiver);
         images.acknowledge();
@@ -746,7 +763,13 @@ mod tests {
         }
         let (images, connected, mut receiver) = new_image_multi(false);
         images
-            .set_all_image(1, [1, 1], [1, 1, 1, 255], false, false)
+            .set_all_image(
+                1,
+                [1, 1],
+                ImageFill::ColorAlpha([1, 1, 1, 255]),
+                false,
+                false,
+            )
             .unwrap();
         connected.store(true, Ordering::Release);
         images.sync().unwrap();
@@ -756,9 +779,15 @@ mod tests {
         // The synchronization is not acknowledged, so this set waits.
         let waiting_images = images.clone();
         let waiter = std::thread::spawn(move || {
-            waiting_images.set_all_image(1, [1, 1], [3, 3, 3, 255], false, false)
+            waiting_images.set_all_image(
+                1,
+                [1, 1],
+                ImageFill::ColorAlpha([3, 3, 3, 255]),
+                false,
+                false,
+            )
         });
-        wait_until(|| images.get_image(1, |image| image.unwrap().0.as_slice() == [3, 3, 3, 255]));
+        wait_until(|| images.get_image(1, |image| image.unwrap().data() == [3, 3, 3, 255]));
         assert_no_message(&mut receiver);
 
         connected.store(false, Ordering::Release);
@@ -804,7 +833,13 @@ mod tests {
         let (images, connected, mut receiver) = new_image_multi(false);
         for index in [1, 2] {
             images
-                .set_all_image(index, [2, 1], [0, 0, 0, 255], false, false)
+                .set_all_image(
+                    index,
+                    [2, 1],
+                    ImageFill::ColorAlpha([0, 0, 0, 255]),
+                    false,
+                    false,
+                )
                 .unwrap();
         }
         connected.store(true, Ordering::Release);
@@ -814,7 +849,7 @@ mod tests {
         }
         images.acknowledge();
         images.acknowledge();
-        let column = |index: u32| images.get_image(index, |image| image.unwrap().0.clone());
+        let column = |index: u32| images.get_image(index, |image| image.unwrap().data().to_vec());
 
         // A split update of index 1: the first row goes out, the second waits.
         let rows = [10, 11];
@@ -882,6 +917,10 @@ mod tests {
             )
         });
         wait_until(|| column(1) == [40, 40, 40, 255, 41, 41, 41, 255]);
+        // The stored pixels change before the waiting row is dropped; an
+        // acknowledgement in between would send that row and leave the
+        // forced update waiting for an acknowledgement that never comes.
+        wait_until(|| !images.transfer.has_waiting());
         images.acknowledge();
         same_index.join().unwrap().unwrap();
         assert_update(&mut receiver, 1, &[40, 41]);

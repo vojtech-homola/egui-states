@@ -396,6 +396,17 @@ Server image shapes use `[height, width]`, origins use `[y, x]`, and public
 server inputs may be gray, gray-alpha, RGB, or RGBA. Client textures expose
 egui's `[width, height]` size convention.
 
+The server stores an image in the format of its last set, or of the color of
+its last fill, so a gray image takes one byte per pixel; `get` returns it in
+that format, and an image that was never set has none. An update with fewer
+channels is converted while it is written. An update with channels the image
+lacks first widens the whole image to the smallest format that holds both:
+gray gains equal color channels and a missing alpha becomes 255, so gray-alpha
+and RGB meet at RGBA. Only a set or fill narrows it again. Every message
+carries its own format, and the client expands each to its RGBA texture, so
+the reconnect synchronization sends the stored format too and the client ends
+with the same pixels either way.
+
 The client creates each texture in the egui context passed to
 `ClientBuilder::new` when the first complete image for it arrives, so an image
 sent right after connecting is never lost. Until then the client handles

@@ -10,7 +10,8 @@ use crate::protocol::{FastVec, TRANSFER_CHUNK_SIZE};
 use crate::server_core::error::CoreError;
 use crate::server_core::net::sender::MessageSender;
 use crate::server_core::server::{Acknowledge, SyncTrait};
-use crate::server_core::states::data::{DataSlice, HeaderType, SyncState, check_data_type};
+use crate::server_core::states::data::{DataSlice, HeaderType, check_data_type};
+use crate::server_core::states::scheduler::SyncState;
 use crate::server_core::transfer::{Chunk, chunk_transfer};
 
 // DataTake --------------------------------------------------

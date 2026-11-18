@@ -19,11 +19,11 @@ def test_image_shape_limit(local_bundle, multi, shape):
     pixels = np.full(shape, 7, dtype=np.uint8)
     image.set(pixels)
     assert image.shape() == shape
-    assert np.all(image.get()[..., :3] == 7)
+    assert_array(image.get(), pixels)
     image.set_all(shape, 9)
     origin = (shape[0] - 1, shape[1] - 1)
     image.update(np.array([[8]], dtype=np.uint8), origin)
-    assert image.get()[origin].tolist() == [8, 8, 8, 255]
+    assert image.get()[origin] == 8
     before = image.get().copy()
 
     for oversized in [(65_537, 1), (1, 65_537)]:
@@ -71,16 +71,54 @@ def test_image_value_roundtrip(local_bundle: tuple[StatesServer, State, list[Exc
 
 def test_image_fill_colors(local_bundle):
     _, states, _ = local_bundle
-    colors = (
-        (7, [7, 7, 7, 255]),
-        ((7, 8), [7, 7, 7, 8]),
-        ((7, 8, 9), [7, 8, 9, 255]),
-        ((7, 8, 9, 10), [7, 8, 9, 10]),
-    )
-    for color, expected in colors:
-        states.image.image.set_all((2, 3), color, update=True)
-        expected_image = np.tile(np.array(expected, dtype=np.uint8), (2, 3, 1))
-        assert_array(states.image.image.get(), expected_image)
+    # The image is stored in the format of the color.
+    assert_array(_fill(states.image.image, 7), np.full((2, 3), 7, dtype=np.uint8))
+    for color in [(7, 8), (7, 8, 9), (7, 8, 9, 10)]:
+        expected = np.tile(np.array(color, dtype=np.uint8), (2, 3, 1))
+        assert_array(_fill(states.image.image, color), expected)
+
+
+def _fill(image, color):
+    image.set_all((2, 3), color, update=True)
+    return image.get()
+
+
+def test_image_is_stored_in_its_format_and_widened_by_updates(local_bundle):
+    _, states, _ = local_bundle
+    image = states.image.image
+    assert image.get() is None
+    assert image.shape() == (0, 0)
+
+    gray = np.arange(6, dtype=np.uint8).reshape((2, 3))
+    image.set(gray)
+    assert_array(image.get(), gray)
+
+    # Fewer channels than stored: converted while written, format kept.
+    image.update(np.full((1, 1), 9, dtype=np.uint8), (0, 0))
+    gray[0, 0] = 9
+    assert_array(image.get(), gray)
+
+    # More channels: the whole image is widened first.
+    image.update(np.array([[[1, 2, 3]]], dtype=np.uint8), (1, 2))
+    rgb = np.repeat(gray[..., None], 3, axis=-1)
+    rgb[1, 2] = [1, 2, 3]
+    assert_array(image.get(), rgb)
+
+    # Gray-alpha and RGB meet at RGBA.
+    image.update(np.array([[[5, 6]]], dtype=np.uint8), (0, 1))
+    rgba = np.concatenate([rgb, np.full((2, 3, 1), 255, dtype=np.uint8)], axis=-1)
+    rgba[0, 1] = [5, 5, 5, 6]
+    assert_array(image.get(), rgba)
+
+    # Only a set or fill narrows it again.
+    image.set(gray)
+    assert_array(image.get(), gray)
+
+    images = states.image.images
+    images[1].set(gray)
+    images[2].set_all((1, 1), (1, 2, 3))
+    assert_array(images[1].get(), gray)
+    assert_array(images[2].get(), np.array([[[1, 2, 3]]], dtype=np.uint8))
 
 
 def test_invalid_image_fill_preserves_pixels(local_bundle):
@@ -171,7 +209,7 @@ def test_image_update_outside_the_image_preserves_pixels(local_bundle):
             image.update(np.zeros(shape, dtype=np.uint8), origin)
         assert_array(image.get(), before)
     image.update(np.full((1, 1), 9, dtype=np.uint8), (1, 2))
-    assert image.get()[1, 2].tolist() == [9, 9, 9, 255]
+    assert image.get()[1, 2] == 9
 
 
 @pytest.mark.parametrize("multi", [False, True], ids=["image", "image-multi"])
@@ -182,17 +220,17 @@ def test_image_wait_force_and_max_lines(local_bundle, multi):
     # Without a client every change is only stored, so nothing waits.
     assert state.is_idle()
     image.set(np.zeros((4, 2), dtype=np.uint8), wait=True)
-    assert_array(image.get()[..., :3], np.zeros((4, 2, 3), dtype=np.uint8))
+    assert_array(image.get(), np.zeros((4, 2), dtype=np.uint8))
     image.set_all((4, 2), 0, wait=True)
 
     rows = np.arange(8, dtype=np.uint8).reshape(4, 2)
     image.update(rows, (0, 0), update=True, max_lines=1)
-    assert_array(image.get()[..., 0], rows)
+    assert_array(image.get(), rows)
     image.update(np.full((2, 2), 9, dtype=np.uint8), (1, 0), force=True, max_lines=10, wait=True)
     assert state.is_idle()
     expected = rows.copy()
     expected[1:3] = 9
-    assert_array(image.get()[..., 0], expected)
+    assert_array(image.get(), expected)
 
     before = image.get().copy()
     for max_lines in [0, -1]:

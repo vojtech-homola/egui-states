@@ -332,8 +332,23 @@ class SignalEmpty(_SignalBase):
         self._signals_manager.clear_callbacks(self._value_id)
 
 
+def _image_array(data: bytearray, shape: tuple[int, int], channels: int) -> npt.NDArray[np.uint8]:
+    """Return stored image bytes as an array shaped like an image to set."""
+    array = np.frombuffer(data, dtype=np.uint8)
+    if channels == 1:
+        return array.reshape(shape)
+    return array.reshape((shape[0], shape[1], channels))
+
+
 class Image(_StaticBase):
     """Server-controlled image mirrored to an initialized client texture.
+
+    The server keeps the image in the format of the last :meth:`set` or
+    :meth:`set_all`: gray, gray-alpha, RGB or RGBA. An :meth:`update` with
+    channels the image lacks widens it first, to the smallest format that
+    holds both: gray gains color channels equal to it, and a missing alpha
+    becomes 255, which is what the client shows. Until it is first set, the
+    image has no format and :meth:`get` returns ``None``.
 
     Each dimension is at most 65,536 pixels, inclusive. Oversized images raise
     ``ValueError``. Client renderer and memory limits may be smaller.
@@ -368,7 +383,9 @@ class Image(_StaticBase):
         first, because this image overwrites them.
 
         Args:
-            image (Buffer): The image to set.
+            image (Buffer): The image to set, shaped as ``(height, width)``
+                for gray or ``(height, width, channels)`` with 2, 3 or 4
+                channels. The server keeps it in this format.
             update (bool, optional): Whether to request a client repaint.
                 Defaults to False.
             wait (bool, optional): Whether to return only once the client has
@@ -394,6 +411,9 @@ class Image(_StaticBase):
         sent once the client has acknowledged the one before, so later
         changes of other states can reach the client first, and the next call
         on this image waits until the last part has been acknowledged.
+
+        When the rectangle has channels the stored image lacks, the server
+        first widens the whole image to a format that holds both.
 
         Args:
             image (Buffer): The image rectangle to write.
@@ -432,7 +452,9 @@ class Image(_StaticBase):
             shape (list[int] | tuple[int, int]): Image shape as ``(height,
                 width)``.
             color (ImageColor): Gray, gray-alpha, RGB, or RGBA color. Every
-                component must be in ``0..255``.
+                component must be in ``0..255``. The image is stored in the
+                format of the color: an integer stores gray, and a tuple of
+                2, 3 or 4 components gray-alpha, RGB or RGBA.
             update (bool, optional): Whether to request a client repaint.
                 Defaults to False.
             wait (bool, optional): Whether to return only once the client has
@@ -454,16 +476,19 @@ class Image(_StaticBase):
         """
         return self._server.image_is_idle(self._value_id)
 
-    def get(self) -> npt.NDArray[np.uint8]:
-        """Get the image in the UI image.
+    def get(self) -> npt.NDArray[np.uint8] | None:
+        """Get the image in the format it is stored in.
 
         Returns:
-            npt.NDArray[np.uint8]: RGBA image with shape ``(height, width, 4)``.
+            npt.NDArray[np.uint8] | None: The image, with shape ``(height,
+            width)`` for gray and ``(height, width, channels)`` otherwise, as
+            :meth:`set` takes it; ``None`` until the image is set.
         """
-        data, shape = self._server.image_get(self._value_id)
-        shape = (shape[0], shape[1], 4)
-
-        return np.frombuffer(data, dtype=np.uint8).reshape(shape)
+        image = self._server.image_get(self._value_id)
+        if image is None:
+            return None
+        data, shape, channels = image
+        return _image_array(data, shape, channels)
 
     def shape(self) -> tuple[int, int]:
         """Get the shape of the image.
@@ -560,7 +585,8 @@ class SingleImage:
         Args:
             shape (list[int] | tuple[int, int]): Image shape as ``(height,
                 width)``.
-            color (ImageColor): Gray, gray-alpha, RGB, or RGBA color.
+            color (ImageColor): Gray, gray-alpha, RGB, or RGBA color. The
+                image is stored in its format, as in :meth:`Image.set_all`.
             update (bool, optional): Whether to request a client repaint.
                 Defaults to False.
             wait (bool, optional): Whether to return only once the client has
@@ -570,13 +596,15 @@ class SingleImage:
         self._server.image_multi_set_all(self._value_id, self._index, shape, color, update, wait)
 
     def get(self) -> npt.NDArray[np.uint8]:
-        """Return this indexed image.
+        """Return this indexed image in the format it is stored in.
 
         Returns:
-            npt.NDArray[np.uint8]: RGBA image with shape ``(height, width, 4)``.
+            npt.NDArray[np.uint8]: The image, with shape ``(height, width)``
+            for gray and ``(height, width, channels)`` otherwise, as
+            :meth:`set` takes it.
         """
-        data, shape = self._server.image_multi_get(self._value_id, self._index)
-        return np.frombuffer(data, dtype=np.uint8).reshape((shape[0], shape[1], 4))
+        data, shape, channels = self._server.image_multi_get(self._value_id, self._index)
+        return _image_array(data, shape, channels)
 
     def shape(self) -> tuple[int, int]:
         """Return this indexed image shape.
@@ -589,6 +617,8 @@ class SingleImage:
 
 class ImageMulti(_StaticBase):
     """Sparse collection of server-controlled images indexed by integers.
+
+    Each image keeps its own format, as described at :class:`Image`.
 
     Each image dimension is limited to 65,536 pixels, inclusive. Client renderer
     and memory limits may be smaller.

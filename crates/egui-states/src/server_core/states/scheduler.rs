@@ -1,4 +1,5 @@
-//! Transfer scheduling shared by `Image` and `ImageMulti`.
+//! Transfer scheduling shared by the states whose transfers the client
+//! acknowledges: `Data`, `DataMulti`, `Image` and `ImageMulti`.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -9,9 +10,60 @@ use parking_lot::{Mutex, MutexGuard};
 use crate::event::Event;
 use crate::protocol::FastVec;
 use crate::server_core::net::sender::MessageSender;
-use crate::server_core::states::data::SyncState;
-use crate::server_core::states::image::common::covers;
 use crate::server_core::transfer::Messages;
+
+/// Connection bookkeeping a state keeps under its storage lock.
+///
+/// A producer stores its change and, under the same lock, asks whether it may
+/// send it. Until the state is synchronized with a newly connected client it
+/// may not: the synchronization sends the stored data, so a delta sent as well
+/// would be applied twice. A reset bumps the generation, so a producer that
+/// was waiting for an acknowledgement of a previous connection drops its work.
+pub(crate) struct SyncState {
+    required: bool,
+    generation: u64,
+}
+
+impl SyncState {
+    pub(crate) fn new() -> Self {
+        Self {
+            required: true,
+            generation: 0,
+        }
+    }
+
+    /// The generation to send in, or `None` if the change must only be stored.
+    pub(crate) fn sendable(&self, connected: &AtomicBool) -> Option<u64> {
+        (!self.required && connected.load(Ordering::Acquire)).then_some(self.generation)
+    }
+
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Whether the state awaits a synchronization with a newly connected
+    /// client.
+    pub(crate) fn required(&self) -> bool {
+        self.required
+    }
+
+    pub(crate) fn synchronized(&mut self) {
+        self.required = false;
+    }
+
+    pub(crate) fn reset(&mut self) {
+        self.required = true;
+        self.generation = self.generation.wrapping_add(1);
+    }
+}
+
+/// Whether the rectangle `outer` (`[y, x, height, width]`) contains `inner`.
+fn covers(outer: [usize; 4], inner: [usize; 4]) -> bool {
+    outer[0] <= inner[0]
+        && outer[1] <= inner[1]
+        && outer[0] + outer[2] >= inner[0] + inner[2]
+        && outer[1] + outer[3] >= inner[1] + inner[3]
+}
 
 /// The parts of a split update that wait behind the part in flight.
 struct Waiting {
@@ -28,7 +80,7 @@ struct State {
     sync_acks: usize,
 }
 
-/// Schedules the transfers of one image state on its connection.
+/// Schedules the acknowledged transfers of one state on its connection.
 ///
 /// One transfer is in flight at a time. A producer waits until the state is
 /// idle, with nothing in flight and nothing waiting, and then sends. Only a
@@ -74,8 +126,8 @@ impl Scheduler {
 
     /// The generation to send in, or `None` while the state awaits a
     /// synchronization or no client is connected. Producers ask while they
-    /// hold the image storage, so a reset after their check invalidates their
-    /// work.
+    /// hold the state's storage lock, so a reset after their check
+    /// invalidates their work.
     pub(super) fn sendable(&self) -> Option<u64> {
         self.state.lock().sync.sendable(&self.connected)
     }
@@ -87,6 +139,12 @@ impl Scheduler {
     #[cfg(test)]
     pub(super) fn generation(&self) -> u64 {
         self.state.lock().sync.generation()
+    }
+
+    /// Whether parts of a split update wait behind the part in flight.
+    #[cfg(all(test, feature = "client"))]
+    pub(super) fn has_waiting(&self) -> bool {
+        self.state.lock().waiting.is_some()
     }
 
     /// Whether nothing is in flight and nothing waits, so a change would be
@@ -217,6 +275,25 @@ impl Scheduler {
         }
         self.event.wait();
         let state = self.state.lock();
+        if state.sync.generation() != generation || !self.is_connected() {
+            return;
+        }
+        self.sender.send(message);
+    }
+
+    /// Queues `message`, which the client does not acknowledge, at once: it
+    /// follows the transfers of earlier producers on the wire without waiting
+    /// for their acknowledgement. Only for states that never leave split
+    /// parts waiting, which it would overtake; others use
+    /// [`send_control`](Self::send_control).
+    pub(super) fn send_unacked(
+        &self,
+        _lock: MutexGuard<'_, ()>,
+        message: FastVec<32>,
+        generation: u64,
+    ) {
+        let state = self.state.lock();
+        debug_assert!(state.waiting.is_none(), "would overtake waiting parts");
         if state.sync.generation() != generation || !self.is_connected() {
             return;
         }
@@ -548,6 +625,20 @@ mod tests {
     }
 
     #[test]
+    fn an_unacknowledged_message_is_queued_behind_the_transfer_in_flight() {
+        let (scheduler, _, mut receiver) = scheduler();
+        set(&scheduler, 7, 1, false);
+        assert_marker(&mut receiver, 1);
+
+        let generation = scheduler.generation();
+        scheduler.send_unacked(scheduler.lock.lock(), marker(2), generation);
+        assert_marker(&mut receiver, 2);
+        assert!(!scheduler.is_idle(), "the set is still in flight");
+        scheduler.acknowledge();
+        assert!(scheduler.is_idle());
+    }
+
+    #[test]
     fn with_wait_a_producer_returns_once_its_last_part_is_acknowledged() {
         if crate::test_support::isolated() {
             return;
@@ -606,6 +697,7 @@ mod tests {
         let parts = VecDeque::from([part(2), part(3)]);
         scheduler.send_update(scheduler.lock.lock(), 7, RECT, parts, false, false, stale);
         scheduler.send_control(scheduler.lock.lock(), None, marker(4), stale);
+        scheduler.send_unacked(scheduler.lock.lock(), marker(6), stale);
         assert_no_message(&mut receiver);
         assert!(scheduler.is_idle(), "stale work consumed the idle state");
 
