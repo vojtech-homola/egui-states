@@ -268,6 +268,25 @@ impl Scheduler {
         self.sender.send(message);
     }
 
+    /// Queues `message`, which the client does not acknowledge, at once: it
+    /// follows the transfers of earlier producers on the wire without waiting
+    /// for their acknowledgement. Only for states that never leave split
+    /// parts waiting, which it would overtake; others use
+    /// [`send_control`](Self::send_control).
+    pub(super) fn send_unacked(
+        &self,
+        _lock: MutexGuard<'_, ()>,
+        message: FastVec<32>,
+        generation: u64,
+    ) {
+        let state = self.state.lock();
+        debug_assert!(state.waiting.is_none(), "would overtake waiting parts");
+        if state.sync.generation() != generation || !self.is_connected() {
+            return;
+        }
+        self.sender.send(message);
+    }
+
     /// Starts a connection synchronization that sends `messages` and waits
     /// for `ack_count` acknowledgements.
     pub(super) fn begin_sync(&self, messages: Messages, ack_count: usize) {
@@ -593,6 +612,20 @@ mod tests {
     }
 
     #[test]
+    fn an_unacknowledged_message_is_queued_behind_the_transfer_in_flight() {
+        let (scheduler, _, mut receiver) = scheduler();
+        set(&scheduler, 7, 1, false);
+        assert_marker(&mut receiver, 1);
+
+        let generation = scheduler.generation();
+        scheduler.send_unacked(scheduler.lock.lock(), marker(2), generation);
+        assert_marker(&mut receiver, 2);
+        assert!(!scheduler.is_idle(), "the set is still in flight");
+        scheduler.acknowledge();
+        assert!(scheduler.is_idle());
+    }
+
+    #[test]
     fn with_wait_a_producer_returns_once_its_last_part_is_acknowledged() {
         if crate::test_support::isolated() {
             return;
@@ -651,6 +684,7 @@ mod tests {
         let parts = VecDeque::from([part(2), part(3)]);
         scheduler.send_update(scheduler.lock.lock(), 7, RECT, parts, false, false, stale);
         scheduler.send_control(scheduler.lock.lock(), None, marker(4), stale);
+        scheduler.send_unacked(scheduler.lock.lock(), marker(6), stale);
         assert_no_message(&mut receiver);
         assert!(scheduler.is_idle(), "stale work consumed the idle state");
 

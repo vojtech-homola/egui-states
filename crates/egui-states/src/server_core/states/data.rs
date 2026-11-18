@@ -13,7 +13,7 @@ use crate::protocol::{FastVec, TRANSFER_CHUNK_SIZE, check_value_size};
 use crate::server_core::error::CoreError;
 use crate::server_core::net::sender::MessageSender;
 use crate::server_core::server::{Acknowledge, SyncTrait};
-use crate::server_core::states::scheduler::SyncState;
+use crate::server_core::states::scheduler::{Scheduler, SyncState};
 use crate::server_core::transfer::{Chunk, chunk_transfer};
 
 /// The input of a Data operation, as the front-ends hand it to the cores,
@@ -162,8 +162,10 @@ impl Stored {
 struct DataStorage {
     /// `None` while the data is not set.
     value: Option<Stored>,
-    sync: SyncState,
 }
+
+/// The single key of a `Data` in its scheduler.
+const KEY: u32 = 0;
 
 /// Server storage of one numeric buffer and its header.
 ///
@@ -171,22 +173,18 @@ struct DataStorage {
 /// when the state has a header type; [`Data::reset`] returns it to "not set".
 /// Every other change needs data that is set.
 ///
-/// Producers are serialized by `producer`, which they hold across the wait
-/// for the client's acknowledgement of the previous transfer, so the stored
-/// data changes in the order the client receives the changes. The storage
-/// lock is held only to change or read the bytes; nothing that waits holds
-/// it, because a disconnect reset takes it from the connection's writer.
+/// Producers are serialized by the scheduler's lock, which they hold across
+/// the wait for the client's acknowledgement of the previous transfer, so the
+/// stored data changes in the order the client receives the changes. The
+/// storage lock is held only to change or read the bytes; nothing that waits
+/// holds it, because a disconnect reset takes it from the connection's writer.
 pub(crate) struct Data {
     pub(crate) name: String,
-    id: u64,
     pub(crate) data_type: DataType,
     item_size: usize,
     header_type: HeaderType,
-    producer: Mutex<()>,
     storage: RwLock<DataStorage>,
-    sender: MessageSender,
-    connected: Arc<AtomicBool>,
-    event: Event,
+    scheduler: Scheduler,
 }
 
 impl Data {
@@ -200,18 +198,11 @@ impl Data {
     ) -> Arc<Self> {
         Arc::new(Self {
             name,
-            id,
             data_type,
             item_size: data_type.item_size(),
             header_type: HeaderType::new(header_type),
-            producer: Mutex::new(()),
-            storage: RwLock::new(DataStorage {
-                value: None,
-                sync: SyncState::new(),
-            }),
-            sender,
-            connected,
-            event: Event::new(),
+            storage: RwLock::new(DataStorage { value: None }),
+            scheduler: Scheduler::new(id, sender, connected),
         })
     }
 
@@ -226,7 +217,7 @@ impl Data {
         let header = self.header_type.check(&self.name, data.header)?;
         let slice = data.bytes;
 
-        let _producer = self.producer.lock();
+        let lock = self.scheduler.lock.lock();
         let generation = {
             let mut w = self.storage.write();
             match w.value.as_mut() {
@@ -237,7 +228,7 @@ impl Data {
                     w.value = Some(Stored::new(slice, elements, header));
                 }
             }
-            w.sync.sendable(&self.connected)
+            self.scheduler.sendable()
         };
         let Some(generation) = generation else {
             return Ok(());
@@ -245,7 +236,7 @@ impl Data {
 
         let count = elements as u64;
         let messages = pack_data(
-            self.id,
+            self.scheduler.id,
             slice,
             TransportType::Set(count),
             count,
@@ -254,7 +245,8 @@ impl Data {
             update,
             self.header_type.change(header),
         )?;
-        self.send_after_ack(generation, messages, wait);
+        self.scheduler
+            .send_set(lock, KEY, messages, wait, generation);
         Ok(())
     }
 
@@ -263,14 +255,14 @@ impl Data {
         let header = self.header_type.check(&self.name, data.header)?;
         let slice = data.bytes;
 
-        let _producer = self.producer.lock();
+        let lock = self.scheduler.lock.lock();
         let generation = {
             let mut w = self.storage.write();
             let value = w.value.as_mut().ok_or_else(|| self.not_set())?;
             value.bytes.extend_from_slice(slice);
             value.count += elements;
             value.store_header(header);
-            w.sync.sendable(&self.connected)
+            self.scheduler.sendable()
         };
         let Some(generation) = generation else {
             return Ok(());
@@ -278,7 +270,7 @@ impl Data {
 
         let count = elements as u64;
         let messages = pack_data(
-            self.id,
+            self.scheduler.id,
             slice,
             TransportType::Add(count),
             count,
@@ -287,7 +279,8 @@ impl Data {
             update,
             self.header_type.change(header),
         )?;
-        self.send_after_ack(generation, messages, wait);
+        self.scheduler
+            .send_set(lock, KEY, messages, wait, generation);
         Ok(())
     }
 
@@ -302,7 +295,7 @@ impl Data {
         let header = self.header_type.check(&self.name, data.header)?;
         let slice = data.bytes;
 
-        let _producer = self.producer.lock();
+        let lock = self.scheduler.lock.lock();
         let generation = {
             let mut w = self.storage.write();
             let value = w.value.as_mut().ok_or_else(|| self.not_set())?;
@@ -319,7 +312,7 @@ impl Data {
             let byte_index = index * self.item_size;
             value.bytes[byte_index..byte_index + slice.len()].copy_from_slice(slice);
             value.store_header(header);
-            w.sync.sendable(&self.connected)
+            self.scheduler.sendable()
         };
         let Some(generation) = generation else {
             return Ok(());
@@ -327,7 +320,7 @@ impl Data {
 
         let count = elements as u64;
         let messages = pack_data(
-            self.id,
+            self.scheduler.id,
             slice,
             TransportType::Replace(index as u64, count),
             count,
@@ -336,7 +329,8 @@ impl Data {
             update,
             self.header_type.change(header),
         )?;
-        self.send_after_ack(generation, messages, wait);
+        self.scheduler
+            .send_set(lock, KEY, messages, wait, generation);
         Ok(())
     }
 
@@ -353,7 +347,7 @@ impl Data {
         }
         let header = self.header_type.check(&self.name, header)?;
 
-        let _producer = self.producer.lock();
+        let lock = self.scheduler.lock.lock();
         let generation = {
             let mut w = self.storage.write();
             let value = w.value.as_mut().ok_or_else(|| self.not_set())?;
@@ -370,7 +364,7 @@ impl Data {
                 .drain(byte_index..byte_index + size * self.item_size);
             value.count -= size;
             value.store_header(header);
-            w.sync.sendable(&self.connected)
+            self.scheduler.sendable()
         };
         let Some(generation) = generation else {
             return Ok(());
@@ -379,29 +373,31 @@ impl Data {
         let change = self.header_type.change(header);
         let message = change.message(|| {
             DataHeader::Drain(index as u64, size as u64, update, change.update)
-                .serialize(self.id, false)
+                .serialize(self.scheduler.id, false)
         })?;
-        self.send_after_ack(generation, vec![(message, false)], wait);
+        self.scheduler
+            .send_set(lock, KEY, vec![(message, false)], wait, generation);
         Ok(())
     }
 
     /// Empties the buffer; the header stays unless a new one is given.
     pub(crate) fn clear(&self, header: Option<&[u8]>, update: bool) -> Result<(), CoreError> {
         let header = self.header_type.check(&self.name, header)?;
-        let _producer = self.producer.lock();
+        let lock = self.scheduler.lock.lock();
         let mut w = self.storage.write();
         let value = w.value.as_mut().ok_or_else(|| self.not_set())?;
         value.bytes.clear();
         value.count = 0;
         value.store_header(header);
 
-        // The client does not acknowledge a clear, so it is queued at once,
-        // under the storage lock so a reset cannot slip in before it.
-        if w.sync.sendable(&self.connected).is_some() {
+        // The client does not acknowledge a clear, so it is queued at once.
+        if let Some(generation) = self.scheduler.sendable() {
+            drop(w);
             let change = self.header_type.change(header);
-            let message = change
-                .message(|| DataHeader::Clear(update, change.update).serialize(self.id, false))?;
-            self.sender.send(message);
+            let message = change.message(|| {
+                DataHeader::Clear(update, change.update).serialize(self.scheduler.id, false)
+            })?;
+            self.scheduler.send_unacked(lock, message, generation);
         }
 
         Ok(())
@@ -409,23 +405,25 @@ impl Data {
 
     /// Replaces the header alone. Like a clear, the client does not
     /// acknowledge it, so it is queued without waiting for an
-    /// acknowledgement of its own. The producer mutex still orders it after
+    /// acknowledgement of its own. The scheduler's lock still orders it after
     /// a change another producer is sending, so it cannot overtake a stored
     /// header that change carries.
     pub(crate) fn set_header(&self, header: &[u8], update: bool) -> Result<(), CoreError> {
         self.header_type.check(&self.name, Some(header))?;
-        let _producer = self.producer.lock();
+        let lock = self.scheduler.lock.lock();
         let mut w = self.storage.write();
         let value = w.value.as_mut().ok_or_else(|| self.not_set())?;
         value.store_header(Some(header));
 
-        if w.sync.sendable(&self.connected).is_some()
+        if let Some(generation) = self.scheduler.sendable()
             && let Some(bytes) = self.header_type.bytes(header)
         {
+            drop(w);
             let change = WireHeader::set(bytes.type_id, header);
-            let message =
-                change.message(|| DataHeader::Header(update, bytes).serialize(self.id, false))?;
-            self.sender.send(message);
+            let message = change.message(|| {
+                DataHeader::Header(update, bytes).serialize(self.scheduler.id, false)
+            })?;
+            self.scheduler.send_unacked(lock, message, generation);
         }
 
         Ok(())
@@ -435,14 +433,18 @@ impl Data {
     /// stays so. Like a clear, it is queued at once.
     pub(crate) fn reset(&self, update: bool) -> Result<(), CoreError> {
         let message = DataHeader::Reset(update)
-            .serialize(self.id, false)
+            .serialize(self.scheduler.id, false)
             .map_err(|_| "Failed to serialize reset header".to_string())?;
         let previous = {
-            let _producer = self.producer.lock();
+            let lock = self.scheduler.lock.lock();
             let mut w = self.storage.write();
             let previous = w.value.take();
-            if previous.is_some() && w.sync.sendable(&self.connected).is_some() {
-                self.sender.send(message);
+            let generation = self.scheduler.sendable();
+            drop(w);
+            if let Some(generation) = generation
+                && previous.is_some()
+            {
+                self.scheduler.send_unacked(lock, message, generation);
             }
             previous
         };
@@ -475,50 +477,35 @@ impl Data {
             .map(|value| (value.bytes.as_slice(), value.header.as_slice())))
     }
 
-    fn send_after_ack(&self, generation: u64, messages: Vec<(FastVec<32>, bool)>, wait: bool) {
-        send_after_ack(
-            &self.storage,
-            |storage| &storage.sync,
-            &self.event,
-            &self.connected,
-            &self.sender,
-            generation,
-            messages,
-            wait,
-        );
-    }
-
     /// Whether no transfer waits for the client's acknowledgement, so the
     /// next change is sent at once. Also true while no client is
     /// synchronized, because a change is then only stored.
     pub(crate) fn is_idle(&self) -> bool {
-        let storage = self.storage.read();
-        storage.sync.sendable(&self.connected).is_none() || self.event.is_set()
+        self.scheduler.is_idle()
     }
 }
 
 impl Acknowledge for Data {
     fn acknowledge(&self) {
-        self.event.set();
+        self.scheduler.acknowledge();
     }
 
     fn reset(&self) {
-        // Bump the generation before releasing a waiting producer, so it sees
-        // that its work belongs to the old connection.
-        self.storage.write().sync.reset();
-        self.event.set();
+        // Under the storage lock, so a producer either checked whether it may
+        // send before this reset, or sees the new state.
+        let _w = self.storage.write();
+        self.scheduler.reset();
     }
 }
 
 impl SyncTrait for Data {
     fn sync(&self) -> Result<(), ()> {
-        // The producer mutex keeps a producer that was released by the reset
-        // from consuming this synchronization's acknowledgement. No producer
-        // of this state waits for an acknowledgement here: until this point
-        // the state required a synchronization, so producers only stored.
-        let _producer = self.producer.lock();
-        let mut w = self.storage.write();
-        w.sync.synchronized();
+        // The scheduler's lock keeps a producer that was released by the
+        // reset from consuming this synchronization's acknowledgement. No
+        // producer of this state waits for an acknowledgement here: until this
+        // point the state required a synchronization, so producers only stored.
+        let _lock = self.scheduler.lock.lock();
+        let w = self.storage.write();
 
         // The client keeps its data across a disconnect, so a synchronization
         // always says what the data is: not set, or a set of its elements,
@@ -526,15 +513,14 @@ impl SyncTrait for Data {
         match &w.value {
             None => {
                 let message = DataHeader::Reset(false)
-                    .serialize(self.id, false)
+                    .serialize(self.scheduler.id, false)
                     .map_err(|_| ())?;
-                self.sender.send(message);
-                self.event.set();
+                self.scheduler.begin_sync(vec![(message, false)], 0);
             }
             Some(value) => {
                 let count = value.count as u64;
                 let messages = pack_data(
-                    self.id,
+                    self.scheduler.id,
                     &value.bytes,
                     TransportType::Set(count),
                     count,
@@ -544,11 +530,7 @@ impl SyncTrait for Data {
                     self.header_type.change(Some(&value.header)),
                 )
                 .map_err(|_| ())?;
-
-                self.event.clear();
-                for (message, single) in messages {
-                    self.sender.send_set(message, single);
-                }
+                self.scheduler.begin_sync(messages, 1);
             }
         }
 
