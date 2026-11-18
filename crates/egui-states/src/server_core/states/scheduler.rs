@@ -1,4 +1,5 @@
-//! Transfer scheduling shared by `Image` and `ImageMulti`.
+//! Transfer scheduling shared by the states whose transfers the client
+//! acknowledges: `Data`, `DataMulti`, `Image` and `ImageMulti`.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -9,9 +10,53 @@ use parking_lot::{Mutex, MutexGuard};
 use crate::event::Event;
 use crate::protocol::FastVec;
 use crate::server_core::net::sender::MessageSender;
-use crate::server_core::states::data::SyncState;
 use crate::server_core::states::image::common::covers;
 use crate::server_core::transfer::Messages;
+
+/// Connection bookkeeping a state keeps under its storage lock.
+///
+/// A producer stores its change and, under the same lock, asks whether it may
+/// send it. Until the state is synchronized with a newly connected client it
+/// may not: the synchronization sends the stored data, so a delta sent as well
+/// would be applied twice. A reset bumps the generation, so a producer that
+/// was waiting for an acknowledgement of a previous connection drops its work.
+pub(crate) struct SyncState {
+    required: bool,
+    generation: u64,
+}
+
+impl SyncState {
+    pub(crate) fn new() -> Self {
+        Self {
+            required: true,
+            generation: 0,
+        }
+    }
+
+    /// The generation to send in, or `None` if the change must only be stored.
+    pub(crate) fn sendable(&self, connected: &AtomicBool) -> Option<u64> {
+        (!self.required && connected.load(Ordering::Acquire)).then_some(self.generation)
+    }
+
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Whether the state awaits a synchronization with a newly connected
+    /// client.
+    pub(crate) fn required(&self) -> bool {
+        self.required
+    }
+
+    pub(crate) fn synchronized(&mut self) {
+        self.required = false;
+    }
+
+    pub(crate) fn reset(&mut self) {
+        self.required = true;
+        self.generation = self.generation.wrapping_add(1);
+    }
+}
 
 /// The parts of a split update that wait behind the part in flight.
 struct Waiting {
@@ -28,7 +73,7 @@ struct State {
     sync_acks: usize,
 }
 
-/// Schedules the transfers of one image state on its connection.
+/// Schedules the acknowledged transfers of one state on its connection.
 ///
 /// One transfer is in flight at a time. A producer waits until the state is
 /// idle, with nothing in flight and nothing waiting, and then sends. Only a
@@ -74,8 +119,8 @@ impl Scheduler {
 
     /// The generation to send in, or `None` while the state awaits a
     /// synchronization or no client is connected. Producers ask while they
-    /// hold the image storage, so a reset after their check invalidates their
-    /// work.
+    /// hold the state's storage lock, so a reset after their check
+    /// invalidates their work.
     pub(super) fn sendable(&self) -> Option<u64> {
         self.state.lock().sync.sendable(&self.connected)
     }

@@ -16,7 +16,7 @@ use crate::server_core::states::image::common::{
     checked_fill_size, checked_max_lines, pack_image_set, pack_image_update, store_rgba,
     write_rectangle,
 };
-use crate::server_core::states::image::scheduler::Scheduler;
+use crate::server_core::states::scheduler::Scheduler;
 use crate::server_core::transfer::Messages;
 
 /// The single key of an `Image` in its scheduler.

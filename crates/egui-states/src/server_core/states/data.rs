@@ -13,6 +13,7 @@ use crate::protocol::{FastVec, TRANSFER_CHUNK_SIZE, check_value_size};
 use crate::server_core::error::CoreError;
 use crate::server_core::net::sender::MessageSender;
 use crate::server_core::server::{Acknowledge, SyncTrait};
+use crate::server_core::states::scheduler::SyncState;
 use crate::server_core::transfer::{Chunk, chunk_transfer};
 
 /// The input of a Data operation, as the front-ends hand it to the cores,
@@ -154,51 +155,6 @@ impl Stored {
             self.header.clear();
             self.header.extend_from_slice(header);
         }
-    }
-}
-
-/// Connection bookkeeping a state keeps under its storage lock.
-///
-/// A producer stores its change and, under the same lock, asks whether it may
-/// send it. Until the state is synchronized with a newly connected client it
-/// may not: the synchronization sends the stored data, so a delta sent as well
-/// would be applied twice. A reset bumps the generation, so a producer that
-/// was waiting for an acknowledgement of a previous connection drops its work.
-pub(crate) struct SyncState {
-    required: bool,
-    generation: u64,
-}
-
-impl SyncState {
-    pub(crate) fn new() -> Self {
-        Self {
-            required: true,
-            generation: 0,
-        }
-    }
-
-    /// The generation to send in, or `None` if the change must only be stored.
-    pub(crate) fn sendable(&self, connected: &AtomicBool) -> Option<u64> {
-        (!self.required && connected.load(Ordering::Acquire)).then_some(self.generation)
-    }
-
-    pub(crate) fn generation(&self) -> u64 {
-        self.generation
-    }
-
-    /// Whether the state awaits a synchronization with a newly connected
-    /// client.
-    pub(crate) fn required(&self) -> bool {
-        self.required
-    }
-
-    pub(crate) fn synchronized(&mut self) {
-        self.required = false;
-    }
-
-    pub(crate) fn reset(&mut self) {
-        self.required = true;
-        self.generation = self.generation.wrapping_add(1);
     }
 }
 
