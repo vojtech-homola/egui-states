@@ -217,7 +217,9 @@ def edit_images(states):
     """Command 34: a full image, partial updates, and sparse images.
 
     The first set returns once the client acknowledged it. The split update
-    finishes before the remove, which waits for every acknowledgement.
+    finishes before the remove, which waits for every acknowledgement. The
+    sparse images use the low-priority lane, so the phase can reach the client
+    before the remove.
     """
     image = states.image.image
     image.set(np.arange(18, dtype=np.uint8).reshape(2, 3, 3), wait=True)
