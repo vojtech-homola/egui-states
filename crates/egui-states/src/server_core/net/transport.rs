@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt, stream::SplitSink, stream::SplitStream};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpListener;
 use tokio::time::{Instant, timeout_at};
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
@@ -24,6 +24,9 @@ use crate::protocol::close::Close;
 use crate::server_core::http::download;
 use crate::server_core::http::origin::OriginPolicy;
 use crate::server_core::http::web::{self, Dispatch, WebSite};
+#[cfg(feature = "tls")]
+use crate::server_core::net::stream::Secured;
+use crate::server_core::net::stream::Stream;
 use crate::server_core::signals::SignalsManager;
 
 /// A frame from the client.
@@ -112,34 +115,95 @@ pub(crate) trait Listener: Send + 'static {
     ) -> impl Future<Output = Option<Opened<Self>>> + Send;
 }
 
-type WebSocket = WebSocketStream<TcpStream>;
+type WebSocket = WebSocketStream<Stream>;
 
-impl Listener for TcpListener {
-    type Connection = TcpStream;
+/// Accepts TCP connections, which carry WebSockets and plain HTTP requests,
+/// encrypted or not.
+pub(crate) struct SocketListener {
+    listener: TcpListener,
+    /// Set when connections must speak TLS.
+    #[cfg(feature = "tls")]
+    tls: Option<tokio_rustls::TlsAcceptor>,
+}
+
+impl SocketListener {
+    pub(crate) fn new(listener: TcpListener) -> Self {
+        Self {
+            listener,
+            #[cfg(feature = "tls")]
+            tls: None,
+        }
+    }
+
+    /// Requires TLS on every connection when `tls` is set.
+    #[cfg(feature = "tls")]
+    pub(crate) fn with_tls(self, tls: Option<tokio_rustls::TlsAcceptor>) -> Self {
+        Self { tls, ..self }
+    }
+}
+
+/// A connection accepted by a [`SocketListener`].
+pub(crate) struct SocketConnection {
+    stream: Stream,
+    /// Set until [`Listener::serve_web`] has completed the TLS handshake. It
+    /// runs there, in the connection's own task and before its deadline,
+    /// rather than in `accept`, which the run loop waits for.
+    #[cfg(feature = "tls")]
+    tls: Option<tokio_rustls::TlsAcceptor>,
+}
+
+impl SocketConnection {
+    fn new(stream: Stream) -> Self {
+        Self {
+            stream,
+            #[cfg(feature = "tls")]
+            tls: None,
+        }
+    }
+}
+
+impl Listener for SocketListener {
+    type Connection = SocketConnection;
     type Source = SplitStream<WebSocket>;
     type Sink = SplitSink<WebSocket, Message>;
 
-    async fn accept(&mut self) -> Result<TcpStream, String> {
-        let (stream, _) = TcpListener::accept(self)
+    async fn accept(&mut self) -> Result<SocketConnection, String> {
+        let (stream, _) = self
+            .listener
+            .accept()
             .await
             .map_err(|e| format!("accepting connection failed: {:?}", e))?;
         stream
             .set_nodelay(true)
             .map_err(|e| format!("failed to set TCP_NODELAY: {:?}", e))?;
-        Ok(stream)
+        Ok(SocketConnection {
+            stream: Stream::plain(stream),
+            #[cfg(feature = "tls")]
+            tls: self.tls.clone(),
+        })
     }
 
     async fn serve_web(
-        stream: TcpStream,
+        connection: SocketConnection,
         site: Option<Arc<WebSite>>,
         transfers: &Engine,
         deadline: Instant,
         signals: &SignalsManager,
-    ) -> Served<TcpStream> {
+    ) -> Served<SocketConnection> {
+        #[cfg(feature = "tls")]
+        let stream = match connection.tls {
+            None => connection.stream,
+            Some(acceptor) => match secure(connection.stream, &acceptor, deadline, signals).await {
+                Some(stream) => stream,
+                None => return Served::Done,
+            },
+        };
+        #[cfg(not(feature = "tls"))]
+        let stream = connection.stream;
         // Without a page or downloads, every connection is a WebSocket.
         let downloads = transfers.has_downloads();
         if site.is_none() && !downloads {
-            return Served::Connection(stream);
+            return Served::Connection(SocketConnection::new(stream));
         }
         // Browsers abort downloads on navigation, so failures here are not
         // server errors.
@@ -150,7 +214,9 @@ impl Listener for TcpListener {
             }
         };
         match timeout_at(deadline, web::dispatch(stream)).await {
-            Ok(Ok(Dispatch::WebSocket(stream))) => Served::Connection(stream),
+            Ok(Ok(Dispatch::WebSocket(stream))) => {
+                Served::Connection(SocketConnection::new(stream))
+            }
             Ok(Ok(Dispatch::Http(stream, request))) => {
                 let served = if downloads && download::is_download(&request) {
                     match download::claim(stream, request, transfers).await {
@@ -182,10 +248,16 @@ impl Listener for TcpListener {
     }
 
     async fn open(
-        stream: TcpStream,
+        connection: SocketConnection,
         origins: &OriginPolicy,
         signals: &SignalsManager,
     ) -> Option<Opened<Self>> {
+        #[cfg(feature = "tls")]
+        debug_assert!(
+            connection.tls.is_none(),
+            "serve_web completes the TLS handshake"
+        );
+        let stream = connection.stream;
         let mut websocket_config = WebSocketConfig::default();
         websocket_config.max_message_size = Some(WEBSOCKET_MAX_SIZE);
         websocket_config.max_frame_size = Some(WEBSOCKET_MAX_SIZE);
@@ -234,6 +306,44 @@ impl Listener for TcpListener {
             source,
             peer_addr,
         })
+    }
+}
+
+/// Completes the TLS handshake of a new connection by `deadline`.
+///
+/// A plain connection is answered here and yields `None`, as does one whose
+/// handshake fails.
+#[cfg(feature = "tls")]
+async fn secure(
+    stream: Stream,
+    acceptor: &tokio_rustls::TlsAcceptor,
+    deadline: Instant,
+    signals: &SignalsManager,
+) -> Option<Stream> {
+    let peer = stream
+        .peer_addr()
+        .map_or(String::new(), |addr| addr.to_string());
+    match timeout_at(deadline, stream.secure(acceptor)).await {
+        Ok(Ok(Secured::Tls(stream))) => Some(stream),
+        Ok(Ok(Secured::Plain(stream))) => {
+            match timeout_at(deadline, web::refuse_plain(stream)).await {
+                Ok(Ok(web::Refused::RequiresTls)) => signals.warning(format!(
+                    "refused a connection without TLS from {peer}; the server requires TLS"
+                )),
+                // A browser that opened the http:// address, sent on to https://.
+                Ok(Ok(web::Refused::Redirected | web::Refused::Closed)) => {}
+                Ok(Err(_)) | Err(_) => {}
+            }
+            None
+        }
+        Ok(Ok(Secured::Closed)) | Err(_) => None,
+        // A browser aborts the first handshake with an untrusted certificate
+        // to show its warning, so a failed handshake is routine.
+        Ok(Err(_error)) => {
+            #[cfg(debug_assertions)]
+            signals.debug(format!("TLS handshake with {peer} failed: {_error}"));
+            None
+        }
     }
 }
 

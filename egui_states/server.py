@@ -150,6 +150,9 @@ class StateServerBase[T: StatesBase]:
         transfer_profile: TransferProfile = TransferProfile.Balanced,
         client_policy: ClientPolicy = ClientPolicy.Replace,
         connect_request_timeout: float = 5.0,
+        tls: bool = False,
+        tls_cert: str | PathLike[str] | None = None,
+        tls_key: str | PathLike[str] | None = None,
     ) -> None:
         """Initialize the state server.
 
@@ -217,6 +220,26 @@ class StateServerBase[T: StatesBase]:
                 still waiting when it passes is refused, and the error
                 handler is told. The client learns this time and waits as
                 long.
+            tls (bool, optional): Whether clients connect with TLS, which
+                encrypts the connection. The server then speaks only TLS on
+                its port: ``wss://`` WebSockets, and ``https://`` for the web
+                page and browser downloads. A plain HTTP request from a
+                browser is redirected to ``https://``; other plain
+                connections, such as a native client without TLS, are refused.
+                Without ``tls_cert``, the server generates a self-signed
+                certificate now. It exists only in memory, so every new
+                server presents a new one; stopping and starting the same
+                server keeps it. Native clients pin it by its fingerprint
+                (see :meth:`tls_fingerprint`) or accept any certificate;
+                browsers show a warning before the page loads.
+            tls_cert (str | PathLike[str] | None, optional): PEM file with the
+                certificate to present instead of a generated one, followed by
+                any intermediate certificates. Requires ``tls`` and
+                ``tls_key``. Clients that trust the certificate, or the
+                authority that issued it, connect without a warning, provided
+                they reach the server under a name or address it lists.
+            tls_key (str | PathLike[str] | None, optional): PEM file with the
+                unencrypted private key of ``tls_cert``.
 
         Raises:
             ValueError: If ``heartbeat_interval`` is not positive,
@@ -224,8 +247,13 @@ class StateServerBase[T: StatesBase]:
                 cannot be made absolute (for example because it is empty), an
                 allowed origin is malformed, ``transfer_profile`` is not a
                 :class:`TransferProfile`, ``client_policy`` is not a
-                :class:`ClientPolicy`, or ``connect_request_timeout`` is not
-                positive.
+                :class:`ClientPolicy`, ``connect_request_timeout`` is not
+                positive, only one of ``tls_cert`` and ``tls_key`` is given or
+                either without ``tls``, a TLS file holds no valid PEM
+                certificate or unencrypted key, or the key does not belong to
+                the certificate.
+            OSError: If ``tls_cert`` or ``tls_key`` cannot be read, such as
+                ``FileNotFoundError`` for a missing file.
         """
         self._server = StateServerCore(
             version,
@@ -237,6 +265,9 @@ class StateServerBase[T: StatesBase]:
             TransferProfile(transfer_profile).value,
             ClientPolicy(client_policy).value,
             connect_request_timeout,
+            tls=tls,
+            tls_cert=tls_cert,
+            tls_key=tls_key,
         )
         self._signals_manager = SignalsManager(self._server, signals_workers, error_handler)
         self._states: T = state_class(self)
@@ -330,6 +361,22 @@ class StateServerBase[T: StatesBase]:
             port, or ``None`` when the server is not running.
         """
         return self._server.address()
+
+    def tls_fingerprint(self) -> str | None:
+        """Return the fingerprint of the server's TLS certificate.
+
+        The fingerprint is the SHA-256 hash of the certificate, generated or
+        supplied, and is known as soon as the server is created. Pass it to
+        native clients (``Tls::Fingerprint`` in Rust, for example as a
+        command-line argument) so they connect to this server only, and
+        compare it with the SHA-256 fingerprint a browser shows for the
+        certificate before accepting it.
+
+        Returns:
+            str | None: 64 lowercase hexadecimal digits, or ``None`` when TLS
+            is off.
+        """
+        return self._server.tls_fingerprint()
 
     def start_web(self) -> None:
         """Start serving the static web page on the state server port.

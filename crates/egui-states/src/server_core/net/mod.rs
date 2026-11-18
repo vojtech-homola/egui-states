@@ -5,4 +5,5 @@ pub(crate) mod heartbeat;
 pub(super) mod sender;
 pub(crate) mod session;
 mod socket_reader;
+pub(crate) mod stream;
 pub(crate) mod transport;

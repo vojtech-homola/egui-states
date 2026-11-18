@@ -132,6 +132,94 @@ def test_server_start_while_running_requires_the_active_settings():
     assert server.address() is None
 
 
+def test_tls_servers_report_their_fingerprint_and_speak_tls13(tmp_path):
+    """Present a generated certificate whose fingerprint the server reports."""
+    import hashlib
+    import socket
+    import ssl
+    import pytest
+    from egui_states_test_bindings import StatesServer  # ty: ignore[import-not-found]
+    from tests.python_test_helpers.network import free_port
+
+    assert StatesServer(signals_workers=1).tls_fingerprint() is None
+
+    def read_all(connection: socket.socket) -> bytes:
+        response = b""
+        while chunk := connection.recv(4096):
+            response += chunk
+        return response
+
+    port = free_port()
+    server = StatesServer(signals_workers=1, tls=True)
+    fingerprint = server.tls_fingerprint()
+    assert fingerprint is not None
+    assert len(fingerprint) == 64
+    assert fingerprint == fingerprint.lower()
+    int(fingerprint, 16)
+    try:
+        server.start(port, (127, 0, 0, 1))
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        with (
+            socket.create_connection(("127.0.0.1", port), timeout=5) as raw,
+            context.wrap_socket(raw, server_hostname="localhost") as connection,
+        ):
+            assert connection.version() == "TLSv1.3"
+            certificate = connection.getpeercert(binary_form=True)
+            assert certificate is not None
+            assert hashlib.sha256(certificate).hexdigest() == fingerprint
+
+        # A browser that opens the http:// address is sent to https://.
+        with socket.create_connection(("127.0.0.1", port), timeout=5) as plain:
+            plain.sendall(f"GET /page?x=1 HTTP/1.1\r\nHost: localhost:{port}\r\n\r\n".encode())
+            response = read_all(plain)
+        assert response.startswith(b"HTTP/1.1 307"), response
+        assert f"\r\nLocation: https://localhost:{port}/page?x=1\r\n".encode() in response
+
+        # The certificate stays the same across a restart.
+        server.stop()
+        server.start(port, (127, 0, 0, 1))
+        assert server.tls_fingerprint() == fingerprint
+    finally:
+        server.stop()
+
+    garbage = tmp_path / "garbage.pem"
+    garbage.write_text("not a certificate")
+    with pytest.raises(ValueError, match="together"):
+        StatesServer(signals_workers=1, tls=True, tls_cert=garbage)
+    with pytest.raises(ValueError, match="require tls"):
+        StatesServer(signals_workers=1, tls_cert=garbage, tls_key=garbage)
+    with pytest.raises(ValueError, match="no PEM certificate"):
+        StatesServer(signals_workers=1, tls=True, tls_cert=garbage, tls_key=garbage)
+    with pytest.raises(FileNotFoundError, match="missing.pem"):
+        StatesServer(signals_workers=1, tls=True, tls_cert=tmp_path / "missing.pem", tls_key=garbage)
+
+
+def test_tls_servers_present_a_supplied_certificate(tmp_path):
+    """Report the fingerprint of a certificate created with OpenSSL."""
+    import hashlib
+    import shutil
+    import ssl
+    import subprocess
+    import pytest
+    from egui_states_test_bindings import StatesServer  # ty: ignore[import-not-found]
+
+    openssl = shutil.which("openssl")
+    if openssl is None:
+        pytest.skip("openssl is not installed")
+    cert, key = tmp_path / "cert.pem", tmp_path / "key.pem"
+    subprocess.run(
+        [openssl, "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1"]
+        + ["-nodes", "-keyout", key, "-out", cert, "-days", "1", "-subj", "/CN=localhost"],
+        check=True,
+        capture_output=True,
+    )
+    server = StatesServer(signals_workers=1, tls=True, tls_cert=cert, tls_key=str(key))
+    expected = hashlib.sha256(ssl.PEM_cert_to_DER_cert(cert.read_text())).hexdigest()
+    assert server.tls_fingerprint() == expected
+
+
 def test_browser_pages_from_other_origins_cannot_connect():
     """Refuse WebSocket upgrades from foreign pages and validate the allow lists."""
     import socket

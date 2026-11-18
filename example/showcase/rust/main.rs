@@ -2,6 +2,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
     let mut port = 8091;
     let mut web = None;
+    let mut tls = false;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--port" => {
@@ -11,12 +12,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .parse::<u16>()?
             }
             "--web" => web = Some(args.next().ok_or("--web requires a directory")?),
-            _ => return Err("Usage: showcase-server [--port PORT] [--web DIR]".into()),
+            "--tls" => tls = true,
+            _ => return Err("Usage: showcase-server [--port PORT] [--web DIR] [--tls]".into()),
         }
     }
     let mut options = egui_states::server::ServerOptions::new();
     options.web_path = web.map(std::path::PathBuf::from);
+    // A certificate generated for this run; clients pin it by its fingerprint.
+    options.tls = tls;
     let demo = showcase_server::setup_server_with_options(options)?;
+    if let Some(fingerprint) = demo.server.tls_fingerprint() {
+        println!("TLS certificate fingerprint (SHA-256): {fingerprint}");
+    }
     if demo.server.web_path().is_some() {
         demo.server.start_web()?;
     }

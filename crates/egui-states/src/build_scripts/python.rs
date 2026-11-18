@@ -640,6 +640,9 @@ class StatesServer(StateServerBase[{root_name}]):
         transfer_profile: TransferProfile = TransferProfile.Balanced,
         client_policy: ClientPolicy = ClientPolicy.Replace,
         connect_request_timeout: float = 5.0,
+        tls: bool = False,
+        tls_cert: str | PathLike[str] | None = None,
+        tls_key: str | PathLike[str] | None = None,
     ) -> None:
         """Initialize and finalize the generated state server.
 
@@ -675,14 +678,25 @@ class StatesServer(StateServerBase[{root_name}]):
             connect_request_timeout (float, optional): Seconds a callback
                 registered with ``on_connect_request`` may take to decide on a
                 client before it is refused. Defaults to 5.
+            tls (bool, optional): Whether clients connect with TLS, which
+                encrypts the connection. Without ``tls_cert``, the server
+                generates a self-signed certificate that exists only in
+                memory; see ``tls_fingerprint``. Defaults to ``False``.
+            tls_cert (str | PathLike[str] | None, optional): PEM file with the
+                certificate to present instead of a generated one. Requires
+                ``tls`` and ``tls_key``. Defaults to a generated certificate.
+            tls_key (str | PathLike[str] | None, optional): PEM file with the
+                unencrypted private key of ``tls_cert``.
 
         Raises:
             ValueError: If ``heartbeat_interval`` is not positive,
                 ``heartbeat_timeout`` is not greater than it, ``web_path``
                 cannot be made absolute, an allowed origin is malformed,
                 ``transfer_profile`` is not a ``TransferProfile``,
-                ``client_policy`` is not a ``ClientPolicy``, or
-                ``connect_request_timeout`` is not positive.
+                ``client_policy`` is not a ``ClientPolicy``,
+                ``connect_request_timeout`` is not positive, or the TLS
+                settings or files are invalid.
+            OSError: If ``tls_cert`` or ``tls_key`` cannot be read.
         """
         super().__init__(
             {root_name},
@@ -696,6 +710,9 @@ class StatesServer(StateServerBase[{root_name}]):
             transfer_profile,
             client_policy,
             connect_request_timeout,
+            tls,
+            tls_cert,
+            tls_key,
         )
 "#
     )

@@ -8,14 +8,15 @@ use pharos::{Events, Observable, ObserveConfig};
 use ws_stream_wasm::{WsEvent, WsMessage, WsMeta, WsStream};
 
 use crate::client::messages::{ReadError, ServerFrames, ServerReader};
-use crate::client::net::timer;
+use crate::client::net::{Target, timer};
 use crate::protocol::FastVec;
 
 /// How long a closed stream waits for the browser's close event, which
 /// carries the server's close code and reason.
 const CLOSE_EVENT_WAIT: Duration = Duration::from_secs(1);
 
-pub(crate) async fn build_ws(address: &str) -> Result<(WsClientRead, WsClientSend), String> {
+pub(crate) async fn build_ws(target: &Target) -> Result<(WsClientRead, WsClientSend), String> {
+    let address = &target.url;
     let res = WsMeta::connect(address, None).await;
 
     let (mut meta, socket) = match res {

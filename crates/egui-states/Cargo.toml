@@ -9,7 +9,7 @@ license = "MIT"
 readme = "../../README.md"
 
 [package.metadata.docs.rs]
-features = ["rfd"]
+features = ["rfd", "tls"]
 
 [features]
 default = ["client"]
@@ -17,7 +17,16 @@ client = ["dep:egui"]
 # File dialogs for file transfers, through `rfd`.
 rfd = ["client", "dep:rfd"]
 server = ["tokio/macros", "dep:httparse", "dep:getrandom", "dep:crc32fast"]
-python = ["tokio/macros", "dep:pyo3", "dep:httparse", "dep:getrandom", "dep:crc32fast"]
+python = [
+    "tokio/macros",
+    "dep:pyo3",
+    "dep:httparse",
+    "dep:getrandom",
+    "dep:crc32fast",
+    "tls",
+]
+# Encrypted connections (TLS) for the server and the native client.
+tls = ["dep:tokio-rustls", "dep:rcgen", "dep:rustls-platform-verifier"]
 # Exposes internals to the `egui_states_bench` benchmarks; not a public API.
 bench = ["server", "client"]
 build_scripts = ["client"]
@@ -53,6 +62,18 @@ httparse = { version = "1.10", optional = true }
 # Tickets and zip checksums of browser downloads.
 getrandom = { version = "0.4", optional = true }
 crc32fast = { version = "1.5", optional = true }
+# TLS. The `ring` backend is passed explicitly wherever rustls needs one, so
+# the process-wide default provider is never installed or used.
+tokio-rustls = { version = "0.26", default-features = false, features = [
+    "ring",
+], optional = true }
+# The server's certificate when none is supplied, created in memory.
+rcgen = { version = "0.14", default-features = false, features = [
+    "crypto",
+    "ring",
+], optional = true }
+# The native client's `Tls::System` mode: the operating system's trust store.
+rustls-platform-verifier = { version = "0.7", optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 tokio = { version = "1.52", features = ["sync", "macros"] }

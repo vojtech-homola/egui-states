@@ -8,6 +8,8 @@ mod packer_reference;
 pub(crate) mod server;
 pub(crate) mod signals;
 pub(crate) mod states;
+#[cfg(feature = "tls")]
+pub(crate) mod tls;
 pub(crate) mod transfer;
 
 #[cfg(all(test, feature = "client"))]

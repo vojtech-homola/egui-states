@@ -38,6 +38,24 @@ impl ClientPolicy {
     }
 }
 
+/// Who the server lets in while another client is connected.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct AdmissionSettings {
+    /// What happens to a newcomer when no connect-request callback decides.
+    pub(crate) policy: ClientPolicy,
+    /// How long the connect-request callback may take to decide.
+    pub(crate) request_timeout: Duration,
+}
+
+impl Default for AdmissionSettings {
+    fn default() -> Self {
+        Self {
+            policy: ClientPolicy::default(),
+            request_timeout: DEFAULT_CONNECT_REQUEST_TIMEOUT,
+        }
+    }
+}
+
 /// A client that passed the handshake and waits for the connect-request
 /// callback to decide on it.
 ///

@@ -33,7 +33,7 @@ jobs:
       - run: uvx ruff@0.17.3 check .
       - run: uvx ruff@0.17.3 format --check .
       # docs.rs builds the default features and `rfd`.
-      - run: cargo doc --locked --no-deps -p egui_states -p egui_states_macros --features egui_states/rfd
+      - run: cargo doc --locked --no-deps -p egui_states -p egui_states_macros --features "egui_states/rfd egui_states/tls"
         env:
           RUSTDOCFLAGS: -D warnings
 
@@ -58,6 +58,13 @@ jobs:
       - run: cargo clippy --locked -p egui_states --features "server build_scripts python" --all-targets -- -D warnings
         if: ${{ !cancelled() }}
       - run: cargo clippy --locked -p egui_states --features "server rfd" --all-targets -- -D warnings
+        if: ${{ !cancelled() }}
+      - run: cargo clippy --locked -p egui_states --features "server tls" --all-targets -- -D warnings
+        if: ${{ !cancelled() }}
+      - run: cargo clippy --locked -p egui_states --no-default-features --features "server tls" --all-targets -- -D warnings
+        if: ${{ !cancelled() }}
+      # A client with TLS and no server; its tests need the server.
+      - run: cargo clippy --locked -p egui_states --features tls -- -D warnings
         if: ${{ !cancelled() }}
       # Compiles the benchmarks without running them.
       - run: cargo clippy --locked -p egui_states_bench --all-targets -- -D warnings
@@ -86,11 +93,16 @@ jobs:
         run: cargo test --locked -p egui_states
       - name: Server feature
         run: cargo test --locked -p egui_states --no-default-features --features server --lib
+      - name: TLS feature
+        run: cargo test --locked -p egui_states --features "server tls" --lib
       # The test binary links libpython; pytest covers the Python server on
-      # every platform.
+      # every platform. uv installs its own Python where the system has no
+      # 3.12, so the loader must be told where its libpython is.
       - name: Python feature
         if: runner.os == 'Linux'
-        run: uv run --no-sync cargo test --locked -p egui_states --features "server build_scripts python" --lib -- --test-threads=1
+        run: |
+          LD_LIBRARY_PATH="$(uv run --no-sync python -c 'import sysconfig; print(sysconfig.get_config_var("LIBDIR"))')" \
+            uv run --no-sync cargo test --locked -p egui_states --features "server build_scripts python" --lib -- --test-threads=1
       - name: Examples
         run: cargo test --locked -p example_smoke_tests
 
@@ -136,4 +148,5 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo check --locked --target wasm32-unknown-unknown -p egui_states
       - run: cargo check --locked --target wasm32-unknown-unknown -p egui_states --features rfd
+      - run: cargo check --locked --target wasm32-unknown-unknown -p egui_states --features tls
       - run: cargo check --locked --target wasm32-unknown-unknown -p showcase_gui

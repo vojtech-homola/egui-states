@@ -12,6 +12,7 @@ ignore = ["./example/showcase/gui/web/"]
 
 # The browser client connects back to the page's own origin. Forward its
 # WebSocket to the showcase server, as if the server had served the page.
+# The rules speak plain HTTP, so run the showcase server without `--tls`.
 [[proxy]]
 backend = "ws://127.0.0.1:8091/ws"
 ws = true

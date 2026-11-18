@@ -1195,6 +1195,7 @@ mod run_tests {
                 .await
                 .unwrap();
             let addr = listener.local_addr().unwrap();
+            let listener = crate::server_core::net::transport::SocketListener::new(listener);
             let server = Self::run(
                 listener,
                 heartbeat,
