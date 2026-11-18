@@ -356,13 +356,26 @@ def configure(states):  # noqa: PLR0915
 
 def run_scenario(probe, scenario):
     """Run the server and its potentially blocking callbacks in a disposable process."""
-    errors, warnings = [], []
-    server = StatesServer(error_handler=errors.append, version=StatesServer.VERSION_HASH)
+    from egui_states import ClientPolicy
     from egui_states.logging import LogLevel
+
+    errors, warnings = [], []
+    policy = ClientPolicy.Reject if scenario == "busy-client" else ClientPolicy.Replace
+    server = StatesServer(error_handler=errors.append, version=StatesServer.VERSION_HASH, client_policy=policy)
 
     server.logging.add_logger(LogLevel.Error, lambda message: errors.append(RuntimeError(message)))
     server.logging.add_logger(LogLevel.Warning, warnings.append)
     configure(server.states)
+    if scenario == "connect-request":
+        asked = []
+
+        def decide(request):
+            # Refuses the first client and accepts every later one.
+            assert request.is_pending()
+            asked.append(request.address)
+            return len(asked) > 1
+
+        server.on_connect_request(decide)
     port = free_port()
     try:
         server.start(port, (127, 0, 0, 1))
@@ -371,5 +384,6 @@ def run_scenario(probe, scenario):
     finally:
         server.stop()
         assert not errors, f"Unexpected callback errors: {errors!r}"
-    if scenario == "rejected-client":
-        wait_until(lambda: any("wrong version" in warning for warning in warnings))
+    expected = {"rejected-client": "wrong version", "busy-client": "another client is connected"}.get(scenario)
+    if expected is not None:
+        wait_until(lambda: any(expected in warning for warning in warnings))

@@ -3,11 +3,12 @@
 
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Sequence
+from enum import Enum
 from os import PathLike
 from pathlib import Path
 from typing import Any
 
-from egui_states._core import PyObjectType, StateServerCore
+from egui_states._core import PyObjectType, StateServerCore, _ConnectRequest
 from egui_states.logging import LoggingSignal
 from egui_states.signals import SignalsManager
 from egui_states.structures import ISubStates, _CallbackBase, _StaticBase
@@ -16,6 +17,61 @@ from egui_states.transfer import TransferProfile
 _ON_CONNECT_ID = 1
 _ON_DISCONNECT_ID = 2
 _CLIENT_MESSAGE_ID = 3
+_ON_CONNECT_REQUEST_ID = 4
+
+
+class ClientPolicy(Enum):
+    """What the server does with a client that connects while another is connected.
+
+    The server serves one client at a time.
+    """
+
+    #: The new client takes over the connection. The connected client is
+    #: closed and learns that it was replaced.
+    Replace = 0
+    #: The connected client keeps the connection. The new client is refused
+    #: and learns that the server is busy.
+    Reject = 1
+
+
+class ConnectRequest:
+    """A client that passed the handshake and asks to connect.
+
+    The callback registered with :meth:`StateServerBase.on_connect_request`
+    receives it and decides whether the client may connect.
+    """
+
+    __slots__ = ("_request",)
+
+    def __init__(self, request: _ConnectRequest) -> None:
+        self._request = request
+
+    @property
+    def address(self) -> str:
+        """The client's address, as ``ip:port``."""
+        return self._request.address()
+
+    def is_pending(self) -> bool:
+        """Return whether the server still waits for the answer.
+
+        It turns ``False`` once the request was answered, when the client
+        closes its connection, when ``connect_request_timeout`` passes, or
+        when the server stops. An answer given after that is ignored, so a
+        callback that waits, for example for the user of the connected
+        client, can check this to stop waiting early.
+
+        Returns:
+            bool: Whether the answer is still awaited.
+        """
+        return self._request.is_pending()
+
+    def __repr__(self) -> str:
+        """Return the request's address and whether it is pending.
+
+        Returns:
+            str: Readable description of the request.
+        """
+        return f"ConnectRequest(address={self.address!r}, pending={self.is_pending()})"
 
 
 def _initialize(
@@ -92,6 +148,8 @@ class StateServerBase[T: StatesBase]:
         web_path: str | PathLike[str] | None = None,
         allowed_origins: Sequence[str] = (),
         transfer_profile: TransferProfile = TransferProfile.Balanced,
+        client_policy: ClientPolicy = ClientPolicy.Replace,
+        connect_request_timeout: float = 5.0,
         tls: bool = False,
         tls_cert: str | PathLike[str] | None = None,
         tls_key: str | PathLike[str] | None = None,
@@ -150,6 +208,17 @@ class StateServerBase[T: StatesBase]:
                 the fastest transfers, for a client on the same machine or
                 when transfers matter more than the UI; a state change may
                 wait behind up to 1 MiB of file data.
+            client_policy (ClientPolicy, optional): What the server does with
+                a client that connects while another is connected:
+                ``Replace`` lets the new client take over, ``Reject`` keeps
+                the connected client and refuses the new one as busy. A
+                callback registered with :meth:`on_connect_request` decides
+                instead.
+            connect_request_timeout (float, optional): Seconds the callback
+                registered with :meth:`on_connect_request` may take to decide
+                on a client, counted from the client's handshake. A client
+                still waiting when it passes is refused, which is logged as
+                an error. The client learns this time and waits as long.
             tls (bool, optional): Whether clients connect with TLS, which
                 encrypts the connection. The server then speaks only TLS on
                 its port: ``wss://`` WebSockets, and ``https://`` for the web
@@ -176,10 +245,12 @@ class StateServerBase[T: StatesBase]:
                 ``heartbeat_timeout`` is not greater than it, ``web_path``
                 cannot be made absolute (for example because it is empty), an
                 allowed origin is malformed, ``transfer_profile`` is not a
-                :class:`TransferProfile`, only one of ``tls_cert`` and
-                ``tls_key`` is given or either without ``tls``, a TLS file
-                holds no valid PEM certificate or unencrypted key, or the key
-                does not belong to the certificate.
+                :class:`TransferProfile`, ``client_policy`` is not a
+                :class:`ClientPolicy`, ``connect_request_timeout`` is not
+                positive, only one of ``tls_cert`` and ``tls_key`` is given or
+                either without ``tls``, a TLS file holds no valid PEM
+                certificate or unencrypted key, or the key does not belong to
+                the certificate.
             OSError: If ``tls_cert`` or ``tls_key`` cannot be read, such as
                 ``FileNotFoundError`` for a missing file.
         """
@@ -189,8 +260,10 @@ class StateServerBase[T: StatesBase]:
             heartbeat_timeout,
             web_path,
             list(allowed_origins),
-            # The native core takes the profile's number.
+            # The native core takes the profile's and the policy's numbers.
             TransferProfile(transfer_profile).value,
+            ClientPolicy(client_policy).value,
+            connect_request_timeout,
             tls=tls,
             tls_cert=tls_cert,
             tls_key=tls_key,
@@ -204,6 +277,7 @@ class StateServerBase[T: StatesBase]:
         self._on_connect: Callable[[str], Any] | None = None
         self._on_disconnect: Callable[[], Any] | None = None
         self._on_client_message: Callable[[str], Any] | None = None
+        self._on_connect_request: Callable[[ConnectRequest], bool] | None = None
 
     @property
     def states(self) -> T:
@@ -406,6 +480,56 @@ class StateServerBase[T: StatesBase]:
         self._signals_manager.clear_callbacks(_ON_DISCONNECT_ID)
         if func is not None:
             self._signals_manager.add_callback(_ON_DISCONNECT_ID, func)
+
+    def on_connect_request(self, func: Callable[[ConnectRequest], bool] | None) -> None:
+        """Replace the callback that decides whether a client may connect.
+
+        The server asks it for every client that passed the handshake, whether
+        or not another client is connected, instead of applying
+        ``client_policy``. Returning ``True`` lets the client in, replacing the
+        connected one; ``False`` refuses it, and the client learns that it
+        was refused. A callback that raises refuses the client and reports
+        the exception to the error handler.
+
+        The callback runs on a callback worker and may block, for example to
+        ask the user of the connected client; it then occupies that worker,
+        so keep ``signals_workers`` at two or more for the user's answer to
+        arrive. Requests are decided one at a time; meanwhile the client waits
+        and the connected client is unaffected. A request not answered within
+        ``connect_request_timeout`` is refused, which is logged as an error,
+        and its answer ignored; check :meth:`ConnectRequest.is_pending` to
+        stop waiting early. While the callback blocks, the requests behind it
+        wait and may run out of time without being asked about.
+
+        Args:
+            func (Callable[[ConnectRequest], bool] | None): Callback receiving
+                the request and returning whether to accept the client, or
+                ``None`` to unregister it and return the decision to
+                ``client_policy``.
+        """
+        # The dispatcher stays registered while a callback is swapped: without
+        # it, a client connecting in between would be decided by the policy.
+        registered = self._on_connect_request is not None
+        self._on_connect_request = func
+        if func is None:
+            self._signals_manager.clear_callbacks(_ON_CONNECT_REQUEST_ID)
+        elif not registered:
+            self._signals_manager.add_callback(_ON_CONNECT_REQUEST_ID, self._decide_connect_request)
+
+    def _decide_connect_request(self) -> None:
+        """Ask the connect-request callback about the pending request."""
+        request = self._server.connect_request()
+        func = self._on_connect_request
+        # A request that ended while it waited for this worker, because its
+        # client left or its time ran out, is not asked about.
+        if request is None or not request.is_pending():
+            return
+        accept = False
+        try:
+            accept = func is not None and bool(func(ConnectRequest(request)))
+        finally:
+            # An exception refuses the client; the worker then reports it.
+            request.answer(accept)
 
     def on_client_message(self, func: Callable[[str], Any] | None) -> None:
         """Replace the callback for diagnostic messages from the client.

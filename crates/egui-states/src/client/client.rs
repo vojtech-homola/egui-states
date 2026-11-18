@@ -1,11 +1,13 @@
 //! Client construction, connection control, and egui repaint integration.
 
 use std::any::Any;
+use std::fmt;
 use std::future::Future;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::panic::AssertUnwindSafe;
 use std::pin::pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use egui::Context;
@@ -16,10 +18,14 @@ use tokio::sync::mpsc::{self, UnboundedReceiver};
 
 use crate::PROTOCOL_VERSION;
 use crate::State;
-use crate::client::messages::{ChannelMessage, MessageSender, MessagesSerializer, handle_message};
+use crate::client::messages::{
+    ChannelMessage, MessageSender, MessagesSerializer, ReadError, ServerMessage, handle_message,
+};
+use crate::client::net::timer::{self, Sleep};
 use crate::client::states_creator::{StatesCreatorClient, ValuesList};
 use crate::event::Event;
-use crate::protocol::{ClientHeader, FastVec};
+use crate::protocol::close;
+use crate::protocol::{ClientHeader, FastVec, ServerHeader};
 
 use crate::client::net::Target;
 #[cfg(not(target_arch = "wasm32"))]
@@ -32,14 +38,27 @@ use crate::client::net::websocket_wasm::{WsClientRead, WsClientSend, build_ws};
 
 type MessageReceiver = UnboundedReceiver<Option<ChannelMessage>>;
 
-async fn start_gui_client(
+/// How long a connection attempt waits by default for the server to answer.
+pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// What the client waits beyond the time the server gave for its connect
+/// request, so a late answer is not cut off by network delay.
+const APPROVAL_MARGIN: Duration = Duration::from_secs(2);
+
+/// What the connection task needs to open a connection.
+struct Settings {
     target: Target,
+    version: Option<u64>,
+    token: Option<String>,
+    connect_timeout: Duration,
+}
+
+async fn start_gui_client(
+    settings: Settings,
     vals: ValuesList,
     mut rx: MessageReceiver,
     sender: MessageSender,
     client: ClientCore,
-    version: Option<u64>,
-    hash: Option<String>,
 ) {
     // Every exit from this loop is a shutdown: the user dropped the last
     // `Client` handle, so nothing can observe the connection state anymore.
@@ -53,37 +72,96 @@ async fn start_gui_client(
         {
             return;
         }
-        client.set_state(ConnectionState::NotConnected);
+        client.set_state(ConnectionState::Connecting);
+
+        // On native targets the timeout bounds the whole attempt. In the
+        // browser it starts once the socket is open: the browser bounds the
+        // opening itself, and an abandoned opening would leave its socket.
+        #[cfg(not(target_arch = "wasm32"))]
+        let mut deadline = timer::sleep(settings.connect_timeout);
+        #[cfg(not(target_arch = "wasm32"))]
+        let opening = until(build_ws(&settings.target), deadline.as_mut());
+        #[cfg(target_arch = "wasm32")]
+        let opening = async { Some(build_ws(&settings.target).await) };
 
         // try to connect to the server
-        let Some(socket) = client.until_shutdown(build_ws(&target)).await else {
+        let Some(opened) = client.until_shutdown(opening).await else {
             return;
         };
-        let (socket_read, mut socket_send) = match socket {
-            Ok(socket) => socket,
-            Err(error) => {
-                client.fail(error);
+        let (socket_read, mut socket_send) = match opened {
+            Some(Ok(socket)) => socket,
+            Some(Err(error)) => {
+                client.fail(Some(CloseReason::Unreachable), error);
+                continue;
+            }
+            None => {
+                client.fail(
+                    Some(CloseReason::Timeout),
+                    no_answer(settings.connect_timeout),
+                );
                 continue;
             }
         };
+        #[cfg(target_arch = "wasm32")]
+        let deadline = timer::sleep(settings.connect_timeout);
 
         // clean message queue before starting
         while !rx.is_empty() {
             let _ = rx.recv().await;
         }
+        // A disconnect requested before this point went with the queue.
+        client.0.closed_by_user.store(false, Ordering::Release);
 
         // communicate handshake and initialization -------------------------
-        let message = ClientHeader::serialize_handshake(PROTOCOL_VERSION, version, hash.clone());
+        let message = ClientHeader::serialize_handshake(
+            PROTOCOL_VERSION,
+            settings.version,
+            settings.token.clone(),
+        );
         // Nothing is queued for this connection yet, so a shutdown can drop it.
         let Some(sent) = client.until_shutdown(socket_send.send(message)).await else {
             return;
         };
-        if sent.is_err() {
-            client.fail("Sending handshake failed.".to_string());
+        if let Err(error) = sent {
+            client.fail(
+                Some(CloseReason::ConnectionLost),
+                format!("Sending handshake failed: {error}"),
+            );
             continue;
         }
 
-        let session = run_session(socket_read, socket_send, rx, &vals, &sender, &client).await;
+        let attempt = Attempt {
+            deadline,
+            timeout: settings.connect_timeout,
+        };
+        let mut socket_read = socket_read;
+        let answer = catch_panic(await_answer(&mut socket_read, &mut rx, &client, attempt));
+        let Some(answer) = client.until_shutdown(answer).await else {
+            return;
+        };
+        let first = match answer {
+            Ok(Answer::Accepted(first)) => first,
+            Ok(Answer::NotAccepted(reason, error)) => {
+                client.end_attempt();
+                client.fail(Some(reason), error);
+                continue;
+            }
+            Ok(Answer::Cancelled) => {
+                let _ = client.until_shutdown(socket_send.close()).await;
+                client.end_attempt();
+                client.set_state(ConnectionState::NotConnected);
+                continue;
+            }
+            Err(message) => {
+                client.end_attempt();
+                client.fail(None, format!("Client receive task panicked: {message}"));
+                continue;
+            }
+        };
+        client.set_state(ConnectionState::Connected);
+
+        let session =
+            run_session(socket_read, socket_send, rx, &vals, &sender, &client, first).await;
         let end = match session {
             Ok((rx_back, end)) => {
                 rx = rx_back;
@@ -92,41 +170,119 @@ async fn start_gui_client(
             Err(error) => {
                 // Without the message queue no further connection can work.
                 vals.disconnected();
-                client.fail(format!(
-                    "Client connection task stopped, build a new client: {}",
-                    error
-                ));
+                client.fail(
+                    None,
+                    format!(
+                        "Client connection task stopped, build a new client: {}",
+                        error
+                    ),
+                );
                 return;
             }
         };
 
         vals.disconnected();
-        // Requests made while connected do not start a reconnect.
-        client.0.connect_signal.clear();
+        client.end_attempt();
         match end {
-            SessionEnd::Closed => client.set_state(ConnectionState::Disconnected),
-            SessionEnd::NotAccepted(error) => client.fail(format!(
-                "Connection closed before the server accepted the handshake: {}",
-                error
-            )),
+            // A panic is reported even if the user disconnected meanwhile.
             SessionEnd::Panicked(task, message) => {
-                client.fail(format!("Client {} task panicked: {}", task, message))
+                client.fail(None, format!("Client {} task panicked: {}", task, message))
+            }
+            // The user's own disconnect has no reason to report.
+            SessionEnd::Closed(..) if client.0.closed_by_user.load(Ordering::Acquire) => {
+                client.disconnected(None, None)
+            }
+            SessionEnd::Closed(reason, error) => client.disconnected(reason, error),
+        }
+    }
+}
+
+/// How the wait for the server's answer to the handshake ended.
+enum Answer {
+    /// The server accepted the client; holds its first message.
+    Accepted(ServerMessage),
+    /// The server refused the client, the connection broke, or no answer came
+    /// in time.
+    NotAccepted(CloseReason, String),
+    /// The user disconnected before the server answered.
+    Cancelled,
+}
+
+/// Waits for the server's answer to the handshake.
+///
+/// The server answers an accepted handshake with its synchronization
+/// messages and closes the connection of a refused client. `attempt` bounds
+/// the wait; a connect-request notice from the server sets a new deadline.
+///
+/// Until the server accepts the client, the client writes nothing: the
+/// server reads a waiting client only to notice that it left. What the UI
+/// queues meanwhile belongs to no connection and is dropped, like what it
+/// queues while disconnected.
+async fn await_answer(
+    socket_read: &mut WsClientRead,
+    rx: &mut MessageReceiver,
+    client: &ClientCore,
+    attempt: Attempt,
+) -> Answer {
+    let Attempt {
+        mut deadline,
+        timeout,
+    } = attempt;
+    let mut waiting = false;
+    // Ends when the user disconnects, which closes the queue.
+    let mut cancelled = pin!(async { while let Some(Some(_)) = rx.recv().await {} });
+    loop {
+        let read = until(socket_read.read(), deadline.as_mut());
+        let read = match select(pin!(read), cancelled.as_mut()).await {
+            Either::Left((read, _)) => read,
+            Either::Right(_) => return Answer::Cancelled,
+        };
+        let Some(read) = read else {
+            let error = if waiting {
+                "The server did not answer the connect request in time".to_string()
+            } else {
+                no_answer(timeout)
+            };
+            return Answer::NotAccepted(CloseReason::Timeout, error);
+        };
+        match read {
+            Ok((ServerHeader::ConnectPending(millis), _)) => {
+                waiting = true;
+                client.set_state(ConnectionState::WaitingForApproval);
+                let wait = Duration::from_millis(millis.into()) + APPROVAL_MARGIN;
+                deadline = timer::sleep(wait);
+            }
+            Ok(message) => return Answer::Accepted(message),
+            Err(error) => {
+                let (reason, error) = close_cause(error);
+                return Answer::NotAccepted(reason, error);
             }
         }
     }
 }
 
+/// The error of an attempt the server did not answer within `timeout`.
+fn no_answer(timeout: Duration) -> String {
+    format!("The server did not answer within {timeout:?}")
+}
+
+/// How long a connection attempt may still wait for the server's answer.
+struct Attempt {
+    deadline: Sleep,
+    timeout: Duration,
+}
+
 /// How one connection ended.
 enum SessionEnd {
-    /// An established connection ended.
-    Closed,
-    /// The connection ended before the server accepted the handshake.
-    NotAccepted(String),
+    /// An established connection ended, with its reason and a description
+    /// when known.
+    Closed(Option<CloseReason>, Option<String>),
     /// A connection task panicked; holds the task name and the panic message.
     Panicked(&'static str, String),
 }
 
-/// Runs the receive and send tasks of one connection until both end.
+/// Runs the receive and send tasks of one accepted connection until both
+/// end. `first` is the server's first message.
 ///
 /// Returns the message queue receiver for the next connection and how this
 /// one ended. A panic in either task ends the connection instead of the
@@ -139,6 +295,7 @@ async fn run_session(
     vals: &ValuesList,
     sender: &MessageSender,
     client: &ClientCore,
+    first: ServerMessage,
 ) -> Result<(MessageReceiver, SessionEnd), String> {
     // A panicking send task stops the receive task; reading alone would keep
     // the connection open while nothing can be sent.
@@ -172,8 +329,13 @@ async fn run_session(
         async move {
             // A shutdown stops reading at once; the send task still writes the
             // messages queued so far and closes the socket.
-            let read =
-                client.until_shutdown(catch_panic(receive(socket_read, &vals, &client, &sender)));
+            let read = client.until_shutdown(catch_panic(receive(
+                socket_read,
+                &vals,
+                &client,
+                &sender,
+                first,
+            )));
             let end = Abortable::new(read, abort_registration).await;
             // The connection is over: unfinished transfers fail, which also
             // ends the pump.
@@ -182,7 +344,9 @@ async fn run_session(
             sender.close();
             // The read is aborted only after the send task panicked, which is
             // reported instead.
-            end.ok().flatten().unwrap_or(Ok(SessionEnd::Closed))
+            end.ok()
+                .flatten()
+                .unwrap_or(Ok(SessionEnd::Closed(None, None)))
         }
     };
 
@@ -237,39 +401,53 @@ async fn run_session(
     Ok((rx, end))
 }
 
-/// Reads and applies server messages until the connection ends.
+/// Reads and applies server messages, starting with `message`, until the
+/// connection ends.
 async fn receive(
     mut socket_read: WsClientRead,
     vals: &ValuesList,
     client: &ClientCore,
     sender: &MessageSender,
+    mut message: ServerMessage,
 ) -> SessionEnd {
-    // The server answers an accepted handshake with its synchronization
-    // messages and sends nothing to a rejected client.
-    let mut accepted = false;
     let error = loop {
+        if let Err(e) = handle_message(message, vals, client).await {
+            let error = format!("handling message from server failed: {:?}", e);
+            sender.send_message(&error);
+            print_error(&error);
+            // break; TODO: decide if we want to break the loop on error
+        }
         match socket_read.read().await {
-            Ok(msg) => {
-                if !accepted {
-                    accepted = true;
-                    client.set_state(ConnectionState::Connected);
-                }
-                if let Err(e) = handle_message(msg, vals, client).await {
-                    let error = format!("handling message from server failed: {:?}", e);
-                    sender.send_message(&error);
-                    print_error(&error);
-                    // break; TODO: decide if we want to break the loop on error
-                }
-            }
+            Ok(next) => message = next,
             Err(e) => break e,
         }
     };
 
-    if accepted {
-        print_error(&format!("Connection with server failed: {:?}", error));
-        SessionEnd::Closed
-    } else {
-        SessionEnd::NotAccepted(error.to_string())
+    print_error(&format!("Connection with server failed: {:?}", error));
+    let (reason, error) = close_cause(error);
+    SessionEnd::Closed(Some(reason), Some(error))
+}
+
+/// Why the server's connection ended, and its description.
+fn close_cause(error: ReadError) -> (CloseReason, String) {
+    match error {
+        ReadError::Closed(Some((code, text))) => match CloseReason::from_code(code) {
+            Some(reason) if text.is_empty() => (reason, reason.to_string()),
+            Some(reason) => (reason, text),
+            None if text.is_empty() => (
+                CloseReason::ConnectionLost,
+                format!("The connection was closed with code {code}"),
+            ),
+            None => (
+                CloseReason::ConnectionLost,
+                format!("The connection was closed with code {code}: {text}"),
+            ),
+        },
+        ReadError::Closed(None) => (
+            CloseReason::ConnectionLost,
+            "The server closed the connection without a reason".to_string(),
+        ),
+        ReadError::Failed(error) => (CloseReason::ConnectionLost, error.to_string()),
     }
 }
 
@@ -347,25 +525,118 @@ pub(crate) fn print_error(error: &str) {
 
 /// Current client connection status.
 ///
-/// A connection attempt starts in [`Self::NotConnected`], becomes
-/// [`Self::Connected`] once the server accepts the handshake, and becomes
-/// [`Self::Disconnected`] when an established connection ends. An attempt that
-/// does not reach an established connection, or a connection whose background
-/// task panicked, ends in [`Self::Failed`]. Calling [`Client::connect`] starts
-/// a new attempt and returns the state to `NotConnected`.
+/// A client starts in [`Self::NotConnected`]. Calling [`Client::connect`]
+/// starts an attempt in [`Self::Connecting`], which becomes
+/// [`Self::Connected`] once the server accepts the handshake, possibly after
+/// [`Self::WaitingForApproval`]. An established connection that ends becomes
+/// [`Self::Disconnected`]. An attempt that does not reach an established
+/// connection, or a connection whose background task panicked, ends in
+/// [`Self::Failed`]. [`Client::last_reason`] and [`Client::last_error`] tell
+/// why a connection failed or ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ConnectionState {
-    /// No connection has been established or a connection attempt is pending.
+    /// No connection attempt has been made yet, or the last one was cancelled
+    /// with [`Client::disconnect`].
     NotConnected,
+    /// A connection attempt is running: the client is opening the connection
+    /// or waiting for the server to accept its handshake.
+    Connecting,
+    /// The server asks its connect-request callback whether to accept this
+    /// client, for example by asking the user of the connected client.
+    WaitingForApproval,
     /// The server accepted the handshake and state synchronization is active.
     Connected,
-    /// A previously active connection ended.
+    /// A previously active connection ended. [`Client::last_reason`] tells why,
+    /// unless the client ended it with [`Client::disconnect`].
     Disconnected,
     /// The server could not be reached, did not accept the handshake, or a
-    /// background connection task panicked. [`Client::last_error`] describes
-    /// the cause; call [`Client::connect`] to retry.
+    /// background connection task panicked. [`Client::last_reason`] and
+    /// [`Client::last_error`] describe the cause; call [`Client::connect`] to
+    /// retry.
     Failed,
+}
+
+/// Why a connection attempt failed or a connection ended.
+///
+/// [`Client::last_reason`] returns it after [`ConnectionState::Failed`] and
+/// [`ConnectionState::Disconnected`]. The server sends the reasons it decides
+/// on, so they reach the client also in the browser.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum CloseReason {
+    /// The server could not be reached: it is not running, the address is
+    /// wrong, or it is not a state server.
+    Unreachable,
+    /// The server did not answer the connection attempt in time.
+    Timeout,
+    /// The server uses another protocol version; client and server come from
+    /// incompatible `egui_states` releases.
+    ProtocolMismatch,
+    /// The server requires another application version, or one the client
+    /// did not send.
+    VersionMismatch,
+    /// The server rejected the token, or the client sent none.
+    TokenRejected,
+    /// Another client is connected and the server keeps it.
+    Busy,
+    /// The server's connect-request callback refused the client, or did not
+    /// answer in time.
+    Refused,
+    /// Another client took over the connection.
+    Replaced,
+    /// The server closed the connection: it disconnected the client, stopped,
+    /// or failed to synchronize it.
+    ClosedByServer,
+    /// The connection broke, or the server closed it without a reason.
+    ConnectionLost,
+}
+
+impl CloseReason {
+    /// The reasons the server's close codes stand for.
+    const CODES: [(u16, Self); 7] = [
+        (close::PROTOCOL_MISMATCH, Self::ProtocolMismatch),
+        (close::VERSION_MISMATCH, Self::VersionMismatch),
+        (close::TOKEN_REJECTED, Self::TokenRejected),
+        (close::BUSY, Self::Busy),
+        (close::REFUSED, Self::Refused),
+        (close::REPLACED, Self::Replaced),
+        (close::CLOSED_BY_SERVER, Self::ClosedByServer),
+    ];
+
+    /// The reason the server's close `code` stands for.
+    fn from_code(code: u16) -> Option<Self> {
+        Self::CODES
+            .iter()
+            .find(|(known, _)| *known == code)
+            .map(|(_, reason)| *reason)
+    }
+}
+
+impl fmt::Display for CloseReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Unreachable => "the server could not be reached",
+            Self::Timeout => "the server did not answer in time",
+            Self::ProtocolMismatch => "the server uses another protocol version",
+            Self::VersionMismatch => "the server requires another application version",
+            Self::TokenRejected => "the server rejected the token",
+            Self::Busy => "another client is connected",
+            Self::Refused => "the server refused the connection",
+            Self::Replaced => "another client took over the connection",
+            Self::ClosedByServer => "the server closed the connection",
+            Self::ConnectionLost => "the connection was lost",
+        })
+    }
+}
+
+/// The connection state with why it was reached.
+struct Status {
+    state: ConnectionState,
+    /// Set only together with `Failed` or `Disconnected`.
+    reason: Option<CloseReason>,
+    /// Set only together with `Failed` or `Disconnected`.
+    error: Option<String>,
 }
 
 struct ClientInner {
@@ -373,8 +644,10 @@ struct ClientInner {
     connect_signal: Event,
     // Set once, when the last `Client` handle is dropped.
     shutdown: Event,
-    // The error is set only together with `ConnectionState::Failed`.
-    state: RwLock<(ConnectionState, Option<String>)>,
+    status: RwLock<Status>,
+    /// Set by `Client::disconnect`, so the end of the connection it closes
+    /// has no reason to report.
+    closed_by_user: AtomicBool,
     sender: MessageSender,
 }
 
@@ -404,7 +677,12 @@ impl ClientCore {
             context,
             connect_signal: Event::new(),
             shutdown: Event::new(),
-            state: RwLock::new((ConnectionState::NotConnected, None)),
+            status: RwLock::new(Status {
+                state: ConnectionState::NotConnected,
+                reason: None,
+                error: None,
+            }),
+            closed_by_user: AtomicBool::new(false),
             sender,
         };
 
@@ -452,14 +730,41 @@ impl ClientCore {
         until(future, deadline).await
     }
 
-    pub(crate) fn set_state(&self, state: ConnectionState) {
-        *self.0.state.write() = (state, None);
-        self.0.context.request_repaint();
+    /// Ends a connection attempt or connection: requests to connect made
+    /// during it do not start another attempt.
+    fn end_attempt(&self) {
+        self.0.connect_signal.clear();
     }
 
-    pub(crate) fn fail(&self, error: String) {
+    pub(crate) fn set_state(&self, state: ConnectionState) {
+        self.set_status(Status {
+            state,
+            reason: None,
+            error: None,
+        });
+    }
+
+    /// Ends the attempt or connection in `Failed`.
+    pub(crate) fn fail(&self, reason: Option<CloseReason>, error: String) {
         print_error(&error);
-        *self.0.state.write() = (ConnectionState::Failed, Some(error));
+        self.set_status(Status {
+            state: ConnectionState::Failed,
+            reason,
+            error: Some(error),
+        });
+    }
+
+    /// Ends an established connection in `Disconnected`.
+    fn disconnected(&self, reason: Option<CloseReason>, error: Option<String>) {
+        self.set_status(Status {
+            state: ConnectionState::Disconnected,
+            reason,
+            error,
+        });
+    }
+
+    fn set_status(&self, status: Status) {
+        *self.0.status.write() = status;
         self.0.context.request_repaint();
     }
 
@@ -520,22 +825,42 @@ impl Client {
         self.core().0.connect_signal.set();
     }
 
-    /// Closes the active connection.
+    /// Closes the active connection, or cancels a connection attempt that
+    /// waits for the server's answer.
+    ///
+    /// After a closed connection the client reports
+    /// [`ConnectionState::Disconnected`] without a reason; after a cancelled
+    /// attempt, [`ConnectionState::NotConnected`].
     pub fn disconnect(&self) {
+        self.core().0.closed_by_user.store(true, Ordering::Release);
         self.core().0.sender.close();
     }
 
     /// Returns the current connection status.
     pub fn get_state(&self) -> ConnectionState {
-        self.core().0.state.read().0
+        self.core().0.status.read().state
     }
 
-    /// Returns why the client is in [`ConnectionState::Failed`].
+    /// Returns why the client is in [`ConnectionState::Failed`] or
+    /// [`ConnectionState::Disconnected`].
     ///
-    /// Returns `None` in every other state; a new connection attempt clears
-    /// the error.
+    /// Returns `None` in every other state, after [`Self::disconnect`], and
+    /// after a background task panicked, which [`Self::last_error`] describes.
+    /// A new connection attempt clears it.
+    pub fn last_reason(&self) -> Option<CloseReason> {
+        self.core().0.status.read().reason
+    }
+
+    /// Returns a description of why the client is in
+    /// [`ConnectionState::Failed`] or [`ConnectionState::Disconnected`].
+    ///
+    /// The description is meant for people; it includes the server's own
+    /// explanation when the server refused or closed the connection. Use
+    /// [`Self::last_reason`] to react to the cause. Returns `None` in every
+    /// other state and after [`Self::disconnect`]; a new connection attempt
+    /// clears it.
     pub fn last_error(&self) -> Option<String> {
-        self.core().0.state.read().1.clone()
+        self.core().0.status.read().error.clone()
     }
 
     /// Makes the send task panic on the next queued message.
@@ -556,6 +881,7 @@ pub struct ClientBuilder<T> {
     context: Context,
     version: Option<u64>,
     token: Option<String>,
+    connect_timeout: Duration,
     #[cfg(all(feature = "tls", not(target_arch = "wasm32")))]
     tls: Option<Tls>,
 }
@@ -575,7 +901,8 @@ where
     ///
     /// The client requests repaints of `context` when the connection state
     /// changes or the server asks for an update. No application version or
-    /// authentication token is set by default. The derived [`State::new`]
+    /// authentication token is set by default, and a connection attempt waits
+    /// [`DEFAULT_CONNECT_TIMEOUT`] for the server. The derived [`State::new`]
     /// implementation runs during this call.
     pub fn new(context: Context, port: u16) -> Self {
         let (sender, rx) = MessageSender::new();
@@ -594,6 +921,7 @@ where
             context,
             version: None,
             token: None,
+            connect_timeout: DEFAULT_CONNECT_TIMEOUT,
             #[cfg(all(feature = "tls", not(target_arch = "wasm32")))]
             tls: None,
         }
@@ -632,6 +960,22 @@ where
     pub fn token(self, token: String) -> Self {
         Self {
             token: Some(token),
+            ..self
+        }
+    }
+
+    /// Sets how long a connection attempt waits for the server's answer
+    /// before it fails with [`CloseReason::Timeout`]. Default
+    /// [`DEFAULT_CONNECT_TIMEOUT`].
+    ///
+    /// On native targets it covers opening the connection and the handshake.
+    /// In the browser it starts once the connection is open, since the
+    /// browser limits the opening itself. While the server asks its
+    /// connect-request callback ([`ConnectionState::WaitingForApproval`]),
+    /// the client waits as long as the server says it will take instead.
+    pub fn connect_timeout(self, timeout: Duration) -> Self {
+        Self {
+            connect_timeout: timeout,
             ..self
         }
     }
@@ -689,6 +1033,7 @@ where
             context,
             version,
             token,
+            connect_timeout,
             #[cfg(all(feature = "tls", not(target_arch = "wasm32")))]
             tls,
         } = self;
@@ -719,6 +1064,12 @@ where
         };
         let client = ClientCore::new(context, sender.clone());
         let client_out = Client::new(client.clone());
+        let settings = Settings {
+            target,
+            version,
+            token,
+            connect_timeout,
+        };
 
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -736,16 +1087,14 @@ where
             let thread = thread::Builder::new().name("Client".to_string());
 
             let _ = thread.spawn(move || {
-                runtime.block_on(start_gui_client(
-                    target, values, rx, sender, client, version, token,
-                ))
+                runtime.block_on(start_gui_client(settings, values, rx, sender, client))
             });
         }
 
         #[cfg(target_arch = "wasm32")]
         {
             wasm_bindgen_futures::spawn_local(async move {
-                start_gui_client(target, values, rx, sender, client, version, token).await;
+                start_gui_client(settings, values, rx, sender, client).await;
             });
         }
 

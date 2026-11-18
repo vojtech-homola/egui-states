@@ -15,10 +15,12 @@ use tokio::time::{Instant, timeout_at};
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
 use tokio_tungstenite::tungstenite::http::StatusCode;
+use tokio_tungstenite::tungstenite::protocol::frame::{CloseFrame, coding::CloseCode};
 use tokio_tungstenite::tungstenite::{Message, protocol::WebSocketConfig};
 
 use crate::file_transfer::engine::Engine;
 use crate::protocol::WEBSOCKET_MAX_SIZE;
+use crate::protocol::close::Close;
 use crate::server_core::http::download;
 use crate::server_core::http::origin::OriginPolicy;
 use crate::server_core::http::web::{self, Dispatch, WebSite};
@@ -58,8 +60,9 @@ pub(crate) trait FrameSink: Send + 'static {
     /// Sends `frame`; the error describes why it could not be sent.
     fn send_frame(&mut self, frame: Outgoing) -> impl Future<Output = Result<(), String>> + Send;
 
-    /// Closes the connection, ignoring failures.
-    fn close(&mut self) -> impl Future<Output = ()> + Send;
+    /// Closes the connection, ignoring failures. `close` tells the client
+    /// why; `None` closes without a reason.
+    fn close(&mut self, close: Option<Close>) -> impl Future<Output = ()> + Send;
 }
 
 /// The frame channel of a connection that has been opened.
@@ -372,7 +375,15 @@ impl FrameSink for SplitSink<WebSocket, Message> {
             .map_err(|e| format!("{:?}", e))
     }
 
-    async fn close(&mut self) {
+    async fn close(&mut self, close: Option<Close>) {
+        if let Some(close) = close {
+            let frame = CloseFrame {
+                code: CloseCode::from(close.code),
+                reason: close.reason.into(),
+            };
+            // The close below then only flushes the frame and ends the stream.
+            let _ = SinkExt::send(self, Message::Close(Some(frame))).await;
+        }
         let _ = SinkExt::close(self).await;
     }
 }
@@ -398,13 +409,31 @@ pub(crate) mod memory {
 
     pub(crate) struct MemorySource(UnboundedReceiver<Incoming>);
 
-    pub(crate) struct MemorySink(UnboundedSender<Outgoing>);
+    pub(crate) struct MemorySink {
+        frames: UnboundedSender<Outgoing>,
+        closed: Arc<parking_lot::Mutex<Option<Close>>>,
+    }
 
     /// The client end of an in-memory connection. Dropping it closes the
     /// connection as a lost socket would.
     pub(crate) struct MemoryClient {
         pub(crate) frames: UnboundedReceiver<Outgoing>,
         pub(crate) send: UnboundedSender<Incoming>,
+        closed: Arc<parking_lot::Mutex<Option<Close>>>,
+    }
+
+    impl MemoryClient {
+        /// The reason the server closed the connection with, if it gave one.
+        pub(crate) fn close_reason(&self) -> Option<Close> {
+            self.closed.lock().clone()
+        }
+
+        /// Waits until the server drops the connection and returns the
+        /// reason it gave, skipping any frames still queued.
+        pub(crate) async fn closed(&mut self) -> Option<Close> {
+            while self.frames.recv().await.is_some() {}
+            self.close_reason()
+        }
     }
 
     pub(crate) fn listener() -> (MemoryListener, MemoryConnector) {
@@ -429,14 +458,19 @@ pub(crate) mod memory {
         pub(crate) fn connect(&self) -> Option<MemoryClient> {
             let (to_server, from_client) = unbounded_channel();
             let (to_client, from_server) = unbounded_channel();
+            let closed = Arc::new(parking_lot::Mutex::new(None));
             let connection = MemoryConnection {
-                sink: MemorySink(to_client),
+                sink: MemorySink {
+                    frames: to_client,
+                    closed: closed.clone(),
+                },
                 source: MemorySource(from_client),
             };
             self.0.send(connection).ok()?;
             Some(MemoryClient {
                 frames: from_server,
                 send: to_server,
+                closed,
             })
         }
     }
@@ -485,11 +519,15 @@ pub(crate) mod memory {
 
     impl FrameSink for MemorySink {
         async fn send_frame(&mut self, frame: Outgoing) -> Result<(), String> {
-            self.0
+            self.frames
                 .send(frame)
                 .map_err(|_| "the client is gone".to_string())
         }
 
-        async fn close(&mut self) {}
+        async fn close(&mut self, close: Option<Close>) {
+            if close.is_some() {
+                *self.closed.lock() = close;
+            }
+        }
     }
 }

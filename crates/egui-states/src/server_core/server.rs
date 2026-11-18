@@ -16,14 +16,16 @@ use crate::event::Event;
 use crate::file_transfer::TransferProfile;
 use crate::file_transfer::engine::{Engine, Role, Side};
 use crate::hashing::{MAX_RESERVED_ID, NoHashMap, generate_value_id};
+use crate::protocol::close::{self, Close};
 use crate::protocol::data::DataType;
 use crate::protocol::{ServerHeader, check_value_size, serialize};
+use crate::server_core::admission::AdmissionSettings;
 use crate::server_core::file_transfer::{TransferEndpoint, record_event};
 use crate::server_core::http::origin::OriginPolicy;
 use crate::server_core::http::web::{LoadError, WebSite, WebSlot};
 use crate::server_core::net::heartbeat::Heartbeat;
 use crate::server_core::net::sender::{MessageReceiver, MessageSender};
-use crate::server_core::net::session;
+use crate::server_core::net::session::{self, CloseSlot};
 use crate::server_core::net::transport::SocketListener;
 use crate::server_core::signals::SignalsManager;
 use crate::server_core::states::data::{Data, DataMulti};
@@ -284,6 +286,8 @@ pub(crate) struct ServerConfig {
     origins: Arc<OriginPolicy>,
     /// How file transfers share the connection.
     transfer_profile: TransferProfile,
+    /// Who may connect while another client is connected.
+    admission: AdmissionSettings,
     /// `None` when TLS is off.
     #[cfg(feature = "tls")]
     tls: Option<TlsIdentity>,
@@ -308,8 +312,14 @@ impl ServerConfig {
         web_path: Option<&Path>,
         allowed_origins: &[String],
         transfer_profile: TransferProfile,
+        admission: AdmissionSettings,
         tls: TlsSettings<'_>,
     ) -> Result<Self, LoadError> {
+        if admission.request_timeout.is_zero() {
+            return Err(LoadError::Invalid(
+                "the connect request timeout must be greater than zero".to_string(),
+            ));
+        }
         let web_path = web_path
             .map(|path| {
                 std::path::absolute(path).map_err(|e| {
@@ -338,6 +348,7 @@ impl ServerConfig {
             web_path,
             origins: Arc::new(origins),
             transfer_profile,
+            admission,
             #[cfg(feature = "tls")]
             tls,
         })
@@ -353,6 +364,7 @@ impl ServerConfig {
             web_path: None,
             origins: Arc::default(),
             transfer_profile: TransferProfile::default(),
+            admission: AdmissionSettings::default(),
             #[cfg(feature = "tls")]
             tls: None,
         }
@@ -361,6 +373,8 @@ impl ServerConfig {
 
 pub(crate) struct Server {
     connected: Arc<AtomicBool>,
+    /// Why the server ends the current connection.
+    close: CloseSlot,
     stop_event: Event,
     sender: MessageSender,
     states: StatesList,
@@ -429,6 +443,7 @@ impl Server {
 
         Self {
             connected,
+            close: CloseSlot::default(),
             stop_event: Event::new(),
             sender,
             states: StatesList::default(),
@@ -496,11 +511,14 @@ impl Server {
 
                 let sender = self.sender.clone();
                 let connected = self.connected.clone();
+                let close = self.close.clone();
                 let stop_event = self.stop_event.clone();
                 let values = states_server.clone();
                 let signals = self.signals.clone();
                 let web = self.web.clone();
                 let heartbeat = self.config.heartbeat;
+                let policy = self.config.admission.policy;
+                let request_timeout = self.config.admission.request_timeout;
                 let transfers = self.transfers.clone();
                 let low_priority = self.low_priority;
                 #[cfg(feature = "tls")]
@@ -524,6 +542,9 @@ impl Server {
                         let session = session::Session {
                             sender,
                             connected,
+                            close,
+                            policy,
+                            request_timeout,
                             values,
                             signals,
                             heartbeat,
@@ -571,6 +592,7 @@ impl Server {
                 *state = RunnerState::Stopped(rx);
             }
             RunnerState::Running(handle, _) => {
+                self.close_with(close::CLOSED_BY_SERVER, "server stopped");
                 self.connected.store(false, Ordering::Release);
                 self.stop_event.set();
                 self.sender.close();
@@ -586,8 +608,20 @@ impl Server {
 
     pub(crate) fn disconnect_client(&self) {
         if self.connected.load(Ordering::Acquire) {
+            self.close_with(
+                close::CLOSED_BY_SERVER,
+                "the server disconnected the client",
+            );
             self.connected.store(false, Ordering::Release);
             self.sender.close();
+        }
+    }
+
+    /// Records why the server ends the current connection, if a client is
+    /// connected; the writer sends it in its close frame.
+    fn close_with(&self, code: u16, reason: &str) {
+        if self.connected.load(Ordering::Acquire) {
+            *self.close.lock() = Some(Close::new(code, reason));
         }
     }
 

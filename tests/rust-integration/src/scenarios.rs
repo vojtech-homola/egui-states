@@ -1,5 +1,5 @@
 //! Identical client assertions for the generated Python and Rust servers.
-use egui_states::{Client, ClientBuilder, ConnectionState};
+use egui_states::{Client, ClientBuilder, CloseReason, ConnectionState};
 use egui_states_test_schema::{State, integration::IntegrationState};
 use std::time::{Duration, Instant};
 
@@ -76,6 +76,8 @@ pub fn run(port: u16, scenario: &str) {
         "images-wire" => return images_wire(port),
         "takeover" => return takeover(port),
         "rejected-client" => return rejected_client(port),
+        "busy-client" => return busy_client(port),
+        "connect-request" => return connect_request(port),
         _ => {}
     }
     let (state, connection) = connect(port);
@@ -681,14 +683,61 @@ fn images_wire(port: u16) {
     assert_eq!(rgba(sparse), [[4, 5, 6, 255]; 4]);
 }
 
-/// A second client replaces the first one, which observes the disconnect.
+/// A second client replaces the first one, which observes the disconnect and
+/// learns why.
 fn takeover(port: u16) {
     let (_first_state, first) = connect(port);
     let (second_state, _second) = connect(port);
     wait("replaced client disconnect", || {
         (first.0.get_state() == ConnectionState::Disconnected).then_some(())
     });
+    assert_eq!(first.0.last_reason(), Some(CloseReason::Replaced));
     barrier(&second_state.integration);
+}
+
+/// With the `Reject` policy a second client is refused as busy and the first
+/// one stays connected; once it leaves, the next client gets in.
+fn busy_client(port: u16) {
+    let (state, first) = connect(port);
+    let builder = ClientBuilder::<State>::new(egui::Context::default(), port);
+    let hash = builder.get_version_hash();
+    let (refused, client) = builder.version(hash).build();
+    client.connect();
+    let reason = wait("busy refusal", || client.last_reason());
+    assert_eq!(reason, CloseReason::Busy);
+    assert_eq!(client.get_state(), ConnectionState::Failed);
+    assert_eq!(
+        refused.integration.value.get(),
+        0,
+        "a refused client received synchronized state"
+    );
+    barrier(&state.integration);
+    assert_eq!(first.0.get_state(), ConnectionState::Connected);
+
+    drop(first);
+    let (next_state, _next) =
+        connect_client(ClientBuilder::<State>::new(egui::Context::default(), port));
+    barrier(&next_state.integration);
+}
+
+/// The server's connect-request callback refuses the first client, which
+/// learns why, and accepts the next one.
+fn connect_request(port: u16) {
+    let builder = ClientBuilder::<State>::new(egui::Context::default(), port);
+    let hash = builder.get_version_hash();
+    let (refused, client) = builder.version(hash).build();
+    client.connect();
+    let reason = wait("refusal", || client.last_reason());
+    assert_eq!(reason, CloseReason::Refused);
+    assert_eq!(client.get_state(), ConnectionState::Failed);
+    assert_eq!(
+        refused.integration.value.get(),
+        0,
+        "a refused client received synchronized state"
+    );
+
+    let (state, _connection) = connect(port);
+    barrier(&state.integration);
 }
 
 /// A client with a mismatched layout version is refused without affecting the
@@ -709,14 +758,14 @@ fn rejected_client(port: u16) {
         );
         std::thread::sleep(Duration::from_millis(20));
     }
-    // An error is reported only in `ConnectionState::Failed`.
-    let error = wait("rejected client failure", || {
-        rejected_connection.0.last_error()
+    // A reason is reported only once the attempt has failed.
+    let reason = wait("rejected client failure", || {
+        rejected_connection.0.last_reason()
     });
-    assert!(
-        error.contains("before the server accepted the handshake"),
-        "{error}"
-    );
+    assert_eq!(reason, CloseReason::VersionMismatch);
+    assert_eq!(rejected_connection.0.get_state(), ConnectionState::Failed);
+    let error = rejected_connection.0.last_error().unwrap();
+    assert!(error.contains("another application version"), "{error}");
     barrier(&state.integration);
     assert!(connection.0.get_state() == ConnectionState::Connected);
 }

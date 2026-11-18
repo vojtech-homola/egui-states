@@ -1,3 +1,4 @@
+pub(crate) mod admission;
 pub(crate) mod error;
 pub(crate) mod file_transfer;
 pub(crate) mod http;

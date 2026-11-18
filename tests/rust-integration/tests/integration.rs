@@ -3,7 +3,7 @@ use egui_states_test_support::{fixture::Fixture, free_port};
 
 fn scenario(scenario: &str) {
     let port = free_port();
-    let fixture = Fixture::new(port).unwrap();
+    let fixture = Fixture::new(port, scenario).unwrap();
     process::checked_output(
         std::process::Command::new(env!("CARGO_BIN_EXE_client-probe"))
             .arg(port.to_string())
@@ -13,8 +13,10 @@ fn scenario(scenario: &str) {
     );
     fixture.server.stop();
     fixture.assert_no_errors();
-    if scenario == "rejected-client" {
-        fixture.assert_warning("wrong version");
+    match scenario {
+        "rejected-client" => fixture.assert_warning("wrong version"),
+        "busy-client" => fixture.assert_warning("another client is connected"),
+        _ => {}
     }
 }
 

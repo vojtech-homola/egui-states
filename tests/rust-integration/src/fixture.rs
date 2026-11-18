@@ -291,14 +291,20 @@ fn edit_images(all: &State) -> s::Result<()> {
 }
 
 impl Fixture {
-    pub fn new(port: u16) -> s::Result<Self> {
+    /// The server for `scenario`, which some scenarios configure.
+    pub fn new(port: u16, scenario: &str) -> s::Result<Self> {
         let errors = Arc::new(Mutex::new(Vec::new()));
         let on_error = errors.clone();
+        let client_policy = match scenario {
+            "busy-client" => s::ClientPolicy::Reject,
+            _ => s::ClientPolicy::Replace,
+        };
         let server = StatesServer::with_options(s::ServerOptions {
             version: Some(StatesServer::VERSION_HASH),
             error_handler: Some(Arc::new(move |error| {
                 on_error.lock().unwrap().push(error.to_string())
             })),
+            client_policy,
             ..s::ServerOptions::default()
         })?;
         let states = &server.states.integration;
@@ -524,6 +530,14 @@ impl Fixture {
                 on_error.lock().unwrap().push(error.to_string());
             }
         }));
+        if scenario == "connect-request" {
+            // Refuses the first client and accepts every later one.
+            let asked = std::sync::atomic::AtomicUsize::new(0);
+            callbacks.push(server.on_connect_request(move |request| {
+                assert!(request.is_pending());
+                asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst) > 0
+            }));
+        }
         server.start(port, Some(std::net::Ipv4Addr::LOCALHOST), None)?;
         Ok(Self {
             server,

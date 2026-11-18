@@ -47,6 +47,97 @@ def test_transfer_profiles_are_validated():
             StatesServer(signals_workers=1, transfer_profile=cast(Any, profile))
 
 
+def test_client_policies_are_validated():
+    """Accept every client policy and reject anything else."""
+    import pytest
+    from egui_states import ClientPolicy
+    from egui_states_test_bindings import StatesServer  # ty: ignore[import-not-found]
+
+    for policy in ClientPolicy:
+        StatesServer(signals_workers=1, client_policy=policy)
+    # Values an untyped caller might pass.
+    for policy in ["reject", "Reject", 2, -1]:
+        with pytest.raises(ValueError, match="ClientPolicy"):
+            StatesServer(signals_workers=1, client_policy=cast(Any, policy))
+
+
+def test_connect_request_timeouts_are_validated():
+    """Accept a positive connect request timeout and reject anything else."""
+    import pytest
+    from egui_states_test_bindings import StatesServer  # ty: ignore[import-not-found]
+
+    StatesServer(signals_workers=1, connect_request_timeout=0.5)
+    for timeout in [0.0, -1.0, float("nan"), float("inf")]:
+        with pytest.raises(ValueError, match="connect request timeout"):
+            StatesServer(signals_workers=1, connect_request_timeout=timeout)
+
+
+def test_replacing_the_connect_request_callback_keeps_it_registered(monkeypatch):
+    """Swap the connect-request callback without a moment where none decides."""
+    from egui_states_test_bindings import StatesServer  # ty: ignore[import-not-found]
+
+    server = StatesServer(signals_workers=1)
+    manager = server._signals_manager
+    cleared = []
+    clear = manager.clear_callbacks
+    monkeypatch.setattr(manager, "clear_callbacks", lambda value_id: (cleared.append(value_id), clear(value_id)))
+    request_id = 4
+
+    server.on_connect_request(lambda request: True)
+    server.on_connect_request(lambda request: False)
+    # Unregistering in between would let the client policy decide.
+    assert cleared == []
+    assert len(manager._callbacks[request_id]) == 1
+
+    server.on_connect_request(None)
+    assert cleared == [request_id]
+    assert manager._callbacks[request_id] == []
+    server.on_connect_request(lambda request: True)
+    assert len(manager._callbacks[request_id]) == 1
+
+
+def test_connect_request_callback_is_not_asked_about_an_ended_request():
+    """Skip a request that ended, and answer a pending one with the result."""
+    from types import SimpleNamespace
+
+    from egui_states_test_bindings import StatesServer  # ty: ignore[import-not-found]
+
+    class Request:
+        def __init__(self, pending, address):
+            self.pending = pending
+            self.name = address
+            self.answers = []
+
+        def address(self):
+            return self.name
+
+        def is_pending(self):
+            return self.pending
+
+        def answer(self, accept):
+            self.answers.append(accept)
+
+    server = StatesServer(signals_workers=1)
+    asked = []
+
+    def decide(request):
+        asked.append(request.address)
+        return True
+
+    server.on_connect_request(decide)
+    core = server._server
+    try:
+        ended, pending = Request(False, "ended"), Request(True, "pending")
+        for request in (ended, pending):
+            server._server = SimpleNamespace(connect_request=lambda request=request: request)
+            server._decide_connect_request()
+        assert ended.answers == []
+        assert pending.answers == [True]
+        assert asked == ["pending"]
+    finally:
+        server._server = core
+
+
 def test_server_restarts_on_a_different_port():
     """Restart a server with a new port and release the previous listener."""
     import socket

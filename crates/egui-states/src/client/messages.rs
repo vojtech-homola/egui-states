@@ -201,11 +201,27 @@ impl MessagesParser {
     }
 }
 
+/// Why reading from the server stopped.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ReadError {
+    /// The server closed the connection, with the code and reason of its close
+    /// frame if it sent one.
+    Closed(Option<(u16, String)>),
+    /// Reading failed, or the server sent something this client cannot read.
+    Failed(&'static str),
+}
+
+impl From<&'static str> for ReadError {
+    fn from(error: &'static str) -> Self {
+        Self::Failed(error)
+    }
+}
+
 /// The binary frames a server sends, apart from how they travel.
 pub(crate) trait ServerFrames {
     /// Waits for the next frame of server messages. Frames without messages,
     /// such as pings, are skipped.
-    async fn next_frame(&mut self) -> Result<Bytes, &'static str>;
+    async fn next_frame(&mut self) -> Result<Bytes, ReadError>;
 }
 
 /// Reads the server messages of the frames of `S`, one at a time.
@@ -224,7 +240,7 @@ impl<S: ServerFrames> ServerReader<S> {
 
     /// Returns the next message, reading a frame when the current one is
     /// used up. An error ends the connection.
-    pub(crate) async fn read(&mut self) -> Result<ServerMessage, &'static str> {
+    pub(crate) async fn read(&mut self) -> Result<ServerMessage, ReadError> {
         if let Some(message) = self.parser.next()? {
             return Ok(message);
         }
@@ -253,6 +269,8 @@ pub(crate) async fn handle_message(
             client.lane_ack();
             return Ok(());
         }
+        // The connection task reads it before the server accepts the client.
+        ServerHeader::ConnectPending(_) => return Ok(()),
         // Every transfer frame of the connection comes after it.
         ServerHeader::TransferLimits(window, chunk) => {
             let limits = TransferLimits::new(u64::from(window), chunk as usize)?;
@@ -401,8 +419,8 @@ mod tests {
     struct QueuedFrames(std::collections::VecDeque<Bytes>);
 
     impl ServerFrames for QueuedFrames {
-        async fn next_frame(&mut self) -> Result<Bytes, &'static str> {
-            self.0.pop_front().ok_or("Connection closed by server")
+        async fn next_frame(&mut self) -> Result<Bytes, ReadError> {
+            self.0.pop_front().ok_or(ReadError::Closed(None))
         }
     }
 
@@ -425,10 +443,7 @@ mod tests {
                 assert!(matches!(header, ServerHeader::Update(dt) if dt == expected));
                 assert!(payload.is_empty());
             }
-            assert!(matches!(
-                reader.read().await,
-                Err("Connection closed by server")
-            ));
+            assert!(matches!(reader.read().await, Err(ReadError::Closed(None))));
         });
     }
 

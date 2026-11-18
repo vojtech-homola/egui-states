@@ -1,5 +1,6 @@
 //! The WebSocket connection to the server, native or in the browser.
 
+pub(crate) mod timer;
 #[cfg(all(feature = "tls", not(target_arch = "wasm32")))]
 pub(crate) mod tls;
 #[cfg(not(target_arch = "wasm32"))]

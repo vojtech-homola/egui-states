@@ -4,6 +4,7 @@ use std::net::{Ipv4Addr, SocketAddrV4};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::OnceLock;
+use std::time::Duration;
 
 use bytes::Bytes;
 use pyo3::buffer::PyBuffer;
@@ -19,12 +20,16 @@ type SignalEvent<'py> = (u64, Bound<'py, PyAny>, bool, Option<Bound<'py, PyAny>>
 use crate::file_transfer::TransferProfile;
 use crate::file_transfer::engine::Engine;
 use crate::protocol::data::header_type_id;
+use crate::python::pyadmission::PyConnectRequest;
 use crate::python::value_parsing::{ValueCreator, ValueParser};
 use crate::python::{
     pydata::{contiguous_bytes, data_buffer, data_slice},
     pyimage, pyparsing,
     pytransfer::{self, Offer, PyTransferHandle, PyTransferOffer, SendTarget},
     pytypes::{PyObjectClass, PyObjectType},
+};
+use crate::server_core::admission::{
+    AdmissionSettings, ClientPolicy, DEFAULT_CONNECT_REQUEST_TIMEOUT, Request,
 };
 use crate::server_core::file_transfer::{TransferEndpoint, finished_transfer};
 use crate::server_core::http::web::{LoadError, WebSite};
@@ -303,10 +308,13 @@ impl StateServerCore {
         web_path=None,
         allowed_origins=Vec::new(),
         transfer_profile=1,
+        client_policy=0,
+        connect_request_timeout=DEFAULT_CONNECT_REQUEST_TIMEOUT.as_secs_f64(),
         tls=false,
         tls_cert=None,
         tls_key=None,
     ))]
+    // One parameter per keyword argument of the Python constructor.
     #[allow(clippy::too_many_arguments)]
     fn new(
         version: Option<u64>,
@@ -315,6 +323,8 @@ impl StateServerCore {
         web_path: Option<PathBuf>,
         allowed_origins: Vec<String>,
         transfer_profile: u8,
+        client_policy: u8,
+        connect_request_timeout: f64,
         tls: bool,
         tls_cert: Option<PathBuf>,
         tls_key: Option<PathBuf>,
@@ -324,12 +334,27 @@ impl StateServerCore {
         let transfer_profile = TransferProfile::from_code(transfer_profile).ok_or_else(|| {
             PyValueError::new_err(format!("unknown transfer profile {transfer_profile}"))
         })?;
+        let client_policy = ClientPolicy::from_code(client_policy).ok_or_else(|| {
+            PyValueError::new_err(format!("unknown client policy {client_policy}"))
+        })?;
+        let connect_request_timeout = Duration::try_from_secs_f64(connect_request_timeout)
+            .ok()
+            .filter(|timeout| !timeout.is_zero())
+            .ok_or_else(|| {
+                PyValueError::new_err(format!(
+                    "the connect request timeout must be a positive number of seconds, got {connect_request_timeout}"
+                ))
+            })?;
         let config = ServerConfig::new(
             version,
             heartbeat,
             web_path.as_deref(),
             &allowed_origins,
             transfer_profile,
+            AdmissionSettings {
+                policy: client_policy,
+                request_timeout: connect_request_timeout,
+            },
             TlsSettings {
                 enabled: tls,
                 cert: tls_cert.as_deref(),
@@ -348,6 +373,7 @@ impl StateServerCore {
         types.insert(signals::ON_CONNECT_ID, PyObjectType::String);
         types.insert(signals::ON_DISCONNECT_ID, PyObjectType::Empty);
         types.insert(signals::CLIENT_MESSAGE_ID, PyObjectType::String);
+        types.insert(signals::ON_CONNECT_REQUEST_ID, PyObjectType::Empty);
 
         Ok(Self {
             server: RwLock::new(server),
@@ -1873,6 +1899,15 @@ impl StateServerCore {
         Ok(())
     }
 
+    /// The connect request the connect-request callbacks are running for;
+    /// `None` outside of them.
+    fn connect_request(&self) -> Option<PyConnectRequest> {
+        self.signals
+            .attachment(signals::ON_CONNECT_REQUEST_ID)
+            .and_then(|attachment| attachment.downcast::<Request>().ok())
+            .map(PyConnectRequest::new)
+    }
+
     /// The finished transfer of the event the endpoint's callbacks are
     /// running for; `None` outside of them.
     fn transfer_finished(
@@ -1975,9 +2010,20 @@ mod tests {
     ) {
         Python::initialize();
         let core = Python::attach(|py| {
-            let core =
-                StateServerCore::new(None, 60.0, None, None, Vec::new(), 1, false, None, None)
-                    .unwrap();
+            let core = StateServerCore::new(
+                None,
+                60.0,
+                None,
+                None,
+                Vec::new(),
+                1,
+                0,
+                5.0,
+                false,
+                None,
+                None,
+            )
+            .unwrap();
             Py::new(py, core).unwrap()
         });
         let port = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))

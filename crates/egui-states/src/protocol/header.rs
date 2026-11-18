@@ -33,6 +33,10 @@ pub(crate) enum ServerHeader {
     /// [`ClientHeader::LaneAck`] once it has handled everything before it,
     /// which returns that frame's bytes to the lane's window.
     LaneMark,
+    /// The server asks its connect-request callback whether to accept the
+    /// client and answers within this many milliseconds. Sent before any
+    /// other message; it does not mean the client is accepted.
+    ConnectPending(u32),
 }
 
 #[derive(Serialize, Deserialize)]
@@ -103,6 +107,7 @@ mod tests {
             ServerHeader::Transfer(1, TransferFrame::Reject { serial: 0 }, 0),
             ServerHeader::TransferLimits(1, 1),
             ServerHeader::LaneMark,
+            ServerHeader::ConnectPending(1),
         ];
         for (index, header) in server.iter().enumerate() {
             let data: FastVec<32> = serialize(header).unwrap();

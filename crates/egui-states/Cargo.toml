@@ -78,6 +78,10 @@ rustls-platform-verifier = { version = "0.7", optional = true }
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 tokio = { version = "1.52", features = ["sync", "macros"] }
 ws_stream_wasm = { version = "0.7" }
+# The close events of the browser socket, which carry the close code.
+pharos = { version = "0.5" }
+# The connection timeout's timer.
+js-sys = { version = "0.3" }
 wasm-bindgen-futures = { version = "0.4" }
 web-sys = { workspace = true, features = [
     "Window",
