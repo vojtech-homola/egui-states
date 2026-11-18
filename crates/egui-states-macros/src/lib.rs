@@ -129,6 +129,11 @@ pub fn atomic_static(input: TokenStream) -> TokenStream {
 ///   to `Image`, `ImageMulti`, `Data`, `DataTake`, `DataMulti` and
 ///   `DataMultiTake`, and on a nested state to every such handle inside it, at
 ///   any depth.
+/// - `queue`: server callbacks receive every change of the field in arrival
+///   order, as `StatesCreator::queue` describes, instead of only the latest
+///   one. It applies to `Value`, `ValueAtomic` and `Signal`.
+///
+/// Options can be combined in one attribute, `#[state(a, b)]`.
 ///
 /// ```ignore
 /// #[derive(egui_states::State)]
@@ -136,6 +141,8 @@ pub fn atomic_static(input: TokenStream) -> TokenStream {
 ///     result: Image,
 ///     #[state(low_priority)]
 ///     camera: Image,
+///     #[state(queue)]
+///     clicks: Signal<u32>,
 /// }
 /// ```
 #[proc_macro_derive(State, attributes(state))]

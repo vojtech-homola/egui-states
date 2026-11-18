@@ -97,6 +97,7 @@ compile_fail! {
     state_empty: "state-empty" => "State derive requires at least one named field",
     state_low_priority_value: "state-low-priority-value" => "`low_priority` applies to Image, ImageMulti",
     state_option: "state-option" => "unknown `state` option",
+    state_queue_image: "state-queue-image" => "`queue` applies to Value, ValueAtomic, Signal",
     atomic_payload: "atomic-payload" => "Enum variants must be unit variants",
     initial_tuple: "initial-tuple" => "Struct fields must be named",
     atomic_static_payload: "atomic-static-payload" => "Enum variants must be unit variants",

@@ -30,7 +30,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use egui_states::server::{self, CallbackHandle, StateServer};
-use egui_states::{Client, ClientBuilder, ConnectionState, Queue, State, StatesCreator};
+use egui_states::{Client, ClientBuilder, ConnectionState, State, StatesCreator};
 use egui_states_bench::{Link, free_port, relay, wait_until};
 
 /// Bursts measured per case, unless `EGUI_BURST_REPEATS` says otherwise.
@@ -53,12 +53,12 @@ const NAMES: [&str; 16] = [
 
 struct BurstStates {
     statics: Vec<egui_states::Static<u64>>,
-    value: egui_states::Value<u64, Queue>,
+    value: egui_states::Value<u64>,
     /// Registered so the server's blobs reach a client state.
     _blob: egui_states::Static<String>,
     marker: egui_states::Static<u64>,
-    input: egui_states::Value<u64, Queue>,
-    ping: egui_states::Value<u64, Queue>,
+    input: egui_states::Value<u64>,
+    ping: egui_states::Value<u64>,
     echo: egui_states::Static<u64>,
 }
 

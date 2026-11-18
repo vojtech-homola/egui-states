@@ -19,8 +19,7 @@ use crate::client::states::image::{Image, ImageMulti};
 use crate::client::states::initial_value::InitialValue;
 use crate::client::states::map::{MapState, UpdateMap};
 use crate::client::states::values::{
-    GetQueueType, Signal, Static, StaticAtomic, UpdateValue, UpdateValueTake, Value, ValueAtomic,
-    ValueTake,
+    Signal, Static, StaticAtomic, UpdateValue, UpdateValueTake, Value, ValueAtomic, ValueTake,
 };
 use crate::client::states::vec::{UpdateList, VecState};
 use crate::file_transfer::engine::{Engine, Repaint, Role, Side};
@@ -58,7 +57,7 @@ pub trait StatesCreator {
     fn substate<S: State>(&mut self, name: &str) -> S;
 
     /// Creates a synchronized read/write value with an initial client value.
-    fn value<T, Q>(&mut self, name: &'static str, value: T) -> Value<T, Q>
+    fn value<T>(&mut self, name: &'static str, value: T) -> Value<T>
     where
         T: for<'a> Deserialize<'a>
             + Serialize
@@ -67,8 +66,7 @@ pub trait StatesCreator {
             + Send
             + Sync
             + Clone
-            + 'static,
-        Q: GetQueueType;
+            + 'static;
 
     /// Creates a one-shot value received by and consumed on the client.
     fn value_take<T>(&mut self, name: &'static str) -> ValueTake<T>
@@ -76,7 +74,7 @@ pub trait StatesCreator {
         T: for<'a> Deserialize<'a> + Serialize + Typed + Send + Sync + 'static;
 
     /// Creates an atomic synchronized read/write value.
-    fn atomic<T, Q>(&mut self, name: &'static str, value: T) -> ValueAtomic<T, Q>
+    fn atomic<T>(&mut self, name: &'static str, value: T) -> ValueAtomic<T>
     where
         T: for<'a> Deserialize<'a>
             + Serialize
@@ -86,8 +84,7 @@ pub trait StatesCreator {
             + Sync
             + Clone
             + Atomic
-            + 'static,
-        Q: GetQueueType;
+            + 'static;
 
     /// Creates a server-controlled value that is read-only on the client.
     fn add_static<T>(&mut self, name: &'static str, value: T) -> Static<T>
@@ -115,10 +112,9 @@ pub trait StatesCreator {
             + 'static;
 
     /// Creates a client-to-server event carrying values of type `T`.
-    fn signal<T, Q>(&mut self, name: &'static str) -> Signal<T, Q>
+    fn signal<T>(&mut self, name: &'static str) -> Signal<T>
     where
-        T: Serialize + Typed + Clone + Send + Sync + 'static,
-        Q: GetQueueType;
+        T: Serialize + Typed + Clone + Send + Sync + 'static;
 
     /// Creates a server-controlled egui image texture.
     fn image(&mut self, name: &'static str) -> Image;
@@ -184,6 +180,21 @@ pub trait StatesCreator {
     /// behaves the same either way. The derive spells it
     /// `#[state(low_priority)]`.
     fn low_priority<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R
+    where
+        Self: Sized,
+    {
+        f(self)
+    }
+
+    /// Creates the values and signals that `f` makes in queue mode.
+    ///
+    /// Server callbacks then receive every change a client makes with
+    /// `set_signal`, and every event of a signal, in arrival order. By
+    /// default they receive only the latest change made while they are busy.
+    /// It applies to the values, atomic values and signals `f` creates
+    /// itself, not to those of substates. The derive spells it
+    /// `#[state(queue)]`.
+    fn queue<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R
     where
         Self: Sized,
     {
@@ -367,7 +378,7 @@ impl StatesCreator for StatesCreatorClient {
         substate
     }
 
-    fn value<T, Q>(&mut self, name: &str, value: T) -> Value<T, Q>
+    fn value<T>(&mut self, name: &str, value: T) -> Value<T>
     where
         T: for<'a> Deserialize<'a>
             + Serialize
@@ -377,7 +388,6 @@ impl StatesCreator for StatesCreatorClient {
             + Sync
             + Clone
             + 'static,
-        Q: GetQueueType,
     {
         let (name, id) = state_path(&self.parent, name);
         let type_id = T::get_type().get_hash();
@@ -407,7 +417,7 @@ impl StatesCreator for StatesCreatorClient {
         value
     }
 
-    fn atomic<T, Q>(&mut self, name: &str, value: T) -> ValueAtomic<T, Q>
+    fn atomic<T>(&mut self, name: &str, value: T) -> ValueAtomic<T>
     where
         T: for<'a> Deserialize<'a>
             + Serialize
@@ -418,7 +428,6 @@ impl StatesCreator for StatesCreatorClient {
             + Clone
             + Atomic
             + 'static,
-        Q: GetQueueType,
     {
         let (name, id) = state_path(&self.parent, name);
         let type_id = T::get_type().get_hash();
@@ -502,10 +511,9 @@ impl StatesCreator for StatesCreatorClient {
         value
     }
 
-    fn signal<T, Q>(&mut self, name: &str) -> Signal<T, Q>
+    fn signal<T>(&mut self, name: &str) -> Signal<T>
     where
         T: Serialize + Typed + Clone + Send + Sync + 'static,
-        Q: GetQueueType,
     {
         let (name, id) = state_path(&self.parent, name);
         let type_id = T::get_type().get_hash();

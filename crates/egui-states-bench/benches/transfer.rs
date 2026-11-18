@@ -17,14 +17,14 @@ use std::time::{Duration, Instant};
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use egui_states::server::{self, CallbackHandle, ImageFormat, StateServer};
-use egui_states::{Client, ClientBuilder, ConnectionState, Queue, State, StatesCreator};
+use egui_states::{Client, ClientBuilder, ConnectionState, State, StatesCreator};
 use egui_states_bench::{MIB, free_port, pattern, wait_until};
 
 struct BenchStates {
     data: egui_states::Data<u8>,
     image: egui_states::Image,
-    value: egui_states::Value<u64, Queue>,
-    blob: egui_states::Value<Vec<u8>, Queue>,
+    value: egui_states::Value<u64>,
+    blob: egui_states::Value<Vec<u8>>,
     marker: egui_states::Static<u64>,
 }
 

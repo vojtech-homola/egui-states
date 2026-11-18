@@ -78,9 +78,13 @@ whether to apply the request.
 
 Signals and signaled `Value` changes use one of two server-side modes:
 
-- Single mode (`NoQueue`, the default) coalesces pending changes for a state to
-  the latest value while a callback for that state is outstanding.
-- Queue mode (`Queue`) preserves every change and delivers them in order.
+- Single mode, the default, coalesces pending changes for a state to the
+  latest value while a callback for that state is outstanding.
+- Queue mode, `#[state(queue)]` on the field or `StatesCreator::queue` in a
+  hand-written `State`, preserves every change and delivers them in order.
+
+The mode is set in the state definition and passed to the server by the
+generated bindings; the client type is the same in both modes.
 
 Callbacks for different states may run concurrently when the server has more
 than one signal worker. A callback handle owns its registration; dropping the

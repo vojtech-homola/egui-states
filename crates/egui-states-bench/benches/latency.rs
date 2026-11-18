@@ -35,8 +35,7 @@ use std::time::{Duration, Instant};
 use egui_states::bench_support::{accept_discard, discard_uploads, send_pattern, upload_pattern};
 use egui_states::server::{self, CallbackHandle, StateServer};
 use egui_states::{
-    Client, ClientBuilder, ConnectionState, Queue, State, StatesCreator, TransferHandle,
-    TransferOffer,
+    Client, ClientBuilder, ConnectionState, State, StatesCreator, TransferHandle, TransferOffer,
 };
 use egui_states_bench::{Link, MIB, free_port, relay, wait_until};
 
@@ -52,9 +51,9 @@ const STOP_DATA: u32 = 4;
 const START_LOW_DATA: u32 = 5;
 
 struct LatencyStates {
-    value: egui_states::Value<u64, Queue>,
+    value: egui_states::Value<u64>,
     echo: egui_states::Static<u64>,
-    command: egui_states::Signal<u32, Queue>,
+    command: egui_states::Signal<u32>,
     /// Registered so the server's `Data` sets reach a client state.
     _data: egui_states::Data<u8>,
     _low_data: egui_states::Data<u8>,

@@ -80,6 +80,9 @@ const BULK_HANDLES: [&str; 6] = [
     "DataMultiTake",
 ];
 
+/// State handles that `#[state(queue)]` applies to.
+const QUEUE_HANDLES: [&str; 3] = ["Value", "ValueAtomic", "Signal"];
+
 /// The other state handles.
 const HANDLES: [&str; 10] = [
     "Value",
@@ -98,6 +101,7 @@ const HANDLES: [&str; 10] = [
 #[derive(Default)]
 struct FieldOptions {
     low_priority: Option<syn::Path>,
+    queue: Option<syn::Path>,
 }
 
 fn field_options(field: &syn::Field) -> syn::Result<FieldOptions> {
@@ -112,15 +116,17 @@ fn field_options(field: &syn::Field) -> syn::Result<FieldOptions> {
             let Meta::Path(path) = meta else {
                 return Err(syn::Error::new_spanned(
                     meta,
-                    "expected a `state` option without arguments: `low_priority`",
+                    "expected a `state` option without arguments: `low_priority` or `queue`",
                 ));
             };
             let option = if path.is_ident("low_priority") {
                 &mut options.low_priority
+            } else if path.is_ident("queue") {
+                &mut options.queue
             } else {
                 return Err(syn::Error::new_spanned(
                     path,
-                    "unknown `state` option; expected `low_priority`",
+                    "unknown `state` option; expected `low_priority` or `queue`",
                 ));
             };
             if option.is_some() {
@@ -175,6 +181,19 @@ fn field_initializer(field: &syn::Field) -> syn::Result<proc_macro2::TokenStream
             ));
         }
         Some(_) => quote!(c.low_priority(|c| #initializer)),
+        None => initializer,
+    };
+    let initializer = match options.queue {
+        Some(option) if !QUEUE_HANDLES.contains(&type_name.as_str()) => {
+            return Err(syn::Error::new_spanned(
+                option,
+                format!(
+                    "`queue` applies to {}; not to `{type_name}`",
+                    QUEUE_HANDLES.join(", ")
+                ),
+            ));
+        }
+        Some(_) => quote!(c.queue(|c| #initializer)),
         None => initializer,
     };
 

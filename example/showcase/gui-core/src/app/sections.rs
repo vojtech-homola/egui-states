@@ -40,7 +40,7 @@ pub(super) fn show_values(ui: &mut egui::Ui, state: &mut ViewState) {
 
         ui.separator();
 
-        ui.label("Value<f32, Queue>: root.values.queued_progress");
+        ui.label("Value<f32>, #[state(queue)]: root.values.queued_progress");
         let mut queued_progress = state.schema.values.queued_progress.get();
         if ui
             .add(egui::Slider::new(&mut queued_progress, 0.0..=1.0).text("queued_progress"))
@@ -154,7 +154,7 @@ pub(super) fn show_values(ui: &mut egui::Ui, state: &mut ViewState) {
 
 pub(super) fn show_signals(ui: &mut egui::Ui, state: &mut ViewState) {
     ui.collapsing("signals", |ui| {
-        ui.label("Signal<(), Queue>: root.signals.empty_signal");
+        ui.label("Signal<()>, #[state(queue)]: root.signals.empty_signal");
         if ui.button("emit empty signal").clicked() {
             state.schema.signals.empty_signal.set(());
         }
@@ -179,7 +179,7 @@ pub(super) fn show_signals(ui: &mut egui::Ui, state: &mut ViewState) {
         }
         ui.separator();
 
-        ui.label("Signal<PrimaryChoice, Queue>: root.signals.enum_signal");
+        ui.label("Signal<PrimaryChoice>, #[state(queue)]: root.signals.enum_signal");
         let mut enum_changed = false;
         egui::ComboBox::from_label("variant")
             .selected_text(primary_choice_label(state.enum_signal_value))

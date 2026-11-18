@@ -15,9 +15,7 @@ use crate::client::states::initial_value::{InitValue, InitialValue};
 
 use crate::client::messages::MessageSender;
 use crate::client::states::map::MapState;
-use crate::client::states::values::{
-    GetQueueType, Signal, Static, StaticAtomic, Value, ValueAtomic, ValueTake,
-};
+use crate::client::states::values::{Signal, Static, StaticAtomic, Value, ValueAtomic, ValueTake};
 use crate::client::states::vec::VecState;
 use crate::client::states_creator::{
     self, StatesCreator, hash_id, hash_id_kind, hash_id_type, state_path,
@@ -180,6 +178,8 @@ pub(crate) struct StatesCreatorBuild {
     version_hasher: StableHasher,
     /// Set inside [`StatesCreator::low_priority`], also for substates.
     low_priority: bool,
+    /// Set inside [`StatesCreator::queue`], not for substates.
+    queue: bool,
 }
 
 impl StatesCreatorBuild {
@@ -193,6 +193,7 @@ impl StatesCreatorBuild {
             sender,
             version_hasher: StableHasher::new(),
             low_priority: false,
+            queue: false,
         }
     }
 
@@ -253,10 +254,9 @@ impl StatesCreator for StatesCreatorBuild {
         substate
     }
 
-    fn value<T, Q>(&mut self, name: &str, value: T) -> Value<T, Q>
+    fn value<T>(&mut self, name: &str, value: T) -> Value<T>
     where
         T: for<'a> Deserialize<'a> + Serialize + Clone + Typed + InitialValue,
-        Q: GetQueueType,
     {
         self.collect_rust_derives::<T>();
         let (full_name, id) = state_path(&self.parent, name);
@@ -275,7 +275,7 @@ impl StatesCreator for StatesCreatorBuild {
             name.to_owned(),
             T::get_type(),
             init,
-            Q::is_queue(),
+            self.queue,
         ));
 
         value
@@ -303,10 +303,9 @@ impl StatesCreator for StatesCreatorBuild {
         value
     }
 
-    fn atomic<T, Q>(&mut self, name: &str, value: T) -> ValueAtomic<T, Q>
+    fn atomic<T>(&mut self, name: &str, value: T) -> ValueAtomic<T>
     where
         T: for<'a> Deserialize<'a> + Serialize + Clone + Typed + InitialValue + Atomic,
-        Q: GetQueueType,
     {
         self.collect_rust_derives::<T>();
         let (full_name, id) = state_path(&self.parent, name);
@@ -325,7 +324,7 @@ impl StatesCreator for StatesCreatorBuild {
             name.to_owned(),
             T::get_type(),
             init,
-            Q::is_queue(),
+            self.queue,
         ));
 
         value
@@ -410,10 +409,9 @@ impl StatesCreator for StatesCreatorBuild {
         value
     }
 
-    fn signal<T, Q>(&mut self, name: &str) -> Signal<T, Q>
+    fn signal<T>(&mut self, name: &str) -> Signal<T>
     where
         T: Serialize + Clone + Typed,
-        Q: GetQueueType,
     {
         self.collect_rust_derives::<T>();
         let (_, id) = state_path(&self.parent, name);
@@ -430,7 +428,7 @@ impl StatesCreator for StatesCreatorBuild {
         self.states.push(StateType::Signal(
             name.to_owned(),
             T::get_type(),
-            Q::is_queue(),
+            self.queue,
         ));
 
         signal
@@ -602,6 +600,13 @@ impl StatesCreator for StatesCreatorBuild {
         let outer = std::mem::replace(&mut self.low_priority, true);
         let result = f(self);
         self.low_priority = outer;
+        result
+    }
+
+    fn queue<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        let outer = std::mem::replace(&mut self.queue, true);
+        let result = f(self);
+        self.queue = outer;
         result
     }
 
