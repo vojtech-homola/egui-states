@@ -26,7 +26,7 @@ use crate::server_core::http::origin::OriginPolicy;
 use crate::server_core::http::web::{WebSite, WebSlot};
 use crate::server_core::net::heartbeat::{Activity, Heartbeat};
 use crate::server_core::net::sender::{LaneReceiver, MessageReceiver, MessageSender, SenderData};
-use crate::server_core::net::socket_reader::{ClientMessage, SocketReader};
+use crate::server_core::net::socket_reader::{ClientMessage, SocketReader, Watched};
 use crate::server_core::net::transport::{
     FrameSink, FrameSource, Listener, Opened, Outgoing, Served,
 };
@@ -464,20 +464,39 @@ enum Decision {
     Refused,
     /// The client closed its connection.
     Left,
+    /// The client sent messages before it was accepted.
+    Sent,
     TimedOut,
 }
+
+impl From<Watched> for Decision {
+    fn from(watched: Watched) -> Self {
+        match watched {
+            Watched::Left => Self::Left,
+            Watched::Sent => Self::Sent,
+        }
+    }
+}
+
+/// Stands in for a deadline too far away for the clock.
+const FAR_FUTURE: Duration = Duration::from_secs(60 * 60 * 24 * 365 * 30);
 
 /// Asks the connect-request callback whether `client` may connect.
 ///
 /// The client first learns how long the decision may take. Requests are
 /// decided one at a time, and the time spent waiting for the turn counts.
-/// Returns the accepted client; a refused one is closed with the reason.
+/// The client is watched all the while: one that leaves ends its request,
+/// so a later answer cannot let a departed client take over. Returns the
+/// accepted client; a refused one is closed with the reason.
 async fn decide<L: Listener>(
     mut client: ClientReady<L>,
     admission: &Admission,
     signals: &SignalsManager,
 ) -> Option<ClientReady<L>> {
-    let deadline = Instant::now() + admission.timeout;
+    let now = Instant::now();
+    let deadline = now
+        .checked_add(admission.timeout)
+        .unwrap_or(now + FAR_FUTURE);
     let millis = u32::try_from(admission.timeout.as_millis()).unwrap_or(u32::MAX);
     if let Ok(notice) = serialize::<_, 32>(&ServerHeader::ConnectPending(millis)) {
         let notice = Outgoing::Binary(notice.into_bytes());
@@ -491,26 +510,18 @@ async fn decide<L: Listener>(
     let (request, answer) = Request::new(client.peer_addr.clone());
     let _end = EndRequest(request.clone());
     let decision = timeout_at(deadline, async {
-        let turn = admission.turn.clone().lock_owned().await;
+        // A client that leaves while it waits for its turn is never raised.
+        let turn = tokio::select! {
+            turn = admission.turn.clone().lock_owned() => turn,
+            watched = client.socket_reader.watch() => return watched.into(),
+        };
         signals.set_attached(ON_CONNECT_REQUEST_ID, Bytes::new(), request.clone());
-        let mut answer = answer;
-        let mut watching = true;
-        loop {
-            tokio::select! {
-                accept = &mut answer => {
-                    break match accept {
-                        Ok(true) => Decision::Accepted(turn),
-                        Ok(false) | Err(_) => Decision::Refused,
-                    };
-                }
-                open = client.socket_reader.watch(), if watching => {
-                    if !open {
-                        break Decision::Left;
-                    }
-                    // The client sent something; it is read once accepted.
-                    watching = false;
-                }
-            }
+        tokio::select! {
+            accept = answer => match accept {
+                Ok(true) => Decision::Accepted(turn),
+                Ok(false) | Err(_) => Decision::Refused,
+            },
+            watched = client.socket_reader.watch() => watched.into(),
         }
     })
     .await
@@ -526,6 +537,13 @@ async fn decide<L: Listener>(
             #[cfg(debug_assertions)]
             signals.debug("a client left while its connect request was decided");
             return None;
+        }
+        Decision::Sent => {
+            signals.warning(format!(
+                "refused a client that sent messages before it was accepted ({})",
+                client.peer_addr
+            ));
+            "the client sent messages before the server accepted it".to_string()
         }
         Decision::Refused => {
             signals.info(format!(
@@ -568,9 +586,9 @@ async fn handshake_client<L: Listener>(
         }
         Ok(ClientMessage::Handshake(p, v, h)) => {
             if let Err(refusal) = check_handshake(handshake, p, v, h) {
-                signals.warning(&refusal.reason);
+                signals.warning(&refusal.log);
                 // The caller's deadline bounds this as well.
-                socket_tx.close(Some(refusal)).await;
+                socket_tx.close(Some(refusal.close)).await;
                 return None;
             }
             Some(ClientReady {
@@ -588,52 +606,90 @@ async fn handshake_client<L: Listener>(
     }
 }
 
-/// Checks a client's handshake; the error is the close that refuses it.
+/// Why a handshake is refused.
+struct Refusal {
+    /// What the client is told. It is sent before the client has proved
+    /// anything, so it says nothing about what the server expects.
+    close: Close,
+    /// What the server logs.
+    log: String,
+}
+
+impl Refusal {
+    fn new(code: u16, told: &str, log: impl Into<String>) -> Self {
+        Self {
+            close: Close::new(code, told),
+            log: log.into(),
+        }
+    }
+}
+
+/// Checks a client's handshake.
+///
+/// The token is checked before the application version, so a client without
+/// the token learns nothing about the version.
 fn check_handshake(
     server_handshake: &Handshake,
     client_protocol: u16,
     version: Option<u64>,
     token: Option<String>,
-) -> Result<(), Close> {
+) -> Result<(), Refusal> {
     if client_protocol != PROTOCOL_VERSION {
-        let message = format!(
+        // The protocol version is the library's and no secret; naming both
+        // tells the user which side to update.
+        let told = format!(
+            "the server uses protocol version {PROTOCOL_VERSION}, the client {client_protocol}"
+        );
+        let log = format!(
             "attempted to connect with wrong protocol version: expected {}, got {}",
             PROTOCOL_VERSION, client_protocol
         );
-        return Err(Close::new(close::PROTOCOL_MISMATCH, message));
-    }
-
-    if let Some(server_version) = server_handshake.version {
-        match version {
-            Some(client_version) => {
-                if client_version != server_version {
-                    let message = format!(
-                        "attempted to connect with wrong version: expected {}, got {}",
-                        server_version, client_version
-                    );
-                    return Err(Close::new(close::VERSION_MISMATCH, message));
-                }
-            }
-            _ => {
-                return Err(Close::new(
-                    close::VERSION_MISMATCH,
-                    "client version missing",
-                ));
-            }
-        }
+        return Err(Refusal::new(close::PROTOCOL_MISMATCH, &told, log));
     }
 
     if let Some(server_token) = &server_handshake.token {
         match token {
             Some(client_token) => {
                 if !tokens_match(&client_token, server_token) {
-                    return Err(Close::new(
+                    return Err(Refusal::new(
                         close::TOKEN_REJECTED,
+                        "the server rejected the token",
                         "attempted to connect with wrong token",
                     ));
                 }
             }
-            _ => return Err(Close::new(close::TOKEN_REJECTED, "client token missing")),
+            _ => {
+                return Err(Refusal::new(
+                    close::TOKEN_REJECTED,
+                    "the server requires a token",
+                    "client token missing",
+                ));
+            }
+        }
+    }
+
+    if let Some(server_version) = server_handshake.version {
+        match version {
+            Some(client_version) => {
+                if client_version != server_version {
+                    let log = format!(
+                        "attempted to connect with wrong version: expected {}, got {}",
+                        server_version, client_version
+                    );
+                    return Err(Refusal::new(
+                        close::VERSION_MISMATCH,
+                        "the server requires another application version",
+                        log,
+                    ));
+                }
+            }
+            _ => {
+                return Err(Refusal::new(
+                    close::VERSION_MISMATCH,
+                    "the server requires an application version",
+                    "client version missing",
+                ));
+            }
         }
     }
 
@@ -1379,14 +1435,26 @@ mod run_tests {
             sync: Vec<Arc<dyn SyncTrait>>,
         ) -> (Self, MemoryConnector) {
             let (listener, connector) = memory::listener();
-            let server = Self::run(listener, heartbeat, signals, sync, ClientPolicy::Replace);
+            let admission = (ClientPolicy::Replace, REQUEST_TIMEOUT);
+            let server = Self::run(listener, heartbeat, signals, sync, admission);
             (server, connector)
         }
 
         /// Runs the loop on in-memory connections with `policy`.
         fn memory_policy(policy: ClientPolicy, signals: SignalsManager) -> (Self, MemoryConnector) {
+            Self::memory_admission(policy, REQUEST_TIMEOUT, signals)
+        }
+
+        /// Runs the loop on in-memory connections with `policy` and the time
+        /// a connect-request callback may take.
+        fn memory_admission(
+            policy: ClientPolicy,
+            request_timeout: Duration,
+            signals: SignalsManager,
+        ) -> (Self, MemoryConnector) {
             let (listener, connector) = memory::listener();
-            let server = Self::run(listener, None, signals, Vec::new(), policy);
+            let admission = (policy, request_timeout);
+            let server = Self::run(listener, None, signals, Vec::new(), admission);
             (server, connector)
         }
 
@@ -1402,7 +1470,7 @@ mod run_tests {
                 heartbeat,
                 SignalsManager::new(),
                 Vec::new(),
-                ClientPolicy::Replace,
+                (ClientPolicy::Replace, REQUEST_TIMEOUT),
             );
             (server, addr)
         }
@@ -1412,7 +1480,7 @@ mod run_tests {
             heartbeat: Option<Heartbeat>,
             signals: SignalsManager,
             sync: Vec<Arc<dyn SyncTrait>>,
-            policy: ClientPolicy,
+            (policy, request_timeout): (ClientPolicy, Duration),
         ) -> Self {
             let (sender, rx) = MessageSender::new();
             let connected = Arc::new(AtomicBool::new(false));
@@ -1439,7 +1507,7 @@ mod run_tests {
                     connected: connected.clone(),
                     close: CloseSlot::default(),
                     policy,
-                    request_timeout: REQUEST_TIMEOUT,
+                    request_timeout,
                     values,
                     signals,
                     heartbeat,
@@ -1967,6 +2035,95 @@ mod run_tests {
         });
     }
 
+    /// A waiting client must send nothing: one that sends messages is
+    /// refused, and its request ends.
+    #[test]
+    fn a_waiting_client_that_sends_messages_is_refused() {
+        block_on(async {
+            let signals = SignalsManager::new();
+            let requests = Requests::new(&signals);
+            let (server, connector) = TestServer::memory_policy(ClientPolicy::Replace, signals);
+            let first = connect_accepted(&connector, &requests).await;
+
+            let mut waiting = connect(&connector);
+            let request = requests.next();
+            let ack = postcard::to_stdvec(&ClientHeader::Ack(1)).unwrap();
+            waiting.send.send(Incoming::Binary(ack.into())).unwrap();
+            let closed = tokio::time::timeout(DEADLINE, waiting.closed())
+                .await
+                .unwrap();
+            assert_eq!(closed.map(|close| close.code), Some(close::REFUSED));
+            assert!(!request.is_pending());
+            request.answer(true);
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            assert!(server.connected());
+            assert_eq!(first.close_reason(), None);
+            server.stop().await;
+        });
+    }
+
+    /// A client that leaves while it waits for its turn is never raised to
+    /// the callback.
+    #[test]
+    fn a_client_that_leaves_before_its_turn_is_not_raised() {
+        block_on(async {
+            let signals = SignalsManager::new();
+            let requests = Requests::new(&signals);
+            let (server, connector) = TestServer::memory_policy(ClientPolicy::Replace, signals);
+            let _first = connect_accepted(&connector, &requests).await;
+
+            let mut second = connect(&connector);
+            let request = requests.next();
+            let mut third = connect(&connector);
+            assert!(is_pending_notice(&frame(&mut third).await));
+            drop(third);
+            // The server notices the departure while the second is decided.
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            request.answer(false);
+            let closed = tokio::time::timeout(DEADLINE, second.closed())
+                .await
+                .unwrap();
+            assert_eq!(closed.map(|close| close.code), Some(close::REFUSED));
+            assert!(
+                requests
+                    .requests
+                    .recv_timeout(Duration::from_millis(300))
+                    .is_err(),
+                "a request was raised for a client that had left"
+            );
+            assert!(server.connected());
+            server.stop().await;
+        });
+    }
+
+    /// A timeout too long for the clock still lets the callback decide.
+    #[test]
+    fn a_huge_connect_request_timeout_does_not_break_the_decision() {
+        block_on(async {
+            let signals = SignalsManager::new();
+            let requests = Requests::new(&signals);
+            let (server, connector) =
+                TestServer::memory_admission(ClientPolicy::Replace, Duration::MAX, signals);
+            let mut client = connect(&connector);
+            // The notice carries the longest time it can express.
+            let notice = frame(&mut client).await;
+            let Some(Outgoing::Binary(bytes)) = &notice else {
+                panic!("the client received no notice");
+            };
+            assert!(matches!(
+                postcard::take_from_bytes::<ServerHeader>(bytes),
+                Ok((ServerHeader::ConnectPending(u32::MAX), _))
+            ));
+            requests.next().answer(true);
+            assert!(matches!(
+                frame(&mut client).await,
+                Some(Outgoing::Binary(_))
+            ));
+            assert!(until(DEADLINE, || server.connected()).await);
+            server.stop().await;
+        });
+    }
+
     /// Requests are decided one at a time: the next one is raised only once
     /// the previous one has been decided.
     #[test]
@@ -2320,11 +2477,28 @@ mod handshake_tests {
                 token_code,
                 "wrong token",
             ),
+            // The token is checked first: without it, a wrong or missing
+            // version is not reported.
+            (
+                PROTOCOL_VERSION,
+                Some(18),
+                Some("wrong"),
+                token_code,
+                "wrong token",
+            ),
+            (PROTOCOL_VERSION, None, None, token_code, "token missing"),
         ] {
-            let error = check_handshake(&settings, protocol, version, token.map(str::to_owned))
-                .unwrap_err();
-            assert_eq!(error.code, code, "{}", error.reason);
-            assert!(error.reason.contains(diagnostic), "{}", error.reason);
+            let refusal = check_handshake(&settings, protocol, version, token.map(str::to_owned))
+                .err()
+                .unwrap();
+            assert_eq!(refusal.close.code, code, "{}", refusal.log);
+            assert!(refusal.log.contains(diagnostic), "{}", refusal.log);
+            // The client is told why, but not what the server expects.
+            let told = &refusal.close.reason;
+            assert!(!told.is_empty());
+            if code != protocol_code {
+                assert!(!told.contains("17") && !told.contains("secret"), "{told}");
+            }
             assert!(
                 check_handshake(&settings, PROTOCOL_VERSION, Some(17), Some("secret".into()))
                     .is_ok()

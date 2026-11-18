@@ -765,7 +765,7 @@ fn rejected_client(port: u16) {
     assert_eq!(reason, CloseReason::VersionMismatch);
     assert_eq!(rejected_connection.0.get_state(), ConnectionState::Failed);
     let error = rejected_connection.0.last_error().unwrap();
-    assert!(error.contains("wrong version"), "{error}");
+    assert!(error.contains("another application version"), "{error}");
     barrier(&state.integration);
     assert!(connection.0.get_state() == ConnectionState::Connected);
 }

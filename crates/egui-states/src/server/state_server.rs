@@ -371,10 +371,11 @@ impl StateServer {
     /// meanwhile the client waits and the connected client is unaffected. A
     /// request not answered within
     /// [`ServerOptions::connect_request_timeout`](super::ServerOptions::connect_request_timeout)
-    /// is refused and its answer ignored; check
-    /// [`ConnectRequest::is_pending`] to stop waiting early. A panicking
-    /// callback refuses the client. If several callbacks are registered, the
-    /// first to answer decides.
+    /// is refused, which is logged as an error, and its answer ignored; check
+    /// [`ConnectRequest::is_pending`] to stop waiting early. While a callback
+    /// blocks, the requests behind it wait and may run out of time without
+    /// being asked about. A panicking callback refuses the client. If several
+    /// callbacks are registered, the first to answer decides.
     ///
     /// Retain the returned handle; dropping it unregisters the callback and
     /// returns the decision to the client policy.
@@ -390,6 +391,11 @@ impl StateServer {
             else {
                 return Ok(());
             };
+            // A request that ended while it waited for this worker, because
+            // its client left or its time ran out, is not asked about.
+            if !request.is_pending() {
+                return Ok(());
+            }
             let decided = catch_unwind(AssertUnwindSafe(|| {
                 callback(&ConnectRequest(request.clone()))
             }));
@@ -1976,7 +1982,7 @@ mod connection_tests {
 
     use super::*;
     use crate::protocol::close;
-    use crate::protocol::{ClientHeader, ServerHeader, VALUE_MAX_SIZE};
+    use crate::protocol::{ClientHeader, ServerHeader, VALUE_MAX_SIZE, serialize};
     use crate::{ClientBuilder, CloseReason, ConnectionState};
     use tokio_tungstenite::tungstenite::{self, Message};
 
@@ -2432,6 +2438,191 @@ mod connection_tests {
         );
     }
 
+    /// Until the server accepts it, a client writes nothing after its
+    /// handshake, and what its UI changes meanwhile is dropped.
+    #[test]
+    fn a_client_sends_nothing_before_the_server_accepts_it() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (handshake_seen, seen) = mpsc::channel();
+        let (accept, accepted) = mpsc::channel::<()>();
+        // Each frame the client sent after its handshake, with whether the
+        // server had accepted it by then.
+        let (frames, received) = mpsc::channel::<(bool, Vec<u8>)>();
+        let peer = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut socket = tungstenite::accept(stream).unwrap();
+            let _handshake = socket.read().unwrap();
+            handshake_seen.send(()).unwrap();
+            socket
+                .get_ref()
+                .set_read_timeout(Some(Duration::from_millis(20)))
+                .unwrap();
+            let mut is_accepted = false;
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while Instant::now() < deadline {
+                if !is_accepted && accepted.try_recv().is_ok() {
+                    let update = serialize::<_, 32>(&ServerHeader::Update(0.0)).unwrap();
+                    socket.send(Message::Binary(update.into_bytes())).unwrap();
+                    is_accepted = true;
+                }
+                match socket.read() {
+                    Ok(Message::Binary(bytes)) => {
+                        let _ = frames.send((is_accepted, bytes.to_vec()));
+                    }
+                    Ok(Message::Close(_)) => break,
+                    Ok(_) => {}
+                    Err(tungstenite::Error::Io(error))
+                        if matches!(
+                            error.kind(),
+                            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                        ) => {}
+                    Err(_) => break,
+                }
+            }
+        });
+
+        let (state, client) =
+            ClientBuilder::<ClientTestState>::new(egui::Context::default(), port).build();
+        client.connect();
+        seen.recv_timeout(Duration::from_secs(5)).unwrap();
+        state.value.set_signal(5);
+        assert!(
+            received.recv_timeout(Duration::from_millis(300)).is_err(),
+            "the client sent a message before the server accepted it"
+        );
+        assert_eq!(client.get_state(), ConnectionState::Connecting);
+
+        accept.send(()).unwrap();
+        wait("accepted", || {
+            client.get_state() == ConnectionState::Connected
+        });
+        state.value.set_signal(6);
+        let (after_accept, frame) = received.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(after_accept);
+        // The first message is the change made after the client was accepted.
+        let (header, size) = ClientHeader::deserialize(&frame).unwrap();
+        assert!(matches!(header, ClientHeader::Value(..)));
+        let length = header.payload_len() as usize;
+        let value: i32 = postcard::from_bytes(&frame[size..size + length]).unwrap();
+        assert_eq!(value, 6, "a change made while waiting was sent");
+        client.disconnect();
+        peer.join().unwrap();
+    }
+
+    /// `disconnect` cancels an attempt that waits for the server's answer:
+    /// the connection is closed and the client reports no failure.
+    #[test]
+    fn disconnect_cancels_an_attempt_that_waits_for_the_server() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (handshake_seen, seen) = mpsc::channel();
+        let peer = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut socket = tungstenite::accept(stream).unwrap();
+            let _handshake = socket.read().unwrap();
+            handshake_seen.send(()).unwrap();
+            socket
+                .get_ref()
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            // The client says nothing more until it closes the connection.
+            matches!(socket.read(), Ok(Message::Close(_)))
+        });
+
+        let (_state, client) =
+            ClientBuilder::<ClientTestState>::new(egui::Context::default(), port).build();
+        client.connect();
+        seen.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(client.get_state(), ConnectionState::Connecting);
+        client.disconnect();
+        wait("cancelled", || {
+            client.get_state() == ConnectionState::NotConnected
+        });
+        assert_eq!(client.last_reason(), None);
+        assert_eq!(client.last_error(), None);
+        assert!(
+            peer.join().unwrap(),
+            "the client did not close the connection"
+        );
+    }
+
+    /// A task panic is reported even when the user disconnects as well.
+    #[test]
+    fn a_send_panic_is_reported_despite_a_disconnect() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let (server, _value, port) = server(ServerOptions::new(), None);
+        let (state, client) =
+            ClientBuilder::<ClientTestState>::new(egui::Context::default(), port).build();
+        client.connect();
+        wait("connection", || state.value.get() == 731);
+
+        client.inject_send_panic();
+        client.disconnect();
+        wait("send panic", || {
+            client.get_state() == ConnectionState::Failed
+        });
+        let error = client.last_error().unwrap();
+        assert!(error.contains("send task panicked"), "{error}");
+        server.stop();
+    }
+
+    /// The callback is not asked about a request that ended while it waited
+    /// behind a blocked callback.
+    #[test]
+    fn ended_connect_requests_are_not_asked_about() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let options = ServerOptions {
+            connect_request_timeout: Duration::from_millis(300),
+            ..ServerOptions::new()
+        };
+        let (server, _value, port) = server(options, None);
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let asked = calls.clone();
+        let _decide = server.on_connect_request(move |_| {
+            // Only the first call outlasts the timeout.
+            if asked.fetch_add(1, Ordering::SeqCst) == 0 {
+                thread::sleep(Duration::from_millis(900));
+            }
+            true
+        });
+        let attempt = || {
+            let (_state, client) =
+                ClientBuilder::<ClientTestState>::new(egui::Context::default(), port).build();
+            client.connect();
+            client
+        };
+
+        // The first request times out in the callback; the second runs out of
+        // time behind it without being asked about.
+        let first = attempt();
+        wait("first request", || calls.load(Ordering::SeqCst) == 1);
+        let second = attempt();
+        for client in [&first, &second] {
+            wait("refused", || client.get_state() == ConnectionState::Failed);
+            assert_eq!(client.last_reason(), Some(CloseReason::Refused));
+        }
+        // Once the callback returns, it is asked only about a live request.
+        thread::sleep(Duration::from_millis(900));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let third = attempt();
+        wait("accepted", || {
+            third.get_state() == ConnectionState::Connected
+        });
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        server.stop();
+    }
+
     /// An unreachable server and a refused handshake end in `Failed` with the
     /// cause.
     #[test]
@@ -2453,8 +2644,12 @@ mod connection_tests {
 
         let (server, _value, port) = server(ServerOptions::new(), Some("secret"));
         for (token, reason, text) in [
-            (None, CloseReason::TokenRejected, "token missing"),
-            (Some("wrong"), CloseReason::TokenRejected, "wrong token"),
+            (None, CloseReason::TokenRejected, "requires a token"),
+            (
+                Some("wrong"),
+                CloseReason::TokenRejected,
+                "rejected the token",
+            ),
         ] {
             let builder = ClientBuilder::<ClientTestState>::new(egui::Context::default(), port);
             let builder = match token {

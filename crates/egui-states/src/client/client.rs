@@ -19,7 +19,7 @@ use tokio::sync::mpsc::{self, UnboundedReceiver};
 use crate::PROTOCOL_VERSION;
 use crate::State;
 use crate::client::messages::{
-    ChannelMessage, MessageSender, MessagesSerializer, ReadError, handle_message,
+    ChannelMessage, MessageSender, MessagesSerializer, ReadError, ServerMessage, handle_message,
 };
 use crate::client::net::timer::{self, Sleep};
 use crate::client::states_creator::{StatesCreatorClient, ValuesList};
@@ -134,16 +134,34 @@ async fn start_gui_client(
             deadline,
             timeout: settings.connect_timeout,
         };
-        let session = run_session(
-            socket_read,
-            socket_send,
-            rx,
-            &vals,
-            &sender,
-            &client,
-            attempt,
-        )
-        .await;
+        let mut socket_read = socket_read;
+        let answer = catch_panic(await_answer(&mut socket_read, &mut rx, &client, attempt));
+        let Some(answer) = client.until_shutdown(answer).await else {
+            return;
+        };
+        let first = match answer {
+            Ok(Answer::Accepted(first)) => first,
+            Ok(Answer::NotAccepted(reason, error)) => {
+                client.end_attempt();
+                client.fail(Some(reason), error);
+                continue;
+            }
+            Ok(Answer::Cancelled) => {
+                let _ = client.until_shutdown(socket_send.close()).await;
+                client.end_attempt();
+                client.set_state(ConnectionState::NotConnected);
+                continue;
+            }
+            Err(message) => {
+                client.end_attempt();
+                client.fail(None, format!("Client receive task panicked: {message}"));
+                continue;
+            }
+        };
+        client.set_state(ConnectionState::Connected);
+
+        let session =
+            run_session(socket_read, socket_send, rx, &vals, &sender, &client, first).await;
         let end = match session {
             Ok((rx_back, end)) => {
                 rx = rx_back;
@@ -164,15 +182,80 @@ async fn start_gui_client(
         };
 
         vals.disconnected();
-        // Requests made while connected do not start a reconnect.
-        client.0.connect_signal.clear();
+        client.end_attempt();
         match end {
-            // The user's own disconnect has no reason to report.
-            _ if client.0.closed_by_user.load(Ordering::Acquire) => client.disconnected(None, None),
-            SessionEnd::Closed(reason, error) => client.disconnected(reason, error),
-            SessionEnd::NotAccepted(reason, error) => client.fail(Some(reason), error),
+            // A panic is reported even if the user disconnected meanwhile.
             SessionEnd::Panicked(task, message) => {
                 client.fail(None, format!("Client {} task panicked: {}", task, message))
+            }
+            // The user's own disconnect has no reason to report.
+            SessionEnd::Closed(..) if client.0.closed_by_user.load(Ordering::Acquire) => {
+                client.disconnected(None, None)
+            }
+            SessionEnd::Closed(reason, error) => client.disconnected(reason, error),
+        }
+    }
+}
+
+/// How the wait for the server's answer to the handshake ended.
+enum Answer {
+    /// The server accepted the client; holds its first message.
+    Accepted(ServerMessage),
+    /// The server refused the client, the connection broke, or no answer came
+    /// in time.
+    NotAccepted(CloseReason, String),
+    /// The user disconnected before the server answered.
+    Cancelled,
+}
+
+/// Waits for the server's answer to the handshake.
+///
+/// The server answers an accepted handshake with its synchronization
+/// messages and closes the connection of a refused client. `attempt` bounds
+/// the wait; a connect-request notice from the server sets a new deadline.
+///
+/// Until the server accepts the client, the client writes nothing: the
+/// server reads a waiting client only to notice that it left. What the UI
+/// queues meanwhile belongs to no connection and is dropped, like what it
+/// queues while disconnected.
+async fn await_answer(
+    socket_read: &mut WsClientRead,
+    rx: &mut MessageReceiver,
+    client: &ClientCore,
+    attempt: Attempt,
+) -> Answer {
+    let Attempt {
+        mut deadline,
+        timeout,
+    } = attempt;
+    let mut waiting = false;
+    // Ends when the user disconnects, which closes the queue.
+    let mut cancelled = pin!(async { while let Some(Some(_)) = rx.recv().await {} });
+    loop {
+        let read = until(socket_read.read(), deadline.as_mut());
+        let read = match select(pin!(read), cancelled.as_mut()).await {
+            Either::Left((read, _)) => read,
+            Either::Right(_) => return Answer::Cancelled,
+        };
+        let Some(read) = read else {
+            let error = if waiting {
+                "The server did not answer the connect request in time".to_string()
+            } else {
+                no_answer(timeout)
+            };
+            return Answer::NotAccepted(CloseReason::Timeout, error);
+        };
+        match read {
+            Ok((ServerHeader::ConnectPending(millis), _)) => {
+                waiting = true;
+                client.set_state(ConnectionState::WaitingForApproval);
+                let wait = Duration::from_millis(millis.into()) + APPROVAL_MARGIN;
+                deadline = timer::sleep(wait);
+            }
+            Ok(message) => return Answer::Accepted(message),
+            Err(error) => {
+                let (reason, error) = close_cause(error);
+                return Answer::NotAccepted(reason, error);
             }
         }
     }
@@ -194,13 +277,12 @@ enum SessionEnd {
     /// An established connection ended, with its reason and a description
     /// when known.
     Closed(Option<CloseReason>, Option<String>),
-    /// The connection ended before the server accepted the handshake.
-    NotAccepted(CloseReason, String),
     /// A connection task panicked; holds the task name and the panic message.
     Panicked(&'static str, String),
 }
 
-/// Runs the receive and send tasks of one connection until both end.
+/// Runs the receive and send tasks of one accepted connection until both
+/// end. `first` is the server's first message.
 ///
 /// Returns the message queue receiver for the next connection and how this
 /// one ended. A panic in either task ends the connection instead of the
@@ -213,7 +295,7 @@ async fn run_session(
     vals: &ValuesList,
     sender: &MessageSender,
     client: &ClientCore,
-    attempt: Attempt,
+    first: ServerMessage,
 ) -> Result<(MessageReceiver, SessionEnd), String> {
     // A panicking send task stops the receive task; reading alone would keep
     // the connection open while nothing can be sent.
@@ -252,7 +334,7 @@ async fn run_session(
                 &vals,
                 &client,
                 &sender,
-                attempt,
+                first,
             )));
             let end = Abortable::new(read, abort_registration).await;
             // The connection is over: unfinished transfers fail, which also
@@ -319,49 +401,15 @@ async fn run_session(
     Ok((rx, end))
 }
 
-/// Reads and applies server messages until the connection ends.
-///
-/// Until the server accepts the client, `attempt` bounds the wait for its
-/// answer; a connect-request notice from the server sets a new deadline.
+/// Reads and applies server messages, starting with `message`, until the
+/// connection ends.
 async fn receive(
     mut socket_read: WsClientRead,
     vals: &ValuesList,
     client: &ClientCore,
     sender: &MessageSender,
-    attempt: Attempt,
+    mut message: ServerMessage,
 ) -> SessionEnd {
-    let Attempt {
-        mut deadline,
-        timeout,
-    } = attempt;
-    let mut waiting = false;
-    // The server answers an accepted handshake with its synchronization
-    // messages and closes the connection of a refused client.
-    let mut message = loop {
-        let Some(read) = until(socket_read.read(), deadline.as_mut()).await else {
-            let error = if waiting {
-                "The server did not answer the connect request in time".to_string()
-            } else {
-                no_answer(timeout)
-            };
-            return SessionEnd::NotAccepted(CloseReason::Timeout, error);
-        };
-        match read {
-            Ok((ServerHeader::ConnectPending(millis), _)) => {
-                waiting = true;
-                client.set_state(ConnectionState::WaitingForApproval);
-                let wait = Duration::from_millis(millis.into()) + APPROVAL_MARGIN;
-                deadline = timer::sleep(wait);
-            }
-            Ok(message) => break message,
-            Err(error) => {
-                let (reason, error) = close_cause(error);
-                return SessionEnd::NotAccepted(reason, error);
-            }
-        }
-    };
-    client.set_state(ConnectionState::Connected);
-
     let error = loop {
         if let Err(e) = handle_message(message, vals, client).await {
             let error = format!("handling message from server failed: {:?}", e);
@@ -488,7 +536,8 @@ pub(crate) fn print_error(error: &str) {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ConnectionState {
-    /// No connection attempt has been made yet.
+    /// No connection attempt has been made yet, or the last one was cancelled
+    /// with [`Client::disconnect`].
     NotConnected,
     /// A connection attempt is running: the client is opening the connection
     /// or waiting for the server to accept its handshake.
@@ -681,6 +730,12 @@ impl ClientCore {
         until(future, deadline).await
     }
 
+    /// Ends a connection attempt or connection: requests to connect made
+    /// during it do not start another attempt.
+    fn end_attempt(&self) {
+        self.0.connect_signal.clear();
+    }
+
     pub(crate) fn set_state(&self, state: ConnectionState) {
         self.set_status(Status {
             state,
@@ -770,10 +825,12 @@ impl Client {
         self.core().0.connect_signal.set();
     }
 
-    /// Closes the active connection.
+    /// Closes the active connection, or cancels a connection attempt that
+    /// waits for the server's answer.
     ///
-    /// The client then reports [`ConnectionState::Disconnected`] without a
-    /// reason.
+    /// After a closed connection the client reports
+    /// [`ConnectionState::Disconnected`] without a reason; after a cancelled
+    /// attempt, [`ConnectionState::NotConnected`].
     pub fn disconnect(&self) {
         self.core().0.closed_by_user.store(true, Ordering::Release);
         self.core().0.sender.close();

@@ -88,9 +88,9 @@ pub struct ServerOptions {
     /// How long a connect-request callback may take to decide on a client,
     /// counted from the client's handshake. Default 5 s.
     ///
-    /// A client still waiting when it passes is refused, and the error
-    /// handler is told. The client learns this time and waits as long. Must
-    /// be greater than zero.
+    /// A client still waiting when it passes is refused, which is logged as
+    /// an error. The client learns this time and waits as long. Must be
+    /// greater than zero.
     pub connect_request_timeout: Duration,
     /// Whether clients connect with TLS, which encrypts the connection.
     /// Default `false`.

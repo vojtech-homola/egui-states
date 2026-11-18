@@ -45,15 +45,20 @@ as a `CloseReason`.
 
 1. A browser page's origin is checked during the WebSocket upgrade; a page the
    server does not allow gets HTTP 403, before any close code can be sent.
-2. The handshake is checked: protocol version (4000), application version
-   (4001), and token (4002).
+2. The handshake is checked: protocol version (4000), token (4002), then
+   application version (4001). The token comes before the application version,
+   and the reason sent to the client does not say what the server expects, so a
+   client without the token learns nothing about the version. The server's log
+   has the details.
 3. If a connect-request callback is registered, the server sends
    `ConnectPending` with the time the decision may take, and the client reports
    `WaitingForApproval` and waits that long. Requests are decided one at a
    time; the next one is raised only after the previous client was served or
    refused. A refusal, a callback that fails, or a decision that is not made in
-   time closes the client with 4004. A client that leaves while waiting ends its
-   request, and a later answer is ignored.
+   time closes the client with 4004. The server watches a waiting client all
+   the while: one that leaves ends its request, also while it waits for its
+   turn, and a later answer is ignored. A waiting client sends nothing until
+   the server's first synchronization message; one that does is refused.
 4. Without a callback, `ClientPolicy::Reject` refuses the client with 4003 while
    another client is connected. The check is made where the run loop publishes
    connections, so no other client can connect in between.

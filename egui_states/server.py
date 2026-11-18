@@ -217,9 +217,8 @@ class StateServerBase[T: StatesBase]:
             connect_request_timeout (float, optional): Seconds the callback
                 registered with :meth:`on_connect_request` may take to decide
                 on a client, counted from the client's handshake. A client
-                still waiting when it passes is refused, and the error
-                handler is told. The client learns this time and waits as
-                long.
+                still waiting when it passes is refused, which is logged as
+                an error. The client learns this time and waits as long.
             tls (bool, optional): Whether clients connect with TLS, which
                 encrypts the connection. The server then speaks only TLS on
                 its port: ``wss://`` WebSockets, and ``https://`` for the web
@@ -497,8 +496,10 @@ class StateServerBase[T: StatesBase]:
         so keep ``signals_workers`` at two or more for the user's answer to
         arrive. Requests are decided one at a time; meanwhile the client waits
         and the connected client is unaffected. A request not answered within
-        ``connect_request_timeout`` is refused and its answer ignored; check
-        :meth:`ConnectRequest.is_pending` to stop waiting early.
+        ``connect_request_timeout`` is refused, which is logged as an error,
+        and its answer ignored; check :meth:`ConnectRequest.is_pending` to
+        stop waiting early. While the callback blocks, the requests behind it
+        wait and may run out of time without being asked about.
 
         Args:
             func (Callable[[ConnectRequest], bool] | None): Callback receiving
@@ -506,16 +507,22 @@ class StateServerBase[T: StatesBase]:
                 ``None`` to unregister it and return the decision to
                 ``client_policy``.
         """
+        # The dispatcher stays registered while a callback is swapped: without
+        # it, a client connecting in between would be decided by the policy.
+        registered = self._on_connect_request is not None
         self._on_connect_request = func
-        self._signals_manager.clear_callbacks(_ON_CONNECT_REQUEST_ID)
-        if func is not None:
+        if func is None:
+            self._signals_manager.clear_callbacks(_ON_CONNECT_REQUEST_ID)
+        elif not registered:
             self._signals_manager.add_callback(_ON_CONNECT_REQUEST_ID, self._decide_connect_request)
 
     def _decide_connect_request(self) -> None:
         """Ask the connect-request callback about the pending request."""
         request = self._server.connect_request()
         func = self._on_connect_request
-        if request is None:
+        # A request that ended while it waited for this worker, because its
+        # client left or its time ran out, is not asked about.
+        if request is None or not request.is_pending():
             return
         accept = False
         try:

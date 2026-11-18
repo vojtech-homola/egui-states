@@ -20,6 +20,14 @@ pub(crate) enum ClientMessage {
     LaneAck,
 }
 
+/// What a client did while it waited to be served.
+pub(crate) enum Watched {
+    /// It closed the connection, or the connection broke.
+    Left,
+    /// It sent messages, which it must not do before it is accepted.
+    Sent,
+}
+
 pub(crate) struct SocketReader<S> {
     socket: S,
     previous: Option<(Bytes, usize, bool)>,
@@ -40,23 +48,18 @@ impl<S: FrameSource> SocketReader<S> {
         self.activity.clone()
     }
 
-    /// Waits until the client sends a frame or the connection ends, keeping
-    /// the frame for [`Self::next`]. Returns `false` once the connection
-    /// ended. Cancel safe: a frame is only taken when it is kept.
-    pub(crate) async fn watch(&mut self) -> bool {
+    /// Waits until a client that is not served yet leaves or sends messages.
+    ///
+    /// Such a client must send nothing, so its messages are not kept.
+    pub(crate) async fn watch(&mut self) -> Watched {
         if self.previous.is_some() {
-            return true;
+            return Watched::Sent;
         }
         loop {
             match self.socket.next_frame().await {
-                Some(Ok(Incoming::Binary(msg))) => {
-                    self.activity.touch();
-                    let slice = msg.len() > COPY_SIZE;
-                    self.previous = Some((msg, 0, slice));
-                    return true;
-                }
+                Some(Ok(Incoming::Binary(_))) => return Watched::Sent,
                 Some(Ok(Incoming::KeepAlive)) => self.activity.touch(),
-                Some(Ok(Incoming::Close)) | Some(Err(_)) | None => return false,
+                Some(Ok(Incoming::Close)) | Some(Err(_)) | None => return Watched::Left,
             }
         }
     }
