@@ -105,17 +105,54 @@ fn data_state(
     kind: &str,
     data_type: &DataType,
     header: Option<&ObjectType>,
+    priority: Priority,
     object_types: &[ObjectType],
 ) -> String {
     let data_type = data_type_to_dtype(data_type);
+    let priority = priority.argument(", ");
     match header {
-        None => format!("        self.{attr}: s.{kind}[{data_type}] = s.{kind}({data_type})\n"),
+        None => format!(
+            "        self.{attr}: s.{kind}[{data_type}] = s.{kind}({data_type}{priority})\n"
+        ),
         Some(header) => {
             let index = object_type_index(object_types, header);
             let py_type = type_info_to_python_type(header, false, PythonTypeContext::States);
             format!(
-                "        self.{attr}: s.{kind}WithHeader[{data_type}, {py_type}] = s.{kind}WithHeader({data_type}, {index})\n"
+                "        self.{attr}: s.{kind}WithHeader[{data_type}, {py_type}] = s.{kind}WithHeader({data_type}, {index}{priority})\n"
             )
+        }
+    }
+}
+
+/// Where the send priority of a bulk state or substate field comes from.
+#[derive(Clone, Copy)]
+enum Priority {
+    /// The field is marked.
+    Low,
+    /// The `low_priority` argument of the enclosing substate class.
+    Inherited,
+    /// The default, in the root class.
+    Normal,
+}
+
+impl Priority {
+    /// Of a field marked `low` or not, in a substate class (`inherits`) or
+    /// in the root class.
+    fn new(low: bool, inherits: bool) -> Self {
+        match (low, inherits) {
+            (true, _) => Self::Low,
+            (false, true) => Self::Inherited,
+            (false, false) => Self::Normal,
+        }
+    }
+
+    /// The keyword argument after `separator`; nothing for the default, so
+    /// it stays implicit.
+    fn argument(self, separator: &str) -> String {
+        match self {
+            Self::Low => format!("{separator}low_priority=True"),
+            Self::Inherited => format!("{separator}low_priority=low_priority"),
+            Self::Normal => String::new(),
         }
     }
 }
@@ -162,15 +199,15 @@ fn collect_object_types(values: &[StateType]) -> Vec<ObjectType> {
                 push_type(key);
                 push_type(value);
             }
-            StateType::Data(_, _, Some(header))
-            | StateType::DataTake(_, _, Some(header))
-            | StateType::DataMulti(_, _, Some(header))
-            | StateType::DataMultiTake(_, _, Some(header))
+            StateType::Data(_, _, Some(header), _)
+            | StateType::DataTake(_, _, Some(header), _)
+            | StateType::DataMulti(_, _, Some(header), _)
+            | StateType::DataMultiTake(_, _, Some(header), _)
             | StateType::Download(_, Some(header))
             | StateType::Upload(_, Some(header)) => push_type(header),
-            StateType::SubState(_, _, _)
-            | StateType::Image(_)
-            | StateType::ImageMulti(_)
+            StateType::SubState(..)
+            | StateType::Image(..)
+            | StateType::ImageMulti(..)
             | StateType::Data(..)
             | StateType::DataTake(..)
             | StateType::DataMulti(..)
@@ -374,7 +411,9 @@ fn data_type_to_dtype(data_type: &DataType) -> &'static str {
     }
 }
 
-fn state_to_line(state: &StateType, object_types: &[ObjectType]) -> String {
+/// The line that creates `state`; `inherits` in a substate class, whose bulk
+/// states take the class's `low_priority` argument unless they are marked.
+fn state_to_line(state: &StateType, object_types: &[ObjectType], inherits: bool) -> String {
     let attr = python_name(state.name());
     match state {
         StateType::Value(_, state_type, init, queue) => {
@@ -432,32 +471,59 @@ fn state_to_line(state: &StateType, object_types: &[ObjectType]) -> String {
                 "        self.{attr}: s.Map[{key_type}, {value_type}] = s.Map[{key_type}, {value_type}]({key}, {value})\n"
             )
         }
-        StateType::Data(_, data_type, header) => {
-            data_state(&attr, "Data", data_type, header.as_ref(), object_types)
-        }
-        StateType::DataMulti(_, data_type, header) => {
-            data_state(&attr, "DataMulti", data_type, header.as_ref(), object_types)
-        }
-        StateType::DataTake(_, data_type, header) => {
-            data_state(&attr, "DataTake", data_type, header.as_ref(), object_types)
-        }
-        StateType::DataMultiTake(_, data_type, header) => data_state(
+        StateType::Data(_, data_type, header, low) => data_state(
+            &attr,
+            "Data",
+            data_type,
+            header.as_ref(),
+            Priority::new(*low, inherits),
+            object_types,
+        ),
+        StateType::DataMulti(_, data_type, header, low) => data_state(
+            &attr,
+            "DataMulti",
+            data_type,
+            header.as_ref(),
+            Priority::new(*low, inherits),
+            object_types,
+        ),
+        StateType::DataTake(_, data_type, header, low) => data_state(
+            &attr,
+            "DataTake",
+            data_type,
+            header.as_ref(),
+            Priority::new(*low, inherits),
+            object_types,
+        ),
+        StateType::DataMultiTake(_, data_type, header, low) => data_state(
             &attr,
             "DataMultiTake",
             data_type,
             header.as_ref(),
+            Priority::new(*low, inherits),
             object_types,
         ),
         StateType::Download(_, meta) => {
             transfer_state(&attr, "Download", meta.as_ref(), object_types)
         }
         StateType::Upload(_, meta) => transfer_state(&attr, "Upload", meta.as_ref(), object_types),
-        StateType::Image(_) => format!("        self.{attr}: s.Image = s.Image()\n"),
-        StateType::ImageMulti(_) => {
-            format!("        self.{attr}: s.ImageMulti = s.ImageMulti()\n")
-        }
-        StateType::SubState(name, state_class, _) => {
-            format!("        self.{attr}: {state_class} = {state_class}(parent + \".{name}\")\n")
+        StateType::Image(_, low) => format!(
+            "        self.{attr}: s.Image = s.Image({})\n",
+            Priority::new(*low, inherits).argument("")
+        ),
+        StateType::ImageMulti(_, low) => format!(
+            "        self.{attr}: s.ImageMulti = s.ImageMulti({})\n",
+            Priority::new(*low, inherits).argument("")
+        ),
+        StateType::SubState(name, state_class, _, low) => {
+            // Only a class with bulk states takes the priority.
+            let priority = match state.takes_priority() {
+                true => Priority::new(*low, inherits).argument(", "),
+                false => String::new(),
+            };
+            format!(
+                "        self.{attr}: {state_class} = {state_class}(parent + \".{name}\"{priority})\n"
+            )
         }
     }
 }
@@ -470,7 +536,7 @@ fn write_states(
     used_states: &mut Vec<String>,
 ) {
     for state in states {
-        if let StateType::SubState(_, state_class, sub_states) = state {
+        if let StateType::SubState(_, state_class, sub_states, _) = state {
             if used_states.iter().any(|used| used == state_class) {
                 continue;
             }
@@ -483,16 +549,26 @@ fn write_states(
     if !wire_names.is_empty() {
         wire_names.push('\n');
     }
+    // A group with images or buffers takes the priority of the field it is
+    // created for, so one class serves fields of either priority.
+    let inherits = states.iter().any(StateType::takes_priority);
+    let (parameter, argument) = match inherits {
+        true => (
+            ", low_priority: bool = False",
+            "            low_priority (bool, optional): Whether the images and buffers\n                of the group use the low-priority lane. Defaults to False.\n",
+        ),
+        false => ("", ""),
+    };
     writeln!(
         output,
-        "\n\nclass {state_class}(ISubStates):\n    \"\"\"Generated handles for a nested state group.\"\"\"\n\n{wire_names}    def __init__(self, parent: str) -> None:\n        \"\"\"Initialize handles below a generated state path.\n\n        Args:\n            parent (str): Fully qualified parent state path.\n        \"\"\""
+        "\n\nclass {state_class}(ISubStates):\n    \"\"\"Generated handles for a nested state group.\"\"\"\n\n{wire_names}    def __init__(self, parent: str{parameter}) -> None:\n        \"\"\"Initialize handles below a generated state path.\n\n        Args:\n            parent (str): Fully qualified parent state path.\n{argument}        \"\"\""
     )
     .unwrap();
     if states.is_empty() {
         output.push_str("        pass\n");
     } else {
         for state in states {
-            output.push_str(&state_to_line(state, object_types));
+            output.push_str(&state_to_line(state, object_types, inherits));
         }
     }
 }
@@ -573,13 +649,13 @@ fn render_python<S: State>() -> (String, String, String) {
         "# Generated by build.rs, do not edit\n# ruff: noqa: E501\n\"\"\"Typed Python server bindings generated from the egui client state tree.\"\"\"\n\nfrom __future__ import annotations\n\nfrom collections.abc import Callable, Sequence\nfrom os import PathLike\n\nimport numpy as np\n\nimport egui_states.structures as s\nfrom egui_states.server import StatesBase, StateServerBase\nfrom egui_states.transfer import TransferProfile\nfrom egui_states.structures import ISubStates\n\nfrom . import enums, structs\n",
     );
 
-    let StateType::SubState(_, root_name, substates) = &states else {
+    let StateType::SubState(_, root_name, substates, _) = &states else {
         panic!("Root state must be a SubState");
     };
 
     let mut used_states = Vec::new();
     for state in substates {
-        if let StateType::SubState(_, state_class, sub_states) = state {
+        if let StateType::SubState(_, state_class, sub_states, _) = state {
             if used_states.iter().any(|used| used == state_class) {
                 continue;
             }
@@ -615,7 +691,7 @@ fn render_python<S: State>() -> (String, String, String) {
         "        ]\n\n    def __init__(self, server: StateServerBase) -> None:\n        \"\"\"Initialize the generated root state handles.\n\n        Args:\n            server (StateServerBase): State server that owns this tree.\n        \"\"\"\n        super().__init__(server)\n        parent = \"root\"\n",
     );
     for state in substates {
-        states_output.push_str(&state_to_line(state, &types_list));
+        states_output.push_str(&state_to_line(state, &types_list, false));
     }
 
     write!(

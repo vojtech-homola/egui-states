@@ -64,6 +64,21 @@ path = "src/bin/state-empty.rs"
 required-features = ["invalid"]
 
 [[bin]]
+name = "state-low-priority-value"
+path = "src/bin/state-low-priority-value.rs"
+required-features = ["invalid"]
+
+[[bin]]
+name = "state-option"
+path = "src/bin/state-option.rs"
+required-features = ["invalid"]
+
+[[bin]]
+name = "state-queue-image"
+path = "src/bin/state-queue-image.rs"
+required-features = ["invalid"]
+
+[[bin]]
 name = "atomic-payload"
 path = "src/bin/atomic-payload.rs"
 required-features = ["invalid"]

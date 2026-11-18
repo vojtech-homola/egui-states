@@ -17,14 +17,14 @@ use std::time::{Duration, Instant};
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use egui_states::server::{self, CallbackHandle, ImageFormat, StateServer};
-use egui_states::{Client, ClientBuilder, ConnectionState, Queue, State, StatesCreator};
+use egui_states::{Client, ClientBuilder, ConnectionState, State, StatesCreator};
 use egui_states_bench::{MIB, free_port, pattern, wait_until};
 
 struct BenchStates {
     data: egui_states::Data<u8>,
     image: egui_states::Image,
-    value: egui_states::Value<u64, Queue>,
-    blob: egui_states::Value<Vec<u8>, Queue>,
+    value: egui_states::Value<u64>,
+    blob: egui_states::Value<Vec<u8>>,
     marker: egui_states::Static<u64>,
 }
 
@@ -58,8 +58,8 @@ impl Session {
     fn connect() -> Self {
         let port = free_port();
         let server = StateServer::new().expect("server");
-        let data = server::Data::<u8>::new(&server, "root.data").expect("data");
-        let image = server::Image::new(&server, "root.image").expect("image");
+        let data = server::Data::<u8>::new(&server, "root.data", false).expect("data");
+        let image = server::Image::new(&server, "root.image", false).expect("image");
         let value = server::Value::new(&server, "root.value", 0_u64, true).expect("value");
         let blob = server::Value::new(&server, "root.blob", Vec::<u8>::new(), true).expect("blob");
         let marker = server::Static::new(&server, "root.marker", 0_u64).expect("marker");
@@ -125,7 +125,7 @@ fn data_set(c: &mut Criterion, session: &Session) {
                 for _ in 0..iterations {
                     marker = marker.wrapping_add(1);
                     buffer[0] = marker;
-                    session.data.set(&buffer, false).expect("set data");
+                    session.data.set(&buffer, false, false).expect("set data");
                     wait_until("data", || {
                         session.states.data.read(|data| {
                             data.is_some_and(|data| data.len() == len && data[0] == marker)
@@ -163,7 +163,13 @@ fn image_set(c: &mut Criterion, session: &Session) {
                     };
                     session
                         .image
-                        .set(&pixels, [height, width], ImageFormat::ColorAlpha, false)
+                        .set(
+                            &pixels,
+                            [height, width],
+                            ImageFormat::ColorAlpha,
+                            false,
+                            false,
+                        )
                         .expect("set image");
                     wait_until("image", || {
                         session.states.image.get_size() == Some([width, height])
@@ -186,7 +192,13 @@ fn image_update(c: &mut Criterion, session: &Session) {
     let base = pattern(50 * 256 * width * 4);
     session
         .image
-        .set(&base, [50 * 256, width], ImageFormat::ColorAlpha, false)
+        .set(
+            &base,
+            [50 * 256, width],
+            ImageFormat::ColorAlpha,
+            false,
+            false,
+        )
         .expect("set base image");
     wait_until("base image", || {
         session.states.image.get_size() == Some([width, 50 * 256])
@@ -202,11 +214,21 @@ fn image_update(c: &mut Criterion, session: &Session) {
                 for _ in 0..iterations {
                     session
                         .image
-                        .update(&pixels, [0, 0], size, ImageFormat::ColorAlpha, false, true)
+                        .update(
+                            &pixels,
+                            [0, 0],
+                            size,
+                            ImageFormat::ColorAlpha,
+                            false,
+                            true,
+                            None,
+                            false,
+                        )
                         .expect("update image");
-                    // Update chunks go out one per client acknowledgement. A
-                    // second update elsewhere waits until the client has
-                    // acknowledged them all, and the marker follows it.
+                    // The update's chunks are queued at once and acknowledged
+                    // once. A second update elsewhere waits behind it, and the
+                    // marker queued after both arrives once the client has
+                    // applied the first.
                     session
                         .image
                         .update(
@@ -215,6 +237,8 @@ fn image_update(c: &mut Criterion, session: &Session) {
                             [1, 1],
                             ImageFormat::ColorAlpha,
                             false,
+                            false,
+                            None,
                             false,
                         )
                         .expect("update corner");

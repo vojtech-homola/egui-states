@@ -123,10 +123,7 @@ pub use client::{
         image::{Image, ImageMulti},
         initial_value::{InitValue, InitialValue},
         map::MapState,
-        values::{
-            Diff, DiffAtomic, GetQueueType, NoQueue, Queue, Signal, Static, StaticAtomic, Value,
-            ValueAtomic, ValueTake,
-        },
+        values::{Diff, DiffAtomic, Signal, Static, StaticAtomic, Value, ValueAtomic, ValueTake},
         vec::VecState,
     },
     states_creator::StatesCreator,

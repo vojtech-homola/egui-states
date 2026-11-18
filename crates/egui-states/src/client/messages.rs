@@ -7,7 +7,7 @@ use crate::file_transfer::TransferLimits;
 use crate::protocol::data::{DataMultiTakeHeader, MultiDataHeader};
 use crate::protocol::image::{ImageHeader, ImageMultiHeader};
 use crate::protocol::{
-    ClientHeader, FastVec, MAX_MSG_COUNT, MSG_SIZE_THRESHOLD, MessageData, ServerHeader, serialize,
+    ClientHeader, FRAME_FLUSH_SIZE, FastVec, MAX_MSG_COUNT, MessageData, ServerHeader, serialize,
     serialize_to_data,
 };
 
@@ -16,6 +16,8 @@ pub(crate) enum ChannelMessage {
     Signal(u64, u32, MessageData),
     Message(MessageData),
     Ack(u64),
+    /// Answers a mark of the server's low-priority lane.
+    LaneAck,
     /// An encoded file transfer message.
     Raw(Vec<u8>),
     /// Panics the send task, to test that its panics are contained.
@@ -69,6 +71,7 @@ fn parse_to_send(message: ChannelMessage, data: &mut FastVec<64>) {
             let header = ClientHeader::Ack(id);
             serialize_to_data(&header, data).unwrap();
         }
+        ChannelMessage::LaneAck => serialize_to_data(&ClientHeader::LaneAck, data).unwrap(),
         ChannelMessage::Message(msg_data) => {
             let header = ClientHeader::Message(msg_data.len() as u32);
             serialize_to_data(&header, data).unwrap();
@@ -105,7 +108,7 @@ impl MessagesSerializer {
                         Ok(Some(msg)) => {
                             counter += 1;
                             parse_to_send(msg, &mut message);
-                            if counter >= MAX_MSG_COUNT || message.len() > MSG_SIZE_THRESHOLD {
+                            if counter >= MAX_MSG_COUNT || message.len() >= FRAME_FLUSH_SIZE {
                                 return Some(message);
                             }
                         }
@@ -244,6 +247,12 @@ pub(crate) async fn handle_message(
             client.update(t);
             return Ok(());
         }
+        // Everything before the mark has been handled, so the server may
+        // send that much more of its low-priority lane.
+        ServerHeader::LaneMark => {
+            client.lane_ack();
+            return Ok(());
+        }
         // Every transfer frame of the connection comes after it.
         ServerHeader::TransferLimits(window, chunk) => {
             let limits = TransferLimits::new(u64::from(window), chunk as usize)?;
@@ -278,8 +287,8 @@ pub(crate) async fn handle_message(
         ServerHeader::Image(id, header, _) => match vals.image(id) {
             Some(image) => match header {
                 ImageHeader::Set(set, image_type) => image.set_image(set, image_type, &payload)?,
-                ImageHeader::Update(rect, image_type, _) => {
-                    image.update_image(rect, image_type, &payload)?
+                ImageHeader::Update(update, image_type) => {
+                    image.update_image(update, image_type, &payload)?
                 }
                 ImageHeader::Fill(size, rgba, _) => image.fill_image(size, rgba, &payload)?,
             },
@@ -353,8 +362,8 @@ pub(crate) async fn handle_message(
                 ImageMultiHeader::Modify(index, ImageHeader::Set(set, image_type), _) => {
                     images.set_image(index, set, image_type, &payload)?
                 }
-                ImageMultiHeader::Modify(index, ImageHeader::Update(rect, image_type, _), _) => {
-                    images.update_image(index, rect, image_type, &payload)?
+                ImageMultiHeader::Modify(index, ImageHeader::Update(update, image_type), _) => {
+                    images.update_image(index, update, image_type, &payload)?
                 }
                 ImageMultiHeader::Modify(index, ImageHeader::Fill(size, rgba, _), _) => {
                     images.fill_image(index, size, rgba, &payload)?
@@ -384,8 +393,8 @@ mod tests {
     use crate::protocol::collections::VecHeader;
     use crate::protocol::data::{DataHeader, DataTakeHeader};
     use crate::protocol::data::{DataType, TransportType};
-    use crate::protocol::image::ImageSetHeader;
     use crate::protocol::image::ImageType;
+    use crate::protocol::image::{ImageSetHeader, ImageUpdateHeader};
     use tokio::sync::mpsc::{UnboundedReceiver, error::TryRecvError};
 
     /// Frames that were queued in advance.
@@ -459,6 +468,31 @@ mod tests {
             let bytes = postcard::to_stdvec(&header).unwrap();
             assert!(MessagesParser::from_bytes(Bytes::from(bytes)).is_err());
         }
+    }
+
+    /// The client answers a mark of the low-priority lane at once, after
+    /// everything before it.
+    #[test]
+    fn a_lane_mark_is_answered() {
+        let (sender, mut receiver) = MessageSender::new();
+        let context = egui::Context::default();
+        let creator = StatesCreatorClient::new(sender.clone(), context.clone(), "root".to_string());
+        let values = creator.get_values();
+        let client = ClientCore::new(context, sender);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        runtime
+            .block_on(handle_message(
+                (ServerHeader::LaneMark, Bytes::new()),
+                &values,
+                &client,
+            ))
+            .unwrap();
+        assert!(matches!(
+            receiver.try_recv(),
+            Ok(Some(ChannelMessage::LaneAck))
+        ));
     }
 
     #[test]
@@ -665,7 +699,10 @@ mod tests {
             91,
             ImageMultiHeader::Modify(
                 3,
-                ImageHeader::Update([0, 0, 1, 1], ImageType::GrayAlpha, true),
+                ImageHeader::Update(
+                    ImageUpdateHeader::All([0, 0, 1, 1], true),
+                    ImageType::GrayAlpha,
+                ),
                 2,
             ),
         );
@@ -859,7 +896,7 @@ mod serializer_tests {
                 | ClientHeader::Signal(_, _, size)
                 | ClientHeader::Message(size)
                 | ClientHeader::Transfer(_, _, size) => size as usize,
-                ClientHeader::Ack(_) | ClientHeader::Handshake(..) => 0,
+                ClientHeader::Ack(_) | ClientHeader::Handshake(..) | ClientHeader::LaneAck => 0,
             };
             rest = &after[payload..];
             headers.push(header);

@@ -37,6 +37,11 @@ together with the buffer; see [Data headers](docs/architecture.md#data-headers).
 A `Data` reads as `None` until the server sets it, so an empty buffer differs
 from no data; see [numeric data](docs/architecture.md#numeric-and-image-data).
 
+A large image or buffer delays the states the server sends after it. Mark it
+`#[state(low_priority)]`, or a substate to mark every image and buffer inside
+it, and the server sends it only while no other state waits; see
+[send priority](docs/architecture.md#send-priority).
+
 Generate matching server bindings from the same state definition with
 `generate_python` or `generate_rust`. Construct the UI state with
 `ClientBuilder::new`, which takes the app's egui context for repaints and the

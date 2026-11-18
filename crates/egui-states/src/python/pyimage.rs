@@ -116,6 +116,16 @@ pub(crate) fn image_color(color: &Bound<'_, PyAny>) -> PyResult<[u8; 4]> {
     ))
 }
 
+/// Converts the `max_lines` option of an image update, which must be at
+/// least 1 when given.
+pub(crate) fn max_lines(max_lines: Option<i64>) -> PyResult<Option<usize>> {
+    match max_lines {
+        None => Ok(None),
+        Some(lines) if lines >= 1 => Ok(Some(usize::try_from(lines).unwrap_or(usize::MAX))),
+        Some(_) => Err(PyValueError::new_err("max_lines must be at least 1")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

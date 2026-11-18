@@ -172,3 +172,30 @@ def test_image_update_outside_the_image_preserves_pixels(local_bundle):
         assert_array(image.get(), before)
     image.update(np.full((1, 1), 9, dtype=np.uint8), (1, 2))
     assert image.get()[1, 2].tolist() == [9, 9, 9, 255]
+
+
+@pytest.mark.parametrize("multi", [False, True], ids=["image", "image-multi"])
+def test_image_wait_force_and_max_lines(local_bundle, multi):
+    _, states, _ = local_bundle
+    image = states.image.images[3] if multi else states.image.image
+    state = states.image.images if multi else states.image.image
+    # Without a client every change is only stored, so nothing waits.
+    assert state.is_idle()
+    image.set(np.zeros((4, 2), dtype=np.uint8), wait=True)
+    assert_array(image.get()[..., :3], np.zeros((4, 2, 3), dtype=np.uint8))
+    image.set_all((4, 2), 0, wait=True)
+
+    rows = np.arange(8, dtype=np.uint8).reshape(4, 2)
+    image.update(rows, (0, 0), update=True, max_lines=1)
+    assert_array(image.get()[..., 0], rows)
+    image.update(np.full((2, 2), 9, dtype=np.uint8), (1, 0), force=True, max_lines=10, wait=True)
+    assert state.is_idle()
+    expected = rows.copy()
+    expected[1:3] = 9
+    assert_array(image.get()[..., 0], expected)
+
+    before = image.get().copy()
+    for max_lines in [0, -1]:
+        with pytest.raises(ValueError, match="max_lines"):
+            image.update(np.zeros((1, 1), dtype=np.uint8), (0, 0), max_lines=max_lines)
+    assert_array(image.get(), before)

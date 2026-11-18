@@ -3,8 +3,9 @@
 //! One round trip: the client sets a `Value`, the server's callback copies it
 //! into a `Static`, and the client sees the `Static` change. It is measured
 //! idle, during a download into memory and one into a file, during an
-//! upload, and, for comparison, during large `Data` sets, which travel with
-//! the state messages. The file download goes through the sink worker, which
+//! upload, and during large `Data` sets: of a state with normal priority,
+//! which travel with the state messages, and of one with low priority, which
+//! use a lane of their own. The file download goes through the sink worker, which
 //! writes in batches and returns credit per batch; the others consume every
 //! chunk as it arrives.
 //!
@@ -25,10 +26,8 @@
 //! cargo bench -p egui_states_bench --bench latency -- connect 192.168.1.20:9300
 //! ```
 
-use std::io::{Read, Write};
-use std::net::{Ipv4Addr, Shutdown, TcpListener, TcpStream};
+use std::net::Ipv4Addr;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -36,10 +35,9 @@ use std::time::{Duration, Instant};
 use egui_states::bench_support::{accept_discard, discard_uploads, send_pattern, upload_pattern};
 use egui_states::server::{self, CallbackHandle, StateServer};
 use egui_states::{
-    Client, ClientBuilder, ConnectionState, Queue, State, StatesCreator, TransferHandle,
-    TransferOffer,
+    Client, ClientBuilder, ConnectionState, State, StatesCreator, TransferHandle, TransferOffer,
 };
-use egui_states_bench::{MIB, free_port, wait_until};
+use egui_states_bench::{Link, MIB, free_port, relay, wait_until};
 
 /// Round trips measured per case.
 const SAMPLES: usize = 300;
@@ -50,13 +48,15 @@ const START_DOWNLOAD: u32 = 1;
 const STOP_DOWNLOAD: u32 = 2;
 const START_DATA: u32 = 3;
 const STOP_DATA: u32 = 4;
+const START_LOW_DATA: u32 = 5;
 
 struct LatencyStates {
-    value: egui_states::Value<u64, Queue>,
+    value: egui_states::Value<u64>,
     echo: egui_states::Static<u64>,
-    command: egui_states::Signal<u32, Queue>,
+    command: egui_states::Signal<u32>,
     /// Registered so the server's `Data` sets reach a client state.
     _data: egui_states::Data<u8>,
+    _low_data: egui_states::Data<u8>,
     files: egui_states::Download,
     inputs: egui_states::Upload,
 }
@@ -70,6 +70,7 @@ impl State for LatencyStates {
             echo: c.add_static("echo", 0),
             command: c.signal("command"),
             _data: c.data("data"),
+            _low_data: c.low_priority(|c| c.data("low_data")),
             files: c.download("files"),
             inputs: c.upload("inputs"),
         }
@@ -87,7 +88,8 @@ fn start_server(port: u16, addr: Ipv4Addr) -> Server {
     let value = server::Value::new(&server, "root.value", 0_u64, true).expect("value");
     let echo = server::Static::new(&server, "root.echo", 0_u64).expect("echo");
     let command = server::Signal::<u32>::new(&server, "root.command", true).expect("command");
-    let data = server::Data::<u8>::new(&server, "root.data").expect("data");
+    let data = server::Data::<u8>::new(&server, "root.data", false).expect("data");
+    let low_data = server::Data::<u8>::new(&server, "root.low_data", true).expect("low data");
     let files = server::Download::<()>::new(&server, "root.files").expect("files");
     let inputs = server::Upload::<()>::new(&server, "root.inputs").expect("inputs");
     server.finalize().expect("finalize");
@@ -99,6 +101,12 @@ fn start_server(port: u16, addr: Ipv4Addr) -> Server {
     });
     let download: Arc<Mutex<Option<TransferHandle>>> = Arc::default();
     let data_running = Arc::new(AtomicBool::new(false));
+    // The producer of the current `Data` case. Stopping joins it, so the next
+    // case does not start while its last set still occupies the connection.
+    let producer: Arc<Mutex<Option<thread::JoinHandle<()>>>> = Arc::default();
+    // Bytes the current case has set, and since when.
+    let set_bytes = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let started = Arc::new(Mutex::new(Instant::now()));
     let command_callback = command.connect(move |command| match command {
         START_DOWNLOAD => {
             *download.lock().unwrap() = send_pattern(&files, ENDLESS).ok();
@@ -108,147 +116,43 @@ fn start_server(port: u16, addr: Ipv4Addr) -> Server {
                 handle.cancel();
             }
         }
-        START_DATA => {
+        START_DATA | START_LOW_DATA => {
             data_running.store(true, Ordering::Release);
-            let (data, running) = (data.clone(), data_running.clone());
-            thread::spawn(move || {
+            let data = match command {
+                START_DATA => data.clone(),
+                _ => low_data.clone(),
+            };
+            let running = data_running.clone();
+            let bytes = set_bytes.clone();
+            bytes.store(0, Ordering::Release);
+            *started.lock().unwrap() = Instant::now();
+            *producer.lock().unwrap() = Some(thread::spawn(move || {
                 let buffer = vec![0x5a; 16 * MIB];
                 while running.load(Ordering::Acquire) {
-                    if data.set(&buffer, false).is_err() {
+                    if data.set(&buffer, false, false).is_err() {
                         break;
                     }
+                    bytes.fetch_add(buffer.len() as u64, Ordering::AcqRel);
                 }
-            });
+            }));
         }
-        STOP_DATA => data_running.store(false, Ordering::Release),
+        STOP_DATA => {
+            data_running.store(false, Ordering::Release);
+            if let Some(producer) = producer.lock().unwrap().take() {
+                let _ = producer.join();
+            }
+            // Printed by the server, so also in a two-machine run.
+            let rate = set_bytes.load(Ordering::Acquire) as f64
+                / started.lock().unwrap().elapsed().as_secs_f64()
+                / 1e6;
+            println!("{:<10} data sets {rate:7.1} MB/s", "");
+        }
         _ => {}
     });
     Server {
         server,
         _callbacks: [echo_callback, command_callback],
     }
-}
-
-/// A simulated network link; both directions behave the same.
-#[derive(Clone, Copy)]
-struct Link {
-    /// Bytes per second.
-    rate: f64,
-    /// The propagation delay in one direction.
-    delay: Duration,
-}
-
-impl Link {
-    /// Parses `Mbit/s[:one-way delay in ms]`; `None` for 0, which means no
-    /// relay.
-    fn parse(spec: &str) -> Option<Self> {
-        let (rate, delay) = spec.trim().split_once(':').unwrap_or((spec.trim(), "0"));
-        let rate: f64 = rate.parse().expect("rate in Mbit/s");
-        let delay: f64 = delay.parse().expect("one-way delay in ms");
-        (rate > 0.0).then(|| Self {
-            rate: rate * 1e6 / 8.0,
-            delay: Duration::from_secs_f64(delay / 1e3),
-        })
-    }
-
-    fn label(&self) -> String {
-        format!(
-            "relay {} Mbit/s, {} ms each way",
-            self.rate * 8.0 / 1e6,
-            self.delay.as_secs_f64() * 1e3
-        )
-    }
-}
-
-/// Bytes of the smallest packet on the simulated link.
-const PACKET: usize = 1500;
-/// Link time of the largest packet. Faster links forward larger packets, as
-/// network cards with segmentation offload do, so the relay keeps up with
-/// 10 Gbit/s; a packet stays shorter than the delays the benchmark measures.
-const PACKET_TIME: Duration = Duration::from_micros(10);
-/// Link time of the packets the relay queues in front of the link. What does
-/// not fit waits in the socket buffers, like in those of a real sender.
-const LINK_QUEUE: Duration = Duration::from_millis(5);
-
-/// Forwards connections to `target` over `link`.
-fn relay(target: u16, link: Link) -> u16 {
-    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("relay bind");
-    let port = listener.local_addr().unwrap().port();
-    thread::spawn(move || {
-        for incoming in listener.incoming() {
-            let Ok(client) = incoming else { break };
-            let Ok(server) = TcpStream::connect((Ipv4Addr::LOCALHOST, target)) else {
-                continue;
-            };
-            for stream in [&client, &server] {
-                let _ = stream.set_nodelay(true);
-            }
-            let (client_read, server_read) =
-                (client.try_clone().unwrap(), server.try_clone().unwrap());
-            thread::spawn(move || pipe(client_read, server, link));
-            thread::spawn(move || pipe(server_read, client, link));
-        }
-    });
-    port
-}
-
-/// One direction of the link: schedules every packet read from `from` and
-/// hands it to the thread that delivers it into `to`.
-fn pipe(mut from: TcpStream, to: TcpStream, link: Link) {
-    // Room for the packets in the queue and on the wire; a receiver that
-    // stops reading fills it and so holds the sender up.
-    let packet_len = PACKET.max((PACKET_TIME.as_secs_f64() * link.rate) as usize);
-    let in_transit = (LINK_QUEUE + link.delay).as_secs_f64() * link.rate;
-    let (packets, arriving) = sync_channel(in_transit as usize / packet_len + 16);
-    thread::spawn(move || deliver(arriving, to));
-
-    let mut buffer = vec![0; 64 * 1024];
-    // When the link has sent everything scheduled so far.
-    let mut link_free = Instant::now();
-    'link: loop {
-        let len = match from.read(&mut buffer) {
-            Ok(0) | Err(_) => break,
-            Ok(len) => len,
-        };
-        for packet in buffer[..len].chunks(packet_len) {
-            // A packet leaves once the link has sent the ones before it and
-            // arrives after its serialization time and the delay. The times
-            // are absolute, so a late wake-up costs no rate.
-            let start = link_free.max(Instant::now());
-            link_free = start + Duration::from_secs_f64(packet.len() as f64 / link.rate);
-            if packets
-                .send((link_free + link.delay, packet.to_vec()))
-                .is_err()
-            {
-                break 'link;
-            }
-        }
-        // Stop reading while the queue is full.
-        if let Some(queued) = link_free.checked_duration_since(Instant::now())
-            && queued > LINK_QUEUE
-        {
-            thread::sleep(queued - LINK_QUEUE / 2);
-        }
-    }
-}
-
-/// Writes every packet into `to` at its arrival time.
-fn deliver(arriving: Receiver<(Instant, Vec<u8>)>, mut to: TcpStream) {
-    // `thread::sleep` wakes tens of microseconds late; the rest is spun.
-    const SPIN: Duration = Duration::from_micros(200);
-    for (due, packet) in arriving {
-        while let Some(wait) = due.checked_duration_since(Instant::now()) {
-            if wait > SPIN {
-                thread::sleep(wait - SPIN);
-            } else {
-                std::hint::spin_loop();
-            }
-        }
-        if to.write_all(&packet).is_err() {
-            break;
-        }
-    }
-    let _ = to.shutdown(Shutdown::Write);
 }
 
 struct Peer {
@@ -371,11 +275,15 @@ fn run_cases(peer: &mut Peer) {
     upload.cancel();
     wait_until("upload end", || upload.is_finished());
 
-    peer.command(START_DATA);
-    thread::sleep(Duration::from_millis(500));
-    report("data set", peer.round_trips(), None);
-    peer.command(STOP_DATA);
-    thread::sleep(Duration::from_millis(500));
+    for (label, command) in [("data set", START_DATA), ("low data", START_LOW_DATA)] {
+        peer.command(command);
+        thread::sleep(Duration::from_millis(500));
+        report(label, peer.round_trips(), None);
+        // Stopping waits for the producer's last set, up to a few seconds
+        // on a slow link.
+        peer.command(STOP_DATA);
+        thread::sleep(Duration::from_secs(3));
+    }
 }
 
 fn main() {

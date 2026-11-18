@@ -4,10 +4,10 @@ use std::mem::MaybeUninit;
 
 use crate::protocol::FastVec;
 use crate::protocol::image::{
-    ImageHeader, ImageSetHeader, ImageType, checked_image_bounds, checked_image_bytes,
-    checked_image_shape, to_rgba,
+    ImageHeader, ImageSetHeader, ImageType, ImageUpdateHeader, checked_image_bounds,
+    checked_image_bytes, checked_image_shape, to_rgba,
 };
-use crate::server_core::transfer::{Chunk, Messages, chunk_rows, chunk_transfer};
+use crate::server_core::transfer::{Chunk, Messages, chunk_transfer};
 
 /// A borrowed source image in one of the accepted pixel formats.
 ///
@@ -96,36 +96,79 @@ pub(crate) fn pack_image_set(
     })
 }
 
+/// Checks the `max_lines` option of an image update.
+pub(crate) fn checked_max_lines(max_lines: Option<usize>) -> Result<(), String> {
+    match max_lines {
+        Some(0) => Err("max_lines must be at least 1".to_string()),
+        _ => Ok(()),
+    }
+}
+
+/// Whether the server rectangle `outer` (`[y, x, height, width]`) contains
+/// `inner`.
+pub(crate) fn covers(outer: [usize; 4], inner: [usize; 4]) -> bool {
+    outer[0] <= inner[0]
+        && outer[1] <= inner[1]
+        && outer[0] + outer[2] >= inner[0] + inner[2]
+        && outer[1] + outer[3] >= inner[1] + inner[3]
+}
+
 /// Packs an update of the validated `image` into the wire rectangle `rect`
-/// (`[x, y, width, height]`) as row strips. `header` serializes an image
-/// header with its payload length for the image's state.
+/// (`[x, y, width, height]`). `header` serializes an image header with its
+/// payload length for the image's state.
+///
+/// The rectangle is cut into sub-rectangles of at most `max_lines` rows, or
+/// kept whole without a limit. Each sub-rectangle is one group of messages,
+/// chunked like an image set, which the client applies once; `update` asks
+/// for a repaint after every group.
 pub(crate) fn pack_image_update(
     id: u64,
     image: &ImageData,
     rect: [u32; 4],
     update: bool,
+    max_lines: Option<usize>,
     chunk_limit: usize,
     header: impl Fn(ImageHeader, u32) -> Result<FastVec<32>, ()>,
-) -> Result<VecDeque<(FastVec<32>, bool)>, String> {
+) -> Result<VecDeque<Messages>, String> {
+    checked_max_lines(max_lines)?;
+    let rows = image.size[0];
     let row_bytes = image.row_bytes();
-    chunk_rows(
-        image.size[0],
-        row_bytes,
-        chunk_limit,
-        update,
-        |first, rows, repaint| {
-            let strip = [rect[0], rect[1] + first as u32, rect[2], rows as u32];
-            let len = rows * row_bytes;
-            let mut message = header(
-                ImageHeader::Update(strip, image.image_type, repaint),
-                len as u32,
-            )
-            .map_err(|_| format!("Failed to serialize update header for image {}", id))?;
-            message.reserve_exact(len);
-            image.append(&mut message, first * row_bytes, len);
-            Ok(message)
-        },
-    )
+    let pixel_size = image.image_type.bytes_per_pixel();
+    let step = max_lines.unwrap_or(rows).clamp(1, rows.max(1));
+
+    let mut groups = VecDeque::with_capacity(rows.div_ceil(step));
+    let mut first = 0;
+    while first < rows {
+        let count = (rows - first).min(step);
+        let part = [rect[0], rect[1] + first as u32, rect[2], count as u32];
+        let offset = first * row_bytes;
+        let group = chunk_transfer(
+            count * row_bytes,
+            pixel_size,
+            chunk_limit,
+            |chunk, range| {
+                let len = range.len();
+                let pixels = (len / pixel_size) as u32;
+                let part_header = match chunk {
+                    Chunk::All => ImageUpdateHeader::All(part, update),
+                    Chunk::Start => ImageUpdateHeader::Start(part, pixels),
+                    Chunk::Batch => ImageUpdateHeader::Batch(pixels),
+                    Chunk::End => ImageUpdateHeader::End(pixels, update),
+                };
+                let mut message = header(
+                    ImageHeader::Update(part_header, image.image_type),
+                    len as u32,
+                )
+                .map_err(|_| format!("Failed to serialize update header for image {}", id))?;
+                message.reserve_exact(len);
+                image.append(&mut message, offset + range.start, len);
+                Ok(message)
+            },
+        )?;
+        groups.push_back(group);
+        first += count;
+    }
+    Ok(groups)
 }
 
 pub(crate) fn checked_image_size(size: [usize; 2]) -> Result<[u32; 2], String> {

@@ -82,9 +82,13 @@ whether to apply the request.
 
 Signals and signaled `Value` changes use one of two server-side modes:
 
-- Single mode (`NoQueue`, the default) coalesces pending changes for a state to
-  the latest value while a callback for that state is outstanding.
-- Queue mode (`Queue`) preserves every change and delivers them in order.
+- Single mode, the default, coalesces pending changes for a state to the
+  latest value while a callback for that state is outstanding.
+- Queue mode, `#[state(queue)]` on the field or `StatesCreator::queue` in a
+  hand-written `State`, preserves every change and delivers them in order.
+
+The mode is set in the state definition and passed to the server by the
+generated bindings; the client type is the same in both modes.
 
 Callbacks for different states may run concurrently when the server has more
 than one signal worker. A callback handle owns its registration; dropping the
@@ -99,13 +103,25 @@ if `a -> b -> c` coalesces to `c`, the callback receives `(c, a)`.
 
 ## Transfers and acknowledgements
 
-Large numeric buffers, image sets and collection replacements are split into
-chunks of 512 KiB and published to a client handle only after the last chunk
-arrives. Small messages queued together are merged into one frame of up to
-10 MB, but a chunk is never merged: the WebSocket library moves the unsent rest
-of a message after every partial socket write, so large frames cost time
-quadratic in their size. Acknowledgements provide backpressure and release
-pending server work.
+Large numeric buffers, image sets, image updates and collection replacements
+are split into chunks of 512 KiB and published to a client handle only after
+the last chunk arrives. Small messages queued together are merged into one
+frame of up to 256 messages and about 512 KiB, which saves a socket write per
+message. A message larger than 64 KiB, such as a full chunk, is sent as a frame
+of its own: the WebSocket library moves the unsent rest of a message after
+every partial socket write, so large frames cost time quadratic in their size.
+Acknowledgements provide backpressure and release pending server work.
+
+`Data`, `DataMulti`, `Image` and `ImageMulti` send one acknowledged transfer
+at a time. A change waits until the client has acknowledged the previous one,
+then queues its transfer and returns, so the changes one thread makes to these
+states and to any other state reach the client in the order they were made,
+unless the state has [low send priority](#send-priority).
+With `wait`, a change returns only once the client has acknowledged it, or
+the connection has ended; the call does not tell the two apart.
+`is_idle` tells whether nothing is in flight, so a producer can skip a frame
+on a slow link instead of waiting. A change made while no client is
+synchronized is only stored, and none of these calls waits then.
 
 When a client connects, every state is synchronized from the server's current
 contents; a change made while the client was away is not replayed. A
@@ -118,12 +134,31 @@ A whole-collection replacement of a `VecState` or `MapState` larger than one
 message is split at item boundaries and applied on the client only after its
 last part arrives. These parts need no acknowledgement.
 
-All keys in an `ImageMulti` share one ordered transfer stream. Sets and updates
-that require multiple messages finish before a later remove or reset is sent;
-controls do not cancel preceding chunks. A disconnect invalidates pending work
-with a transfer generation, and reconnect synchronization resets the client
-collection before sending the server's current keys. Each synchronized image
-must be acknowledged before subsequently queued work is released.
+An image update is applied on the client once, like a set, unless `max_lines`
+splits its rectangle into parts of at most that many rows from the top. Each
+part is a complete update, chunked like any other, applied and acknowledged on
+its own, and `update` requests a repaint after every part. The call queues the
+first part and returns; each further part is sent once the client has
+acknowledged the one before. A split update is therefore the one exception to
+the order above: later changes of other states can reach the client before its
+remaining parts, and the next change of the image waits until its last part
+has been acknowledged.
+
+Parts that are not sent yet can be dropped, and what is in flight never is. A
+set drops them, because it overwrites the whole image. A forced update drops
+them when its rectangle covers the rectangle of the whole split update;
+otherwise it waits like any other. Either way the call still waits for the part
+in flight, and the client ends with the server's pixels, because what is
+dropped is overwritten.
+
+All keys in an `ImageMulti` share one ordered transfer stream, and a set or a
+forced update drops only waiting parts of its own key. A remove drops the
+waiting parts of its key, and a reset those of every key; both are queued once
+nothing is in flight and need no acknowledgement. A disconnect invalidates
+pending work with a transfer generation, and reconnect synchronization resets
+the client collection before sending the server's current keys. Each
+synchronized image must be acknowledged before subsequently queued work is
+released.
 
 Waiting for acknowledgements slows the server down to the client's pace. A
 client that disappears without closing the connection would make it wait
@@ -143,14 +178,56 @@ retains the last transfer for synchronization with a newly connected client.
 A reconnected `DataMultiTake` holds only the cached keys: values the client
 had not taken before the disconnect are dropped.
 
+## Send priority
+
+A bulk state (an `Image`, `ImageMulti`, `Data`, `DataMulti`, `DataTake` or
+`DataMultiTake`) can be created with low send priority: `#[state(low_priority)]`
+on its field, on a substate for every bulk state inside it at any depth, or
+`StatesCreator::low_priority` in a hand-written `State`. The generated server
+bindings pass the priority to the state's constructor; the client behaves the
+same either way, and the priority is not part of the layout hash.
+
+The server sends the messages of these states in a lane of their own, only
+while no message of a normal-priority state waits. Every message of such a
+state uses the lane, so the state keeps its own order. A change of another
+state made after it can reach the client first, though: after
+`image.set(frame); label.set(text)` the client may show the new label before
+the new frame. Where that order matters, `wait` on the bulk change keeps it.
+The same holds for everything else the server sends in the normal lane, such
+as a file transfer offer: it can arrive before a low-priority change made
+earlier, also before the first value of a low-priority state on a new
+connection. A repaint request is the exception: the server sends one in each
+lane, so the client repaints again when the low-priority changes have arrived.
+
+The lane has a window, the file transfer window of the server's profile. The
+server follows every frame of the lane with a small mark, which the client
+answers once it has handled everything before it, and sends while the bytes
+of unanswered frames are below the window. A normal message therefore waits
+behind at most one window or one 512 KiB chunk of bulk data, whichever is
+larger. The window also caps the lane's throughput, at one window or one chunk
+per round trip: with the default profile, 512 KiB per round trip, which is
+about 5 MiB/s over a 100 ms round trip whatever the bandwidth. The
+`Throughput` profile doubles that, at the cost of twice the wait for a normal
+message. In the latency benchmark, a value round trip during continuous 16 MiB
+`Data` sets takes 2.5 ms instead of 133 ms over a 1 Gbit/s link and 50 ms
+instead of 1350 ms over a 100 Mbit/s link, while the sets move 2 % and 11 %
+slower; on loopback the sets move about a quarter slower.
+
+After eight frames of normal messages in a row, the server first sends one
+waiting frame of the low-priority lane or one chunk of file data, taking turns
+between the two, so a busy normal lane slows the other lanes down but never
+stops them.
+
 ## File transfers
 
 `Download<M>` and `Upload<M>` move files and buffers that are not state. They
 share the WebSocket with the state messages but not its queue.
 
-**Two lanes.** Each peer's writer sends a heartbeat ping first, then any
-queued state message, and a chunk of file data only when no state message
-waits. The control frames of a transfer (offer, accept, credit,
+**Lanes.** Each peer's writer sends a heartbeat ping first, then any queued
+state message, and a chunk of file data only when no state message waits. On
+the server, the low-priority lane of [send priority](#send-priority) goes
+between the two, and the starvation guard described there also lets file data
+through a busy state lane. The control frames of a transfer (offer, accept, credit,
 cancel, finished) travel with the state messages and keep their order, so a
 state change the server sends after a finished transfer arrives after the
 client sees it done.

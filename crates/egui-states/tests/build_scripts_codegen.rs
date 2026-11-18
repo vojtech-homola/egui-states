@@ -6,8 +6,8 @@ use std::path::PathBuf;
 use egui_states::build_scripts::{generate_python, generate_rust};
 use egui_states::{
     ClientBuilder, Data, DataMulti, DataMultiTake, DataTake, Download, Image, ImageMulti, MapState,
-    Queue, Signal, State, StatesCreator, Static, StaticAtomic, Upload, Value, ValueAtomic,
-    ValueTake, VecState,
+    Signal, State, StatesCreator, Static, StaticAtomic, Upload, Value, ValueAtomic, ValueTake,
+    VecState,
 };
 
 #[egui_states::typed(rust_derive(Debug, PartialEq, Eq, Hash))]
@@ -320,13 +320,13 @@ impl State for AllKinds {
 
     fn new(c: &mut impl StatesCreator) -> Self {
         let _: Value<i32> = c.value("value", 3);
-        let _: Value<String, Queue> = c.value("queued", "text".into());
+        let _: Value<String> = c.queue(|c| c.value("queued", "text".into()));
         let _: ValueAtomic<f64> = c.atomic("atomic", 0.5);
         let _: Static<GeneratedEnum> = c.add_static("fixed", GeneratedEnum::Second);
         let _: StaticAtomic<[f32; 2]> = c.static_atomic("pair", [1.0, 2.0]);
         let _: ValueTake<String> = c.value_take("take");
         let _: Signal<u8> = c.signal("signal");
-        let _: Signal<(), Queue> = c.signal("empty");
+        let _: Signal<()> = c.queue(|c| c.signal("empty"));
         let _: Image = c.image("image");
         let _: ImageMulti = c.image_multi("images");
         let _: MapState<u16, GeneratedOuter> = c.map("map");
@@ -354,6 +354,114 @@ fn client_and_generated_layout_hashes_match_for_every_state_kind() {
         client
     );
     assert_eq!(generated_hash(&python, "VERSION_HASH: int = "), client);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A substate without images or buffers, which takes no priority.
+#[derive(State)]
+#[allow(dead_code)]
+struct ModesLeaf {
+    count: Value<i32>,
+}
+
+/// Data, a marked image and substates inside a substate, for [`Modes`].
+#[derive(State)]
+#[allow(dead_code)]
+struct ModesInner {
+    buffer: Data<u8>,
+    #[state(low_priority)]
+    preview: Image,
+    leaf: ModesLeaf,
+    count: Value<i32>,
+}
+
+/// Low send priority and queue mode on every kind of field that takes them.
+#[derive(State)]
+#[allow(dead_code)]
+struct Modes {
+    plain: Image,
+    #[state(low_priority)]
+    camera: Image,
+    #[state(low_priority)]
+    inner: ModesInner,
+    /// The same group at normal priority.
+    ordered: ModesInner,
+    #[state(queue)]
+    clicks: Signal<u32>,
+    #[state(queue)]
+    progress: Value<f32>,
+    #[state(queue)]
+    level: ValueAtomic<f64>,
+}
+
+/// [`Modes`] without any mode.
+#[derive(State)]
+#[allow(dead_code)]
+struct NoModes {
+    plain: Image,
+    camera: Image,
+    inner: ModesInner,
+    ordered: ModesInner,
+    clicks: Signal<u32>,
+    progress: Value<f32>,
+    level: ValueAtomic<f64>,
+}
+
+/// The modes reach both bindings, but not the layout hash: they change only
+/// how the server sends and calls back.
+#[test]
+fn bindings_carry_send_priority_and_queue_mode() {
+    let dir = output_dir("modes", 0);
+    generate_rust::<Modes>(&dir).unwrap();
+    generate_python::<Modes>(dir.join("python")).unwrap();
+    let rust = std::fs::read_to_string(dir.join("mod.rs")).unwrap();
+    for expected in [
+        "s::Image::new(server, format!(\"{parent}.plain\"), false)?",
+        "s::Image::new(server, format!(\"{parent}.camera\"), true)?",
+        // One group type serves both priorities: it takes the priority of
+        // the field it is created for, unless a state inside is marked.
+        "pub fn new(server: &s::StateServer, parent: &str, low_priority: bool) -> s::Result<Self>",
+        "inner: ModesInner::new(server, &format!(\"{parent}.inner\"), true)?",
+        "ordered: ModesInner::new(server, &format!(\"{parent}.ordered\"), false)?",
+        "s::Data::<u8>::new(server, format!(\"{parent}.buffer\"), low_priority)?",
+        "s::Image::new(server, format!(\"{parent}.preview\"), true)?",
+        "leaf: ModesLeaf::new(server, &format!(\"{parent}.leaf\"))?",
+        "s::Value::new(server, format!(\"{parent}.count\"), 0i32, false)?",
+        "s::Signal::<u32>::new(server, format!(\"{parent}.clicks\"), true)?",
+        "s::Value::new(server, format!(\"{parent}.progress\"), 0.0f32, true)?",
+        "s::Value::new(server, format!(\"{parent}.level\"), 0.0f64, true)?",
+    ] {
+        assert!(rust.contains(expected), "missing {expected} in\n{rust}");
+    }
+    let python = std::fs::read_to_string(dir.join("python/__init__.py")).unwrap();
+    for expected in [
+        "self.plain: s.Image = s.Image()\n",
+        "self.camera: s.Image = s.Image(low_priority=True)\n",
+        "def __init__(self, parent: str, low_priority: bool = False) -> None:",
+        "self.inner: ModesInner = ModesInner(parent + \".inner\", low_priority=True)\n",
+        "self.ordered: ModesInner = ModesInner(parent + \".ordered\")\n",
+        "s.Data[np.uint8] = s.Data(np.uint8, low_priority=low_priority)\n",
+        "self.preview: s.Image = s.Image(low_priority=True)\n",
+        "self.leaf: ModesLeaf = ModesLeaf(parent + \".leaf\")\n",
+    ] {
+        assert!(python.contains(expected), "missing {expected} in\n{python}");
+    }
+    // The group without bulk states keeps its plain constructor.
+    assert_eq!(python.matches("low_priority: bool = False").count(), 1);
+    for queued in ["self.clicks", "self.progress", "self.level"] {
+        let line = python.lines().find(|line| line.contains(queued)).unwrap();
+        assert!(line.ends_with(", True)"), "{line}");
+    }
+
+    let hash = |modes: bool| match modes {
+        true => ClientBuilder::<Modes>::new(egui::Context::default(), 0).get_version_hash(),
+        false => ClientBuilder::<NoModes>::new(egui::Context::default(), 0).get_version_hash(),
+    };
+    assert_eq!(hash(true), hash(false));
+    assert_eq!(
+        generated_hash(&rust, "pub const VERSION_HASH: u64 = "),
+        hash(true)
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 

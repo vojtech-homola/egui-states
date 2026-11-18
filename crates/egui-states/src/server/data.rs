@@ -126,6 +126,16 @@ fn data_from_bytes<T: DataElement>(data: &[u8]) -> Result<Vec<T>> {
 ///
 /// The methods without a header keep the current one. A header sent with a
 /// change reaches the client together with the buffer.
+///
+/// The client acknowledges [`Self::set`], [`Self::add`], [`Self::replace`]
+/// and [`Self::remove`], with their `_with_header` forms, and one of these
+/// changes is sent at a time: a call blocks until the client has acknowledged
+/// the previous one, then queues its change and returns. With `wait`, the
+/// call returns only once the client has acknowledged its own change, or the
+/// connection has ended; it does not tell the two apart, and without a client
+/// it does not wait.
+/// [`Self::clear`], [`Self::set_header`] and [`Self::reset`] are not
+/// acknowledged and do not wait for the client.
 pub struct Data<T, H = ()> {
     inner: Arc<CoreData>,
     _type: PhantomData<fn() -> (T, H)>,
@@ -145,9 +155,11 @@ where
     T: DataElement,
     H: HeaderValue,
 {
-    /// Registers a numeric buffer under `name`, not set yet.
-    pub fn new(server: &StateServer, name: impl Into<String>) -> Result<Self> {
-        let (_, inner) = server.add_data::<T>(name.into(), header_type::<H>())?;
+    /// Registers a numeric buffer under `name`, not set yet. With
+    /// `low_priority`, its transfers use the low-priority lane, as described
+    /// at [`Image::new`](crate::server::Image::new).
+    pub fn new(server: &StateServer, name: impl Into<String>, low_priority: bool) -> Result<Self> {
+        let (_, inner) = server.add_data::<T>(name.into(), header_type::<H>(), low_priority)?;
         Ok(Self {
             inner,
             _type: PhantomData,
@@ -170,6 +182,16 @@ where
     /// `None` while the data is not set.
     pub fn read_bytes<R>(&self, f: impl Fn(Option<&[u8]>) -> R) -> R {
         self.inner.get(f)
+    }
+
+    /// Returns whether no change waits for the client's acknowledgement, so
+    /// the next acknowledged change is sent without waiting.
+    ///
+    /// Also true while no client is connected, because a change is then only
+    /// stored. Producers that want the freshest data on a slow link can skip
+    /// a change while this is false.
+    pub fn is_idle(&self) -> bool {
+        self.inner.is_idle()
     }
 
     /// Returns the header, or `None` while the data is not set.
@@ -199,8 +221,8 @@ where
     ///
     /// Returns an error when the data is not set and the state has a header
     /// type: use [`Self::set_with_header`] to create it.
-    pub fn set(&self, data: &[T], update: bool) -> Result<()> {
-        self.set_inner(data, None, update)
+    pub fn set(&self, data: &[T], update: bool, wait: bool) -> Result<()> {
+        self.set_inner(data, None, update, wait)
     }
 
     /// Like [`Self::set`], replacing the header as well.
@@ -209,13 +231,19 @@ where
     ///
     /// Returns an error when the state has no header type or the header is
     /// larger than a value may be.
-    pub fn set_with_header(&self, data: &[T], header: &H, update: bool) -> Result<()> {
-        self.set_inner(data, Some(&serialize_bytes(header)?), update)
+    pub fn set_with_header(&self, data: &[T], header: &H, update: bool, wait: bool) -> Result<()> {
+        self.set_inner(data, Some(&serialize_bytes(header)?), update, wait)
     }
 
-    fn set_inner(&self, data: &[T], header: Option<&Bytes>, update: bool) -> Result<()> {
+    fn set_inner(
+        &self,
+        data: &[T],
+        header: Option<&Bytes>,
+        update: bool,
+        wait: bool,
+    ) -> Result<()> {
         self.inner
-            .set(with_header(data, header), update)
+            .set(with_header(data, header), update, wait)
             .map_err(ServerError::new)
     }
 
@@ -224,18 +252,24 @@ where
     /// # Errors
     ///
     /// Returns an error when the data is not set.
-    pub fn add(&self, data: &[T], update: bool) -> Result<()> {
-        self.add_inner(data, None, update)
+    pub fn add(&self, data: &[T], update: bool, wait: bool) -> Result<()> {
+        self.add_inner(data, None, update, wait)
     }
 
     /// Like [`Self::add`], replacing the header as well.
-    pub fn add_with_header(&self, data: &[T], header: &H, update: bool) -> Result<()> {
-        self.add_inner(data, Some(&serialize_bytes(header)?), update)
+    pub fn add_with_header(&self, data: &[T], header: &H, update: bool, wait: bool) -> Result<()> {
+        self.add_inner(data, Some(&serialize_bytes(header)?), update, wait)
     }
 
-    fn add_inner(&self, data: &[T], header: Option<&Bytes>, update: bool) -> Result<()> {
+    fn add_inner(
+        &self,
+        data: &[T],
+        header: Option<&Bytes>,
+        update: bool,
+        wait: bool,
+    ) -> Result<()> {
         self.inner
-            .add(with_header(data, header), update)
+            .add(with_header(data, header), update, wait)
             .map_err(ServerError::new)
     }
 
@@ -245,8 +279,8 @@ where
     ///
     /// Returns an error when the data is not set, the replaced range exceeds
     /// the current buffer or the update cannot be serialized or queued.
-    pub fn replace(&self, data: &[T], index: usize, update: bool) -> Result<()> {
-        self.replace_inner(data, index, None, update)
+    pub fn replace(&self, data: &[T], index: usize, update: bool, wait: bool) -> Result<()> {
+        self.replace_inner(data, index, None, update, wait)
     }
 
     /// Like [`Self::replace`], replacing the header as well.
@@ -256,8 +290,9 @@ where
         index: usize,
         header: &H,
         update: bool,
+        wait: bool,
     ) -> Result<()> {
-        self.replace_inner(data, index, Some(&serialize_bytes(header)?), update)
+        self.replace_inner(data, index, Some(&serialize_bytes(header)?), update, wait)
     }
 
     fn replace_inner(
@@ -266,9 +301,10 @@ where
         index: usize,
         header: Option<&Bytes>,
         update: bool,
+        wait: bool,
     ) -> Result<()> {
         self.inner
-            .replace(with_header(data, header), index, update)
+            .replace(with_header(data, header), index, update, wait)
             .map_err(ServerError::new)
     }
 
@@ -278,9 +314,9 @@ where
     ///
     /// Returns an error when the data is not set, the removed range exceeds
     /// the current buffer or the update cannot be queued.
-    pub fn remove(&self, index: usize, count: usize, update: bool) -> Result<()> {
+    pub fn remove(&self, index: usize, count: usize, update: bool, wait: bool) -> Result<()> {
         self.inner
-            .remove(index, count, None, update)
+            .remove(index, count, None, update, wait)
             .map_err(ServerError::new)
     }
 
@@ -291,10 +327,11 @@ where
         count: usize,
         header: &H,
         update: bool,
+        wait: bool,
     ) -> Result<()> {
         let header = serialize_bytes(header)?;
         self.inner
-            .remove(index, count, Some(&header), update)
+            .remove(index, count, Some(&header), update, wait)
             .map_err(ServerError::new)
     }
 
@@ -363,9 +400,12 @@ where
     T: DataElement,
     H: HeaderValue,
 {
-    /// Registers a one-shot numeric buffer under `name`.
-    pub fn new(server: &StateServer, name: impl Into<String>) -> Result<Self> {
-        let (_, inner) = server.add_data_take::<T>(name.into(), header_type::<H>())?;
+    /// Registers a one-shot numeric buffer under `name`. With
+    /// `low_priority`, its transfers use the low-priority lane, as described
+    /// at [`Image::new`](crate::server::Image::new).
+    pub fn new(server: &StateServer, name: impl Into<String>, low_priority: bool) -> Result<Self> {
+        let (_, inner) =
+            server.add_data_take::<T>(name.into(), header_type::<H>(), low_priority)?;
         Ok(Self {
             inner,
             _type: PhantomData,
@@ -406,6 +446,9 @@ where
 
 /// Server-side numeric buffers indexed by `u32` keys, each with an optional
 /// typed header `H`.
+///
+/// Changes wait for the client as in [`Data`]; all keys share one stream, so
+/// a change waits for the previous acknowledged change of any key.
 pub struct DataMulti<T, H = ()> {
     inner: Arc<CoreDataMulti>,
     _type: PhantomData<fn() -> (T, H)>,
@@ -425,9 +468,12 @@ where
     T: DataElement,
     H: HeaderValue,
 {
-    /// Registers an empty keyed buffer collection under `name`.
-    pub fn new(server: &StateServer, name: impl Into<String>) -> Result<Self> {
-        let (_, inner) = server.add_data_multi::<T>(name.into(), header_type::<H>())?;
+    /// Registers an empty keyed buffer collection under `name`. With
+    /// `low_priority`, its transfers use the low-priority lane, as described
+    /// at [`Image::new`](crate::server::Image::new).
+    pub fn new(server: &StateServer, name: impl Into<String>, low_priority: bool) -> Result<Self> {
+        let (_, inner) =
+            server.add_data_multi::<T>(name.into(), header_type::<H>(), low_priority)?;
         Ok(Self {
             inner,
             _type: PhantomData,
@@ -440,6 +486,12 @@ where
             Some(data) => data_from_bytes(data).map(Some),
             None => Ok(None),
         })
+    }
+
+    /// Returns whether no change of any key waits for the client's
+    /// acknowledgement, as [`Data::is_idle`].
+    pub fn is_idle(&self) -> bool {
+        self.inner.is_idle()
     }
 
     /// Returns the header at `index`, or `None` if the index is absent.
@@ -468,13 +520,20 @@ where
     ///
     /// Returns an error when the index is absent and the state has a header
     /// type: use [`Self::set_with_header`] to create it.
-    pub fn set(&self, index: u32, data: &[T], update: bool) -> Result<()> {
-        self.set_inner(index, data, None, update)
+    pub fn set(&self, index: u32, data: &[T], update: bool, wait: bool) -> Result<()> {
+        self.set_inner(index, data, None, update, wait)
     }
 
     /// Like [`Self::set`], replacing the header as well.
-    pub fn set_with_header(&self, index: u32, data: &[T], header: &H, update: bool) -> Result<()> {
-        self.set_inner(index, data, Some(&serialize_bytes(header)?), update)
+    pub fn set_with_header(
+        &self,
+        index: u32,
+        data: &[T],
+        header: &H,
+        update: bool,
+        wait: bool,
+    ) -> Result<()> {
+        self.set_inner(index, data, Some(&serialize_bytes(header)?), update, wait)
     }
 
     fn set_inner(
@@ -483,20 +542,28 @@ where
         data: &[T],
         header: Option<&Bytes>,
         update: bool,
+        wait: bool,
     ) -> Result<()> {
         self.inner
-            .set(index, with_header(data, header), update)
+            .set(index, with_header(data, header), update, wait)
             .map_err(ServerError::new)
     }
 
     /// Appends elements to the buffer at `index`.
-    pub fn add(&self, index: u32, data: &[T], update: bool) -> Result<()> {
-        self.add_inner(index, data, None, update)
+    pub fn add(&self, index: u32, data: &[T], update: bool, wait: bool) -> Result<()> {
+        self.add_inner(index, data, None, update, wait)
     }
 
     /// Like [`Self::add`], replacing the header as well.
-    pub fn add_with_header(&self, index: u32, data: &[T], header: &H, update: bool) -> Result<()> {
-        self.add_inner(index, data, Some(&serialize_bytes(header)?), update)
+    pub fn add_with_header(
+        &self,
+        index: u32,
+        data: &[T],
+        header: &H,
+        update: bool,
+        wait: bool,
+    ) -> Result<()> {
+        self.add_inner(index, data, Some(&serialize_bytes(header)?), update, wait)
     }
 
     fn add_inner(
@@ -505,15 +572,23 @@ where
         data: &[T],
         header: Option<&Bytes>,
         update: bool,
+        wait: bool,
     ) -> Result<()> {
         self.inner
-            .add(index, with_header(data, header), update)
+            .add(index, with_header(data, header), update, wait)
             .map_err(ServerError::new)
     }
 
     /// Replaces elements starting at `data_index` in the buffer at `index`.
-    pub fn replace(&self, index: u32, data_index: usize, data: &[T], update: bool) -> Result<()> {
-        self.replace_inner(index, data_index, data, None, update)
+    pub fn replace(
+        &self,
+        index: u32,
+        data_index: usize,
+        data: &[T],
+        update: bool,
+        wait: bool,
+    ) -> Result<()> {
+        self.replace_inner(index, data_index, data, None, update, wait)
     }
 
     /// Like [`Self::replace`], replacing the header as well.
@@ -524,9 +599,10 @@ where
         data: &[T],
         header: &H,
         update: bool,
+        wait: bool,
     ) -> Result<()> {
         let header = serialize_bytes(header)?;
-        self.replace_inner(index, data_index, data, Some(&header), update)
+        self.replace_inner(index, data_index, data, Some(&header), update, wait)
     }
 
     fn replace_inner(
@@ -536,16 +612,24 @@ where
         data: &[T],
         header: Option<&Bytes>,
         update: bool,
+        wait: bool,
     ) -> Result<()> {
         self.inner
-            .replace(index, data_index, with_header(data, header), update)
+            .replace(index, data_index, with_header(data, header), update, wait)
             .map_err(ServerError::new)
     }
 
     /// Removes `count` elements from `data_index` in the selected buffer.
-    pub fn remove(&self, index: u32, data_index: usize, count: usize, update: bool) -> Result<()> {
+    pub fn remove(
+        &self,
+        index: u32,
+        data_index: usize,
+        count: usize,
+        update: bool,
+        wait: bool,
+    ) -> Result<()> {
         self.inner
-            .remove(index, data_index, count, None, update)
+            .remove(index, data_index, count, None, update, wait)
             .map_err(ServerError::new)
     }
 
@@ -557,10 +641,11 @@ where
         count: usize,
         header: &H,
         update: bool,
+        wait: bool,
     ) -> Result<()> {
         let header = serialize_bytes(header)?;
         self.inner
-            .remove(index, data_index, count, Some(&header), update)
+            .remove(index, data_index, count, Some(&header), update, wait)
             .map_err(ServerError::new)
     }
 
@@ -628,9 +713,12 @@ where
     T: DataElement,
     H: HeaderValue,
 {
-    /// Registers an empty keyed one-shot collection under `name`.
-    pub fn new(server: &StateServer, name: impl Into<String>) -> Result<Self> {
-        let (_, inner) = server.add_data_multi_take::<T>(name.into(), header_type::<H>())?;
+    /// Registers an empty keyed one-shot collection under `name`. With
+    /// `low_priority`, its transfers use the low-priority lane, as described
+    /// at [`Image::new`](crate::server::Image::new).
+    pub fn new(server: &StateServer, name: impl Into<String>, low_priority: bool) -> Result<Self> {
+        let (_, inner) =
+            server.add_data_multi_take::<T>(name.into(), header_type::<H>(), low_priority)?;
         Ok(Self {
             inner,
             _type: PhantomData,
@@ -701,16 +789,16 @@ mod tests {
     #[test]
     fn data_round_trips_without_a_client() {
         let server = StateServer::new().unwrap();
-        let data = Data::<u16>::new(&server, "root.data").unwrap();
+        let data = Data::<u16>::new(&server, "root.data", false).unwrap();
 
-        data.set(&[1, 2, 3], false).unwrap();
-        data.add(&[4, 5], false).unwrap();
-        data.replace(&[8, 9], 1, false).unwrap();
+        data.set(&[1, 2, 3], false, false).unwrap();
+        data.add(&[4, 5], false, false).unwrap();
+        data.replace(&[8, 9], 1, false, false).unwrap();
         assert_eq!(data.get().unwrap(), Some(vec![1, 8, 9, 4, 5]));
         let sum = data.read(|values| values.unwrap().iter().sum::<u16>());
         assert_eq!(sum.unwrap(), 27);
         assert_eq!(data.read_bytes(|bytes| bytes.map(<[u8]>::len)), Some(10));
-        data.remove(2, 2, false).unwrap();
+        data.remove(2, 2, false, false).unwrap();
         assert_eq!(data.get().unwrap(), Some(vec![1, 8, 5]));
         data.clear(false).unwrap();
         assert_eq!(data.get().unwrap(), Some(vec![]));
@@ -723,14 +811,14 @@ mod tests {
     #[test]
     fn data_that_is_not_set_takes_only_a_set() {
         let server = StateServer::new().unwrap();
-        let data = Data::<u16>::new(&server, "root.data").unwrap();
+        let data = Data::<u16>::new(&server, "root.data", false).unwrap();
         assert_eq!(data.get().unwrap(), None);
         assert!(data.read_bytes(|bytes| bytes.is_none()));
 
         for (name, error) in [
-            ("add", data.add(&[1], false).unwrap_err()),
-            ("replace", data.replace(&[], 0, false).unwrap_err()),
-            ("remove", data.remove(0, 1, false).unwrap_err()),
+            ("add", data.add(&[1], false, false).unwrap_err()),
+            ("replace", data.replace(&[], 0, false, false).unwrap_err()),
+            ("remove", data.remove(0, 1, false, false).unwrap_err()),
             ("clear", data.clear(false).unwrap_err()),
         ] {
             assert!(error.to_string().contains("is not set"), "{name}: {error}");
@@ -739,22 +827,22 @@ mod tests {
         data.reset(false).unwrap();
         assert_eq!(data.get().unwrap(), None);
 
-        data.set(&[], false).unwrap();
+        data.set(&[], false, false).unwrap();
         assert_eq!(data.get().unwrap(), Some(vec![]));
-        data.add(&[7], false).unwrap();
+        data.add(&[7], false, false).unwrap();
         assert_eq!(data.get().unwrap(), Some(vec![7]));
     }
 
     #[test]
     fn multi_data_round_trips_without_a_client() {
         let server = StateServer::new().unwrap();
-        let data = DataMulti::<f32>::new(&server, "root.data").unwrap();
+        let data = DataMulti::<f32>::new(&server, "root.data", false).unwrap();
 
-        data.set(3, &[1.0, 2.0], false).unwrap();
-        data.add(3, &[3.0], false).unwrap();
-        data.replace(3, 1, &[4.0], false).unwrap();
+        data.set(3, &[1.0, 2.0], false, false).unwrap();
+        data.add(3, &[3.0], false, false).unwrap();
+        data.replace(3, 1, &[4.0], false, false).unwrap();
         assert_eq!(data.get(3).unwrap(), Some(vec![1.0, 4.0, 3.0]));
-        data.remove(3, 0, 1, false).unwrap();
+        data.remove(3, 0, 1, false, false).unwrap();
         assert_eq!(data.get(3).unwrap(), Some(vec![4.0, 3.0]));
         data.remove_index(3, false).unwrap();
         assert_eq!(data.get(3).unwrap(), None);
@@ -763,17 +851,17 @@ mod tests {
     #[test]
     fn invalid_data_ranges_are_rejected_without_changes() {
         let server = StateServer::new().unwrap();
-        let data = Data::<u16>::new(&server, "root.data").unwrap();
-        data.set(&[1, 2, 3], false).unwrap();
+        let data = Data::<u16>::new(&server, "root.data", false).unwrap();
+        data.set(&[1, 2, 3], false, false).unwrap();
 
-        assert!(data.replace(&[9, 9], 2, false).is_err());
-        assert!(data.remove(2, 2, false).is_err());
-        assert!(data.remove(0, 0, false).is_err());
+        assert!(data.replace(&[9, 9], 2, false, false).is_err());
+        assert!(data.remove(2, 2, false, false).is_err());
+        assert!(data.remove(0, 0, false, false).is_err());
         assert_eq!(data.get().unwrap(), Some(vec![1, 2, 3]));
 
         // Empty edits at the end are valid no-ops.
-        data.replace(&[], 3, false).unwrap();
-        data.add(&[], false).unwrap();
+        data.replace(&[], 3, false, false).unwrap();
+        data.add(&[], false, false).unwrap();
         assert_eq!(data.get().unwrap(), Some(vec![1, 2, 3]));
     }
 
@@ -781,25 +869,28 @@ mod tests {
     #[test]
     fn overflowing_data_ranges_are_rejected_without_changes() {
         let server = StateServer::new().unwrap();
-        let data = Data::<u16>::new(&server, "root.data").unwrap();
-        let multi = DataMulti::<u16>::new(&server, "root.multi").unwrap();
-        data.set(&[1, 2, 3], false).unwrap();
-        multi.set(4, &[1, 2, 3], false).unwrap();
+        let data = Data::<u16>::new(&server, "root.data", false).unwrap();
+        let multi = DataMulti::<u16>::new(&server, "root.multi", false).unwrap();
+        data.set(&[1, 2, 3], false, false).unwrap();
+        multi.set(4, &[1, 2, 3], false, false).unwrap();
 
         type Attempt<'a> = (&'a str, Box<dyn Fn() -> Result<()> + 'a>);
         let attempts: [Attempt<'_>; 4] = [
             (
                 "replace",
-                Box::new(|| data.replace(&[9], usize::MAX, false)),
+                Box::new(|| data.replace(&[9], usize::MAX, false, false)),
             ),
-            ("remove", Box::new(|| data.remove(usize::MAX, 1, false))),
+            (
+                "remove",
+                Box::new(|| data.remove(usize::MAX, 1, false, false)),
+            ),
             (
                 "multi replace",
-                Box::new(|| multi.replace(4, usize::MAX, &[9], false)),
+                Box::new(|| multi.replace(4, usize::MAX, &[9], false, false)),
             ),
             (
                 "multi remove",
-                Box::new(|| multi.remove(4, usize::MAX, 1, false)),
+                Box::new(|| multi.remove(4, usize::MAX, 1, false, false)),
             ),
         ];
         for (name, attempt) in attempts {
@@ -816,18 +907,18 @@ mod tests {
     #[test]
     fn multi_data_edits_require_an_existing_key_and_range() {
         let server = StateServer::new().unwrap();
-        let data = DataMulti::<u8>::new(&server, "root.data").unwrap();
-        data.set(1, &[1, 2, 3], false).unwrap();
+        let data = DataMulti::<u8>::new(&server, "root.data", false).unwrap();
+        data.set(1, &[1, 2, 3], false, false).unwrap();
 
-        assert!(data.add(2, &[4], false).is_err());
-        assert!(data.replace(2, 0, &[4], false).is_err());
-        assert!(data.remove(2, 0, 1, false).is_err());
+        assert!(data.add(2, &[4], false, false).is_err());
+        assert!(data.replace(2, 0, &[4], false, false).is_err());
+        assert!(data.remove(2, 0, 1, false, false).is_err());
         assert!(data.clear(2, false).is_err());
         assert_eq!(data.get(2).unwrap(), None);
 
-        assert!(data.replace(1, 2, &[8, 9], false).is_err());
-        assert!(data.remove(1, 1, 3, false).is_err());
-        assert!(data.remove(1, 0, 0, false).is_err());
+        assert!(data.replace(1, 2, &[8, 9], false, false).is_err());
+        assert!(data.remove(1, 1, 3, false, false).is_err());
+        assert!(data.remove(1, 0, 0, false, false).is_err());
         assert_eq!(data.get(1).unwrap(), Some(vec![1, 2, 3]));
 
         data.clear(1, false).unwrap();
@@ -843,20 +934,20 @@ mod tests {
     fn headers_are_stored_with_the_data() {
         type Meta = (u32, String);
         let server = StateServer::new().unwrap();
-        let data = Data::<u16, Meta>::new(&server, "root.data").unwrap();
-        let multi = DataMulti::<u16, Meta>::new(&server, "root.multi").unwrap();
-        let take = DataTake::<u16, Meta>::new(&server, "root.take").unwrap();
-        let plain = Data::<u16>::new(&server, "root.plain").unwrap();
+        let data = Data::<u16, Meta>::new(&server, "root.data", false).unwrap();
+        let multi = DataMulti::<u16, Meta>::new(&server, "root.multi", false).unwrap();
+        let take = DataTake::<u16, Meta>::new(&server, "root.take", false).unwrap();
+        let plain = Data::<u16>::new(&server, "root.plain", false).unwrap();
 
         assert_eq!(data.header().unwrap(), None);
         assert_eq!(data.get_with_header().unwrap(), None);
         // The set that creates the data needs a header.
-        let error = data.set(&[1], false).unwrap_err();
+        let error = data.set(&[1], false, false).unwrap_err();
         assert!(error.to_string().contains("needs a header"), "{error}");
         assert!(data.set_header(&(0, "z".into()), false).is_err());
-        data.set_with_header(&[1, 2], &(1, "a".into()), false)
+        data.set_with_header(&[1, 2], &(1, "a".into()), false, false)
             .unwrap();
-        data.add(&[3], false).unwrap();
+        data.add(&[3], false, false).unwrap();
         assert_eq!(data.header().unwrap(), Some((1, "a".into())));
         assert_eq!(
             data.get_with_header().unwrap(),
@@ -869,18 +960,18 @@ mod tests {
         data.reset(false).unwrap();
         assert_eq!(data.get_with_header().unwrap(), None);
 
-        assert!(multi.set(1, &[1], false).is_err());
+        assert!(multi.set(1, &[1], false, false).is_err());
         assert_eq!(multi.get(1).unwrap(), None);
         multi
-            .set_with_header(1, &[1], &(0, "y".into()), false)
+            .set_with_header(1, &[1], &(0, "y".into()), false, false)
             .unwrap();
-        multi.set(1, &[2], false).unwrap();
+        multi.set(1, &[2], false, false).unwrap();
         assert_eq!(
             multi.get_with_header(1).unwrap(),
             Some((vec![2], (0, "y".into())))
         );
         multi
-            .replace_with_header(1, 0, &[5], &(4, "d".into()), false)
+            .replace_with_header(1, 0, &[5], &(4, "d".into()), false, false)
             .unwrap();
         assert_eq!(multi.header(1).unwrap(), Some((4, "d".into())));
         assert_eq!(
@@ -897,10 +988,10 @@ mod tests {
         take.set_with_header(&[1], &(6, "f".into()), false, false, true)
             .unwrap();
 
-        let error = plain.set_with_header(&[1], &(), false).unwrap_err();
+        let error = plain.set_with_header(&[1], &(), false, false).unwrap_err();
         assert!(error.to_string().contains("without a header"), "{error}");
         assert_eq!(plain.header().unwrap(), None);
-        plain.set(&[1], false).unwrap();
+        plain.set(&[1], false, false).unwrap();
         assert_eq!(plain.header().unwrap(), Some(()));
     }
 }

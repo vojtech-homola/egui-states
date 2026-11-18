@@ -265,7 +265,7 @@ impl Data {
 
     /// Replaces the buffer, creating the data when it is not set; creating
     /// the data of a state with a header type needs a header.
-    pub(crate) fn set(&self, data: DataSlice, update: bool) -> Result<(), CoreError> {
+    pub(crate) fn set(&self, data: DataSlice, update: bool, wait: bool) -> Result<(), CoreError> {
         let elements = check_data_type(&data, self.data_type, self.item_size)?;
         let header = self.header_type.check(&self.name, data.header)?;
         let slice = data.bytes;
@@ -298,11 +298,11 @@ impl Data {
             update,
             self.header_type.change(header),
         )?;
-        self.send_after_ack(generation, messages);
+        self.send_after_ack(generation, messages, wait);
         Ok(())
     }
 
-    pub(crate) fn add(&self, data: DataSlice, update: bool) -> Result<(), CoreError> {
+    pub(crate) fn add(&self, data: DataSlice, update: bool, wait: bool) -> Result<(), CoreError> {
         let elements = check_data_type(&data, self.data_type, self.item_size)?;
         let header = self.header_type.check(&self.name, data.header)?;
         let slice = data.bytes;
@@ -331,7 +331,7 @@ impl Data {
             update,
             self.header_type.change(header),
         )?;
-        self.send_after_ack(generation, messages);
+        self.send_after_ack(generation, messages, wait);
         Ok(())
     }
 
@@ -340,6 +340,7 @@ impl Data {
         data: DataSlice,
         index: usize,
         update: bool,
+        wait: bool,
     ) -> Result<(), CoreError> {
         let elements = check_data_type(&data, self.data_type, self.item_size)?;
         let header = self.header_type.check(&self.name, data.header)?;
@@ -379,7 +380,7 @@ impl Data {
             update,
             self.header_type.change(header),
         )?;
-        self.send_after_ack(generation, messages);
+        self.send_after_ack(generation, messages, wait);
         Ok(())
     }
 
@@ -389,6 +390,7 @@ impl Data {
         size: usize,
         header: Option<&[u8]>,
         update: bool,
+        wait: bool,
     ) -> Result<(), CoreError> {
         if size == 0 {
             return Err("Invalid remove size: size must be greater than 0".into());
@@ -423,7 +425,7 @@ impl Data {
             DataHeader::Drain(index as u64, size as u64, update, change.update)
                 .serialize(self.id, false)
         })?;
-        self.send_after_ack(generation, vec![(message, false)]);
+        self.send_after_ack(generation, vec![(message, false)], wait);
         Ok(())
     }
 
@@ -517,7 +519,7 @@ impl Data {
             .map(|value| (value.bytes.as_slice(), value.header.as_slice())))
     }
 
-    fn send_after_ack(&self, generation: u64, messages: Vec<(FastVec<32>, bool)>) {
+    fn send_after_ack(&self, generation: u64, messages: Vec<(FastVec<32>, bool)>, wait: bool) {
         send_after_ack(
             &self.storage,
             |storage| &storage.sync,
@@ -526,7 +528,16 @@ impl Data {
             &self.sender,
             generation,
             messages,
+            wait,
         );
+    }
+
+    /// Whether no transfer waits for the client's acknowledgement, so the
+    /// next change is sent at once. Also true while no client is
+    /// synchronized, because a change is then only stored.
+    pub(crate) fn is_idle(&self) -> bool {
+        let storage = self.storage.read();
+        storage.sync.sendable(&self.connected).is_none() || self.event.is_set()
     }
 }
 
@@ -680,7 +691,13 @@ impl DataMulti {
 
     /// Sets the buffer at `index`, creating the key; creating a key of a
     /// state with a header type needs a header.
-    pub(crate) fn set(&self, index: u32, data: DataSlice, update: bool) -> Result<(), CoreError> {
+    pub(crate) fn set(
+        &self,
+        index: u32,
+        data: DataSlice,
+        update: bool,
+        wait: bool,
+    ) -> Result<(), CoreError> {
         let elements = check_data_type(&data, self.data_type, self.item_size)?;
         let header = self.header_type.check(&self.name, data.header)?;
         let slice = data.bytes;
@@ -716,11 +733,17 @@ impl DataMulti {
             update,
             self.header_type.change(header),
         )?;
-        self.send_after_ack(generation, messages);
+        self.send_after_ack(generation, messages, wait);
         Ok(())
     }
 
-    pub(crate) fn add(&self, index: u32, data: DataSlice, update: bool) -> Result<(), CoreError> {
+    pub(crate) fn add(
+        &self,
+        index: u32,
+        data: DataSlice,
+        update: bool,
+        wait: bool,
+    ) -> Result<(), CoreError> {
         let elements = check_data_type(&data, self.data_type, self.item_size)?;
         let header = self.header_type.check(&self.name, data.header)?;
         let slice = data.bytes;
@@ -749,7 +772,7 @@ impl DataMulti {
             update,
             self.header_type.change(header),
         )?;
-        self.send_after_ack(generation, messages);
+        self.send_after_ack(generation, messages, wait);
         Ok(())
     }
 
@@ -759,6 +782,7 @@ impl DataMulti {
         data_index: usize,
         data: DataSlice,
         update: bool,
+        wait: bool,
     ) -> Result<(), CoreError> {
         let elements = check_data_type(&data, self.data_type, self.item_size)?;
         let header = self.header_type.check(&self.name, data.header)?;
@@ -797,10 +821,11 @@ impl DataMulti {
             update,
             self.header_type.change(header),
         )?;
-        self.send_after_ack(generation, messages);
+        self.send_after_ack(generation, messages, wait);
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn remove(
         &self,
         index: u32,
@@ -808,6 +833,7 @@ impl DataMulti {
         size: usize,
         header: Option<&[u8]>,
         update: bool,
+        wait: bool,
     ) -> Result<(), CoreError> {
         if size == 0 {
             return Err("Invalid remove size: size must be greater than 0".into());
@@ -844,7 +870,7 @@ impl DataMulti {
             let header = DataHeader::Drain(data_index as u64, size as u64, update, change.update);
             MultiDataHeader::serialize_modify(self.id, index, header)
         })?;
-        self.send_after_ack(generation, vec![(message, false)]);
+        self.send_after_ack(generation, vec![(message, false)], wait);
         Ok(())
     }
 
@@ -932,7 +958,7 @@ impl DataMulti {
             .map(|value| (value.bytes.as_slice(), value.header.as_slice())))
     }
 
-    fn send_after_ack(&self, generation: u64, messages: Vec<(FastVec<32>, bool)>) {
+    fn send_after_ack(&self, generation: u64, messages: Vec<(FastVec<32>, bool)>, wait: bool) {
         send_after_ack(
             &self.storage,
             |storage| &storage.sync,
@@ -941,7 +967,16 @@ impl DataMulti {
             &self.sender,
             generation,
             messages,
+            wait,
         );
+    }
+
+    /// Whether no transfer waits for the client's acknowledgement, so the
+    /// next change is sent at once. Also true while no client is
+    /// synchronized, because a change is then only stored.
+    pub(crate) fn is_idle(&self) -> bool {
+        let storage = self.storage.read();
+        storage.sync.sendable(&self.connected).is_none() || self.event.is_set()
     }
 }
 
@@ -1013,12 +1048,14 @@ impl SyncTrait for DataMulti {
 
 // functions ------------------------------------------------
 /// Waits until the client acknowledged the previous transfer, then queues
-/// `messages` unless the connection ended or was replaced meanwhile.
+/// `messages` unless the connection ended or was replaced meanwhile. With
+/// `wait`, also waits until the client acknowledged `messages`.
 ///
 /// The caller holds its state's producer mutex and read `generation` under
 /// the storage lock together with its synchronization check. The storage read
 /// guard is kept through enqueueing, so a reset cannot change the generation
 /// between the check and the send.
+#[allow(clippy::too_many_arguments)]
 fn send_after_ack<S>(
     storage: &RwLock<S>,
     sync: impl FnOnce(&S) -> &SyncState,
@@ -1027,6 +1064,7 @@ fn send_after_ack<S>(
     sender: &MessageSender,
     generation: u64,
     messages: Vec<(FastVec<32>, bool)>,
+    wait: bool,
 ) {
     event.wait_clear();
     let storage = storage.read();
@@ -1035,6 +1073,13 @@ fn send_after_ack<S>(
     }
     for (message, single) in messages {
         sender.send_set(message, single);
+    }
+    // A disconnect reset takes the storage lock before it releases the
+    // event, so the guard must not be held while waiting. The producer mutex
+    // is, so only this transfer's acknowledgement or a reset sets the event.
+    drop(storage);
+    if wait {
+        event.wait();
     }
 }
 
@@ -1191,6 +1236,83 @@ mod tests {
             .unwrap_or_else(|_| panic!("blocked: {label}"))
     }
 
+    /// Runs `f` on another thread and checks that it is still blocked.
+    fn blocked<T: Send + 'static>(
+        f: impl FnOnce() -> T + Send + 'static,
+    ) -> std::sync::mpsc::Receiver<T> {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || sender.send(f()).unwrap());
+        assert!(matches!(
+            receiver.recv_timeout(Duration::from_millis(100)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ));
+        receiver
+    }
+
+    /// With `wait`, an acknowledged change returns only once the client has
+    /// acknowledged it, and a disconnect releases it. `is_idle` follows the
+    /// transfer and is true before the synchronization.
+    #[test]
+    fn a_change_with_wait_returns_once_it_is_acknowledged() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let (sender, mut receiver) = MessageSender::new();
+        let connected = Arc::new(AtomicBool::new(false));
+        let data = Data::new(
+            "root.data".into(),
+            5,
+            DataType::U16,
+            None,
+            sender,
+            connected.clone(),
+        );
+        assert!(data.is_idle());
+        data.set(holder(&[1]), false, true).unwrap();
+        connected.store(true, Ordering::Release);
+        assert!(data.is_idle(), "a change before the sync is only stored");
+        data.sync().unwrap();
+        assert!(!data.is_idle());
+        data.acknowledge();
+        assert!(data.is_idle());
+        queued(&mut receiver);
+
+        let adding = data.clone();
+        let done = blocked(move || adding.add(holder(&[2]), false, true));
+        assert_eq!(queued(&mut receiver).len(), 1, "the add was not sent");
+        assert!(!data.is_idle());
+        data.acknowledge();
+        done.recv_timeout(Duration::from_secs(2)).unwrap().unwrap();
+        assert!(data.is_idle());
+
+        let setting = data.clone();
+        let done = blocked(move || setting.set(holder(&[3]), false, true));
+        connected.store(false, Ordering::Release);
+        Acknowledge::reset(&*data);
+        done.recv_timeout(Duration::from_secs(2)).unwrap().unwrap();
+        assert!(data.is_idle());
+
+        let (sender, mut receiver) = MessageSender::new();
+        let connected = Arc::new(AtomicBool::new(true));
+        let multi = DataMulti::new(
+            "root.multi".into(),
+            6,
+            DataType::U16,
+            None,
+            sender,
+            connected,
+        );
+        multi.sync().unwrap();
+        queued(&mut receiver);
+        let setting = multi.clone();
+        let done = blocked(move || setting.set(1, holder(&[4]), false, true));
+        assert_eq!(queued(&mut receiver).len(), 1, "the set was not sent");
+        assert!(!multi.is_idle());
+        multi.acknowledge();
+        done.recv_timeout(Duration::from_secs(2)).unwrap().unwrap();
+        assert!(multi.is_idle());
+    }
+
     /// The connect window: the run loop marks the connection before it
     /// synchronizes. Producers in it used to wait for an acknowledgement while
     /// holding the storage read guard, a second producer queued for the write
@@ -1211,14 +1333,14 @@ mod tests {
             sender,
             connected.clone(),
         );
-        data.set(holder(&[1, 2]), false).unwrap();
+        data.set(holder(&[1, 2]), false, false).unwrap();
 
         connected.store(true, Ordering::Release);
         let producers: Vec<_> = [vec![3, 4], vec![5, 6]]
             .into_iter()
             .map(|values| {
                 let data = data.clone();
-                std::thread::spawn(move || data.add(holder(&values), false))
+                std::thread::spawn(move || data.add(holder(&values), false, false))
             })
             .collect();
         std::thread::sleep(Duration::from_millis(100));
@@ -1258,13 +1380,13 @@ mod tests {
             sender,
             connected.clone(),
         );
-        data.set(1, holder(&[1, 2]), false).unwrap();
+        data.set(1, holder(&[1, 2]), false, false).unwrap();
 
         connected.store(true, Ordering::Release);
         let adding = data.clone();
-        let add = std::thread::spawn(move || adding.add(1, holder(&[3]), false));
+        let add = std::thread::spawn(move || adding.add(1, holder(&[3]), false, false));
         let setting = data.clone();
-        let set = std::thread::spawn(move || setting.set(1, holder(&[4, 5, 6]), false));
+        let set = std::thread::spawn(move || setting.set(1, holder(&[4, 5, 6]), false, false));
         std::thread::sleep(Duration::from_millis(100));
         let syncing = data.clone();
         within("DataMulti sync behind window producers", move || {
@@ -1310,7 +1432,7 @@ mod tests {
             sender,
             connected.clone(),
         );
-        data.set(holder(&[1, 2]), false).unwrap();
+        data.set(holder(&[1, 2]), false, false).unwrap();
         connected.store(true, Ordering::Release);
         data.sync().unwrap();
         data.acknowledge();
@@ -1319,8 +1441,8 @@ mod tests {
         Acknowledge::reset(&*data);
         queued(&mut receiver);
         connected.store(true, Ordering::Release);
-        data.add(holder(&[7]), false).unwrap();
-        data.remove(0, 1, None, false).unwrap();
+        data.add(holder(&[7]), false, false).unwrap();
+        data.remove(0, 1, None, false, false).unwrap();
         assert!(queued(&mut receiver).is_empty(), "a window change was sent");
 
         data.sync().unwrap();
@@ -1338,7 +1460,7 @@ mod tests {
 
         // After the synchronization's acknowledgement, deltas flow again.
         data.acknowledge();
-        data.add(holder(&[8]), false).unwrap();
+        data.add(holder(&[8]), false, false).unwrap();
         let expected = pack_data(
             5,
             &u16_bytes(&[8]),
@@ -1367,7 +1489,7 @@ mod tests {
             connected.clone(),
         );
         // Not connected yet: the set only stores.
-        data.set(holder(&[]), false).unwrap();
+        data.set(holder(&[]), false, false).unwrap();
         connected.store(true, Ordering::Release);
         data.sync().unwrap();
 
@@ -1405,11 +1527,11 @@ mod tests {
         data.sync().unwrap();
         // The synchronization of data that is not set needs no
         // acknowledgement; this set does.
-        data.set(holder(&[1]), false).unwrap();
+        data.set(holder(&[1]), false, false).unwrap();
         queued(&mut receiver);
 
         let waiting = data.clone();
-        let producer = std::thread::spawn(move || waiting.add(holder(&[2]), false));
+        let producer = std::thread::spawn(move || waiting.add(holder(&[2]), false, false));
         std::thread::sleep(Duration::from_millis(100));
         connected.store(false, Ordering::Release);
         Acknowledge::reset(&*data);
@@ -1436,8 +1558,8 @@ mod tests {
             sender,
             connected.clone(),
         );
-        data.set(1, holder(&[1]), false).unwrap();
-        data.set(2, holder(&[2]), false).unwrap();
+        data.set(1, holder(&[1]), false, false).unwrap();
+        data.set(2, holder(&[2]), false, false).unwrap();
         data.remove_index(2, false).unwrap();
 
         connected.store(true, Ordering::Release);
@@ -1473,9 +1595,9 @@ mod tests {
             sender,
             connected.clone(),
         );
-        data.set(1, holder(&[1, 2]), false).unwrap();
-        data.set(2, holder(&[3, 4]), false).unwrap();
-        data.set(3, holder(&[7, 8]), false).unwrap();
+        data.set(1, holder(&[1, 2]), false, false).unwrap();
+        data.set(2, holder(&[3, 4]), false, false).unwrap();
+        data.set(3, holder(&[7, 8]), false, false).unwrap();
 
         connected.store(true, Ordering::Release);
         data.sync().unwrap();
@@ -1486,7 +1608,7 @@ mod tests {
         let (done_sender, done_receiver) = std::sync::mpsc::channel();
         let waiter = std::thread::spawn(move || {
             done_sender
-                .send(waiting.set(1, holder(&[5, 6]), false))
+                .send(waiting.set(1, holder(&[5, 6]), false, false))
                 .unwrap();
         });
         assert!(
@@ -1638,16 +1760,16 @@ mod transfer_tests {
         let key_start = random.below(key_len + 1);
         let _ = match random.below(14) {
             // Sets come twice as often, so the data is mostly set.
-            0 | 1 => data.set(holder(&values), false),
-            2 => data.add(holder(&values), false),
-            3 => data.replace(holder(&values), start, false),
-            4 => data.remove(start, values.len().max(1), None, false),
+            0 | 1 => data.set(holder(&values), false, false),
+            2 => data.add(holder(&values), false, false),
+            3 => data.replace(holder(&values), start, false, false),
+            4 => data.remove(start, values.len().max(1), None, false, false),
             5 => data.clear(None, false),
             6 => data.reset(false),
-            7 => multi.set(key, holder(&values), false),
-            8 => multi.add(key, holder(&values), false),
-            9 => multi.replace(key, key_start, holder(&values), false),
-            10 => multi.remove(key, key_start, values.len().max(1), None, false),
+            7 => multi.set(key, holder(&values), false, false),
+            8 => multi.add(key, holder(&values), false, false),
+            9 => multi.replace(key, key_start, holder(&values), false, false),
+            10 => multi.remove(key, key_start, values.len().max(1), None, false, false),
             11 => multi.clear(key, None, false),
             12 => multi.remove_index(key, false).map_err(CoreError::from),
             _ => multi.reset(false).map_err(CoreError::from),
@@ -1808,6 +1930,7 @@ mod transfer_tests {
                     crate::file_transfer::engine::Side::Server,
                     None,
                 ),
+                low_priority: false,
             },
         ));
 
@@ -2063,7 +2186,8 @@ mod header_tests {
         assert_eq!(client.get_with_header(), None);
         data.header(|header| assert_eq!(header, None));
 
-        data.set(with(&[1, 2], Some(&encoded(1))), false).unwrap();
+        data.set(with(&[1, 2], Some(&encoded(1))), false, false)
+            .unwrap();
         assert_eq!(deliver(&client), 1);
         client.read_with_header(|entry| {
             assert_eq!(entry, Some((&[1, 2][..], &meta(1))));
@@ -2071,7 +2195,7 @@ mod header_tests {
         data.acknowledge();
 
         // Without a header, a change keeps the current one.
-        data.add(with(&[3], None), false).unwrap();
+        data.add(with(&[3], None), false, false).unwrap();
         deliver(&client);
         data.acknowledge();
         assert_eq!(client.get_with_header(), Some((vec![1, 2, 3], meta(1))));
@@ -2079,7 +2203,7 @@ mod header_tests {
             assert_eq!(entry, Some((u16_slice(&[1, 2, 3]).bytes, &encoded(1)[..])));
         });
 
-        data.remove(0, 1, Some(&encoded(2)), false).unwrap();
+        data.remove(0, 1, Some(&encoded(2)), false, false).unwrap();
         deliver(&client);
         data.acknowledge();
         assert_eq!(
@@ -2115,7 +2239,7 @@ mod header_tests {
         ));
         data.acknowledge();
 
-        data.set(with(&[9], None), false).unwrap();
+        data.set(with(&[9], None), false, false).unwrap();
         deliver(&fresh);
         data.acknowledge();
         Acknowledge::reset(&*data);
@@ -2146,7 +2270,8 @@ mod header_tests {
         data.sync().unwrap();
         deliver(&mut receiver, &mut acks, Some(&client), None);
 
-        data.set(with(&[1], Some(&encoded(1))), false).unwrap();
+        data.set(with(&[1], Some(&encoded(1))), false, false)
+            .unwrap();
         deliver(&mut receiver, &mut acks, Some(&client), None);
         data.acknowledge();
 
@@ -2161,9 +2286,10 @@ mod header_tests {
         assert!(receiver.try_recv().is_err(), "a message was queued");
 
         // The set that creates the data again needs a header.
-        let error = data.set(with(&[2], None), false).unwrap_err();
+        let error = data.set(with(&[2], None), false, false).unwrap_err();
         assert_eq!(error.kind, ErrorKind::InvalidArgument);
-        data.set(with(&[2], Some(&encoded(2))), false).unwrap();
+        data.set(with(&[2], Some(&encoded(2))), false, false)
+            .unwrap();
         assert_eq!(deliver(&mut receiver, &mut acks, Some(&client), None), 1);
         data.acknowledge();
         assert_eq!(client.get_with_header(), Some((vec![2], meta(2))));
@@ -2192,13 +2318,14 @@ mod header_tests {
             connected.clone(),
         );
         let header = encoded(1);
-        let error = data.set(with(&[1], None), false).unwrap_err();
+        let error = data.set(with(&[1], None), false, false).unwrap_err();
         assert_eq!(error.kind, ErrorKind::InvalidArgument);
         assert!(error.message.contains("needs a header"), "{error}");
         for error in [
-            data.add(with(&[1], Some(&header)), false).unwrap_err(),
-            data.replace(with(&[], None), 0, false).unwrap_err(),
-            data.remove(0, 1, None, false).unwrap_err(),
+            data.add(with(&[1], Some(&header)), false, false)
+                .unwrap_err(),
+            data.replace(with(&[], None), 0, false, false).unwrap_err(),
+            data.remove(0, 1, None, false, false).unwrap_err(),
             data.clear(Some(&header), false).unwrap_err(),
             data.set_header(&header, false).unwrap_err(),
         ] {
@@ -2208,7 +2335,7 @@ mod header_tests {
         data.get_with_header(|entry| assert_eq!(entry, None));
 
         // Empty data is set, unlike no data.
-        data.set(with(&[], Some(&header)), false).unwrap();
+        data.set(with(&[], Some(&header)), false, false).unwrap();
         data.get_with_header(|entry| assert_eq!(entry, Some((&[][..], &header[..]))));
 
         // Without a header type, a set creates the data alone.
@@ -2220,7 +2347,7 @@ mod header_tests {
             sender,
             connected,
         );
-        plain.set(with(&[3], None), false).unwrap();
+        plain.set(with(&[3], None), false, false).unwrap();
         plain.get_with_header(|entry| {
             assert_eq!(entry, Some((u16_slice(&[3]).bytes, &[][..])));
         });
@@ -2240,7 +2367,9 @@ mod header_tests {
         );
         let header = encoded(1);
         for error in [
-            plain.set(with(&[1], Some(&header)), false).unwrap_err(),
+            plain
+                .set(with(&[1], Some(&header)), false, false)
+                .unwrap_err(),
             plain.clear(Some(&header), false).unwrap_err(),
             plain.set_header(&header, false).unwrap_err(),
         ] {
@@ -2259,7 +2388,7 @@ mod header_tests {
             sender,
             connected,
         );
-        data.set(with(&[], Some(&header)), false).unwrap();
+        data.set(with(&[], Some(&header)), false, false).unwrap();
         let largest = vec![0; VALUE_MAX_SIZE];
         data.set_header(&largest, false).unwrap();
         let error = data
@@ -2293,11 +2422,12 @@ mod header_tests {
         deliver(&client);
 
         // A new key needs a header.
-        let error = data.set(1, with(&[1], None), false).unwrap_err();
+        let error = data.set(1, with(&[1], None), false, false).unwrap_err();
         assert_eq!(error.kind, ErrorKind::InvalidArgument);
         assert!(error.message.contains("index 1"), "{error}");
         data.header(1, |header| assert_eq!(header, None));
-        data.set(1, with(&[1], Some(&encoded(0))), false).unwrap();
+        data.set(1, with(&[1], Some(&encoded(0))), false, false)
+            .unwrap();
         deliver(&client);
         data.acknowledge();
         assert_eq!(client.header(1), Some(meta(0)));
@@ -2305,7 +2435,7 @@ mod header_tests {
 
         data.set_header(1, &encoded(1), false).unwrap();
         deliver(&client);
-        data.set(1, with(&[2, 3], None), false).unwrap();
+        data.set(1, with(&[2, 3], None), false, false).unwrap();
         deliver(&client);
         data.acknowledge();
         client.read_with_header(1, |entry| {
@@ -2317,7 +2447,8 @@ mod header_tests {
             assert_eq!(entry, Some((u16_slice(&[2, 3]).bytes, &encoded(1)[..])));
         });
 
-        data.set(2, with(&[4], Some(&encoded(2))), false).unwrap();
+        data.set(2, with(&[4], Some(&encoded(2))), false, false)
+            .unwrap();
         deliver(&client);
         data.acknowledge();
         let mut seen = Vec::new();
@@ -2344,7 +2475,8 @@ mod header_tests {
         data.get_with_header(1, |entry| assert_eq!(entry, None));
 
         // A reconnecting client gets every key with its stored header.
-        data.set(3, with(&[5], Some(&encoded(5))), false).unwrap();
+        data.set(3, with(&[5], Some(&encoded(5))), false, false)
+            .unwrap();
         deliver(&client);
         data.acknowledge();
         Acknowledge::reset(&*data);

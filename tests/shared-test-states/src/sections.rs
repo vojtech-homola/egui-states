@@ -1,4 +1,4 @@
-use egui_states::{Queue, Signal, Static, StaticAtomic, Value, ValueAtomic};
+use egui_states::{Signal, Static, StaticAtomic, Value, ValueAtomic};
 
 #[egui_states::typed(rust_derive(Debug, PartialEq, Eq, Hash))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, egui_states::InitialValue)]
@@ -45,7 +45,8 @@ pub struct ValueStates {
     pub bool_value: Value<bool>,
     pub count: Value<i32>,
     pub ratio: ValueAtomic<f64>,
-    pub queued_progress: Value<f32, Queue>,
+    #[state(queue)]
+    pub queued_progress: Value<f32>,
     pub title: Value<String>,
     pub optional_value: Value<Option<i32>>,
     pub fixed_numbers: Value<[u16; 3]>,
@@ -69,9 +70,11 @@ pub struct NestedStaticStates {
 
 #[derive(egui_states::State)]
 pub struct SignalStates {
-    pub empty_signal: Signal<(), Queue>,
+    #[state(queue)]
+    pub empty_signal: Signal<()>,
     pub number_signal: Signal<f64>,
-    pub enum_signal: Signal<TestEnum, Queue>,
+    #[state(queue)]
+    pub enum_signal: Signal<TestEnum>,
 }
 
 #[derive(egui_states::State)]
