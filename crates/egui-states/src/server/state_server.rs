@@ -1851,8 +1851,9 @@ mod connection_tests {
     use std::time::{Duration, Instant};
 
     use super::*;
+    use crate::protocol::close;
     use crate::protocol::{ClientHeader, ServerHeader, VALUE_MAX_SIZE};
-    use crate::{ClientBuilder, ConnectionState};
+    use crate::{ClientBuilder, CloseReason, ConnectionState};
     use tokio_tungstenite::tungstenite::{self, Message};
 
     struct ClientTestState {
@@ -1918,7 +1919,8 @@ mod connection_tests {
 
     enum Event {
         Frame(Vec<(ServerHeader, Vec<u8>)>),
-        Closed,
+        /// The connection ended, with the server's close code if it sent one.
+        Closed(Option<u16>),
         Silent,
     }
 
@@ -1972,7 +1974,9 @@ mod connection_tests {
             loop {
                 match self.0.read() {
                     Ok(Message::Binary(bytes)) => return Event::Frame(messages(&bytes)),
-                    Ok(Message::Close(_)) => return Event::Closed,
+                    Ok(Message::Close(frame)) => {
+                        return Event::Closed(frame.map(|frame| frame.code.into()));
+                    }
                     Ok(_) => {}
                     Err(tungstenite::Error::Io(error))
                         if matches!(
@@ -1984,7 +1988,7 @@ mod connection_tests {
                             return Event::Silent;
                         }
                     }
-                    Err(_) => return Event::Closed,
+                    Err(_) => return Event::Closed(None),
                 }
             }
         }
@@ -2001,7 +2005,7 @@ mod connection_tests {
                             return;
                         }
                     }
-                    Event::Closed => panic!("{label}: connection closed"),
+                    Event::Closed(_) => panic!("{label}: connection closed"),
                     Event::Silent => panic!("{label}: no message within 5s"),
                 }
             }
@@ -2018,7 +2022,7 @@ mod connection_tests {
             let _ = self.0.close(None);
             while !matches!(
                 self.next(Duration::from_secs(5)),
-                Event::Closed | Event::Silent
+                Event::Closed(_) | Event::Silent
             ) {}
         }
     }
@@ -2035,8 +2039,11 @@ mod connection_tests {
         let mut second = Peer::connect(port, None);
         second.wait_for_value(731);
         assert!(
-            matches!(first.next(Duration::from_secs(5)), Event::Closed),
-            "the replaced client stayed connected"
+            matches!(
+                first.next(Duration::from_secs(5)),
+                Event::Closed(Some(close::REPLACED))
+            ),
+            "the replaced client stayed connected or was not told why"
         );
 
         value.set(5, false).unwrap();
@@ -2056,8 +2063,11 @@ mod connection_tests {
 
         let mut rejected = Peer::connect(port, Some("wrong"));
         assert!(
-            matches!(rejected.next(Duration::from_secs(5)), Event::Closed),
-            "a rejected client must be closed without data"
+            matches!(
+                rejected.next(Duration::from_secs(5)),
+                Event::Closed(Some(close::TOKEN_REJECTED))
+            ),
+            "a rejected client must be closed without data, with the reason"
         );
 
         value.set(6, false).unwrap();
@@ -2102,7 +2112,10 @@ mod connection_tests {
         first.wait_for_value(731);
 
         server.disconnect_client();
-        assert!(matches!(first.next(Duration::from_secs(5)), Event::Closed));
+        assert!(matches!(
+            first.next(Duration::from_secs(5)),
+            Event::Closed(Some(close::CLOSED_BY_SERVER))
+        ));
         wait("disconnect", || !server.is_connected());
         assert!(server.is_running());
 
@@ -2135,7 +2148,7 @@ mod connection_tests {
         let mut rejected = Peer::connect(port, Some("wrong"));
         assert!(matches!(
             rejected.next(Duration::from_secs(5)),
-            Event::Closed
+            Event::Closed(Some(close::TOKEN_REJECTED))
         ));
         let message = warning.recv_timeout(Duration::from_secs(5)).unwrap();
         assert!(message.contains("wrong token"), "{message}");
@@ -2305,28 +2318,137 @@ mod connection_tests {
         let (_state, client) =
             ClientBuilder::<ClientTestState>::new(egui::Context::default(), free_port()).build();
         assert_eq!(client.last_error(), None);
+        assert_eq!(client.last_reason(), None);
         client.connect();
         wait("unreachable server", || {
             client.get_state() == ConnectionState::Failed
         });
+        assert_eq!(client.last_reason(), Some(CloseReason::Unreachable));
         let error = client.last_error().unwrap();
         assert!(error.contains("Connecting to server"), "{error}");
 
         let (server, _value, port) = server(ServerOptions::new(), Some("secret"));
+        for (token, reason, text) in [
+            (None, CloseReason::TokenRejected, "token missing"),
+            (Some("wrong"), CloseReason::TokenRejected, "wrong token"),
+        ] {
+            let builder = ClientBuilder::<ClientTestState>::new(egui::Context::default(), port);
+            let builder = match token {
+                Some(token) => builder.token(token.to_string()),
+                None => builder,
+            };
+            let (_state, client) = builder.build();
+            client.connect();
+            wait("refused handshake", || {
+                client.get_state() == ConnectionState::Failed
+            });
+            assert_eq!(client.last_reason(), Some(reason));
+            let error = client.last_error().unwrap();
+            assert!(error.contains(text), "{error}");
+        }
+        server.stop();
+
+        let server = StateServer::with_options(ServerOptions {
+            version: Some(3),
+            ..ServerOptions::new()
+        })
+        .unwrap();
+        server.finalize().unwrap();
+        let port = free_port();
+        server.start(port, Some(Ipv4Addr::LOCALHOST), None).unwrap();
         let (_state, client) =
             ClientBuilder::<ClientTestState>::new(egui::Context::default(), port)
-                .token("wrong".to_string())
+                .version(4)
                 .build();
         client.connect();
-        wait("refused handshake", || {
+        wait("wrong version", || {
             client.get_state() == ConnectionState::Failed
         });
-        let error = client.last_error().unwrap();
-        assert!(
-            error.contains("before the server accepted the handshake"),
-            "{error}"
-        );
+        assert_eq!(client.last_reason(), Some(CloseReason::VersionMismatch));
         server.stop();
+    }
+
+    /// An attempt the server never answers fails with `Timeout` once the
+    /// connect timeout passes, after reporting `Connecting`.
+    #[test]
+    fn an_unanswered_attempt_times_out() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let silent_server = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut socket = tungstenite::accept(stream).unwrap();
+            let _handshake = socket.read();
+            thread::sleep(Duration::from_secs(2));
+        });
+
+        let (_state, client) =
+            ClientBuilder::<ClientTestState>::new(egui::Context::default(), port)
+                .connect_timeout(Duration::from_millis(300))
+                .build();
+        client.connect();
+        wait("connecting", || {
+            client.get_state() == ConnectionState::Connecting
+        });
+        let start = Instant::now();
+        wait("timeout", || client.get_state() == ConnectionState::Failed);
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            start.elapsed()
+        );
+        assert_eq!(client.last_reason(), Some(CloseReason::Timeout));
+        silent_server.join().unwrap();
+    }
+
+    /// An established connection that ends reports why: the server's reason,
+    /// or none when the client closed it itself.
+    #[test]
+    fn ended_connections_report_the_reason() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let (server, _value, port) = server(ServerOptions::new(), None);
+        let connect = || {
+            let (_state, client) =
+                ClientBuilder::<ClientTestState>::new(egui::Context::default(), port).build();
+            client.connect();
+            wait("connected", || {
+                client.get_state() == ConnectionState::Connected
+            });
+            client
+        };
+
+        let first = connect();
+        let second = connect();
+        wait("replaced", || {
+            first.get_state() == ConnectionState::Disconnected
+        });
+        assert_eq!(first.last_reason(), Some(CloseReason::Replaced));
+        assert!(first.last_error().is_some());
+
+        server.disconnect_client();
+        wait("disconnected by the server", || {
+            second.get_state() == ConnectionState::Disconnected
+        });
+        assert_eq!(second.last_reason(), Some(CloseReason::ClosedByServer));
+
+        let third = connect();
+        third.disconnect();
+        wait("disconnected by the client", || {
+            third.get_state() == ConnectionState::Disconnected
+        });
+        assert_eq!(third.last_reason(), None);
+        assert_eq!(third.last_error(), None);
+
+        let fourth = connect();
+        server.stop();
+        wait("server stopped", || {
+            fourth.get_state() == ConnectionState::Disconnected
+        });
+        assert_eq!(fourth.last_reason(), Some(CloseReason::ClosedByServer));
     }
 
     const PANIC_VALUE: i32 = -13;

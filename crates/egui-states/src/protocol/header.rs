@@ -29,6 +29,10 @@ pub(crate) enum ServerHeader {
     /// The window and the chunk size of file transfers on this connection, in
     /// bytes. The first message of every connection.
     TransferLimits(u32, u32),
+    /// The server asks its connect-request callback whether to accept the
+    /// client and answers within this many milliseconds. Sent before any
+    /// other message; it does not mean the client is accepted.
+    ConnectPending(u32),
 }
 
 #[derive(Serialize, Deserialize)]
@@ -96,6 +100,7 @@ mod tests {
             ServerHeader::ImageMulti(1, ImageMultiHeader::Reset(false)),
             ServerHeader::Transfer(1, TransferFrame::Reject { serial: 0 }, 0),
             ServerHeader::TransferLimits(1, 1),
+            ServerHeader::ConnectPending(1),
         ];
         for (index, header) in server.iter().enumerate() {
             let data: FastVec<32> = serialize(header).unwrap();

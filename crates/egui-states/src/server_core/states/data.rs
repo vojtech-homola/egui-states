@@ -1801,6 +1801,7 @@ mod transfer_tests {
             Session {
                 sender: sender.clone(),
                 connected: connected.clone(),
+                close: Default::default(),
                 values,
                 signals: SignalsManager::new(),
                 heartbeat: None,

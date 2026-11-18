@@ -94,7 +94,7 @@ mod server_core;
 #[cfg(feature = "client")]
 pub use client::{
     client::ClientBuilder,
-    client::{Client, ConnectionState},
+    client::{Client, CloseReason, ConnectionState, DEFAULT_CONNECT_TIMEOUT},
     states::{
         atomics::{Atomic, AtomicLock, AtomicLockStatic, AtomicStatic, FallbackLock, UpdateLock},
         data::{Data, DataMulti, HeaderValue},

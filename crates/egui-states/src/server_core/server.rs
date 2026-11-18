@@ -16,6 +16,7 @@ use crate::event::Event;
 use crate::file_transfer::TransferProfile;
 use crate::file_transfer::engine::{Engine, Role, Side};
 use crate::hashing::{MAX_RESERVED_ID, NoHashMap, generate_value_id};
+use crate::protocol::close::{self, Close};
 use crate::protocol::data::DataType;
 use crate::protocol::{ServerHeader, check_value_size, serialize};
 use crate::server_core::file_transfer::{TransferEndpoint, record_event};
@@ -23,7 +24,7 @@ use crate::server_core::http::origin::OriginPolicy;
 use crate::server_core::http::web::{WebSite, WebSlot};
 use crate::server_core::net::heartbeat::Heartbeat;
 use crate::server_core::net::sender::{MessageReceiver, MessageSender};
-use crate::server_core::net::session;
+use crate::server_core::net::session::{self, CloseSlot};
 use crate::server_core::signals::SignalsManager;
 use crate::server_core::states::data::{Data, DataMulti};
 use crate::server_core::states::data_take::{DataMultiTake, DataTake};
@@ -318,6 +319,8 @@ impl ServerConfig {
 
 pub(crate) struct Server {
     connected: Arc<AtomicBool>,
+    /// Why the server ends the current connection.
+    close: CloseSlot,
     stop_event: Event,
     sender: MessageSender,
     states: StatesList,
@@ -384,6 +387,7 @@ impl Server {
 
         Self {
             connected,
+            close: CloseSlot::default(),
             stop_event: Event::new(),
             sender,
             states: StatesList::default(),
@@ -450,6 +454,7 @@ impl Server {
 
                 let sender = self.sender.clone();
                 let connected = self.connected.clone();
+                let close = self.close.clone();
                 let stop_event = self.stop_event.clone();
                 let values = states_server.clone();
                 let signals = self.signals.clone();
@@ -475,6 +480,7 @@ impl Server {
                         let session = session::Session {
                             sender,
                             connected,
+                            close,
                             values,
                             signals,
                             heartbeat,
@@ -518,6 +524,7 @@ impl Server {
                 *state = RunnerState::Stopped(rx);
             }
             RunnerState::Running(handle, _) => {
+                self.close_with(close::CLOSED_BY_SERVER, "server stopped");
                 self.connected.store(false, Ordering::Release);
                 self.stop_event.set();
                 self.sender.close();
@@ -533,8 +540,20 @@ impl Server {
 
     pub(crate) fn disconnect_client(&self) {
         if self.connected.load(Ordering::Acquire) {
+            self.close_with(
+                close::CLOSED_BY_SERVER,
+                "the server disconnected the client",
+            );
             self.connected.store(false, Ordering::Release);
             self.sender.close();
+        }
+    }
+
+    /// Records why the server ends the current connection, if a client is
+    /// connected; the writer sends it in its close frame.
+    fn close_with(&self, code: u16, reason: &str) {
+        if self.connected.load(Ordering::Acquire) {
+            *self.close.lock() = Some(Close::new(code, reason));
         }
     }
 

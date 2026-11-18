@@ -77,8 +77,13 @@ impl eframe::App for MainApp {
             .show_separator_line(false)
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    let button = match self.client.get_state() {
+                    let state = self.client.get_state();
+                    let button = match state {
                         ConnectionState::NotConnected => egui::Button::new("Connect"),
+                        ConnectionState::Connecting => egui::Button::new("Connecting…"),
+                        ConnectionState::WaitingForApproval => {
+                            egui::Button::new("Waiting for approval…")
+                        }
                         ConnectionState::Connected => {
                             egui::Button::new("Connected").fill(egui::Color32::LIGHT_GREEN)
                         }
@@ -88,13 +93,21 @@ impl eframe::App for MainApp {
                         // `Failed` and any state added in the future.
                         _ => egui::Button::new("Retry").fill(egui::Color32::LIGHT_RED),
                     };
-                    let response = ui.add(button);
+                    // An attempt in progress cannot be started again.
+                    let attempting = matches!(
+                        state,
+                        ConnectionState::Connecting | ConnectionState::WaitingForApproval
+                    );
+                    let response = ui.add_enabled(!attempting, button);
                     let response = match self.client.last_error() {
                         Some(error) => response.on_hover_text(error),
                         None => response,
                     };
                     if response.clicked() {
                         self.client.connect();
+                    }
+                    if let Some(reason) = self.client.last_reason() {
+                        ui.label(reason.to_string());
                     }
                 });
             });

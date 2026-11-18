@@ -5,7 +5,7 @@ use tokio_tungstenite::connect_async_with_config;
 use tokio_tungstenite::tungstenite::{Message, protocol::WebSocketConfig};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
-use crate::client::messages::{ServerFrames, ServerReader};
+use crate::client::messages::{ReadError, ServerFrames, ServerReader};
 use crate::protocol::{FastVec, WEBSOCKET_MAX_SIZE};
 
 pub(crate) async fn build_ws(address: &str) -> Result<(WsClientRead, WsClientSend), String> {
@@ -37,7 +37,7 @@ pub(crate) type WsClientRead = ServerReader<WsFrames>;
 pub(crate) struct WsFrames(SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>);
 
 impl ServerFrames for WsFrames {
-    async fn next_frame(&mut self) -> Result<Bytes, &'static str> {
+    async fn next_frame(&mut self) -> Result<Bytes, ReadError> {
         let message = loop {
             match self.0.next().await {
                 // Keep-alive frames carry no data; tungstenite answers pings itself.
@@ -48,21 +48,23 @@ impl ServerFrames for WsFrames {
 
         match message {
             Some(Ok(Message::Binary(data))) => Ok(data),
-            Some(Ok(Message::Close(_))) => Err("Connection closed by server"),
+            Some(Ok(Message::Close(frame))) => Err(ReadError::Closed(
+                frame.map(|frame| (frame.code.into(), frame.reason.to_string())),
+            )),
             Some(Ok(_message)) => {
                 #[cfg(debug_assertions)]
                 println!("Unexpected message from server: {:?}", _message);
-                Err("Unexpected message from server")
+                Err(ReadError::Failed("Unexpected message from server"))
             }
             Some(Err(_e)) => {
                 #[cfg(debug_assertions)]
                 println!("Reading message from server failed: {:?}", _e);
-                Err("Reading message from server failed")
+                Err(ReadError::Failed("Reading message from server failed"))
             }
             None => {
                 #[cfg(debug_assertions)]
                 println!("Connection closed by server");
-                Err("Connection closed by server")
+                Err(ReadError::Closed(None))
             }
         }
     }
@@ -78,16 +80,14 @@ impl WsClientSend {
         let _ = self.sink.close().await;
     }
 
-    pub(crate) async fn send(&mut self, data: FastVec<64>) -> Result<(), ()> {
+    /// Sends `data`; the error describes why it could not be sent.
+    pub(crate) async fn send(&mut self, data: FastVec<64>) -> Result<(), String> {
         let message = Message::Binary(data.into_bytes());
-        match self.sink.send(message).await {
-            Ok(_) => Ok(()),
-            Err(_e) => {
-                #[cfg(debug_assertions)]
-                println!("Sending message to socket failed: {:?}", _e);
-                Err(())
-            }
-        }
+        self.sink.send(message).await.map_err(|e| {
+            #[cfg(debug_assertions)]
+            println!("Sending message to socket failed: {:?}", e);
+            e.to_string()
+        })
     }
 }
 
@@ -128,6 +128,42 @@ mod tests {
             let (mut reader, _writer) = build_ws(&format!("ws://{addr}/ws")).await.unwrap();
             assert!(matches!(reader.read().await, Ok((ServerHeader::Update(dt), _)) if dt == 0.5));
             assert!(reader.read().await.is_err());
+            peer.await.unwrap();
+        });
+    }
+
+    /// The code and reason of the server's close frame reach the reader.
+    #[test]
+    fn client_reader_reports_the_close_code_and_reason() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+                .await
+                .unwrap();
+            let std::net::SocketAddr::V4(addr) = listener.local_addr().unwrap() else {
+                unreachable!("bound to an IPv4 address");
+            };
+            let peer = tokio::spawn(async move {
+                use tokio_tungstenite::tungstenite::protocol::frame::CloseFrame;
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+                let frame = CloseFrame {
+                    code: 4003.into(),
+                    reason: "busy".into(),
+                };
+                ws.close(Some(frame)).await.unwrap();
+            });
+            let (mut reader, _writer) = build_ws(&format!("ws://{addr}/ws")).await.unwrap();
+            let Err(error) = reader.read().await else {
+                panic!("the reader returned a message");
+            };
+            assert_eq!(error, ReadError::Closed(Some((4003, "busy".to_string()))));
             peer.await.unwrap();
         });
     }

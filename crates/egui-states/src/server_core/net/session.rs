@@ -15,6 +15,7 @@ use tokio::time::{Instant, Interval, MissedTickBehavior, interval_at, timeout_at
 use crate::PROTOCOL_VERSION;
 use crate::event::Event;
 use crate::file_transfer::engine::Engine;
+use crate::protocol::close::{self, Close};
 use crate::protocol::{FastVec, MAX_MSG_COUNT, MSG_SIZE_THRESHOLD, ServerHeader, serialize};
 use crate::server_core::http::origin::OriginPolicy;
 use crate::server_core::http::web::{WebSite, WebSlot};
@@ -72,11 +73,21 @@ enum Accepted<L: Listener> {
     Nothing,
 }
 
+/// Why the server ends the current connection, set before it clears
+/// `connected`. The writer sends it in its close frame.
+pub(crate) type CloseSlot = Arc<Mutex<Option<Close>>>;
+
+/// Bounds how long sending a close frame to a refused client may take, so a
+/// client that does not read cannot hold its task.
+const CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// What the run loop shares with the tasks of each connection.
 #[derive(Clone)]
 pub(crate) struct Session {
     pub(crate) sender: MessageSender,
     pub(crate) connected: Arc<AtomicBool>,
+    /// Why the server ends the current connection.
+    pub(crate) close: CloseSlot,
     pub(crate) values: ServerStatesList,
     pub(crate) signals: SignalsManager,
     pub(crate) heartbeat: Option<Heartbeat>,
@@ -108,6 +119,7 @@ pub(crate) async fn run<L: Listener>(
     let Session {
         sender,
         connected,
+        close: close_slot,
         values,
         signals,
         transfers,
@@ -186,12 +198,20 @@ pub(crate) async fn run<L: Listener>(
             ChannelHolder::Transfer(handler) => {
                 #[cfg(debug_assertions)]
                 signals.debug("terminating previous connection");
+                if connected.load(Ordering::Acquire) {
+                    *close_slot.lock() = Some(Close::new(
+                        close::REPLACED,
+                        "another client took over the connection",
+                    ));
+                }
                 connected.store(false, Ordering::Release);
                 sender.close();
                 handler.await.expect("joining communication handler failed")
             }
             ChannelHolder::Rx(rx) => rx,
         };
+        // A reason meant for the previous connection must not close this one.
+        close_slot.lock().take();
 
         // clean mesage queue and send sync signals
         while !rx.is_empty() {
@@ -245,6 +265,12 @@ pub(crate) async fn run<L: Listener>(
             for v in values.ack.values() {
                 v.reset();
             }
+            // Nothing was written to this client yet; tell it why it goes.
+            close_unread(
+                &mut pending,
+                socket_tx,
+                Close::new(close::CLOSED_BY_SERVER, error),
+            );
             holder = ChannelHolder::Rx(rx);
             continue;
         }
@@ -306,12 +332,26 @@ pub(crate) async fn run<L: Listener>(
         ChannelHolder::Transfer(handler) => {
             #[cfg(debug_assertions)]
             signals.debug("terminating previous connection");
+            if connected.load(Ordering::Acquire) {
+                close_slot
+                    .lock()
+                    .get_or_insert_with(|| Close::new(close::CLOSED_BY_SERVER, "server stopped"));
+            }
             connected.store(false, Ordering::Release);
             sender.close();
             handler.await.expect("joining communication handler failed")
         }
         ChannelHolder::Rx(rx) => rx,
     }
+}
+
+/// Sends `close` to a client the run loop will not serve, in a task of
+/// `pending`, so the loop never waits for a client to read.
+fn close_unread<L: Listener>(pending: &mut JoinSet<Accepted<L>>, mut sink: L::Sink, close: Close) {
+    pending.spawn(async move {
+        let _ = tokio::time::timeout(CLOSE_TIMEOUT, sink.close(Some(close))).await;
+        Accepted::Nothing
+    });
 }
 
 /// Takes a new connection up to a passed protocol handshake.
@@ -353,7 +393,7 @@ async fn handshake_client<L: Listener>(
     signals: &SignalsManager,
 ) -> Option<ClientReady<L>> {
     let Opened {
-        sink: socket_tx,
+        sink: mut socket_tx,
         source: socket_rx,
         peer_addr,
     } = L::open(connection, &handshake.origins, signals).await?;
@@ -367,8 +407,10 @@ async fn handshake_client<L: Listener>(
             None
         }
         Ok(ClientMessage::Handshake(p, v, h)) => {
-            if let Err(e) = check_handshake(handshake, p, v, h) {
-                signals.warning(&e);
+            if let Err(refusal) = check_handshake(handshake, p, v, h) {
+                signals.warning(&refusal.reason);
+                // The caller's deadline bounds this as well.
+                socket_tx.close(Some(refusal)).await;
                 return None;
             }
             Some(ClientReady {
@@ -384,18 +426,19 @@ async fn handshake_client<L: Listener>(
     }
 }
 
+/// Checks a client's handshake; the error is the close that refuses it.
 fn check_handshake(
     server_handshake: &Handshake,
     client_protocol: u16,
     version: Option<u64>,
     token: Option<String>,
-) -> Result<(), String> {
+) -> Result<(), Close> {
     if client_protocol != PROTOCOL_VERSION {
         let message = format!(
             "attempted to connect with wrong protocol version: expected {}, got {}",
             PROTOCOL_VERSION, client_protocol
         );
-        return Err(message);
+        return Err(Close::new(close::PROTOCOL_MISMATCH, message));
     }
 
     if let Some(server_version) = server_handshake.version {
@@ -406,10 +449,15 @@ fn check_handshake(
                         "attempted to connect with wrong version: expected {}, got {}",
                         server_version, client_version
                     );
-                    return Err(message);
+                    return Err(Close::new(close::VERSION_MISMATCH, message));
                 }
             }
-            _ => return Err("client version missing".to_string()),
+            _ => {
+                return Err(Close::new(
+                    close::VERSION_MISMATCH,
+                    "client version missing",
+                ));
+            }
         }
     }
 
@@ -417,10 +465,13 @@ fn check_handshake(
         match token {
             Some(client_token) => {
                 if !tokens_match(&client_token, server_token) {
-                    return Err("attempted to connect with wrong token".to_string());
+                    return Err(Close::new(
+                        close::TOKEN_REJECTED,
+                        "attempted to connect with wrong token",
+                    ));
                 }
             }
-            _ => return Err("client token missing".to_string()),
+            _ => return Err(Close::new(close::TOKEN_REJECTED, "client token missing")),
         }
     }
 
@@ -527,12 +578,15 @@ async fn writer<K: FrameSink>(
 ) -> MessageReceiver {
     let Session {
         connected,
+        close: close_slot,
         values,
         signals,
         heartbeat,
         transfers,
         ..
     } = session;
+    // The server's reason for ending the connection, if it ends it.
+    let close = || close_slot.lock().take();
     enum Next {
         Message(Option<SenderData>),
         Chunk(Vec<u8>),
@@ -579,14 +633,14 @@ async fn writer<K: FrameSink>(
             Next::Message(Some(message)) => {
                 // if not connected, stop thread
                 if !connected.load(Ordering::Acquire) {
-                    unless_silent(websocket.close(), heartbeat, &activity).await;
+                    unless_silent(websocket.close(close()), heartbeat, &activity).await;
                     break;
                 }
                 Outgoing::Binary(message.into_bytes())
             }
             Next::Chunk(chunk) => {
                 if !connected.load(Ordering::Acquire) {
-                    unless_silent(websocket.close(), heartbeat, &activity).await;
+                    unless_silent(websocket.close(close()), heartbeat, &activity).await;
                     break;
                 }
                 Outgoing::Binary(chunk.into())
@@ -594,7 +648,7 @@ async fn writer<K: FrameSink>(
             // check if message is terminate signal
             Next::Message(None) => {
                 signals.info("writer is closing connection");
-                unless_silent(websocket.close(), heartbeat, &activity).await;
+                unless_silent(websocket.close(close()), heartbeat, &activity).await;
                 break;
             }
             Next::Ping => {
@@ -1012,6 +1066,7 @@ mod run_tests {
                 Session {
                     sender: sender.clone(),
                     connected: connected.clone(),
+                    close: CloseSlot::default(),
                     values,
                     signals,
                     heartbeat,
@@ -1074,6 +1129,10 @@ mod run_tests {
                 .await
                 .expect("the client whose sync failed was not dropped");
             assert!(closed.is_none(), "the rejected client received a frame");
+            assert_eq!(
+                rejected.close_reason().map(|close| close.code),
+                Some(close::CLOSED_BY_SERVER)
+            );
             assert!(server.released(), "pending states were not reset");
             assert!(!server.connected());
             // Its transfers are detached with it.
@@ -1088,6 +1147,29 @@ mod run_tests {
                 .expect("the next client was not synchronized");
             assert!(matches!(update, Some(Outgoing::Binary(_))));
             assert!(server.connected());
+            server.stop().await;
+        });
+    }
+
+    /// A client that takes over the connection gets it; the replaced one is
+    /// told why it was closed.
+    #[test]
+    fn a_takeover_tells_the_replaced_client_why() {
+        block_on(async {
+            let (server, connector) = TestServer::memory(None);
+            let mut first = connect(&connector);
+            let synced = tokio::time::timeout(DEADLINE, first.frames.recv()).await;
+            assert!(matches!(synced, Ok(Some(Outgoing::Binary(_)))));
+
+            let mut second = connect(&connector);
+            let closed = tokio::time::timeout(DEADLINE, first.closed())
+                .await
+                .expect("the replaced client stayed connected");
+            assert_eq!(closed.map(|close| close.code), Some(close::REPLACED));
+            let synced = tokio::time::timeout(DEADLINE, second.frames.recv()).await;
+            assert!(matches!(synced, Ok(Some(Outgoing::Binary(_)))));
+            assert!(server.connected());
+            assert_eq!(second.close_reason(), None);
             server.stop().await;
         });
     }
@@ -1340,25 +1422,80 @@ mod handshake_tests {
             token: Some("secret".into()),
             origins: Default::default(),
         };
-        for (protocol, version, token, diagnostic) in [
-            (0, Some(17), Some("secret"), "protocol version"),
+        let (protocol_code, version_code, token_code) = (
+            close::PROTOCOL_MISMATCH,
+            close::VERSION_MISMATCH,
+            close::TOKEN_REJECTED,
+        );
+        for (protocol, version, token, code, diagnostic) in [
+            (
+                0,
+                Some(17),
+                Some("secret"),
+                protocol_code,
+                "protocol version",
+            ),
             (
                 PROTOCOL_VERSION + 1,
                 Some(17),
                 Some("secret"),
+                protocol_code,
                 "protocol version",
             ),
-            (PROTOCOL_VERSION, None, Some("secret"), "version missing"),
-            (PROTOCOL_VERSION, Some(18), Some("secret"), "wrong version"),
-            (PROTOCOL_VERSION, Some(17), None, "token missing"),
-            (PROTOCOL_VERSION, Some(17), Some("wrong"), "wrong token"),
-            (PROTOCOL_VERSION, Some(17), Some("secre"), "wrong token"),
-            (PROTOCOL_VERSION, Some(17), Some("secrets"), "wrong token"),
-            (PROTOCOL_VERSION, Some(17), Some(""), "wrong token"),
+            (
+                PROTOCOL_VERSION,
+                None,
+                Some("secret"),
+                version_code,
+                "version missing",
+            ),
+            (
+                PROTOCOL_VERSION,
+                Some(18),
+                Some("secret"),
+                version_code,
+                "wrong version",
+            ),
+            (
+                PROTOCOL_VERSION,
+                Some(17),
+                None,
+                token_code,
+                "token missing",
+            ),
+            (
+                PROTOCOL_VERSION,
+                Some(17),
+                Some("wrong"),
+                token_code,
+                "wrong token",
+            ),
+            (
+                PROTOCOL_VERSION,
+                Some(17),
+                Some("secre"),
+                token_code,
+                "wrong token",
+            ),
+            (
+                PROTOCOL_VERSION,
+                Some(17),
+                Some("secrets"),
+                token_code,
+                "wrong token",
+            ),
+            (
+                PROTOCOL_VERSION,
+                Some(17),
+                Some(""),
+                token_code,
+                "wrong token",
+            ),
         ] {
             let error = check_handshake(&settings, protocol, version, token.map(str::to_owned))
                 .unwrap_err();
-            assert!(error.contains(diagnostic), "{error}");
+            assert_eq!(error.code, code, "{}", error.reason);
+            assert!(error.reason.contains(diagnostic), "{}", error.reason);
             assert!(
                 check_handshake(&settings, PROTOCOL_VERSION, Some(17), Some("secret".into()))
                     .is_ok()

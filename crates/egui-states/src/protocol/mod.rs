@@ -12,6 +12,7 @@ mod client_side;
 #[cfg(any(feature = "server", feature = "python"))]
 mod server_side;
 
+pub(crate) mod close;
 pub(crate) mod collections;
 pub(crate) mod data;
 pub(crate) mod file_transfer;

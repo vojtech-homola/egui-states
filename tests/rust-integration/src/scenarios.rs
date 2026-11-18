@@ -1,5 +1,5 @@
 //! Identical client assertions for the generated Python and Rust servers.
-use egui_states::{Client, ClientBuilder, ConnectionState};
+use egui_states::{Client, ClientBuilder, CloseReason, ConnectionState};
 use egui_states_test_schema::{State, integration::IntegrationState};
 use std::time::{Duration, Instant};
 
@@ -681,13 +681,15 @@ fn images_wire(port: u16) {
     assert_eq!(rgba(sparse), [[1, 2, 3, 255]; 4]);
 }
 
-/// A second client replaces the first one, which observes the disconnect.
+/// A second client replaces the first one, which observes the disconnect and
+/// learns why.
 fn takeover(port: u16) {
     let (_first_state, first) = connect(port);
     let (second_state, _second) = connect(port);
     wait("replaced client disconnect", || {
         (first.0.get_state() == ConnectionState::Disconnected).then_some(())
     });
+    assert_eq!(first.0.last_reason(), Some(CloseReason::Replaced));
     barrier(&second_state.integration);
 }
 
@@ -709,14 +711,14 @@ fn rejected_client(port: u16) {
         );
         std::thread::sleep(Duration::from_millis(20));
     }
-    // An error is reported only in `ConnectionState::Failed`.
-    let error = wait("rejected client failure", || {
-        rejected_connection.0.last_error()
+    // A reason is reported only once the attempt has failed.
+    let reason = wait("rejected client failure", || {
+        rejected_connection.0.last_reason()
     });
-    assert!(
-        error.contains("before the server accepted the handshake"),
-        "{error}"
-    );
+    assert_eq!(reason, CloseReason::VersionMismatch);
+    assert_eq!(rejected_connection.0.get_state(), ConnectionState::Failed);
+    let error = rejected_connection.0.last_error().unwrap();
+    assert!(error.contains("wrong version"), "{error}");
     barrier(&state.integration);
     assert!(connection.0.get_state() == ConnectionState::Connected);
 }
