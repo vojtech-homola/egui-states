@@ -57,6 +57,21 @@ mod tests {
             .unwrap();
         assert_eq!(measurements.header().unwrap(), Some(header));
         assert!(!server.is_running());
+
+        let initials = &server.states.initials;
+        assert_eq!(initials.gain.get().unwrap(), 0.5);
+        assert_eq!(initials.status.get().unwrap(), "ready");
+        assert_eq!(
+            initials.choice.get().unwrap(),
+            bindings::enums::Choice::High
+        );
+        assert_eq!(
+            initials.inner.get().unwrap(),
+            bindings::structs::Inner { enabled: true }
+        );
+        assert_eq!(initials.counter.get().unwrap(), 7);
+        assert!(initials.flag.get().unwrap());
+        assert_eq!(initials.plain.get().unwrap(), 0);
     }
 
     #[cfg(feature = "awkward")]

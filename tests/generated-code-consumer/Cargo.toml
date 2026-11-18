@@ -79,6 +79,26 @@ path = "src/bin/state-queue-image.rs"
 required-features = ["invalid"]
 
 [[bin]]
+name = "state-init-wrong-kind"
+path = "src/bin/state-init-wrong-kind.rs"
+required-features = ["invalid"]
+
+[[bin]]
+name = "state-duplicate-init"
+path = "src/bin/state-duplicate-init.rs"
+required-features = ["invalid"]
+
+[[bin]]
+name = "state-struct-attribute"
+path = "src/bin/state-struct-attribute.rs"
+required-features = ["invalid"]
+
+[[bin]]
+name = "state-empty-attribute"
+path = "src/bin/state-empty-attribute.rs"
+required-features = ["invalid"]
+
+[[bin]]
 name = "atomic-payload"
 path = "src/bin/atomic-payload.rs"
 required-features = ["invalid"]

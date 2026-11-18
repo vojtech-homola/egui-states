@@ -29,6 +29,24 @@ pub struct CounterState {
 - `Static<T>` stores a value the server controls and the client reads.
 - `Signal<T>` sends a client event to server callbacks without retaining a value.
 
+`Value` and `Static` fields (and their atomic variants) start from
+`Default::default()`. Give a field another initial value with
+`#[state(init = ...)]`; the generated server bindings start from the same value:
+
+```rust
+#[derive(egui_states::State)]
+pub struct SettingsState {
+    #[state(init = 0.5)]
+    pub gain: Value<f32>,
+    #[state(init = "ready")]
+    pub status: Static<String>,
+}
+```
+
+The expression is evaluated both when the bindings are generated and when the
+client starts, so it must give the same value both times: it must not depend
+on the environment, the clock, or the target platform.
+
 Nest structs deriving `State` to organize larger state trees. Collections,
 numeric buffers, images, custom types, and one-shot transfers are covered in the
 [showcase](example/showcase/README.md). A numeric buffer can carry a typed

@@ -15,11 +15,19 @@ pub(crate) fn impl_state(input: TokenStream) -> TokenStream {
 
 fn expand_state(input: syn::ItemStruct) -> syn::Result<proc_macro2::TokenStream> {
     let syn::ItemStruct {
+        attrs,
         ident,
         generics,
         fields,
         ..
     } = input;
+
+    if let Some(attr) = attrs.iter().find(|attr| attr.path().is_ident("state")) {
+        return Err(syn::Error::new_spanned(
+            attr,
+            "`state` attributes belong on fields, not on the struct",
+        ));
+    }
 
     if generics.lt_token.is_some() {
         return Err(syn::Error::new_spanned(
@@ -50,16 +58,20 @@ fn expand_state(input: syn::ItemStruct) -> syn::Result<proc_macro2::TokenStream>
         }
     };
 
+    // Hygienic, so an `init` expression cannot name the creator, and a user
+    // item called `c` stays reachable from it.
+    let c = syn::Ident::new("c", proc_macro2::Span::mixed_site());
+
     let initializers = fields
         .iter()
-        .map(field_initializer)
+        .map(|field| field_initializer(field, &c))
         .collect::<syn::Result<Vec<_>>>()?;
 
     Ok(quote! {
         impl egui_states::State for #ident {
             const NAME: &'static str = stringify!(#ident);
 
-            fn new(c: &mut impl egui_states::StatesCreator) -> Self {
+            fn new(#c: &mut impl egui_states::StatesCreator) -> Self {
                 Self {
                     #(#initializers,)*
                 }
@@ -83,6 +95,9 @@ const BULK_HANDLES: [&str; 6] = [
 /// State handles that `#[state(queue)]` applies to.
 const QUEUE_HANDLES: [&str; 3] = ["Value", "ValueAtomic", "Signal"];
 
+/// State handles that `#[state(init = ...)]` applies to.
+const INIT_HANDLES: [&str; 4] = ["Value", "ValueAtomic", "Static", "StaticAtomic"];
+
 /// The other state handles.
 const HANDLES: [&str; 10] = [
     "Value",
@@ -102,7 +117,11 @@ const HANDLES: [&str; 10] = [
 struct FieldOptions {
     low_priority: Option<syn::Path>,
     queue: Option<syn::Path>,
+    /// The `init` path and its initial value expression.
+    init: Option<(syn::Path, syn::Expr)>,
 }
+
+const EXPECTED_OPTIONS: &str = "`init = <expr>`, `low_priority`, or `queue`";
 
 fn field_options(field: &syn::Field) -> syn::Result<FieldOptions> {
     let parser = Punctuated::<Meta, Token![,]>::parse_terminated;
@@ -112,33 +131,82 @@ fn field_options(field: &syn::Field) -> syn::Result<FieldOptions> {
         .iter()
         .filter(|attr| attr.path().is_ident("state"))
     {
-        for meta in parser.parse2(attr.meta.require_list()?.tokens.clone())? {
-            let Meta::Path(path) = meta else {
-                return Err(syn::Error::new_spanned(
-                    meta,
-                    "expected a `state` option without arguments: `low_priority` or `queue`",
-                ));
-            };
-            let option = if path.is_ident("low_priority") {
-                &mut options.low_priority
-            } else if path.is_ident("queue") {
-                &mut options.queue
-            } else {
-                return Err(syn::Error::new_spanned(
+        let metas = parser.parse2(attr.meta.require_list()?.tokens.clone())?;
+        if metas.is_empty() {
+            return Err(syn::Error::new_spanned(
+                attr,
+                format!("empty `state` attribute; expected {EXPECTED_OPTIONS}"),
+            ));
+        }
+        for meta in metas {
+            let unknown = |path: &syn::Path| {
+                syn::Error::new_spanned(
                     path,
-                    "unknown `state` option; expected `low_priority` or `queue`",
-                ));
+                    format!("unknown `state` option; expected {EXPECTED_OPTIONS}"),
+                )
             };
-            if option.is_some() {
-                return Err(syn::Error::new_spanned(path, "duplicate `state` option"));
+            let duplicate =
+                |path: &syn::Path| syn::Error::new_spanned(path, "duplicate `state` option");
+            match meta {
+                Meta::Path(path) => {
+                    let option = if path.is_ident("low_priority") {
+                        &mut options.low_priority
+                    } else if path.is_ident("queue") {
+                        &mut options.queue
+                    } else if path.is_ident("init") {
+                        return Err(syn::Error::new_spanned(
+                            path,
+                            "`init` takes a value: `init = <expr>`",
+                        ));
+                    } else {
+                        return Err(unknown(&path));
+                    };
+                    if option.is_some() {
+                        return Err(duplicate(&path));
+                    }
+                    *option = Some(path);
+                }
+                Meta::NameValue(meta) if meta.path.is_ident("init") => {
+                    if options.init.is_some() {
+                        return Err(duplicate(&meta.path));
+                    }
+                    options.init = Some((meta.path, meta.value));
+                }
+                Meta::NameValue(meta)
+                    if meta.path.is_ident("low_priority") || meta.path.is_ident("queue") =>
+                {
+                    return Err(syn::Error::new_spanned(
+                        meta,
+                        "`low_priority` and `queue` take no value",
+                    ));
+                }
+                Meta::NameValue(syn::MetaNameValue { path, .. })
+                | Meta::List(syn::MetaList { path, .. }) => return Err(unknown(&path)),
             }
-            *option = Some(path);
         }
     }
     Ok(options)
 }
 
-fn field_initializer(field: &syn::Field) -> syn::Result<proc_macro2::TokenStream> {
+/// The initial value expression; a string literal is converted with `Into`
+/// so that `init = "text"` works for `String` fields.
+fn init_expression(expr: &syn::Expr) -> proc_macro2::TokenStream {
+    // A literal forwarded through `macro_rules!` arrives in an invisible group.
+    let mut inner = expr;
+    while let syn::Expr::Group(group) = inner {
+        inner = &group.expr;
+    }
+
+    match inner {
+        syn::Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::Str(_),
+            ..
+        }) => quote!(::core::convert::Into::into(#expr)),
+        _ => quote!(#expr),
+    }
+}
+
+fn field_initializer(field: &syn::Field, c: &syn::Ident) -> syn::Result<proc_macro2::TokenStream> {
     let name = field.ident.as_ref().ok_or_else(|| {
         syn::Error::new_spanned(field, "State derive requires named struct fields")
     })?;
@@ -148,26 +216,38 @@ fn field_initializer(field: &syn::Field) -> syn::Result<proc_macro2::TokenStream
     let type_name = segment.ident.to_string();
     let options = field_options(field)?;
 
-    let value_default = quote!(::core::default::Default::default());
+    let initial = match &options.init {
+        Some((option, _)) if !INIT_HANDLES.contains(&type_name.as_str()) => {
+            return Err(syn::Error::new_spanned(
+                option,
+                format!(
+                    "`init` applies to {}; not to `{type_name}`",
+                    INIT_HANDLES.join(", ")
+                ),
+            ));
+        }
+        Some((_, expr)) => init_expression(expr),
+        None => quote!(::core::default::Default::default()),
+    };
 
     let initializer = match type_name.as_str() {
-        "Value" => quote!(c.value(#field_name, #value_default)),
-        "ValueAtomic" => quote!(c.atomic(#field_name, #value_default)),
-        "Static" => quote!(c.add_static(#field_name, #value_default)),
-        "StaticAtomic" => quote!(c.static_atomic(#field_name, #value_default)),
-        "Signal" => quote!(c.signal(#field_name)),
-        "ValueTake" => quote!(c.value_take(#field_name)),
-        "Image" => quote!(c.image(#field_name)),
-        "ImageMulti" => quote!(c.image_multi(#field_name)),
-        "MapState" => quote!(c.map(#field_name)),
-        "VecState" => quote!(c.vec(#field_name)),
-        "Data" => quote!(c.data(#field_name)),
-        "DataTake" => quote!(c.data_take(#field_name)),
-        "DataMulti" => quote!(c.data_multi(#field_name)),
-        "DataMultiTake" => quote!(c.data_multi_take(#field_name)),
-        "Download" => quote!(c.download(#field_name)),
-        "Upload" => quote!(c.upload(#field_name)),
-        _ => quote!(c.substate(#field_name)),
+        "Value" => quote!(#c.value(#field_name, #initial)),
+        "ValueAtomic" => quote!(#c.atomic(#field_name, #initial)),
+        "Static" => quote!(#c.add_static(#field_name, #initial)),
+        "StaticAtomic" => quote!(#c.static_atomic(#field_name, #initial)),
+        "Signal" => quote!(#c.signal(#field_name)),
+        "ValueTake" => quote!(#c.value_take(#field_name)),
+        "Image" => quote!(#c.image(#field_name)),
+        "ImageMulti" => quote!(#c.image_multi(#field_name)),
+        "MapState" => quote!(#c.map(#field_name)),
+        "VecState" => quote!(#c.vec(#field_name)),
+        "Data" => quote!(#c.data(#field_name)),
+        "DataTake" => quote!(#c.data_take(#field_name)),
+        "DataMulti" => quote!(#c.data_multi(#field_name)),
+        "DataMultiTake" => quote!(#c.data_multi_take(#field_name)),
+        "Download" => quote!(#c.download(#field_name)),
+        "Upload" => quote!(#c.upload(#field_name)),
+        _ => quote!(#c.substate(#field_name)),
     };
 
     let initializer = match options.low_priority {
@@ -180,7 +260,7 @@ fn field_initializer(field: &syn::Field) -> syn::Result<proc_macro2::TokenStream
                 ),
             ));
         }
-        Some(_) => quote!(c.low_priority(|c| #initializer)),
+        Some(_) => quote!(#c.low_priority(|#c| #initializer)),
         None => initializer,
     };
     let initializer = match options.queue {
@@ -193,7 +273,7 @@ fn field_initializer(field: &syn::Field) -> syn::Result<proc_macro2::TokenStream
                 ),
             ));
         }
-        Some(_) => quote!(c.queue(|c| #initializer)),
+        Some(_) => quote!(#c.queue(|#c| #initializer)),
         None => initializer,
     };
 

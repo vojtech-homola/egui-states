@@ -132,6 +132,15 @@ pub fn atomic_static(input: TokenStream) -> TokenStream {
 /// - `queue`: server callbacks receive every change of the field in arrival
 ///   order, as `StatesCreator::queue` describes, instead of only the latest
 ///   one. It applies to `Value`, `ValueAtomic` and `Signal`.
+/// - `init = <expr>`: the field starts from this value instead of
+///   `Default::default()`, on the client and in the generated server bindings.
+///   It applies to `Value`, `ValueAtomic`, `Static` and `StaticAtomic`. The
+///   expression is any Rust expression of the field's value type; a string
+///   literal on its own is converted with `Into`, so it also initializes a
+///   `String`. The expression is evaluated both when the server bindings are
+///   generated and when the client starts, so it must give the same value each
+///   time: a value that depends on the environment, the clock, or the target
+///   platform would differ between the server and the client.
 ///
 /// Options can be combined in one attribute, `#[state(a, b)]`.
 ///
@@ -143,6 +152,10 @@ pub fn atomic_static(input: TokenStream) -> TokenStream {
 ///     camera: Image,
 ///     #[state(queue)]
 ///     clicks: Signal<u32>,
+///     #[state(init = 0.5)]
+///     gain: Value<f32>,
+///     #[state(init = "ready")]
+///     status: Static<String>,
 /// }
 /// ```
 #[proc_macro_derive(State, attributes(state))]

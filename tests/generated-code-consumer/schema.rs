@@ -1,4 +1,4 @@
-use egui_states::{Data, State, StatesCreator, Value};
+use egui_states::{Data, Signal, State, StatesCreator, Static, StaticAtomic, Value, ValueAtomic};
 use std::collections::HashMap;
 
 #[egui_states::typed(rust_derive(
@@ -47,6 +47,7 @@ impl State for Root {
         let _: Value<HashMap<u16, u32>> =
             c.value("mapping", HashMap::from([(1, 10), (20, 200), (3, 30)]));
         let _: Data<f32, Inner> = c.data("measurements");
+        let _: Initials = c.substate("initials");
         Self
     }
 }
@@ -71,6 +72,26 @@ pub mod conflicting {
             Self
         }
     }
+}
+
+/// `#[state(init = ...)]` values must reach the generated server bindings.
+#[derive(egui_states::State)]
+#[allow(dead_code)]
+pub struct Initials {
+    #[state(init = 0.5)]
+    pub gain: Value<f32>,
+    #[state(init = "ready")]
+    pub status: Value<String>,
+    #[state(init = Choice::High)]
+    pub choice: Static<Choice>,
+    #[state(init = Inner { enabled: true })]
+    pub inner: Value<Inner>,
+    #[state(init = 7)]
+    pub counter: ValueAtomic<u16>,
+    #[state(init = true)]
+    pub flag: StaticAtomic<bool>,
+    pub plain: Value<i32>,
+    pub reset: Signal<()>,
 }
 
 // Reusing a state containing a HashMap used to fail nondeterministically.
