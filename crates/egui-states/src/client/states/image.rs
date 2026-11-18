@@ -9,7 +9,8 @@ use egui::{ColorImage, ImageData, TextureHandle};
 use crate::client::messages::{ChannelMessage, MessageSender};
 use crate::hashing::NoHashMap;
 use crate::protocol::image::{
-    ImageSetHeader, ImageType, checked_image_bounds, checked_image_bytes, to_rgba,
+    ImageSetHeader, ImageType, ImageUpdateHeader, checked_image_bounds, checked_image_bytes,
+    to_rgba,
 };
 
 /// A texture and its `[width, height]` size.
@@ -148,12 +149,14 @@ impl Image {
                 *self.buffer.lock() = Some(partial)
             }
             ImageSetHeader::Batch(pixels) => match *self.buffer.lock() {
-                Some(ref mut partial) => partial.append(&self.name, pixels, image_type, data)?,
-                None => return Err(format!("No image buffer found for image: {}", self.name)),
+                Some(ref mut partial) if partial.origin.is_none() => {
+                    partial.append(&self.name, pixels, image_type, data)?
+                }
+                _ => return Err(format!("No image buffer found for image: {}", self.name)),
             },
             ImageSetHeader::End(pixels, _) => {
                 self.sender.send(ChannelMessage::Ack(self.id));
-                let Some(partial) = self.buffer.lock().take() else {
+                let Some(partial) = self.buffer.lock().take().filter(|p| p.origin.is_none()) else {
                     return Err(format!("No image buffer found for image: {}", self.name));
                 };
                 let c_image = partial.finish(&self.name, pixels, image_type, data)?;
@@ -164,35 +167,78 @@ impl Image {
         Ok(())
     }
 
+    /// Applies one message of a rectangle update; the rectangle is applied
+    /// once, at `All` or `End`, which are acknowledged also when they fail.
     pub(crate) fn update_image(
         &self,
-        rect: [u32; 4],
+        header: ImageUpdateHeader,
         image_type: ImageType,
         data: &[u8],
     ) -> Result<(), String> {
-        // TODO: not sure if this is the best place to send ack
-        self.sender.send(ChannelMessage::Ack(self.id));
+        match header {
+            ImageUpdateHeader::All(rect, _) => {
+                self.sender.send(ChannelMessage::Ack(self.id));
+                let (origin, size) = self.checked_update(rect)?;
+                let image = create_color_image(&self.name, size, image_type, data)?;
+                self.put_texture_update(origin, image)
+            }
+            ImageUpdateHeader::Start(rect, pixels) => {
+                let (origin, _) = self.checked_update(rect)?;
+                let partial =
+                    PartialImage::start(&self.name, [rect[2], rect[3]], pixels, image_type, data)?;
+                *self.buffer.lock() = Some(partial.at(origin));
+                Ok(())
+            }
+            ImageUpdateHeader::Batch(pixels) => match *self.buffer.lock() {
+                Some(ref mut partial) if partial.origin.is_some() => {
+                    partial.append(&self.name, pixels, image_type, data)
+                }
+                _ => Err(self.no_update_buffer()),
+            },
+            ImageUpdateHeader::End(pixels, _) => {
+                self.sender.send(ChannelMessage::Ack(self.id));
+                let partial = self.buffer.lock().take();
+                let Some((partial, origin)) =
+                    partial.and_then(|p| p.origin.map(|origin| (p, origin)))
+                else {
+                    return Err(self.no_update_buffer());
+                };
+                let image = partial.finish(&self.name, pixels, image_type, data)?;
+                self.put_texture_update(origin, image)
+            }
+        }
+    }
 
-        let image_size = [rect[2] as usize, rect[3] as usize];
+    fn no_update_buffer(&self) -> String {
+        format!("No image update buffer found for image: {}", self.name)
+    }
+
+    fn no_texture(&self) -> String {
+        format!(
+            "Image {} received a partial update before a complete image",
+            self.name
+        )
+    }
+
+    /// Checks a wire rectangle against the texture and returns its origin and
+    /// size as `[x, y]` and `[width, height]`.
+    fn checked_update(&self, rect: [u32; 4]) -> Result<([usize; 2], [usize; 2]), String> {
+        let size = [rect[2] as usize, rect[3] as usize];
         let origin = [rect[0] as usize, rect[1] as usize];
-
-        checked_image_bounds(origin, image_size)?;
-        let no_texture = || {
-            format!(
-                "Image {} received a partial update before a complete image",
-                self.name
-            )
-        };
+        checked_image_bounds(origin, size)?;
         // A connection always starts with a complete image, so an update
         // without a texture is a protocol error. Only this receive task
         // changes the texture, so it stays as checked while the pixels are
         // converted outside the lock, which UI reads would wait for.
-        let texture_size = self.get_size().ok_or_else(no_texture)?;
-        check_update(texture_size, &self.name, origin, image_size)?;
-        let image = create_color_image(&self.name, image_size, image_type, data)?;
+        let texture_size = self.get_size().ok_or_else(|| self.no_texture())?;
+        check_update(texture_size, &self.name, origin, size)?;
+        Ok((origin, size))
+    }
 
+    fn put_texture_update(&self, origin: [usize; 2], image: ColorImage) -> Result<(), String> {
         let mut texture = self.texture.write();
-        let (texture_handle, saved_size) = texture.as_mut().ok_or_else(no_texture)?;
+        let (texture_handle, saved_size) = texture.as_mut().ok_or_else(|| self.no_texture())?;
+        check_update(*saved_size, &self.name, origin, image.size)?;
         put_update(texture_handle, *saved_size, origin, image);
         Ok(())
     }
@@ -340,6 +386,7 @@ impl ImageMulti {
                 let mut buffers = self.buffers.lock();
                 let partial = buffers
                     .get_mut(&index)
+                    .filter(|partial| partial.origin.is_none())
                     .ok_or_else(|| self.no_buffer(index))?;
                 partial.append(&self.label(index), pixels, image_type, data)
             }
@@ -349,6 +396,7 @@ impl ImageMulti {
                     .buffers
                     .lock()
                     .remove(&index)
+                    .filter(|partial| partial.origin.is_none())
                     .ok_or_else(|| self.no_buffer(index))?;
                 let image = partial.finish(&self.label(index), pixels, image_type, data)?;
                 self.set_texture(index, image)
@@ -356,32 +404,86 @@ impl ImageMulti {
         }
     }
 
+    /// Applies one message of a rectangle update of `index`; the rectangle
+    /// is applied once, at `All` or `End`, which are acknowledged also when
+    /// they fail.
     pub(crate) fn update_image(
         &self,
         index: u32,
-        rect: [u32; 4],
+        header: ImageUpdateHeader,
         image_type: ImageType,
         data: &[u8],
     ) -> Result<(), String> {
-        self.sender.send_ack(self.id);
-        let image_size = [rect[2] as usize, rect[3] as usize];
-        let origin = [rect[0] as usize, rect[1] as usize];
-        checked_image_bounds(origin, image_size)?;
-
-        let not_found = || {
-            format!(
-                "Image index {} not found in collection: {}",
-                index, self.name
-            )
-        };
-        // Convert outside the map lock, which UI reads of every key wait for.
         let label = self.label(index);
-        let texture_size = self.get_size(index).ok_or_else(not_found)?;
-        check_update(texture_size, &label, origin, image_size)?;
-        let image = create_color_image(&label, image_size, image_type, data)?;
+        match header {
+            ImageUpdateHeader::All(rect, _) => {
+                self.sender.send_ack(self.id);
+                let (origin, size) = self.checked_update(index, rect)?;
+                // Convert outside the map lock, which UI reads of every key
+                // wait for.
+                let image = create_color_image(&label, size, image_type, data)?;
+                self.put_texture_update(index, origin, image)
+            }
+            ImageUpdateHeader::Start(rect, pixels) => {
+                let (origin, _) = self.checked_update(index, rect)?;
+                let partial =
+                    PartialImage::start(&label, [rect[2], rect[3]], pixels, image_type, data)?;
+                self.buffers.lock().insert(index, partial.at(origin));
+                Ok(())
+            }
+            ImageUpdateHeader::Batch(pixels) => {
+                let mut buffers = self.buffers.lock();
+                let partial = buffers
+                    .get_mut(&index)
+                    .filter(|partial| partial.origin.is_some())
+                    .ok_or_else(|| self.no_buffer(index))?;
+                partial.append(&label, pixels, image_type, data)
+            }
+            ImageUpdateHeader::End(pixels, _) => {
+                self.sender.send_ack(self.id);
+                let partial = self.buffers.lock().remove(&index);
+                let (partial, origin) = partial
+                    .and_then(|p| p.origin.map(|origin| (p, origin)))
+                    .ok_or_else(|| self.no_buffer(index))?;
+                let image = partial.finish(&label, pixels, image_type, data)?;
+                self.put_texture_update(index, origin, image)
+            }
+        }
+    }
 
+    fn not_found(&self, index: u32) -> String {
+        format!(
+            "Image index {} not found in collection: {}",
+            index, self.name
+        )
+    }
+
+    /// Checks a wire rectangle against the texture of `index` and returns its
+    /// origin and size as `[x, y]` and `[width, height]`.
+    fn checked_update(
+        &self,
+        index: u32,
+        rect: [u32; 4],
+    ) -> Result<([usize; 2], [usize; 2]), String> {
+        let size = [rect[2] as usize, rect[3] as usize];
+        let origin = [rect[0] as usize, rect[1] as usize];
+        checked_image_bounds(origin, size)?;
+        let texture_size = self.get_size(index).ok_or_else(|| self.not_found(index))?;
+        check_update(texture_size, &self.label(index), origin, size)?;
+        Ok((origin, size))
+    }
+
+    fn put_texture_update(
+        &self,
+        index: u32,
+        origin: [usize; 2],
+        image: ColorImage,
+    ) -> Result<(), String> {
         let mut images = self.images.write();
-        let (texture, saved_size) = images.get_mut(&index).ok_or_else(not_found)?;
+        let (texture, saved_size) = images
+            .get_mut(&index)
+            .ok_or_else(|| self.not_found(index))?;
+        check_update(*saved_size, &self.label(index), origin, image.size)?;
         put_update(texture, *saved_size, origin, image);
         Ok(())
     }
@@ -495,10 +597,12 @@ impl Display for KeyLabel<'_> {
     }
 }
 
-/// An image set being assembled from its chunks; `pixels` holds the pixels
-/// received so far. `label` names the image in errors.
+/// An image set or rectangle update being assembled from its chunks;
+/// `pixels` holds the pixels received so far. `origin` is the `[x, y]` of an
+/// update's rectangle and `None` for a whole-image set.
 struct PartialImage {
     size: [usize; 2],
+    origin: Option<[usize; 2]>,
     pixels: Vec<egui::Color32>,
 }
 
@@ -514,10 +618,17 @@ impl PartialImage {
         checked_image_bytes(size, 4)?;
         let mut image = Self {
             size,
+            origin: None,
             pixels: Vec::with_capacity(size[0] * size[1]),
         };
         image.append(label, pixels, image_type, data)?;
         Ok(image)
+    }
+
+    /// Marks the transfer as a rectangle update at `origin`.
+    fn at(mut self, origin: [usize; 2]) -> Self {
+        self.origin = Some(origin);
+        self
     }
 
     fn total(&self) -> usize {
@@ -702,7 +813,11 @@ mod tests {
                         }
                         1 => image.set_image(ImageSetHeader::Start(size, 1), ImageType::Gray, &[9]),
                         2 => image.fill_image(size, [9; 4], &[]),
-                        _ => image.update_image([0, 0, size[0], size[1]], ImageType::Gray, &[]),
+                        _ => image.update_image(
+                            ImageUpdateHeader::All([0, 0, size[0], size[1]], false),
+                            ImageType::Gray,
+                            &[],
+                        ),
                     };
                     assert!(result.unwrap_err().contains("65536"));
                     let result = match operation {
@@ -719,7 +834,12 @@ mod tests {
                             &[9],
                         ),
                         2 => images.fill_image(7, size, [9; 4], &[]),
-                        _ => images.update_image(7, [0, 0, size[0], size[1]], ImageType::Gray, &[]),
+                        _ => images.update_image(
+                            7,
+                            ImageUpdateHeader::All([0, 0, size[0], size[1]], false),
+                            ImageType::Gray,
+                            &[],
+                        ),
                     };
                     assert!(result.unwrap_err().contains("65536"));
                     if operation != 1 {
@@ -738,8 +858,21 @@ mod tests {
             }
             for origin in [[65_536, 0], [0, 65_536], [u32::MAX, 0], [0, u32::MAX]] {
                 let rect = [origin[0], origin[1], 1, 1];
-                assert!(image.update_image(rect, ImageType::Gray, &[9]).is_err());
-                assert!(images.update_image(7, rect, ImageType::Gray, &[9]).is_err());
+                assert!(
+                    image
+                        .update_image(ImageUpdateHeader::All(rect, false), ImageType::Gray, &[9])
+                        .is_err()
+                );
+                assert!(
+                    images
+                        .update_image(
+                            7,
+                            ImageUpdateHeader::All(rect, false),
+                            ImageType::Gray,
+                            &[9]
+                        )
+                        .is_err()
+                );
                 assert_single_ack(&mut receiver, 1);
                 assert_single_ack(&mut multi_receiver, 2);
             }
@@ -814,9 +947,16 @@ mod tests {
             assert_single_ack(&mut receiver, 1);
             assert_single_ack(&mut multi_receiver, 2);
             let rect = [wire_size[0] - 1, wire_size[1] - 1, 1, 1];
-            image.update_image(rect, ImageType::Gray, &[10]).unwrap();
+            image
+                .update_image(ImageUpdateHeader::All(rect, false), ImageType::Gray, &[10])
+                .unwrap();
             images
-                .update_image(7, rect, ImageType::Gray, &[10])
+                .update_image(
+                    7,
+                    ImageUpdateHeader::All(rect, false),
+                    ImageType::Gray,
+                    &[10],
+                )
                 .unwrap();
             assert_single_ack(&mut receiver, 1);
             assert_single_ack(&mut multi_receiver, 2);
@@ -888,6 +1028,143 @@ mod tests {
         assert_eq!(images.get_size(7), None);
     }
 
+    /// A chunked update is applied once, at its End, with a single
+    /// acknowledgement; set and update chunks never complete each other.
+    #[test]
+    fn chunked_updates_are_applied_once_at_their_end() {
+        let context = egui::Context::default();
+        let (sender, mut receiver) = MessageSender::new();
+        let image = Image::new("image".into(), 1, sender, context.clone());
+        let (sender, mut multi_receiver) = MessageSender::new();
+        let images = ImageMulti::new("images".into(), 2, sender, context.clone());
+        image.fill_image([4, 3], [0; 4], &[]).unwrap();
+        images.fill_image(7, [4, 3], [0; 4], &[]).unwrap();
+        assert_single_ack(&mut receiver, 1);
+        assert_single_ack(&mut multi_receiver, 2);
+        let (id, _) = image.get().unwrap();
+        let (multi_id, _) = images.get(7).unwrap();
+        crate::test_support::texture_updates(&context);
+
+        // A 2x2 rectangle at x 1, y 1, in three chunks.
+        let rect = [1, 1, 2, 2];
+        let chunks = || {
+            [
+                (ImageUpdateHeader::Start(rect, 1), &[1][..]),
+                (ImageUpdateHeader::Batch(2), &[2, 3][..]),
+                (ImageUpdateHeader::End(1, true), &[4][..]),
+            ]
+        };
+        for (n, (header, data)) in chunks().into_iter().enumerate() {
+            let last = n == 2;
+            image.update_image(header, ImageType::Gray, data).unwrap();
+            if !last {
+                assert!(receiver.try_recv().is_err());
+                assert!(crate::test_support::texture_updates(&context).is_empty());
+            }
+        }
+        for (n, (header, data)) in chunks().into_iter().enumerate() {
+            let last = n == 2;
+            images
+                .update_image(7, header, ImageType::Gray, data)
+                .unwrap();
+            if !last {
+                assert!(multi_receiver.try_recv().is_err());
+            }
+        }
+        assert_single_ack(&mut receiver, 1);
+        assert_single_ack(&mut multi_receiver, 2);
+        let delta = crate::test_support::texture_updates(&context);
+        for texture in [id, multi_id] {
+            let changes = &delta[&texture];
+            assert_eq!(changes.len(), 1);
+            assert_eq!(changes[0].pos, Some([1, 1]));
+            assert_eq!(changes[0].image.size(), [2, 2]);
+        }
+        assert!(image.buffer.lock().is_none());
+        assert!(images.buffers.lock().is_empty());
+
+        // A set's chunks cannot complete an update, nor the reverse; only the
+        // failing End is acknowledged.
+        image
+            .update_image(ImageUpdateHeader::Start(rect, 1), ImageType::Gray, &[1])
+            .unwrap();
+        assert!(
+            image
+                .set_image(ImageSetHeader::End(3, false), ImageType::Gray, &[2, 3, 4])
+                .is_err()
+        );
+        assert_single_ack(&mut receiver, 1);
+        image
+            .set_image(ImageSetHeader::Start([4, 3], 1), ImageType::Gray, &[1])
+            .unwrap();
+        assert!(
+            image
+                .update_image(ImageUpdateHeader::Batch(1), ImageType::Gray, &[2])
+                .is_err()
+        );
+        assert!(
+            image
+                .update_image(
+                    ImageUpdateHeader::End(3, false),
+                    ImageType::Gray,
+                    &[2, 3, 4]
+                )
+                .is_err()
+        );
+        assert_single_ack(&mut receiver, 1);
+        images
+            .update_image(7, ImageUpdateHeader::Start(rect, 1), ImageType::Gray, &[1])
+            .unwrap();
+        assert!(
+            images
+                .set_image(7, ImageSetHeader::Batch(1), ImageType::Gray, &[2])
+                .is_err()
+        );
+        assert!(multi_receiver.try_recv().is_err());
+
+        // A disconnect drops a partial update, so its End fails.
+        image
+            .update_image(ImageUpdateHeader::Start(rect, 1), ImageType::Gray, &[1])
+            .unwrap();
+        image.disconnected();
+        images.disconnected();
+        assert!(
+            image
+                .update_image(
+                    ImageUpdateHeader::End(3, false),
+                    ImageType::Gray,
+                    &[2, 3, 4]
+                )
+                .is_err()
+        );
+        assert!(
+            images
+                .update_image(
+                    7,
+                    ImageUpdateHeader::End(3, false),
+                    ImageType::Gray,
+                    &[2, 3, 4]
+                )
+                .is_err()
+        );
+        assert_single_ack(&mut receiver, 1);
+        assert_single_ack(&mut multi_receiver, 2);
+
+        // An update rectangle outside the texture is rejected at its Start.
+        assert!(
+            image
+                .update_image(
+                    ImageUpdateHeader::Start([3, 1, 2, 2], 1),
+                    ImageType::Gray,
+                    &[1]
+                )
+                .is_err()
+        );
+        assert!(image.buffer.lock().is_none());
+        assert!(receiver.try_recv().is_err());
+        assert!(crate::test_support::texture_updates(&context).is_empty());
+    }
+
     #[test]
     fn invalid_fill_messages_still_ack() {
         let id = 51;
@@ -939,7 +1216,11 @@ mod tests {
             assert!(image.get().is_none());
 
             let error = image
-                .update_image([0, 0, 1, 1], ImageType::Gray, &[9])
+                .update_image(
+                    ImageUpdateHeader::All([0, 0, 1, 1], false),
+                    ImageType::Gray,
+                    &[9],
+                )
                 .unwrap_err();
             assert!(error.contains("before a complete image"), "{error}");
             assert_single_ack(&mut receiver, 1);
@@ -1046,7 +1327,12 @@ mod tests {
 
         assert!(
             images
-                .update_image(99, [0, 0, 1, 1], ImageType::Gray, &[5])
+                .update_image(
+                    99,
+                    ImageUpdateHeader::All([0, 0, 1, 1], false),
+                    ImageType::Gray,
+                    &[5],
+                )
                 .is_err()
         );
         assert_single_ack(&mut receiver, id);

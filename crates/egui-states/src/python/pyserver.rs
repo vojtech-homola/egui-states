@@ -921,24 +921,29 @@ impl StateServerCore {
         Ok((array, size))
     }
 
-    #[pyo3(signature = (value_id, image, update))]
+    fn image_is_idle(&self, value_id: u64) -> PyResult<bool> {
+        Ok(self.inner_image(value_id)?.is_idle())
+    }
+
+    #[pyo3(signature = (value_id, image, update, wait=false))]
     fn image_set(
         &self,
         py: Python,
         value_id: u64,
         image: PyBuffer<u8>,
         update: bool,
+        wait: bool,
     ) -> PyResult<()> {
         py.detach(|| {
             let image_val = self.inner_image(value_id)?;
             let image_data = pyimage::image_data(&image)?;
             image_val
-                .set_image(image_data, update)
+                .set_image(image_data, update, wait)
                 .map_err(PyValueError::new_err)
         })
     }
 
-    #[pyo3(signature = (value_id, shape, color, update))]
+    #[pyo3(signature = (value_id, shape, color, update, wait=false))]
     fn image_set_all(
         &self,
         py: Python,
@@ -946,16 +951,18 @@ impl StateServerCore {
         shape: [usize; 2],
         color: &Bound<'_, PyAny>,
         update: bool,
+        wait: bool,
     ) -> PyResult<()> {
         let rgba = pyimage::image_color(color)?;
         py.detach(|| {
             self.inner_image(value_id)?
-                .set_all_image(shape, rgba, update)
+                .set_all_image(shape, rgba, update, wait)
                 .map_err(PyValueError::new_err)
         })
     }
 
-    #[pyo3(signature = (value_id, image, origin, update, force=false))]
+    #[pyo3(signature = (value_id, image, origin, update, force=false, max_lines=None, wait=false))]
+    #[allow(clippy::too_many_arguments)]
     fn image_update(
         &self,
         py: Python,
@@ -964,7 +971,10 @@ impl StateServerCore {
         origin: [u32; 2],
         update: bool,
         force: bool,
+        max_lines: Option<i64>,
+        wait: bool,
     ) -> PyResult<()> {
+        let max_lines = pyimage::max_lines(max_lines)?;
         py.detach(|| {
             let image_val = self.inner_image(value_id)?;
             let image_data = pyimage::image_data(&image)?;
@@ -974,6 +984,8 @@ impl StateServerCore {
                     image_data,
                     update,
                     force,
+                    max_lines,
+                    wait,
                 )
                 .map_err(PyValueError::new_err)
         })
@@ -1001,7 +1013,11 @@ impl StateServerCore {
         })
     }
 
-    #[pyo3(signature = (value_id, index, image, update))]
+    fn image_multi_is_idle(&self, value_id: u64) -> PyResult<bool> {
+        Ok(self.inner_image_multi(value_id)?.is_idle())
+    }
+
+    #[pyo3(signature = (value_id, index, image, update, wait=false))]
     fn image_multi_set(
         &self,
         py: Python,
@@ -1009,17 +1025,19 @@ impl StateServerCore {
         index: u32,
         image: PyBuffer<u8>,
         update: bool,
+        wait: bool,
     ) -> PyResult<()> {
         py.detach(|| {
             let images = self.inner_image_multi(value_id)?;
             let image_data = pyimage::image_data(&image)?;
             images
-                .set_image(index, image_data, update)
+                .set_image(index, image_data, update, wait)
                 .map_err(PyValueError::new_err)
         })
     }
 
-    #[pyo3(signature = (value_id, index, shape, color, update))]
+    #[pyo3(signature = (value_id, index, shape, color, update, wait=false))]
+    #[allow(clippy::too_many_arguments)]
     fn image_multi_set_all(
         &self,
         py: Python,
@@ -1028,16 +1046,17 @@ impl StateServerCore {
         shape: [usize; 2],
         color: &Bound<'_, PyAny>,
         update: bool,
+        wait: bool,
     ) -> PyResult<()> {
         let rgba = pyimage::image_color(color)?;
         py.detach(|| {
             self.inner_image_multi(value_id)?
-                .set_all_image(index, shape, rgba, update)
+                .set_all_image(index, shape, rgba, update, wait)
                 .map_err(PyValueError::new_err)
         })
     }
 
-    #[pyo3(signature = (value_id, index, image, origin, update, force=false))]
+    #[pyo3(signature = (value_id, index, image, origin, update, force=false, max_lines=None, wait=false))]
     #[allow(clippy::too_many_arguments)]
     fn image_multi_update(
         &self,
@@ -1048,7 +1067,10 @@ impl StateServerCore {
         origin: [u32; 2],
         update: bool,
         force: bool,
+        max_lines: Option<i64>,
+        wait: bool,
     ) -> PyResult<()> {
+        let max_lines = pyimage::max_lines(max_lines)?;
         py.detach(|| {
             let images = self.inner_image_multi(value_id)?;
             let image_data = pyimage::image_data(&image)?;
@@ -1059,6 +1081,8 @@ impl StateServerCore {
                     image_data,
                     update,
                     force,
+                    max_lines,
+                    wait,
                 )
                 .map_err(PyValueError::new_err)
         })
@@ -1142,6 +1166,11 @@ impl StateServerCore {
             .transpose()
     }
 
+    fn data_is_idle(&self, value_id: u64) -> PyResult<bool> {
+        Ok(self.inner_data(value_id)?.0.is_idle())
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn data_set(
         &self,
         py: Python,
@@ -1149,6 +1178,7 @@ impl StateServerCore {
         data: &Bound<PyAny>,
         update: bool,
         header: Option<(Bound<PyAny>,)>,
+        wait: bool,
     ) -> PyResult<()> {
         let buffer = data_buffer(data)?;
         let (data_value, header_type) = self.inner_data(value_id)?;
@@ -1160,11 +1190,12 @@ impl StateServerCore {
 
         py.detach(|| {
             data_value
-                .set(elements, update)
+                .set(elements, update, wait)
                 .map_err(PyValueError::new_err)
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn data_add(
         &self,
         py: Python,
@@ -1172,6 +1203,7 @@ impl StateServerCore {
         data: &Bound<PyAny>,
         update: bool,
         header: Option<(Bound<PyAny>,)>,
+        wait: bool,
     ) -> PyResult<()> {
         let buffer = data_buffer(data)?;
         let (data_value, header_type) = self.inner_data(value_id)?;
@@ -1183,7 +1215,7 @@ impl StateServerCore {
 
         py.detach(|| {
             data_value
-                .add(elements, update)
+                .add(elements, update, wait)
                 .map_err(PyValueError::new_err)
         })
     }
@@ -1197,6 +1229,7 @@ impl StateServerCore {
         index: usize,
         update: bool,
         header: Option<(Bound<PyAny>,)>,
+        wait: bool,
     ) -> PyResult<()> {
         let buffer = data_buffer(data)?;
         let (data_value, header_type) = self.inner_data(value_id)?;
@@ -1208,11 +1241,12 @@ impl StateServerCore {
 
         py.detach(|| {
             data_value
-                .replace(elements, index, update)
+                .replace(elements, index, update, wait)
                 .map_err(PyValueError::new_err)
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn data_remove(
         &self,
         py: Python,
@@ -1221,12 +1255,13 @@ impl StateServerCore {
         count: usize,
         update: bool,
         header: Option<(Bound<PyAny>,)>,
+        wait: bool,
     ) -> PyResult<()> {
         let (data_value, header_type) = self.inner_data(value_id)?;
         let header = encode_header(header, header_type)?;
         py.detach(|| {
             data_value
-                .remove(index, count, header.as_deref(), update)
+                .remove(index, count, header.as_deref(), update, wait)
                 .map_err(PyValueError::new_err)
         })
     }
@@ -1345,6 +1380,10 @@ impl StateServerCore {
         Ok((bytes, decode_header(py, header, header_type)?))
     }
 
+    fn data_multi_is_idle(&self, value_id: u64) -> PyResult<bool> {
+        Ok(self.inner_data_multi(value_id)?.0.is_idle())
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn data_multi_set(
         &self,
@@ -1354,6 +1393,7 @@ impl StateServerCore {
         data: &Bound<PyAny>,
         update: bool,
         header: Option<(Bound<PyAny>,)>,
+        wait: bool,
     ) -> PyResult<()> {
         let buffer = data_buffer(data)?;
         let (data_value, header_type) = self.inner_data_multi(value_id)?;
@@ -1365,7 +1405,7 @@ impl StateServerCore {
 
         py.detach(|| {
             data_value
-                .set(index, elements, update)
+                .set(index, elements, update, wait)
                 .map_err(PyValueError::new_err)
         })
     }
@@ -1379,6 +1419,7 @@ impl StateServerCore {
         data: &Bound<PyAny>,
         update: bool,
         header: Option<(Bound<PyAny>,)>,
+        wait: bool,
     ) -> PyResult<()> {
         let buffer = data_buffer(data)?;
         let (data_value, header_type) = self.inner_data_multi(value_id)?;
@@ -1390,7 +1431,7 @@ impl StateServerCore {
 
         py.detach(|| {
             data_value
-                .add(index, elements, update)
+                .add(index, elements, update, wait)
                 .map_err(PyValueError::new_err)
         })
     }
@@ -1405,6 +1446,7 @@ impl StateServerCore {
         data_index: usize,
         update: bool,
         header: Option<(Bound<PyAny>,)>,
+        wait: bool,
     ) -> PyResult<()> {
         let buffer = data_buffer(data)?;
         let (data_value, header_type) = self.inner_data_multi(value_id)?;
@@ -1416,7 +1458,7 @@ impl StateServerCore {
 
         py.detach(|| {
             data_value
-                .replace(index, data_index, elements, update)
+                .replace(index, data_index, elements, update, wait)
                 .map_err(PyValueError::new_err)
         })
     }
@@ -1431,12 +1473,13 @@ impl StateServerCore {
         count: usize,
         update: bool,
         header: Option<(Bound<PyAny>,)>,
+        wait: bool,
     ) -> PyResult<()> {
         let (data_value, header_type) = self.inner_data_multi(value_id)?;
         let header = encode_header(header, header_type)?;
         py.detach(|| {
             data_value
-                .remove(index, data_index, count, header.as_deref(), update)
+                .remove(index, data_index, count, header.as_deref(), update, wait)
                 .map_err(PyValueError::new_err)
         })
     }
@@ -1702,20 +1745,20 @@ impl StateServerCore {
         Ok(value_id)
     }
 
-    fn add_image(&self, name: String) -> PyResult<u64> {
+    fn add_image(&self, name: String, low_priority: bool) -> PyResult<u64> {
         let value_id = self
             .server
             .write()
-            .add_image(&name)
+            .add_image(&name, low_priority)
             .map_err(|e| PyValueError::new_err(format!("Failed to add ValueImage: {}", e)))?;
         Ok(value_id)
     }
 
-    fn add_image_multi(&self, name: String) -> PyResult<u64> {
+    fn add_image_multi(&self, name: String, low_priority: bool) -> PyResult<u64> {
         let value_id = self
             .server
             .write()
-            .add_image_multi(&name)
+            .add_image_multi(&name, low_priority)
             .map_err(|e| PyValueError::new_err(format!("Failed to add ImageMulti: {}", e)))?;
         Ok(value_id)
     }
@@ -1726,13 +1769,14 @@ impl StateServerCore {
         name: String,
         data_type: u8,
         header: Option<&Bound<PyObjectClass>>,
+        low_priority: bool,
     ) -> PyResult<u64> {
         let header = header.map(|header| header.borrow().object_type.clone_py(py));
         let header_type = header_type(py, header.as_ref())?;
         let value_id = self
             .server
             .write()
-            .add_data(&name, data_type, header_type)
+            .add_data(&name, data_type, header_type, low_priority)
             .map_err(|e| PyValueError::new_err(format!("Failed to add Data: {}", e)))?;
         self.keep_header_type(value_id, header);
         Ok(value_id)
@@ -1744,13 +1788,14 @@ impl StateServerCore {
         name: String,
         data_type: u8,
         header: Option<&Bound<PyObjectClass>>,
+        low_priority: bool,
     ) -> PyResult<u64> {
         let header = header.map(|header| header.borrow().object_type.clone_py(py));
         let header_type = header_type(py, header.as_ref())?;
         let value_id = self
             .server
             .write()
-            .add_data_multi(&name, data_type, header_type)
+            .add_data_multi(&name, data_type, header_type, low_priority)
             .map_err(|e| PyValueError::new_err(format!("Failed to add DataMulti: {}", e)))?;
         self.keep_header_type(value_id, header);
         Ok(value_id)
@@ -1900,13 +1945,14 @@ impl StateServerCore {
         name: String,
         data_type: u8,
         header: Option<&Bound<PyObjectClass>>,
+        low_priority: bool,
     ) -> PyResult<u64> {
         let header = header.map(|header| header.borrow().object_type.clone_py(py));
         let header_type = header_type(py, header.as_ref())?;
         let value_id = self
             .server
             .write()
-            .add_data_take(&name, data_type, header_type)
+            .add_data_take(&name, data_type, header_type, low_priority)
             .map_err(|e| PyValueError::new_err(format!("Failed to add DataTake: {}", e)))?;
         self.keep_header_type(value_id, header);
         Ok(value_id)
@@ -1918,13 +1964,14 @@ impl StateServerCore {
         name: String,
         data_type: u8,
         header: Option<&Bound<PyObjectClass>>,
+        low_priority: bool,
     ) -> PyResult<u64> {
         let header = header.map(|header| header.borrow().object_type.clone_py(py));
         let header_type = header_type(py, header.as_ref())?;
         let value_id = self
             .server
             .write()
-            .add_data_multi_take(&name, data_type, header_type)
+            .add_data_multi_take(&name, data_type, header_type, low_priority)
             .map_err(|e| PyValueError::new_err(format!("Failed to add DataMultiTake: {}", e)))?;
         self.keep_header_type(value_id, header);
         Ok(value_id)
@@ -1987,7 +2034,7 @@ mod tests {
         let id = Python::attach(|py| {
             let server = core.borrow(py);
             let id = server
-                .add_data_multi(py, "root.data".to_string(), 0, None)
+                .add_data_multi(py, "root.data".to_string(), 0, None, false)
                 .unwrap();
             server.finalize(py).unwrap();
             server.start(py, port, Some([127, 0, 0, 1]), None).unwrap();
@@ -2031,8 +2078,8 @@ mod tests {
                     Python::attach(|py| {
                         let server = core.borrow(py);
                         let data = PyBytes::new(py, &[1, 2, 3]);
-                        server.data_multi_set(py, id, 0, data.as_any(), false, None)?;
-                        server.data_multi_set(py, id, 0, data.as_any(), false, None)
+                        server.data_multi_set(py, id, 0, data.as_any(), false, None, false)?;
+                        server.data_multi_set(py, id, 0, data.as_any(), false, None, false)
                     })
                 })
             };

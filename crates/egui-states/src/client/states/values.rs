@@ -111,32 +111,6 @@ pub(crate) trait UpdateValueTake: Sync + Send {
     fn disconnected(&self);
 }
 
-/// Selects how server callbacks buffer signaled client changes.
-pub trait GetQueueType: Sync + Send + 'static {
-    /// Returns whether every pending change should be queued.
-    fn is_queue() -> bool;
-}
-
-/// Coalescing mode: callbacks receive only the latest pending signaled change.
-pub struct NoQueue;
-
-impl GetQueueType for NoQueue {
-    #[inline]
-    fn is_queue() -> bool {
-        false
-    }
-}
-
-/// Queue mode: callbacks receive every signaled change in arrival order.
-pub struct Queue;
-
-impl GetQueueType for Queue {
-    #[inline]
-    fn is_queue() -> bool {
-        true
-    }
-}
-
 /// What all clones of a value handle share, in one allocation.
 struct Shared<V> {
     name: String,
@@ -162,8 +136,9 @@ impl<V> Shared<V> {
 /// A bidirectional synchronized value.
 ///
 /// Client writes update the local copy immediately and are sent to the server.
-/// `Q` controls how server-side callbacks process changes produced by
-/// [`Self::set_signal`] or [`Self::write_signal`].
+/// By default, server callbacks receive only the latest of the changes
+/// [`Self::set_signal`] and [`Self::write_signal`] produce while they are busy;
+/// a field marked `#[state(queue)]` receives every change in arrival order.
 ///
 /// The server wins concurrent writes. A client write that reaches the server
 /// before the client has acknowledged the server's latest write to this value
@@ -176,12 +151,11 @@ impl<V> Shared<V> {
 /// oversized in-place [`Self::write`] keeps the local edit but cannot send it,
 /// so the peers remain out of sync until a later successful write or server
 /// update.
-pub struct Value<T, Q: GetQueueType = NoQueue> {
+pub struct Value<T> {
     shared: Arc<Shared<RwLock<T>>>,
-    _phantom: PhantomData<Q>,
 }
 
-impl<T, Q: GetQueueType> Value<T, Q>
+impl<T> Value<T>
 where
     T: Serialize + Clone,
 {
@@ -194,7 +168,6 @@ where
     ) -> Self {
         Self {
             shared: Shared::new(name, id, type_id, RwLock::new(value), sender),
-            _phantom: PhantomData,
         }
     }
 
@@ -295,9 +268,7 @@ where
     }
 }
 
-impl<T: for<'a> Deserialize<'a> + Send + Sync, Q: GetQueueType + Send + Sync> UpdateValue
-    for Value<T, Q>
-{
+impl<T: for<'a> Deserialize<'a> + Send + Sync> UpdateValue for Value<T> {
     fn update_value(&self, type_id: u32, data: &[u8]) -> Result<(), String> {
         if type_id != self.shared.type_id {
             self.shared.sender.send(ChannelMessage::Ack(self.shared.id));
@@ -316,11 +287,10 @@ impl<T: for<'a> Deserialize<'a> + Send + Sync, Q: GetQueueType + Send + Sync> Up
     }
 }
 
-impl<T, Q: GetQueueType> Clone for Value<T, Q> {
+impl<T> Clone for Value<T> {
     fn clone(&self) -> Self {
         Self {
             shared: self.shared.clone(),
-            _phantom: PhantomData,
         }
     }
 }
@@ -331,13 +301,13 @@ impl<T, Q: GetQueueType> Clone for Value<T, Q> {
 /// f32)`, and `[f32; 2]`. Custom [`Atomic`] implementations must preserve the
 /// synchronization and size guarantees documented by that unsafe trait.
 ///
-/// Concurrent writes follow the same rule as [`Value`]: the server wins.
-pub struct ValueAtomic<T: Atomic, Q: GetQueueType = NoQueue> {
+/// Concurrent writes and `#[state(queue)]` follow the same rules as
+/// [`Value`]: the server wins.
+pub struct ValueAtomic<T: Atomic> {
     shared: Arc<Shared<T::Lock>>,
-    _phantom: PhantomData<Q>,
 }
 
-impl<T, Q: GetQueueType> ValueAtomic<T, Q>
+impl<T> ValueAtomic<T>
 where
     T: Serialize + Clone + Atomic,
 {
@@ -350,7 +320,6 @@ where
     ) -> Self {
         Self {
             shared: Shared::new(name, id, type_id, T::Lock::new(value), sender),
-            _phantom: PhantomData,
         }
     }
 
@@ -386,9 +355,7 @@ where
     }
 }
 
-impl<T: for<'a> Deserialize<'a> + Atomic + Send + Sync, Q: GetQueueType + Send + Sync> UpdateValue
-    for ValueAtomic<T, Q>
-{
+impl<T: for<'a> Deserialize<'a> + Atomic + Send + Sync> UpdateValue for ValueAtomic<T> {
     fn update_value(&self, type_id: u32, data: &[u8]) -> Result<(), String> {
         if type_id != self.shared.type_id {
             self.shared.sender.send(ChannelMessage::Ack(self.shared.id));
@@ -410,11 +377,10 @@ impl<T: for<'a> Deserialize<'a> + Atomic + Send + Sync, Q: GetQueueType + Send +
     }
 }
 
-impl<T: Atomic, Q: GetQueueType> Clone for ValueAtomic<T, Q> {
+impl<T: Atomic> Clone for ValueAtomic<T> {
     fn clone(&self) -> Self {
         Self {
             shared: self.shared.clone(),
-            _phantom: PhantomData,
         }
     }
 }
@@ -530,14 +496,15 @@ impl<T: AtomicStatic> Clone for StaticAtomic<T> {
 // Signal --------------------------------------------
 /// A client-to-server event carrying a value without storing it.
 ///
-/// `Q` controls whether server callbacks queue every event or coalesce pending
-/// events to the latest one.
-pub struct Signal<T, Q: GetQueueType = NoQueue> {
+/// By default, server callbacks receive only the latest of the events sent
+/// while they are busy; a field marked `#[state(queue)]` receives every event
+/// in arrival order.
+pub struct Signal<T> {
     shared: Arc<Shared<()>>,
-    phantom: PhantomData<(T, Q)>,
+    phantom: PhantomData<T>,
 }
 
-impl<T: Serialize + Clone, Q: GetQueueType> Signal<T, Q> {
+impl<T: Serialize + Clone> Signal<T> {
     pub(crate) fn new(name: String, id: u64, type_id: u32, sender: MessageSender) -> Self {
         Self {
             shared: Shared::new(name, id, type_id, (), sender),
@@ -568,7 +535,7 @@ impl<T: Serialize + Clone, Q: GetQueueType> Signal<T, Q> {
     }
 }
 
-impl<T, Q: GetQueueType> Clone for Signal<T, Q> {
+impl<T> Clone for Signal<T> {
     fn clone(&self) -> Self {
         Self {
             shared: self.shared.clone(),

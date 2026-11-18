@@ -74,8 +74,14 @@ pub struct Image {
 
 impl Image {
     /// Registers an empty image under `name`.
-    pub fn new(server: &StateServer, name: impl Into<String>) -> Result<Self> {
-        let (_, inner) = server.add_image(name.into())?;
+    ///
+    /// With `low_priority`, its transfers use the low-priority lane: they are
+    /// sent only while no other state has a message waiting, and only a
+    /// window of their data is on the way at a time. Small states then do
+    /// not wait behind its transfers, but a change of another state made
+    /// after a change of this one can reach the client first.
+    pub fn new(server: &StateServer, name: impl Into<String>, low_priority: bool) -> Result<Self> {
+        let (_, inner) = server.add_image(name.into(), low_priority)?;
         Ok(Self { inner })
     }
 
@@ -89,10 +95,30 @@ impl Image {
         self.inner.get_image(|(data, size)| (data.clone(), *size))
     }
 
+    /// Returns whether nothing is being sent and nothing waits, so the next
+    /// [`set`](Self::set), [`set_all`](Self::set_all) or
+    /// [`update`](Self::update) is sent without waiting.
+    ///
+    /// Also true while no client is connected, because a change is then only
+    /// stored. Producers that want the freshest image on a slow link can skip
+    /// a frame while this is false.
+    pub fn is_idle(&self) -> bool {
+        self.inner.is_idle()
+    }
+
     /// Replaces the complete image.
     ///
     /// `size` is `[height, width]`; `data` must contain exactly the number of
     /// bytes implied by `size` and `format`. `update` requests a client repaint.
+    /// The client shows the new image only once all of it has arrived.
+    ///
+    /// One transfer of this image is sent at a time: the call blocks until
+    /// the previous one has been acknowledged by the client, then queues the
+    /// image and returns. The unsent parts of a split [`update`](Self::update)
+    /// are dropped first, because this image overwrites them. With `wait`,
+    /// the call returns only once the client has acknowledged this image, or
+    /// the connection has ended; it does not tell the two apart, and without
+    /// a client it does not wait.
     ///
     /// # Errors
     ///
@@ -105,11 +131,12 @@ impl Image {
         size: [usize; 2],
         format: ImageFormat,
         update: bool,
+        wait: bool,
     ) -> Result<()> {
         self.check_image_data(data, size, format)?;
         let image = ImageData::packed(data, size, format.image_type());
         self.inner
-            .set_image(image, update)
+            .set_image(image, update, wait)
             .map_err(ServerError::new)
     }
 
@@ -117,28 +144,51 @@ impl Image {
     ///
     /// `shape` is `[height, width]`. When a client is connected, this sends only
     /// a compact header; the server still retains the complete RGBA image for
-    /// subsequent reads, updates, and connection synchronization.
+    /// subsequent reads, updates, and connection synchronization. It is
+    /// scheduled like [`set`](Self::set), including `wait`.
     ///
     /// # Errors
     ///
     /// Returns an error for zero dimensions, dimensions exceeding 65,536 pixels,
     /// overflowing dimensions, or when the update cannot be queued.
-    pub fn set_all(&self, shape: [usize; 2], color: ImageColor, update: bool) -> Result<()> {
+    pub fn set_all(
+        &self,
+        shape: [usize; 2],
+        color: ImageColor,
+        update: bool,
+        wait: bool,
+    ) -> Result<()> {
         self.inner
-            .set_all_image(shape, color.rgba(), update)
+            .set_all_image(shape, color.rgba(), update, wait)
             .map_err(ServerError::new)
     }
 
     /// Replaces a rectangular image region.
     ///
-    /// `origin` and `size` are `[y, x]` and `[height, width]`. With `force`, a
-    /// pending update for the same region may be replaced by this one.
+    /// `origin` and `size` are `[y, x]` and `[height, width]`. Without
+    /// `max_lines`, the client applies the whole rectangle at once. With
+    /// `max_lines`, the rectangle is sent as parts of at most that many rows
+    /// from the top; the client applies each part as it arrives, and `update`
+    /// requests a repaint after every part.
+    ///
+    /// Like [`set`](Self::set), the call blocks until the previous transfer
+    /// has been acknowledged, then queues the update and returns. A split
+    /// update queues only its first part; each further part is sent when the
+    /// client has acknowledged the one before, so later changes of other
+    /// states can reach the client before them, and the next call of this
+    /// image waits until the last part has been acknowledged. With `force`,
+    /// the call first drops the unsent parts of the previous split update
+    /// when this rectangle covers its rectangle; the part being sent always
+    /// completes. With `wait`, the call returns only once the client has
+    /// acknowledged the last part of this update, or the connection has
+    /// ended.
     ///
     /// # Errors
     ///
     /// Returns an error if the rectangle lies outside the current image, a
     /// dimension is zero, its dimensions exceed 65,536 pixels or overflow, its
-    /// data length is invalid, or it cannot be queued.
+    /// data length is invalid, `max_lines` is zero, or it cannot be queued.
+    #[allow(clippy::too_many_arguments)]
     pub fn update(
         &self,
         data: &[u8],
@@ -147,11 +197,13 @@ impl Image {
         format: ImageFormat,
         update: bool,
         force: bool,
+        max_lines: Option<usize>,
+        wait: bool,
     ) -> Result<()> {
         self.check_image_data(data, size, format)?;
         let image = ImageData::packed(data, size, format.image_type());
         self.inner
-            .update_image(&origin, image, update, force)
+            .update_image(&origin, image, update, force, max_lines, wait)
             .map_err(ServerError::new)
     }
 
@@ -182,9 +234,11 @@ pub struct ImageMulti {
 }
 
 impl ImageMulti {
-    /// Registers an empty keyed image collection under `name`.
-    pub fn new(server: &StateServer, name: impl Into<String>) -> Result<Self> {
-        let (_, inner) = server.add_image_multi(name.into())?;
+    /// Registers an empty keyed image collection under `name`. With
+    /// `low_priority`, its transfers use the low-priority lane, as described
+    /// at [`Image::new`].
+    pub fn new(server: &StateServer, name: impl Into<String>, low_priority: bool) -> Result<Self> {
+        let (_, inner) = server.add_image_multi(name.into(), low_priority)?;
         Ok(Self { inner })
     }
 
@@ -220,7 +274,19 @@ impl ImageMulti {
         self.inner.indices()
     }
 
+    /// Returns whether nothing is being sent and nothing waits for any
+    /// index, as [`Image::is_idle`].
+    pub fn is_idle(&self) -> bool {
+        self.inner.is_idle()
+    }
+
     /// Creates or replaces the complete image at `index`.
+    ///
+    /// All indices share one transfer stream, so this waits for the previous
+    /// transfer of any index, as [`Image::set`] does. Only unsent parts of a
+    /// split update of the same `index` are dropped. With `wait`, the call
+    /// returns only once the client has acknowledged this image, or the
+    /// connection has ended.
     pub fn set(
         &self,
         index: u32,
@@ -228,6 +294,7 @@ impl ImageMulti {
         size: [usize; 2],
         format: ImageFormat,
         update: bool,
+        wait: bool,
     ) -> Result<()> {
         check_image_multi_data(data, size, format)?;
         self.inner
@@ -235,28 +302,32 @@ impl ImageMulti {
                 index,
                 ImageData::packed(data, size, format.image_type()),
                 update,
+                wait,
             )
             .map_err(ServerError::new)
     }
 
-    /// Creates or replaces the image at `index` with one uniform color.
+    /// Creates or replaces the image at `index` with one uniform color. It is
+    /// scheduled like [`set`](Self::set), including `wait`.
     pub fn set_all(
         &self,
         index: u32,
         shape: [usize; 2],
         color: ImageColor,
         update: bool,
+        wait: bool,
     ) -> Result<()> {
         self.inner
-            .set_all_image(index, shape, color.rgba(), update)
+            .set_all_image(index, shape, color.rgba(), update, wait)
             .map_err(ServerError::new)
     }
 
     /// Replaces a rectangular region of the existing image at `index`.
     ///
-    /// With `force`, a buffered update may be replaced only when it targets the
-    /// same `index` and rectangle. Updates for other indices remain ordered and
-    /// are never dropped.
+    /// `max_lines`, `force` and `wait` work as in [`Image::update`]. With
+    /// `force`, waiting parts are dropped only when they belong to the same
+    /// `index` and this rectangle covers their rectangle; parts of other
+    /// indices are never dropped.
     #[allow(clippy::too_many_arguments)]
     pub fn update(
         &self,
@@ -267,6 +338,8 @@ impl ImageMulti {
         format: ImageFormat,
         update: bool,
         force: bool,
+        max_lines: Option<usize>,
+        wait: bool,
     ) -> Result<()> {
         check_image_multi_data(data, size, format)?;
         self.inner
@@ -276,11 +349,16 @@ impl ImageMulti {
                 ImageData::packed(data, size, format.image_type()),
                 update,
                 force,
+                max_lines,
+                wait,
             )
             .map_err(ServerError::new)
     }
 
     /// Removes `index`; an absent index is a no-op.
+    ///
+    /// Unsent parts of a split update of `index` are dropped, then the call
+    /// waits until nothing is in flight before it queues the removal.
     pub fn remove_index(&self, index: u32, update: bool) -> Result<()> {
         self.inner
             .remove_index(index, update)
@@ -288,6 +366,9 @@ impl ImageMulti {
     }
 
     /// Removes all image keys.
+    ///
+    /// Unsent parts of a split update are dropped, then the call waits until
+    /// nothing is in flight before it queues the reset.
     pub fn reset(&self, update: bool) -> Result<()> {
         self.inner.reset_images(update).map_err(ServerError::new)
     }
@@ -317,36 +398,78 @@ mod tests {
     #[test]
     fn public_images_enforce_the_inclusive_shape_limit() {
         let server = StateServer::new().unwrap();
-        let image = Image::new(&server, "root.image").unwrap();
-        let images = ImageMulti::new(&server, "root.images").unwrap();
+        let image = Image::new(&server, "root.image", false).unwrap();
+        let images = ImageMulti::new(&server, "root.images", false).unwrap();
         for shape in [[65_536, 1], [1, 65_536]] {
             let data = vec![7; 65_536];
-            image.set(&data, shape, ImageFormat::Gray, false).unwrap();
-            images
-                .set(7, &data, shape, ImageFormat::Gray, false)
+            image
+                .set(&data, shape, ImageFormat::Gray, false, false)
                 .unwrap();
-            image.set_all(shape, ImageColor::Gray(9), false).unwrap();
             images
-                .set_all(7, shape, ImageColor::Gray(9), false)
+                .set(7, &data, shape, ImageFormat::Gray, false, false)
+                .unwrap();
+            image
+                .set_all(shape, ImageColor::Gray(9), false, false)
+                .unwrap();
+            images
+                .set_all(7, shape, ImageColor::Gray(9), false, false)
                 .unwrap();
             let origin = [shape[0] - 1, shape[1] - 1];
             image
-                .update(&[8], origin, [1, 1], ImageFormat::Gray, false, false)
+                .update(
+                    &[8],
+                    origin,
+                    [1, 1],
+                    ImageFormat::Gray,
+                    false,
+                    false,
+                    None,
+                    false,
+                )
                 .unwrap();
             images
-                .update(7, &[8], origin, [1, 1], ImageFormat::Gray, false, false)
+                .update(
+                    7,
+                    &[8],
+                    origin,
+                    [1, 1],
+                    ImageFormat::Gray,
+                    false,
+                    false,
+                    None,
+                    false,
+                )
                 .unwrap();
             assert_eq!(image.shape(), shape);
             assert_eq!(images.shape(7), Some(shape));
             let before = image.get();
             for oversized in [[65_537, 1], [1, 65_537]] {
                 for result in [
-                    image.set(&[], oversized, ImageFormat::Gray, false),
-                    images.set(9, &[], oversized, ImageFormat::Gray, false),
-                    image.set_all(oversized, ImageColor::Gray(0), false),
-                    images.set_all(9, oversized, ImageColor::Gray(0), false),
-                    image.update(&[], [0, 0], oversized, ImageFormat::Gray, false, false),
-                    images.update(7, &[], [0, 0], oversized, ImageFormat::Gray, false, false),
+                    image.set(&[], oversized, ImageFormat::Gray, false, false),
+                    images.set(9, &[], oversized, ImageFormat::Gray, false, false),
+                    image.set_all(oversized, ImageColor::Gray(0), false, false),
+                    images.set_all(9, oversized, ImageColor::Gray(0), false, false),
+                    image.update(
+                        &[],
+                        [0, 0],
+                        oversized,
+                        ImageFormat::Gray,
+                        false,
+                        false,
+                        None,
+                        false,
+                    ),
+                    images.update(
+                        7,
+                        &[],
+                        [0, 0],
+                        oversized,
+                        ImageFormat::Gray,
+                        false,
+                        false,
+                        None,
+                        false,
+                    ),
                 ] {
                     assert!(result.unwrap_err().to_string().contains("65536"));
                 }
@@ -354,12 +477,31 @@ mod tests {
             for origin in [[65_536, 0], [0, 65_536], [usize::MAX, 0], [0, usize::MAX]] {
                 assert!(
                     image
-                        .update(&[0], origin, [1, 1], ImageFormat::Gray, false, false)
+                        .update(
+                            &[0],
+                            origin,
+                            [1, 1],
+                            ImageFormat::Gray,
+                            false,
+                            false,
+                            None,
+                            false
+                        )
                         .is_err()
                 );
                 assert!(
                     images
-                        .update(7, &[0], origin, [1, 1], ImageFormat::Gray, false, false)
+                        .update(
+                            7,
+                            &[0],
+                            origin,
+                            [1, 1],
+                            ImageFormat::Gray,
+                            false,
+                            false,
+                            None,
+                            false,
+                        )
                         .is_err()
                 );
             }
@@ -380,10 +522,16 @@ mod tests {
     #[test]
     fn image_converts_to_rgba_and_updates() {
         let server = StateServer::new().unwrap();
-        let image = Image::new(&server, "root.image").unwrap();
+        let image = Image::new(&server, "root.image", false).unwrap();
 
         image
-            .set(&[10, 20, 30, 40, 50, 60], [1, 2], ImageFormat::Color, false)
+            .set(
+                &[10, 20, 30, 40, 50, 60],
+                [1, 2],
+                ImageFormat::Color,
+                false,
+                false,
+            )
             .unwrap();
         assert_eq!(image.shape(), [1, 2]);
         assert_eq!(image.get().0, vec![10, 20, 30, 255, 40, 50, 60, 255]);
@@ -396,6 +544,8 @@ mod tests {
                 ImageFormat::GrayAlpha,
                 false,
                 false,
+                None,
+                false,
             )
             .unwrap();
         assert_eq!(image.get().0, vec![7, 7, 7, 8, 40, 50, 60, 255]);
@@ -404,16 +554,16 @@ mod tests {
     #[test]
     fn image_rejects_invalid_and_overflowing_dimensions() {
         let server = StateServer::new().unwrap();
-        let image = Image::new(&server, "root.image").unwrap();
+        let image = Image::new(&server, "root.image", false).unwrap();
 
         assert!(
             image
-                .set(&[], [1, 1], ImageFormat::ColorAlpha, false)
+                .set(&[], [1, 1], ImageFormat::ColorAlpha, false, false)
                 .is_err()
         );
         assert!(
             image
-                .set(&[], [usize::MAX, 2], ImageFormat::ColorAlpha, false)
+                .set(&[], [usize::MAX, 2], ImageFormat::ColorAlpha, false, false)
                 .is_err()
         );
     }
@@ -423,18 +573,27 @@ mod tests {
     #[test]
     fn image_update_outside_the_image_is_rejected_without_changes() {
         let server = StateServer::new().unwrap();
-        let image = Image::new(&server, "root.image").unwrap();
+        let image = Image::new(&server, "root.image", false).unwrap();
 
         // Nothing has been set yet, so every rectangle is outside the image.
         assert!(
             image
-                .update(&[1], [0, 0], [1, 1], ImageFormat::Gray, false, false)
+                .update(
+                    &[1],
+                    [0, 0],
+                    [1, 1],
+                    ImageFormat::Gray,
+                    false,
+                    false,
+                    None,
+                    false
+                )
                 .is_err()
         );
         assert_eq!(image.shape(), [0, 0]);
 
         image
-            .set(&[1, 2, 3, 4, 5, 6], [2, 3], ImageFormat::Gray, false)
+            .set(&[1, 2, 3, 4, 5, 6], [2, 3], ImageFormat::Gray, false, false)
             .unwrap();
         let before = image.get();
         for (origin, size) in [
@@ -449,7 +608,16 @@ mod tests {
             let data = vec![9; size[0] * size[1]];
             assert!(
                 image
-                    .update(&data, origin, size, ImageFormat::Gray, false, false)
+                    .update(
+                        &data,
+                        origin,
+                        size,
+                        ImageFormat::Gray,
+                        false,
+                        false,
+                        None,
+                        false
+                    )
                     .is_err(),
                 "accepted {size:?} at {origin:?}"
             );
@@ -462,7 +630,16 @@ mod tests {
 
         // The last row and column are still inside.
         image
-            .update(&[9], [1, 2], [1, 1], ImageFormat::Gray, false, false)
+            .update(
+                &[9],
+                [1, 2],
+                [1, 1],
+                ImageFormat::Gray,
+                false,
+                false,
+                None,
+                false,
+            )
             .unwrap();
         assert_eq!(&image.get().0[20..24], &[9, 9, 9, 255]);
     }
@@ -470,27 +647,31 @@ mod tests {
     #[test]
     fn image_set_all_materializes_rgba_data() {
         let server = StateServer::new().unwrap();
-        let image = Image::new(&server, "root.image").unwrap();
+        let image = Image::new(&server, "root.image", false).unwrap();
 
         image
-            .set_all([2, 3], ImageColor::GrayAlpha(7, 8), false)
+            .set_all([2, 3], ImageColor::GrayAlpha(7, 8), false, false)
             .unwrap();
 
         assert_eq!(image.shape(), [2, 3]);
         assert_eq!(image.get().0, [7, 7, 7, 8].repeat(6));
-        assert!(image.set_all([0, 3], ImageColor::Gray(0), false).is_err());
+        assert!(
+            image
+                .set_all([0, 3], ImageColor::Gray(0), false, false)
+                .is_err()
+        );
     }
 
     #[test]
     fn image_multi_sparse_operations_and_validation() {
         let server = StateServer::new().unwrap();
-        let images = ImageMulti::new(&server, "root.images").unwrap();
+        let images = ImageMulti::new(&server, "root.images", false).unwrap();
 
         assert!(images.is_empty());
         assert_eq!(images.get(7), None);
         assert!(
             images
-                .set(9, &[], [0, 1], ImageFormat::Gray, false)
+                .set(9, &[], [0, 1], ImageFormat::Gray, false, false)
                 .is_err()
         );
         assert!(!images.contains(9));
@@ -499,7 +680,7 @@ mod tests {
             let too_large = u32::MAX as usize + 1;
             assert!(
                 images
-                    .set(9, &[], [1, too_large], ImageFormat::Gray, false)
+                    .set(9, &[], [1, too_large], ImageFormat::Gray, false, false)
                     .unwrap_err()
                     .to_string()
                     .contains("65536")
@@ -508,7 +689,17 @@ mod tests {
         }
         assert!(
             images
-                .update(7, &[1], [0, 0], [1, 1], ImageFormat::Gray, false, false,)
+                .update(
+                    7,
+                    &[1],
+                    [0, 0],
+                    [1, 1],
+                    ImageFormat::Gray,
+                    false,
+                    false,
+                    None,
+                    false,
+                )
                 .is_err()
         );
 
@@ -519,10 +710,11 @@ mod tests {
                 [1, 2],
                 ImageFormat::Color,
                 false,
+                false,
             )
             .unwrap();
         images
-            .set_all(2, [2, 1], ImageColor::GrayAlpha(7, 8), false)
+            .set_all(2, [2, 1], ImageColor::GrayAlpha(7, 8), false, false)
             .unwrap();
         assert_eq!(images.len(), 2);
         assert_eq!(images.indices(), vec![2, 7]);
@@ -543,6 +735,8 @@ mod tests {
                 ImageFormat::GrayAlpha,
                 false,
                 false,
+                None,
+                false,
             )
             .unwrap();
         assert_eq!(images.get(7).unwrap().0, vec![10, 20, 30, 255, 9, 9, 9, 10]);
@@ -550,25 +744,45 @@ mod tests {
         let before = images.get(7).unwrap();
         assert!(
             images
-                .update(7, &[], [0, 0], [0, 1], ImageFormat::Gray, false, false,)
+                .update(
+                    7,
+                    &[],
+                    [0, 0],
+                    [0, 1],
+                    ImageFormat::Gray,
+                    false,
+                    false,
+                    None,
+                    false,
+                )
                 .is_err()
         );
         assert_eq!(images.get(7).unwrap(), before);
         assert!(
             images
-                .update(7, &[1], [1, 2], [1, 1], ImageFormat::Gray, false, false,)
+                .update(
+                    7,
+                    &[1],
+                    [1, 2],
+                    [1, 1],
+                    ImageFormat::Gray,
+                    false,
+                    false,
+                    None,
+                    false,
+                )
                 .is_err()
         );
         assert_eq!(images.get(7).unwrap(), before);
         assert!(
             images
-                .set(9, &[], [1, 1], ImageFormat::Color, false)
+                .set(9, &[], [1, 1], ImageFormat::Color, false, false)
                 .is_err()
         );
         assert!(!images.contains(9));
 
         images
-            .set_all(7, [1, 1], ImageColor::Color(1, 2, 3), false)
+            .set_all(7, [1, 1], ImageColor::Color(1, 2, 3), false, false)
             .unwrap();
         assert_eq!(images.len(), 2);
         assert_eq!(images.get(7).unwrap().0, vec![1, 2, 3, 255]);

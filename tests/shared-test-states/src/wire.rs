@@ -1,7 +1,7 @@
 //! Value shapes that only the wire scenarios exchange between peers.
 use std::collections::HashMap;
 
-use egui_states::{Queue, Signal, Static, Value};
+use egui_states::{Signal, Static, Value};
 
 use crate::sections::{TestEnum, TestEnum2, TestStruct2};
 
@@ -18,5 +18,6 @@ pub struct WireTypeStates {
     pub keyed_enum: Value<HashMap<TestEnum, u32>>,
     pub optional_enum: Value<Option<TestEnum2>>,
     pub bytes: Static<Vec<u8>>,
-    pub pair_signal: Signal<(f32, TestEnum), Queue>,
+    #[state(queue)]
+    pub pair_signal: Signal<(f32, TestEnum)>,
 }

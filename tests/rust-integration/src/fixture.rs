@@ -29,12 +29,12 @@ fn edit_headers(all: &State, command: u32) -> s::Result<()> {
     let h = &all.headers;
     if command == 35 {
         h.series
-            .set_with_header(&[1.0, 2.0], &meta(1.5, "series", &[3]), false)?;
-        h.series.add(&[3.0], false)?;
+            .set_with_header(&[1.0, 2.0], &meta(1.5, "series", &[3]), false, false)?;
+        h.series.add(&[3.0], false, false)?;
         h.keyed
-            .set_with_header(1, &[7], &meta(1.0, "first", &[1]), false)?;
+            .set_with_header(1, &[7], &meta(1.0, "first", &[1]), false, false)?;
         h.keyed
-            .set_with_header(2, &[8], &meta(2.0, "keyed", &[1]), false)?;
+            .set_with_header(2, &[8], &meta(2.0, "keyed", &[1]), false, false)?;
         h.keyed.set_header(2, &meta(3.0, "renamed", &[]), false)?;
         h.take
             .set_with_header(&[5], &meta(0.5, "take", &[1]), false, false, true)?;
@@ -47,7 +47,7 @@ fn edit_headers(all: &State, command: u32) -> s::Result<()> {
             false,
         )?;
         h.transient
-            .set_with_header(&[9], &meta(9.0, "transient", &[1]), false)?;
+            .set_with_header(&[9], &meta(9.0, "transient", &[1]), false, false)?;
         return Ok(());
     }
     h.series.clear(false)?;
@@ -228,50 +228,65 @@ fn edit_collections(all: &State) -> s::Result<()> {
 /// Command 33: numeric edits and the limits of every element type.
 fn edit_numeric(all: &State) -> s::Result<()> {
     let d = &all.data;
-    d.bytes.set(&[1, 2, 3, 4, 5], false)?;
-    d.bytes.add(&[6], false)?;
-    d.bytes.replace(&[20, 30], 1, false)?;
-    d.bytes.remove(0, 1, false)?;
-    d.samples.set(&[-1.5, 0.25], false)?;
-    d.nested.buffer.set(&[1, 2, 3], false)?;
+    d.bytes.set(&[1, 2, 3, 4, 5], false, false)?;
+    d.bytes.add(&[6], false, false)?;
+    d.bytes.replace(&[20, 30], 1, false, false)?;
+    d.bytes.remove(0, 1, false, false)?;
+    d.samples.set(&[-1.5, 0.25], false, false)?;
+    d.nested.buffer.set(&[1, 2, 3], false, false)?;
     d.nested.buffer.clear(false)?;
     let n = &all.numeric;
-    n.u8_data.set(&[u8::MIN, 0, u8::MAX], false)?;
-    n.i8_data.set(&[i8::MIN, 0, i8::MAX], false)?;
-    n.u16_data.set(&[u16::MIN, 0, u16::MAX], false)?;
-    n.i16_data.set(&[i16::MIN, 0, i16::MAX], false)?;
-    n.u32_data.set(&[u32::MIN, 0, u32::MAX], false)?;
-    n.i32_data.set(&[i32::MIN, 0, i32::MAX], false)?;
-    n.u64_data.set(&[u64::MIN, 0, u64::MAX], false)?;
-    n.i64_data.set(&[i64::MIN, 0, i64::MAX], false)?;
-    n.f32_data.set(&[f32::MIN, 0.0, f32::MAX], false)?;
-    n.f64_data.set(&[f64::MIN, 0.0, f64::MAX], false)?;
+    n.u8_data.set(&[u8::MIN, 0, u8::MAX], false, false)?;
+    n.i8_data.set(&[i8::MIN, 0, i8::MAX], false, false)?;
+    n.u16_data.set(&[u16::MIN, 0, u16::MAX], false, false)?;
+    n.i16_data.set(&[i16::MIN, 0, i16::MAX], false, false)?;
+    n.u32_data.set(&[u32::MIN, 0, u32::MAX], false, false)?;
+    n.i32_data.set(&[i32::MIN, 0, i32::MAX], false, false)?;
+    n.u64_data.set(&[u64::MIN, 0, u64::MAX], false, false)?;
+    n.i64_data.set(&[i64::MIN, 0, i64::MAX], false, false)?;
+    n.f32_data.set(&[f32::MIN, 0.0, f32::MAX], false, false)?;
+    n.f64_data.set(&[f64::MIN, 0.0, f64::MAX], false, false)?;
     let m = &all.multi_data;
-    m.bytes.set(1, &[1, 2], false)?;
-    m.bytes.add(1, &[3], false)?;
-    m.bytes.set(2, &[9], false)?;
+    m.bytes.set(1, &[1, 2], false, false)?;
+    m.bytes.add(1, &[3], false, false)?;
+    m.bytes.set(2, &[9], false, false)?;
     m.bytes.remove_index(2, false)?;
-    m.samples.set(7, &[0.5], false)?;
-    m.nested.buffer.set(3, &[4, 5], false)?;
-    m.nested.buffer.replace(3, 1, &[6], false)
+    m.samples.set(7, &[0.5], false, false)?;
+    m.nested.buffer.set(3, &[4, 5], false, false)?;
+    m.nested.buffer.replace(3, 1, &[6], false, false)
 }
 
-/// Command 34: a full image, a partial update, and sparse images.
+/// Command 34: a full image, partial updates, and sparse images. The first
+/// set returns once the client acknowledged it. The split update finishes
+/// before the remove, which waits for every acknowledgement.
 fn edit_images(all: &State) -> s::Result<()> {
     let pixels: Vec<u8> = (0..18).collect();
     let image = &all.image.image;
-    image.set(&pixels, [2, 3], s::ImageFormat::Color, false)?;
+    image.set(&pixels, [2, 3], s::ImageFormat::Color, false, true)?;
     image.update(
         &[200, 201, 202, 210, 211, 212],
         [1, 1],
         [1, 2],
         s::ImageFormat::Color,
         false,
+        true,
+        None,
         false,
     )?;
     let images = &all.image.images;
-    images.set(2, &[9], [1, 1], s::ImageFormat::Gray, false)?;
-    images.set_all(7, [2, 2], s::ImageColor::Color(1, 2, 3), false)?;
+    images.set(2, &[9], [1, 1], s::ImageFormat::Gray, false, false)?;
+    images.set_all(7, [2, 2], s::ImageColor::Color(1, 2, 3), false, false)?;
+    images.update(
+        7,
+        &[4, 5, 6].repeat(4),
+        [0, 0],
+        [2, 2],
+        s::ImageFormat::Color,
+        false,
+        false,
+        Some(1),
+        false,
+    )?;
     images.remove_index(2, false)
 }
 

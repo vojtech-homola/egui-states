@@ -717,6 +717,12 @@ impl ClientCore {
     pub(crate) fn send_ack(&self, id: u64) {
         self.0.sender.send_ack(id);
     }
+
+    /// Answers a mark of the server's low-priority lane.
+    #[inline]
+    pub(crate) fn lane_ack(&self) {
+        self.0.sender.send(ChannelMessage::LaneAck);
+    }
 }
 
 /// Owns the background task; dropping it shuts the task down.

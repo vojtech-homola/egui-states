@@ -648,8 +648,8 @@ fn rgba(texture: &egui::ColorImage) -> Vec<[u8; 4]> {
         .collect()
 }
 
-/// Server images reach the client textures, including partial updates and
-/// sparse key removal. The client creates its textures from the server's
+/// Server images reach the client textures, including partial updates, an
+/// update split into parts, and sparse key removal. The client creates its textures from the server's
 /// images, with no setup before connecting. The servers use opaque pixels
 /// only.
 fn images_wire(port: u16) {
@@ -680,7 +680,7 @@ fn images_wire(port: u16) {
         ]
     );
     let sparse = &textures[&state.image.images.get_id(7).unwrap()];
-    assert_eq!(rgba(sparse), [[1, 2, 3, 255]; 4]);
+    assert_eq!(rgba(sparse), [[4, 5, 6, 255]; 4]);
 }
 
 /// A second client replaces the first one, which observes the disconnect and

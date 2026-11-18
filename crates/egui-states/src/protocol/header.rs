@@ -29,6 +29,10 @@ pub(crate) enum ServerHeader {
     /// The window and the chunk size of file transfers on this connection, in
     /// bytes. The first message of every connection.
     TransferLimits(u32, u32),
+    /// Follows every frame of the low-priority lane. The client answers with
+    /// [`ClientHeader::LaneAck`] once it has handled everything before it,
+    /// which returns that frame's bytes to the lane's window.
+    LaneMark,
     /// The server asks its connect-request callback whether to accept the
     /// client and answers within this many milliseconds. Sent before any
     /// other message; it does not mean the client is accepted.
@@ -44,6 +48,8 @@ pub(crate) enum ClientHeader {
     Handshake(u16, Option<u64>, Option<String>),
     /// A file transfer frame: endpoint id, frame, payload length.
     Transfer(u64, TransferFrame, u32),
+    /// Answers the oldest unanswered [`ServerHeader::LaneMark`].
+    LaneAck,
 }
 
 #[cfg(test)]
@@ -100,6 +106,7 @@ mod tests {
             ServerHeader::ImageMulti(1, ImageMultiHeader::Reset(false)),
             ServerHeader::Transfer(1, TransferFrame::Reject { serial: 0 }, 0),
             ServerHeader::TransferLimits(1, 1),
+            ServerHeader::LaneMark,
             ServerHeader::ConnectPending(1),
         ];
         for (index, header) in server.iter().enumerate() {
@@ -118,6 +125,7 @@ mod tests {
             ClientHeader::Message(0),
             ClientHeader::Handshake(1, None, None),
             ClientHeader::Transfer(1, TransferFrame::Reject { serial: 0 }, 0),
+            ClientHeader::LaneAck,
         ];
         for (index, header) in client.iter().enumerate() {
             let data: FastVec<32> = serialize(header).unwrap();
@@ -162,7 +170,7 @@ mod tests {
             DataHeader, DataMultiTakeHeader, DataTakeHeader, DataType, HeaderBytes, HeaderUpdate,
             MultiDataHeader, TransportType,
         };
-        use crate::protocol::image::{ImageSetHeader, ImageType};
+        use crate::protocol::image::{ImageSetHeader, ImageType, ImageUpdateHeader};
 
         let header = HeaderBytes {
             type_id: 0,
@@ -249,10 +257,19 @@ mod tests {
             ],
         );
         assert_tags(
+            "ImageUpdateHeader",
+            &[
+                ImageUpdateHeader::All([0; 4], false),
+                ImageUpdateHeader::Start([0; 4], 0),
+                ImageUpdateHeader::Batch(0),
+                ImageUpdateHeader::End(0, false),
+            ],
+        );
+        assert_tags(
             "ImageHeader",
             &[
                 ImageHeader::Set(ImageSetHeader::Batch(0), ImageType::Color),
-                ImageHeader::Update([0; 4], ImageType::Color, false),
+                ImageHeader::Update(ImageUpdateHeader::Batch(0), ImageType::Color),
                 ImageHeader::Fill([0; 2], [0; 4], false),
             ],
         );
@@ -298,7 +315,7 @@ mod tests {
             DataHeader, DataMultiTakeHeader, DataTakeHeader, DataType, HeaderBytes, HeaderUpdate,
             MultiDataHeader, TransportType,
         };
-        use crate::protocol::image::{ImageSetHeader, ImageType};
+        use crate::protocol::image::{ImageSetHeader, ImageType, ImageUpdateHeader};
 
         fn bytes<T: Serialize>(value: &T) -> Vec<u8> {
             contents(&serialize::<T, 64>(value).unwrap())
@@ -406,11 +423,14 @@ mod tests {
                 5,
                 ImageMultiHeader::Modify(
                     1,
-                    ImageHeader::Update([0, 1, 2, 3], ImageType::ColorAlpha, true),
+                    ImageHeader::Update(
+                        ImageUpdateHeader::All([0, 1, 2, 3], true),
+                        ImageType::ColorAlpha
+                    ),
                     24
                 )
             )),
-            [11, 5, 1, 1, 1, 0, 1, 2, 3, 1, 1, 24]
+            [11, 5, 1, 1, 1, 0, 0, 1, 2, 3, 1, 1, 24]
         );
         assert_eq!(
             bytes(&ServerHeader::ValueVec(

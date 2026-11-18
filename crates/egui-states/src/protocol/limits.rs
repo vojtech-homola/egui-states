@@ -1,15 +1,24 @@
 //! Size limits both peers apply.
 
 // TODO: make these constants configurable
+/// The largest serialized value of a state.
 pub(crate) const VALUE_MAX_SIZE: usize = 1024 * 1024; // 1 MB
-pub(crate) const MSG_SIZE_THRESHOLD: usize = 1024 * 1024 * 10; // 10 MB
+/// The largest WebSocket frame and message a peer accepts.
 #[cfg(any(
     all(feature = "client", not(target_arch = "wasm32")),
     feature = "server",
     feature = "python"
 ))]
-pub(crate) const WEBSOCKET_MAX_SIZE: usize = MSG_SIZE_THRESHOLD + MSG_SIZE_THRESHOLD / 5; // 12 MB
-pub(crate) const MAX_MSG_COUNT: usize = 10;
+pub(crate) const WEBSOCKET_MAX_SIZE: usize = 12 * 1024 * 1024; // 12 MB
+
+// Messages that queue up while the writer is busy are merged into one frame,
+// which saves a socket write per message. The two limits below were chosen
+// with the `burst` benchmark: more than 64 messages per frame bring no
+// further gain, and frames past the chunk size of bulk transfers get slower.
+/// The most messages merged into one frame.
+pub(crate) const MAX_MSG_COUNT: usize = 256;
+/// A frame that has reached this size is sent without merging more into it.
+pub(crate) const FRAME_FLUSH_SIZE: usize = 512 * 1024;
 
 /// Check the size of a serialized value against the maximum allowed size.
 ///

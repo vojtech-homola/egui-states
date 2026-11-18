@@ -16,6 +16,8 @@ pub(crate) enum ClientMessage {
     Message(Bytes),
     Handshake(u16, Option<u64>, Option<String>),
     Transfer(u64, TransferFrame, Bytes),
+    /// Answers the oldest unanswered mark of the low-priority lane.
+    LaneAck,
 }
 
 pub(crate) struct SocketReader<S> {
@@ -106,6 +108,7 @@ impl<S: FrameSource> SocketReader<S> {
             }
             ClientHeader::Signal(id, type_id, _) => ClientMessage::Signal(id, type_id, payload),
             ClientHeader::Ack(id) => ClientMessage::Ack(id),
+            ClientHeader::LaneAck => ClientMessage::LaneAck,
             ClientHeader::Message(_) => ClientMessage::Message(payload),
             ClientHeader::Handshake(protocol_version, client_version, hash) => {
                 ClientMessage::Handshake(protocol_version, client_version, hash)

@@ -27,7 +27,10 @@ impl ServerHeader {
             Self::ImageMulti(_, ImageMultiHeader::Modify(_, _, size)) => *size,
             Self::Transfer(.., size) => *size,
             Self::MultiData(..) | Self::DataMultiTake(..) | Self::ImageMulti(..) => 0,
-            Self::Update(_) | Self::TransferLimits(..) | Self::ConnectPending(_) => 0,
+            Self::Update(_)
+            | Self::TransferLimits(..)
+            | Self::LaneMark
+            | Self::ConnectPending(_) => 0,
         }
     }
 
@@ -69,6 +72,7 @@ impl ServerHeader {
             Self::Update(_)
             | Self::Transfer(..)
             | Self::TransferLimits(..)
+            | Self::LaneMark
             | Self::ConnectPending(_) => false,
         }
     }
@@ -87,6 +91,7 @@ impl ServerHeader {
             Self::Update(_) => "Incomplete Update message",
             Self::Transfer(..) => "Incomplete data for Transfer message",
             Self::TransferLimits(..) => "Incomplete TransferLimits message",
+            Self::LaneMark => "Incomplete LaneMark message",
             Self::ConnectPending(_) => "Incomplete ConnectPending message",
         }
     }
