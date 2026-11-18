@@ -21,6 +21,7 @@ hundred MiB). Feature configurations need separate Cargo runs:
 ```sh
 cargo test --locked -p egui_states                                              # client defaults
 cargo test --locked -p egui_states --no-default-features --features server --lib
+cargo test --locked -p egui_states --features "server tls" --lib                # TLS
 uv run cargo test --locked -p egui_states --features "server build_scripts python" --lib -- --test-threads=1
 cargo test --locked -p example_smoke_tests                                      # Rust examples
 ```

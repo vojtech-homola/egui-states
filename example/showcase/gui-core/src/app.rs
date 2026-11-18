@@ -2,7 +2,7 @@ use std::error::Error;
 
 use eframe::{App, CreationContext};
 use egui::{Color32, ColorImage};
-use egui_states::{Client, ClientBuilder, ConnectionState};
+use egui_states::{Client, ClientBuilder, ConnectionState, Tls};
 
 mod collections;
 mod data;
@@ -51,12 +51,22 @@ pub struct MainApp {
 }
 
 impl MainApp {
+    /// Creates the app, connecting to `host` (the default without one) on
+    /// `port`, with TLS when `tls` is set.
     pub fn new(
         cc: &CreationContext,
         port: u16,
+        host: Option<String>,
+        tls: Option<Tls>,
     ) -> Result<Box<dyn App>, Box<dyn Error + Send + Sync>> {
-        let (state, client) =
-            ClientBuilder::<ShowcaseState>::new(cc.egui_ctx.clone(), port).build();
+        let mut builder = ClientBuilder::<ShowcaseState>::new(cc.egui_ctx.clone(), port);
+        if let Some(host) = host {
+            builder = builder.host(host);
+        }
+        if let Some(tls) = tls {
+            builder = builder.tls(tls);
+        }
+        let (state, client) = builder.build();
 
         // Shown until the server sends its image; ignored if it already has.
         let placeholder = ColorImage::filled([256, 256], Color32::BLACK);

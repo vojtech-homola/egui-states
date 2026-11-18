@@ -3,9 +3,11 @@ use futures_util::{SinkExt, StreamExt, stream::SplitSink, stream::SplitStream};
 use ws_stream_wasm::{WsMessage, WsMeta, WsStream};
 
 use crate::client::messages::{ServerFrames, ServerReader};
+use crate::client::net::Target;
 use crate::protocol::FastVec;
 
-pub(crate) async fn build_ws(address: &str) -> Result<(WsClientRead, WsClientSend), String> {
+pub(crate) async fn build_ws(target: &Target) -> Result<(WsClientRead, WsClientSend), String> {
+    let address = &target.url;
     let res = WsMeta::connect(address, None).await;
 
     let socket = match res {

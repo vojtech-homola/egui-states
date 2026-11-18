@@ -7,4 +7,4 @@ edition.workspace = true
 [dependencies]
 eframe = { workspace = true }
 egui = { workspace = true, features = ["rayon"] }
-egui_states = { workspace = true, features = ["rfd"] }
+egui_states = { workspace = true, features = ["rfd", "tls"] }

@@ -51,18 +51,29 @@ fn finished(handle: &crate::TransferHandle) -> TransferStatus {
 
 impl Peers {
     fn connect() -> Self {
+        Self::connect_with(crate::server::ServerOptions::new(), |builder| builder)
+    }
+
+    /// Connects a client configured by `client` to a server with `options`.
+    fn connect_with(
+        options: crate::server::ServerOptions,
+        client: impl FnOnce(ClientBuilder<ClientStates>) -> ClientBuilder<ClientStates>,
+    ) -> Self {
         let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
         drop(listener);
 
-        let server = StateServer::new().unwrap();
+        let server = StateServer::with_options(options).unwrap();
         let files = super::Download::new(&server, "root.files").unwrap();
         let inputs = super::Upload::new(&server, "root.inputs").unwrap();
         server.finalize().unwrap();
         server.start(port, Some(Ipv4Addr::LOCALHOST), None).unwrap();
 
-        let (states, client) =
-            ClientBuilder::<ClientStates>::new(egui::Context::default(), port).build();
+        let (states, client) = client(ClientBuilder::<ClientStates>::new(
+            egui::Context::default(),
+            port,
+        ))
+        .build();
         client.connect();
         wait("connection", || {
             (server.is_connected() && client.get_state() == ConnectionState::Connected)
@@ -693,6 +704,11 @@ fn http(port: u16, method: &str, path: &str) -> (u16, Vec<(String, String)>, Vec
     .unwrap();
     let mut response = Vec::new();
     stream.read_to_end(&mut response).unwrap();
+    parse_response(&response)
+}
+
+/// Splits an HTTP response into its status, headers, and body.
+fn parse_response(response: &[u8]) -> (u16, Vec<(String, String)>, Vec<u8>) {
     let split = response.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
     let head = String::from_utf8(response[..split].to_vec()).unwrap();
     let mut lines = head.split("\r\n");
@@ -743,6 +759,40 @@ fn path(download: &crate::file_transfer::engine::BrowserDownload) -> String {
         crate::file_transfer::engine::DOWNLOAD_PATH,
         download.ticket
     )
+}
+
+#[cfg(feature = "tls")]
+#[test]
+fn browser_downloads_stream_over_tls() {
+    if crate::test_support::isolated() {
+        return;
+    }
+    let mut options = crate::server::ServerOptions::new();
+    options.tls = true;
+    let peers = Peers::connect_with(options, |client| client.tls(crate::Tls::AcceptAny));
+    let downloads = browser(&peers);
+
+    let payload = data(3_000_000);
+    let sent = peers
+        .files
+        .send_bytes(payload.clone(), "a.bin", &(), false, None)
+        .unwrap();
+    let received = wait("offer", || peers.states.files.take_offer()).accept_browser(false);
+    let download = downloads.recv_timeout(Duration::from_secs(10)).unwrap();
+    let request = format!(
+        "GET {} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n",
+        path(&download)
+    );
+    let (status, headers, body) =
+        parse_response(&crate::test_support::https(peers.port, request.as_bytes()));
+    assert_eq!(status, 200);
+    assert_eq!(
+        header(&headers, "content-length"),
+        payload.len().to_string()
+    );
+    assert!(body == payload, "the body differs from the payload");
+    sent.wait(Some(Duration::from_secs(10))).unwrap();
+    assert_eq!(finished(&received), TransferStatus::Done);
 }
 
 #[test]
@@ -845,7 +895,32 @@ fn a_browser_that_stops_cancels_the_download() {
         return;
     }
     let peers = Peers::connect();
-    let downloads = browser(&peers);
+    stopped_browser_cancels_the_download(&peers, |port| {
+        std::net::TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap()
+    });
+}
+
+/// Over TLS the end of a download can wait in the TLS layer for a browser
+/// that reads slowly, so a download is only finished once that is sent too.
+#[cfg(feature = "tls")]
+#[test]
+fn a_browser_that_stops_cancels_the_download_over_tls() {
+    if crate::test_support::isolated() {
+        return;
+    }
+    let mut options = crate::server::ServerOptions::new();
+    options.tls = true;
+    let peers = Peers::connect_with(options, |client| client.tls(crate::Tls::AcceptAny));
+    stopped_browser_cancels_the_download(&peers, crate::test_support::tls_connect);
+}
+
+/// Starts a browser download on a connection from `connect`, reads its
+/// beginning and drops the connection.
+fn stopped_browser_cancels_the_download<S: std::io::Read + std::io::Write>(
+    peers: &Peers,
+    connect: impl FnOnce(u16) -> S,
+) {
+    let downloads = browser(peers);
     let sent = peers
         .files
         .send_bytes(vec![0; 64 * 1024 * 1024], "big.bin", &(), false, None)
@@ -853,8 +928,7 @@ fn a_browser_that_stops_cancels_the_download() {
     let received = wait("offer", || peers.states.files.take_offer()).accept_browser(false);
     let download = downloads.recv_timeout(Duration::from_secs(10)).unwrap();
     {
-        use std::io::{Read, Write};
-        let mut stream = std::net::TcpStream::connect((Ipv4Addr::LOCALHOST, peers.port)).unwrap();
+        let mut stream = connect(peers.port);
         write!(
             stream,
             "GET {} HTTP/1.1\r\nHost: x\r\n\r\n",

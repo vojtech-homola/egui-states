@@ -171,6 +171,7 @@ mod tests {
                 ws.close(None).await.unwrap();
             });
             let (stream, _) = listener.accept().await.unwrap();
+            let stream = crate::server_core::net::stream::Stream::plain(stream);
             let ws = tokio_tungstenite::accept_async(stream).await.unwrap();
             let (_writer, reader) = ws.split();
             let mut reader = SocketReader::new(reader);

@@ -218,7 +218,7 @@ def populate_initial_data(states: ShowcaseState) -> None:  # noqa: PLR0915
     states.image.images[7].update(image_patch, origin=(96, 96), update=True)
 
 
-def setup_server(*, error_handler: Callable[[Exception], None] | None = None) -> StatesServer:
+def setup_server(*, error_handler: Callable[[Exception], None] | None = None, tls: bool = False) -> StatesServer:
     """Configure a server using the showcase's fixed browser GUI directory.
 
     No listening socket is opened and the browser GUI is not loaded until
@@ -227,11 +227,13 @@ def setup_server(*, error_handler: Callable[[Exception], None] | None = None) ->
     Args:
         error_handler (Callable[[Exception], None] | None, optional): Handler
             for asynchronous callback errors; None uses the default handler.
+        tls (bool, optional): Whether clients connect with TLS, using a
+            certificate generated for this server.
 
     Returns:
         StatesServer: Configured server; call start to listen for a client.
     """
-    server = StatesServer(error_handler=error_handler, web_path=WEB_PATH)
+    server = StatesServer(error_handler=error_handler, web_path=WEB_PATH, tls=tls)
     register_callbacks(server)
     populate_initial_data(server.states)
     return server
@@ -247,8 +249,15 @@ def main() -> StatesServer:
     parser.add_argument("--port", type=int, default=PORT)
     parser.add_argument("--web", action="store_true", help="serve the built browser GUI on the server port")
     parser.add_argument("--interactive", action="store_true", help="leave the server running and return to the console")
+    parser.add_argument(
+        "--tls", action="store_true", help="encrypt connections with a certificate generated for this run"
+    )
     args = parser.parse_args()
-    server = setup_server()
+    server = setup_server(tls=args.tls)
+    if (fingerprint := server.tls_fingerprint()) is not None:
+        # Pass it to the native GUI as `--tls FINGERPRINT`, and compare it
+        # with the SHA-256 fingerprint the browser shows before accepting.
+        print(f"TLS certificate fingerprint (SHA-256): {fingerprint}", flush=True)
     stopped = threading.Event()
     previous_handlers = {}
     keep_running = False

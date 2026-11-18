@@ -18,7 +18,11 @@ and synchronization bookkeeping.
    handshake. They can also compare an application version and token when those
    checks are configured. Before that, the server refuses the WebSocket upgrade
    of a browser page whose `Origin` it does not allow; native clients send no
-   `Origin`.
+   `Origin`. With TLS on, every connection first completes a TLS handshake,
+   which sits below the WebSocket and does not change the wire protocol. The
+   server tells TLS from plain connections by their first byte and answers a
+   plain one itself: a browser page request with a redirect to `https://`,
+   anything else with `426 Upgrade Required`.
 
 Generated bindings should not be edited. Their contents and layout hash are
 derived from the shared Rust state definition. The layout hash is not enforced by
@@ -206,7 +210,7 @@ temporary `.part` file behind.
 HTTPS or `localhost`. A browser client therefore accepts a download as browser
 downloads: the server sends a one-time ticket over the WebSocket, and the
 browser fetches `/egui-states/transfer/<ticket>` from the server's port over
-plain HTTP, one download per file (folders flattened into the name) or one
+HTTP, or HTTPS when the server uses TLS, one download per file (folders flattened into the name) or one
 uncompressed zip of all files. The zip holds each modification time twice:
 exactly, in the extended timestamp that most unzip tools read, and as UTC in
 the classic fields, which have no time zone and which other tools show as
