@@ -353,6 +353,16 @@ impl StoredImage {
     /// the whole image is widened first, so it holds both formats.
     pub(crate) fn update(&mut self, image: &ImageData, origin: &[usize; 2]) {
         let wider = self.image_type.union(image.image_type);
+        if image.size == self.size {
+            // The rectangle is the whole image, so no stored pixel survives:
+            // nothing is widened only to be overwritten.
+            let len = self.size[0] * self.size[1] * wider.bytes_per_pixel();
+            replace_bytes(&mut self.data, len, |target| {
+                write_pixels(image, wider, target)
+            });
+            self.image_type = wider;
+            return;
+        }
         if wider != self.image_type {
             let from = self.image_type;
             let mut data = Vec::new();
@@ -488,6 +498,31 @@ mod tests {
         stored.set(&ImageData::packed(&[4, 4], [1, 2], ImageType::Gray));
         assert_eq!(stored.image_type(), ImageType::Gray);
         assert_eq!(stored.data(), [4, 4]);
+    }
+
+    #[test]
+    fn an_update_of_the_whole_image_replaces_every_pixel() {
+        // Widening: the format still holds both, as for any update.
+        let mut stored = StoredImage::filled([2, 1], ImageFill::GrayAlpha([7, 8]));
+        let rows = ImageData {
+            size: [2, 1],
+            stride: 4,
+            image_type: ImageType::Color,
+            data: &[1, 2, 3, 0, 4, 5, 6],
+        };
+        stored.update(&rows, &[0, 0]);
+        assert_eq!(stored.image_type(), ImageType::ColorAlpha);
+        assert_eq!(stored.data(), [1, 2, 3, 255, 4, 5, 6, 255]);
+
+        // Fewer channels: converted to the stored format, in place.
+        let allocation = stored.data().as_ptr();
+        stored.update(
+            &ImageData::packed(&[9, 10], [2, 1], ImageType::Gray),
+            &[0, 0],
+        );
+        assert_eq!(stored.image_type(), ImageType::ColorAlpha);
+        assert_eq!(stored.data(), [9, 9, 9, 255, 10, 10, 10, 255]);
+        assert_eq!(stored.data().as_ptr(), allocation);
     }
 
     #[test]
