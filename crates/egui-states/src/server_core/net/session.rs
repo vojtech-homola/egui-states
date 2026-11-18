@@ -3,12 +3,13 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 use std::time::Duration;
 
 use futures_util::FutureExt;
 use parking_lot::Mutex;
+use tokio::sync::Notify;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::task::{JoinHandle, JoinSet};
@@ -297,8 +298,8 @@ pub(crate) async fn run<L: Listener>(
         signals.on_connect(peer_addr);
 
         let activity = socket_reader.activity();
-        let (answers_tx, answers) = mpsc::unbounded_channel();
-        let reader_handler = tokio::spawn(reader(socket_reader, session.clone(), answers_tx));
+        let answers = Arc::new(LaneAnswers::default());
+        let reader_handler = tokio::spawn(reader(socket_reader, session.clone(), answers.clone()));
         let handler = tokio::spawn(writer(
             rx,
             socket_tx,
@@ -457,7 +458,7 @@ fn tokens_match(client_token: &str, server_token: &str) -> bool {
 async fn reader<S: FrameSource>(
     mut socket_rx: SocketReader<S>,
     session: Session,
-    answers: mpsc::UnboundedSender<()>,
+    answers: Arc<LaneAnswers>,
 ) {
     let Session {
         sender,
@@ -525,9 +526,7 @@ async fn reader<S: FrameSource>(
             Ok(ClientMessage::Transfer(endpoint, frame, payload)) => {
                 transfers.handle_frame(endpoint, frame, payload);
             }
-            Ok(ClientMessage::LaneAck) => {
-                let _ = answers.send(());
-            }
+            Ok(ClientMessage::LaneAck) => answers.answer(),
         }
     }
 
@@ -538,9 +537,33 @@ async fn reader<S: FrameSource>(
 }
 
 /// After this many frames of the normal lane in a row, the writer sends a
-/// waiting frame of the low-priority lane or a file chunk first. A busy normal
-/// lane then slows the other lanes down but never stops them.
+/// waiting frame of the low-priority lane or a file chunk first, taking turns
+/// between the two. A busy normal lane then slows the other lanes down but
+/// never stops them.
 const STARVATION_GUARD: usize = 8;
+
+/// The client's answers to the marks of the low-priority lane, counted by the
+/// reader for the writer.
+///
+/// A counter instead of a queue: a client that sends answers without end
+/// costs the server no memory, and the writer takes all of them in one step.
+#[derive(Default)]
+struct LaneAnswers {
+    count: AtomicUsize,
+    arrived: Notify,
+}
+
+impl LaneAnswers {
+    fn answer(&self) {
+        self.count.fetch_add(1, Ordering::AcqRel);
+        self.arrived.notify_one();
+    }
+
+    /// The answers that arrived since the last call.
+    fn take(&self) -> usize {
+        self.count.swap(0, Ordering::AcqRel)
+    }
+}
 
 /// The low-priority lane of one connection.
 ///
@@ -577,8 +600,11 @@ impl LowLane {
         self.unanswered.push_back(len);
     }
 
-    fn answered(&mut self) {
-        if let Some(len) = self.unanswered.pop_front() {
+    /// Returns the bytes of the `count` oldest unanswered frames to the
+    /// window. Answers beyond the marks that were sent are ignored.
+    fn answered(&mut self, count: usize) {
+        let count = count.min(self.unanswered.len());
+        for len in self.unanswered.drain(..count) {
             self.in_flight -= len;
         }
     }
@@ -591,20 +617,29 @@ enum Next {
     Ping,
 }
 
-/// A frame of the low-priority lane or a file chunk that is ready now.
+/// A frame of the low-priority lane or a file chunk that is ready now; the
+/// chunk first with `chunk_first`.
 fn lagging(
     low: &mut LowLane,
     chunks: &mut mpsc::Receiver<Vec<u8>>,
     chunks_open: bool,
+    chunk_first: bool,
 ) -> Option<Next> {
+    let chunk = |chunks: &mut mpsc::Receiver<Vec<u8>>| match chunks_open {
+        true => chunks.try_recv().ok().map(Next::Chunk),
+        false => None,
+    };
+    if chunk_first && let Some(chunk) = chunk(chunks) {
+        return Some(chunk);
+    }
     if low.has_room()
         && let Some(message) = low.receiver.next().now_or_never()
     {
         return Some(Next::Low(message));
     }
-    match chunks_open {
-        true => chunks.try_recv().ok().map(Next::Chunk),
-        false => None,
+    match chunk_first {
+        true => None,
+        false => chunk(chunks),
     }
 }
 
@@ -616,7 +651,7 @@ async fn writer<K: FrameSink>(
     activity: Arc<Activity>,
     session: Session,
     lane: DataLane,
-    mut answers: mpsc::UnboundedReceiver<()>,
+    answers: Arc<LaneAnswers>,
 ) -> MessageReceiver {
     let Session {
         connected,
@@ -634,7 +669,6 @@ async fn writer<K: FrameSink>(
         tickets,
     } = lane;
     let mut chunks_open = true;
-    let mut answers_open = true;
 
     let MessageReceiver { normal, low } = rx;
     let mut data_receiver = DataReceiver::new(normal);
@@ -644,6 +678,8 @@ async fn writer<K: FrameSink>(
         .map(FastVec::into_bytes)
         .unwrap_or_default();
     let mut normal_streak = 0;
+    // Whether the starvation guard's next turn belongs to the file lane.
+    let mut chunk_turn = false;
 
     // The connection counts as heard from when it starts, however long the
     // initial synchronization took.
@@ -655,29 +691,33 @@ async fn writer<K: FrameSink>(
     });
 
     loop {
+        // Taken on every turn, so answers never wait behind the lanes, and
+        // a flood of them costs one step.
+        low.answered(answers.take());
         let due = if normal_streak >= STARVATION_GUARD {
             normal_streak = 0;
-            lagging(&mut low, &mut chunks, chunks_open)
+            let due = lagging(&mut low, &mut chunks, chunks_open, chunk_turn);
+            match due {
+                Some(Next::Low(_)) => chunk_turn = true,
+                Some(Next::Chunk(_)) => chunk_turn = false,
+                _ => {}
+            }
+            due
         } else {
             None
         };
         // Pings go first, so a long burst of state messages cannot starve
         // the heartbeat. The low-priority lane and then file data go only
-        // when no normal message waits, apart from the starvation guard.
-        // Every branch is cancel safe: each only awaits a channel or a timer
-        // tick, and a missed tick is delivered by the next poll.
+        // when no normal message waits, apart from the starvation guard. An
+        // answer only wakes an idle writer, so answers cannot hold up a lane.
+        // Every branch is cancel safe: each only awaits a channel, a
+        // notification or a timer tick, and a missed tick is delivered by
+        // the next poll.
         let next = match due {
             Some(next) => next,
             None => tokio::select! {
                 biased;
                 () = next_ping(&mut pings) => Next::Ping,
-                answer = answers.recv(), if answers_open => {
-                    match answer {
-                        Some(()) => low.answered(),
-                        None => answers_open = false,
-                    }
-                    continue;
-                }
                 message = data_receiver.next() => Next::Message(message),
                 message = low.receiver.next(), if low.has_room() => Next::Low(message),
                 chunk = chunks.recv(), if chunks_open => match chunk {
@@ -687,6 +727,7 @@ async fn writer<K: FrameSink>(
                         continue;
                     }
                 },
+                () = answers.arrived.notified() => continue,
             },
         };
 
@@ -1241,7 +1282,7 @@ mod run_tests {
     /// picks first is deterministic.
     struct WriterRun {
         frames: mpsc::UnboundedReceiver<Outgoing>,
-        answers: mpsc::UnboundedSender<()>,
+        answers: Arc<LaneAnswers>,
         sender: MessageSender,
         handle: JoinHandle<MessageReceiver>,
     }
@@ -1279,7 +1320,8 @@ mod run_tests {
                 transfers,
                 low_priority: true,
             };
-            let (answers, answers_rx) = mpsc::unbounded_channel();
+            let answers = Arc::new(LaneAnswers::default());
+            let writer_answers = answers.clone();
             let handle = tokio::spawn(async move {
                 // Keeps the file lane open for the run.
                 let _chunk_tx = chunk_tx;
@@ -1290,7 +1332,7 @@ mod run_tests {
                     Activity::new(),
                     session,
                     lane,
-                    answers_rx,
+                    writer_answers,
                 )
                 .await
             });
@@ -1355,11 +1397,35 @@ mod run_tests {
             assert_eq!(run.next().await, (LANE_MARK, 1));
             // A frame larger than the window fills it.
             run.assert_quiet().await;
-            run.answers.send(()).unwrap();
+            run.answers.answer();
             assert_eq!(run.next().await, (2, LARGE));
             assert_eq!(run.next().await, (LANE_MARK, 1));
             run.stop().await;
         });
+    }
+
+    /// Answers are counted, and an answer without an unanswered mark returns
+    /// nothing to the window.
+    #[test]
+    fn surplus_lane_answers_are_ignored() {
+        let answers = LaneAnswers::default();
+        for _ in 0..3 {
+            answers.answer();
+        }
+        assert_eq!(answers.take(), 3);
+        assert_eq!(answers.take(), 0);
+
+        let (_sender, rx) = MessageSender::new();
+        let mut low = LowLane::new(rx.low, 100);
+        low.answered(5);
+        low.sent(60);
+        low.sent(60);
+        assert!(!low.has_room());
+        low.answered(1);
+        assert_eq!(low.in_flight, 60);
+        assert!(low.has_room());
+        low.answered(9);
+        assert_eq!(low.in_flight, 0);
     }
 
     /// A normal lane that never empties holds the other lanes back for at
@@ -1378,17 +1444,21 @@ mod run_tests {
                 }
                 let mut run = WriterRun::start(sender, rx, 1 << 20, Some(vec![2; 100]));
 
-                for marker in 0..STARVATION_GUARD {
-                    assert_eq!(run.next().await, (100 + marker as u8, LARGE));
-                }
-                // The low-priority lane goes before the file lane.
+                let mut sent = 0..count;
+                let mut normal = async |run: &mut WriterRun| {
+                    for marker in sent.by_ref().take(STARVATION_GUARD) {
+                        assert_eq!(run.next().await, (100 + marker as u8, LARGE));
+                    }
+                };
+                normal(&mut run).await;
+                // The two other lanes take turns, the low-priority lane first.
                 if low_waits {
                     assert_eq!(run.next().await, (1, LARGE));
                     assert_eq!(run.next().await, (LANE_MARK, 1));
-                } else {
-                    assert_eq!(run.next().await, (2, 100));
+                    normal(&mut run).await;
                 }
-                assert_eq!(run.next().await, (100 + STARVATION_GUARD as u8, LARGE));
+                assert_eq!(run.next().await, (2, 100));
+                normal(&mut run).await;
                 run.stop().await;
             }
         });

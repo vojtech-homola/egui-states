@@ -131,7 +131,9 @@ fn data_from_bytes<T: DataElement>(data: &[u8]) -> Result<Vec<T>> {
 /// and [`Self::remove`], with their `_with_header` forms, and one of these
 /// changes is sent at a time: a call blocks until the client has acknowledged
 /// the previous one, then queues its change and returns. With `wait`, the
-/// call returns only once the client has acknowledged its own change.
+/// call returns only once the client has acknowledged its own change, or the
+/// connection has ended; it does not tell the two apart, and without a client
+/// it does not wait.
 /// [`Self::clear`], [`Self::set_header`] and [`Self::reset`] are not
 /// acknowledged and do not wait for the client.
 pub struct Data<T, H = ()> {

@@ -645,12 +645,21 @@ impl Server {
         None
     }
 
+    /// Asks the client to repaint after `duration` seconds, or at once.
+    ///
+    /// The request follows everything queued before it. With low-priority
+    /// states that means one request per lane: the lanes are sent
+    /// independently, so a single request could reach the client before a
+    /// low-priority change made earlier, and nothing would repaint when that
+    /// change arrives.
     pub(crate) fn update(&self, duration: Option<f32>) -> Result<(), ()> {
         if self.connected.load(Ordering::Acquire) {
             let duration = duration.unwrap_or(0.0);
             let header = ServerHeader::Update(duration);
-            let data = serialize(&header)?;
-            self.sender.send(data);
+            self.sender.send(serialize(&header)?);
+            if self.low_priority {
+                self.sender.lane(true).send(serialize(&header)?);
+            }
         }
         Ok(())
     }
@@ -1012,5 +1021,33 @@ mod tests {
             "a client call waited for the stop"
         );
         drop(stopping);
+    }
+
+    /// The receiving ends of a stopped server's lanes.
+    fn lanes(server: &Server) -> parking_lot::MappedMutexGuard<'_, MessageReceiver> {
+        parking_lot::MutexGuard::map(server.runner_state.lock(), |state| match state {
+            RunnerState::Stopped(rx) => rx,
+            _ => panic!("the server is not stopped"),
+        })
+    }
+
+    /// A repaint request follows the changes queued before it in both lanes;
+    /// in the normal lane alone it could overtake a low-priority change, and
+    /// nothing would repaint when that change arrives.
+    #[test]
+    fn a_repaint_request_is_queued_in_every_lane_in_use() {
+        let repaint = |low_priority: bool| {
+            let mut server = Server::new(ServerConfig::with_version(None));
+            server.add_image("root.image", low_priority).unwrap();
+            server.connected.store(true, Ordering::Release);
+            server.update(None).unwrap();
+            let mut lanes = lanes(&server);
+            (
+                lanes.normal.try_recv().is_ok(),
+                lanes.low.try_recv().is_ok(),
+            )
+        };
+        assert_eq!(repaint(false), (true, false));
+        assert_eq!(repaint(true), (true, true));
     }
 }

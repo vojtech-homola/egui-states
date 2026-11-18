@@ -229,7 +229,7 @@ fn state_field_type(state: &StateType) -> String {
         StateType::Upload(_, meta) => format!("s::Upload{}", meta_parameter(meta)),
         StateType::Image(..) => "s::Image".to_string(),
         StateType::ImageMulti(..) => "s::ImageMulti".to_string(),
-        StateType::SubState(_, state_class, _) => state_class.to_string(),
+        StateType::SubState(_, state_class, ..) => state_class.to_string(),
     }
 }
 
@@ -283,7 +283,20 @@ fn state_field_doc(state: &StateType) -> &'static str {
     }
 }
 
-fn state_initializer(state: &StateType) -> String {
+/// The expression of a field's send priority: `true` when it is marked,
+/// otherwise the `low_priority` argument of the enclosing group (`inherits`),
+/// or `false` in the root.
+fn priority(low: bool, inherits: bool) -> &'static str {
+    match (low, inherits) {
+        (true, _) => "true",
+        (false, true) => "low_priority",
+        (false, false) => "false",
+    }
+}
+
+/// The expression that creates `state`; `inherits` in a nested group, whose
+/// bulk states take the group's `low_priority` argument unless marked.
+fn state_initializer(state: &StateType, inherits: bool) -> String {
     match state {
         StateType::Value(name, typ, init, queue) => format!(
             "s::Value::new(server, format!(\"{{parent}}.{}\"), {}, {})?",
@@ -322,25 +335,25 @@ fn state_initializer(state: &StateType) -> String {
             "s::Data::<{}>::new(server, format!(\"{{parent}}.{}\"), {})?",
             data_parameters(typ, header),
             name,
-            low
+            priority(*low, inherits)
         ),
         StateType::DataTake(name, typ, header, low) => format!(
             "s::DataTake::<{}>::new(server, format!(\"{{parent}}.{}\"), {})?",
             data_parameters(typ, header),
             name,
-            low
+            priority(*low, inherits)
         ),
         StateType::DataMulti(name, typ, header, low) => format!(
             "s::DataMulti::<{}>::new(server, format!(\"{{parent}}.{}\"), {})?",
             data_parameters(typ, header),
             name,
-            low
+            priority(*low, inherits)
         ),
         StateType::DataMultiTake(name, typ, header, low) => format!(
             "s::DataMultiTake::<{}>::new(server, format!(\"{{parent}}.{}\"), {})?",
             data_parameters(typ, header),
             name,
-            low
+            priority(*low, inherits)
         ),
         StateType::Download(name, meta) => format!(
             "s::Download::{}new(server, format!(\"{{parent}}.{}\"))?",
@@ -354,16 +367,26 @@ fn state_initializer(state: &StateType) -> String {
         ),
         StateType::Image(name, low) => format!(
             "s::Image::new(server, format!(\"{{parent}}.{}\"), {})?",
-            name, low
+            name,
+            priority(*low, inherits)
         ),
         StateType::ImageMulti(name, low) => format!(
             "s::ImageMulti::new(server, format!(\"{{parent}}.{}\"), {})?",
-            name, low
+            name,
+            priority(*low, inherits)
         ),
-        StateType::SubState(name, state_class, _) => format!(
-            "{state_class}::new(server, &format!(\"{{parent}}.{}\"))?",
-            name
-        ),
+        // Only a group with bulk states takes the priority.
+        StateType::SubState(name, state_class, _, low) => match state.takes_priority() {
+            true => format!(
+                "{state_class}::new(server, &format!(\"{{parent}}.{}\"), {})?",
+                name,
+                priority(*low, inherits)
+            ),
+            false => format!(
+                "{state_class}::new(server, &format!(\"{{parent}}.{}\"))?",
+                name
+            ),
+        },
     }
 }
 
@@ -374,7 +397,7 @@ fn write_state(
     used_states: &mut Vec<String>,
 ) {
     for state in states {
-        if let StateType::SubState(_, state_class, sub_states) = state {
+        if let StateType::SubState(_, state_class, sub_states, _) = state {
             if used_states.iter().any(|used| used == state_class) {
                 continue;
             }
@@ -400,14 +423,29 @@ fn write_state(
     }
     output.push_str("}\n");
 
+    // A group with images or buffers takes the priority of the field it is
+    // created for, so one type serves fields of either priority.
+    let inherits = states.iter().any(StateType::takes_priority);
+    let (doc, parameter) = match inherits {
+        true => (
+            " With `low_priority`, its images and\n    /// buffers use the low-priority lane.",
+            ", low_priority: bool",
+        ),
+        false => ("", ""),
+    };
     writeln!(
         output,
-        "\nimpl {state_class} {{\n    /// Registers this state group below `parent`.\n    pub fn new(server: &s::StateServer, parent: &str) -> s::Result<Self> {{\n        Ok(Self {{"
+        "\nimpl {state_class} {{\n    /// Registers this state group below `parent`.{doc}\n    pub fn new(server: &s::StateServer, parent: &str{parameter}) -> s::Result<Self> {{\n        Ok(Self {{"
     )
     .unwrap();
     for state in states {
         let field = state.name();
-        writeln!(output, "            {field}: {},", state_initializer(state)).unwrap();
+        writeln!(
+            output,
+            "            {field}: {},",
+            state_initializer(state, inherits)
+        )
+        .unwrap();
     }
     output.push_str("        })\n    }\n}\n");
 }
@@ -529,13 +567,13 @@ fn render_rust<S: State>() -> Result<(String, String, String), String> {
         "//! Typed server bindings generated from the egui client state tree.\n\n// Generated by build.rs, do not edit\n/// Custom enum types used by the state tree.\npub mod enums;\n/// Custom struct types used by the state tree.\npub mod structs;\n\nuse egui_states::server as s;\n",
     );
 
-    let StateType::SubState(_, root_name, substates) = &states else {
+    let StateType::SubState(_, root_name, substates, _) = &states else {
         return Err("Root state must be a SubState".to_string());
     };
 
     let mut used_states = Vec::new();
     for state in substates {
-        if let StateType::SubState(_, state_class, sub_states) = state {
+        if let StateType::SubState(_, state_class, sub_states, _) = state {
             if used_states.iter().any(|used| used == state_class) {
                 continue;
             }
@@ -576,7 +614,7 @@ fn render_rust<S: State>() -> Result<(String, String, String), String> {
         writeln!(
             states_output,
             "            {field}: {},",
-            state_initializer(state)
+            state_initializer(state, false)
         )
         .unwrap();
     }

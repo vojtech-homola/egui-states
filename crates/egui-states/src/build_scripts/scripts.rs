@@ -17,7 +17,7 @@ pub(crate) fn parse_states<S: State>() -> (StateType, u64, RustDerives) {
     let version_hash = creator.get_version_hash();
     let (states, rust_derives) = creator.into_parts();
     (
-        StateType::SubState("root".to_string(), S::NAME, states),
+        StateType::SubState("root".to_string(), S::NAME, states, false),
         version_hash,
         rust_derives,
     )
@@ -43,14 +43,14 @@ fn collect_state_definitions<'a>(
     }
 
     for state in states {
-        if let StateType::SubState(_, class, children) = state {
+        if let StateType::SubState(_, class, children, _) = state {
             collect_state_definitions(class, children, false, definitions);
         }
     }
 }
 
 pub(crate) fn validate_states(states: &StateType) {
-    let StateType::SubState(_, root_name, children) = states else {
+    let StateType::SubState(_, root_name, children, _) = states else {
         panic!("Root state must be a SubState");
     };
 
@@ -212,7 +212,7 @@ pub(crate) fn get_all_enums_struct(values: &[StateType]) -> (Enums, Structs) {
 
 pub(crate) fn states_into_values_list(state: &StateType, list: &mut Vec<StateType>) {
     match state {
-        StateType::SubState(_, _, sub_values) => {
+        StateType::SubState(_, _, sub_values, _) => {
             for sub_value in sub_values {
                 states_into_values_list(sub_value, list);
             }

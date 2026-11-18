@@ -372,9 +372,8 @@ class Image(_StaticBase):
             update (bool, optional): Whether to request a client repaint.
                 Defaults to False.
             wait (bool, optional): Whether to return only once the client has
-                acknowledged this change. Defaults to False.
-            wait (bool, optional): Whether to return only once the client has
-                acknowledged this image. Defaults to False.
+                acknowledged this image, or the connection has ended.
+                Defaults to False.
         """
         self._server.image_set(self._value_id, image, update, wait)
 
@@ -409,7 +408,8 @@ class Image(_StaticBase):
                 most this many rows, each applied by the client as it arrives.
                 ``None`` applies the whole rectangle at once. Defaults to None.
             wait (bool, optional): Whether to return only once the client has
-                acknowledged the last part of this update. Defaults to False.
+                acknowledged the last part of this update, or the connection
+                has ended. Defaults to False.
 
         Raises:
             ValueError: If ``max_lines`` is less than 1, or the rectangle is
@@ -436,7 +436,8 @@ class Image(_StaticBase):
             update (bool, optional): Whether to request a client repaint.
                 Defaults to False.
             wait (bool, optional): Whether to return only once the client has
-                acknowledged this image. Defaults to False.
+                acknowledged this image, or the connection has ended.
+                Defaults to False.
         """
         self._server.image_set_all(self._value_id, shape, color, update, wait)
 
@@ -503,9 +504,8 @@ class SingleImage:
             update (bool, optional): Whether to request a client repaint.
                 Defaults to False.
             wait (bool, optional): Whether to return only once the client has
-                acknowledged this change. Defaults to False.
-            wait (bool, optional): Whether to return only once the client has
-                acknowledged this image. Defaults to False.
+                acknowledged this image, or the connection has ended.
+                Defaults to False.
         """
         self._server.image_multi_set(self._value_id, self._index, image, update, wait)
 
@@ -537,7 +537,8 @@ class SingleImage:
                 most this many rows, each applied by the client as it arrives.
                 ``None`` applies the whole rectangle at once. Defaults to None.
             wait (bool, optional): Whether to return only once the client has
-                acknowledged the last part of this update. Defaults to False.
+                acknowledged the last part of this update, or the connection
+                has ended. Defaults to False.
 
         Raises:
             ValueError: If ``max_lines`` is less than 1, or the rectangle is
@@ -563,7 +564,8 @@ class SingleImage:
             update (bool, optional): Whether to request a client repaint.
                 Defaults to False.
             wait (bool, optional): Whether to return only once the client has
-                acknowledged this image. Defaults to False.
+                acknowledged this image, or the connection has ended.
+                Defaults to False.
         """
         self._server.image_multi_set_all(self._value_id, self._index, shape, color, update, wait)
 
@@ -881,7 +883,8 @@ class Data[T: np.generic](_StaticBase):
     :meth:`remove`, and one of these changes is sent at a time: a call blocks
     until the client has acknowledged the previous one, then queues its change
     and returns. With ``wait``, the call returns only once the client has
-    acknowledged its own change. :meth:`clear` and :meth:`reset` are not
+    acknowledged its own change, or the connection has ended; without a
+    client it does not wait. :meth:`clear` and :meth:`reset` are not
     acknowledged and do not wait for the client.
 
     Methods that take a buffer read it until they return, while other Python
@@ -950,7 +953,8 @@ class Data[T: np.generic](_StaticBase):
             update (bool, optional): Whether to request a client repaint.
                 Defaults to False.
             wait (bool, optional): Whether to return only once the client has
-                acknowledged this change. Defaults to False.
+                acknowledged this change, or the connection has ended.
+                Defaults to False.
         """
         self._server.data_set(self._value_id, data, update, None, wait)
 
@@ -963,7 +967,8 @@ class Data[T: np.generic](_StaticBase):
             update (bool, optional): Whether to request a client repaint.
                 Defaults to False.
             wait (bool, optional): Whether to return only once the client has
-                acknowledged this change. Defaults to False.
+                acknowledged this change, or the connection has ended.
+                Defaults to False.
         """
         self._server.data_add(self._value_id, data, update, None, wait)
 
@@ -977,7 +982,8 @@ class Data[T: np.generic](_StaticBase):
             update (bool, optional): Whether to request a client repaint.
                 Defaults to False.
             wait (bool, optional): Whether to return only once the client has
-                acknowledged this change. Defaults to False.
+                acknowledged this change, or the connection has ended.
+                Defaults to False.
         """
         self._server.data_replace(self._value_id, data, index, update, None, wait)
 
@@ -990,7 +996,8 @@ class Data[T: np.generic](_StaticBase):
             update (bool, optional): Whether to request a client repaint.
                 Defaults to False.
             wait (bool, optional): Whether to return only once the client has
-                acknowledged this change. Defaults to False.
+                acknowledged this change, or the connection has ended.
+                Defaults to False.
         """
         self._server.data_remove(self._value_id, index, count, update, None, wait)
 
@@ -1066,39 +1073,41 @@ class DataWithHeader[T: np.generic, H](Data[T]):
         data, header = entry
         return np.frombuffer(data, dtype=self._dtype), header
 
-    def set(self, data: Buffer, update: bool = False, wait: bool = False, header: H | _Unset = UNSET) -> None:
+    def set(self, data: Buffer, update: bool = False, header: H | _Unset = UNSET, wait: bool = False) -> None:
         """Set the data and optionally the header.
 
         Args:
             data (Buffer): Data to set.
             update (bool, optional): Whether to request a client repaint.
                 Defaults to False.
-            wait (bool, optional): Whether to return only once the client has
-                acknowledged this change. Defaults to False.
             header (H | _Unset, optional): New header; :data:`UNSET` keeps the
                 current one. Defaults to :data:`UNSET`.
+            wait (bool, optional): Whether to return only once the client has
+                acknowledged this change, or the connection has ended.
+                Defaults to False.
 
         Raises:
             ValueError: If the data is not set and no header is given.
         """
         self._server.data_set(self._value_id, data, update, _header(header), wait)
 
-    def add(self, data: Buffer, update: bool = False, wait: bool = False, header: H | _Unset = UNSET) -> None:
+    def add(self, data: Buffer, update: bool = False, header: H | _Unset = UNSET, wait: bool = False) -> None:
         """Append data and optionally replace the header.
 
         Args:
             data (Buffer): Data to append.
             update (bool, optional): Whether to request a client repaint.
                 Defaults to False.
-            wait (bool, optional): Whether to return only once the client has
-                acknowledged this change. Defaults to False.
             header (H | _Unset, optional): New header; :data:`UNSET` keeps the
                 current one. Defaults to :data:`UNSET`.
+            wait (bool, optional): Whether to return only once the client has
+                acknowledged this change, or the connection has ended.
+                Defaults to False.
         """
         self._server.data_add(self._value_id, data, update, _header(header), wait)
 
     def replace(
-        self, data: Buffer, index: int, update: bool = False, wait: bool = False, header: H | _Unset = UNSET
+        self, data: Buffer, index: int, update: bool = False, header: H | _Unset = UNSET, wait: bool = False
     ) -> None:
         """Replace data from ``index`` and optionally the header.
 
@@ -1107,15 +1116,16 @@ class DataWithHeader[T: np.generic, H](Data[T]):
             index (int): Index at which replacement starts.
             update (bool, optional): Whether to request a client repaint.
                 Defaults to False.
-            wait (bool, optional): Whether to return only once the client has
-                acknowledged this change. Defaults to False.
             header (H | _Unset, optional): New header; :data:`UNSET` keeps the
                 current one. Defaults to :data:`UNSET`.
+            wait (bool, optional): Whether to return only once the client has
+                acknowledged this change, or the connection has ended.
+                Defaults to False.
         """
         self._server.data_replace(self._value_id, data, index, update, _header(header), wait)
 
     def remove(
-        self, index: int, count: int, update: bool = False, wait: bool = False, header: H | _Unset = UNSET
+        self, index: int, count: int, update: bool = False, header: H | _Unset = UNSET, wait: bool = False
     ) -> None:
         """Remove data and optionally replace the header.
 
@@ -1124,10 +1134,11 @@ class DataWithHeader[T: np.generic, H](Data[T]):
             count (int): Number of items to remove.
             update (bool, optional): Whether to request a client repaint.
                 Defaults to False.
-            wait (bool, optional): Whether to return only once the client has
-                acknowledged this change. Defaults to False.
             header (H | _Unset, optional): New header; :data:`UNSET` keeps the
                 current one. Defaults to :data:`UNSET`.
+            wait (bool, optional): Whether to return only once the client has
+                acknowledged this change, or the connection has ended.
+                Defaults to False.
         """
         self._server.data_remove(self._value_id, index, count, update, _header(header), wait)
 
@@ -1305,7 +1316,8 @@ class SingleData[T: np.generic]:
             update (bool, optional): Whether to request a client repaint.
                 Defaults to False.
             wait (bool, optional): Whether to return only once the client has
-                acknowledged this change. Defaults to False.
+                acknowledged this change, or the connection has ended.
+                Defaults to False.
         """
         self._server.data_multi_set(self._value_id, self._index, data, update, None, wait)
 
@@ -1318,7 +1330,8 @@ class SingleData[T: np.generic]:
             update (bool, optional): Whether to request a client repaint.
                 Defaults to False.
             wait (bool, optional): Whether to return only once the client has
-                acknowledged this change. Defaults to False.
+                acknowledged this change, or the connection has ended.
+                Defaults to False.
         """
         self._server.data_multi_add(self._value_id, self._index, data, update, None, wait)
 
@@ -1332,7 +1345,8 @@ class SingleData[T: np.generic]:
             update (bool, optional): Whether to request a client repaint.
                 Defaults to False.
             wait (bool, optional): Whether to return only once the client has
-                acknowledged this change. Defaults to False.
+                acknowledged this change, or the connection has ended.
+                Defaults to False.
         """
         self._server.data_multi_replace(self._value_id, self._index, data, index, update, None, wait)
 
@@ -1345,7 +1359,8 @@ class SingleData[T: np.generic]:
             update (bool, optional): Whether to request a client repaint.
                 Defaults to False.
             wait (bool, optional): Whether to return only once the client has
-                acknowledged this change. Defaults to False.
+                acknowledged this change, or the connection has ended.
+                Defaults to False.
         """
         self._server.data_multi_remove(self._value_id, self._index, index, count, update, None, wait)
 
@@ -1392,39 +1407,41 @@ class SingleDataWithHeader[T: np.generic, H](SingleData[T]):
         data, header = self._server.data_multi_get_with_header(self._value_id, self._index)
         return np.frombuffer(data, dtype=self._dtype), header
 
-    def set(self, data: Buffer, update: bool = False, wait: bool = False, header: H | _Unset = UNSET) -> None:
+    def set(self, data: Buffer, update: bool = False, header: H | _Unset = UNSET, wait: bool = False) -> None:
         """Set the data at this index and optionally its header.
 
         Args:
             data (Buffer): Data to set.
             update (bool, optional): Whether to request a client repaint.
                 Defaults to False.
-            wait (bool, optional): Whether to return only once the client has
-                acknowledged this change. Defaults to False.
             header (H | _Unset, optional): New header; :data:`UNSET` keeps the
                 current one. Defaults to :data:`UNSET`.
+            wait (bool, optional): Whether to return only once the client has
+                acknowledged this change, or the connection has ended.
+                Defaults to False.
 
         Raises:
             ValueError: If the index does not exist and no header is given.
         """
         self._server.data_multi_set(self._value_id, self._index, data, update, _header(header), wait)
 
-    def add(self, data: Buffer, update: bool = False, wait: bool = False, header: H | _Unset = UNSET) -> None:
+    def add(self, data: Buffer, update: bool = False, header: H | _Unset = UNSET, wait: bool = False) -> None:
         """Append data at this index and optionally replace its header.
 
         Args:
             data (Buffer): Data to append.
             update (bool, optional): Whether to request a client repaint.
                 Defaults to False.
-            wait (bool, optional): Whether to return only once the client has
-                acknowledged this change. Defaults to False.
             header (H | _Unset, optional): New header; :data:`UNSET` keeps the
                 current one. Defaults to :data:`UNSET`.
+            wait (bool, optional): Whether to return only once the client has
+                acknowledged this change, or the connection has ended.
+                Defaults to False.
         """
         self._server.data_multi_add(self._value_id, self._index, data, update, _header(header), wait)
 
     def replace(
-        self, data: Buffer, index: int, update: bool = False, wait: bool = False, header: H | _Unset = UNSET
+        self, data: Buffer, index: int, update: bool = False, header: H | _Unset = UNSET, wait: bool = False
     ) -> None:
         """Replace data from ``index`` and optionally the header.
 
@@ -1433,15 +1450,16 @@ class SingleDataWithHeader[T: np.generic, H](SingleData[T]):
             index (int): Index at which replacement starts within this buffer.
             update (bool, optional): Whether to request a client repaint.
                 Defaults to False.
-            wait (bool, optional): Whether to return only once the client has
-                acknowledged this change. Defaults to False.
             header (H | _Unset, optional): New header; :data:`UNSET` keeps the
                 current one. Defaults to :data:`UNSET`.
+            wait (bool, optional): Whether to return only once the client has
+                acknowledged this change, or the connection has ended.
+                Defaults to False.
         """
         self._server.data_multi_replace(self._value_id, self._index, data, index, update, _header(header), wait)
 
     def remove(
-        self, index: int, count: int, update: bool = False, wait: bool = False, header: H | _Unset = UNSET
+        self, index: int, count: int, update: bool = False, header: H | _Unset = UNSET, wait: bool = False
     ) -> None:
         """Remove data at this index and optionally replace its header.
 
@@ -1450,10 +1468,11 @@ class SingleDataWithHeader[T: np.generic, H](SingleData[T]):
             count (int): Number of items to remove.
             update (bool, optional): Whether to request a client repaint.
                 Defaults to False.
-            wait (bool, optional): Whether to return only once the client has
-                acknowledged this change. Defaults to False.
             header (H | _Unset, optional): New header; :data:`UNSET` keeps the
                 current one. Defaults to :data:`UNSET`.
+            wait (bool, optional): Whether to return only once the client has
+                acknowledged this change, or the connection has ended.
+                Defaults to False.
         """
         self._server.data_multi_remove(self._value_id, self._index, index, count, update, _header(header), wait)
 

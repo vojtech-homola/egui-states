@@ -129,15 +129,17 @@ pub(crate) enum StateType {
     Value(String, ObjectType, InitValue, bool),
     ValueTake(String, ObjectType),
     Static(String, ObjectType, InitValue),
-    /// Name and whether it has low send priority, as for the bulk states
-    /// below.
+    /// Name and whether the field is marked for low send priority, as for the
+    /// bulk states below. A state also has low priority when a substate it
+    /// lies in is marked; that is not recorded here, so one substate type has
+    /// one definition wherever it is used.
     Image(String, bool),
     ImageMulti(String, bool),
     ValueMap(String, ObjectType, ObjectType),
     ValueVec(String, ObjectType),
     Signal(String, ObjectType, bool),
     /// Name, element type, header type (`None` for a state without one) and
-    /// whether it has low send priority.
+    /// whether the field is marked for low send priority.
     Data(String, DataType, Option<ObjectType>, bool),
     DataTake(String, DataType, Option<ObjectType>, bool),
     DataMulti(String, DataType, Option<ObjectType>, bool),
@@ -145,10 +147,27 @@ pub(crate) enum StateType {
     /// Name and metadata type (`None` for an endpoint without metadata).
     Download(String, Option<ObjectType>),
     Upload(String, Option<ObjectType>),
-    SubState(String, &'static str, Vec<StateType>),
+    /// Name, state class, states and whether the field is marked for low
+    /// send priority, which then applies to every bulk state inside.
+    SubState(String, &'static str, Vec<StateType>, bool),
 }
 
 impl StateType {
+    /// Whether this is a bulk state, or a substate with one at any depth:
+    /// the states that take a send priority.
+    pub(crate) fn takes_priority(&self) -> bool {
+        match self {
+            Self::Image(..)
+            | Self::ImageMulti(..)
+            | Self::Data(..)
+            | Self::DataTake(..)
+            | Self::DataMulti(..)
+            | Self::DataMultiTake(..) => true,
+            Self::SubState(_, _, states, _) => states.iter().any(Self::takes_priority),
+            _ => false,
+        }
+    }
+
     pub(crate) fn name(&self) -> &str {
         match self {
             Self::Value(name, ..)
@@ -176,7 +195,8 @@ pub(crate) struct StatesCreatorBuild {
     parent: String,
     sender: MessageSender,
     version_hasher: StableHasher,
-    /// Set inside [`StatesCreator::low_priority`], also for substates.
+    /// Set inside [`StatesCreator::low_priority`]. A substate's builder
+    /// starts without it: the substate records the mark instead.
     low_priority: bool,
     /// Set inside [`StatesCreator::queue`], not for substates.
     queue: bool,
@@ -239,7 +259,6 @@ impl StatesCreator for StatesCreatorBuild {
         let parent = format!("{}.{}", self.parent, name);
 
         let mut builder = Self::new(&parent);
-        builder.low_priority = self.low_priority;
         let substate = S::new(&mut builder);
         builder
             .version_hasher
@@ -248,8 +267,12 @@ impl StatesCreator for StatesCreatorBuild {
 
         let (states, rust_derives) = builder.into_parts();
         self.rust_derives.merge(rust_derives);
-        self.states
-            .push(StateType::SubState(name.to_owned(), S::NAME, states));
+        self.states.push(StateType::SubState(
+            name.to_owned(),
+            S::NAME,
+            states,
+            self.low_priority,
+        ));
 
         substate
     }

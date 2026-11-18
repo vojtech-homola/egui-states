@@ -117,7 +117,8 @@ at a time. A change waits until the client has acknowledged the previous one,
 then queues its transfer and returns, so the changes one thread makes to these
 states and to any other state reach the client in the order they were made,
 unless the state has [low send priority](#send-priority).
-With `wait`, a change returns only once the client has acknowledged it.
+With `wait`, a change returns only once the client has acknowledged it, or
+the connection has ended; the call does not tell the two apart.
 `is_idle` tells whether nothing is in flight, so a producer can skip a frame
 on a slow link instead of waiting. A change made while no client is
 synchronized is only stored, and none of these calls waits then.
@@ -192,20 +193,30 @@ state uses the lane, so the state keeps its own order. A change of another
 state made after it can reach the client first, though: after
 `image.set(frame); label.set(text)` the client may show the new label before
 the new frame. Where that order matters, `wait` on the bulk change keeps it.
+The same holds for everything else the server sends in the normal lane, such
+as a file transfer offer: it can arrive before a low-priority change made
+earlier, also before the first value of a low-priority state on a new
+connection. A repaint request is the exception: the server sends one in each
+lane, so the client repaints again when the low-priority changes have arrived.
 
 The lane has a window, the file transfer window of the server's profile. The
 server follows every frame of the lane with a small mark, which the client
 answers once it has handled everything before it, and sends while the bytes
 of unanswered frames are below the window. A normal message therefore waits
 behind at most one window or one 512 KiB chunk of bulk data, whichever is
-larger. In the latency benchmark, a value round trip during continuous 16 MiB
+larger. The window also caps the lane's throughput, at one window or one chunk
+per round trip: with the default profile, 512 KiB per round trip, which is
+about 5 MiB/s over a 100 ms round trip whatever the bandwidth. The
+`Throughput` profile doubles that, at the cost of twice the wait for a normal
+message. In the latency benchmark, a value round trip during continuous 16 MiB
 `Data` sets takes 2.5 ms instead of 133 ms over a 1 Gbit/s link and 50 ms
 instead of 1350 ms over a 100 Mbit/s link, while the sets move 2 % and 11 %
 slower; on loopback the sets move about a quarter slower.
 
 After eight frames of normal messages in a row, the server first sends one
-waiting frame of the low-priority lane, or else one chunk of file data, so a
-busy normal lane slows the other lanes down but never stops them.
+waiting frame of the low-priority lane or one chunk of file data, taking turns
+between the two, so a busy normal lane slows the other lanes down but never
+stops them.
 
 ## File transfers
 

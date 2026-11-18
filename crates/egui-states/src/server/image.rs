@@ -116,7 +116,9 @@ impl Image {
     /// the previous one has been acknowledged by the client, then queues the
     /// image and returns. The unsent parts of a split [`update`](Self::update)
     /// are dropped first, because this image overwrites them. With `wait`,
-    /// the call returns only once the client has acknowledged this image.
+    /// the call returns only once the client has acknowledged this image, or
+    /// the connection has ended; it does not tell the two apart, and without
+    /// a client it does not wait.
     ///
     /// # Errors
     ///
@@ -178,7 +180,8 @@ impl Image {
     /// the call first drops the unsent parts of the previous split update
     /// when this rectangle covers its rectangle; the part being sent always
     /// completes. With `wait`, the call returns only once the client has
-    /// acknowledged the last part of this update.
+    /// acknowledged the last part of this update, or the connection has
+    /// ended.
     ///
     /// # Errors
     ///
@@ -282,7 +285,8 @@ impl ImageMulti {
     /// All indices share one transfer stream, so this waits for the previous
     /// transfer of any index, as [`Image::set`] does. Only unsent parts of a
     /// split update of the same `index` are dropped. With `wait`, the call
-    /// returns only once the client has acknowledged this image.
+    /// returns only once the client has acknowledged this image, or the
+    /// connection has ended.
     pub fn set(
         &self,
         index: u32,
