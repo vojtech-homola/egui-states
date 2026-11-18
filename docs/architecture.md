@@ -97,10 +97,11 @@ if `a -> b -> c` coalesces to `c`, the callback receives `(c, a)`.
 
 Large numeric buffers, image sets, image updates and collection replacements
 are split into chunks of 512 KiB and published to a client handle only after
-the last chunk arrives. Small messages queued together are merged into one frame of up to
-10 MB, but a chunk is never merged: the WebSocket library moves the unsent rest
-of a message after every partial socket write, so large frames cost time
-quadratic in their size. Acknowledgements provide backpressure and release
+the last chunk arrives. Small messages queued together are merged into one
+frame of up to 256 messages and about 512 KiB, which saves a socket write per
+message. A message larger than 64 KiB, such as a full chunk, is sent as a frame
+of its own: the WebSocket library moves the unsent rest of a message after
+every partial socket write, so large frames cost time quadratic in their size. Acknowledgements provide backpressure and release
 pending server work.
 
 When a client connects, every state is synchronized from the server's current

@@ -23,3 +23,7 @@ harness = false
 [[bench]]
 name = "latency"
 harness = false
+
+[[bench]]
+name = "burst"
+harness = false

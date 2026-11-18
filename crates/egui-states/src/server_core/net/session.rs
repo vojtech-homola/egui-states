@@ -15,7 +15,7 @@ use tokio::time::{Instant, Interval, MissedTickBehavior, interval_at, timeout_at
 use crate::PROTOCOL_VERSION;
 use crate::event::Event;
 use crate::file_transfer::engine::Engine;
-use crate::protocol::{FastVec, MAX_MSG_COUNT, MSG_SIZE_THRESHOLD, ServerHeader, serialize};
+use crate::protocol::{FRAME_FLUSH_SIZE, FastVec, MAX_MSG_COUNT, ServerHeader, serialize};
 use crate::server_core::http::origin::OriginPolicy;
 use crate::server_core::http::web::{WebSite, WebSlot};
 use crate::server_core::net::heartbeat::{Activity, Heartbeat};
@@ -684,7 +684,9 @@ fn report_silent(signals: &SignalsManager, heartbeat: Heartbeat) {
 
 // A helper struct to receive from MessageReceiver and create micro-batches
 /// Messages larger than this are not merged with others into one frame:
-/// appending would copy them again, and they fill a frame on their own.
+/// appending would copy them again, and they fill a frame on their own. In
+/// the `burst` benchmark merging 16 KiB messages is a gain and merging
+/// 100 KiB messages a loss.
 const MERGE_LIMIT: usize = 64 * 1024;
 
 struct DataReceiver {
@@ -717,36 +719,24 @@ impl DataReceiver {
         }
 
         let mut counter = 1;
-        loop {
-            if msg.len() > MSG_SIZE_THRESHOLD || counter >= MAX_MSG_COUNT {
-                return Some(msg);
-            }
-
+        while counter < MAX_MSG_COUNT && msg.len() < FRAME_FLUSH_SIZE {
             match self.rx.try_recv() {
-                Ok(Some((next_msg, true))) => {
-                    self.send_next = Some((next_msg, true));
-                    return Some(msg);
-                }
-                Ok(Some((next_msg, false))) => {
-                    if next_msg.len() > MERGE_LIMIT
-                        || msg
-                            .len()
-                            .checked_add(next_msg.len())
-                            .is_none_or(|size| size > MSG_SIZE_THRESHOLD)
-                    {
-                        self.send_next = Some((next_msg, false));
-                        return Some(msg);
+                Ok(Some((next_msg, send_now))) => {
+                    if send_now || next_msg.len() > MERGE_LIMIT {
+                        self.send_next = Some((next_msg, send_now));
+                        break;
                     }
                     msg.extend_from_data(&next_msg);
                     counter += 1;
                 }
-                Err(TryRecvError::Empty) => return Some(msg),
+                Err(TryRecvError::Empty) => break,
                 Ok(None) | Err(TryRecvError::Disconnected) => {
                     self.is_closed = true;
-                    return Some(msg);
+                    break;
                 }
             }
         }
+        Some(msg)
     }
 
     fn finalize(self) -> MessageReceiver {
@@ -759,7 +749,7 @@ mod tests {
     use tokio::sync::mpsc::unbounded_channel;
 
     use super::{DataReceiver, MERGE_LIMIT};
-    use crate::protocol::{FastVec, MAX_MSG_COUNT, MSG_SIZE_THRESHOLD};
+    use crate::protocol::{FRAME_FLUSH_SIZE, FastVec, MAX_MSG_COUNT};
 
     fn data(size: usize) -> FastVec<32> {
         FastVec::Heap((0..size).map(|i| (i % 251) as u8).collect())
@@ -807,14 +797,26 @@ mod tests {
         assert_eq!(frames, [bytes(5), bytes(MERGE_LIMIT + 1), joined(&[6, 7])]);
     }
 
+    /// A frame is sent once it has reached the flush size; what follows
+    /// starts the next frame.
     #[tokio::test]
-    async fn data_receiver_does_not_batch_past_size_threshold() {
-        let frames = frames(vec![
-            (data(MSG_SIZE_THRESHOLD - 10), false),
-            (data(11), false),
-        ])
-        .await;
-        assert_eq!(frames, [bytes(MSG_SIZE_THRESHOLD - 10), bytes(11)]);
+    async fn data_receiver_sends_a_frame_that_reached_the_flush_size() {
+        let count = FRAME_FLUSH_SIZE / MERGE_LIMIT;
+        let mut messages: Vec<_> = (0..count).map(|_| (data(MERGE_LIMIT), false)).collect();
+        messages.push((data(11), false));
+        let frames = frames(messages).await;
+        assert_eq!(frames, [joined(&vec![MERGE_LIMIT; count]), bytes(11)]);
+    }
+
+    /// One message short of the flush size, the frame still takes the next.
+    #[tokio::test]
+    async fn data_receiver_merges_below_the_flush_size() {
+        let count = FRAME_FLUSH_SIZE / MERGE_LIMIT;
+        let mut sizes = vec![MERGE_LIMIT; count - 1];
+        sizes.extend([MERGE_LIMIT - 1, 11]);
+        let messages = sizes.iter().map(|size| (data(*size), false)).collect();
+        let frames = frames(messages).await;
+        assert_eq!(frames, [joined(&sizes)]);
     }
 
     #[tokio::test]
@@ -843,9 +845,10 @@ mod tests {
 
     #[tokio::test]
     async fn data_receiver_respects_message_count_limit() {
+        let marker = |index: usize| (index % 251) as u8;
         let (tx, rx) = unbounded_channel();
-        for marker in 0..MAX_MSG_COUNT + 2 {
-            tx.send(Some((FastVec::Heap(vec![marker as u8]), false)))
+        for index in 0..MAX_MSG_COUNT + 2 {
+            tx.send(Some((FastVec::Heap(vec![marker(index)]), false)))
                 .unwrap();
         }
         drop(tx);
@@ -853,11 +856,11 @@ mod tests {
         let mut receiver = DataReceiver::new(rx);
         assert_eq!(
             receiver.next().await.unwrap().into_bytes().as_ref(),
-            (0..MAX_MSG_COUNT as u8).collect::<Vec<_>>()
+            (0..MAX_MSG_COUNT).map(marker).collect::<Vec<_>>()
         );
         assert_eq!(
             receiver.next().await.unwrap().into_bytes().as_ref(),
-            [MAX_MSG_COUNT as u8, MAX_MSG_COUNT as u8 + 1]
+            [marker(MAX_MSG_COUNT), marker(MAX_MSG_COUNT + 1)]
         );
         assert!(receiver.next().await.is_none());
     }

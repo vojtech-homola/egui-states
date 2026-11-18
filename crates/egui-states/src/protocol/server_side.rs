@@ -8,10 +8,10 @@ use crate::protocol::fastvec::{FastVec, serialize_to_data};
 use crate::protocol::header::{ClientHeader, ServerHeader};
 
 /// Chunk size of bulk transfers: Data, takes, image sets and collection
-/// replacements. Much smaller than `MSG_SIZE_THRESHOLD`, the cap for merging
-/// small messages into one frame, because the WebSocket library moves the
+/// replacements. Kept this small because the WebSocket library moves the
 /// unsent rest of a message after every partial socket write, which costs
-/// time quadratic in the message size.
+/// time quadratic in the message size. `FRAME_FLUSH_SIZE` bounds a frame of
+/// merged small messages to about the same size.
 pub(crate) const TRANSFER_CHUNK_SIZE: usize = 512 * 1024;
 
 /// The longest encoding of a Data message's server header; a test checks the

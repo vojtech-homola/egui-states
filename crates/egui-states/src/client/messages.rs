@@ -7,7 +7,7 @@ use crate::file_transfer::TransferLimits;
 use crate::protocol::data::{DataMultiTakeHeader, MultiDataHeader};
 use crate::protocol::image::{ImageHeader, ImageMultiHeader};
 use crate::protocol::{
-    ClientHeader, FastVec, MAX_MSG_COUNT, MSG_SIZE_THRESHOLD, MessageData, ServerHeader, serialize,
+    ClientHeader, FRAME_FLUSH_SIZE, FastVec, MAX_MSG_COUNT, MessageData, ServerHeader, serialize,
     serialize_to_data,
 };
 
@@ -105,7 +105,7 @@ impl MessagesSerializer {
                         Ok(Some(msg)) => {
                             counter += 1;
                             parse_to_send(msg, &mut message);
-                            if counter >= MAX_MSG_COUNT || message.len() > MSG_SIZE_THRESHOLD {
+                            if counter >= MAX_MSG_COUNT || message.len() >= FRAME_FLUSH_SIZE {
                                 return Some(message);
                             }
                         }
