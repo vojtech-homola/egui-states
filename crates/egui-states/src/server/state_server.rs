@@ -3203,21 +3203,39 @@ mod connection_tests {
             server.start_web().unwrap();
             server.start(port, Some(Ipv4Addr::LOCALHOST), None).unwrap();
 
-            {
-                use std::io::Write;
+            // The server sends session tickets right after the handshake. A
+            // client that leaves them unread makes the system reset the
+            // connection when it closes; one that read them closes it.
+            for read_tickets in [false, true] {
                 let mut unused = crate::test_support::tls_connect(port);
                 // Completes the handshake without sending a request.
                 while unused.conn.is_handshaking() {
                     unused.conn.complete_io(&mut unused.sock).unwrap();
                 }
-                unused.flush().unwrap();
+                thread::sleep(Duration::from_millis(100));
+                if read_tickets {
+                    unused
+                        .sock
+                        .set_read_timeout(Some(Duration::from_millis(100)))
+                        .unwrap();
+                    while unused
+                        .conn
+                        .complete_io(&mut unused.sock)
+                        .is_ok_and(|(read, _)| read > 0)
+                    {}
+                }
                 // Dropped without the TLS closing message.
+                drop(unused);
+
+                // The server noticed the closed connection and still serves.
+                let response = https(port, b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n");
+                assert!(String::from_utf8_lossy(&response).ends_with("page"));
+                let reported = error.recv_timeout(Duration::from_millis(500));
+                assert!(
+                    reported.is_err(),
+                    "read tickets {read_tickets}: {reported:?}"
+                );
             }
-            // The server noticed the closed connection and still serves.
-            let response = https(port, b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n");
-            assert!(String::from_utf8_lossy(&response).ends_with("page"));
-            let reported = error.recv_timeout(Duration::from_millis(500));
-            assert!(reported.is_err(), "{reported:?}");
             server.stop();
         }
 

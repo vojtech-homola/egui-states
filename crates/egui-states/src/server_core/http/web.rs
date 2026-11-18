@@ -317,19 +317,35 @@ pub(crate) async fn dispatch(mut stream: Stream) -> io::Result<Dispatch> {
             Parsed::Partial if stream.ahead().len() >= MAX_REQUEST_HEAD => {
                 Dispatch::Http(stream, HttpRequest(Err(431)))
             }
-            Parsed::Partial => {
-                // A peer that closes before its head is complete sent no request.
-                if stream.read_ahead(MAX_REQUEST_HEAD).await? == 0 {
-                    return Ok(Dispatch::Closed);
-                }
-                continue;
-            }
+            Parsed::Partial => match stream.read_ahead(MAX_REQUEST_HEAD).await {
+                Ok(0) => Dispatch::Closed,
+                Ok(_) => continue,
+                Err(error) if gone(&error) => Dispatch::Closed,
+                Err(error) => return Err(error),
+            },
             Parsed::WebSocket => Dispatch::WebSocket(stream),
             Parsed::Http(head) => Dispatch::Http(stream, HttpRequest(Ok(head))),
             Parsed::Invalid => Dispatch::Http(stream, HttpRequest(Err(400))),
             Parsed::TooLarge => Dispatch::Http(stream, HttpRequest(Err(431))),
         });
     }
+}
+
+/// Whether `error` only says that the peer went away.
+///
+/// A peer that goes away before its request head is complete sent no request,
+/// as when a client drops a connection it opened in advance and never used.
+/// Over TLS that is common and often abrupt: the client has not read the
+/// session tickets the server sent after the handshake, so the system resets
+/// the connection, or the client closes it without the TLS closing message.
+fn gone(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::UnexpectedEof
+            | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::ConnectionAborted
+            | io::ErrorKind::BrokenPipe
+    )
 }
 
 fn parse_head(buffer: &[u8]) -> Parsed {

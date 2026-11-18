@@ -87,14 +87,7 @@ impl Stream {
         match &mut self.io {
             Io::Plain(stream) => stream.read_buf(&mut buffer).await,
             #[cfg(feature = "tls")]
-            Io::Tls(stream) => match stream.read_buf(&mut buffer).await {
-                // The peer closed the connection without the TLS closing
-                // message, as clients that drop an unused connection do. No
-                // request is cut short by it here: one is only complete with
-                // the empty line that ends its head.
-                Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => Ok(0),
-                read => read,
-            },
+            Io::Tls(stream) => stream.read_buf(&mut buffer).await,
         }
     }
 
