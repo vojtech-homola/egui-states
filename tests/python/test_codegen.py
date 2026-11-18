@@ -76,6 +76,15 @@ def test_generated_python_is_usable(codegen_probe, tmp_path):
     assert payload.nested.enabled is True
     assert payload.choice.value == 71
     assert server.states.mapping.get() == {1: 10, 3: 30, 20: 200}
+    # Values given with `#[state(init = ...)]` on a derived state.
+    initials = server.states.initials
+    assert initials.gain.get() == 0.5
+    assert initials.status.get() == "ready"
+    assert initials.choice.get().value == 71
+    assert initials.inner.get().enabled is True
+    assert initials.counter.get() == 7
+    assert initials.flag.get() is True
+    assert initials.plain.get() == 0
     assert not server.is_running()
     server.stop()
 
