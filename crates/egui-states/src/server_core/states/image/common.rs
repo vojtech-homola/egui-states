@@ -182,11 +182,15 @@ pub(crate) fn checked_image_rect(
     Ok([x, y, width, height])
 }
 
-pub(crate) fn checked_fill_size(size: [usize; 2]) -> Result<([u32; 2], usize), String> {
+/// Checks that an image of `size` (`[height, width]`) can be stored and
+/// returns its wire size (`[width, height]`). The size is checked at four
+/// bytes per pixel whatever the format, because an update can widen the
+/// stored image up to RGBA and the client always stores RGBA.
+pub(crate) fn checked_stored_size(size: [usize; 2]) -> Result<[u32; 2], String> {
     let wire_size = checked_image_size(size)?;
-    let rgba_size = checked_image_bytes(size, 4)?;
+    checked_image_bytes(size, 4)?;
 
-    Ok((wire_size, rgba_size))
+    Ok(wire_size)
 }
 
 /// Converts `image` to `to`, which holds its format, into `target`, as if

@@ -14,8 +14,8 @@ use crate::server_core::error::CoreError;
 use crate::server_core::net::sender::MessageSender;
 use crate::server_core::server::{Acknowledge, SyncTrait};
 use crate::server_core::states::image::common::{
-    ImageData, ImageFill, StoredImage, checked_fill_size, checked_image_rect, checked_image_size,
-    checked_max_lines, pack_image_set, pack_image_update,
+    ImageData, ImageFill, StoredImage, checked_image_rect, checked_image_size, checked_max_lines,
+    checked_stored_size, pack_image_set, pack_image_update,
 };
 use crate::server_core::states::scheduler::Scheduler;
 use crate::server_core::transfer::Messages;
@@ -89,7 +89,7 @@ impl ImageMulti {
         update: bool,
         wait: bool,
     ) -> Result<(), String> {
-        checked_fill_size(image.size)?;
+        checked_stored_size(image.size)?;
         let to_send = if self.transfer.is_connected() {
             Some(pack_set_data(self.transfer.id, index, &image, update)?)
         } else {
@@ -127,7 +127,7 @@ impl ImageMulti {
         wait: bool,
     ) -> Result<(), String> {
         let rgba = fill.rgba();
-        let (wire_size, _) = checked_fill_size(size)?;
+        let wire_size = checked_stored_size(size)?;
         let to_send = if self.transfer.is_connected() {
             Some(pack_fill_data(
                 self.transfer.id,
@@ -174,7 +174,7 @@ impl ImageMulti {
         max_lines: Option<usize>,
         wait: bool,
     ) -> Result<(), CoreError> {
-        checked_fill_size(image.size)?;
+        checked_stored_size(image.size)?;
         checked_image_rect(origin, image.size)?;
         checked_max_lines(max_lines)?;
         let to_send = if self.transfer.is_connected() {

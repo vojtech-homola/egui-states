@@ -13,7 +13,8 @@ use crate::server_core::net::sender::MessageSender;
 use crate::server_core::server::{Acknowledge, SyncTrait};
 pub(crate) use crate::server_core::states::image::common::ImageData;
 use crate::server_core::states::image::common::{
-    ImageFill, StoredImage, checked_fill_size, checked_max_lines, pack_image_set, pack_image_update,
+    ImageFill, StoredImage, checked_max_lines, checked_stored_size, pack_image_set,
+    pack_image_update,
 };
 use crate::server_core::states::scheduler::Scheduler;
 use crate::server_core::transfer::Messages;
@@ -67,7 +68,7 @@ impl Image {
         update: bool,
         wait: bool,
     ) -> Result<(), String> {
-        checked_fill_size(image.size)?;
+        checked_stored_size(image.size)?;
         let id = self.scheduler.id;
         // Prepare data to send if connected before locking
         let to_send = if self.scheduler.is_connected() {
@@ -113,7 +114,7 @@ impl Image {
         wait: bool,
     ) -> Result<(), String> {
         let rgba = fill.rgba();
-        let (wire_size, _) = checked_fill_size(size)?;
+        let wire_size = checked_stored_size(size)?;
         let id = self.scheduler.id;
 
         // Prepare the compact message before locking when possible, just like
@@ -163,7 +164,7 @@ impl Image {
         max_lines: Option<usize>,
         wait: bool,
     ) -> Result<(), String> {
-        checked_fill_size(image.size)?;
+        checked_stored_size(image.size)?;
         checked_image_bounds(*origin, image.size)?;
         checked_max_lines(max_lines)?;
         let id = self.scheduler.id;

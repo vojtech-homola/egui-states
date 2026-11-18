@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use crate::protocol::image::{ImageType, checked_image_bytes};
-use crate::server_core::states::image::common::{ImageFill, StoredImage, checked_fill_size};
+use crate::server_core::states::image::common::{ImageFill, StoredImage, checked_stored_size};
 use crate::server_core::states::image::multi::ImageMulti as CoreImageMulti;
 use crate::server_core::states::image::single::{Image as CoreImage, ImageData};
 
@@ -427,7 +427,7 @@ impl ImageMulti {
 }
 
 fn check_image_multi_data(data: &[u8], size: [usize; 2], format: ImageFormat) -> Result<()> {
-    checked_fill_size(size).map_err(ServerError::new)?;
+    checked_stored_size(size).map_err(ServerError::new)?;
     let stride = size[1]
         .checked_mul(format.bytes_per_pixel())
         .ok_or_else(|| ServerError::new("image dimensions overflow"))?;
