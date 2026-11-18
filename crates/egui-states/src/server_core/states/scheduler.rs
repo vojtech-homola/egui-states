@@ -134,6 +134,12 @@ impl Scheduler {
         self.state.lock().sync.generation()
     }
 
+    /// Whether parts of a split update wait behind the part in flight.
+    #[cfg(all(test, feature = "client"))]
+    pub(super) fn has_waiting(&self) -> bool {
+        self.state.lock().waiting.is_some()
+    }
+
     /// Whether nothing is in flight and nothing waits, so a change would be
     /// sent at once. Also true while no client is synchronized, because a
     /// change is then only stored.

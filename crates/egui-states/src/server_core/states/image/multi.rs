@@ -882,6 +882,10 @@ mod tests {
             )
         });
         wait_until(|| column(1) == [40, 40, 40, 255, 41, 41, 41, 255]);
+        // The stored pixels change before the waiting row is dropped; an
+        // acknowledgement in between would send that row and leave the
+        // forced update waiting for an acknowledgement that never comes.
+        wait_until(|| !images.transfer.has_waiting());
         images.acknowledge();
         same_index.join().unwrap().unwrap();
         assert_update(&mut receiver, 1, &[40, 41]);
