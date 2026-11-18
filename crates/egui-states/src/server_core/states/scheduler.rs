@@ -10,7 +10,6 @@ use parking_lot::{Mutex, MutexGuard};
 use crate::event::Event;
 use crate::protocol::FastVec;
 use crate::server_core::net::sender::MessageSender;
-use crate::server_core::states::image::common::covers;
 use crate::server_core::transfer::Messages;
 
 /// Connection bookkeeping a state keeps under its storage lock.
@@ -56,6 +55,14 @@ impl SyncState {
         self.required = true;
         self.generation = self.generation.wrapping_add(1);
     }
+}
+
+/// Whether the rectangle `outer` (`[y, x, height, width]`) contains `inner`.
+fn covers(outer: [usize; 4], inner: [usize; 4]) -> bool {
+    outer[0] <= inner[0]
+        && outer[1] <= inner[1]
+        && outer[0] + outer[2] >= inner[0] + inner[2]
+        && outer[1] + outer[3] >= inner[1] + inner[3]
 }
 
 /// The parts of a split update that wait behind the part in flight.

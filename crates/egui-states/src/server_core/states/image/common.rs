@@ -104,15 +104,6 @@ pub(crate) fn checked_max_lines(max_lines: Option<usize>) -> Result<(), String> 
     }
 }
 
-/// Whether the server rectangle `outer` (`[y, x, height, width]`) contains
-/// `inner`.
-pub(crate) fn covers(outer: [usize; 4], inner: [usize; 4]) -> bool {
-    outer[0] <= inner[0]
-        && outer[1] <= inner[1]
-        && outer[0] + outer[2] >= inner[0] + inner[2]
-        && outer[1] + outer[3] >= inner[1] + inner[3]
-}
-
 /// Packs an update of the validated `image` into the wire rectangle `rect`
 /// (`[x, y, width, height]`). `header` serializes an image header with its
 /// payload length for the image's state.
