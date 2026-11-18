@@ -29,7 +29,7 @@ use crate::python::{
 use crate::server_core::file_transfer::{TransferEndpoint, finished_transfer};
 use crate::server_core::http::web::{LoadError, WebSite};
 use crate::server_core::net::heartbeat::{self, Heartbeat};
-use crate::server_core::server::{Server, ServerConfig, StateRef};
+use crate::server_core::server::{Server, ServerConfig, StateRef, TlsSettings};
 use crate::server_core::signals::{self, Claim, SignalsManager};
 use crate::server_core::states::data::{Data, DataMulti, DataSlice};
 use crate::server_core::states::data_take::{DataMultiTake, DataTake};
@@ -283,6 +283,16 @@ pub(crate) fn decode_header<'py>(
     }
 }
 
+/// Raises an [`OSError`] subclass for a file that cannot be read, keeping its
+/// kind (a missing file raises `FileNotFoundError`), and `ValueError` for the
+/// rest.
+fn load_error(error: LoadError) -> PyErr {
+    match error {
+        LoadError::Io(e) => PyErr::from(e),
+        LoadError::Invalid(message) => PyValueError::new_err(message),
+    }
+}
+
 #[pymethods]
 impl StateServerCore {
     #[new]
@@ -293,7 +303,11 @@ impl StateServerCore {
         web_path=None,
         allowed_origins=Vec::new(),
         transfer_profile=1,
+        tls=false,
+        tls_cert=None,
+        tls_key=None,
     ))]
+    #[allow(clippy::too_many_arguments)]
     fn new(
         version: Option<u64>,
         heartbeat_interval: f64,
@@ -301,6 +315,9 @@ impl StateServerCore {
         web_path: Option<PathBuf>,
         allowed_origins: Vec<String>,
         transfer_profile: u8,
+        tls: bool,
+        tls_cert: Option<PathBuf>,
+        tls_key: Option<PathBuf>,
     ) -> PyResult<Self> {
         let heartbeat = Heartbeat::from_secs(heartbeat_interval, heartbeat_timeout)
             .map_err(PyValueError::new_err)?;
@@ -313,8 +330,13 @@ impl StateServerCore {
             web_path.as_deref(),
             &allowed_origins,
             transfer_profile,
+            TlsSettings {
+                enabled: tls,
+                cert: tls_cert.as_deref(),
+                key: tls_key.as_deref(),
+            },
         )
-        .map_err(PyValueError::new_err)?;
+        .map_err(load_error)?;
         let server = Server::new(config);
         let signals = server.get_signals_manager();
 
@@ -473,11 +495,7 @@ impl StateServerCore {
             self.server.read().web_path().ok_or_else(|| {
                 PyRuntimeError::new_err("The server was created without web_path.")
             })?;
-        let site = py.detach(|| WebSite::load(&path)).map_err(|e| match e {
-            // Keeps the kind, so a missing path raises FileNotFoundError.
-            LoadError::Io(e) => PyErr::from(e),
-            LoadError::Invalid(message) => PyValueError::new_err(message),
-        })?;
+        let site = py.detach(|| WebSite::load(&path)).map_err(load_error)?;
         self.server.read().set_web(Some(site));
         Ok(())
     }
@@ -492,6 +510,10 @@ impl StateServerCore {
 
     fn web_path(&self) -> Option<PathBuf> {
         self.server.read().web_path()
+    }
+
+    fn tls_fingerprint(&self) -> Option<String> {
+        self.server.read().tls_fingerprint()
     }
 
     fn update(&self, duration: Option<f32>) -> PyResult<()> {
@@ -1953,7 +1975,9 @@ mod tests {
     ) {
         Python::initialize();
         let core = Python::attach(|py| {
-            let core = StateServerCore::new(None, 60.0, None, None, Vec::new(), 1).unwrap();
+            let core =
+                StateServerCore::new(None, 60.0, None, None, Vec::new(), 1, false, None, None)
+                    .unwrap();
             Py::new(py, core).unwrap()
         });
         let port = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))

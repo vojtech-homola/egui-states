@@ -93,6 +93,24 @@ The Python server always uses `example/showcase/gui/web`, resolved relative to
 
 Then open [localhost:8091](http://localhost:8091) and click **Connect**.
 
+## Encrypted connection
+
+Both servers take `--tls` to encrypt connections with a certificate generated
+for this run, and print its fingerprint. Pass the fingerprint to the native
+GUI, which then accepts only that certificate (`--tls any` accepts any):
+
+```sh
+uv run python example/showcase/python/run.py --tls
+# prints: TLS certificate fingerprint (SHA-256): 4f2a...
+cargo run -p showcase_gui --bin showcase-gui -- --tls 4f2a...
+```
+
+The GUI also takes `--host` and `--port`. With `--web --tls`, open
+[https://localhost:8091](https://localhost:8091); the browser warns about the
+generated certificate, whose SHA-256 fingerprint in the certificate viewer
+should match the printed one. Trunk serves plain HTTP, so keep TLS off with
+`trunk serve`.
+
 ## Read the code
 
 - [State definitions](gui-core/src/state/mod.rs): follow each feature's module

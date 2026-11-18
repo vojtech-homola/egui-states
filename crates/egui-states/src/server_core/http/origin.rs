@@ -28,6 +28,8 @@ pub(crate) struct OriginPolicy {
     allowed: Vec<OriginPattern>,
     /// Set by a `*` entry: every page may connect.
     any: bool,
+    /// Whether this server speaks TLS itself, so its own pages are `https`.
+    secure: bool,
 }
 
 impl OriginPolicy {
@@ -37,7 +39,8 @@ impl OriginPolicy {
     /// run of characters in the host (`*.example.com`), or any port (`:*`).
     /// Without a port, the scheme's default port is meant, as in browsers.
     /// A pattern of just `*` allows every page, including local files.
-    pub(crate) fn new(patterns: &[String]) -> Result<Self, String> {
+    /// `secure` tells that the server speaks TLS itself.
+    pub(crate) fn new(patterns: &[String], secure: bool) -> Result<Self, String> {
         let any = patterns.iter().any(|text| text == "*");
         let allowed = patterns
             .iter()
@@ -48,7 +51,11 @@ impl OriginPolicy {
                 })
             })
             .collect::<Result<_, _>>()?;
-        Ok(Self { allowed, any })
+        Ok(Self {
+            allowed,
+            any,
+            secure,
+        })
     }
 
     /// Checks the headers of a WebSocket upgrade request.
@@ -78,7 +85,7 @@ impl OriginPolicy {
             return Ok(());
         }
 
-        let served = served_origin(headers).ok_or_else(rejected)?;
+        let served = served_origin(headers, self.secure).ok_or_else(rejected)?;
         if origin.scheme != served.scheme
             || origin.host != served.host
             || origin.effective_port() != served.effective_port()
@@ -121,15 +128,16 @@ fn is_local_name_or_address(host: &str) -> bool {
 /// A browser cannot set headers on a WebSocket request, so `X-Forwarded-*`
 /// headers were added by a proxy and name the address and scheme the browser
 /// used; the `Host` header then names the proxy's backend instead. Without
-/// them the browser reached this server directly, which speaks plain HTTP.
-fn served_origin(headers: &HeaderMap) -> Option<Origin> {
+/// them the browser reached this server directly, which speaks HTTPS when it
+/// is `secure` and plain HTTP otherwise.
+fn served_origin(headers: &HeaderMap, secure: bool) -> Option<Origin> {
     // Chained proxies append; the first entry is the browser's.
     let first = |name| -> Option<&str> {
         Some(headers.get(name)?.to_str().ok()?.split(',').next()?.trim())
     };
     let address = first(X_FORWARDED_HOST).or_else(|| first(header::HOST.as_str()))?;
     let scheme = first(X_FORWARDED_PROTO)
-        .unwrap_or("http")
+        .unwrap_or(if secure { "https" } else { "http" })
         .to_ascii_lowercase();
     // Some proxies, such as Traefik, report a WebSocket request's scheme as
     // `ws` or `wss`; the page that opened it was loaded over HTTP or HTTPS.
@@ -262,7 +270,7 @@ fn split_scheme(text: &str) -> Option<(String, &str)> {
 ///
 /// IPv6 addresses keep their brackets. Anything with a path, user info, or
 /// an invalid port is rejected.
-fn split_authority(authority: &str) -> Option<(String, Option<u16>)> {
+pub(super) fn split_authority(authority: &str) -> Option<(String, Option<u16>)> {
     if authority.is_empty()
         || authority.contains(|c: char| matches!(c, '/' | '?' | '#' | '@') || c.is_whitespace())
     {
@@ -312,7 +320,7 @@ mod tests {
 
     fn policy(patterns: &[&str]) -> OriginPolicy {
         let patterns = patterns.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        OriginPolicy::new(&patterns).unwrap()
+        OriginPolicy::new(&patterns, false).unwrap()
     }
 
     #[test]
@@ -562,9 +570,42 @@ mod tests {
             "",
         ] {
             assert!(
-                OriginPolicy::new(&[pattern.to_string()]).is_err(),
+                OriginPolicy::new(&[pattern.to_string()], false).is_err(),
                 "{pattern}"
             );
+        }
+    }
+
+    #[test]
+    fn a_server_speaking_tls_serves_https_pages() {
+        let secure = OriginPolicy::new(&[], true).unwrap();
+        for request in [
+            vec![
+                ("Host", "127.0.0.1:8091"),
+                ("Origin", "https://127.0.0.1:8091"),
+            ],
+            vec![("Host", "localhost"), ("Origin", "https://localhost")],
+            vec![("Host", "localhost:443"), ("Origin", "https://localhost")],
+            // A proxy in front still decides the scheme.
+            vec![
+                ("Host", "127.0.0.1:8091"),
+                ("X-Forwarded-Host", "localhost:8090"),
+                ("X-Forwarded-Proto", "http"),
+                ("Origin", "http://localhost:8090"),
+            ],
+        ] {
+            assert!(secure.check(&headers(&request)).is_ok(), "{request:?}");
+        }
+        for request in [
+            // A plain HTTP page of the same address is another origin.
+            vec![
+                ("Host", "127.0.0.1:8091"),
+                ("Origin", "http://127.0.0.1:8091"),
+            ],
+            vec![("Host", "localhost"), ("Origin", "http://localhost")],
+            vec![("Host", "evil.example"), ("Origin", "https://evil.example")],
+        ] {
+            assert!(secure.check(&headers(&request)).is_err(), "{request:?}");
         }
     }
 }

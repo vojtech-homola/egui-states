@@ -671,6 +671,9 @@ class StatesServer(StateServerBase[{root_name}]):
         web_path: str | PathLike[str] | None = None,
         allowed_origins: Sequence[str] = (),
         transfer_profile: TransferProfile = TransferProfile.Balanced,
+        tls: bool = False,
+        tls_cert: str | PathLike[str] | None = None,
+        tls_key: str | PathLike[str] | None = None,
     ) -> None:
         """Initialize and finalize the generated state server.
 
@@ -699,12 +702,23 @@ class StatesServer(StateServerBase[{root_name}]):
                 share the connection with state synchronization:
                 ``Responsive`` for slow links, ``Balanced``, or ``Throughput``
                 for a client on the same machine. Defaults to ``Balanced``.
+            tls (bool, optional): Whether clients connect with TLS, which
+                encrypts the connection. Without ``tls_cert``, the server
+                generates a self-signed certificate that exists only in
+                memory; see ``tls_fingerprint``. Defaults to ``False``.
+            tls_cert (str | PathLike[str] | None, optional): PEM file with the
+                certificate to present instead of a generated one. Requires
+                ``tls`` and ``tls_key``. Defaults to a generated certificate.
+            tls_key (str | PathLike[str] | None, optional): PEM file with the
+                unencrypted private key of ``tls_cert``.
 
         Raises:
             ValueError: If ``heartbeat_interval`` is not positive,
                 ``heartbeat_timeout`` is not greater than it, ``web_path``
-                cannot be made absolute, an allowed origin is malformed, or
-                ``transfer_profile`` is not a ``TransferProfile``.
+                cannot be made absolute, an allowed origin is malformed,
+                ``transfer_profile`` is not a ``TransferProfile``, or the TLS
+                settings or files are invalid.
+            OSError: If ``tls_cert`` or ``tls_key`` cannot be read.
         """
         super().__init__(
             {root_name},
@@ -716,6 +730,9 @@ class StatesServer(StateServerBase[{root_name}]):
             web_path,
             allowed_origins,
             transfer_profile,
+            tls,
+            tls_cert,
+            tls_key,
         )
 "#
     )

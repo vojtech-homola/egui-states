@@ -10,12 +10,12 @@ use std::io;
 use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
 
 use crate::file_transfer::TransferError;
 use crate::file_transfer::engine::{DOWNLOAD_PATH, Engine, HttpJob};
 use crate::server_core::http::web::{HttpRequest, LINGER_TIMEOUT, MAX_REQUEST_HEAD};
 use crate::server_core::http::zip::ZipLayout;
+use crate::server_core::net::stream::Stream;
 
 /// A browser that stops reading this long fails the download. It is longer
 /// than for the web page: a browser set to ask where to save may wait for the
@@ -33,7 +33,7 @@ pub(crate) fn is_download(request: &HttpRequest) -> bool {
 }
 
 /// Answers a request that is not a download when no web page is served.
-pub(crate) async fn not_found(stream: TcpStream, request: HttpRequest) -> io::Result<()> {
+pub(crate) async fn not_found(stream: Stream, request: HttpRequest) -> io::Result<()> {
     let status = request.error_status().unwrap_or(404);
     respond_error(stream, &request, status).await
 }
@@ -44,7 +44,7 @@ pub(crate) async fn not_found(stream: TcpStream, request: HttpRequest) -> io::Re
 /// takes, for the caller to run apart from what must stay short. A request
 /// that claims nothing is answered here and yields `None`.
 pub(crate) async fn claim(
-    stream: TcpStream,
+    stream: Stream,
     request: HttpRequest,
     transfers: &Engine,
 ) -> io::Result<Option<impl Future<Output = io::Result<()>> + Send + 'static>> {
@@ -77,7 +77,7 @@ fn parse_ticket(hex: &str) -> Option<[u8; 16]> {
     Some(ticket)
 }
 
-async fn consume_head(stream: &mut TcpStream, request: &HttpRequest) -> io::Result<()> {
+async fn consume_head(stream: &mut Stream, request: &HttpRequest) -> io::Result<()> {
     if let Some(length) = request.head_len() {
         let mut buffer = vec![0; length.min(MAX_REQUEST_HEAD)];
         stream.read_exact(&mut buffer).await?;
@@ -85,11 +85,7 @@ async fn consume_head(stream: &mut TcpStream, request: &HttpRequest) -> io::Resu
     Ok(())
 }
 
-async fn respond_error(
-    mut stream: TcpStream,
-    request: &HttpRequest,
-    status: u16,
-) -> io::Result<()> {
+async fn respond_error(mut stream: Stream, request: &HttpRequest, status: u16) -> io::Result<()> {
     consume_head(&mut stream, request).await?;
     let reason = match status {
         400 => "400 Bad Request",
@@ -108,7 +104,7 @@ async fn respond_error(
     close(stream).await
 }
 
-async fn write_all(stream: &mut TcpStream, data: &[u8]) -> io::Result<()> {
+async fn write_all(stream: &mut Stream, data: &[u8]) -> io::Result<()> {
     match tokio::time::timeout(WRITE_IDLE_TIMEOUT, stream.write_all(data)).await {
         Ok(result) => result,
         Err(_) => Err(io::Error::new(
@@ -118,8 +114,30 @@ async fn write_all(stream: &mut TcpStream, data: &[u8]) -> io::Result<()> {
     }
 }
 
-async fn close(mut stream: TcpStream) -> io::Result<()> {
-    stream.shutdown().await?;
+/// Hands everything written so far to the operating system. TLS can hold the
+/// end of the data back while the browser is slow; a plain socket has nothing
+/// to flush.
+async fn flush(stream: &mut Stream) -> io::Result<()> {
+    match tokio::time::timeout(WRITE_IDLE_TIMEOUT, stream.flush()).await {
+        Ok(result) => result,
+        Err(_) => Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "the browser stopped reading",
+        )),
+    }
+}
+
+async fn close(mut stream: Stream) -> io::Result<()> {
+    // Over TLS, this also sends what is still buffered, so it can stall too.
+    match tokio::time::timeout(WRITE_IDLE_TIMEOUT, stream.shutdown()).await {
+        Ok(result) => result?,
+        Err(_) => {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "the browser stopped reading",
+            ));
+        }
+    }
     // Closing with unread input makes the kernel send a reset, which can
     // discard the end of the response before the browser reads it.
     let mut buffer = [0u8; 1024];
@@ -162,7 +180,7 @@ enum Stop {
 }
 
 async fn stream_job(
-    mut stream: TcpStream,
+    mut stream: Stream,
     request: HttpRequest,
     mut job: HttpJob,
     transfers: Engine,
@@ -220,6 +238,8 @@ async fn stream_job(
                 .await
                 .map_err(Stop::Browser)?;
         }
+        // The download only counts as finished once all of it is on its way.
+        flush(&mut stream).await.map_err(Stop::Browser)?;
         if !transfers.http_progress(endpoint, serial, done) {
             return Err(Stop::Cancelled);
         }

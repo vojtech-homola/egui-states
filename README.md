@@ -115,8 +115,9 @@ a path from any dialog.
 - **Files are saved atomically.** A file appears under its name only once it
   is complete, with the sender's modification time.
 - **Browsers** upload `File` objects from a file picker, and download through
-  the browser's download manager over plain HTTP from the server's port, one
-  file at a time or as one zip. A browser chooses the location itself.
+  the browser's download manager over HTTP (HTTPS with
+  [TLS](#encrypted-connections)) from the server's port, one file at a time or
+  as one zip. A browser chooses the location itself.
 
 Transfers end when the connection does and are not resumed. See
 [file transfers](docs/architecture.md#file-transfers) for the details.
@@ -155,19 +156,83 @@ origin and are not affected; the `token` guards against other programs. An
 entry of just `*` turns the check off and lets every page connect, including
 local files; any site open in your browser can then connect too, so set a
 `token` with it. The option is `allowed_origins` in the Rust `ServerOptions`
-and the Python server's constructor, and `egui_states_server_set_allowed_origins`
-in C.
+and the Python server's constructor.
 
 ## Network access
 
 By default the server listens only on `127.0.0.1`, so only clients on the same
 machine can connect. To accept clients from other machines, including a browser
 opened elsewhere or a port published from a Docker container, pass the address
-`0.0.0.0` (or a specific interface) to `start`. Connections are unencrypted
-WebSockets, so the optional `token` and all state data travel in clear text;
-on an untrusted network, keep the server on loopback and reach it through an
-SSH tunnel. Native clients target `127.0.0.1` unless the client builder's `host`
-(a host name or IP address) or `addr` says otherwise.
+`0.0.0.0` (or a specific interface) to `start`. Native clients target
+`127.0.0.1` unless the client builder's `host` (a host name or IP address) or
+`addr` says otherwise.
+
+By default connections are unencrypted, so the optional `token` and all state
+data travel in clear text. On a network you do not trust, turn on
+[TLS](#encrypted-connections), or keep the server on loopback and reach it
+through an SSH tunnel.
+
+### Encrypted connections
+
+With the `tls` option, the server speaks only TLS on its port: `wss://`
+WebSockets, and `https://` for the web page and browser downloads. TLS needs
+no internet access, so it also works on machines that are offline.
+
+```python
+server = StatesServer(tls=True)
+print(server.tls_fingerprint())  # 64 hexadecimal digits
+server.start(8091, (0, 0, 0, 0))
+```
+
+Without a certificate of your own, the server generates one when it is created.
+It exists only in memory, so every new server, such as each run of your
+program, presents a new one; stopping and starting the same server keeps it.
+`tls_fingerprint()` returns its SHA-256 fingerprint, which identifies it.
+
+A native client connects with TLS when its builder is given a `Tls` mode (Rust
+crate feature `tls`). The mode parses from text, so it can come straight from
+a command-line argument:
+
+```rust
+let mode: Tls = arg.parse()?; // "any", "system", or a fingerprint
+let (state, client) = ClientBuilder::<AppState>::new(ctx, 8091)
+    .host("pc-a.local")
+    .tls(mode)
+    .build();
+```
+
+| Mode | The client accepts | Protects against |
+| --- | --- | --- |
+| `Tls::Fingerprint(fp)` | only the certificate with this fingerprint | listening, and someone posing as the server |
+| `Tls::AcceptAny` | any certificate | listening only |
+| `Tls::System` | certificates the operating system trusts for that host | listening, and someone posing as the server |
+
+Pass the fingerprint the server reports to the client, for example as an
+argument when you start it; a generated certificate, and so its fingerprint,
+is new in every run of the server program. `System` suits a certificate you supply, issued by an authority
+installed on the client machines. A client without TLS cannot connect to a TLS
+server, nor a TLS client to a plain one, and neither falls back to an
+unencrypted connection; `Client::last_error` says why.
+
+A browser decides itself which certificates to accept. Open the page as
+`https://host:port/`; a plain `http://` request is redirected there, but
+whatever its address carries, such as a token, has by then travelled
+unencrypted. With a
+generated certificate, the browser shows a warning before the page loads, in
+every run of the server program. Before accepting, compare the SHA-256 fingerprint in the
+browser's certificate viewer with `tls_fingerprint()`; otherwise someone
+on the network could pose as the server, and the browser would only be
+protected against listening. To avoid the warning, supply a certificate that
+the client machines trust and that lists the name or address the browser
+uses, with `tls_cert` and `tls_key` (PEM files). Tools such as
+[mkcert](https://github.com/FiloSottile/mkcert) create one, and an authority
+to install on the clients, without internet access. A page served by a
+separate development server such as `trunk serve` is plain HTTP, so keep TLS
+off for that.
+
+The options are `tls`, `tls_cert`, and `tls_key` in the Rust `ServerOptions`
+and the Python server's constructor. The Python package always includes TLS;
+Rust needs the crate's `tls` feature.
 
 ## Lost connections
 
@@ -177,7 +242,7 @@ network drops without closing the connection. Server operations waiting for
 that client's acknowledgements are then released. Clients answer pings
 automatically. Change either time, or disable the heartbeat, with
 `heartbeat_interval` and `heartbeat_timeout` in the Rust `ServerOptions` or the
-Python server's constructor, or with `egui_states_server_set_heartbeat` in C.
+Python server's constructor.
 
 ## Examples
 
@@ -198,6 +263,8 @@ when built.
 - `server`: native Rust server API.
 - `build_scripts`: Python and Rust binding generators.
 - `python`: PyO3 support for building the Python extension.
+- `tls`: encrypted connections for the server and native clients (see
+  [encrypted connections](#encrypted-connections)).
 
 See the [API reference](https://docs.rs/egui_states),
 [synchronization model](docs/architecture.md), and [test commands](tests/README.md)

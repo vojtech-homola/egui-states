@@ -21,8 +21,11 @@ use crate::client::states_creator::{StatesCreatorClient, ValuesList};
 use crate::event::Event;
 use crate::protocol::{ClientHeader, FastVec};
 
+use crate::client::net::Target;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::client::net::websocket::{WsClientRead, WsClientSend, build_ws};
+#[cfg(feature = "tls")]
+use crate::client::tls::Tls;
 
 #[cfg(target_arch = "wasm32")]
 use crate::client::net::websocket_wasm::{WsClientRead, WsClientSend, build_ws};
@@ -30,7 +33,7 @@ use crate::client::net::websocket_wasm::{WsClientRead, WsClientSend, build_ws};
 type MessageReceiver = UnboundedReceiver<Option<ChannelMessage>>;
 
 async fn start_gui_client(
-    url: String,
+    target: Target,
     vals: ValuesList,
     mut rx: MessageReceiver,
     sender: MessageSender,
@@ -53,7 +56,7 @@ async fn start_gui_client(
         client.set_state(ConnectionState::NotConnected);
 
         // try to connect to the server
-        let Some(socket) = client.until_shutdown(build_ws(&url)).await else {
+        let Some(socket) = client.until_shutdown(build_ws(&target)).await else {
             return;
         };
         let (socket_read, mut socket_send) = match socket {
@@ -553,6 +556,8 @@ pub struct ClientBuilder<T> {
     context: Context,
     version: Option<u64>,
     token: Option<String>,
+    #[cfg(all(feature = "tls", not(target_arch = "wasm32")))]
+    tls: Option<Tls>,
 }
 
 impl<T> ClientBuilder<T>
@@ -589,6 +594,8 @@ where
             context,
             version: None,
             token: None,
+            #[cfg(all(feature = "tls", not(target_arch = "wasm32")))]
+            tls: None,
         }
     }
 
@@ -600,13 +607,15 @@ where
     }
 
     /// Sets the server host: a host name such as `myserver.local`, or an IPv4
-    /// or IPv6 address, without scheme or port.
+    /// or IPv6 address, without scheme or port. An IPv6 address may be in
+    /// brackets, as in a URL.
     ///
     /// The client connects to this host on the builder's port, also on WASM,
     /// where it replaces the default of the page's own host and port.
     pub fn host(self, host: impl Into<String>) -> Self {
+        let host = host.into();
         Self {
-            host: Some(host.into()),
+            host: Some(without_brackets(&host).to_string()),
             ..self
         }
     }
@@ -624,6 +633,30 @@ where
         Self {
             token: Some(token),
             ..self
+        }
+    }
+
+    /// Connects with TLS, which encrypts the connection, checking the server
+    /// as `tls` says.
+    ///
+    /// The server must have TLS turned on. Without this call the client
+    /// connects without TLS, and a connection to a server that requires TLS
+    /// fails, as does a TLS connection to a server without it; the error is
+    /// reported by [`Client::last_error`].
+    ///
+    /// A WASM client ignores this: the browser connects with TLS when the page
+    /// was loaded over HTTPS, and decides itself which certificates to accept.
+    #[cfg(feature = "tls")]
+    pub fn tls(self, tls: Tls) -> Self {
+        #[cfg(not(target_arch = "wasm32"))]
+        return Self {
+            tls: Some(tls),
+            ..self
+        };
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = tls;
+            self
         }
     }
 
@@ -656,9 +689,15 @@ where
             context,
             version,
             token,
+            #[cfg(all(feature = "tls", not(target_arch = "wasm32")))]
+            tls,
         } = self;
 
-        let url = server_url(host.as_deref(), port);
+        #[cfg(all(feature = "tls", not(target_arch = "wasm32")))]
+        let secure = tls.is_some();
+        #[cfg(not(all(feature = "tls", not(target_arch = "wasm32"))))]
+        let secure = false;
+        let url = server_url(host.as_deref(), port, secure);
         let values = creator.get_values();
         #[cfg(target_arch = "wasm32")]
         {
@@ -669,6 +708,15 @@ where
                 start_browser_download(&format!("{base}{path}{}", download.ticket), &download.name);
             }));
         }
+        let target = Target {
+            url,
+            #[cfg(not(target_arch = "wasm32"))]
+            host: host.unwrap_or_else(|| "127.0.0.1".to_string()),
+            #[cfg(not(target_arch = "wasm32"))]
+            port,
+            #[cfg(all(feature = "tls", not(target_arch = "wasm32")))]
+            tls,
+        };
         let client = ClientCore::new(context, sender.clone());
         let client_out = Client::new(client.clone());
 
@@ -689,7 +737,7 @@ where
 
             let _ = thread.spawn(move || {
                 runtime.block_on(start_gui_client(
-                    url, values, rx, sender, client, version, token,
+                    target, values, rx, sender, client, version, token,
                 ))
             });
         }
@@ -697,12 +745,21 @@ where
         #[cfg(target_arch = "wasm32")]
         {
             wasm_bindgen_futures::spawn_local(async move {
-                start_gui_client(url, values, rx, sender, client, version, token).await;
+                start_gui_client(target, values, rx, sender, client, version, token).await;
             });
         }
 
         (states, client_out)
     }
+}
+
+/// Removes the brackets around an IPv6 address written as in a URL. The
+/// address is kept without them, which is how a connection is opened to it.
+fn without_brackets(host: &str) -> &str {
+    host.strip_prefix('[')
+        .and_then(|host| host.strip_suffix(']'))
+        .filter(|address| address.parse::<Ipv6Addr>().is_ok())
+        .unwrap_or(host)
 }
 
 /// Formats `host` for a URL, bracketing an IPv6 address.
@@ -713,18 +770,23 @@ fn url_host(host: &str) -> String {
     }
 }
 
-/// Returns the WebSocket URL of the server.
+/// Returns the WebSocket URL of the server, `wss` when `secure`.
 #[cfg(not(target_arch = "wasm32"))]
-fn server_url(host: Option<&str>, port: u16) -> String {
-    format!("ws://{}:{port}/ws", url_host(host.unwrap_or("127.0.0.1")))
+fn server_url(host: Option<&str>, port: u16, secure: bool) -> String {
+    let scheme = if secure { "wss" } else { "ws" };
+    format!(
+        "{scheme}://{}:{port}/ws",
+        url_host(host.unwrap_or("127.0.0.1"))
+    )
 }
 
 /// Returns the WebSocket URL of the server.
 ///
 /// Without an explicit host this is the page's own host and port, read once
-/// when the client is built.
+/// when the client is built. The scheme follows the page's, as browsers
+/// require; `ClientBuilder::tls` does not change it.
 #[cfg(target_arch = "wasm32")]
-fn server_url(host: Option<&str>, port: u16) -> String {
+fn server_url(host: Option<&str>, port: u16, _secure: bool) -> String {
     let location = web_sys::window().map(|window| window.location());
     let secure = location
         .as_ref()
@@ -752,13 +814,48 @@ mod tests {
 
     #[test]
     fn server_urls_default_to_loopback_and_accept_host_names() {
-        assert_eq!(server_url(None, 8091), "ws://127.0.0.1:8091/ws");
+        assert_eq!(server_url(None, 8091, false), "ws://127.0.0.1:8091/ws");
         assert_eq!(
-            server_url(Some("myserver.local"), 8091),
+            server_url(Some("myserver.local"), 8091, false),
             "ws://myserver.local:8091/ws"
         );
-        assert_eq!(server_url(Some("10.0.0.2"), 80), "ws://10.0.0.2:80/ws");
-        assert_eq!(server_url(Some("::1"), 8091), "ws://[::1]:8091/ws");
+        assert_eq!(
+            server_url(Some("10.0.0.2"), 80, false),
+            "ws://10.0.0.2:80/ws"
+        );
+        assert_eq!(server_url(Some("::1"), 8091, false), "ws://[::1]:8091/ws");
+        assert_eq!(server_url(Some("::1"), 8091, true), "wss://[::1]:8091/ws");
+    }
+
+    #[test]
+    fn ipv6_hosts_are_accepted_with_and_without_brackets() {
+        for (host, expected) in [
+            ("::1", "::1"),
+            ("[::1]", "::1"),
+            ("[fe80::1]", "fe80::1"),
+            ("myserver.local", "myserver.local"),
+            ("10.0.0.2", "10.0.0.2"),
+            // Only an address is unwrapped.
+            ("[myserver]", "[myserver]"),
+        ] {
+            assert_eq!(without_brackets(host), expected);
+            let builder = ClientBuilder::<Empty>::new(Context::default(), 8091).host(host);
+            assert_eq!(builder.host.as_deref(), Some(expected));
+        }
+        assert_eq!(
+            server_url(Some(without_brackets("[::1]")), 8091, false),
+            "ws://[::1]:8091/ws"
+        );
+    }
+
+    struct Empty;
+
+    impl State for Empty {
+        const NAME: &'static str = "Empty";
+
+        fn new(_: &mut impl crate::StatesCreator) -> Self {
+            Self
+        }
     }
 
     /// Returns the repaint requests made by `Client::update(delay)`.

@@ -20,10 +20,11 @@ use crate::protocol::data::DataType;
 use crate::protocol::{ServerHeader, check_value_size, serialize};
 use crate::server_core::file_transfer::{TransferEndpoint, record_event};
 use crate::server_core::http::origin::OriginPolicy;
-use crate::server_core::http::web::{WebSite, WebSlot};
+use crate::server_core::http::web::{LoadError, WebSite, WebSlot};
 use crate::server_core::net::heartbeat::Heartbeat;
 use crate::server_core::net::sender::{MessageReceiver, MessageSender};
 use crate::server_core::net::session;
+use crate::server_core::net::transport::SocketListener;
 use crate::server_core::signals::SignalsManager;
 use crate::server_core::states::data::{Data, DataMulti};
 use crate::server_core::states::data_take::{DataMultiTake, DataTake};
@@ -32,6 +33,8 @@ use crate::server_core::states::image::single::Image;
 use crate::server_core::states::map::ValueMap;
 use crate::server_core::states::value::{SignalCore, ValueCore, ValueStaticCore, ValueTakeCore};
 use crate::server_core::states::vec::ValueList;
+#[cfg(feature = "tls")]
+use crate::server_core::tls::TlsIdentity;
 
 pub(crate) trait SyncTrait: Sync + Send {
     fn sync(&self) -> Result<(), ()>;
@@ -257,6 +260,18 @@ impl RunnerState {
     }
 }
 
+/// The TLS settings, as every front-end passes them.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct TlsSettings<'a> {
+    /// Whether clients connect with TLS.
+    pub(crate) enabled: bool,
+    /// A PEM certificate chain, server certificate first; `None` generates a
+    /// self-signed certificate.
+    pub(crate) cert: Option<&'a Path>,
+    /// The PEM private key of `cert`.
+    pub(crate) key: Option<&'a Path>,
+}
+
 /// The settings a server reads when it starts, as every front-end passes
 /// them.
 pub(crate) struct ServerConfig {
@@ -269,6 +284,9 @@ pub(crate) struct ServerConfig {
     origins: Arc<OriginPolicy>,
     /// How file transfers share the connection.
     transfer_profile: TransferProfile,
+    /// `None` when TLS is off.
+    #[cfg(feature = "tls")]
+    tls: Option<TlsIdentity>,
 }
 
 impl ServerConfig {
@@ -280,25 +298,48 @@ impl ServerConfig {
     /// pages that may connect besides pages the server serves itself on an
     /// IP address or local network name: `scheme://host[:port]` patterns,
     /// where `*` matches any scheme, part of the host, or port.
+    ///
+    /// With TLS on, the certificate is generated or read here, so its
+    /// fingerprint is known before the server starts. Unreadable certificate
+    /// files are an [`LoadError::Io`]; everything else is invalid.
     pub(crate) fn new(
         version: Option<u64>,
         heartbeat: Option<Heartbeat>,
         web_path: Option<&Path>,
         allowed_origins: &[String],
         transfer_profile: TransferProfile,
-    ) -> Result<Self, String> {
+        tls: TlsSettings<'_>,
+    ) -> Result<Self, LoadError> {
         let web_path = web_path
             .map(|path| {
-                std::path::absolute(path)
-                    .map_err(|e| format!("invalid web page path {}: {e}", path.display()))
+                std::path::absolute(path).map_err(|e| {
+                    LoadError::Invalid(format!("invalid web page path {}: {e}", path.display()))
+                })
             })
             .transpose()?;
+        #[cfg(feature = "tls")]
+        let tls = TlsIdentity::from_settings(&tls)?;
+        #[cfg(feature = "tls")]
+        let secure = tls.is_some();
+        #[cfg(not(feature = "tls"))]
+        let secure = {
+            if tls.enabled || tls.cert.is_some() || tls.key.is_some() {
+                return Err(LoadError::Invalid(
+                    "TLS support is not compiled in; enable the `tls` feature of egui_states"
+                        .to_string(),
+                ));
+            }
+            false
+        };
+        let origins = OriginPolicy::new(allowed_origins, secure).map_err(LoadError::Invalid)?;
         Ok(Self {
             version,
             heartbeat,
             web_path,
-            origins: Arc::new(OriginPolicy::new(allowed_origins)?),
+            origins: Arc::new(origins),
             transfer_profile,
+            #[cfg(feature = "tls")]
+            tls,
         })
     }
 
@@ -312,6 +353,8 @@ impl ServerConfig {
             web_path: None,
             origins: Arc::default(),
             transfer_profile: TransferProfile::default(),
+            #[cfg(feature = "tls")]
+            tls: None,
         }
     }
 }
@@ -460,6 +503,8 @@ impl Server {
                 let heartbeat = self.config.heartbeat;
                 let transfers = self.transfers.clone();
                 let low_priority = self.low_priority;
+                #[cfg(feature = "tls")]
+                let tls = self.config.tls.as_ref().map(|tls| tls.acceptor.clone());
 
                 let listening = Listening {
                     requested: addr,
@@ -485,6 +530,9 @@ impl Server {
                             transfers,
                             low_priority,
                         };
+                        let listener = SocketListener::new(listener);
+                        #[cfg(feature = "tls")]
+                        let listener = listener.with_tls(tls);
                         session::run(listener, rx, stop_event, handshake, web, session).await
                     })
                 });
@@ -586,6 +634,15 @@ impl Server {
     /// Returns the configured absolute web page directory, served or not.
     pub(crate) fn web_path(&self) -> Option<PathBuf> {
         self.config.web_path.clone()
+    }
+
+    /// The SHA-256 fingerprint of the TLS certificate, in lowercase
+    /// hexadecimal; `None` when TLS is off.
+    pub(crate) fn tls_fingerprint(&self) -> Option<String> {
+        #[cfg(feature = "tls")]
+        return self.config.tls.as_ref().map(|tls| tls.fingerprint.clone());
+        #[cfg(not(feature = "tls"))]
+        None
     }
 
     pub(crate) fn update(&self, duration: Option<f32>) -> Result<(), ()> {
