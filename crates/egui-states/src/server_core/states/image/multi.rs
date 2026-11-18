@@ -97,12 +97,8 @@ impl ImageMulti {
         };
         let lock = self.transfer.lock.lock();
         let mut inner = self.inner.write();
-        match inner.images.get_mut(&index) {
-            Some(stored) => stored.set(&image),
-            None => {
-                inner.images.insert(index, StoredImage::new(&image));
-            }
-        }
+        let stored = inner.images.entry(index);
+        stored.or_insert_with(StoredImage::empty).set(&image);
         let Some(generation) = self.transfer.sendable() else {
             return Ok(());
         };
@@ -141,12 +137,8 @@ impl ImageMulti {
         };
         let lock = self.transfer.lock.lock();
         let mut inner = self.inner.write();
-        match inner.images.get_mut(&index) {
-            Some(stored) => stored.fill(size, fill),
-            None => {
-                inner.images.insert(index, StoredImage::filled(size, fill));
-            }
-        }
+        let stored = inner.images.entry(index);
+        stored.or_insert_with(StoredImage::empty).fill(size, fill);
         let Some(generation) = self.transfer.sendable() else {
             return Ok(());
         };

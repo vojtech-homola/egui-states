@@ -267,24 +267,26 @@ pub(crate) struct StoredImage {
 }
 
 impl StoredImage {
-    /// Stores the validated `image` in its own format.
-    pub(crate) fn new(image: &ImageData) -> Self {
-        let mut stored = Self {
+    /// An image without pixels, for a [`set`](Self::set) or
+    /// [`fill`](Self::fill) that follows at once and gives it its format.
+    pub(crate) fn empty() -> Self {
+        Self {
             data: Vec::new(),
-            size: image.size,
-            image_type: image.image_type,
-        };
+            size: [0, 0],
+            image_type: ImageType::Gray,
+        }
+    }
+
+    #[cfg(test)]
+    fn new(image: &ImageData) -> Self {
+        let mut stored = Self::empty();
         stored.set(image);
         stored
     }
 
-    /// An image of `size` filled with `fill`, in its format.
-    pub(crate) fn filled(size: [usize; 2], fill: ImageFill) -> Self {
-        let mut stored = Self {
-            data: Vec::new(),
-            size,
-            image_type: fill.image_type(),
-        };
+    #[cfg(test)]
+    fn filled(size: [usize; 2], fill: ImageFill) -> Self {
+        let mut stored = Self::empty();
         stored.fill(size, fill);
         stored
     }

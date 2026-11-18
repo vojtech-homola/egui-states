@@ -80,10 +80,7 @@ impl Image {
         // this is main lock for set and update operation
         let lock = self.scheduler.lock.lock();
         let mut w = self.image.write();
-        match w.as_mut() {
-            Some(stored) => stored.set(&image),
-            None => *w = Some(StoredImage::new(&image)),
-        }
+        w.get_or_insert_with(StoredImage::empty).set(&image);
 
         // A connection sync sends the latest complete image. Do not enqueue a
         // separate mutation until that initial sync has completed.
@@ -129,10 +126,7 @@ impl Image {
         // keeps fill ordered with ordinary sets and updates.
         let lock = self.scheduler.lock.lock();
         let mut w = self.image.write();
-        match w.as_mut() {
-            Some(stored) => stored.fill(size, fill),
-            None => *w = Some(StoredImage::filled(size, fill)),
-        }
+        w.get_or_insert_with(StoredImage::empty).fill(size, fill);
 
         // The first sync for a connection always sends the complete stored
         // image. A compact fill is only useful after sync has completed.
