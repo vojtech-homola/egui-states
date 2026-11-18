@@ -5,7 +5,7 @@ use std::mem::MaybeUninit;
 use crate::protocol::FastVec;
 use crate::protocol::image::{
     ImageHeader, ImageSetHeader, ImageType, ImageUpdateHeader, checked_image_bounds,
-    checked_image_bytes, checked_image_shape, widen,
+    checked_image_bytes, checked_image_shape, to_rgba, widen,
 };
 use crate::server_core::transfer::{Chunk, Messages, chunk_transfer};
 
@@ -226,6 +226,42 @@ fn replace_bytes(target: &mut Vec<u8>, len: usize, write: impl FnOnce(&mut [Mayb
     unsafe { target.set_len(len) };
 }
 
+/// The color of a fill, as the pixel of the format the image is then stored
+/// in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ImageFill {
+    Gray([u8; 1]),
+    GrayAlpha([u8; 2]),
+    Color([u8; 3]),
+    ColorAlpha([u8; 4]),
+}
+
+impl ImageFill {
+    pub(crate) fn image_type(self) -> ImageType {
+        match self {
+            Self::Gray(_) => ImageType::Gray,
+            Self::GrayAlpha(_) => ImageType::GrayAlpha,
+            Self::Color(_) => ImageType::Color,
+            Self::ColorAlpha(_) => ImageType::ColorAlpha,
+        }
+    }
+
+    /// The color the client fills its texture with: the stored pixel
+    /// expanded to RGBA, so the two cannot differ.
+    pub(crate) fn rgba(self) -> [u8; 4] {
+        let pixel: &[u8] = match &self {
+            Self::Gray(pixel) => pixel,
+            Self::GrayAlpha(pixel) => pixel,
+            Self::Color(pixel) => pixel,
+            Self::ColorAlpha(pixel) => pixel,
+        };
+        let mut rgba = [MaybeUninit::uninit(); 4];
+        to_rgba(self.image_type(), pixel, &mut rgba);
+        // SAFETY: `to_rgba` wrote all four bytes.
+        rgba.map(|byte| unsafe { byte.assume_init() })
+    }
+}
+
 /// A server image: its pixels in the format of the last set or fill,
 /// widened by updates with more channels.
 pub(crate) struct StoredImage {
@@ -247,14 +283,14 @@ impl StoredImage {
         stored
     }
 
-    /// An image of `size` filled with `rgba` in `image_type`.
-    pub(crate) fn filled(size: [usize; 2], rgba: [u8; 4], image_type: ImageType) -> Self {
+    /// An image of `size` filled with `fill`, in its format.
+    pub(crate) fn filled(size: [usize; 2], fill: ImageFill) -> Self {
         let mut stored = Self {
             data: Vec::new(),
             size,
-            image_type,
+            image_type: fill.image_type(),
         };
-        stored.fill(size, rgba, image_type);
+        stored.fill(size, fill);
         stored
     }
 
@@ -285,22 +321,21 @@ impl StoredImage {
         self.image_type = image.image_type;
     }
 
-    /// Fills the image with `rgba`, stored as `image_type`. The channels
-    /// `image_type` keeps are taken as they are: red for gray, alpha last.
-    pub(crate) fn fill(&mut self, size: [usize; 2], rgba: [u8; 4], image_type: ImageType) {
+    /// Fills the image with `fill`, in its format.
+    pub(crate) fn fill(&mut self, size: [usize; 2], fill: ImageFill) {
         fn repeat<const N: usize>(target: &mut [MaybeUninit<u8>], pixel: [u8; N]) {
             for target in target.as_chunks_mut::<N>().0 {
                 *target = pixel.map(MaybeUninit::new);
             }
         }
 
-        let [red, green, blue, alpha] = rgba;
+        let image_type = fill.image_type();
         let len = size[0] * size[1] * image_type.bytes_per_pixel();
-        replace_bytes(&mut self.data, len, |target| match image_type {
-            ImageType::Gray => repeat(target, [red]),
-            ImageType::GrayAlpha => repeat(target, [red, alpha]),
-            ImageType::Color => repeat(target, [red, green, blue]),
-            ImageType::ColorAlpha => repeat(target, rgba),
+        replace_bytes(&mut self.data, len, |target| match fill {
+            ImageFill::Gray(pixel) => repeat(target, pixel),
+            ImageFill::GrayAlpha(pixel) => repeat(target, pixel),
+            ImageFill::Color(pixel) => repeat(target, pixel),
+            ImageFill::ColorAlpha(pixel) => repeat(target, pixel),
         });
         self.size = size;
         self.image_type = image_type;
@@ -374,7 +409,7 @@ mod tests {
         assert_eq!(stored.data(), [1, 2, 3, 4]);
         assert_eq!(stored.image_type(), ImageType::Gray);
 
-        let mut target = StoredImage::filled([3, 2], [0; 4], ImageType::Gray);
+        let mut target = StoredImage::filled([3, 2], ImageFill::Gray([0]));
         target.update(&image, &[1, 0]);
         assert_eq!(target.data(), [0, 0, 1, 2, 3, 4]);
     }
@@ -387,7 +422,7 @@ mod tests {
         stored.set(&image);
         assert_eq!(stored.data().as_ptr(), allocation);
         // Three gray-alpha pixels hold the six bytes of six gray ones.
-        stored.fill([1, 3], [5, 6, 7, 8], ImageType::GrayAlpha);
+        stored.fill([1, 3], ImageFill::GrayAlpha([5, 8]));
         assert_eq!(stored.data().as_ptr(), allocation);
         assert_eq!(stored.data(), [5, 8, 5, 8, 5, 8]);
         stored.set(&ImageData::packed(&[1; 3], [1, 3], ImageType::Gray));
@@ -395,23 +430,43 @@ mod tests {
     }
 
     #[test]
-    fn a_fill_keeps_the_channels_of_its_format() {
-        let rgba = [1, 2, 3, 4];
-        for (image_type, pixel) in [
-            (ImageType::Gray, &[1][..]),
-            (ImageType::GrayAlpha, &[1, 4]),
-            (ImageType::Color, &[1, 2, 3]),
-            (ImageType::ColorAlpha, &[1, 2, 3, 4]),
+    fn a_fill_is_stored_in_its_format_and_sent_as_the_same_color() {
+        for (fill, image_type, pixel, rgba) in [
+            (
+                ImageFill::Gray([1]),
+                ImageType::Gray,
+                &[1][..],
+                [1, 1, 1, 255],
+            ),
+            (
+                ImageFill::GrayAlpha([1, 4]),
+                ImageType::GrayAlpha,
+                &[1, 4],
+                [1, 1, 1, 4],
+            ),
+            (
+                ImageFill::Color([1, 2, 3]),
+                ImageType::Color,
+                &[1, 2, 3],
+                [1, 2, 3, 255],
+            ),
+            (
+                ImageFill::ColorAlpha([1, 2, 3, 4]),
+                ImageType::ColorAlpha,
+                &[1, 2, 3, 4],
+                [1, 2, 3, 4],
+            ),
         ] {
-            let stored = StoredImage::filled([2, 1], rgba, image_type);
+            let stored = StoredImage::filled([2, 1], fill);
             assert_eq!(stored.image_type(), image_type);
             assert_eq!(stored.data(), pixel.repeat(2));
+            assert_eq!(fill.rgba(), rgba);
         }
     }
 
     #[test]
     fn an_update_with_fewer_channels_keeps_the_stored_format() {
-        let mut stored = StoredImage::filled([1, 2], [1, 2, 3, 4], ImageType::ColorAlpha);
+        let mut stored = StoredImage::filled([1, 2], ImageFill::ColorAlpha([1, 2, 3, 4]));
         stored.update(&ImageData::packed(&[9], [1, 1], ImageType::Gray), &[0, 1]);
         assert_eq!(stored.image_type(), ImageType::ColorAlpha);
         assert_eq!(stored.data(), [1, 2, 3, 4, 9, 9, 9, 255]);
@@ -419,7 +474,7 @@ mod tests {
 
     #[test]
     fn an_update_with_more_channels_widens_the_whole_image_first() {
-        let mut stored = StoredImage::filled([1, 2], [7, 0, 0, 0], ImageType::Gray);
+        let mut stored = StoredImage::filled([1, 2], ImageFill::Gray([7]));
         stored.update(
             &ImageData::packed(&[1, 2, 3], [1, 1], ImageType::Color),
             &[0, 1],
@@ -443,7 +498,7 @@ mod tests {
 
     #[test]
     fn contains_checks_both_axes_and_overflow() {
-        let stored = StoredImage::filled([2, 3], [0; 4], ImageType::Gray);
+        let stored = StoredImage::filled([2, 3], ImageFill::Gray([0]));
         assert!(stored.contains(&[0, 0], [2, 3]));
         assert!(stored.contains(&[1, 2], [1, 1]));
         assert!(!stored.contains(&[1, 0], [2, 1]));

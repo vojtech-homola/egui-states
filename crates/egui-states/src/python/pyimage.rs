@@ -5,7 +5,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyByteArray;
 
 use crate::protocol::image::{ImageType, checked_image_bytes};
-use crate::server_core::states::image::common::StoredImage;
+use crate::server_core::states::image::common::{ImageFill, StoredImage};
 use crate::server_core::states::image::single::ImageData;
 
 fn check_image_type(shape: &[usize], strides: &[isize]) -> PyResult<ImageType> {
@@ -100,20 +100,20 @@ pub(crate) fn image_data(image: &PyBuffer<u8>) -> PyResult<ImageData<'_>> {
     })
 }
 
-/// The RGBA color of a fill and the format it is stored in: an integer is
-/// gray, and a tuple of 2, 3 or 4 integers gray-alpha, RGB or RGBA.
-pub(crate) fn image_color(color: &Bound<'_, PyAny>) -> PyResult<([u8; 4], ImageType)> {
+/// The fill of a color, in the format it is stored in: an integer is gray,
+/// and a tuple of 2, 3 or 4 integers gray-alpha, RGB or RGBA.
+pub(crate) fn image_color(color: &Bound<'_, PyAny>) -> PyResult<ImageFill> {
     if let Ok(gray) = color.extract::<u8>() {
-        return Ok(([gray, gray, gray, 255], ImageType::Gray));
+        return Ok(ImageFill::Gray([gray]));
     }
-    if let Ok((gray, alpha)) = color.extract::<(u8, u8)>() {
-        return Ok(([gray, gray, gray, alpha], ImageType::GrayAlpha));
+    if let Ok(pixel) = color.extract::<(u8, u8)>() {
+        return Ok(ImageFill::GrayAlpha(pixel.into()));
     }
-    if let Ok((red, green, blue)) = color.extract::<(u8, u8, u8)>() {
-        return Ok(([red, green, blue, 255], ImageType::Color));
+    if let Ok(pixel) = color.extract::<(u8, u8, u8)>() {
+        return Ok(ImageFill::Color(pixel.into()));
     }
-    if let Ok((red, green, blue, alpha)) = color.extract::<(u8, u8, u8, u8)>() {
-        return Ok(([red, green, blue, alpha], ImageType::ColorAlpha));
+    if let Ok(pixel) = color.extract::<(u8, u8, u8, u8)>() {
+        return Ok(ImageFill::ColorAlpha(pixel.into()));
     }
 
     Err(PyValueError::new_err(

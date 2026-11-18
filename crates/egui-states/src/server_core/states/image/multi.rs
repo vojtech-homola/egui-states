@@ -6,7 +6,7 @@ use parking_lot::RwLock;
 
 use crate::hashing::NoHashMap;
 use crate::protocol::image::{
-    ImageHeader, ImageMultiHeader, ImageType, checked_image_bytes, checked_image_shape,
+    ImageHeader, ImageMultiHeader, checked_image_bytes, checked_image_shape,
     serialize_image_multi_header,
 };
 use crate::protocol::{FastVec, TRANSFER_CHUNK_SIZE};
@@ -14,7 +14,7 @@ use crate::server_core::error::CoreError;
 use crate::server_core::net::sender::MessageSender;
 use crate::server_core::server::{Acknowledge, SyncTrait};
 use crate::server_core::states::image::common::{
-    ImageData, StoredImage, checked_fill_size, checked_image_rect, checked_image_size,
+    ImageData, ImageFill, StoredImage, checked_fill_size, checked_image_rect, checked_image_size,
     checked_max_lines, pack_image_set, pack_image_update,
 };
 use crate::server_core::states::scheduler::Scheduler;
@@ -116,18 +116,17 @@ impl ImageMulti {
         Ok(())
     }
 
-    /// Fills the image at `index` with `rgba`, stored as `image_type`; the
+    /// Fills the image at `index` with `fill`, stored in its format; the
     /// client gets only the color.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn set_all_image(
         &self,
         index: u32,
         size: [usize; 2],
-        rgba: [u8; 4],
-        image_type: ImageType,
+        fill: ImageFill,
         update: bool,
         wait: bool,
     ) -> Result<(), String> {
+        let rgba = fill.rgba();
         let (wire_size, _) = checked_fill_size(size)?;
         let to_send = if self.transfer.is_connected() {
             Some(pack_fill_data(
@@ -143,11 +142,9 @@ impl ImageMulti {
         let lock = self.transfer.lock.lock();
         let mut inner = self.inner.write();
         match inner.images.get_mut(&index) {
-            Some(stored) => stored.fill(size, rgba, image_type),
+            Some(stored) => stored.fill(size, fill),
             None => {
-                inner
-                    .images
-                    .insert(index, StoredImage::filled(size, rgba, image_type));
+                inner.images.insert(index, StoredImage::filled(size, fill));
             }
         }
         let Some(generation) = self.transfer.sendable() else {
@@ -383,6 +380,7 @@ mod tests {
     use super::*;
     #[cfg(feature = "client")]
     use crate::protocol::ServerHeader;
+    use crate::protocol::image::ImageType;
     #[cfg(feature = "client")]
     use crate::protocol::image::{ImageHeader, ImageSetHeader, ImageUpdateHeader};
     use crate::server_core::net::sender::MessageReceiver;
@@ -411,14 +409,14 @@ mod tests {
         for connected in [false, true] {
             let (images, _, mut receiver) = new_image_multi(connected);
             images
-                .set_all_image(7, [1, 1], [9; 4], ImageType::ColorAlpha, false, false)
+                .set_all_image(7, [1, 1], ImageFill::ColorAlpha([9; 4]), false, false)
                 .unwrap();
             for size in [[65_537, 1], [1, 65_537]] {
                 let data = || image_data(&[], size, ImageType::Gray);
                 for result in [
                     images.set_image(7, data(), false, false),
                     images.set_image(9, data(), false, false),
-                    images.set_all_image(7, size, [0; 4], ImageType::ColorAlpha, false, false),
+                    images.set_all_image(7, size, ImageFill::ColorAlpha([0; 4]), false, false),
                     images
                         .update_image(7, &[0, 0], data(), false, false, None, false)
                         .map_err(String::from),
@@ -487,7 +485,7 @@ mod tests {
         assert_eq!(images.get_image(4, |v| v.unwrap().data().to_vec()), second);
 
         images
-            .set_all_image(4, [1, 2], [9, 8, 7, 6], ImageType::ColorAlpha, false, false)
+            .set_all_image(4, [1, 2], ImageFill::ColorAlpha([9, 8, 7, 6]), false, false)
             .unwrap();
         assert_eq!(images.inner.read().images[&4].data().as_ptr(), allocation);
         assert_eq!(
@@ -527,7 +525,7 @@ mod tests {
         }
 
         images
-            .set_all_image(1, [1, 1], [1, 2, 3, 4], ImageType::ColorAlpha, false, false)
+            .set_all_image(1, [1, 1], ImageFill::ColorAlpha([1, 2, 3, 4]), false, false)
             .unwrap();
         let before = images.get_image(1, |image| image.unwrap().data().to_vec());
         assert!(
@@ -561,14 +559,13 @@ mod tests {
             .set_all_image(
                 7,
                 [1, 1],
-                [7, 7, 7, 255],
-                ImageType::ColorAlpha,
+                ImageFill::ColorAlpha([7, 7, 7, 255]),
                 false,
                 false,
             )
             .unwrap();
         images
-            .set_all_image(2, [1, 1], [2, 2, 2, 255], ImageType::Gray, false, false)
+            .set_all_image(2, [1, 1], ImageFill::Gray([2]), false, false)
             .unwrap();
         assert_eq!(images.indices(), vec![2, 7]);
 
@@ -616,8 +613,7 @@ mod tests {
             waiting_images.set_all_image(
                 9,
                 [1, 1],
-                [9, 9, 9, 255],
-                ImageType::ColorAlpha,
+                ImageFill::ColorAlpha([9, 9, 9, 255]),
                 true,
                 false,
             )
@@ -651,8 +647,7 @@ mod tests {
                 .set_all_image(
                     index,
                     [1, 1],
-                    [index as u8; 4],
-                    ImageType::ColorAlpha,
+                    ImageFill::ColorAlpha([index as u8; 4]),
                     false,
                     false,
                 )
@@ -672,10 +667,10 @@ mod tests {
         images.remove_index(5, false).unwrap();
         images.reset_images(false).unwrap();
         images
-            .set_all_image(13, [1, 1], [13; 4], ImageType::ColorAlpha, false, false)
+            .set_all_image(13, [1, 1], ImageFill::ColorAlpha([13; 4]), false, false)
             .unwrap();
         images
-            .set_all_image(1, [1, 1], [1; 4], ImageType::ColorAlpha, false, false)
+            .set_all_image(1, [1, 1], ImageFill::ColorAlpha([1; 4]), false, false)
             .unwrap();
 
         connected.store(true, Ordering::Release);
@@ -706,8 +701,7 @@ mod tests {
             .set_all_image(
                 1,
                 [1, 1],
-                [1, 1, 1, 255],
-                ImageType::ColorAlpha,
+                ImageFill::ColorAlpha([1, 1, 1, 255]),
                 false,
                 false,
             )
@@ -722,8 +716,7 @@ mod tests {
             .set_all_image(
                 1,
                 [1, 1],
-                [2, 2, 2, 255],
-                ImageType::ColorAlpha,
+                ImageFill::ColorAlpha([2, 2, 2, 255]),
                 false,
                 false,
             )
@@ -742,8 +735,7 @@ mod tests {
             .set_all_image(
                 2,
                 [1, 1],
-                [3, 3, 3, 255],
-                ImageType::ColorAlpha,
+                ImageFill::ColorAlpha([3, 3, 3, 255]),
                 false,
                 false,
             )
@@ -762,8 +754,7 @@ mod tests {
             .set_all_image(
                 3,
                 [1, 1],
-                [4, 4, 4, 255],
-                ImageType::ColorAlpha,
+                ImageFill::ColorAlpha([4, 4, 4, 255]),
                 false,
                 false,
             )
@@ -783,8 +774,7 @@ mod tests {
             .set_all_image(
                 1,
                 [1, 1],
-                [1, 1, 1, 255],
-                ImageType::ColorAlpha,
+                ImageFill::ColorAlpha([1, 1, 1, 255]),
                 false,
                 false,
             )
@@ -800,8 +790,7 @@ mod tests {
             waiting_images.set_all_image(
                 1,
                 [1, 1],
-                [3, 3, 3, 255],
-                ImageType::ColorAlpha,
+                ImageFill::ColorAlpha([3, 3, 3, 255]),
                 false,
                 false,
             )
@@ -855,8 +844,7 @@ mod tests {
                 .set_all_image(
                     index,
                     [2, 1],
-                    [0, 0, 0, 255],
-                    ImageType::ColorAlpha,
+                    ImageFill::ColorAlpha([0, 0, 0, 255]),
                     false,
                     false,
                 )

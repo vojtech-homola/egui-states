@@ -6,14 +6,14 @@ use parking_lot::RwLock;
 
 use crate::protocol::ServerHeader;
 use crate::protocol::image::{
-    ImageHeader, ImageType, checked_image_bounds, checked_image_bytes, checked_image_shape,
+    ImageHeader, checked_image_bounds, checked_image_bytes, checked_image_shape,
 };
 use crate::protocol::{FastVec, TRANSFER_CHUNK_SIZE};
 use crate::server_core::net::sender::MessageSender;
 use crate::server_core::server::{Acknowledge, SyncTrait};
 pub(crate) use crate::server_core::states::image::common::ImageData;
 use crate::server_core::states::image::common::{
-    StoredImage, checked_fill_size, checked_max_lines, pack_image_set, pack_image_update,
+    ImageFill, StoredImage, checked_fill_size, checked_max_lines, pack_image_set, pack_image_update,
 };
 use crate::server_core::states::scheduler::Scheduler;
 use crate::server_core::transfer::Messages;
@@ -103,16 +103,16 @@ impl Image {
         Ok(())
     }
 
-    /// Fills the image with `rgba`, stored as `image_type`; the client gets
+    /// Fills the image with `fill`, stored in its format; the client gets
     /// only the color.
     pub(crate) fn set_all_image(
         &self,
         size: [usize; 2],
-        rgba: [u8; 4],
-        image_type: ImageType,
+        fill: ImageFill,
         update: bool,
         wait: bool,
     ) -> Result<(), String> {
+        let rgba = fill.rgba();
         let (wire_size, _) = checked_fill_size(size)?;
         let id = self.scheduler.id;
 
@@ -129,8 +129,8 @@ impl Image {
         let lock = self.scheduler.lock.lock();
         let mut w = self.image.write();
         match w.as_mut() {
-            Some(stored) => stored.fill(size, rgba, image_type),
-            None => *w = Some(StoredImage::filled(size, rgba, image_type)),
+            Some(stored) => stored.fill(size, fill),
+            None => *w = Some(StoredImage::filled(size, fill)),
         }
 
         // The first sync for a connection always sends the complete stored
@@ -321,6 +321,7 @@ mod tests {
     use tokio::sync::mpsc::error::TryRecvError;
 
     use super::*;
+    use crate::protocol::image::ImageType;
     use crate::server_core::net::sender::MessageReceiver;
 
     fn new_image(is_connected: bool) -> (Arc<Image>, Arc<AtomicBool>, MessageReceiver) {
@@ -347,13 +348,13 @@ mod tests {
         for connected in [false, true] {
             let (image, _, mut receiver) = new_image(connected);
             image
-                .set_all_image([1, 1], [9; 4], ImageType::ColorAlpha, false, false)
+                .set_all_image([1, 1], ImageFill::ColorAlpha([9; 4]), false, false)
                 .unwrap();
             for size in [[65_537, 1], [1, 65_537]] {
                 let data = || image_data(&[], size, ImageType::Gray);
                 for result in [
                     image.set_image(data(), false, false),
-                    image.set_all_image(size, [0; 4], ImageType::ColorAlpha, false, false),
+                    image.set_all_image(size, ImageFill::ColorAlpha([0; 4]), false, false),
                     image.update_image(&[0, 0], data(), false, false, None, false),
                     pack_set_data(1, &data(), false).map(|_| ()),
                     pack_fill_data(1, [size[0] as u32, size[1] as u32], [0; 4], false).map(|_| ()),
@@ -503,7 +504,7 @@ mod tests {
         assert!(image.get_image(|image| image.is_none()));
 
         image
-            .set_all_image([2, 3], [10, 20, 30, 255], ImageType::Color, false, false)
+            .set_all_image([2, 3], ImageFill::Color([10, 20, 30]), false, false)
             .unwrap();
         assert_eq!(image.get_size(), [2, 3]);
         assert_eq!(
@@ -533,7 +534,7 @@ mod tests {
         image.acknowledge();
 
         image
-            .set_all_image([4, 5], [7, 7, 7, 8], ImageType::GrayAlpha, true, false)
+            .set_all_image([4, 5], ImageFill::GrayAlpha([7, 8]), true, false)
             .unwrap();
         let (message, _) = receiver.try_recv().unwrap().unwrap();
         let bytes = message.into_bytes();
@@ -554,7 +555,7 @@ mod tests {
         for connected in [false, true] {
             let (image, _, mut receiver) = new_image(connected);
             image
-                .set_all_image([1, 1], [9; 4], ImageType::ColorAlpha, false, false)
+                .set_all_image([1, 1], ImageFill::ColorAlpha([9; 4]), false, false)
                 .unwrap();
             for size in [[0, 5], [5, 0], [0, 0]] {
                 let data = || image_data(&[], size, ImageType::Gray);
@@ -583,11 +584,11 @@ mod tests {
         let (image, _, mut receiver) = new_image(false);
 
         image
-            .set_all_image([1, 1], [9, 9, 9, 255], ImageType::ColorAlpha, false, false)
+            .set_all_image([1, 1], ImageFill::ColorAlpha([9, 9, 9, 255]), false, false)
             .unwrap();
         assert!(
             image
-                .set_all_image([0, 4], [0, 0, 0, 255], ImageType::ColorAlpha, false, false)
+                .set_all_image([0, 4], ImageFill::ColorAlpha([0, 0, 0, 255]), false, false)
                 .is_err()
         );
         assert_eq!(image.get_size(), [1, 1]);
@@ -973,6 +974,7 @@ mod packing_tests {
     use super::*;
     use crate::client::messages::{MessageSender as ClientSender, MessagesParser};
     use crate::client::states::image::Image as ClientImage;
+    use crate::protocol::image::ImageType;
 
     type ClientReceiver =
         tokio::sync::mpsc::UnboundedReceiver<Option<crate::client::messages::ChannelMessage>>;

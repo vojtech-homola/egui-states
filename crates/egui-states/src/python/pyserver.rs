@@ -954,10 +954,10 @@ impl StateServerCore {
         update: bool,
         wait: bool,
     ) -> PyResult<()> {
-        let (rgba, image_type) = pyimage::image_color(color)?;
+        let fill = pyimage::image_color(color)?;
         py.detach(|| {
             self.inner_image(value_id)?
-                .set_all_image(shape, rgba, image_type, update, wait)
+                .set_all_image(shape, fill, update, wait)
                 .map_err(PyValueError::new_err)
         })
     }
@@ -1049,10 +1049,10 @@ impl StateServerCore {
         update: bool,
         wait: bool,
     ) -> PyResult<()> {
-        let (rgba, image_type) = pyimage::image_color(color)?;
+        let fill = pyimage::image_color(color)?;
         py.detach(|| {
             self.inner_image_multi(value_id)?
-                .set_all_image(index, shape, rgba, image_type, update, wait)
+                .set_all_image(index, shape, fill, update, wait)
                 .map_err(PyValueError::new_err)
         })
     }

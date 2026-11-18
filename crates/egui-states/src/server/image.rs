@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use crate::protocol::image::{ImageType, checked_image_bytes};
-use crate::server_core::states::image::common::{StoredImage, checked_fill_size};
+use crate::server_core::states::image::common::{ImageFill, StoredImage, checked_fill_size};
 use crate::server_core::states::image::multi::ImageMulti as CoreImageMulti;
 use crate::server_core::states::image::single::{Image as CoreImage, ImageData};
 
@@ -24,24 +24,16 @@ pub enum ImageColor {
 }
 
 impl ImageColor {
+    /// The fill of this color, in the format it is stored in.
     #[inline]
-    fn rgba(self) -> [u8; 4] {
+    fn fill(self) -> ImageFill {
         match self {
-            Self::Gray(gray) => [gray, gray, gray, 255],
-            Self::GrayAlpha(gray, alpha) => [gray, gray, gray, alpha],
-            Self::Color(red, green, blue) => [red, green, blue, 255],
-            Self::ColorAlpha(red, green, blue, alpha) => [red, green, blue, alpha],
-        }
-    }
-
-    /// The format a fill with this color is stored in.
-    #[inline]
-    fn image_type(self) -> ImageType {
-        match self {
-            Self::Gray(_) => ImageType::Gray,
-            Self::GrayAlpha(..) => ImageType::GrayAlpha,
-            Self::Color(..) => ImageType::Color,
-            Self::ColorAlpha(..) => ImageType::ColorAlpha,
+            Self::Gray(gray) => ImageFill::Gray([gray]),
+            Self::GrayAlpha(gray, alpha) => ImageFill::GrayAlpha([gray, alpha]),
+            Self::Color(red, green, blue) => ImageFill::Color([red, green, blue]),
+            Self::ColorAlpha(red, green, blue, alpha) => {
+                ImageFill::ColorAlpha([red, green, blue, alpha])
+            }
         }
     }
 }
@@ -208,7 +200,7 @@ impl Image {
         wait: bool,
     ) -> Result<()> {
         self.inner
-            .set_all_image(shape, color.rgba(), color.image_type(), update, wait)
+            .set_all_image(shape, color.fill(), update, wait)
             .map_err(ServerError::new)
     }
 
@@ -378,7 +370,7 @@ impl ImageMulti {
         wait: bool,
     ) -> Result<()> {
         self.inner
-            .set_all_image(index, shape, color.rgba(), color.image_type(), update, wait)
+            .set_all_image(index, shape, color.fill(), update, wait)
             .map_err(ServerError::new)
     }
 
@@ -573,10 +565,13 @@ mod tests {
 
     #[test]
     fn image_color_normalizes_to_rgba() {
-        assert_eq!(ImageColor::Gray(1).rgba(), [1, 1, 1, 255]);
-        assert_eq!(ImageColor::GrayAlpha(1, 2).rgba(), [1, 1, 1, 2]);
-        assert_eq!(ImageColor::Color(1, 2, 3).rgba(), [1, 2, 3, 255]);
-        assert_eq!(ImageColor::ColorAlpha(1, 2, 3, 4).rgba(), [1, 2, 3, 4]);
+        assert_eq!(ImageColor::Gray(1).fill().rgba(), [1, 1, 1, 255]);
+        assert_eq!(ImageColor::GrayAlpha(1, 2).fill().rgba(), [1, 1, 1, 2]);
+        assert_eq!(ImageColor::Color(1, 2, 3).fill().rgba(), [1, 2, 3, 255]);
+        assert_eq!(
+            ImageColor::ColorAlpha(1, 2, 3, 4).fill().rgba(),
+            [1, 2, 3, 4]
+        );
     }
 
     #[test]
