@@ -19,6 +19,7 @@ use crate::hashing::{MAX_RESERVED_ID, NoHashMap, generate_value_id};
 use crate::protocol::close::{self, Close};
 use crate::protocol::data::DataType;
 use crate::protocol::{ServerHeader, check_value_size, serialize};
+use crate::server_core::admission::ClientPolicy;
 use crate::server_core::file_transfer::{TransferEndpoint, record_event};
 use crate::server_core::http::origin::OriginPolicy;
 use crate::server_core::http::web::{WebSite, WebSlot};
@@ -270,6 +271,8 @@ pub(crate) struct ServerConfig {
     origins: Arc<OriginPolicy>,
     /// How file transfers share the connection.
     transfer_profile: TransferProfile,
+    /// What happens to a client that connects while another is connected.
+    client_policy: ClientPolicy,
 }
 
 impl ServerConfig {
@@ -287,6 +290,7 @@ impl ServerConfig {
         web_path: Option<&Path>,
         allowed_origins: &[String],
         transfer_profile: TransferProfile,
+        client_policy: ClientPolicy,
     ) -> Result<Self, String> {
         let web_path = web_path
             .map(|path| {
@@ -300,6 +304,7 @@ impl ServerConfig {
             web_path,
             origins: Arc::new(OriginPolicy::new(allowed_origins)?),
             transfer_profile,
+            client_policy,
         })
     }
 
@@ -313,6 +318,7 @@ impl ServerConfig {
             web_path: None,
             origins: Arc::default(),
             transfer_profile: TransferProfile::default(),
+            client_policy: ClientPolicy::default(),
         }
     }
 }
@@ -460,6 +466,7 @@ impl Server {
                 let signals = self.signals.clone();
                 let web = self.web.clone();
                 let heartbeat = self.config.heartbeat;
+                let policy = self.config.client_policy;
                 let transfers = self.transfers.clone();
 
                 let listening = Listening {
@@ -481,6 +488,7 @@ impl Server {
                             sender,
                             connected,
                             close,
+                            policy,
                             values,
                             signals,
                             heartbeat,

@@ -276,14 +276,20 @@ fn edit_images(all: &State) -> s::Result<()> {
 }
 
 impl Fixture {
-    pub fn new(port: u16) -> s::Result<Self> {
+    /// The server for `scenario`, which some scenarios configure.
+    pub fn new(port: u16, scenario: &str) -> s::Result<Self> {
         let errors = Arc::new(Mutex::new(Vec::new()));
         let on_error = errors.clone();
+        let client_policy = match scenario {
+            "busy-client" => s::ClientPolicy::Reject,
+            _ => s::ClientPolicy::Replace,
+        };
         let server = StatesServer::with_options(s::ServerOptions {
             version: Some(StatesServer::VERSION_HASH),
             error_handler: Some(Arc::new(move |error| {
                 on_error.lock().unwrap().push(error.to_string())
             })),
+            client_policy,
             ..s::ServerOptions::default()
         })?;
         let states = &server.states.integration;

@@ -79,6 +79,7 @@ class StateServerCore:
         web_path: str | PathLike[str] | None = None,
         allowed_origins: Sequence[str] = (),
         transfer_profile: int = 1,
+        client_policy: int = 0,
     ) -> None: ...
     def start(
         self,

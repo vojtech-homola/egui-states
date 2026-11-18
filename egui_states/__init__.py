@@ -7,6 +7,7 @@ images, and logging levels that can be controlled from Python.
 
 from egui_states import version
 from egui_states.logging import LogLevel
+from egui_states.server import ClientPolicy
 from egui_states.structures import (
     UNSET,
     Data,
@@ -69,6 +70,7 @@ __all__ = [
     "UploadWithMeta",
     "UNSET",
     "LogLevel",
+    "ClientPolicy",
     "OfferedFile",
     "TransferError",
     "TransferErrorKind",

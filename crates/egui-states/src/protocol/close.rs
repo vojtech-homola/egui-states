@@ -11,7 +11,6 @@ pub(crate) const VERSION_MISMATCH: u16 = 4001;
 /// The client's token is missing or wrong.
 pub(crate) const TOKEN_REJECTED: u16 = 4002;
 /// Another client is connected and the server keeps it.
-#[cfg_attr(not(feature = "client"), allow(dead_code))]
 pub(crate) const BUSY: u16 = 4003;
 /// The server's connect-request callback refused the client.
 #[cfg_attr(not(feature = "client"), allow(dead_code))]

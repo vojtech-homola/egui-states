@@ -76,6 +76,7 @@ pub fn run(port: u16, scenario: &str) {
         "images-wire" => return images_wire(port),
         "takeover" => return takeover(port),
         "rejected-client" => return rejected_client(port),
+        "busy-client" => return busy_client(port),
         _ => {}
     }
     let (state, connection) = connect(port);
@@ -691,6 +692,31 @@ fn takeover(port: u16) {
     });
     assert_eq!(first.0.last_reason(), Some(CloseReason::Replaced));
     barrier(&second_state.integration);
+}
+
+/// With the `Reject` policy a second client is refused as busy and the first
+/// one stays connected; once it leaves, the next client gets in.
+fn busy_client(port: u16) {
+    let (state, first) = connect(port);
+    let builder = ClientBuilder::<State>::new(egui::Context::default(), port);
+    let hash = builder.get_version_hash();
+    let (refused, client) = builder.version(hash).build();
+    client.connect();
+    let reason = wait("busy refusal", || client.last_reason());
+    assert_eq!(reason, CloseReason::Busy);
+    assert_eq!(client.get_state(), ConnectionState::Failed);
+    assert_eq!(
+        refused.integration.value.get(),
+        0,
+        "a refused client received synchronized state"
+    );
+    barrier(&state.integration);
+    assert_eq!(first.0.get_state(), ConnectionState::Connected);
+
+    drop(first);
+    let (next_state, _next) =
+        connect_client(ClientBuilder::<State>::new(egui::Context::default(), port));
+    barrier(&next_state.integration);
 }
 
 /// A client with a mismatched layout version is refused without affecting the

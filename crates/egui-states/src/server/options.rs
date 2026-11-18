@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::{ServerError, TransferProfile};
+use super::{ClientPolicy, ServerError, TransferProfile};
 use crate::server_core::net::heartbeat;
 
 /// Thread-safe callback used for asynchronous server errors.
@@ -79,6 +79,9 @@ pub struct ServerOptions {
     /// a transfer can go. Default [`TransferProfile::Balanced`]. The client
     /// uses the server's profile.
     pub transfer_profile: TransferProfile,
+    /// What the server does with a client that connects while another one
+    /// is connected. Default [`ClientPolicy::Replace`].
+    pub client_policy: ClientPolicy,
 }
 
 impl ServerOptions {
@@ -88,7 +91,8 @@ impl ServerOptions {
     /// version, pings the client every 5 s, disconnecting it after 20 s
     /// without any response, and has no web page. Browser pages may connect
     /// only when the server serves them on an IP address or local name. File
-    /// transfers use [`TransferProfile::Balanced`].
+    /// transfers use [`TransferProfile::Balanced`], and a new client replaces
+    /// the connected one ([`ClientPolicy::Replace`]).
     pub fn new() -> Self {
         Self::default()
     }
@@ -106,6 +110,7 @@ impl Default for ServerOptions {
             web_path: None,
             allowed_origins: Vec::new(),
             transfer_profile: TransferProfile::default(),
+            client_policy: ClientPolicy::default(),
         }
     }
 }

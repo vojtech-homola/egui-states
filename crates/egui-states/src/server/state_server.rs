@@ -121,7 +121,7 @@ impl StateServer {
     }
 
     /// Creates a server with explicit application, worker, heartbeat, web
-    /// page, browser access, and file transfer options.
+    /// page, browser access, file transfer, and client policy options.
     ///
     /// # Errors
     ///
@@ -138,6 +138,7 @@ impl StateServer {
             options.web_path.as_deref(),
             &options.allowed_origins,
             options.transfer_profile,
+            options.client_policy,
         )
         .map_err(ServerError::new)?;
         let server = CoreServer::new(config);

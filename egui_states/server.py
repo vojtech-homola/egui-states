@@ -3,6 +3,7 @@
 
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Sequence
+from enum import Enum
 from os import PathLike
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,20 @@ from egui_states.transfer import TransferProfile
 _ON_CONNECT_ID = 1
 _ON_DISCONNECT_ID = 2
 _CLIENT_MESSAGE_ID = 3
+
+
+class ClientPolicy(Enum):
+    """What the server does with a client that connects while another is connected.
+
+    The server serves one client at a time.
+    """
+
+    #: The new client takes over the connection. The connected client is
+    #: closed and learns that it was replaced.
+    Replace = 0
+    #: The connected client keeps the connection. The new client is refused
+    #: and learns that the server is busy.
+    Reject = 1
 
 
 def _initialize(
@@ -92,6 +107,7 @@ class StateServerBase[T: StatesBase]:
         web_path: str | PathLike[str] | None = None,
         allowed_origins: Sequence[str] = (),
         transfer_profile: TransferProfile = TransferProfile.Balanced,
+        client_policy: ClientPolicy = ClientPolicy.Replace,
     ) -> None:
         """Initialize the state server.
 
@@ -147,13 +163,18 @@ class StateServerBase[T: StatesBase]:
                 the fastest transfers, for a client on the same machine or
                 when transfers matter more than the UI; a state change may
                 wait behind up to 1 MiB of file data.
+            client_policy (ClientPolicy, optional): What the server does with
+                a client that connects while another is connected:
+                ``Replace`` lets the new client take over, ``Reject`` keeps
+                the connected client and refuses the new one as busy.
 
         Raises:
             ValueError: If ``heartbeat_interval`` is not positive,
                 ``heartbeat_timeout`` is not greater than it, ``web_path``
                 cannot be made absolute (for example because it is empty), an
-                allowed origin is malformed, or ``transfer_profile`` is not a
-                :class:`TransferProfile`.
+                allowed origin is malformed, ``transfer_profile`` is not a
+                :class:`TransferProfile`, or ``client_policy`` is not a
+                :class:`ClientPolicy`.
         """
         self._server = StateServerCore(
             version,
@@ -161,8 +182,9 @@ class StateServerBase[T: StatesBase]:
             heartbeat_timeout,
             web_path,
             list(allowed_origins),
-            # The native core takes the profile's number.
+            # The native core takes the profile's and the policy's numbers.
             TransferProfile(transfer_profile).value,
+            ClientPolicy(client_policy).value,
         )
         self._signals_manager = SignalsManager(self._server, signals_workers, error_handler)
         self._states: T = state_class(self)

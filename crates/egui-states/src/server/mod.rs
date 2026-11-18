@@ -28,6 +28,7 @@ mod values;
 pub use crate::file_transfer::{
     TransferError, TransferHandle, TransferMeta, TransferProfile, TransferProgress, TransferStatus,
 };
+pub use crate::server_core::admission::ClientPolicy;
 pub use callbacks::CallbackHandle;
 pub use collections::{MapState, VecState};
 pub use data::{Data, DataElement, DataMulti, DataMultiTake, DataTake, HeaderValue};

@@ -17,6 +17,7 @@ use crate::event::Event;
 use crate::file_transfer::engine::Engine;
 use crate::protocol::close::{self, Close};
 use crate::protocol::{FastVec, MAX_MSG_COUNT, MSG_SIZE_THRESHOLD, ServerHeader, serialize};
+use crate::server_core::admission::ClientPolicy;
 use crate::server_core::http::origin::OriginPolicy;
 use crate::server_core::http::web::{WebSite, WebSlot};
 use crate::server_core::net::heartbeat::{Activity, Heartbeat};
@@ -88,6 +89,8 @@ pub(crate) struct Session {
     pub(crate) connected: Arc<AtomicBool>,
     /// Why the server ends the current connection.
     pub(crate) close: CloseSlot,
+    /// What happens to a client that connects while another is connected.
+    pub(crate) policy: ClientPolicy,
     pub(crate) values: ServerStatesList,
     pub(crate) signals: SignalsManager,
     pub(crate) heartbeat: Option<Heartbeat>,
@@ -120,6 +123,7 @@ pub(crate) async fn run<L: Listener>(
         sender,
         connected,
         close: close_slot,
+        policy,
         values,
         signals,
         transfers,
@@ -192,6 +196,15 @@ pub(crate) async fn run<L: Listener>(
             socket_reader,
             peer_addr,
         } = client;
+
+        // The authoritative check: no other connection can be published
+        // between it and the takeover below.
+        if policy == ClientPolicy::Reject && connected.load(Ordering::Acquire) {
+            let reason = "refused a client: another client is connected";
+            signals.warning(format!("{reason} ({peer_addr})"));
+            close_unread(&mut pending, socket_tx, Close::new(close::BUSY, reason));
+            continue;
+        }
 
         let mut rx = match holder {
             // disconnect previous client
@@ -937,6 +950,7 @@ mod run_tests {
     use crate::server_core::net::transport::Incoming;
     use crate::server_core::net::transport::memory::{self, MemoryClient, MemoryConnector};
     use crate::server_core::server::{Acknowledge, SyncTrait};
+    use crate::server_core::signals::LOGGING_ID;
 
     /// Fails only its first connection sync.
     struct FailFirstSync(AtomicUsize);
@@ -1024,7 +1038,15 @@ mod run_tests {
             sync: Vec<Arc<dyn SyncTrait>>,
         ) -> (Self, MemoryConnector) {
             let (listener, connector) = memory::listener();
-            (Self::run(listener, heartbeat, signals, sync), connector)
+            let server = Self::run(listener, heartbeat, signals, sync, ClientPolicy::Replace);
+            (server, connector)
+        }
+
+        /// Runs the loop on in-memory connections with `policy`.
+        fn memory_policy(policy: ClientPolicy, signals: SignalsManager) -> (Self, MemoryConnector) {
+            let (listener, connector) = memory::listener();
+            let server = Self::run(listener, None, signals, Vec::new(), policy);
+            (server, connector)
         }
 
         /// Runs the loop on WebSockets over TCP.
@@ -1033,7 +1055,13 @@ mod run_tests {
                 .await
                 .unwrap();
             let addr = listener.local_addr().unwrap();
-            let server = Self::run(listener, heartbeat, SignalsManager::new(), Vec::new());
+            let server = Self::run(
+                listener,
+                heartbeat,
+                SignalsManager::new(),
+                Vec::new(),
+                ClientPolicy::Replace,
+            );
             (server, addr)
         }
 
@@ -1042,6 +1070,7 @@ mod run_tests {
             heartbeat: Option<Heartbeat>,
             signals: SignalsManager,
             sync: Vec<Arc<dyn SyncTrait>>,
+            policy: ClientPolicy,
         ) -> Self {
             let (sender, rx) = MessageSender::new();
             let connected = Arc::new(AtomicBool::new(false));
@@ -1067,6 +1096,7 @@ mod run_tests {
                     sender: sender.clone(),
                     connected: connected.clone(),
                     close: CloseSlot::default(),
+                    policy,
                     values,
                     signals,
                     heartbeat,
@@ -1170,6 +1200,46 @@ mod run_tests {
             assert!(matches!(synced, Ok(Some(Outgoing::Binary(_)))));
             assert!(server.connected());
             assert_eq!(second.close_reason(), None);
+            server.stop().await;
+        });
+    }
+
+    /// With [`ClientPolicy::Reject`] the connected client keeps the
+    /// connection and a newcomer is refused as busy; once the connected one
+    /// leaves, the next newcomer gets in.
+    #[test]
+    fn the_reject_policy_keeps_the_connected_client() {
+        block_on(async {
+            let signals = SignalsManager::new();
+            signals.set_register(LOGGING_ID, true, false);
+            let (server, connector) =
+                TestServer::memory_policy(ClientPolicy::Reject, signals.clone());
+            let mut first = connect(&connector);
+            let synced = tokio::time::timeout(DEADLINE, first.frames.recv()).await;
+            assert!(matches!(synced, Ok(Some(Outgoing::Binary(_)))));
+
+            let mut refused = connect(&connector);
+            let closed = tokio::time::timeout(DEADLINE, refused.closed())
+                .await
+                .expect("the refused client was not closed");
+            assert_eq!(closed.map(|close| close.code), Some(close::BUSY));
+            assert!(server.connected());
+            assert_eq!(first.close_reason(), None);
+            let mut logged = false;
+            let mut last = None;
+            while let Some((id, message, _)) = signals.try_claim(last.take()) {
+                logged |= String::from_utf8_lossy(&message).contains("another client");
+                last = Some(id);
+            }
+            assert!(logged, "the refusal was not logged");
+
+            // The connected client leaves; the next one is accepted.
+            drop(first);
+            assert!(until(DEADLINE, || !server.connected()).await);
+            let mut next = connect(&connector);
+            let synced = tokio::time::timeout(DEADLINE, next.frames.recv()).await;
+            assert!(matches!(synced, Ok(Some(Outgoing::Binary(_)))));
+            assert!(until(DEADLINE, || server.connected()).await);
             server.stop().await;
         });
     }

@@ -47,6 +47,20 @@ def test_transfer_profiles_are_validated():
             StatesServer(signals_workers=1, transfer_profile=cast(Any, profile))
 
 
+def test_client_policies_are_validated():
+    """Accept every client policy and reject anything else."""
+    import pytest
+    from egui_states import ClientPolicy
+    from egui_states_test_bindings import StatesServer  # ty: ignore[import-not-found]
+
+    for policy in ClientPolicy:
+        StatesServer(signals_workers=1, client_policy=policy)
+    # Values an untyped caller might pass.
+    for policy in ["reject", "Reject", 2, -1]:
+        with pytest.raises(ValueError, match="ClientPolicy"):
+            StatesServer(signals_workers=1, client_policy=cast(Any, policy))
+
+
 def test_server_restarts_on_a_different_port():
     """Restart a server with a new port and release the previous listener."""
     import socket

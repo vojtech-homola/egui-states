@@ -1802,6 +1802,7 @@ mod transfer_tests {
                 sender: sender.clone(),
                 connected: connected.clone(),
                 close: Default::default(),
+                policy: Default::default(),
                 values,
                 signals: SignalsManager::new(),
                 heartbeat: None,

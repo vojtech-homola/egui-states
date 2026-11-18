@@ -26,6 +26,7 @@ use crate::python::{
     pytransfer::{self, Offer, PyTransferHandle, PyTransferOffer, SendTarget},
     pytypes::{PyObjectClass, PyObjectType},
 };
+use crate::server_core::admission::ClientPolicy;
 use crate::server_core::file_transfer::{TransferEndpoint, finished_transfer};
 use crate::server_core::http::web::{LoadError, WebSite};
 use crate::server_core::net::heartbeat::{self, Heartbeat};
@@ -293,6 +294,7 @@ impl StateServerCore {
         web_path=None,
         allowed_origins=Vec::new(),
         transfer_profile=1,
+        client_policy=0,
     ))]
     fn new(
         version: Option<u64>,
@@ -301,11 +303,15 @@ impl StateServerCore {
         web_path: Option<PathBuf>,
         allowed_origins: Vec<String>,
         transfer_profile: u8,
+        client_policy: u8,
     ) -> PyResult<Self> {
         let heartbeat = Heartbeat::from_secs(heartbeat_interval, heartbeat_timeout)
             .map_err(PyValueError::new_err)?;
         let transfer_profile = TransferProfile::from_code(transfer_profile).ok_or_else(|| {
             PyValueError::new_err(format!("unknown transfer profile {transfer_profile}"))
+        })?;
+        let client_policy = ClientPolicy::from_code(client_policy).ok_or_else(|| {
+            PyValueError::new_err(format!("unknown client policy {client_policy}"))
         })?;
         let config = ServerConfig::new(
             version,
@@ -313,6 +319,7 @@ impl StateServerCore {
             web_path.as_deref(),
             &allowed_origins,
             transfer_profile,
+            client_policy,
         )
         .map_err(PyValueError::new_err)?;
         let server = Server::new(config);
@@ -1906,7 +1913,7 @@ mod tests {
     ) {
         Python::initialize();
         let core = Python::attach(|py| {
-            let core = StateServerCore::new(None, 60.0, None, None, Vec::new(), 1).unwrap();
+            let core = StateServerCore::new(None, 60.0, None, None, Vec::new(), 1, 0).unwrap();
             Py::new(py, core).unwrap()
         });
         let port = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
