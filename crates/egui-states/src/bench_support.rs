@@ -10,6 +10,7 @@ use crate::client::states::data::{Data, UpdateData};
 use crate::protocol::data::{DataHeader, DataType, HeaderUpdate::Keep, TransportType};
 use crate::protocol::image::ImageType;
 use crate::server_core::states::data::{WireHeader, pack_data};
+use crate::server_core::states::image::common::StoredImage;
 use crate::server_core::states::image::single::{ImageData, pack_set_data};
 
 /// A pixel layout accepted by the server and sent to the client.
@@ -75,18 +76,39 @@ pub fn pack_image_set(pixels: &[u8], size: [usize; 2], format: PixelFormat) -> u
         .sum()
 }
 
-/// Converts `pixels` to RGBA into `rgba`, as the server does when it writes
-/// them into an RGBA image or widens an image to RGBA.
-pub fn server_to_rgba(pixels: &[u8], format: PixelFormat, rgba: &mut [u8]) {
+/// A server image, as an `Image` state stores it.
+pub struct ServerImage(StoredImage);
+
+impl ServerImage {
+    /// An image of `size` (`[height, width]`) set from `pixels` in `format`.
+    pub fn new(pixels: &[u8], size: [usize; 2], format: PixelFormat) -> Self {
+        let mut image = Self(StoredImage::empty());
+        image.set(pixels, size, format);
+        image
+    }
+
+    /// Replaces the image, as an image set does: a copy in `format`.
+    pub fn set(&mut self, pixels: &[u8], size: [usize; 2], format: PixelFormat) {
+        self.0.set(&image_data(pixels, size, format));
+    }
+
+    /// Writes `pixels` at the top-left corner, as an image update does: they
+    /// are converted to the stored format, which is widened first when
+    /// `format` has channels it lacks.
+    pub fn update(&mut self, pixels: &[u8], size: [usize; 2], format: PixelFormat) {
+        let image = image_data(pixels, size, format);
+        assert!(self.0.contains(&[0, 0], size));
+        self.0.update(&image, &[0, 0]);
+    }
+}
+
+fn image_data(pixels: &[u8], size: [usize; 2], format: PixelFormat) -> ImageData<'_> {
     let image_type = format.image_type();
-    let count = pixels.len() / image_type.bytes_per_pixel();
-    assert_eq!(rgba.len(), count * 4);
-    crate::protocol::image::widen_into(
-        image_type,
-        crate::protocol::image::ImageType::ColorAlpha,
-        pixels,
-        rgba,
+    assert_eq!(
+        pixels.len(),
+        size[0] * size[1] * image_type.bytes_per_pixel()
     );
+    ImageData::packed(pixels, size, image_type)
 }
 
 /// Builds the client texture image for `pixels`, as a complete image set does.
