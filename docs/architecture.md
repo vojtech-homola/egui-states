@@ -101,8 +101,17 @@ the last chunk arrives. Small messages queued together are merged into one
 frame of up to 256 messages and about 512 KiB, which saves a socket write per
 message. A message larger than 64 KiB, such as a full chunk, is sent as a frame
 of its own: the WebSocket library moves the unsent rest of a message after
-every partial socket write, so large frames cost time quadratic in their size. Acknowledgements provide backpressure and release
-pending server work.
+every partial socket write, so large frames cost time quadratic in their size.
+Acknowledgements provide backpressure and release pending server work.
+
+`Data`, `DataMulti`, `Image` and `ImageMulti` send one acknowledged transfer
+at a time. A change waits until the client has acknowledged the previous one,
+then queues its transfer and returns, so the changes one thread makes to these
+states and to any other state reach the client in the order they were made.
+With `wait`, a change returns only once the client has acknowledged it.
+`is_idle` tells whether nothing is in flight, so a producer can skip a frame
+on a slow link instead of waiting. A change made while no client is
+synchronized is only stored, and none of these calls waits then.
 
 When a client connects, every state is synchronized from the server's current
 contents; a change made while the client was away is not replayed. A
@@ -115,28 +124,31 @@ A whole-collection replacement of a `VecState` or `MapState` larger than one
 message is split at item boundaries and applied on the client only after its
 last part arrives. These parts need no acknowledgement.
 
-An image sends one transfer at a time, and one more may wait behind it until
-the client acknowledges the one in flight; a further producer blocks. A set
-always replaces a waiting update. An image update is applied on the client
-once, like a set, unless `max_lines` splits its rectangle into parts of at most
-that many rows from the top. Each part is a complete update, chunked like any
-other, applied and acknowledged on its own; the next part is sent only after
-that acknowledgement, and `update` requests a repaint after every part.
+An image update is applied on the client once, like a set, unless `max_lines`
+splits its rectangle into parts of at most that many rows from the top. Each
+part is a complete update, chunked like any other, applied and acknowledged on
+its own, and `update` requests a repaint after every part. The call queues the
+first part and returns; each further part is sent once the client has
+acknowledged the one before. A split update is therefore the one exception to
+the order above: later changes of other states can reach the client before its
+remaining parts, and the next change of the image waits until its last part
+has been acknowledged.
 
-`force` replaces work that has not been sent and never what is in flight. A
-forced set replaces a waiting set. A forced update drops the parts of the
-waiting update that are not sent yet, provided its rectangle covers that
-update's whole rectangle; otherwise it waits like any other. Either way the
-client ends with the server's pixels, because what is dropped is overwritten.
+Parts that are not sent yet can be dropped, and what is in flight never is. A
+set drops them, because it overwrites the whole image. A forced update drops
+them when its rectangle covers the rectangle of the whole split update;
+otherwise it waits like any other. Either way the call still waits for the part
+in flight, and the client ends with the server's pixels, because what is
+dropped is overwritten.
 
-All keys in an `ImageMulti` share one ordered transfer stream; a set replaces
-only a waiting update of the same key, and `force` only ever replaces waiting
-work of the same key. Sets and updates
-that require multiple messages finish before a later remove or reset is sent;
-controls do not cancel preceding chunks. A disconnect invalidates pending work
-with a transfer generation, and reconnect synchronization resets the client
-collection before sending the server's current keys. Each synchronized image
-must be acknowledged before subsequently queued work is released.
+All keys in an `ImageMulti` share one ordered transfer stream, and a set or a
+forced update drops only waiting parts of its own key. A remove drops the
+waiting parts of its key, and a reset those of every key; both are queued once
+nothing is in flight and need no acknowledgement. A disconnect invalidates
+pending work with a transfer generation, and reconnect synchronization resets
+the client collection before sending the server's current keys. Each
+synchronized image must be acknowledged before subsequently queued work is
+released.
 
 Waiting for acknowledgements slows the server down to the client's pace. A
 client that disappears without closing the connection would make it wait

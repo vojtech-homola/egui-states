@@ -2618,10 +2618,14 @@ mod connection_tests {
                     let mut round = 0_u16;
                     while !stop.load(Ordering::Acquire) {
                         round = round.wrapping_add(1);
-                        data.set(&[writer, round], false).unwrap();
-                        data.add(&[round], false).unwrap();
-                        multi.set(u32::from(writer), &[round], false).unwrap();
-                        multi.add(u32::from(writer), &[round], false).unwrap();
+                        data.set(&[writer, round], false, false).unwrap();
+                        data.add(&[round], false, false).unwrap();
+                        multi
+                            .set(u32::from(writer), &[round], false, false)
+                            .unwrap();
+                        multi
+                            .add(u32::from(writer), &[round], false, false)
+                            .unwrap();
                     }
                 })
             })

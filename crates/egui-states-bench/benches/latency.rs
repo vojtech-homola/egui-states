@@ -112,7 +112,7 @@ fn start_server(port: u16, addr: Ipv4Addr) -> Server {
             thread::spawn(move || {
                 let buffer = vec![0x5a; 16 * MIB];
                 while running.load(Ordering::Acquire) {
-                    if data.set(&buffer, false).is_err() {
+                    if data.set(&buffer, false, false).is_err() {
                         break;
                     }
                 }

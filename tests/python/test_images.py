@@ -175,16 +175,21 @@ def test_image_update_outside_the_image_preserves_pixels(local_bundle):
 
 
 @pytest.mark.parametrize("multi", [False, True], ids=["image", "image-multi"])
-def test_image_force_and_max_lines(local_bundle, multi):
+def test_image_wait_force_and_max_lines(local_bundle, multi):
     _, states, _ = local_bundle
     image = states.image.images[3] if multi else states.image.image
-    image.set(np.zeros((4, 2), dtype=np.uint8), force=True)
+    state = states.image.images if multi else states.image.image
+    # Without a client every change is only stored, so nothing waits.
+    assert state.is_idle()
+    image.set(np.zeros((4, 2), dtype=np.uint8), wait=True)
     assert_array(image.get()[..., :3], np.zeros((4, 2, 3), dtype=np.uint8))
+    image.set_all((4, 2), 0, wait=True)
 
     rows = np.arange(8, dtype=np.uint8).reshape(4, 2)
     image.update(rows, (0, 0), update=True, max_lines=1)
     assert_array(image.get()[..., 0], rows)
-    image.update(np.full((2, 2), 9, dtype=np.uint8), (1, 0), force=True, max_lines=10)
+    image.update(np.full((2, 2), 9, dtype=np.uint8), (1, 0), force=True, max_lines=10, wait=True)
+    assert state.is_idle()
     expected = rows.copy()
     expected[1:3] = 9
     assert_array(image.get()[..., 0], expected)

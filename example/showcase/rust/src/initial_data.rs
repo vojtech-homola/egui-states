@@ -80,11 +80,11 @@ pub fn populate_initial_data(states: &ShowcaseState) -> s::Result<()> {
     states.value_map.items.set(default_map(), true)?;
 
     let bytes = (0u8..32).collect::<Vec<_>>();
-    states.data.bytes.set(&bytes, true)?;
+    states.data.bytes.set(&bytes, true, false)?;
     let samples = (0..(1024 * 20))
         .map(|index| index as f32 / ((1024 * 20 - 1) as f32))
         .collect::<Vec<_>>();
-    states.data.samples.set(&samples, true)?;
+    states.data.samples.set(&samples, true, false)?;
     let temperatures = (0..50)
         .map(|index| 20.0 + (index as f32 / 8.0).sin())
         .collect::<Vec<_>>();
@@ -96,37 +96,46 @@ pub fn populate_initial_data(states: &ShowcaseState) -> s::Result<()> {
     states
         .data
         .measurement
-        .set_with_header(&temperatures, &measurement, true)?;
+        .set_with_header(&temperatures, &measurement, true, false)?;
     let nested_buffer = (0u16..8).collect::<Vec<_>>();
-    states.data.nested.buffer.set(&nested_buffer, true)?;
+    states.data.nested.buffer.set(&nested_buffer, true, false)?;
 
     states
         .multi_data
         .bytes
-        .set(0, &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11], true)?;
-    states.multi_data.bytes.replace(0, 4, &[200, 201], true)?;
-    states.multi_data.bytes.set(1, &[10, 20, 30], true)?;
-    states.multi_data.bytes.add(1, &[40, 50], true)?;
+        .set(0, &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11], true, false)?;
+    states
+        .multi_data
+        .bytes
+        .replace(0, 4, &[200, 201], true, false)?;
+    states.multi_data.bytes.set(1, &[10, 20, 30], true, false)?;
+    states.multi_data.bytes.add(1, &[40, 50], true, false)?;
+    states.multi_data.samples.set(
+        0,
+        &(0..8).map(|i| i as f32 / 7.0).collect::<Vec<_>>(),
+        true,
+        false,
+    )?;
     states
         .multi_data
         .samples
-        .set(0, &(0..8).map(|i| i as f32 / 7.0).collect::<Vec<_>>(), true)?;
-    states
-        .multi_data
-        .samples
-        .set(2, &[-1.0, -0.5, 0.0, 0.5, 1.0], true)?;
-    states.multi_data.samples.add(2, &[1.5, 2.0], true)?;
+        .set(2, &[-1.0, -0.5, 0.0, 0.5, 1.0], true, false)?;
+    states.multi_data.samples.add(2, &[1.5, 2.0], true, false)?;
     states
         .multi_data
         .nested
         .buffer
-        .set(0, &[0, 1, 2, 3], true)?;
-    states.multi_data.nested.buffer.add(0, &[10, 11], true)?;
+        .set(0, &[0, 1, 2, 3], true, false)?;
     states
         .multi_data
         .nested
         .buffer
-        .set(3, &[100, 110, 120], true)?;
+        .add(0, &[10, 11], true, false)?;
+    states
+        .multi_data
+        .nested
+        .buffer
+        .set(3, &[100, 110, 120], true, false)?;
 
     states
         .value_take
@@ -199,6 +208,7 @@ pub fn populate_initial_data(states: &ShowcaseState) -> s::Result<()> {
         true,
         false,
         None,
+        false,
     )?;
 
     states
@@ -208,7 +218,7 @@ pub fn populate_initial_data(states: &ShowcaseState) -> s::Result<()> {
     states
         .image
         .images
-        .set_all(7, [256, 256], s::ImageColor::Color(25, 35, 75), true)?;
+        .set_all(7, [256, 256], s::ImageColor::Color(25, 35, 75), true, false)?;
     states.image.images.update(
         7,
         &image_patch,
@@ -218,6 +228,7 @@ pub fn populate_initial_data(states: &ShowcaseState) -> s::Result<()> {
         true,
         false,
         None,
+        false,
     )?;
 
     Ok(())

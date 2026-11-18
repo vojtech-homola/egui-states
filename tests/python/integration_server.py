@@ -216,11 +216,11 @@ def edit_numeric(states):
 def edit_images(states):
     """Command 34: a full image, partial updates, and sparse images.
 
-    The split update finishes before the remove, which waits for every
-    acknowledgement.
+    The first set returns once the client acknowledged it. The split update
+    finishes before the remove, which waits for every acknowledgement.
     """
     image = states.image.image
-    image.set(np.arange(18, dtype=np.uint8).reshape(2, 3, 3), force=True)
+    image.set(np.arange(18, dtype=np.uint8).reshape(2, 3, 3), wait=True)
     image.update(np.array([[[200, 201, 202], [210, 211, 212]]], dtype=np.uint8), origin=(1, 1), force=True)
     images = states.image.images
     images[2].set(np.array([[9]], dtype=np.uint8))

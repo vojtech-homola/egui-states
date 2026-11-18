@@ -125,7 +125,7 @@ fn data_set(c: &mut Criterion, session: &Session) {
                 for _ in 0..iterations {
                     marker = marker.wrapping_add(1);
                     buffer[0] = marker;
-                    session.data.set(&buffer, false).expect("set data");
+                    session.data.set(&buffer, false, false).expect("set data");
                     wait_until("data", || {
                         session.states.data.read(|data| {
                             data.is_some_and(|data| data.len() == len && data[0] == marker)
@@ -222,6 +222,7 @@ fn image_update(c: &mut Criterion, session: &Session) {
                             false,
                             true,
                             None,
+                            false,
                         )
                         .expect("update image");
                     // The update's chunks are queued at once and acknowledged
@@ -238,6 +239,7 @@ fn image_update(c: &mut Criterion, session: &Session) {
                             false,
                             false,
                             None,
+                            false,
                         )
                         .expect("update corner");
                     marker += 1;

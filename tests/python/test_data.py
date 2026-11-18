@@ -30,6 +30,25 @@ def test_data_array_methods(local_bundle: tuple[StatesServer, State, list[Except
     assert_array(states.data.bytes.get(), np.array([], dtype=np.uint8))
 
 
+def test_data_wait_without_a_client_only_stores(local_bundle):
+    _, states, _ = local_bundle
+    data = states.data.bytes
+    assert data.is_idle()
+    data.set(np.arange(4, dtype=np.uint8), wait=True)
+    data.add(np.array([4], dtype=np.uint8), wait=True)
+    data.replace(np.array([9], dtype=np.uint8), 0, wait=True)
+    data.remove(1, 1, wait=True)
+    assert_array(data.get(), np.array([9, 2, 3, 4], dtype=np.uint8))
+    assert data.is_idle()
+
+    multi = states.multi_data.bytes
+    assert multi.is_idle()
+    multi[0].set(np.array([1, 2], dtype=np.uint8), wait=True)
+    multi[0].add(np.array([3], dtype=np.uint8), wait=True)
+    assert_array(multi[0].get(), np.array([1, 2, 3], dtype=np.uint8))
+    assert multi.is_idle()
+
+
 def test_nested_numeric_storage(local_bundle):
     _, states, _ = local_bundle
     nested_buffer = np.arange(4, dtype=np.uint16)

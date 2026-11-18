@@ -1,10 +1,9 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 
-use parking_lot::{Mutex, MutexGuard, RwLock, RwLockWriteGuard};
+use parking_lot::RwLock;
 
-use crate::event::Event;
 use crate::protocol::ServerHeader;
 use crate::protocol::image::{
     ImageHeader, ImageType, checked_image_bounds, checked_image_bytes, checked_image_shape,
@@ -12,39 +11,27 @@ use crate::protocol::image::{
 use crate::protocol::{FastVec, TRANSFER_CHUNK_SIZE};
 use crate::server_core::net::sender::MessageSender;
 use crate::server_core::server::{Acknowledge, SyncTrait};
-use crate::server_core::states::data::SyncState;
 pub(crate) use crate::server_core::states::image::common::ImageData;
 use crate::server_core::states::image::common::{
-    checked_fill_size, checked_max_lines, covers, pack_image_set, pack_image_update, store_rgba,
+    checked_fill_size, checked_max_lines, pack_image_set, pack_image_update, store_rgba,
     write_rectangle,
 };
+use crate::server_core::states::image::scheduler::Scheduler;
 use crate::server_core::transfer::Messages;
 
-/// Work waiting behind the transfer in flight.
-enum Buffer {
-    /// The messages of one waiting set; empty when none waits.
-    Set(Messages),
-    /// The rectangle (`[y, x, height, width]`) of the last update and its
-    /// sub-rectangles not sent yet, one group of messages each.
-    Update([usize; 4], VecDeque<Messages>),
-}
+/// The single key of an `Image` in its scheduler.
+const KEY: u32 = 0;
 
 struct ImageDataInner {
     data: Vec<u8>,
     size: [usize; 2],
-    buffer: Buffer,
-    sync: SyncState,
 }
 
 pub(crate) struct Image {
     #[cfg_attr(not(feature = "python"), allow(dead_code))]
     pub(crate) name: String,
-    id: u64,
     image: RwLock<ImageDataInner>,
-    lock: Mutex<()>,
-    sender: MessageSender,
-    connected: Arc<AtomicBool>,
-    event: Event,
+    scheduler: Scheduler,
 }
 
 impl Image {
@@ -54,22 +41,13 @@ impl Image {
         sender: MessageSender,
         connected: Arc<AtomicBool>,
     ) -> Arc<Self> {
-        let event = Event::new();
-        event.set(); // initially set so the first send does not block
-
         Arc::new(Self {
             name,
-            id,
             image: RwLock::new(ImageDataInner {
                 data: Vec::with_capacity(0),
                 size: [0, 0],
-                buffer: Buffer::Set(Vec::new()),
-                sync: SyncState::new(),
             }),
-            lock: Mutex::new(()),
-            sender,
-            connected,
-            event,
+            scheduler: Scheduler::new(id, sender, connected),
         })
     }
 
@@ -82,22 +60,31 @@ impl Image {
         getter((&w.data, &w.size))
     }
 
+    /// Whether nothing is in flight and nothing waits.
+    pub(crate) fn is_idle(&self) -> bool {
+        self.scheduler.is_idle()
+    }
+
+    /// Replaces the image. Sends it once the state is idle, dropping waiting
+    /// parts of a split update; with `wait`, returns once the client
+    /// acknowledged it.
     pub(crate) fn set_image(
         &self,
         image: ImageData,
         update: bool,
-        force: bool,
+        wait: bool,
     ) -> Result<(), String> {
         checked_fill_size(image.size)?;
+        let id = self.scheduler.id;
         // Prepare data to send if connected before locking
-        let to_send = if self.connected.load(Ordering::Acquire) {
-            Some(pack_set_data(self.id, &image, update)?)
+        let to_send = if self.scheduler.is_connected() {
+            Some(pack_set_data(id, &image, update)?)
         } else {
             None
         };
 
         // this is main lock for set and update operation
-        let lock = self.lock.lock();
+        let lock = self.scheduler.lock.lock();
         let mut w = self.image.write();
 
         // Only allocate new data if the size has changed.
@@ -107,18 +94,21 @@ impl Image {
 
         // A connection sync sends the latest complete image. Do not enqueue a
         // separate mutation until that initial sync has completed.
-        if w.sync.sendable(&self.connected).is_none() {
+        let Some(generation) = self.scheduler.sendable() else {
             return Ok(());
-        }
+        };
 
         // Reuse data prepared before locking, or prepare it now if the client
         // connected while the local image was being updated.
         let to_send = match to_send {
             Some(data) => data,
-            None => pack_set_data(self.id, &image, update)?,
+            None => pack_set_data(id, &image, update)?,
         };
+        drop(w);
 
-        self.send_or_buffer_set(lock, w, to_send, force)
+        self.scheduler
+            .send_set(lock, KEY, to_send, wait, generation);
+        Ok(())
     }
 
     pub(crate) fn set_all_image(
@@ -126,20 +116,22 @@ impl Image {
         size: [usize; 2],
         rgba: [u8; 4],
         update: bool,
+        wait: bool,
     ) -> Result<(), String> {
         let (wire_size, rgba_size) = checked_fill_size(size)?;
+        let id = self.scheduler.id;
 
         // Prepare the compact message before locking when possible, just like
         // set_image prepares its normal set messages.
-        let to_send = if self.connected.load(Ordering::Acquire) {
-            Some(pack_fill_data(self.id, wire_size, rgba, update)?)
+        let to_send = if self.scheduler.is_connected() {
+            Some(pack_fill_data(id, wire_size, rgba, update)?)
         } else {
             None
         };
 
         // Use the same producer lock and set scheduling as set_image. This
         // keeps fill ordered with ordinary sets and updates.
-        let lock = self.lock.lock();
+        let lock = self.scheduler.lock.lock();
         let mut w = self.image.write();
 
         w.size = size;
@@ -158,89 +150,25 @@ impl Image {
 
         // The first sync for a connection always sends the complete cached
         // RGBA image. A compact fill is only useful after sync has completed.
-        if w.sync.sendable(&self.connected).is_none() {
+        let Some(generation) = self.scheduler.sendable() else {
             return Ok(());
-        }
+        };
 
         let to_send = match to_send {
             Some(data) => data,
-            None => pack_fill_data(self.id, wire_size, rgba, update)?,
+            None => pack_fill_data(id, wire_size, rgba, update)?,
         };
-
-        self.send_or_buffer_set(lock, w, to_send, false)
-    }
-
-    /// Sends a set now, or stores it behind the transfer in flight. With
-    /// `force`, a set already waiting there is replaced; otherwise the call
-    /// waits until that set has been sent.
-    fn send_or_buffer_set(
-        &self,
-        _lock: MutexGuard<'_, ()>,
-        mut w: RwLockWriteGuard<'_, ImageDataInner>,
-        to_send: Messages,
-        force: bool,
-    ) -> Result<(), String> {
-        if let Buffer::Set(ref mut dat) = w.buffer {
-            if dat.is_empty() {
-                if self.event.is_set() {
-                    self.event.clear();
-                    self.send_all(to_send);
-                    return Ok(());
-                } else {
-                    dat.extend(to_send);
-                    return Ok(());
-                }
-            }
-            // The waiting set is complete and never partly sent, so the newer
-            // complete image can take its place.
-            if force {
-                *dat = to_send;
-                return Ok(());
-            }
-        } else {
-            //rewrite any update buffer, set has always priority over update
-            if self.event.is_set() {
-                self.event.clear();
-                self.send_all(to_send);
-                return Ok(());
-            } else {
-                w.buffer = Buffer::Set(to_send);
-                return Ok(());
-            }
-        }
-
-        // Buffer::Set already contains a pending set. Drop the image guard, but
-        // keep the producer mutex, so acknowledge() can drain it before this
-        // call sends its data.
-        let sync_generation = w.sync.generation();
         drop(w);
 
-        self.event.wait_clear();
-        if !self.connected.load(Ordering::Acquire) {
-            return Ok(());
-        }
-
-        // A reset may have released this waiter for a later connection. Keep
-        // the read guard through enqueueing so reset/sync cannot race this
-        // generation check.
-        let w = self.image.read();
-        if w.sync.generation() != sync_generation {
-            return Ok(());
-        }
-
-        self.send_all(to_send);
+        self.scheduler
+            .send_set(lock, KEY, to_send, wait, generation);
         Ok(())
     }
 
-    fn send_all(&self, messages: Messages) {
-        for (message, send_now) in messages {
-            self.sender.send_set(message, send_now);
-        }
-    }
-
-    /// Writes a rectangle and sends it, in groups of at most `max_lines`
-    /// rows. With `force`, a waiting update is dropped when the new rectangle
-    /// covers it; otherwise the call waits until it has been sent.
+    /// Writes a rectangle and sends it once the state is idle, in parts of at
+    /// most `max_lines` rows. With `force`, waiting parts of an earlier split
+    /// update are dropped first when the new rectangle covers it. With
+    /// `wait`, returns once the client acknowledged the last part.
     pub(crate) fn update_image(
         &self,
         origin: &[usize; 2],
@@ -248,21 +176,21 @@ impl Image {
         update: bool,
         force: bool,
         max_lines: Option<usize>,
+        wait: bool,
     ) -> Result<(), String> {
         checked_fill_size(image.size)?;
         checked_image_bounds(*origin, image.size)?;
         checked_max_lines(max_lines)?;
+        let id = self.scheduler.id;
         // Prepare data to send if connected before locking
-        let to_send = if self.connected.load(Ordering::Acquire) {
-            Some(pack_update_data(
-                self.id, origin, &image, update, max_lines,
-            )?)
+        let to_send = if self.scheduler.is_connected() {
+            Some(pack_update_data(id, origin, &image, update, max_lines)?)
         } else {
             None
         };
 
         // this is main lock for set and update operation
-        let _lock = self.lock.lock();
+        let lock = self.scheduler.lock.lock();
         let mut w = self.image.write();
 
         let end_row = origin[0].checked_add(image.size[0]);
@@ -278,107 +206,35 @@ impl Image {
 
         // A connection sync sends the latest complete image. Do not enqueue a
         // separate mutation until that initial sync has completed.
-        if w.sync.sendable(&self.connected).is_none() {
+        let Some(generation) = self.scheduler.sendable() else {
             return Ok(());
-        }
+        };
 
         // Reuse data prepared before locking, or prepare it now if the client
         // connected while the local image was being updated.
-        let mut to_send = match to_send {
+        let to_send = match to_send {
             Some(data) => data,
-            None => pack_update_data(self.id, origin, &image, update, max_lines)?,
+            None => pack_update_data(id, origin, &image, update, max_lines)?,
         };
-
-        let new_rect = [origin[0], origin[1], image.size[0], image.size[1]];
-
-        match w.buffer {
-            Buffer::Update(ref mut rect, ref mut groups) => {
-                if groups.is_empty() {
-                    *rect = new_rect;
-                    if self.event.is_set() {
-                        self.event.clear();
-                        if let Some(group) = to_send.pop_front() {
-                            self.send_all(group);
-                        }
-                    }
-                    *groups = to_send;
-                    return Ok(());
-                }
-
-                // The new rectangle overwrites everything still waiting, so
-                // the client ends as it would after sending both.
-                if force && covers(new_rect, *rect) {
-                    *rect = new_rect;
-                    *groups = to_send;
-                    return Ok(());
-                }
-            }
-            Buffer::Set(ref dat) => {
-                if dat.is_empty() {
-                    if self.event.is_set() {
-                        self.event.clear();
-                        if let Some(group) = to_send.pop_front() {
-                            self.send_all(group);
-                        }
-                    }
-                    w.buffer = Buffer::Update(new_rect, to_send);
-                    return Ok(());
-                }
-            }
-        }
-
-        let sync_generation = w.sync.generation();
         drop(w);
 
-        self.event.wait_clear();
-        if !self.connected.load(Ordering::Acquire) {
-            return Ok(());
-        }
-
-        let mut w = self.image.write();
-        if w.sync.generation() != sync_generation {
-            return Ok(());
-        }
-
-        if let Some(group) = to_send.pop_front() {
-            self.send_all(group);
-        }
-        w.buffer = Buffer::Update(new_rect, to_send);
-
+        let rect = [origin[0], origin[1], image.size[0], image.size[1]];
+        self.scheduler
+            .send_update(lock, KEY, rect, to_send, force, wait, generation);
         Ok(())
     }
 }
 
 impl Acknowledge for Image {
     fn acknowledge(&self) {
-        let mut w = self.image.write();
-
-        match w.buffer {
-            Buffer::Set(ref mut dat) => {
-                if dat.is_empty() {
-                    self.event.set();
-                    return;
-                }
-
-                let messages = std::mem::take(dat);
-                self.send_all(messages);
-            }
-            Buffer::Update(_, ref mut groups) => match groups.pop_front() {
-                Some(group) => self.send_all(group),
-                None => self.event.set(),
-            },
-        }
+        self.scheduler.acknowledge();
     }
 
     fn reset(&self) {
-        // Bump the generation before releasing a waiting producer, so it sees
-        // that its work belongs to the old connection.
-        {
-            let mut w = self.image.write();
-            w.buffer = Buffer::Set(Vec::new());
-            w.sync.reset();
-        }
-        self.event.set();
+        // Under the storage lock, so a producer either checked whether it may
+        // send before this reset, or sees the new state.
+        let _w = self.image.write();
+        self.scheduler.reset();
     }
 }
 
@@ -388,27 +244,20 @@ impl SyncTrait for Image {
         // may hold this lock while waiting for reset() to set the event; taking
         // the lock here prevents sync from clearing that wake-up before the
         // producer consumes it and observes the new generation.
-        let _lock = self.lock.lock();
-        let mut w = self.image.write();
-        if !w.sync.required() {
+        let _lock = self.scheduler.lock.lock();
+        let w = self.image.write();
+        if !self.scheduler.required() {
             return Ok(());
         }
 
         if w.size[0] == 0 || w.size[1] == 0 {
-            w.buffer = Buffer::Set(Vec::new());
-            w.sync.synchronized();
-            self.event.set();
+            self.scheduler.begin_sync(Vec::new(), 0);
             return Ok(());
         }
 
         let image_data = ImageData::packed(&w.data, w.size, ImageType::ColorAlpha);
-
-        let data = pack_set_data(self.id, &image_data, false).map_err(|_| ())?;
-
-        w.buffer = Buffer::Set(Vec::new());
-        w.sync.synchronized();
-        self.event.clear();
-        self.send_all(data);
+        let data = pack_set_data(self.scheduler.id, &image_data, false).map_err(|_| ())?;
+        self.scheduler.begin_sync(data, 1);
         Ok(())
     }
 }
@@ -517,13 +366,13 @@ mod tests {
     fn oversized_images_never_mutate_or_queue_even_when_disconnected() {
         for connected in [false, true] {
             let (image, _, mut receiver) = new_image(connected);
-            image.set_all_image([1, 1], [9; 4], false).unwrap();
+            image.set_all_image([1, 1], [9; 4], false, false).unwrap();
             for size in [[65_537, 1], [1, 65_537]] {
                 let data = || image_data(&[], size, ImageType::Gray);
                 for result in [
                     image.set_image(data(), false, false),
-                    image.set_all_image(size, [0; 4], false),
-                    image.update_image(&[0, 0], data(), false, false, None),
+                    image.set_all_image(size, [0; 4], false, false),
+                    image.update_image(&[0, 0], data(), false, false, None, false),
                     pack_set_data(1, &data(), false).map(|_| ()),
                     pack_fill_data(1, [size[0] as u32, size[1] as u32], [0; 4], false).map(|_| ()),
                     pack_update_data(1, &[0, 0], &data(), false, None).map(|_| ()),
@@ -535,7 +384,7 @@ mod tests {
                 let data = image_data(&[0], [1, 1], ImageType::Gray);
                 assert!(
                     image
-                        .update_image(&origin, data, false, false, None)
+                        .update_image(&origin, data, false, false, None, false)
                         .is_err()
                 );
                 let data = image_data(&[0], [1, 1], ImageType::Gray);
@@ -545,7 +394,7 @@ mod tests {
                 image.get_image(|(data, size)| (data.clone(), *size)),
                 (vec![9; 4], [1, 1])
             );
-            assert!(matches!(&image.image.read().buffer, Buffer::Set(data) if data.is_empty()));
+            assert!(image.is_idle());
             assert_no_message(&mut receiver);
         }
     }
@@ -575,13 +424,13 @@ mod tests {
             .unwrap();
 
         assert_no_message(&mut receiver);
-        assert!(image.image.read().sync.required());
+        assert!(image.scheduler.required());
 
         image.sync().unwrap();
 
         assert_message(&mut receiver);
         assert_no_message(&mut receiver);
-        assert!(!image.image.read().sync.required());
+        assert!(!image.scheduler.required());
 
         image.sync().unwrap();
         assert_no_message(&mut receiver);
@@ -589,9 +438,11 @@ mod tests {
 
     #[test]
     fn mutation_after_sync_waits_for_sync_acknowledgement() {
+        if crate::test_support::isolated() {
+            return;
+        }
         let (image, connected, mut receiver) = new_image(false);
         let initial = [10, 20, 30, 255];
-        let replacement = [40, 50, 60, 255];
 
         image
             .set_image(
@@ -603,22 +454,25 @@ mod tests {
         connected.store(true, Ordering::Release);
         image.sync().unwrap();
         assert_message(&mut receiver);
+        assert!(!image.is_idle());
 
-        image
-            .set_image(
+        let done = spawn_blocked(&image, |image| {
+            let replacement = [40, 50, 60, 255];
+            image.set_image(
                 image_data(&replacement, [1, 1], ImageType::ColorAlpha),
                 false,
                 false,
             )
-            .unwrap();
+        });
         assert_no_message(&mut receiver);
 
         image.acknowledge();
+        finished(&done);
         assert_message(&mut receiver);
         assert_no_message(&mut receiver);
 
         image.acknowledge();
-        assert!(image.event.is_set());
+        assert!(image.is_idle());
     }
 
     #[test]
@@ -642,6 +496,7 @@ mod tests {
                 false,
                 false,
                 None,
+                false,
             )
             .unwrap();
 
@@ -662,7 +517,7 @@ mod tests {
         let (image, connected, mut receiver) = new_image(false);
 
         image
-            .set_all_image([2, 3], [10, 20, 30, 255], false)
+            .set_all_image([2, 3], [10, 20, 30, 255], false, false)
             .unwrap();
         assert_eq!(image.get_size(), [2, 3]);
         assert_eq!(
@@ -690,7 +545,9 @@ mod tests {
         assert_eq!(&sync_bytes[sync_header_size..], [10, 20, 30, 255].repeat(6));
         image.acknowledge();
 
-        image.set_all_image([4, 5], [7, 7, 7, 8], true).unwrap();
+        image
+            .set_all_image([4, 5], [7, 7, 7, 8], true, false)
+            .unwrap();
         let (message, _) = receiver.try_recv().unwrap().unwrap();
         let bytes = message.into_bytes();
         let (header, header_size) = ServerHeader::deserialize(&bytes).unwrap();
@@ -709,7 +566,7 @@ mod tests {
     fn zero_sized_images_are_rejected_without_mutating_the_image() {
         for connected in [false, true] {
             let (image, _, mut receiver) = new_image(connected);
-            image.set_all_image([1, 1], [9; 4], false).unwrap();
+            image.set_all_image([1, 1], [9; 4], false, false).unwrap();
             for size in [[0, 5], [5, 0], [0, 0]] {
                 let data = || image_data(&[], size, ImageType::Gray);
                 assert!(
@@ -718,7 +575,7 @@ mod tests {
                         .unwrap_err()
                         .contains("zero")
                 );
-                let result = image.update_image(&[0, 0], data(), false, false, None);
+                let result = image.update_image(&[0, 0], data(), false, false, None, false);
                 assert!(result.unwrap_err().contains("zero"));
             }
             assert_eq!(
@@ -733,8 +590,14 @@ mod tests {
     fn fill_rejects_invalid_dimensions_without_mutating_the_image() {
         let (image, _, mut receiver) = new_image(false);
 
-        image.set_all_image([1, 1], [9, 9, 9, 255], false).unwrap();
-        assert!(image.set_all_image([0, 4], [0, 0, 0, 255], false).is_err());
+        image
+            .set_all_image([1, 1], [9, 9, 9, 255], false, false)
+            .unwrap();
+        assert!(
+            image
+                .set_all_image([0, 4], [0, 0, 0, 255], false, false)
+                .is_err()
+        );
         assert_eq!(image.get_size(), [1, 1]);
         assert_eq!(image.get_image(|(data, _)| data.clone()), [9, 9, 9, 255]);
         assert_no_message(&mut receiver);
@@ -760,7 +623,7 @@ mod tests {
 
         connected.store(false, Ordering::Release);
         image.reset();
-        assert!(image.image.read().sync.required());
+        assert!(image.scheduler.required());
 
         image
             .set_image(
@@ -774,8 +637,11 @@ mod tests {
 
         assert_message(&mut receiver);
         assert_no_message(&mut receiver);
-        assert!(!image.image.read().sync.required());
+        assert!(!image.scheduler.required());
     }
+
+    /// A producer call run on another thread.
+    type Producer = Box<dyn FnOnce(&Image) -> Result<(), String> + Send>;
 
     #[test]
     fn reset_discards_a_waiter_from_the_previous_connection() {
@@ -783,75 +649,7 @@ mod tests {
             return;
         }
         let (image, connected, mut receiver) = new_image(false);
-        let initial = [10, 20, 30, 255];
-        let buffered = [40, 50, 60, 255];
-
-        image
-            .set_image(
-                image_data(&initial, [1, 1], ImageType::ColorAlpha),
-                false,
-                false,
-            )
-            .unwrap();
-        connected.store(true, Ordering::Release);
-        image.sync().unwrap();
-        assert_message(&mut receiver);
-
-        image
-            .set_image(
-                image_data(&buffered, [1, 1], ImageType::ColorAlpha),
-                false,
-                false,
-            )
-            .unwrap();
-        assert_no_message(&mut receiver);
-
-        let waiting_image = image.clone();
-        let (done_sender, done_receiver) = std::sync::mpsc::channel();
-        let waiter = std::thread::spawn(move || {
-            let latest = [70, 80, 90, 255];
-            let result = waiting_image.set_image(
-                image_data(&latest, [1, 1], ImageType::ColorAlpha),
-                false,
-                false,
-            );
-            done_sender.send(result).unwrap();
-        });
-
-        wait_for_image(&image, &[70, 80, 90, 255]);
-        assert!(image.lock.try_lock().is_none());
-
-        connected.store(false, Ordering::Release);
-        image.reset();
-        connected.store(true, Ordering::Release);
-        let syncing_image = image.clone();
-        let (sync_sender, sync_receiver) = std::sync::mpsc::channel();
-        let syncer = std::thread::spawn(move || {
-            sync_sender.send(syncing_image.sync()).unwrap();
-        });
-        done_receiver
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .expect("stale set producer did not finish after reconnect reset")
-            .unwrap();
-        sync_receiver
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .expect("image sync did not finish after stale set producer")
-            .unwrap();
-        waiter.join().unwrap();
-        syncer.join().unwrap();
-
-        assert_message(&mut receiver);
-        assert_no_message(&mut receiver);
-    }
-
-    #[test]
-    fn reset_discards_an_update_waiter_from_the_previous_connection() {
-        if crate::test_support::isolated() {
-            return;
-        }
-        let (image, connected, mut receiver) = new_image(false);
         let initial = [10, 20, 30, 255, 40, 50, 60, 255];
-        let buffered = [15, 25, 35, 255, 45, 55, 65, 255];
 
         image
             .set_image(
@@ -864,53 +662,63 @@ mod tests {
         image.sync().unwrap();
         assert_message(&mut receiver);
 
-        image
-            .set_image(
-                image_data(&buffered, [1, 2], ImageType::ColorAlpha),
+        // The synchronization is not acknowledged, so both producers wait.
+        let set: Producer = Box::new(|image| {
+            let latest = [70, 80, 90, 255, 70, 80, 90, 255];
+            image.set_image(
+                image_data(&latest, [1, 2], ImageType::ColorAlpha),
                 false,
                 false,
             )
-            .unwrap();
-        assert_no_message(&mut receiver);
-
-        let waiting_image = image.clone();
-        let (done_sender, done_receiver) = std::sync::mpsc::channel();
-        let waiter = std::thread::spawn(move || {
-            let update = [70, 80];
-            let result = waiting_image.update_image(
+        });
+        let update: Producer = Box::new(|image| {
+            let latest = [70, 80];
+            image.update_image(
                 &[0, 0],
-                image_data(&update, [1, 1], ImageType::GrayAlpha),
+                image_data(&latest, [1, 1], ImageType::GrayAlpha),
                 false,
                 false,
                 None,
-            );
-            done_sender.send(result).unwrap();
+                false,
+            )
         });
+        let expected = [
+            [70, 80, 90, 255, 70, 80, 90, 255],
+            [70, 70, 70, 80, 70, 80, 90, 255],
+        ];
+        for (operation, expected) in [set, update].into_iter().zip(expected) {
+            let waiting_image = image.clone();
+            let (done_sender, done_receiver) = std::sync::mpsc::channel();
+            let waiter = std::thread::spawn(move || {
+                done_sender.send(operation(&waiting_image)).unwrap();
+            });
 
-        wait_for_image(&image, &[70, 70, 70, 80, 45, 55, 65, 255]);
-        assert!(image.lock.try_lock().is_none());
+            wait_for_image(&image, &expected);
+            assert!(image.scheduler.lock.try_lock().is_none());
 
-        connected.store(false, Ordering::Release);
-        image.reset();
-        connected.store(true, Ordering::Release);
-        let syncing_image = image.clone();
-        let (sync_sender, sync_receiver) = std::sync::mpsc::channel();
-        let syncer = std::thread::spawn(move || {
-            sync_sender.send(syncing_image.sync()).unwrap();
-        });
-        done_receiver
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .expect("stale update producer did not finish after reconnect reset")
-            .unwrap();
-        sync_receiver
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .expect("image sync did not finish after stale update producer")
-            .unwrap();
-        waiter.join().unwrap();
-        syncer.join().unwrap();
+            connected.store(false, Ordering::Release);
+            image.reset();
+            connected.store(true, Ordering::Release);
+            let syncing_image = image.clone();
+            let (sync_sender, sync_receiver) = std::sync::mpsc::channel();
+            let syncer = std::thread::spawn(move || {
+                sync_sender.send(syncing_image.sync()).unwrap();
+            });
+            done_receiver
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("stale producer did not finish after reconnect reset")
+                .unwrap();
+            sync_receiver
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("image sync did not finish after stale producer")
+                .unwrap();
+            waiter.join().unwrap();
+            syncer.join().unwrap();
 
-        assert_message(&mut receiver);
-        assert_no_message(&mut receiver);
+            // Only the synchronization of the latest image is sent.
+            assert_message(&mut receiver);
+            assert_no_message(&mut receiver);
+        }
     }
 
     fn bytes(message: &FastVec<32>) -> Vec<u8> {
@@ -937,7 +745,7 @@ mod tests {
         image.sync().unwrap();
         assert_message(&mut receiver);
         image.acknowledge();
-        assert!(image.event.is_set());
+        assert!(image.is_idle());
         (image, receiver)
     }
 
@@ -963,30 +771,68 @@ mod tests {
             .unwrap();
     }
 
+    /// A set waits for the transfer in flight and drops the waiting parts of
+    /// a split update, which it overwrites.
     #[test]
-    fn force_set_replaces_a_waiting_set_and_never_the_one_in_flight() {
-        let (image, mut receiver) = synced_image([0; 4]);
-        let sets = [[1; 4], [2; 4], [3; 4]];
-        let packed = |rows: &[u8; 4]| {
-            pack_set_data(1, &image_data(rows, [4, 1], ImageType::Gray), false).unwrap()
-        };
-        for (n, rows) in sets.iter().enumerate() {
-            image
-                .set_image(image_data(rows, [4, 1], ImageType::Gray), false, n > 0)
-                .unwrap();
+    fn a_set_drops_the_waiting_parts_of_a_split_update() {
+        if crate::test_support::isolated() {
+            return;
         }
-        // The first set went out at once; the third replaced the second.
-        assert_sent(&mut receiver, &packed(&sets[0]));
+        let (image, mut receiver) = synced_image([0; 4]);
+        let rows = [1, 2, 3, 4];
+        let groups = pack_update_data(
+            1,
+            &[0, 0],
+            &image_data(&rows, [4, 1], ImageType::Gray),
+            false,
+            Some(1),
+        )
+        .unwrap();
+        image
+            .update_image(
+                &[0, 0],
+                image_data(&rows, [4, 1], ImageType::Gray),
+                false,
+                false,
+                Some(1),
+                false,
+            )
+            .unwrap();
+        assert_sent(&mut receiver, &groups[0]);
+
+        let done = spawn_blocked(&image, |image| {
+            image.set_image(image_data(&[5; 4], [4, 1], ImageType::Gray), false, false)
+        });
         assert_no_message(&mut receiver);
         image.acknowledge();
-        assert_sent(&mut receiver, &packed(&sets[2]));
+        finished(&done);
+        assert_sent(
+            &mut receiver,
+            &pack_set_data(1, &image_data(&[5; 4], [4, 1], ImageType::Gray), false).unwrap(),
+        );
         assert_no_message(&mut receiver);
         image.acknowledge();
-        assert!(image.event.is_set());
+        assert!(image.is_idle());
         assert_eq!(
             image.get_image(|(data, _)| data.clone()),
-            [3, 3, 3, 255].repeat(4)
+            [5, 5, 5, 255].repeat(4)
         );
+    }
+
+    /// With `wait`, a set returns only once the client acknowledged it.
+    #[test]
+    fn a_set_with_wait_returns_once_it_is_acknowledged() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let (image, mut receiver) = synced_image([0; 4]);
+        let done = spawn_blocked(&image, |image| {
+            image.set_image(image_data(&[6; 4], [4, 1], ImageType::Gray), false, true)
+        });
+        assert_message(&mut receiver);
+        image.acknowledge();
+        finished(&done);
+        assert!(image.is_idle());
     }
 
     #[test]
@@ -997,20 +843,20 @@ mod tests {
         let groups = pack_update_data(1, &[0, 0], &data(), true, Some(2)).unwrap();
         assert_eq!(groups.len(), 2);
         image
-            .update_image(&[0, 0], data(), true, false, Some(2))
+            .update_image(&[0, 0], data(), true, false, Some(2), false)
             .unwrap();
         for group in groups {
             assert_sent(&mut receiver, &group);
             assert_no_message(&mut receiver);
-            assert!(!image.event.is_set());
+            assert!(!image.is_idle());
             image.acknowledge();
         }
         assert_no_message(&mut receiver);
-        assert!(image.event.is_set());
+        assert!(image.is_idle());
 
         assert!(
             image
-                .update_image(&[0, 0], data(), true, false, Some(0))
+                .update_image(&[0, 0], data(), true, false, Some(0), false)
                 .is_err()
         );
         assert_no_message(&mut receiver);
@@ -1018,6 +864,9 @@ mod tests {
 
     #[test]
     fn force_update_drops_waiting_parts_it_covers() {
+        if crate::test_support::isolated() {
+            return;
+        }
         let (image, mut receiver) = synced_image([0; 4]);
         let old = [1, 1, 1, 1];
         let new = [2, 2, 2, 2];
@@ -1044,27 +893,31 @@ mod tests {
                 false,
                 false,
                 Some(1),
+                false,
             )
             .unwrap();
         assert_sent(&mut receiver, &old_groups[0]);
-        // Covers the old rectangle: its three waiting parts are dropped.
-        image
-            .update_image(
+        // Covers the old rectangle: its three waiting parts are dropped, and
+        // the call waits only for the part in flight.
+        let done = spawn_blocked(&image, move |image| {
+            image.update_image(
                 &[0, 0],
                 image_data(&new, [4, 1], ImageType::Gray),
                 false,
                 true,
                 Some(1),
+                false,
             )
-            .unwrap();
+        });
         assert_no_message(&mut receiver);
+        image.acknowledge();
+        finished(&done);
         for group in new_groups {
-            image.acknowledge();
             assert_sent(&mut receiver, &group);
             assert_no_message(&mut receiver);
+            image.acknowledge();
         }
-        image.acknowledge();
-        assert!(image.event.is_set());
+        assert!(image.is_idle());
         assert_eq!(
             image.get_image(|(data, _)| data.clone()),
             [2, 2, 2, 255].repeat(4)
@@ -1093,6 +946,7 @@ mod tests {
                 false,
                 false,
                 Some(2),
+                false,
             )
             .unwrap();
         assert_sent(&mut receiver, &groups[0]);
@@ -1105,6 +959,7 @@ mod tests {
                 false,
                 true,
                 None,
+                false,
             )
         });
         image.acknowledge();
@@ -1114,34 +969,7 @@ mod tests {
         finished(&done);
         assert_message(&mut receiver);
         image.acknowledge();
-        assert!(image.event.is_set());
-
-        // A waiting set is never dropped by a forced update.
-        image
-            .set_image(image_data(&[5; 4], [4, 1], ImageType::Gray), false, false)
-            .unwrap();
-        assert_message(&mut receiver);
-        image
-            .set_image(image_data(&[6; 4], [4, 1], ImageType::Gray), false, false)
-            .unwrap();
-        let done = spawn_blocked(&image, |image| {
-            image.update_image(
-                &[0, 0],
-                image_data(&[7; 4], [4, 1], ImageType::Gray),
-                false,
-                true,
-                None,
-            )
-        });
-        image.acknowledge();
-        assert_sent(
-            &mut receiver,
-            &pack_set_data(1, &image_data(&[6; 4], [4, 1], ImageType::Gray), false).unwrap(),
-        );
-        assert!(done.try_recv().is_err());
-        image.acknowledge();
-        finished(&done);
-        assert_message(&mut receiver);
+        assert!(image.is_idle());
     }
 }
 
