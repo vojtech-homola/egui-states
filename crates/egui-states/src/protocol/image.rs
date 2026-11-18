@@ -94,7 +94,8 @@ impl ImageType {
 ///
 /// Bytes are copied as they are, as [`to_rgba`] does: gray becomes equal
 /// color channels and a missing alpha becomes 255. `target` may be
-/// uninitialized; every byte of it is written.
+/// uninitialized; every byte of it is written. Bytes of `source` after its
+/// last whole pixel are ignored.
 #[cfg(any(feature = "server", feature = "python"))]
 pub(crate) fn widen(
     from: ImageType,
@@ -105,6 +106,8 @@ pub(crate) fn widen(
     assert_eq!(from.union(to), to, "{to:?} does not hold {from:?}");
     let pixels = source.len() / from.bytes_per_pixel();
     assert_eq!(target.len(), pixels * to.bytes_per_pixel(), "target size");
+    // Only whole pixels: the copies below write as many bytes as they read.
+    let source = &source[..pixels * from.bytes_per_pixel()];
     let out = target.as_mut_ptr().cast::<u8>();
     // SAFETY (all arms): `target` holds `pixels` pixels of `to` that do not
     // overlap `source`; byte writes need no alignment.
@@ -132,7 +135,8 @@ pub(crate) fn widen(
 ///
 /// Bytes are copied as they are: gray becomes `(g, g, g, 255)`, gray-alpha
 /// `(g, g, g, a)` and color gets an opaque alpha. `target` may be
-/// uninitialized; every byte of it is written.
+/// uninitialized; every byte of it is written. Bytes of `source` after its
+/// last whole pixel are ignored.
 pub(crate) fn to_rgba(
     image_type: ImageType,
     source: &[u8],
@@ -140,6 +144,8 @@ pub(crate) fn to_rgba(
 ) {
     let pixels = source.len() / image_type.bytes_per_pixel();
     assert_eq!(target.len(), pixels * 4, "RGBA target size");
+    // Only whole pixels: the RGBA copy below writes as many bytes as it reads.
+    let source = &source[..pixels * image_type.bytes_per_pixel()];
     let out = target.as_mut_ptr().cast::<[u8; 4]>();
     // SAFETY (all arms): `target` holds `pixels` four-byte slots that do not
     // overlap `source`; unaligned writes need no alignment.
@@ -307,6 +313,12 @@ mod tests {
         assert_eq!(convert(ImageType::GrayAlpha, &[7, 3]), [7, 7, 7, 3]);
         assert_eq!(convert(ImageType::Color, &[1, 2, 3]), [1, 2, 3, 255]);
         assert_eq!(convert(ImageType::ColorAlpha, &[1, 2, 3, 4]), [1, 2, 3, 4]);
+        // The bytes of an incomplete last pixel are not copied past the target.
+        assert_eq!(
+            convert(ImageType::ColorAlpha, &[1, 2, 3, 4, 5]),
+            [1, 2, 3, 4]
+        );
+        assert_eq!(convert(ImageType::Color, &[1, 2, 3, 4]), [1, 2, 3, 255]);
     }
 
     #[cfg(any(feature = "server", feature = "python"))]
@@ -337,6 +349,13 @@ mod tests {
         assert_eq!(widened(Color, Color, &[1, 2, 3]), [1, 2, 3]);
         assert_eq!(widened(Color, ColorAlpha, &[1, 2, 3]), [1, 2, 3, 255]);
         assert_eq!(widened(ColorAlpha, ColorAlpha, &[1, 2, 3, 4]), [1, 2, 3, 4]);
+        // The bytes of an incomplete last pixel are not copied past the target.
+        assert_eq!(
+            widened(ColorAlpha, ColorAlpha, &[1, 2, 3, 4, 5]),
+            [1, 2, 3, 4]
+        );
+        assert_eq!(widened(GrayAlpha, GrayAlpha, &[7, 3, 9]), [7, 3]);
+        assert_eq!(widened(Color, Color, &[1, 2, 3, 4]), [1, 2, 3]);
     }
 
     #[cfg(any(feature = "server", feature = "python"))]
