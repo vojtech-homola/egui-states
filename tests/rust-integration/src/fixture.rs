@@ -515,6 +515,14 @@ impl Fixture {
                 on_error.lock().unwrap().push(error.to_string());
             }
         }));
+        if scenario == "connect-request" {
+            // Refuses the first client and accepts every later one.
+            let asked = std::sync::atomic::AtomicUsize::new(0);
+            callbacks.push(server.on_connect_request(move |request| {
+                assert!(request.is_pending());
+                asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst) > 0
+            }));
+        }
         server.start(port, Some(std::net::Ipv4Addr::LOCALHOST), None)?;
         Ok(Self {
             server,

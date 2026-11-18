@@ -273,6 +273,8 @@ pub(crate) struct ServerConfig {
     transfer_profile: TransferProfile,
     /// What happens to a client that connects while another is connected.
     client_policy: ClientPolicy,
+    /// How long the connect-request callback may take to decide.
+    connect_request_timeout: Duration,
 }
 
 impl ServerConfig {
@@ -291,7 +293,11 @@ impl ServerConfig {
         allowed_origins: &[String],
         transfer_profile: TransferProfile,
         client_policy: ClientPolicy,
+        connect_request_timeout: Duration,
     ) -> Result<Self, String> {
+        if connect_request_timeout.is_zero() {
+            return Err("the connect request timeout must be greater than zero".to_string());
+        }
         let web_path = web_path
             .map(|path| {
                 std::path::absolute(path)
@@ -305,6 +311,7 @@ impl ServerConfig {
             origins: Arc::new(OriginPolicy::new(allowed_origins)?),
             transfer_profile,
             client_policy,
+            connect_request_timeout,
         })
     }
 
@@ -319,6 +326,7 @@ impl ServerConfig {
             origins: Arc::default(),
             transfer_profile: TransferProfile::default(),
             client_policy: ClientPolicy::default(),
+            connect_request_timeout: crate::server_core::admission::DEFAULT_CONNECT_REQUEST_TIMEOUT,
         }
     }
 }
@@ -467,6 +475,7 @@ impl Server {
                 let web = self.web.clone();
                 let heartbeat = self.config.heartbeat;
                 let policy = self.config.client_policy;
+                let request_timeout = self.config.connect_request_timeout;
                 let transfers = self.transfers.clone();
 
                 let listening = Listening {
@@ -489,6 +498,7 @@ impl Server {
                             connected,
                             close,
                             policy,
+                            request_timeout,
                             values,
                             signals,
                             heartbeat,

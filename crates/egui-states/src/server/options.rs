@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::{ClientPolicy, ServerError, TransferProfile};
+use crate::server_core::admission::DEFAULT_CONNECT_REQUEST_TIMEOUT;
 use crate::server_core::net::heartbeat;
 
 /// Thread-safe callback used for asynchronous server errors.
@@ -80,8 +81,17 @@ pub struct ServerOptions {
     /// uses the server's profile.
     pub transfer_profile: TransferProfile,
     /// What the server does with a client that connects while another one
-    /// is connected. Default [`ClientPolicy::Replace`].
+    /// is connected. Default [`ClientPolicy::Replace`]. A callback registered
+    /// with [`StateServer::on_connect_request`](super::StateServer::on_connect_request)
+    /// decides instead.
     pub client_policy: ClientPolicy,
+    /// How long a connect-request callback may take to decide on a client,
+    /// counted from the client's handshake. Default 5 s.
+    ///
+    /// A client still waiting when it passes is refused, and the error
+    /// handler is told. The client learns this time and waits as long. Must
+    /// be greater than zero.
+    pub connect_request_timeout: Duration,
 }
 
 impl ServerOptions {
@@ -92,7 +102,8 @@ impl ServerOptions {
     /// without any response, and has no web page. Browser pages may connect
     /// only when the server serves them on an IP address or local name. File
     /// transfers use [`TransferProfile::Balanced`], and a new client replaces
-    /// the connected one ([`ClientPolicy::Replace`]).
+    /// the connected one ([`ClientPolicy::Replace`]). A connect-request
+    /// callback may take 5 s.
     pub fn new() -> Self {
         Self::default()
     }
@@ -111,6 +122,7 @@ impl Default for ServerOptions {
             allowed_origins: Vec::new(),
             transfer_profile: TransferProfile::default(),
             client_policy: ClientPolicy::default(),
+            connect_request_timeout: DEFAULT_CONNECT_REQUEST_TIMEOUT,
         }
     }
 }

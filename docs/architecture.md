@@ -32,6 +32,36 @@ same source module into both the GUI and build-script crates. See the
 module and the [showcase build script](../example/showcase/gui/build.rs) for
 an application library imported by a separate GUI launcher package.
 
+## Admitting a client
+
+The server serves one client at a time. A new connection goes through these
+steps; the first that refuses it closes the connection with a WebSocket close
+code from the application range and a readable reason, which the client reports
+as a `CloseReason`.
+
+1. A browser page's origin is checked during the WebSocket upgrade; a page the
+   server does not allow gets HTTP 403, before any close code can be sent.
+2. The handshake is checked: protocol version (4000), application version
+   (4001), and token (4002).
+3. If a connect-request callback is registered, the server sends
+   `ConnectPending` with the time the decision may take, and the client reports
+   `WaitingForApproval` and waits that long. Requests are decided one at a
+   time; the next one is raised only after the previous client was served or
+   refused. A refusal, a callback that fails, or a decision that is not made in
+   time closes the client with 4004. A client that leaves while waiting ends its
+   request, and a later answer is ignored.
+4. Without a callback, `ClientPolicy::Reject` refuses the client with 4003 while
+   another client is connected. The check is made where the run loop publishes
+   connections, so no other client can connect in between.
+5. The connected client, if any, is closed with 4005, and the new one is
+   synchronized.
+
+The server also closes with 4006 when it disconnects the client, stops, or fails
+to synchronize a new client. A client that stops answering is dropped by the
+heartbeat without a close frame, as it no longer reads; the client then reports
+`ConnectionLost`. A client attempt that gets no answer at all fails with
+`Timeout` after the client's connect timeout.
+
 ## State directions
 
 - `Value` is stored by both peers. Either peer can replace it; signaling an

@@ -1803,6 +1803,7 @@ mod transfer_tests {
                 connected: connected.clone(),
                 close: Default::default(),
                 policy: Default::default(),
+                request_timeout: std::time::Duration::from_secs(5),
                 values,
                 signals: SignalsManager::new(),
                 heartbeat: None,

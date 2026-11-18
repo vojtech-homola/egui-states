@@ -13,7 +13,6 @@ pub(crate) const TOKEN_REJECTED: u16 = 4002;
 /// Another client is connected and the server keeps it.
 pub(crate) const BUSY: u16 = 4003;
 /// The server's connect-request callback refused the client.
-#[cfg_attr(not(feature = "client"), allow(dead_code))]
 pub(crate) const REFUSED: u16 = 4004;
 /// A new client took over the connection.
 pub(crate) const REPLACED: u16 = 4005;

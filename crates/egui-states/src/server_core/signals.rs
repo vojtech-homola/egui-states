@@ -15,6 +15,8 @@ pub(crate) const LOGGING_ID: u64 = 0;
 pub(crate) const ON_CONNECT_ID: u64 = 1;
 pub(crate) const ON_DISCONNECT_ID: u64 = 2;
 pub(crate) const CLIENT_MESSAGE_ID: u64 = 3;
+/// A client asks to connect; the change carries the request as attachment.
+pub(crate) const ON_CONNECT_REQUEST_ID: u64 = 4;
 
 /// What a change carries for its callbacks besides its bytes.
 pub(crate) type Attachment = Arc<dyn Any + Send + Sync>;
@@ -261,6 +263,7 @@ impl SignalsManager {
             ON_CONNECT_ID,
             ON_DISCONNECT_ID,
             CLIENT_MESSAGE_ID,
+            ON_CONNECT_REQUEST_ID,
         ] {
             values.set_to_queue(id);
         }
@@ -443,6 +446,12 @@ impl SignalsManager {
 
     pub(crate) fn set_to_queue(&self, id: u64) {
         self.values.lock().set_to_queue(id);
+    }
+
+    /// Whether a consumer is registered for `id`; changes of other ids are
+    /// dropped.
+    pub(crate) fn is_registered(&self, id: u64) -> bool {
+        self.values.lock().registered.contains_key(&id)
     }
 
     /// Keeps every event of `id` in order and through a disconnect: the

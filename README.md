@@ -174,6 +174,44 @@ automatically. Change either time, or disable the heartbeat, with
 `heartbeat_interval` and `heartbeat_timeout` in the Rust `ServerOptions` or the
 Python server's constructor, or with `egui_states_server_set_heartbeat` in C.
 
+## One client at a time
+
+The server serves one client. By default a client that connects takes over and
+the connected one is closed. With `client_policy=ClientPolicy.Reject` in the
+Python server's constructor (`client_policy` in the Rust `ServerOptions`) the
+connected client stays and newcomers are refused as busy.
+
+To decide per client, register a connect-request callback. The server then asks
+it for every client that passed the handshake, instead of applying the policy:
+
+```python
+from egui_states import ConnectRequest
+
+
+def decide(request: ConnectRequest) -> bool:
+    return not measurement_running  # True lets request.address in
+
+
+server.on_connect_request(decide)
+```
+
+The callback may block, for example while the user of the connected client
+answers a prompt, for up to `connect_request_timeout` (5 s by default); a
+client not decided by then is refused. Check `request.is_pending()` to stop
+waiting when the client leaves or the time runs out. Requests are decided one
+at a time, and the connected client is unaffected meanwhile. In Rust the
+callback is `StateServer::on_connect_request`.
+
+On the client, `get_state()` reports `Connecting` during an attempt,
+`WaitingForApproval` while the server's callback decides, then `Connected`.
+After `Failed` or `Disconnected`, `last_reason()` returns why as a
+`CloseReason`, such as `Unreachable`, `Timeout`, `VersionMismatch`,
+`TokenRejected`, `Busy`, `Refused`, `Replaced`, `ClosedByServer`, or
+`ConnectionLost`, and `last_error()` describes it, including the server's own
+explanation. An attempt the server does not answer fails after the client
+builder's `connect_timeout` (10 s by default). The server sends its reasons in
+the WebSocket close frame, so browser clients receive them too.
+
 ## Examples
 
 Start with the counter, then explore individual features in the showcase.

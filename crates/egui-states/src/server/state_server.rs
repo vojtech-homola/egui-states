@@ -12,11 +12,13 @@ use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 
 use crate::protocol::{deserialize_value, serialize};
+use crate::server_core::admission::Request;
 use crate::server_core::http::web::WebSite;
 use crate::server_core::net::heartbeat::Heartbeat;
 use crate::server_core::server::{Server as CoreServer, ServerConfig};
 use crate::server_core::signals::{
-    CLIENT_MESSAGE_ID, Claim, ON_CONNECT_ID, ON_DISCONNECT_ID, SignalsManager as CoreSignalsManager,
+    CLIENT_MESSAGE_ID, Claim, ON_CONNECT_ID, ON_CONNECT_REQUEST_ID, ON_DISCONNECT_ID,
+    SignalsManager as CoreSignalsManager,
 };
 use crate::server_core::states::data::{Data as CoreData, DataMulti as CoreDataMulti};
 use crate::server_core::states::data_take::{
@@ -32,6 +34,7 @@ use crate::server_core::states::value::{
 use crate::server_core::states::vec::ValueList as CoreVec;
 use crate::{ObjectType, Typed};
 
+use super::ConnectRequest;
 use super::callbacks::{CallbackHandle, CallbackRegistry};
 use super::data::DataElement;
 use super::options::ErrorHandler;
@@ -127,8 +130,8 @@ impl StateServer {
     ///
     /// Returns an error if the heartbeat interval is zero, the heartbeat
     /// timeout is not greater than the interval, the web page path cannot be
-    /// made absolute (for example because it is empty), or an allowed origin
-    /// is malformed.
+    /// made absolute (for example because it is empty), an allowed origin
+    /// is malformed, or the connect request timeout is zero.
     pub fn with_options(options: ServerOptions) -> Result<Self> {
         let heartbeat = Heartbeat::new(options.heartbeat_interval, options.heartbeat_timeout)
             .map_err(ServerError::new)?;
@@ -139,6 +142,7 @@ impl StateServer {
             &options.allowed_origins,
             options.transfer_profile,
             options.client_policy,
+            options.connect_request_timeout,
         )
         .map_err(ServerError::new)?;
         let server = CoreServer::new(config);
@@ -323,6 +327,53 @@ impl StateServer {
     pub fn on_disconnect(&self, callback: impl Fn() + Send + Sync + 'static) -> CallbackHandle {
         self.add_raw_callback(ON_DISCONNECT_ID, move |_, _| {
             callback();
+            Ok(())
+        })
+    }
+
+    /// Registers the callback that decides whether a client may connect.
+    ///
+    /// The server asks it for every client that passed the handshake,
+    /// whether or not another client is connected, instead of applying
+    /// [`ServerOptions::client_policy`](super::ServerOptions::client_policy).
+    /// Returning `true` lets the client in, replacing the connected one;
+    /// `false` refuses it, and the client reports `CloseReason::Refused`.
+    ///
+    /// The callback runs on a signal worker and may block, for example to ask
+    /// the user of the connected client. Requests are decided one at a time;
+    /// meanwhile the client waits and the connected client is unaffected. A
+    /// request not answered within
+    /// [`ServerOptions::connect_request_timeout`](super::ServerOptions::connect_request_timeout)
+    /// is refused and its answer ignored; check
+    /// [`ConnectRequest::is_pending`] to stop waiting early. A panicking
+    /// callback refuses the client. If several callbacks are registered, the
+    /// first to answer decides.
+    ///
+    /// Retain the returned handle; dropping it unregisters the callback and
+    /// returns the decision to the client policy.
+    pub fn on_connect_request(
+        &self,
+        callback: impl Fn(&ConnectRequest) -> bool + Send + Sync + 'static,
+    ) -> CallbackHandle {
+        let signals = self.inner.signals.clone();
+        self.add_raw_callback(ON_CONNECT_REQUEST_ID, move |_, _| {
+            let Some(request) = signals
+                .attachment(ON_CONNECT_REQUEST_ID)
+                .and_then(|attachment| attachment.downcast::<Request>().ok())
+            else {
+                return Ok(());
+            };
+            let decided = catch_unwind(AssertUnwindSafe(|| {
+                callback(&ConnectRequest(request.clone()))
+            }));
+            match decided {
+                Ok(accept) => request.answer(accept),
+                Err(panic) => {
+                    // Refuse at once, then let the worker report the panic.
+                    request.answer(false);
+                    std::panic::resume_unwind(panic);
+                }
+            }
             Ok(())
         })
     }
@@ -2402,6 +2453,85 @@ mod connection_tests {
         );
         assert_eq!(client.last_reason(), Some(CloseReason::Timeout));
         silent_server.join().unwrap();
+    }
+
+    /// A client waits in `WaitingForApproval` while the callback decides;
+    /// an accepted one connects, a refused one fails with `Refused`, and the
+    /// connected client is not disturbed.
+    #[test]
+    fn connect_requests_decide_while_the_client_waits() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let (server, _value, port) = server(ServerOptions::new(), None);
+        let (seen, requests) = mpsc::channel();
+        let (answer, answers) = mpsc::channel::<bool>();
+        let answers = Mutex::new(answers);
+        let _decide = server.on_connect_request(move |request| {
+            assert!(request.is_pending());
+            seen.send(request.address().to_string()).unwrap();
+            answers
+                .lock()
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap_or(false)
+        });
+        let client = || {
+            ClientBuilder::<ClientTestState>::new(egui::Context::default(), port)
+                .build()
+                .1
+        };
+
+        let first = client();
+        first.connect();
+        wait("waiting for approval", || {
+            first.get_state() == ConnectionState::WaitingForApproval
+        });
+        let address = requests.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(address.starts_with("127.0.0.1:"), "{address}");
+        answer.send(true).unwrap();
+        wait("accepted", || {
+            first.get_state() == ConnectionState::Connected
+        });
+
+        let second = client();
+        second.connect();
+        requests.recv_timeout(Duration::from_secs(5)).unwrap();
+        answer.send(false).unwrap();
+        wait("refused", || second.get_state() == ConnectionState::Failed);
+        assert_eq!(second.last_reason(), Some(CloseReason::Refused));
+        assert_eq!(first.get_state(), ConnectionState::Connected);
+        server.stop();
+    }
+
+    /// A panicking connect-request callback refuses the client at once and
+    /// reports the panic.
+    #[test]
+    fn a_panicking_connect_request_callback_refuses_the_client() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let (errors, error) = mpsc::channel();
+        let options = ServerOptions {
+            error_handler: Some(Arc::new(move |e: ServerError| {
+                let _ = errors.send(e.to_string());
+            })),
+            ..ServerOptions::new()
+        };
+        let (server, _value, port) = server(options, None);
+        let _decide = server.on_connect_request(|_| panic!("deciding failed"));
+        let (_state, client) =
+            ClientBuilder::<ClientTestState>::new(egui::Context::default(), port).build();
+        let started = Instant::now();
+        client.connect();
+        wait("refused", || client.get_state() == ConnectionState::Failed);
+        assert!(
+            started.elapsed() < Duration::from_secs(4),
+            "the refusal waited for the timeout"
+        );
+        assert_eq!(client.last_reason(), Some(CloseReason::Refused));
+        let message = error.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(message.contains("panicked"), "{message}");
+        server.stop();
     }
 
     /// An established connection that ends reports why: the server's reason,

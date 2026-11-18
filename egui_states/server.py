@@ -8,7 +8,7 @@ from os import PathLike
 from pathlib import Path
 from typing import Any
 
-from egui_states._core import PyObjectType, StateServerCore
+from egui_states._core import PyObjectType, StateServerCore, _ConnectRequest
 from egui_states.logging import LoggingSignal
 from egui_states.signals import SignalsManager
 from egui_states.structures import ISubStates, _CallbackBase, _StaticBase
@@ -17,6 +17,7 @@ from egui_states.transfer import TransferProfile
 _ON_CONNECT_ID = 1
 _ON_DISCONNECT_ID = 2
 _CLIENT_MESSAGE_ID = 3
+_ON_CONNECT_REQUEST_ID = 4
 
 
 class ClientPolicy(Enum):
@@ -31,6 +32,46 @@ class ClientPolicy(Enum):
     #: The connected client keeps the connection. The new client is refused
     #: and learns that the server is busy.
     Reject = 1
+
+
+class ConnectRequest:
+    """A client that passed the handshake and asks to connect.
+
+    The callback registered with :meth:`StateServerBase.on_connect_request`
+    receives it and decides whether the client may connect.
+    """
+
+    __slots__ = ("_request",)
+
+    def __init__(self, request: _ConnectRequest) -> None:
+        self._request = request
+
+    @property
+    def address(self) -> str:
+        """The client's address, as ``ip:port``."""
+        return self._request.address()
+
+    def is_pending(self) -> bool:
+        """Return whether the server still waits for the answer.
+
+        It turns ``False`` once the request was answered, when the client
+        closes its connection, when ``connect_request_timeout`` passes, or
+        when the server stops. An answer given after that is ignored, so a
+        callback that waits, for example for the user of the connected
+        client, can check this to stop waiting early.
+
+        Returns:
+            bool: Whether the answer is still awaited.
+        """
+        return self._request.is_pending()
+
+    def __repr__(self) -> str:
+        """Return the request's address and whether it is pending.
+
+        Returns:
+            str: Readable description of the request.
+        """
+        return f"ConnectRequest(address={self.address!r}, pending={self.is_pending()})"
 
 
 def _initialize(
@@ -108,6 +149,7 @@ class StateServerBase[T: StatesBase]:
         allowed_origins: Sequence[str] = (),
         transfer_profile: TransferProfile = TransferProfile.Balanced,
         client_policy: ClientPolicy = ClientPolicy.Replace,
+        connect_request_timeout: float = 5.0,
     ) -> None:
         """Initialize the state server.
 
@@ -166,15 +208,24 @@ class StateServerBase[T: StatesBase]:
             client_policy (ClientPolicy, optional): What the server does with
                 a client that connects while another is connected:
                 ``Replace`` lets the new client take over, ``Reject`` keeps
-                the connected client and refuses the new one as busy.
+                the connected client and refuses the new one as busy. A
+                callback registered with :meth:`on_connect_request` decides
+                instead.
+            connect_request_timeout (float, optional): Seconds the callback
+                registered with :meth:`on_connect_request` may take to decide
+                on a client, counted from the client's handshake. A client
+                still waiting when it passes is refused, and the error
+                handler is told. The client learns this time and waits as
+                long.
 
         Raises:
             ValueError: If ``heartbeat_interval`` is not positive,
                 ``heartbeat_timeout`` is not greater than it, ``web_path``
                 cannot be made absolute (for example because it is empty), an
                 allowed origin is malformed, ``transfer_profile`` is not a
-                :class:`TransferProfile`, or ``client_policy`` is not a
-                :class:`ClientPolicy`.
+                :class:`TransferProfile`, ``client_policy`` is not a
+                :class:`ClientPolicy`, or ``connect_request_timeout`` is not
+                positive.
         """
         self._server = StateServerCore(
             version,
@@ -185,6 +236,7 @@ class StateServerBase[T: StatesBase]:
             # The native core takes the profile's and the policy's numbers.
             TransferProfile(transfer_profile).value,
             ClientPolicy(client_policy).value,
+            connect_request_timeout,
         )
         self._signals_manager = SignalsManager(self._server, signals_workers, error_handler)
         self._states: T = state_class(self)
@@ -195,6 +247,7 @@ class StateServerBase[T: StatesBase]:
         self._on_connect: Callable[[str], Any] | None = None
         self._on_disconnect: Callable[[], Any] | None = None
         self._on_client_message: Callable[[str], Any] | None = None
+        self._on_connect_request: Callable[[ConnectRequest], bool] | None = None
 
     @property
     def states(self) -> T:
@@ -381,6 +434,48 @@ class StateServerBase[T: StatesBase]:
         self._signals_manager.clear_callbacks(_ON_DISCONNECT_ID)
         if func is not None:
             self._signals_manager.add_callback(_ON_DISCONNECT_ID, func)
+
+    def on_connect_request(self, func: Callable[[ConnectRequest], bool] | None) -> None:
+        """Replace the callback that decides whether a client may connect.
+
+        The server asks it for every client that passed the handshake, whether
+        or not another client is connected, instead of applying
+        ``client_policy``. Returning ``True`` lets the client in, replacing the
+        connected one; ``False`` refuses it, and the client learns that it
+        was refused. A callback that raises refuses the client and reports
+        the exception to the error handler.
+
+        The callback runs on a callback worker and may block, for example to
+        ask the user of the connected client; it then occupies that worker,
+        so keep ``signals_workers`` at two or more for the user's answer to
+        arrive. Requests are decided one at a time; meanwhile the client waits
+        and the connected client is unaffected. A request not answered within
+        ``connect_request_timeout`` is refused and its answer ignored; check
+        :meth:`ConnectRequest.is_pending` to stop waiting early.
+
+        Args:
+            func (Callable[[ConnectRequest], bool] | None): Callback receiving
+                the request and returning whether to accept the client, or
+                ``None`` to unregister it and return the decision to
+                ``client_policy``.
+        """
+        self._on_connect_request = func
+        self._signals_manager.clear_callbacks(_ON_CONNECT_REQUEST_ID)
+        if func is not None:
+            self._signals_manager.add_callback(_ON_CONNECT_REQUEST_ID, self._decide_connect_request)
+
+    def _decide_connect_request(self) -> None:
+        """Ask the connect-request callback about the pending request."""
+        request = self._server.connect_request()
+        func = self._on_connect_request
+        if request is None:
+            return
+        accept = False
+        try:
+            accept = func is not None and bool(func(ConnectRequest(request)))
+        finally:
+            # An exception refuses the client; the worker then reports it.
+            request.answer(accept)
 
     def on_client_message(self, func: Callable[[str], Any] | None) -> None:
         """Replace the callback for diagnostic messages from the client.

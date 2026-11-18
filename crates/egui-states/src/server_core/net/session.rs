@@ -6,7 +6,9 @@ use std::sync::{
 };
 use std::time::Duration;
 
+use bytes::Bytes;
 use parking_lot::Mutex;
+use tokio::sync::OwnedMutexGuard;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::task::{JoinHandle, JoinSet};
@@ -17,7 +19,7 @@ use crate::event::Event;
 use crate::file_transfer::engine::Engine;
 use crate::protocol::close::{self, Close};
 use crate::protocol::{FastVec, MAX_MSG_COUNT, MSG_SIZE_THRESHOLD, ServerHeader, serialize};
-use crate::server_core::admission::ClientPolicy;
+use crate::server_core::admission::{ClientPolicy, Request};
 use crate::server_core::http::origin::OriginPolicy;
 use crate::server_core::http::web::{WebSite, WebSlot};
 use crate::server_core::net::heartbeat::{Activity, Heartbeat};
@@ -27,7 +29,7 @@ use crate::server_core::net::transport::{
     FrameSink, FrameSource, Listener, Opened, Outgoing, Served,
 };
 use crate::server_core::server::ServerStatesList;
-use crate::server_core::signals::SignalsManager;
+use crate::server_core::signals::{ON_CONNECT_REQUEST_ID, SignalsManager};
 
 enum ChannelHolder {
     Transfer(JoinHandle<MessageReceiver>),
@@ -62,6 +64,22 @@ struct ClientReady<L: Listener> {
     socket_tx: L::Sink,
     socket_reader: SocketReader<L::Source>,
     peer_addr: String,
+    /// Whether the connect-request callback accepted it, which overrides the
+    /// client policy.
+    approved: bool,
+    /// Holds back the next connect request until this client is served, so
+    /// each request is decided against the connection it will replace.
+    _turn: Option<OwnedMutexGuard<()>>,
+}
+
+/// How the connect-request callback decides on new clients.
+#[derive(Clone)]
+struct Admission {
+    /// How long the callback may take, counted from the passed handshake.
+    timeout: Duration,
+    /// Taken by the request being decided: requests are decided one at a
+    /// time.
+    turn: Arc<tokio::sync::Mutex<()>>,
 }
 
 /// What a new connection came to.
@@ -91,6 +109,8 @@ pub(crate) struct Session {
     pub(crate) close: CloseSlot,
     /// What happens to a client that connects while another is connected.
     pub(crate) policy: ClientPolicy,
+    /// How long the connect-request callback may take to decide.
+    pub(crate) request_timeout: Duration,
     pub(crate) values: ServerStatesList,
     pub(crate) signals: SignalsManager,
     pub(crate) heartbeat: Option<Heartbeat>,
@@ -124,11 +144,16 @@ pub(crate) async fn run<L: Listener>(
         connected,
         close: close_slot,
         policy,
+        request_timeout,
         values,
         signals,
         transfers,
         ..
     } = session.clone();
+    let admission = Admission {
+        timeout: request_timeout,
+        turn: Arc::default(),
+    };
     let mut holder = ChannelHolder::Rx(rx);
     // Connections still handshaking or receiving the web page. They run
     // concurrently so an idle connection cannot hold up the others; dropping
@@ -178,6 +203,7 @@ pub(crate) async fn run<L: Listener>(
                             connection,
                             site,
                             handshake.clone(),
+                            admission.clone(),
                             signals.clone(),
                             transfers.clone(),
                         ));
@@ -195,11 +221,13 @@ pub(crate) async fn run<L: Listener>(
             socket_tx,
             socket_reader,
             peer_addr,
+            approved,
+            _turn,
         } = client;
 
         // The authoritative check: no other connection can be published
         // between it and the takeover below.
-        if policy == ClientPolicy::Reject && connected.load(Ordering::Acquire) {
+        if !approved && policy == ClientPolicy::Reject && connected.load(Ordering::Acquire) {
             let reason = "refused a client: another client is connected";
             signals.warning(format!("{reason} ({peer_addr})"));
             close_unread(&mut pending, socket_tx, Close::new(close::BUSY, reason));
@@ -367,7 +395,8 @@ fn close_unread<L: Listener>(pending: &mut JoinSet<Accepted<L>>, mut sink: L::Si
     });
 }
 
-/// Takes a new connection up to a passed protocol handshake.
+/// Takes a new connection up to a passed protocol handshake and, with a
+/// connect-request callback, up to the callback's decision.
 ///
 /// While the web page is served, plain HTTP requests are answered here and
 /// yield `None`. Failures never touch the current client's connection.
@@ -375,6 +404,7 @@ async fn accept_client<L: Listener>(
     connection: L::Connection,
     site: Option<Arc<WebSite>>,
     handshake: Handshake,
+    admission: Admission,
     signals: SignalsManager,
     transfers: Engine,
 ) -> Accepted<L> {
@@ -385,19 +415,125 @@ async fn accept_client<L: Listener>(
         Served::Done => return Accepted::Nothing,
     };
 
-    match timeout_at(
+    let client = match timeout_at(
         deadline,
         handshake_client::<L>(connection, &handshake, &signals),
     )
     .await
     {
-        Ok(Some(client)) => Accepted::Client(client),
-        Ok(None) => Accepted::Nothing,
+        Ok(Some(client)) => client,
+        Ok(None) => return Accepted::Nothing,
         Err(_) => {
             signals.warning("client handshake timed out");
-            Accepted::Nothing
+            return Accepted::Nothing;
+        }
+    };
+    if !signals.is_registered(ON_CONNECT_REQUEST_ID) {
+        return Accepted::Client(client);
+    }
+    match decide(client, &admission, &signals).await {
+        Some(client) => Accepted::Client(client),
+        None => Accepted::Nothing,
+    }
+}
+
+/// Ends a connect request when its decision ends, however it ends.
+struct EndRequest(Arc<Request>);
+
+impl Drop for EndRequest {
+    fn drop(&mut self) {
+        self.0.end();
+    }
+}
+
+/// How a connect request ended.
+enum Decision {
+    Accepted(OwnedMutexGuard<()>),
+    /// The callback refused the client, or no callback answered.
+    Refused,
+    /// The client closed its connection.
+    Left,
+    TimedOut,
+}
+
+/// Asks the connect-request callback whether `client` may connect.
+///
+/// The client first learns how long the decision may take. Requests are
+/// decided one at a time, and the time spent waiting for the turn counts.
+/// Returns the accepted client; a refused one is closed with the reason.
+async fn decide<L: Listener>(
+    mut client: ClientReady<L>,
+    admission: &Admission,
+    signals: &SignalsManager,
+) -> Option<ClientReady<L>> {
+    let deadline = Instant::now() + admission.timeout;
+    let millis = u32::try_from(admission.timeout.as_millis()).unwrap_or(u32::MAX);
+    if let Ok(notice) = serialize::<_, 32>(&ServerHeader::ConnectPending(millis)) {
+        let notice = Outgoing::Binary(notice.into_bytes());
+        match timeout_at(deadline, client.socket_tx.send_frame(notice)).await {
+            Ok(Ok(())) => {}
+            // The client is gone or does not read.
+            Ok(Err(_)) | Err(_) => return None,
         }
     }
+
+    let (request, answer) = Request::new(client.peer_addr.clone());
+    let _end = EndRequest(request.clone());
+    let decision = timeout_at(deadline, async {
+        let turn = admission.turn.clone().lock_owned().await;
+        signals.set_attached(ON_CONNECT_REQUEST_ID, Bytes::new(), request.clone());
+        let mut answer = answer;
+        let mut watching = true;
+        loop {
+            tokio::select! {
+                accept = &mut answer => {
+                    break match accept {
+                        Ok(true) => Decision::Accepted(turn),
+                        Ok(false) | Err(_) => Decision::Refused,
+                    };
+                }
+                open = client.socket_reader.watch(), if watching => {
+                    if !open {
+                        break Decision::Left;
+                    }
+                    // The client sent something; it is read once accepted.
+                    watching = false;
+                }
+            }
+        }
+    })
+    .await
+    .unwrap_or(Decision::TimedOut);
+
+    let refusal = match decision {
+        Decision::Accepted(turn) => {
+            client.approved = true;
+            client._turn = Some(turn);
+            return Some(client);
+        }
+        Decision::Left => {
+            #[cfg(debug_assertions)]
+            signals.debug("a client left while its connect request was decided");
+            return None;
+        }
+        Decision::Refused => {
+            signals.info(format!(
+                "the connect-request callback refused a client ({})",
+                client.peer_addr
+            ));
+            "the server refused the connection".to_string()
+        }
+        Decision::TimedOut => {
+            signals.error(format!(
+                "the connect-request callback did not answer within {:?}; refused the client ({})",
+                admission.timeout, client.peer_addr
+            ));
+            "the server did not decide on the connection in time".to_string()
+        }
+    };
+    let close = Close::new(close::REFUSED, refusal);
+    let _ = tokio::time::timeout(CLOSE_TIMEOUT, client.socket_tx.close(Some(close))).await;
+    None
 }
 
 async fn handshake_client<L: Listener>(
@@ -430,6 +566,8 @@ async fn handshake_client<L: Listener>(
                 socket_tx,
                 socket_reader,
                 peer_addr,
+                approved: false,
+                _turn: None,
             })
         }
         Ok(_) => {
@@ -950,7 +1088,7 @@ mod run_tests {
     use crate::server_core::net::transport::Incoming;
     use crate::server_core::net::transport::memory::{self, MemoryClient, MemoryConnector};
     use crate::server_core::server::{Acknowledge, SyncTrait};
-    use crate::server_core::signals::LOGGING_ID;
+    use crate::server_core::signals::{Claim, LOGGING_ID};
 
     /// Fails only its first connection sync.
     struct FailFirstSync(AtomicUsize);
@@ -993,6 +1131,8 @@ mod run_tests {
         timeout: Duration::from_millis(400),
     };
     const DEADLINE: Duration = Duration::from_secs(5);
+    /// How long the tests' connect-request callbacks may take.
+    const REQUEST_TIMEOUT: Duration = Duration::from_millis(500);
     /// The endpoint the tests send transfers on.
     const ENDPOINT: u64 = 1000;
 
@@ -1097,6 +1237,7 @@ mod run_tests {
                     connected: connected.clone(),
                     close: CloseSlot::default(),
                     policy,
+                    request_timeout: REQUEST_TIMEOUT,
                     values,
                     signals,
                     heartbeat,
@@ -1240,6 +1381,219 @@ mod run_tests {
             let synced = tokio::time::timeout(DEADLINE, next.frames.recv()).await;
             assert!(matches!(synced, Ok(Some(Outgoing::Binary(_)))));
             assert!(until(DEADLINE, || server.connected()).await);
+            server.stop().await;
+        });
+    }
+
+    /// Plays the connect-request callback for a test: each request the
+    /// server raises is handed to the test, which answers it.
+    struct Requests {
+        requests: std::sync::mpsc::Receiver<Arc<Request>>,
+        stop: Arc<AtomicBool>,
+        worker: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl Requests {
+        fn new(signals: &SignalsManager) -> Self {
+            signals.set_register(ON_CONNECT_REQUEST_ID, true, false);
+            let (sender, requests) = std::sync::mpsc::channel();
+            let stop = Arc::new(AtomicBool::new(false));
+            let (signals, stopped) = (signals.clone(), stop.clone());
+            let worker = std::thread::spawn(move || {
+                let mut last = None;
+                while !stopped.load(Ordering::Acquire) {
+                    let deadline = std::time::Instant::now() + Duration::from_millis(20);
+                    if let Claim::Ready(id, ..) = signals.claim(last.take(), Some(deadline)) {
+                        let request = signals
+                            .attachment(id)
+                            .and_then(|attachment| attachment.downcast::<Request>().ok());
+                        if let Some(request) = request {
+                            let _ = sender.send(request);
+                        }
+                        last = Some(id);
+                    }
+                }
+                if let Some(id) = last {
+                    signals.release(id);
+                }
+            });
+            Self {
+                requests,
+                stop,
+                worker: Some(worker),
+            }
+        }
+
+        fn next(&self) -> Arc<Request> {
+            self.requests
+                .recv_timeout(DEADLINE)
+                .expect("the server raised no connect request")
+        }
+    }
+
+    impl Drop for Requests {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::Release);
+            if let Some(worker) = self.worker.take() {
+                worker.join().unwrap();
+            }
+        }
+    }
+
+    /// The next frame the client receives.
+    async fn frame(client: &mut MemoryClient) -> Option<Outgoing> {
+        tokio::time::timeout(DEADLINE, client.frames.recv())
+            .await
+            .expect("the client received no frame")
+    }
+
+    /// Whether `frame` is the notice of a pending connect request.
+    fn is_pending_notice(frame: &Option<Outgoing>) -> bool {
+        let Some(Outgoing::Binary(bytes)) = frame else {
+            return false;
+        };
+        matches!(
+            postcard::take_from_bytes::<ServerHeader>(bytes),
+            Ok((ServerHeader::ConnectPending(millis), _)) if u128::from(millis) == REQUEST_TIMEOUT.as_millis()
+        )
+    }
+
+    /// Connects a client and lets the callback accept it.
+    async fn connect_accepted(connector: &MemoryConnector, requests: &Requests) -> MemoryClient {
+        let mut client = connect(connector);
+        assert!(is_pending_notice(&frame(&mut client).await));
+        let request = requests.next();
+        assert!(request.is_pending());
+        request.answer(true);
+        assert!(matches!(
+            frame(&mut client).await,
+            Some(Outgoing::Binary(_))
+        ));
+        client
+    }
+
+    /// An accepting callback lets every client in, also against the
+    /// `Reject` policy it overrides; the replaced client learns why.
+    #[test]
+    fn an_accepted_connect_request_takes_over_the_connection() {
+        block_on(async {
+            let signals = SignalsManager::new();
+            let requests = Requests::new(&signals);
+            let (server, connector) = TestServer::memory_policy(ClientPolicy::Reject, signals);
+            let mut first = connect_accepted(&connector, &requests).await;
+            assert!(until(DEADLINE, || server.connected()).await);
+
+            let _second = connect_accepted(&connector, &requests).await;
+            let closed = tokio::time::timeout(DEADLINE, first.closed())
+                .await
+                .unwrap();
+            assert_eq!(closed.map(|close| close.code), Some(close::REPLACED));
+            assert!(until(DEADLINE, || server.connected()).await);
+            server.stop().await;
+        });
+    }
+
+    /// A refused client is closed with the reason; the connected client
+    /// stays.
+    #[test]
+    fn a_refused_connect_request_keeps_the_connected_client() {
+        block_on(async {
+            let signals = SignalsManager::new();
+            let requests = Requests::new(&signals);
+            let (server, connector) = TestServer::memory_policy(ClientPolicy::Replace, signals);
+            let first = connect_accepted(&connector, &requests).await;
+
+            let mut refused = connect(&connector);
+            requests.next().answer(false);
+            let closed = tokio::time::timeout(DEADLINE, refused.closed())
+                .await
+                .unwrap();
+            assert_eq!(closed.map(|close| close.code), Some(close::REFUSED));
+            assert!(server.connected());
+            assert_eq!(first.close_reason(), None);
+            server.stop().await;
+        });
+    }
+
+    /// A request nobody answers in time is refused; the late answer is
+    /// ignored.
+    #[test]
+    fn an_unanswered_connect_request_is_refused_in_time() {
+        block_on(async {
+            let signals = SignalsManager::new();
+            let requests = Requests::new(&signals);
+            let (server, connector) = TestServer::memory_policy(ClientPolicy::Replace, signals);
+            let first = connect_accepted(&connector, &requests).await;
+
+            let mut late = connect(&connector);
+            let request = requests.next();
+            let started = Instant::now();
+            let closed = tokio::time::timeout(DEADLINE, late.closed()).await.unwrap();
+            assert!(started.elapsed() < REQUEST_TIMEOUT + Duration::from_secs(1));
+            assert_eq!(closed.map(|close| close.code), Some(close::REFUSED));
+            assert!(!request.is_pending());
+            request.answer(true);
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            assert!(server.connected());
+            assert_eq!(first.close_reason(), None);
+            server.stop().await;
+        });
+    }
+
+    /// A client that leaves while its request is decided ends the request;
+    /// an answer given afterwards does not disturb the connected client.
+    #[test]
+    fn a_client_that_leaves_ends_its_connect_request() {
+        block_on(async {
+            let signals = SignalsManager::new();
+            let requests = Requests::new(&signals);
+            let (server, connector) = TestServer::memory_policy(ClientPolicy::Replace, signals);
+            let first = connect_accepted(&connector, &requests).await;
+
+            let leaving = connect(&connector);
+            let request = requests.next();
+            drop(leaving);
+            assert!(until(DEADLINE, || !request.is_pending()).await);
+            request.answer(true);
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            assert!(server.connected());
+            assert_eq!(first.close_reason(), None);
+            server.stop().await;
+        });
+    }
+
+    /// Requests are decided one at a time: the next one is raised only once
+    /// the previous one has been decided.
+    #[test]
+    fn connect_requests_are_decided_one_at_a_time() {
+        block_on(async {
+            let signals = SignalsManager::new();
+            let requests = Requests::new(&signals);
+            let (server, connector) = TestServer::memory_policy(ClientPolicy::Replace, signals);
+            let _first = connect_accepted(&connector, &requests).await;
+
+            let mut second = connect(&connector);
+            let mut third = connect(&connector);
+            // Both learn at once that they wait.
+            assert!(is_pending_notice(&frame(&mut second).await));
+            assert!(is_pending_notice(&frame(&mut third).await));
+            let request = requests.next();
+            assert!(
+                requests
+                    .requests
+                    .recv_timeout(Duration::from_millis(200))
+                    .is_err(),
+                "a second request was raised before the first was decided"
+            );
+            request.answer(false);
+            requests.next().answer(false);
+            for client in [&mut second, &mut third] {
+                let closed = tokio::time::timeout(DEADLINE, client.closed())
+                    .await
+                    .unwrap();
+                assert_eq!(closed.map(|close| close.code), Some(close::REFUSED));
+            }
+            assert!(server.connected());
             server.stop().await;
         });
     }

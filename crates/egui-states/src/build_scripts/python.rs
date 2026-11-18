@@ -639,6 +639,7 @@ class StatesServer(StateServerBase[{root_name}]):
         allowed_origins: Sequence[str] = (),
         transfer_profile: TransferProfile = TransferProfile.Balanced,
         client_policy: ClientPolicy = ClientPolicy.Replace,
+        connect_request_timeout: float = 5.0,
     ) -> None:
         """Initialize and finalize the generated state server.
 
@@ -671,13 +672,17 @@ class StatesServer(StateServerBase[{root_name}]):
                 a client that connects while another is connected:
                 ``Replace`` lets it take over, ``Reject`` refuses it as busy.
                 Defaults to ``Replace``.
+            connect_request_timeout (float, optional): Seconds a callback
+                registered with ``on_connect_request`` may take to decide on a
+                client before it is refused. Defaults to 5.
 
         Raises:
             ValueError: If ``heartbeat_interval`` is not positive,
                 ``heartbeat_timeout`` is not greater than it, ``web_path``
                 cannot be made absolute, an allowed origin is malformed,
-                ``transfer_profile`` is not a ``TransferProfile``, or
-                ``client_policy`` is not a ``ClientPolicy``.
+                ``transfer_profile`` is not a ``TransferProfile``,
+                ``client_policy`` is not a ``ClientPolicy``, or
+                ``connect_request_timeout`` is not positive.
         """
         super().__init__(
             {root_name},
@@ -690,6 +695,7 @@ class StatesServer(StateServerBase[{root_name}]):
             allowed_origins,
             transfer_profile,
             client_policy,
+            connect_request_timeout,
         )
 "#
     )

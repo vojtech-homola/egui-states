@@ -38,6 +38,27 @@ impl<S: FrameSource> SocketReader<S> {
         self.activity.clone()
     }
 
+    /// Waits until the client sends a frame or the connection ends, keeping
+    /// the frame for [`Self::next`]. Returns `false` once the connection
+    /// ended. Cancel safe: a frame is only taken when it is kept.
+    pub(crate) async fn watch(&mut self) -> bool {
+        if self.previous.is_some() {
+            return true;
+        }
+        loop {
+            match self.socket.next_frame().await {
+                Some(Ok(Incoming::Binary(msg))) => {
+                    self.activity.touch();
+                    let slice = msg.len() > COPY_SIZE;
+                    self.previous = Some((msg, 0, slice));
+                    return true;
+                }
+                Some(Ok(Incoming::KeepAlive)) => self.activity.touch(),
+                Some(Ok(Incoming::Close)) | Some(Err(_)) | None => return false,
+            }
+        }
+    }
+
     pub(crate) async fn next(&mut self) -> Result<ClientMessage, Option<String>> {
         let (data, pointer, slice) = match self.previous.take() {
             Some(prev) => prev,

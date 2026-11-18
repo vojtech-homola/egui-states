@@ -24,6 +24,7 @@ macro_rules! for_each_scenario {
             takeover => "takeover",
             rejected_client => "rejected-client",
             busy_client => "busy-client",
+            connect_request => "connect-request",
             data_headers => "data-headers",
             file_transfers => "file-transfers",
             uploads => "uploads",

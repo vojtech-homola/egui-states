@@ -14,6 +14,7 @@
 //! `StateServer` clone keeps the server running until its `CallbackHandle` is
 //! dropped.
 
+mod admission;
 mod callbacks;
 mod collections;
 mod data;
@@ -29,6 +30,7 @@ pub use crate::file_transfer::{
     TransferError, TransferHandle, TransferMeta, TransferProfile, TransferProgress, TransferStatus,
 };
 pub use crate::server_core::admission::ClientPolicy;
+pub use admission::ConnectRequest;
 pub use callbacks::CallbackHandle;
 pub use collections::{MapState, VecState};
 pub use data::{Data, DataElement, DataMulti, DataMultiTake, DataTake, HeaderValue};

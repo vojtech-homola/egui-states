@@ -61,6 +61,17 @@ def test_client_policies_are_validated():
             StatesServer(signals_workers=1, client_policy=cast(Any, policy))
 
 
+def test_connect_request_timeouts_are_validated():
+    """Accept a positive connect request timeout and reject anything else."""
+    import pytest
+    from egui_states_test_bindings import StatesServer  # ty: ignore[import-not-found]
+
+    StatesServer(signals_workers=1, connect_request_timeout=0.5)
+    for timeout in [0.0, -1.0, float("nan"), float("inf")]:
+        with pytest.raises(ValueError, match="connect request timeout"):
+            StatesServer(signals_workers=1, connect_request_timeout=timeout)
+
+
 def test_server_restarts_on_a_different_port():
     """Restart a server with a new port and release the previous listener."""
     import socket

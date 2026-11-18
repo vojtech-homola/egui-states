@@ -77,6 +77,7 @@ pub fn run(port: u16, scenario: &str) {
         "takeover" => return takeover(port),
         "rejected-client" => return rejected_client(port),
         "busy-client" => return busy_client(port),
+        "connect-request" => return connect_request(port),
         _ => {}
     }
     let (state, connection) = connect(port);
@@ -717,6 +718,26 @@ fn busy_client(port: u16) {
     let (next_state, _next) =
         connect_client(ClientBuilder::<State>::new(egui::Context::default(), port));
     barrier(&next_state.integration);
+}
+
+/// The server's connect-request callback refuses the first client, which
+/// learns why, and accepts the next one.
+fn connect_request(port: u16) {
+    let builder = ClientBuilder::<State>::new(egui::Context::default(), port);
+    let hash = builder.get_version_hash();
+    let (refused, client) = builder.version(hash).build();
+    client.connect();
+    let reason = wait("refusal", || client.last_reason());
+    assert_eq!(reason, CloseReason::Refused);
+    assert_eq!(client.get_state(), ConnectionState::Failed);
+    assert_eq!(
+        refused.integration.value.get(),
+        0,
+        "a refused client received synchronized state"
+    );
+
+    let (state, _connection) = connect(port);
+    barrier(&state.integration);
 }
 
 /// A client with a mismatched layout version is refused without affecting the

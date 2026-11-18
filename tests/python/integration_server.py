@@ -361,6 +361,16 @@ def run_scenario(probe, scenario):
     server.logging.add_logger(LogLevel.Error, lambda message: errors.append(RuntimeError(message)))
     server.logging.add_logger(LogLevel.Warning, warnings.append)
     configure(server.states)
+    if scenario == "connect-request":
+        asked = []
+
+        def decide(request):
+            # Refuses the first client and accepts every later one.
+            assert request.is_pending()
+            asked.append(request.address)
+            return len(asked) > 1
+
+        server.on_connect_request(decide)
     port = free_port()
     try:
         server.start(port, (127, 0, 0, 1))
