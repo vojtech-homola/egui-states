@@ -19,7 +19,7 @@ def test_image_shape_limit(local_bundle, multi, shape):
     pixels = np.full(shape, 7, dtype=np.uint8)
     image.set(pixels)
     assert image.shape() == shape
-    assert np.all(image.get()[..., :3] == 7)
+    assert_array(image.get(), pixels)
     image.set_all(shape, 9)
     origin = (shape[0] - 1, shape[1] - 1)
     image.update(np.array([[8]], dtype=np.uint8), origin)
