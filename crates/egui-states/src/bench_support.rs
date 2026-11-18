@@ -81,14 +81,11 @@ pub fn server_to_rgba(pixels: &[u8], format: PixelFormat, rgba: &mut [u8]) {
     let image_type = format.image_type();
     let count = pixels.len() / image_type.bytes_per_pixel();
     assert_eq!(rgba.len(), count * 4);
-    // SAFETY: `MaybeUninit<u8>` has the layout of `u8`, and `widen` writes
-    // only initialized bytes.
-    let target = unsafe { &mut *(rgba as *mut [u8] as *mut [std::mem::MaybeUninit<u8>]) };
-    crate::protocol::image::widen(
+    crate::protocol::image::widen_into(
         image_type,
         crate::protocol::image::ImageType::ColorAlpha,
         pixels,
-        target,
+        rgba,
     );
 }
 

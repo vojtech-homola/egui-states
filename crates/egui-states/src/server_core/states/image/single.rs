@@ -1035,14 +1035,15 @@ mod packing_tests {
     fn server_rgba(image: &Image) -> Vec<u8> {
         image.get_image(|image| {
             let image = image.unwrap();
-            let mut rgba = vec![
-                std::mem::MaybeUninit::uninit();
-                image.data().len() / image.image_type().bytes_per_pixel() * 4
-            ];
-            crate::protocol::image::to_rgba(image.image_type(), image.data(), &mut rgba);
-            rgba.into_iter()
-                .map(|byte| unsafe { byte.assume_init() })
-                .collect()
+            let image_type = image.image_type();
+            let mut rgba = vec![0; image.data().len() / image_type.bytes_per_pixel() * 4];
+            crate::protocol::image::widen_into(
+                image_type,
+                ImageType::ColorAlpha,
+                image.data(),
+                &mut rgba,
+            );
+            rgba
         })
     }
 

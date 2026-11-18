@@ -130,6 +130,15 @@ pub(crate) fn widen(
     }
 }
 
+/// [`widen`] into a target that is already initialized.
+#[cfg(any(feature = "server", feature = "python"))]
+pub(crate) fn widen_into(from: ImageType, to: ImageType, source: &[u8], target: &mut [u8]) {
+    // SAFETY: `MaybeUninit<u8>` has the layout of `u8`, and `widen` writes
+    // only initialized bytes.
+    let target = unsafe { &mut *(target as *mut [u8] as *mut [std::mem::MaybeUninit<u8>]) };
+    widen(from, to, source, target);
+}
+
 /// Converts `source` pixels in `image_type` to RGBA, four bytes per pixel,
 /// into `target`, which holds exactly that many bytes.
 ///
@@ -328,13 +337,9 @@ mod tests {
 
         let widened = |from, to, source: &[u8]| {
             let pixels = source.len() / ImageType::bytes_per_pixel(&from);
-            let mut target =
-                vec![std::mem::MaybeUninit::uninit(); pixels * ImageType::bytes_per_pixel(&to)];
-            widen(from, to, source, &mut target);
+            let mut target = vec![0; pixels * ImageType::bytes_per_pixel(&to)];
+            widen_into(from, to, source, &mut target);
             target
-                .into_iter()
-                .map(|byte| unsafe { byte.assume_init() })
-                .collect::<Vec<u8>>()
         };
         let gray: &[u8] = &[7, 9];
         assert_eq!(widened(Gray, Gray, gray), [7, 9]);

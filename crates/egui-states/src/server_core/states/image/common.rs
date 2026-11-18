@@ -5,7 +5,7 @@ use std::mem::MaybeUninit;
 use crate::protocol::FastVec;
 use crate::protocol::image::{
     ImageHeader, ImageSetHeader, ImageType, ImageUpdateHeader, checked_image_bounds,
-    checked_image_bytes, checked_image_shape, to_rgba, widen,
+    checked_image_bytes, checked_image_shape, to_rgba, widen, widen_into,
 };
 use crate::server_core::transfer::{Chunk, Messages, chunk_transfer};
 
@@ -368,10 +368,7 @@ impl StoredImage {
         for i in 0..image.size[0] {
             let start = ((top + i) * self.size[1] + left) * pixel_size;
             let target = &mut self.data[start..start + row];
-            // SAFETY: `MaybeUninit<u8>` has the layout of `u8`, and `widen`
-            // writes only initialized bytes.
-            let target = unsafe { &mut *(target as *mut [u8] as *mut [MaybeUninit<u8>]) };
-            widen(image.image_type, self.image_type, image.row(i), target);
+            widen_into(image.image_type, self.image_type, image.row(i), target);
         }
     }
 }
