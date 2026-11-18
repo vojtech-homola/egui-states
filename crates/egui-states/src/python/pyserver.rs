@@ -1697,20 +1697,20 @@ impl StateServerCore {
         Ok(value_id)
     }
 
-    fn add_image(&self, name: String) -> PyResult<u64> {
+    fn add_image(&self, name: String, low_priority: bool) -> PyResult<u64> {
         let value_id = self
             .server
             .write()
-            .add_image(&name)
+            .add_image(&name, low_priority)
             .map_err(|e| PyValueError::new_err(format!("Failed to add ValueImage: {}", e)))?;
         Ok(value_id)
     }
 
-    fn add_image_multi(&self, name: String) -> PyResult<u64> {
+    fn add_image_multi(&self, name: String, low_priority: bool) -> PyResult<u64> {
         let value_id = self
             .server
             .write()
-            .add_image_multi(&name)
+            .add_image_multi(&name, low_priority)
             .map_err(|e| PyValueError::new_err(format!("Failed to add ImageMulti: {}", e)))?;
         Ok(value_id)
     }
@@ -1721,13 +1721,14 @@ impl StateServerCore {
         name: String,
         data_type: u8,
         header: Option<&Bound<PyObjectClass>>,
+        low_priority: bool,
     ) -> PyResult<u64> {
         let header = header.map(|header| header.borrow().object_type.clone_py(py));
         let header_type = header_type(py, header.as_ref())?;
         let value_id = self
             .server
             .write()
-            .add_data(&name, data_type, header_type)
+            .add_data(&name, data_type, header_type, low_priority)
             .map_err(|e| PyValueError::new_err(format!("Failed to add Data: {}", e)))?;
         self.keep_header_type(value_id, header);
         Ok(value_id)
@@ -1739,13 +1740,14 @@ impl StateServerCore {
         name: String,
         data_type: u8,
         header: Option<&Bound<PyObjectClass>>,
+        low_priority: bool,
     ) -> PyResult<u64> {
         let header = header.map(|header| header.borrow().object_type.clone_py(py));
         let header_type = header_type(py, header.as_ref())?;
         let value_id = self
             .server
             .write()
-            .add_data_multi(&name, data_type, header_type)
+            .add_data_multi(&name, data_type, header_type, low_priority)
             .map_err(|e| PyValueError::new_err(format!("Failed to add DataMulti: {}", e)))?;
         self.keep_header_type(value_id, header);
         Ok(value_id)
@@ -1886,13 +1888,14 @@ impl StateServerCore {
         name: String,
         data_type: u8,
         header: Option<&Bound<PyObjectClass>>,
+        low_priority: bool,
     ) -> PyResult<u64> {
         let header = header.map(|header| header.borrow().object_type.clone_py(py));
         let header_type = header_type(py, header.as_ref())?;
         let value_id = self
             .server
             .write()
-            .add_data_take(&name, data_type, header_type)
+            .add_data_take(&name, data_type, header_type, low_priority)
             .map_err(|e| PyValueError::new_err(format!("Failed to add DataTake: {}", e)))?;
         self.keep_header_type(value_id, header);
         Ok(value_id)
@@ -1904,13 +1907,14 @@ impl StateServerCore {
         name: String,
         data_type: u8,
         header: Option<&Bound<PyObjectClass>>,
+        low_priority: bool,
     ) -> PyResult<u64> {
         let header = header.map(|header| header.borrow().object_type.clone_py(py));
         let header_type = header_type(py, header.as_ref())?;
         let value_id = self
             .server
             .write()
-            .add_data_multi_take(&name, data_type, header_type)
+            .add_data_multi_take(&name, data_type, header_type, low_priority)
             .map_err(|e| PyValueError::new_err(format!("Failed to add DataMultiTake: {}", e)))?;
         self.keep_header_type(value_id, header);
         Ok(value_id)
@@ -1960,7 +1964,7 @@ mod tests {
         let id = Python::attach(|py| {
             let server = core.borrow(py);
             let id = server
-                .add_data_multi(py, "root.data".to_string(), 0, None)
+                .add_data_multi(py, "root.data".to_string(), 0, None, false)
                 .unwrap();
             server.finalize(py).unwrap();
             server.start(py, port, Some([127, 0, 0, 1]), None).unwrap();

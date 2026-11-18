@@ -542,18 +542,30 @@ impl StateServer {
         Ok((id, value))
     }
 
-    pub(super) fn add_image(&self, name: String) -> Result<(u64, Arc<CoreImage>)> {
+    pub(super) fn add_image(
+        &self,
+        name: String,
+        low_priority: bool,
+    ) -> Result<(u64, Arc<CoreImage>)> {
         let mut server = self.inner.server.write();
-        let id = server.add_image(&name).map_err(ServerError::new)?;
+        let id = server
+            .add_image(&name, low_priority)
+            .map_err(ServerError::new)?;
         let value = server.get_image(id).ok_or_else(|| {
             ServerError::new(format!("image not found after registration: {name}"))
         })?;
         Ok((id, value))
     }
 
-    pub(super) fn add_image_multi(&self, name: String) -> Result<(u64, Arc<CoreImageMulti>)> {
+    pub(super) fn add_image_multi(
+        &self,
+        name: String,
+        low_priority: bool,
+    ) -> Result<(u64, Arc<CoreImageMulti>)> {
         let mut server = self.inner.server.write();
-        let id = server.add_image_multi(&name).map_err(ServerError::new)?;
+        let id = server
+            .add_image_multi(&name, low_priority)
+            .map_err(ServerError::new)?;
         let value = server.get_image_multi(id).ok_or_else(|| {
             ServerError::new(format!("image_multi not found after registration: {name}"))
         })?;
@@ -564,13 +576,14 @@ impl StateServer {
         &self,
         name: String,
         header_type: Option<u32>,
+        low_priority: bool,
     ) -> Result<(u64, Arc<CoreData>)>
     where
         T: DataElement,
     {
         let mut server = self.inner.server.write();
         let id = server
-            .add_data(&name, T::TYPE_ID, header_type)
+            .add_data(&name, T::TYPE_ID, header_type, low_priority)
             .map_err(ServerError::new)?;
         let value = server.get_data(id).ok_or_else(|| {
             ServerError::new(format!("data not found after registration: {name}"))
@@ -604,13 +617,14 @@ impl StateServer {
         &self,
         name: String,
         header_type: Option<u32>,
+        low_priority: bool,
     ) -> Result<(u64, Arc<CoreDataTake>)>
     where
         T: DataElement,
     {
         let mut server = self.inner.server.write();
         let id = server
-            .add_data_take(&name, T::TYPE_ID, header_type)
+            .add_data_take(&name, T::TYPE_ID, header_type, low_priority)
             .map_err(ServerError::new)?;
         let value = server.get_data_take(id).ok_or_else(|| {
             ServerError::new(format!("data_take not found after registration: {name}"))
@@ -622,13 +636,14 @@ impl StateServer {
         &self,
         name: String,
         header_type: Option<u32>,
+        low_priority: bool,
     ) -> Result<(u64, Arc<CoreDataMulti>)>
     where
         T: DataElement,
     {
         let mut server = self.inner.server.write();
         let id = server
-            .add_data_multi(&name, T::TYPE_ID, header_type)
+            .add_data_multi(&name, T::TYPE_ID, header_type, low_priority)
             .map_err(ServerError::new)?;
         let value = server.get_data_multi(id).ok_or_else(|| {
             ServerError::new(format!("data_multi not found after registration: {name}"))
@@ -640,13 +655,14 @@ impl StateServer {
         &self,
         name: String,
         header_type: Option<u32>,
+        low_priority: bool,
     ) -> Result<(u64, Arc<CoreDataMultiTake>)>
     where
         T: DataElement,
     {
         let mut server = self.inner.server.write();
         let id = server
-            .add_data_multi_take(&name, T::TYPE_ID, header_type)
+            .add_data_multi_take(&name, T::TYPE_ID, header_type, low_priority)
             .map_err(ServerError::new)?;
         let value = server.get_data_multi_take(id).ok_or_else(|| {
             ServerError::new(format!(
@@ -1516,15 +1532,19 @@ mod tests {
             ("MapState", |sv, n| {
                 s::MapState::<u8, i32>::new(sv, n).map(drop)
             }),
-            ("Image", |sv, n| s::Image::new(sv, n).map(drop)),
-            ("ImageMulti", |sv, n| s::ImageMulti::new(sv, n).map(drop)),
-            ("Data", |sv, n| s::Data::<u8>::new(sv, n).map(drop)),
-            ("DataMulti", |sv, n| {
-                s::DataMulti::<u8>::new(sv, n).map(drop)
+            ("Image", |sv, n| s::Image::new(sv, n, false).map(drop)),
+            ("ImageMulti", |sv, n| {
+                s::ImageMulti::new(sv, n, false).map(drop)
             }),
-            ("DataTake", |sv, n| s::DataTake::<u8>::new(sv, n).map(drop)),
+            ("Data", |sv, n| s::Data::<u8>::new(sv, n, false).map(drop)),
+            ("DataMulti", |sv, n| {
+                s::DataMulti::<u8>::new(sv, n, false).map(drop)
+            }),
+            ("DataTake", |sv, n| {
+                s::DataTake::<u8>::new(sv, n, false).map(drop)
+            }),
             ("DataMultiTake", |sv, n| {
-                s::DataMultiTake::<u8>::new(sv, n).map(drop)
+                s::DataMultiTake::<u8>::new(sv, n, false).map(drop)
             }),
         ]
     }
@@ -2605,8 +2625,8 @@ mod connection_tests {
         }
         let port = free_port();
         let server = StateServer::new().unwrap();
-        let data = crate::server::Data::<u16>::new(&server, "root.data").unwrap();
-        let multi = crate::server::DataMulti::<u16>::new(&server, "root.multi").unwrap();
+        let data = crate::server::Data::<u16>::new(&server, "root.data", false).unwrap();
+        let multi = crate::server::DataMulti::<u16>::new(&server, "root.multi", false).unwrap();
         server.finalize().unwrap();
         server.start(port, Some(Ipv4Addr::LOCALHOST), None).unwrap();
 

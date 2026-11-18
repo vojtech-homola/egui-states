@@ -1930,6 +1930,7 @@ mod transfer_tests {
                     crate::file_transfer::engine::Side::Server,
                     None,
                 ),
+                low_priority: false,
             },
         ));
 

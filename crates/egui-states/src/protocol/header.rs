@@ -29,6 +29,10 @@ pub(crate) enum ServerHeader {
     /// The window and the chunk size of file transfers on this connection, in
     /// bytes. The first message of every connection.
     TransferLimits(u32, u32),
+    /// Follows every frame of the low-priority lane. The client answers with
+    /// [`ClientHeader::LaneAck`] once it has handled everything before it,
+    /// which returns that frame's bytes to the lane's window.
+    LaneMark,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -40,6 +44,8 @@ pub(crate) enum ClientHeader {
     Handshake(u16, Option<u64>, Option<String>),
     /// A file transfer frame: endpoint id, frame, payload length.
     Transfer(u64, TransferFrame, u32),
+    /// Answers the oldest unanswered [`ServerHeader::LaneMark`].
+    LaneAck,
 }
 
 #[cfg(test)]
@@ -96,6 +102,7 @@ mod tests {
             ServerHeader::ImageMulti(1, ImageMultiHeader::Reset(false)),
             ServerHeader::Transfer(1, TransferFrame::Reject { serial: 0 }, 0),
             ServerHeader::TransferLimits(1, 1),
+            ServerHeader::LaneMark,
         ];
         for (index, header) in server.iter().enumerate() {
             let data: FastVec<32> = serialize(header).unwrap();
@@ -113,6 +120,7 @@ mod tests {
             ClientHeader::Message(0),
             ClientHeader::Handshake(1, None, None),
             ClientHeader::Transfer(1, TransferFrame::Reject { serial: 0 }, 0),
+            ClientHeader::LaneAck,
         ];
         for (index, header) in client.iter().enumerate() {
             let data: FastVec<32> = serialize(header).unwrap();

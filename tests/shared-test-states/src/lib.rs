@@ -28,6 +28,8 @@ pub struct State {
     pub data_multi_take: MultiDataTakeStates,
     pub image: ImageStates,
     pub wire_types: wire::WireTypeStates,
+    /// Every data state inside uses the low-priority lane.
+    #[state(low_priority)]
     pub headers: data::HeaderStates,
     pub transfers: transfers::TransferStates,
 }

@@ -327,6 +327,8 @@ pub(crate) struct Server {
     web: WebSlot,
     /// The engine of the file transfer endpoints.
     transfers: Engine,
+    /// Whether any state uses the low-priority lane.
+    low_priority: bool,
 
     /// Held by `start` and `stop` for their whole run, including the join of
     /// the server thread, so they never overlap. Nothing that a connected
@@ -392,6 +394,7 @@ impl Server {
             config,
             web: WebSlot::default(),
             transfers,
+            low_priority: false,
             runner_state: Mutex::new(RunnerState::Stopped(rx)),
         }
     }
@@ -456,6 +459,7 @@ impl Server {
                 let web = self.web.clone();
                 let heartbeat = self.config.heartbeat;
                 let transfers = self.transfers.clone();
+                let low_priority = self.low_priority;
 
                 let listening = Listening {
                     requested: addr,
@@ -479,6 +483,7 @@ impl Server {
                             signals,
                             heartbeat,
                             transfers,
+                            low_priority,
                         };
                         session::run(listener, rx, stop_event, handshake, web, session).await
                     })
@@ -614,6 +619,14 @@ impl Server {
         Ok(id)
     }
 
+    /// The sender and the connection flag of a bulk state, which uses the
+    /// low-priority lane with `low_priority`.
+    fn bulk_channels(&mut self, low_priority: bool) -> (MessageSender, Arc<AtomicBool>) {
+        // A name rejected later still counts; the lane is then only idle.
+        self.low_priority |= low_priority;
+        (self.sender.lane(low_priority), self.connected.clone())
+    }
+
     /// What a new state needs to send and to raise signals.
     fn channels(&self) -> (MessageSender, Arc<AtomicBool>, SignalsManager) {
         (
@@ -729,8 +742,10 @@ impl Server {
         })
     }
 
-    pub(crate) fn add_image(&mut self, name: &str) -> Result<u64, String> {
-        let (sender, connected, _) = self.channels();
+    /// Registers an image; with `low_priority`, it uses the low-priority
+    /// lane.
+    pub(crate) fn add_image(&mut self, name: &str, low_priority: bool) -> Result<u64, String> {
+        let (sender, connected) = self.bulk_channels(low_priority);
         self.register(name, "Image", |id| {
             Ok(StateRef::Image(Image::new(
                 name.to_string(),
@@ -741,8 +756,14 @@ impl Server {
         })
     }
 
-    pub(crate) fn add_image_multi(&mut self, name: &str) -> Result<u64, String> {
-        let (sender, connected, _) = self.channels();
+    /// Registers an image collection; with `low_priority`, it uses the
+    /// low-priority lane.
+    pub(crate) fn add_image_multi(
+        &mut self,
+        name: &str,
+        low_priority: bool,
+    ) -> Result<u64, String> {
+        let (sender, connected) = self.bulk_channels(low_priority);
         self.register(name, "ImageMulti", |id| {
             Ok(StateRef::ImageMulti(ImageMulti::new(
                 name.to_string(),
@@ -754,14 +775,16 @@ impl Server {
     }
 
     /// Registers a data state; `header_type` is the type id of
-    /// its header, `None` for a state without one.
+    /// its header, `None` for a state without one. With `low_priority`, it
+    /// uses the low-priority lane.
     pub(crate) fn add_data(
         &mut self,
         name: &str,
         type_id: u8,
         header_type: Option<u32>,
+        low_priority: bool,
     ) -> Result<u64, String> {
-        let (sender, connected, _) = self.channels();
+        let (sender, connected) = self.bulk_channels(low_priority);
         self.register(name, "Data", |id| {
             Ok(StateRef::Data(Data::new(
                 name.to_string(),
@@ -775,14 +798,16 @@ impl Server {
     }
 
     /// Registers a data multi state; `header_type` is the type id of
-    /// its header, `None` for a state without one.
+    /// its header, `None` for a state without one. With `low_priority`, it
+    /// uses the low-priority lane.
     pub(crate) fn add_data_multi(
         &mut self,
         name: &str,
         type_id: u8,
         header_type: Option<u32>,
+        low_priority: bool,
     ) -> Result<u64, String> {
-        let (sender, connected, _) = self.channels();
+        let (sender, connected) = self.bulk_channels(low_priority);
         self.register(name, "DataMulti", |id| {
             Ok(StateRef::DataMulti(DataMulti::new(
                 name.to_string(),
@@ -796,14 +821,16 @@ impl Server {
     }
 
     /// Registers a data take state; `header_type` is the type id of
-    /// its header, `None` for a state without one.
+    /// its header, `None` for a state without one. With `low_priority`, it
+    /// uses the low-priority lane.
     pub(crate) fn add_data_take(
         &mut self,
         name: &str,
         type_id: u8,
         header_type: Option<u32>,
+        low_priority: bool,
     ) -> Result<u64, String> {
-        let (sender, connected, _) = self.channels();
+        let (sender, connected) = self.bulk_channels(low_priority);
         self.register(name, "DataTake", |id| {
             Ok(StateRef::DataTake(DataTake::new(
                 name.to_string(),
@@ -817,14 +844,16 @@ impl Server {
     }
 
     /// Registers a data multi take state; `header_type` is the type id of
-    /// its header, `None` for a state without one.
+    /// its header, `None` for a state without one. With `low_priority`, it
+    /// uses the low-priority lane.
     pub(crate) fn add_data_multi_take(
         &mut self,
         name: &str,
         type_id: u8,
         header_type: Option<u32>,
+        low_priority: bool,
     ) -> Result<u64, String> {
-        let (sender, connected, _) = self.channels();
+        let (sender, connected) = self.bulk_channels(low_priority);
         self.register(name, "DataMultiTake", |id| {
             Ok(StateRef::DataMultiTake(DataMultiTake::new(
                 name.to_string(),

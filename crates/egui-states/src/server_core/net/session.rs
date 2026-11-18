@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{
@@ -6,6 +7,7 @@ use std::sync::{
 };
 use std::time::Duration;
 
+use futures_util::FutureExt;
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TryRecvError;
@@ -19,7 +21,7 @@ use crate::protocol::{FRAME_FLUSH_SIZE, FastVec, MAX_MSG_COUNT, ServerHeader, se
 use crate::server_core::http::origin::OriginPolicy;
 use crate::server_core::http::web::{WebSite, WebSlot};
 use crate::server_core::net::heartbeat::{Activity, Heartbeat};
-use crate::server_core::net::sender::{MessageReceiver, MessageSender, SenderData};
+use crate::server_core::net::sender::{LaneReceiver, MessageReceiver, MessageSender, SenderData};
 use crate::server_core::net::socket_reader::{ClientMessage, SocketReader};
 use crate::server_core::net::transport::{
     FrameSink, FrameSource, Listener, Opened, Outgoing, Served,
@@ -82,6 +84,8 @@ pub(crate) struct Session {
     pub(crate) heartbeat: Option<Heartbeat>,
     /// The engine of the file transfer endpoints.
     pub(crate) transfers: Engine,
+    /// Whether any state uses the low-priority lane.
+    pub(crate) low_priority: bool,
 }
 
 /// The file data lane of one connection.
@@ -111,6 +115,7 @@ pub(crate) async fn run<L: Listener>(
         values,
         signals,
         transfers,
+        low_priority,
         ..
     } = session.clone();
     let mut holder = ChannelHolder::Rx(rx);
@@ -194,9 +199,7 @@ pub(crate) async fn run<L: Listener>(
         };
 
         // clean mesage queue and send sync signals
-        while !rx.is_empty() {
-            let _ = rx.recv().await;
-        }
+        rx.clear();
 
         // Transfers are attached before the connection is published, so a
         // send never finds a client without them. Their control frames share
@@ -227,12 +230,18 @@ pub(crate) async fn run<L: Listener>(
         } else if values.sync.iter().any(|v| v.sync().is_err()) {
             Some("failed to sync value after handshake")
         } else {
-            match serialize(&ServerHeader::Update(0.0)) {
-                Ok(data) => {
+            // The low-priority lane synchronizes behind the normal one, so it
+            // requests its own repaint once its states have arrived.
+            let repaint = || serialize(&ServerHeader::Update(0.0));
+            match (repaint(), repaint()) {
+                (Ok(data), Ok(low)) => {
                     sender.send(data);
+                    if low_priority {
+                        sender.lane(true).send(low);
+                    }
                     None
                 }
-                Err(_) => Some("failed to serialize update message"),
+                _ => Some("failed to serialize update message"),
             }
         };
         if let Some(error) = failure {
@@ -288,7 +297,8 @@ pub(crate) async fn run<L: Listener>(
         signals.on_connect(peer_addr);
 
         let activity = socket_reader.activity();
-        let reader_handler = tokio::spawn(reader(socket_reader, session.clone()));
+        let (answers_tx, answers) = mpsc::unbounded_channel();
+        let reader_handler = tokio::spawn(reader(socket_reader, session.clone(), answers_tx));
         let handler = tokio::spawn(writer(
             rx,
             socket_tx,
@@ -296,6 +306,7 @@ pub(crate) async fn run<L: Listener>(
             activity,
             session.clone(),
             lane,
+            answers,
         ));
 
         holder = ChannelHolder::Transfer(handler);
@@ -441,7 +452,13 @@ fn tokens_match(client_token: &str, server_token: &str) -> bool {
     std::hint::black_box(difference) == 0
 }
 
-async fn reader<S: FrameSource>(mut socket_rx: SocketReader<S>, session: Session) {
+/// Reads the client's frames. Answers to the marks of the low-priority lane go
+/// to the writer through `answers`.
+async fn reader<S: FrameSource>(
+    mut socket_rx: SocketReader<S>,
+    session: Session,
+    answers: mpsc::UnboundedSender<()>,
+) {
     let Session {
         sender,
         connected,
@@ -508,6 +525,9 @@ async fn reader<S: FrameSource>(mut socket_rx: SocketReader<S>, session: Session
             Ok(ClientMessage::Transfer(endpoint, frame, payload)) => {
                 transfers.handle_frame(endpoint, frame, payload);
             }
+            Ok(ClientMessage::LaneAck) => {
+                let _ = answers.send(());
+            }
         }
     }
 
@@ -517,6 +537,78 @@ async fn reader<S: FrameSource>(mut socket_rx: SocketReader<S>, session: Session
     sender.close();
 }
 
+/// After this many frames of the normal lane in a row, the writer sends a
+/// waiting frame of the low-priority lane or a file chunk first. A busy normal
+/// lane then slows the other lanes down but never stops them.
+const STARVATION_GUARD: usize = 8;
+
+/// The low-priority lane of one connection.
+///
+/// The client answers the mark that follows every frame once it has handled
+/// that frame, so the bytes of unanswered frames are still on the way. The
+/// lane sends while they are below the window, so it never fills the socket
+/// buffers with bulk data that a normal message would wait behind.
+struct LowLane {
+    receiver: DataReceiver,
+    open: bool,
+    window: usize,
+    /// The bytes of every frame whose mark is unanswered, oldest first.
+    unanswered: VecDeque<usize>,
+    in_flight: usize,
+}
+
+impl LowLane {
+    fn new(receiver: LaneReceiver, window: usize) -> Self {
+        Self {
+            receiver: DataReceiver::new(receiver),
+            open: true,
+            window,
+            unanswered: VecDeque::new(),
+            in_flight: 0,
+        }
+    }
+
+    fn has_room(&self) -> bool {
+        self.open && self.in_flight < self.window
+    }
+
+    fn sent(&mut self, len: usize) {
+        self.in_flight += len;
+        self.unanswered.push_back(len);
+    }
+
+    fn answered(&mut self) {
+        if let Some(len) = self.unanswered.pop_front() {
+            self.in_flight -= len;
+        }
+    }
+}
+
+enum Next {
+    Message(Option<SenderData>),
+    Low(Option<SenderData>),
+    Chunk(Vec<u8>),
+    Ping,
+}
+
+/// A frame of the low-priority lane or a file chunk that is ready now.
+fn lagging(
+    low: &mut LowLane,
+    chunks: &mut mpsc::Receiver<Vec<u8>>,
+    chunks_open: bool,
+) -> Option<Next> {
+    if low.has_room()
+        && let Some(message) = low.receiver.next().now_or_never()
+    {
+        return Some(Next::Low(message));
+    }
+    match chunks_open {
+        true => chunks.try_recv().ok().map(Next::Chunk),
+        false => None,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn writer<K: FrameSink>(
     rx: MessageReceiver,
     mut websocket: K,
@@ -524,6 +616,7 @@ async fn writer<K: FrameSink>(
     activity: Arc<Activity>,
     session: Session,
     lane: DataLane,
+    mut answers: mpsc::UnboundedReceiver<()>,
 ) -> MessageReceiver {
     let Session {
         connected,
@@ -533,11 +626,6 @@ async fn writer<K: FrameSink>(
         transfers,
         ..
     } = session;
-    enum Next {
-        Message(Option<SenderData>),
-        Chunk(Vec<u8>),
-        Ping,
-    }
     let DataLane {
         mut chunks,
         generation,
@@ -546,8 +634,17 @@ async fn writer<K: FrameSink>(
         tickets,
     } = lane;
     let mut chunks_open = true;
+    let mut answers_open = true;
 
-    let mut data_receiver = DataReceiver::new(rx);
+    let MessageReceiver { normal, low } = rx;
+    let mut data_receiver = DataReceiver::new(normal);
+    let window = usize::try_from(transfers.limits().window).unwrap_or(usize::MAX);
+    let mut low = LowLane::new(low, window);
+    let lane_mark = serialize::<_, 32>(&ServerHeader::LaneMark)
+        .map(FastVec::into_bytes)
+        .unwrap_or_default();
+    let mut normal_streak = 0;
+
     // The connection counts as heard from when it starts, however long the
     // initial synchronization took.
     activity.touch();
@@ -558,38 +655,71 @@ async fn writer<K: FrameSink>(
     });
 
     loop {
+        let due = if normal_streak >= STARVATION_GUARD {
+            normal_streak = 0;
+            lagging(&mut low, &mut chunks, chunks_open)
+        } else {
+            None
+        };
         // Pings go first, so a long burst of state messages cannot starve
-        // the heartbeat; file data goes only when no state message waits.
+        // the heartbeat. The low-priority lane and then file data go only
+        // when no normal message waits, apart from the starvation guard.
         // Every branch is cancel safe: each only awaits a channel or a timer
         // tick, and a missed tick is delivered by the next poll.
-        let next = tokio::select! {
-            biased;
-            () = next_ping(&mut pings) => Next::Ping,
-            message = data_receiver.next() => Next::Message(message),
-            chunk = chunks.recv(), if chunks_open => match chunk {
-                Some(chunk) => Next::Chunk(chunk),
-                None => {
-                    chunks_open = false;
+        let next = match due {
+            Some(next) => next,
+            None => tokio::select! {
+                biased;
+                () = next_ping(&mut pings) => Next::Ping,
+                answer = answers.recv(), if answers_open => {
+                    match answer {
+                        Some(()) => low.answered(),
+                        None => answers_open = false,
+                    }
                     continue;
                 }
+                message = data_receiver.next() => Next::Message(message),
+                message = low.receiver.next(), if low.has_room() => Next::Low(message),
+                chunk = chunks.recv(), if chunks_open => match chunk {
+                    Some(chunk) => Next::Chunk(chunk),
+                    None => {
+                        chunks_open = false;
+                        continue;
+                    }
+                },
             },
         };
 
-        let message = match next {
+        let (message, mark) = match next {
             Next::Message(Some(message)) => {
                 // if not connected, stop thread
                 if !connected.load(Ordering::Acquire) {
                     unless_silent(websocket.close(), heartbeat, &activity).await;
                     break;
                 }
-                Outgoing::Binary(message.into_bytes())
+                normal_streak += 1;
+                (Outgoing::Binary(message.into_bytes()), false)
+            }
+            Next::Low(Some(message)) => {
+                if !connected.load(Ordering::Acquire) {
+                    unless_silent(websocket.close(), heartbeat, &activity).await;
+                    break;
+                }
+                normal_streak = 0;
+                low.sent(message.len());
+                (Outgoing::Binary(message.into_bytes()), true)
+            }
+            Next::Low(None) => {
+                low.open = false;
+                continue;
             }
             Next::Chunk(chunk) => {
                 if !connected.load(Ordering::Acquire) {
                     unless_silent(websocket.close(), heartbeat, &activity).await;
                     break;
                 }
-                Outgoing::Binary(chunk.into())
+                normal_streak = 0;
+                (Outgoing::Binary(chunk.into()), false)
             }
             // check if message is terminate signal
             Next::Message(None) => {
@@ -604,24 +734,24 @@ async fn writer<K: FrameSink>(
                     report_silent(&signals, heartbeat);
                     break;
                 }
-                Outgoing::Ping
+                (Outgoing::Ping, false)
             }
         };
 
-        // A dead client stops reading, so a send can wait for buffer space
-        // forever; the heartbeat also ends such a send.
-        match unless_silent(websocket.send_frame(message), heartbeat, &activity).await {
-            Some(Ok(())) => {}
-            Some(Err(e)) => {
-                signals.error(format!("sending message to client failed: {}", e));
-                break;
-            }
-            None => {
-                if let Some(heartbeat) = heartbeat {
-                    report_silent(&signals, heartbeat);
-                }
-                break;
-            }
+        if !send(&mut websocket, message, heartbeat, &activity, &signals).await {
+            break;
+        }
+        if mark
+            && !send(
+                &mut websocket,
+                Outgoing::Binary(lane_mark.clone()),
+                heartbeat,
+                &activity,
+                &signals,
+            )
+            .await
+        {
+            break;
         }
     }
 
@@ -645,10 +775,38 @@ async fn writer<K: FrameSink>(
         v.reset();
     }
 
-    data_receiver.finalize()
+    MessageReceiver {
+        normal: data_receiver.finalize(),
+        low: low.receiver.finalize(),
+    }
 }
 
-/// Completes at the next heartbeat ping, or never without a heartbeat.
+/// Sends `frame`, and reports whether the connection still works.
+///
+/// A dead client stops reading, so a send can wait for buffer space forever;
+/// the heartbeat also ends such a send.
+async fn send<K: FrameSink>(
+    websocket: &mut K,
+    frame: Outgoing,
+    heartbeat: Option<Heartbeat>,
+    activity: &Activity,
+    signals: &SignalsManager,
+) -> bool {
+    match unless_silent(websocket.send_frame(frame), heartbeat, activity).await {
+        Some(Ok(())) => true,
+        Some(Err(e)) => {
+            signals.error(format!("sending message to client failed: {}", e));
+            false
+        }
+        None => {
+            if let Some(heartbeat) = heartbeat {
+                report_silent(signals, heartbeat);
+            }
+            false
+        }
+    }
+}
+
 async fn next_ping(pings: &mut Option<Interval>) {
     match pings {
         Some(pings) => {
@@ -690,13 +848,13 @@ fn report_silent(signals: &SignalsManager, heartbeat: Heartbeat) {
 const MERGE_LIMIT: usize = 64 * 1024;
 
 struct DataReceiver {
-    rx: MessageReceiver,
+    rx: LaneReceiver,
     send_next: Option<(SenderData, bool)>,
     is_closed: bool,
 }
 
 impl DataReceiver {
-    fn new(rx: MessageReceiver) -> Self {
+    fn new(rx: LaneReceiver) -> Self {
         Self {
             rx,
             send_next: None,
@@ -739,7 +897,7 @@ impl DataReceiver {
         Some(msg)
     }
 
-    fn finalize(self) -> MessageReceiver {
+    fn finalize(self) -> LaneReceiver {
         self.rx
     }
 }
@@ -1019,6 +1177,7 @@ mod run_tests {
                     signals,
                     heartbeat,
                     transfers: transfers.clone(),
+                    low_priority: false,
                 },
             ));
             Self {
@@ -1062,6 +1221,176 @@ mod run_tests {
                 .expect("the server did not stop")
                 .unwrap();
         }
+    }
+
+    /// Records the frames a writer sends.
+    struct FrameLog(mpsc::UnboundedSender<Outgoing>);
+
+    impl FrameSink for FrameLog {
+        async fn send_frame(&mut self, frame: Outgoing) -> Result<(), String> {
+            self.0
+                .send(frame)
+                .map_err(|_| "the log is gone".to_string())
+        }
+
+        async fn close(&mut self) {}
+    }
+
+    /// A writer started on messages queued before it starts, so the lane it
+    /// picks first is deterministic.
+    struct WriterRun {
+        frames: mpsc::UnboundedReceiver<Outgoing>,
+        answers: mpsc::UnboundedSender<()>,
+        sender: MessageSender,
+        handle: JoinHandle<MessageReceiver>,
+    }
+
+    impl WriterRun {
+        /// Starts the writer with a low-priority window of `window` bytes and
+        /// `chunk` waiting in the file lane.
+        fn start(
+            sender: MessageSender,
+            rx: MessageReceiver,
+            window: u64,
+            chunk: Option<Vec<u8>>,
+        ) -> Self {
+            let transfers = Engine::new(crate::file_transfer::engine::Side::Server, None);
+            transfers.set_limits(crate::file_transfer::TransferLimits::new(window, 1).unwrap());
+            let (log, frames) = mpsc::unbounded_channel();
+            let (chunk_tx, chunks) = mpsc::channel(1);
+            if let Some(chunk) = chunk {
+                chunk_tx.try_send(chunk).unwrap();
+            }
+            let idle = || tokio::spawn(std::future::pending::<()>());
+            let lane = DataLane {
+                chunks,
+                generation: 0,
+                pump: idle(),
+                sinks: idle(),
+                tickets: idle(),
+            };
+            let session = Session {
+                sender: sender.clone(),
+                connected: Arc::new(AtomicBool::new(true)),
+                values: Default::default(),
+                signals: SignalsManager::new(),
+                heartbeat: None,
+                transfers,
+                low_priority: true,
+            };
+            let (answers, answers_rx) = mpsc::unbounded_channel();
+            let handle = tokio::spawn(async move {
+                // Keeps the file lane open for the run.
+                let _chunk_tx = chunk_tx;
+                writer(
+                    rx,
+                    FrameLog(log),
+                    idle(),
+                    Activity::new(),
+                    session,
+                    lane,
+                    answers_rx,
+                )
+                .await
+            });
+            Self {
+                frames,
+                answers,
+                sender,
+                handle,
+            }
+        }
+
+        /// The first byte and the length of the next frame; the mark of the
+        /// low-priority lane is `LANE_MARK`.
+        async fn next(&mut self) -> (u8, usize) {
+            match tokio::time::timeout(DEADLINE, self.frames.recv()).await {
+                Ok(Some(Outgoing::Binary(frame))) => (frame[0], frame.len()),
+                other => panic!("expected a frame, got {:?}", other.ok().flatten().is_some()),
+            }
+        }
+
+        async fn assert_quiet(&mut self) {
+            assert!(
+                tokio::time::timeout(Duration::from_millis(100), self.frames.recv())
+                    .await
+                    .is_err(),
+                "the writer sent a frame"
+            );
+        }
+
+        async fn stop(self) {
+            self.sender.close();
+            tokio::time::timeout(DEADLINE, self.handle)
+                .await
+                .expect("the writer did not stop")
+                .unwrap();
+        }
+    }
+
+    /// The wire tag of `ServerHeader::LaneMark`.
+    const LANE_MARK: u8 = 14;
+    /// Larger than the merge limit, so every message is a frame of its own.
+    const LARGE: usize = MERGE_LIMIT + 1;
+
+    fn message(marker: u8, len: usize) -> SenderData {
+        FastVec::Heap(vec![marker; len])
+    }
+
+    /// Normal messages go first. The low-priority lane then sends while its
+    /// unanswered bytes are below the window, each frame followed by a mark.
+    #[test]
+    fn the_low_lane_waits_for_the_normal_lane_and_for_its_window() {
+        block_on(async {
+            let (sender, rx) = MessageSender::new();
+            let low = sender.lane(true);
+            low.send(message(1, LARGE));
+            low.send(message(2, LARGE));
+            sender.send(message(9, 10));
+            let mut run = WriterRun::start(sender, rx, 1024, None);
+
+            assert_eq!(run.next().await, (9, 10));
+            assert_eq!(run.next().await, (1, LARGE));
+            assert_eq!(run.next().await, (LANE_MARK, 1));
+            // A frame larger than the window fills it.
+            run.assert_quiet().await;
+            run.answers.send(()).unwrap();
+            assert_eq!(run.next().await, (2, LARGE));
+            assert_eq!(run.next().await, (LANE_MARK, 1));
+            run.stop().await;
+        });
+    }
+
+    /// A normal lane that never empties holds the other lanes back for at
+    /// most `STARVATION_GUARD` frames at a time.
+    #[test]
+    fn the_starvation_guard_lets_the_other_lanes_through() {
+        block_on(async {
+            for low_waits in [true, false] {
+                let (sender, rx) = MessageSender::new();
+                let count = 3 * STARVATION_GUARD;
+                for marker in 0..count {
+                    sender.send(message(100 + marker as u8, LARGE));
+                }
+                if low_waits {
+                    sender.lane(true).send(message(1, LARGE));
+                }
+                let mut run = WriterRun::start(sender, rx, 1 << 20, Some(vec![2; 100]));
+
+                for marker in 0..STARVATION_GUARD {
+                    assert_eq!(run.next().await, (100 + marker as u8, LARGE));
+                }
+                // The low-priority lane goes before the file lane.
+                if low_waits {
+                    assert_eq!(run.next().await, (1, LARGE));
+                    assert_eq!(run.next().await, (LANE_MARK, 1));
+                } else {
+                    assert_eq!(run.next().await, (2, 100));
+                }
+                assert_eq!(run.next().await, (100 + STARVATION_GUARD as u8, LARGE));
+                run.stop().await;
+            }
+        });
     }
 
     #[test]

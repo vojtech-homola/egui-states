@@ -95,6 +95,8 @@ compile_fail! {
     typed_duplicate_option: "typed-duplicate-option" => "duplicate `rust_derive(...)` option",
     state_generic: "state-generic" => "State derive does not support generics",
     state_empty: "state-empty" => "State derive requires at least one named field",
+    state_low_priority_value: "state-low-priority-value" => "`low_priority` applies to Image, ImageMulti",
+    state_option: "state-option" => "unknown `state` option",
     atomic_payload: "atomic-payload" => "Enum variants must be unit variants",
     initial_tuple: "initial-tuple" => "Struct fields must be named",
     atomic_static_payload: "atomic-static-payload" => "Enum variants must be unit variants",

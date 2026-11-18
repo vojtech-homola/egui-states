@@ -58,8 +58,8 @@ impl Session {
     fn connect() -> Self {
         let port = free_port();
         let server = StateServer::new().expect("server");
-        let data = server::Data::<u8>::new(&server, "root.data").expect("data");
-        let image = server::Image::new(&server, "root.image").expect("image");
+        let data = server::Data::<u8>::new(&server, "root.data", false).expect("data");
+        let image = server::Image::new(&server, "root.image", false).expect("image");
         let value = server::Value::new(&server, "root.value", 0_u64, true).expect("value");
         let blob = server::Value::new(&server, "root.blob", Vec::<u8>::new(), true).expect("blob");
         let marker = server::Static::new(&server, "root.marker", 0_u64).expect("marker");

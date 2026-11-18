@@ -342,10 +342,21 @@ class Image(_StaticBase):
     threads keep running. Do not modify the buffer from another thread during
     the call, or the client may receive a mix of old and new contents; pass a
     copy if another thread may write to it.
+
+    Args:
+        low_priority (bool, optional): Whether the server sends its transfers
+            in the low-priority lane: only while no other state has a message
+            waiting, and a window of their data at a time, so small states do
+            not wait behind them. A change of another state made after a
+            change of this one can then reach the client first. Defaults to
+            False.
     """
 
+    def __init__(self, low_priority: bool = False) -> None:
+        self._low_priority = low_priority
+
     def _initialize(self, name: str, types: list[PyObjectType]) -> None:
-        self._value_id = self._server.add_image(name)
+        self._value_id = self._server.add_image(name, self._low_priority)
 
     def set(self, image: Buffer, update: bool = False, wait: bool = False) -> None:
         """Set the image in the UI image.
@@ -579,10 +590,21 @@ class ImageMulti(_StaticBase):
 
     Each image dimension is limited to 65,536 pixels, inclusive. Client renderer
     and memory limits may be smaller.
+
+    Args:
+        low_priority (bool, optional): Whether the server sends its transfers
+            in the low-priority lane: only while no other state has a message
+            waiting, and a window of their data at a time, so small states do
+            not wait behind them. A change of another state made after a
+            change of this one can then reach the client first. Defaults to
+            False.
     """
 
+    def __init__(self, low_priority: bool = False) -> None:
+        self._low_priority = low_priority
+
     def _initialize(self, name: str, types: list[PyObjectType]) -> None:
-        self._value_id = self._server.add_image_multi(name)
+        self._value_id = self._server.add_image_multi(name, self._low_priority)
 
     def get(self, index: int) -> SingleImage:
         """Return a handle for one image index.
@@ -871,18 +893,27 @@ class Data[T: np.generic](_StaticBase):
         dtype (type[T]): One of ``numpy.uint8`` through ``numpy.uint64``,
             ``numpy.int8`` through ``numpy.int64``, ``numpy.float32``, or
             ``numpy.float64``.
+        low_priority (bool, optional): Whether the server sends its transfers
+            in the low-priority lane: only while no other state has a message
+            waiting, and a window of their data at a time, so small states do
+            not wait behind them. A change of another state made after a
+            change of this one can then reach the client first. Defaults to
+            False.
     """
 
     _header_id: int | None = None
 
-    def __init__(self, dtype: type[T]) -> None:
+    def __init__(self, dtype: type[T], low_priority: bool = False) -> None:
         self._dtype = dtype
+        self._low_priority = low_priority
 
     def _header_type(self, types: list[PyObjectType]) -> PyObjectType | None:
         return None if self._header_id is None else types[self._header_id]
 
     def _initialize(self, name: str, types: list[PyObjectType]) -> None:
-        self._value_id = self._server.add_data(name, _get_dtype_id(self._dtype), self._header_type(types))
+        self._value_id = self._server.add_data(
+            name, _get_dtype_id(self._dtype), self._header_type(types), self._low_priority
+        )
 
     def get(self) -> npt.NDArray[T] | None:
         """Return a locally mutable snapshot of the current server buffer.
@@ -998,10 +1029,16 @@ class DataWithHeader[T: np.generic, H](Data[T]):
             :class:`Data`.
         header_id (int): Index of the header's protocol type in the generated
             type list.
+        low_priority (bool, optional): Whether the server sends its transfers
+            in the low-priority lane: only while no other state has a message
+            waiting, and a window of their data at a time, so small states do
+            not wait behind them. A change of another state made after a
+            change of this one can then reach the client first. Defaults to
+            False.
     """
 
-    def __init__(self, dtype: type[T], header_id: int) -> None:
-        super().__init__(dtype)
+    def __init__(self, dtype: type[T], header_id: int, low_priority: bool = False) -> None:
+        super().__init__(dtype, low_priority)
         self._header_id = header_id
 
     def get_header(self) -> H | None:
@@ -1136,16 +1173,23 @@ class DataTake[T: np.generic](_StaticBase):
     Args:
         dtype (type[T]): One of the integer or floating-point NumPy scalar
             types supported by :class:`Data`.
+        low_priority (bool, optional): Whether the server sends its transfers
+            in the low-priority lane: only while no other state has a message
+            waiting, and a window of their data at a time, so small states do
+            not wait behind them. A change of another state made after a
+            change of this one can then reach the client first. Defaults to
+            False.
     """
 
     _header_id: int | None = None
 
-    def __init__(self, dtype: type[T]) -> None:
+    def __init__(self, dtype: type[T], low_priority: bool = False) -> None:
         self._dtype = dtype
+        self._low_priority = low_priority
 
     def _initialize(self, name: str, types: list[PyObjectType]) -> None:
         header = None if self._header_id is None else types[self._header_id]
-        self._value_id = self._server.add_data_take(name, _get_dtype_id(self._dtype), header)
+        self._value_id = self._server.add_data_take(name, _get_dtype_id(self._dtype), header, self._low_priority)
 
     def set(
         self,
@@ -1183,10 +1227,16 @@ class DataTakeWithHeader[T: np.generic, H](DataTake[T]):
             :class:`Data`.
         header_id (int): Index of the header's protocol type in the generated
             type list.
+        low_priority (bool, optional): Whether the server sends its transfers
+            in the low-priority lane: only while no other state has a message
+            waiting, and a window of their data at a time, so small states do
+            not wait behind them. A change of another state made after a
+            change of this one can then reach the client first. Defaults to
+            False.
     """
 
-    def __init__(self, dtype: type[T], header_id: int) -> None:
-        super().__init__(dtype)
+    def __init__(self, dtype: type[T], header_id: int, low_priority: bool = False) -> None:
+        super().__init__(dtype, low_priority)
         self._header_id = header_id
 
     def set(
@@ -1445,16 +1495,23 @@ class DataMulti[T: np.generic](_StaticBase):
     Args:
         dtype (type[T]): One of the integer or floating-point NumPy scalar
             types supported by :class:`Data`.
+        low_priority (bool, optional): Whether the server sends its transfers
+            in the low-priority lane: only while no other state has a message
+            waiting, and a window of their data at a time, so small states do
+            not wait behind them. A change of another state made after a
+            change of this one can then reach the client first. Defaults to
+            False.
     """
 
     _header_id: int | None = None
 
-    def __init__(self, dtype: type[T]) -> None:
+    def __init__(self, dtype: type[T], low_priority: bool = False) -> None:
         self._dtype = dtype
+        self._low_priority = low_priority
 
     def _initialize(self, name: str, types: list[PyObjectType]) -> None:
         header = None if self._header_id is None else types[self._header_id]
-        self._value_id = self._server.add_data_multi(name, _get_dtype_id(self._dtype), header)
+        self._value_id = self._server.add_data_multi(name, _get_dtype_id(self._dtype), header, self._low_priority)
 
     def get(self, index: int) -> SingleData[T]:
         """Get the SingleData object for the given index.
@@ -1510,10 +1567,16 @@ class DataMultiWithHeader[T: np.generic, H](DataMulti[T]):
             :class:`Data`.
         header_id (int): Index of the header's protocol type in the generated
             type list.
+        low_priority (bool, optional): Whether the server sends its transfers
+            in the low-priority lane: only while no other state has a message
+            waiting, and a window of their data at a time, so small states do
+            not wait behind them. A change of another state made after a
+            change of this one can then reach the client first. Defaults to
+            False.
     """
 
-    def __init__(self, dtype: type[T], header_id: int) -> None:
-        super().__init__(dtype)
+    def __init__(self, dtype: type[T], header_id: int, low_priority: bool = False) -> None:
+        super().__init__(dtype, low_priority)
         self._header_id = header_id
 
     def get(self, index: int) -> SingleDataWithHeader[T, H]:
@@ -1621,12 +1684,19 @@ class DataMultiTake[T: np.generic](_StaticBase):
     Args:
         dtype (type[T]): One of the integer or floating-point NumPy scalar
             types supported by :class:`Data`.
+        low_priority (bool, optional): Whether the server sends its transfers
+            in the low-priority lane: only while no other state has a message
+            waiting, and a window of their data at a time, so small states do
+            not wait behind them. A change of another state made after a
+            change of this one can then reach the client first. Defaults to
+            False.
     """
 
     _header_id: int | None = None
 
-    def __init__(self, dtype: type[T]) -> None:
+    def __init__(self, dtype: type[T], low_priority: bool = False) -> None:
         self._dtype = dtype
+        self._low_priority = low_priority
 
     def _initialize(self, name: str, types: list[PyObjectType]) -> None:
         header = None if self._header_id is None else types[self._header_id]
@@ -1634,6 +1704,7 @@ class DataMultiTake[T: np.generic](_StaticBase):
             name,
             _get_dtype_id(self._dtype),
             header,
+            self._low_priority,
         )
 
     def get(self, index: int) -> SingleDataTake[T]:
@@ -1681,10 +1752,16 @@ class DataMultiTakeWithHeader[T: np.generic, H](DataMultiTake[T]):
             :class:`Data`.
         header_id (int): Index of the header's protocol type in the generated
             type list.
+        low_priority (bool, optional): Whether the server sends its transfers
+            in the low-priority lane: only while no other state has a message
+            waiting, and a window of their data at a time, so small states do
+            not wait behind them. A change of another state made after a
+            change of this one can then reach the client first. Defaults to
+            False.
     """
 
-    def __init__(self, dtype: type[T], header_id: int) -> None:
-        super().__init__(dtype)
+    def __init__(self, dtype: type[T], header_id: int, low_priority: bool = False) -> None:
+        super().__init__(dtype, low_priority)
         self._header_id = header_id
 
     def get(self, index: int) -> SingleDataTakeWithHeader[T, H]:

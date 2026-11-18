@@ -153,9 +153,11 @@ where
     T: DataElement,
     H: HeaderValue,
 {
-    /// Registers a numeric buffer under `name`, not set yet.
-    pub fn new(server: &StateServer, name: impl Into<String>) -> Result<Self> {
-        let (_, inner) = server.add_data::<T>(name.into(), header_type::<H>())?;
+    /// Registers a numeric buffer under `name`, not set yet. With
+    /// `low_priority`, its transfers use the low-priority lane, as described
+    /// at [`Image::new`](crate::server::Image::new).
+    pub fn new(server: &StateServer, name: impl Into<String>, low_priority: bool) -> Result<Self> {
+        let (_, inner) = server.add_data::<T>(name.into(), header_type::<H>(), low_priority)?;
         Ok(Self {
             inner,
             _type: PhantomData,
@@ -396,9 +398,12 @@ where
     T: DataElement,
     H: HeaderValue,
 {
-    /// Registers a one-shot numeric buffer under `name`.
-    pub fn new(server: &StateServer, name: impl Into<String>) -> Result<Self> {
-        let (_, inner) = server.add_data_take::<T>(name.into(), header_type::<H>())?;
+    /// Registers a one-shot numeric buffer under `name`. With
+    /// `low_priority`, its transfers use the low-priority lane, as described
+    /// at [`Image::new`](crate::server::Image::new).
+    pub fn new(server: &StateServer, name: impl Into<String>, low_priority: bool) -> Result<Self> {
+        let (_, inner) =
+            server.add_data_take::<T>(name.into(), header_type::<H>(), low_priority)?;
         Ok(Self {
             inner,
             _type: PhantomData,
@@ -461,9 +466,12 @@ where
     T: DataElement,
     H: HeaderValue,
 {
-    /// Registers an empty keyed buffer collection under `name`.
-    pub fn new(server: &StateServer, name: impl Into<String>) -> Result<Self> {
-        let (_, inner) = server.add_data_multi::<T>(name.into(), header_type::<H>())?;
+    /// Registers an empty keyed buffer collection under `name`. With
+    /// `low_priority`, its transfers use the low-priority lane, as described
+    /// at [`Image::new`](crate::server::Image::new).
+    pub fn new(server: &StateServer, name: impl Into<String>, low_priority: bool) -> Result<Self> {
+        let (_, inner) =
+            server.add_data_multi::<T>(name.into(), header_type::<H>(), low_priority)?;
         Ok(Self {
             inner,
             _type: PhantomData,
@@ -703,9 +711,12 @@ where
     T: DataElement,
     H: HeaderValue,
 {
-    /// Registers an empty keyed one-shot collection under `name`.
-    pub fn new(server: &StateServer, name: impl Into<String>) -> Result<Self> {
-        let (_, inner) = server.add_data_multi_take::<T>(name.into(), header_type::<H>())?;
+    /// Registers an empty keyed one-shot collection under `name`. With
+    /// `low_priority`, its transfers use the low-priority lane, as described
+    /// at [`Image::new`](crate::server::Image::new).
+    pub fn new(server: &StateServer, name: impl Into<String>, low_priority: bool) -> Result<Self> {
+        let (_, inner) =
+            server.add_data_multi_take::<T>(name.into(), header_type::<H>(), low_priority)?;
         Ok(Self {
             inner,
             _type: PhantomData,
@@ -776,7 +787,7 @@ mod tests {
     #[test]
     fn data_round_trips_without_a_client() {
         let server = StateServer::new().unwrap();
-        let data = Data::<u16>::new(&server, "root.data").unwrap();
+        let data = Data::<u16>::new(&server, "root.data", false).unwrap();
 
         data.set(&[1, 2, 3], false, false).unwrap();
         data.add(&[4, 5], false, false).unwrap();
@@ -798,7 +809,7 @@ mod tests {
     #[test]
     fn data_that_is_not_set_takes_only_a_set() {
         let server = StateServer::new().unwrap();
-        let data = Data::<u16>::new(&server, "root.data").unwrap();
+        let data = Data::<u16>::new(&server, "root.data", false).unwrap();
         assert_eq!(data.get().unwrap(), None);
         assert!(data.read_bytes(|bytes| bytes.is_none()));
 
@@ -823,7 +834,7 @@ mod tests {
     #[test]
     fn multi_data_round_trips_without_a_client() {
         let server = StateServer::new().unwrap();
-        let data = DataMulti::<f32>::new(&server, "root.data").unwrap();
+        let data = DataMulti::<f32>::new(&server, "root.data", false).unwrap();
 
         data.set(3, &[1.0, 2.0], false, false).unwrap();
         data.add(3, &[3.0], false, false).unwrap();
@@ -838,7 +849,7 @@ mod tests {
     #[test]
     fn invalid_data_ranges_are_rejected_without_changes() {
         let server = StateServer::new().unwrap();
-        let data = Data::<u16>::new(&server, "root.data").unwrap();
+        let data = Data::<u16>::new(&server, "root.data", false).unwrap();
         data.set(&[1, 2, 3], false, false).unwrap();
 
         assert!(data.replace(&[9, 9], 2, false, false).is_err());
@@ -856,8 +867,8 @@ mod tests {
     #[test]
     fn overflowing_data_ranges_are_rejected_without_changes() {
         let server = StateServer::new().unwrap();
-        let data = Data::<u16>::new(&server, "root.data").unwrap();
-        let multi = DataMulti::<u16>::new(&server, "root.multi").unwrap();
+        let data = Data::<u16>::new(&server, "root.data", false).unwrap();
+        let multi = DataMulti::<u16>::new(&server, "root.multi", false).unwrap();
         data.set(&[1, 2, 3], false, false).unwrap();
         multi.set(4, &[1, 2, 3], false, false).unwrap();
 
@@ -894,7 +905,7 @@ mod tests {
     #[test]
     fn multi_data_edits_require_an_existing_key_and_range() {
         let server = StateServer::new().unwrap();
-        let data = DataMulti::<u8>::new(&server, "root.data").unwrap();
+        let data = DataMulti::<u8>::new(&server, "root.data", false).unwrap();
         data.set(1, &[1, 2, 3], false, false).unwrap();
 
         assert!(data.add(2, &[4], false, false).is_err());
@@ -921,10 +932,10 @@ mod tests {
     fn headers_are_stored_with_the_data() {
         type Meta = (u32, String);
         let server = StateServer::new().unwrap();
-        let data = Data::<u16, Meta>::new(&server, "root.data").unwrap();
-        let multi = DataMulti::<u16, Meta>::new(&server, "root.multi").unwrap();
-        let take = DataTake::<u16, Meta>::new(&server, "root.take").unwrap();
-        let plain = Data::<u16>::new(&server, "root.plain").unwrap();
+        let data = Data::<u16, Meta>::new(&server, "root.data", false).unwrap();
+        let multi = DataMulti::<u16, Meta>::new(&server, "root.multi", false).unwrap();
+        let take = DataTake::<u16, Meta>::new(&server, "root.take", false).unwrap();
+        let plain = Data::<u16>::new(&server, "root.plain", false).unwrap();
 
         assert_eq!(data.header().unwrap(), None);
         assert_eq!(data.get_with_header().unwrap(), None);

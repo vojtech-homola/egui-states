@@ -172,6 +172,23 @@ pub trait StatesCreator {
     /// Creates an endpoint that sends files to the server, with the metadata
     /// type `M` (`()` for none).
     fn upload<M: TransferMeta>(&mut self, name: &'static str) -> Upload<M>;
+
+    /// Creates the states that `f` makes with low send priority.
+    ///
+    /// The server sends their transfers in a lane of their own, only while no
+    /// other state has a message waiting and a window of their data at a
+    /// time, so small states do not wait behind them. In exchange, a change
+    /// of another state made after a change of one of them can reach the
+    /// client first. It applies to images, data and data takes, also inside
+    /// substates `f` creates; other states are created as usual. The client
+    /// behaves the same either way. The derive spells it
+    /// `#[state(low_priority)]`.
+    fn low_priority<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R
+    where
+        Self: Sized,
+    {
+        f(self)
+    }
 }
 
 /// A client state the receive task updates.

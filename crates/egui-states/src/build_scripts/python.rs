@@ -105,18 +105,31 @@ fn data_state(
     kind: &str,
     data_type: &DataType,
     header: Option<&ObjectType>,
+    low_priority: bool,
     object_types: &[ObjectType],
 ) -> String {
     let data_type = data_type_to_dtype(data_type);
+    let priority = priority_argument(low_priority, ", ");
     match header {
-        None => format!("        self.{attr}: s.{kind}[{data_type}] = s.{kind}({data_type})\n"),
+        None => format!(
+            "        self.{attr}: s.{kind}[{data_type}] = s.{kind}({data_type}{priority})\n"
+        ),
         Some(header) => {
             let index = object_type_index(object_types, header);
             let py_type = type_info_to_python_type(header, false, PythonTypeContext::States);
             format!(
-                "        self.{attr}: s.{kind}WithHeader[{data_type}, {py_type}] = s.{kind}WithHeader({data_type}, {index})\n"
+                "        self.{attr}: s.{kind}WithHeader[{data_type}, {py_type}] = s.{kind}WithHeader({data_type}, {index}{priority})\n"
             )
         }
+    }
+}
+
+/// The keyword argument of a state with low send priority, after
+/// `separator`; nothing otherwise, so the default stays implicit.
+fn priority_argument(low_priority: bool, separator: &str) -> String {
+    match low_priority {
+        true => format!("{separator}low_priority=True"),
+        false => String::new(),
     }
 }
 
@@ -162,15 +175,15 @@ fn collect_object_types(values: &[StateType]) -> Vec<ObjectType> {
                 push_type(key);
                 push_type(value);
             }
-            StateType::Data(_, _, Some(header))
-            | StateType::DataTake(_, _, Some(header))
-            | StateType::DataMulti(_, _, Some(header))
-            | StateType::DataMultiTake(_, _, Some(header))
+            StateType::Data(_, _, Some(header), _)
+            | StateType::DataTake(_, _, Some(header), _)
+            | StateType::DataMulti(_, _, Some(header), _)
+            | StateType::DataMultiTake(_, _, Some(header), _)
             | StateType::Download(_, Some(header))
             | StateType::Upload(_, Some(header)) => push_type(header),
             StateType::SubState(_, _, _)
-            | StateType::Image(_)
-            | StateType::ImageMulti(_)
+            | StateType::Image(..)
+            | StateType::ImageMulti(..)
             | StateType::Data(..)
             | StateType::DataTake(..)
             | StateType::DataMulti(..)
@@ -432,30 +445,50 @@ fn state_to_line(state: &StateType, object_types: &[ObjectType]) -> String {
                 "        self.{attr}: s.Map[{key_type}, {value_type}] = s.Map[{key_type}, {value_type}]({key}, {value})\n"
             )
         }
-        StateType::Data(_, data_type, header) => {
-            data_state(&attr, "Data", data_type, header.as_ref(), object_types)
-        }
-        StateType::DataMulti(_, data_type, header) => {
-            data_state(&attr, "DataMulti", data_type, header.as_ref(), object_types)
-        }
-        StateType::DataTake(_, data_type, header) => {
-            data_state(&attr, "DataTake", data_type, header.as_ref(), object_types)
-        }
-        StateType::DataMultiTake(_, data_type, header) => data_state(
+        StateType::Data(_, data_type, header, low) => data_state(
+            &attr,
+            "Data",
+            data_type,
+            header.as_ref(),
+            *low,
+            object_types,
+        ),
+        StateType::DataMulti(_, data_type, header, low) => data_state(
+            &attr,
+            "DataMulti",
+            data_type,
+            header.as_ref(),
+            *low,
+            object_types,
+        ),
+        StateType::DataTake(_, data_type, header, low) => data_state(
+            &attr,
+            "DataTake",
+            data_type,
+            header.as_ref(),
+            *low,
+            object_types,
+        ),
+        StateType::DataMultiTake(_, data_type, header, low) => data_state(
             &attr,
             "DataMultiTake",
             data_type,
             header.as_ref(),
+            *low,
             object_types,
         ),
         StateType::Download(_, meta) => {
             transfer_state(&attr, "Download", meta.as_ref(), object_types)
         }
         StateType::Upload(_, meta) => transfer_state(&attr, "Upload", meta.as_ref(), object_types),
-        StateType::Image(_) => format!("        self.{attr}: s.Image = s.Image()\n"),
-        StateType::ImageMulti(_) => {
-            format!("        self.{attr}: s.ImageMulti = s.ImageMulti()\n")
-        }
+        StateType::Image(_, low) => format!(
+            "        self.{attr}: s.Image = s.Image({})\n",
+            priority_argument(*low, "")
+        ),
+        StateType::ImageMulti(_, low) => format!(
+            "        self.{attr}: s.ImageMulti = s.ImageMulti({})\n",
+            priority_argument(*low, "")
+        ),
         StateType::SubState(name, state_class, _) => {
             format!("        self.{attr}: {state_class} = {state_class}(parent + \".{name}\")\n")
         }

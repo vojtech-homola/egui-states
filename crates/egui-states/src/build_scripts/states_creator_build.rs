@@ -131,16 +131,19 @@ pub(crate) enum StateType {
     Value(String, ObjectType, InitValue, bool),
     ValueTake(String, ObjectType),
     Static(String, ObjectType, InitValue),
-    Image(String),
-    ImageMulti(String),
+    /// Name and whether it has low send priority, as for the bulk states
+    /// below.
+    Image(String, bool),
+    ImageMulti(String, bool),
     ValueMap(String, ObjectType, ObjectType),
     ValueVec(String, ObjectType),
     Signal(String, ObjectType, bool),
-    /// Name, element type and header type (`None` for a state without one).
-    Data(String, DataType, Option<ObjectType>),
-    DataTake(String, DataType, Option<ObjectType>),
-    DataMulti(String, DataType, Option<ObjectType>),
-    DataMultiTake(String, DataType, Option<ObjectType>),
+    /// Name, element type, header type (`None` for a state without one) and
+    /// whether it has low send priority.
+    Data(String, DataType, Option<ObjectType>, bool),
+    DataTake(String, DataType, Option<ObjectType>, bool),
+    DataMulti(String, DataType, Option<ObjectType>, bool),
+    DataMultiTake(String, DataType, Option<ObjectType>, bool),
     /// Name and metadata type (`None` for an endpoint without metadata).
     Download(String, Option<ObjectType>),
     Upload(String, Option<ObjectType>),
@@ -153,8 +156,8 @@ impl StateType {
             Self::Value(name, ..)
             | Self::ValueTake(name, ..)
             | Self::Static(name, ..)
-            | Self::Image(name)
-            | Self::ImageMulti(name)
+            | Self::Image(name, _)
+            | Self::ImageMulti(name, _)
             | Self::ValueMap(name, ..)
             | Self::ValueVec(name, ..)
             | Self::Signal(name, ..)
@@ -175,6 +178,8 @@ pub(crate) struct StatesCreatorBuild {
     parent: String,
     sender: MessageSender,
     version_hasher: StableHasher,
+    /// Set inside [`StatesCreator::low_priority`], also for substates.
+    low_priority: bool,
 }
 
 impl StatesCreatorBuild {
@@ -187,6 +192,7 @@ impl StatesCreatorBuild {
             parent: parent.to_string(),
             sender,
             version_hasher: StableHasher::new(),
+            low_priority: false,
         }
     }
 
@@ -232,6 +238,7 @@ impl StatesCreator for StatesCreatorBuild {
         let parent = format!("{}.{}", self.parent, name);
 
         let mut builder = Self::new(&parent);
+        builder.low_priority = self.low_priority;
         let substate = S::new(&mut builder);
         builder
             .version_hasher
@@ -383,7 +390,8 @@ impl StatesCreator for StatesCreatorBuild {
         // Codegen only walks the layout, so the handle needs no real context.
         let value = Image::new(full_name, id, self.sender.clone(), egui::Context::default());
 
-        self.states.push(StateType::Image(name.to_owned()));
+        self.states
+            .push(StateType::Image(name.to_owned(), self.low_priority));
 
         value
     }
@@ -397,7 +405,8 @@ impl StatesCreator for StatesCreatorBuild {
         );
 
         let value = ImageMulti::new(full_name, id, self.sender.clone(), egui::Context::default());
-        self.states.push(StateType::ImageMulti(name.to_owned()));
+        self.states
+            .push(StateType::ImageMulti(name.to_owned(), self.low_priority));
         value
     }
 
@@ -491,8 +500,12 @@ impl StatesCreator for StatesCreatorBuild {
         let value = Data::new(full_name, id, self.sender.clone());
 
         let header = self.header_type::<H>();
-        self.states
-            .push(StateType::Data(name.to_owned(), T::get_type(), header));
+        self.states.push(StateType::Data(
+            name.to_owned(),
+            T::get_type(),
+            header,
+            self.low_priority,
+        ));
         value
     }
 
@@ -512,8 +525,12 @@ impl StatesCreator for StatesCreatorBuild {
         let value = DataMulti::new(full_name, id, self.sender.clone());
 
         let header = self.header_type::<H>();
-        self.states
-            .push(StateType::DataMulti(name.to_owned(), T::get_type(), header));
+        self.states.push(StateType::DataMulti(
+            name.to_owned(),
+            T::get_type(),
+            header,
+            self.low_priority,
+        ));
         value
     }
 
@@ -533,8 +550,12 @@ impl StatesCreator for StatesCreatorBuild {
         let value = DataTake::new(full_name, id, self.sender.clone());
 
         let header = self.header_type::<H>();
-        self.states
-            .push(StateType::DataTake(name.to_owned(), T::get_type(), header));
+        self.states.push(StateType::DataTake(
+            name.to_owned(),
+            T::get_type(),
+            header,
+            self.low_priority,
+        ));
         value
     }
 
@@ -558,6 +579,7 @@ impl StatesCreator for StatesCreatorBuild {
             name.to_owned(),
             T::get_type(),
             header,
+            self.low_priority,
         ));
         value
     }
@@ -574,6 +596,13 @@ impl StatesCreator for StatesCreatorBuild {
         self.states.push(StateType::Download(name.to_owned(), meta));
         // The handle is discarded; no connection ever runs.
         Download::new(id, Engine::new(Side::Client, None))
+    }
+
+    fn low_priority<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        let outer = std::mem::replace(&mut self.low_priority, true);
+        let result = f(self);
+        self.low_priority = outer;
+        result
     }
 
     fn upload<M: TransferMeta>(&mut self, name: &str) -> Upload<M> {

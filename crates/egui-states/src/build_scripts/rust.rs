@@ -213,20 +213,22 @@ fn state_field_type(state: &StateType) -> String {
             type_to_rust_type(key, RustTypeContext::States),
             type_to_rust_type(value, RustTypeContext::States)
         ),
-        StateType::Data(_, typ, header) => format!("s::Data<{}>", data_parameters(typ, header)),
-        StateType::DataTake(_, typ, header) => {
+        StateType::Data(_, typ, header, _) => {
+            format!("s::Data<{}>", data_parameters(typ, header))
+        }
+        StateType::DataTake(_, typ, header, _) => {
             format!("s::DataTake<{}>", data_parameters(typ, header))
         }
-        StateType::DataMulti(_, typ, header) => {
+        StateType::DataMulti(_, typ, header, _) => {
             format!("s::DataMulti<{}>", data_parameters(typ, header))
         }
-        StateType::DataMultiTake(_, typ, header) => {
+        StateType::DataMultiTake(_, typ, header, _) => {
             format!("s::DataMultiTake<{}>", data_parameters(typ, header))
         }
         StateType::Download(_, meta) => format!("s::Download{}", meta_parameter(meta)),
         StateType::Upload(_, meta) => format!("s::Upload{}", meta_parameter(meta)),
-        StateType::Image(_) => "s::Image".to_string(),
-        StateType::ImageMulti(_) => "s::ImageMulti".to_string(),
+        StateType::Image(..) => "s::Image".to_string(),
+        StateType::ImageMulti(..) => "s::ImageMulti".to_string(),
         StateType::SubState(_, state_class, _) => state_class.to_string(),
     }
 }
@@ -316,25 +318,29 @@ fn state_initializer(state: &StateType) -> String {
             type_to_rust_type(value, RustTypeContext::States),
             name
         ),
-        StateType::Data(name, typ, header) => format!(
-            "s::Data::<{}>::new(server, format!(\"{{parent}}.{}\"))?",
+        StateType::Data(name, typ, header, low) => format!(
+            "s::Data::<{}>::new(server, format!(\"{{parent}}.{}\"), {})?",
             data_parameters(typ, header),
-            name
+            name,
+            low
         ),
-        StateType::DataTake(name, typ, header) => format!(
-            "s::DataTake::<{}>::new(server, format!(\"{{parent}}.{}\"))?",
+        StateType::DataTake(name, typ, header, low) => format!(
+            "s::DataTake::<{}>::new(server, format!(\"{{parent}}.{}\"), {})?",
             data_parameters(typ, header),
-            name
+            name,
+            low
         ),
-        StateType::DataMulti(name, typ, header) => format!(
-            "s::DataMulti::<{}>::new(server, format!(\"{{parent}}.{}\"))?",
+        StateType::DataMulti(name, typ, header, low) => format!(
+            "s::DataMulti::<{}>::new(server, format!(\"{{parent}}.{}\"), {})?",
             data_parameters(typ, header),
-            name
+            name,
+            low
         ),
-        StateType::DataMultiTake(name, typ, header) => format!(
-            "s::DataMultiTake::<{}>::new(server, format!(\"{{parent}}.{}\"))?",
+        StateType::DataMultiTake(name, typ, header, low) => format!(
+            "s::DataMultiTake::<{}>::new(server, format!(\"{{parent}}.{}\"), {})?",
             data_parameters(typ, header),
-            name
+            name,
+            low
         ),
         StateType::Download(name, meta) => format!(
             "s::Download::{}new(server, format!(\"{{parent}}.{}\"))?",
@@ -346,15 +352,14 @@ fn state_initializer(state: &StateType) -> String {
             turbofish(meta),
             name
         ),
-        StateType::Image(name) => {
-            format!("s::Image::new(server, format!(\"{{parent}}.{}\"))?", name)
-        }
-        StateType::ImageMulti(name) => {
-            format!(
-                "s::ImageMulti::new(server, format!(\"{{parent}}.{}\"))?",
-                name
-            )
-        }
+        StateType::Image(name, low) => format!(
+            "s::Image::new(server, format!(\"{{parent}}.{}\"), {})?",
+            name, low
+        ),
+        StateType::ImageMulti(name, low) => format!(
+            "s::ImageMulti::new(server, format!(\"{{parent}}.{}\"), {})?",
+            name, low
+        ),
         StateType::SubState(name, state_class, _) => format!(
             "{state_class}::new(server, &format!(\"{{parent}}.{}\"))?",
             name

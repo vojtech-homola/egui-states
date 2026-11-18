@@ -16,6 +16,8 @@ pub(crate) enum ChannelMessage {
     Signal(u64, u32, MessageData),
     Message(MessageData),
     Ack(u64),
+    /// Answers a mark of the server's low-priority lane.
+    LaneAck,
     /// An encoded file transfer message.
     Raw(Vec<u8>),
     /// Panics the send task, to test that its panics are contained.
@@ -69,6 +71,7 @@ fn parse_to_send(message: ChannelMessage, data: &mut FastVec<64>) {
             let header = ClientHeader::Ack(id);
             serialize_to_data(&header, data).unwrap();
         }
+        ChannelMessage::LaneAck => serialize_to_data(&ClientHeader::LaneAck, data).unwrap(),
         ChannelMessage::Message(msg_data) => {
             let header = ClientHeader::Message(msg_data.len() as u32);
             serialize_to_data(&header, data).unwrap();
@@ -242,6 +245,12 @@ pub(crate) async fn handle_message(
     match header {
         ServerHeader::Update(t) => {
             client.update(t);
+            return Ok(());
+        }
+        // Everything before the mark has been handled, so the server may
+        // send that much more of its low-priority lane.
+        ServerHeader::LaneMark => {
+            client.lane_ack();
             return Ok(());
         }
         // Every transfer frame of the connection comes after it.
@@ -459,6 +468,31 @@ mod tests {
             let bytes = postcard::to_stdvec(&header).unwrap();
             assert!(MessagesParser::from_bytes(Bytes::from(bytes)).is_err());
         }
+    }
+
+    /// The client answers a mark of the low-priority lane at once, after
+    /// everything before it.
+    #[test]
+    fn a_lane_mark_is_answered() {
+        let (sender, mut receiver) = MessageSender::new();
+        let context = egui::Context::default();
+        let creator = StatesCreatorClient::new(sender.clone(), context.clone(), "root".to_string());
+        let values = creator.get_values();
+        let client = ClientCore::new(context, sender);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        runtime
+            .block_on(handle_message(
+                (ServerHeader::LaneMark, Bytes::new()),
+                &values,
+                &client,
+            ))
+            .unwrap();
+        assert!(matches!(
+            receiver.try_recv(),
+            Ok(Some(ChannelMessage::LaneAck))
+        ));
     }
 
     #[test]
@@ -862,7 +896,7 @@ mod serializer_tests {
                 | ClientHeader::Signal(_, _, size)
                 | ClientHeader::Message(size)
                 | ClientHeader::Transfer(_, _, size) => size as usize,
-                ClientHeader::Ack(_) | ClientHeader::Handshake(..) => 0,
+                ClientHeader::Ack(_) | ClientHeader::Handshake(..) | ClientHeader::LaneAck => 0,
             };
             rest = &after[payload..];
             headers.push(header);

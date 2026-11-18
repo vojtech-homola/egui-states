@@ -3,8 +3,9 @@
 //! One round trip: the client sets a `Value`, the server's callback copies it
 //! into a `Static`, and the client sees the `Static` change. It is measured
 //! idle, during a download into memory and one into a file, during an
-//! upload, and, for comparison, during large `Data` sets, which travel with
-//! the state messages. The file download goes through the sink worker, which
+//! upload, and during large `Data` sets: of a state with normal priority,
+//! which travel with the state messages, and of one with low priority, which
+//! use a lane of their own. The file download goes through the sink worker, which
 //! writes in batches and returns credit per batch; the others consume every
 //! chunk as it arrives.
 //!
@@ -48,6 +49,7 @@ const START_DOWNLOAD: u32 = 1;
 const STOP_DOWNLOAD: u32 = 2;
 const START_DATA: u32 = 3;
 const STOP_DATA: u32 = 4;
+const START_LOW_DATA: u32 = 5;
 
 struct LatencyStates {
     value: egui_states::Value<u64, Queue>,
@@ -55,6 +57,7 @@ struct LatencyStates {
     command: egui_states::Signal<u32, Queue>,
     /// Registered so the server's `Data` sets reach a client state.
     _data: egui_states::Data<u8>,
+    _low_data: egui_states::Data<u8>,
     files: egui_states::Download,
     inputs: egui_states::Upload,
 }
@@ -68,6 +71,7 @@ impl State for LatencyStates {
             echo: c.add_static("echo", 0),
             command: c.signal("command"),
             _data: c.data("data"),
+            _low_data: c.low_priority(|c| c.data("low_data")),
             files: c.download("files"),
             inputs: c.upload("inputs"),
         }
@@ -85,7 +89,8 @@ fn start_server(port: u16, addr: Ipv4Addr) -> Server {
     let value = server::Value::new(&server, "root.value", 0_u64, true).expect("value");
     let echo = server::Static::new(&server, "root.echo", 0_u64).expect("echo");
     let command = server::Signal::<u32>::new(&server, "root.command", true).expect("command");
-    let data = server::Data::<u8>::new(&server, "root.data").expect("data");
+    let data = server::Data::<u8>::new(&server, "root.data", false).expect("data");
+    let low_data = server::Data::<u8>::new(&server, "root.low_data", true).expect("low data");
     let files = server::Download::<()>::new(&server, "root.files").expect("files");
     let inputs = server::Upload::<()>::new(&server, "root.inputs").expect("inputs");
     server.finalize().expect("finalize");
@@ -97,6 +102,12 @@ fn start_server(port: u16, addr: Ipv4Addr) -> Server {
     });
     let download: Arc<Mutex<Option<TransferHandle>>> = Arc::default();
     let data_running = Arc::new(AtomicBool::new(false));
+    // The producer of the current `Data` case. Stopping joins it, so the next
+    // case does not start while its last set still occupies the connection.
+    let producer: Arc<Mutex<Option<thread::JoinHandle<()>>>> = Arc::default();
+    // Bytes the current case has set, and since when.
+    let set_bytes = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let started = Arc::new(Mutex::new(Instant::now()));
     let command_callback = command.connect(move |command| match command {
         START_DOWNLOAD => {
             *download.lock().unwrap() = send_pattern(&files, ENDLESS).ok();
@@ -106,19 +117,37 @@ fn start_server(port: u16, addr: Ipv4Addr) -> Server {
                 handle.cancel();
             }
         }
-        START_DATA => {
+        START_DATA | START_LOW_DATA => {
             data_running.store(true, Ordering::Release);
-            let (data, running) = (data.clone(), data_running.clone());
-            thread::spawn(move || {
+            let data = match command {
+                START_DATA => data.clone(),
+                _ => low_data.clone(),
+            };
+            let running = data_running.clone();
+            let bytes = set_bytes.clone();
+            bytes.store(0, Ordering::Release);
+            *started.lock().unwrap() = Instant::now();
+            *producer.lock().unwrap() = Some(thread::spawn(move || {
                 let buffer = vec![0x5a; 16 * MIB];
                 while running.load(Ordering::Acquire) {
                     if data.set(&buffer, false, false).is_err() {
                         break;
                     }
+                    bytes.fetch_add(buffer.len() as u64, Ordering::AcqRel);
                 }
-            });
+            }));
         }
-        STOP_DATA => data_running.store(false, Ordering::Release),
+        STOP_DATA => {
+            data_running.store(false, Ordering::Release);
+            if let Some(producer) = producer.lock().unwrap().take() {
+                let _ = producer.join();
+            }
+            // Printed by the server, so also in a two-machine run.
+            let rate = set_bytes.load(Ordering::Acquire) as f64
+                / started.lock().unwrap().elapsed().as_secs_f64()
+                / 1e6;
+            println!("{:<10} data sets {rate:7.1} MB/s", "");
+        }
         _ => {}
     });
     Server {
@@ -247,11 +276,15 @@ fn run_cases(peer: &mut Peer) {
     upload.cancel();
     wait_until("upload end", || upload.is_finished());
 
-    peer.command(START_DATA);
-    thread::sleep(Duration::from_millis(500));
-    report("data set", peer.round_trips(), None);
-    peer.command(STOP_DATA);
-    thread::sleep(Duration::from_millis(500));
+    for (label, command) in [("data set", START_DATA), ("low data", START_LOW_DATA)] {
+        peer.command(command);
+        thread::sleep(Duration::from_millis(500));
+        report(label, peer.round_trips(), None);
+        // Stopping waits for the producer's last set, up to a few seconds
+        // on a slow link.
+        peer.command(STOP_DATA);
+        thread::sleep(Duration::from_secs(3));
+    }
 }
 
 fn main() {

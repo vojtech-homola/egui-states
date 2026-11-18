@@ -74,8 +74,14 @@ pub struct Image {
 
 impl Image {
     /// Registers an empty image under `name`.
-    pub fn new(server: &StateServer, name: impl Into<String>) -> Result<Self> {
-        let (_, inner) = server.add_image(name.into())?;
+    ///
+    /// With `low_priority`, its transfers use the low-priority lane: they are
+    /// sent only while no other state has a message waiting, and only a
+    /// window of their data is on the way at a time. Small states then do
+    /// not wait behind its transfers, but a change of another state made
+    /// after a change of this one can reach the client first.
+    pub fn new(server: &StateServer, name: impl Into<String>, low_priority: bool) -> Result<Self> {
+        let (_, inner) = server.add_image(name.into(), low_priority)?;
         Ok(Self { inner })
     }
 
@@ -225,9 +231,11 @@ pub struct ImageMulti {
 }
 
 impl ImageMulti {
-    /// Registers an empty keyed image collection under `name`.
-    pub fn new(server: &StateServer, name: impl Into<String>) -> Result<Self> {
-        let (_, inner) = server.add_image_multi(name.into())?;
+    /// Registers an empty keyed image collection under `name`. With
+    /// `low_priority`, its transfers use the low-priority lane, as described
+    /// at [`Image::new`].
+    pub fn new(server: &StateServer, name: impl Into<String>, low_priority: bool) -> Result<Self> {
+        let (_, inner) = server.add_image_multi(name.into(), low_priority)?;
         Ok(Self { inner })
     }
 
@@ -386,8 +394,8 @@ mod tests {
     #[test]
     fn public_images_enforce_the_inclusive_shape_limit() {
         let server = StateServer::new().unwrap();
-        let image = Image::new(&server, "root.image").unwrap();
-        let images = ImageMulti::new(&server, "root.images").unwrap();
+        let image = Image::new(&server, "root.image", false).unwrap();
+        let images = ImageMulti::new(&server, "root.images", false).unwrap();
         for shape in [[65_536, 1], [1, 65_536]] {
             let data = vec![7; 65_536];
             image
@@ -510,7 +518,7 @@ mod tests {
     #[test]
     fn image_converts_to_rgba_and_updates() {
         let server = StateServer::new().unwrap();
-        let image = Image::new(&server, "root.image").unwrap();
+        let image = Image::new(&server, "root.image", false).unwrap();
 
         image
             .set(
@@ -542,7 +550,7 @@ mod tests {
     #[test]
     fn image_rejects_invalid_and_overflowing_dimensions() {
         let server = StateServer::new().unwrap();
-        let image = Image::new(&server, "root.image").unwrap();
+        let image = Image::new(&server, "root.image", false).unwrap();
 
         assert!(
             image
@@ -561,7 +569,7 @@ mod tests {
     #[test]
     fn image_update_outside_the_image_is_rejected_without_changes() {
         let server = StateServer::new().unwrap();
-        let image = Image::new(&server, "root.image").unwrap();
+        let image = Image::new(&server, "root.image", false).unwrap();
 
         // Nothing has been set yet, so every rectangle is outside the image.
         assert!(
@@ -635,7 +643,7 @@ mod tests {
     #[test]
     fn image_set_all_materializes_rgba_data() {
         let server = StateServer::new().unwrap();
-        let image = Image::new(&server, "root.image").unwrap();
+        let image = Image::new(&server, "root.image", false).unwrap();
 
         image
             .set_all([2, 3], ImageColor::GrayAlpha(7, 8), false, false)
@@ -653,7 +661,7 @@ mod tests {
     #[test]
     fn image_multi_sparse_operations_and_validation() {
         let server = StateServer::new().unwrap();
-        let images = ImageMulti::new(&server, "root.images").unwrap();
+        let images = ImageMulti::new(&server, "root.images", false).unwrap();
 
         assert!(images.is_empty());
         assert_eq!(images.get(7), None);
