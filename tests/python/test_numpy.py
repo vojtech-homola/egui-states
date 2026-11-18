@@ -54,27 +54,37 @@ def test_rejected_numeric_buffers_preserve_state(local_bundle, operation, invali
 @pytest.mark.parametrize("channels", [1, 2, 3, 4], ids=["gray", "gray-alpha", "rgb", "rgba"])
 @pytest.mark.parametrize("padded", [False, True], ids=["contiguous", "padded-rows"])
 def test_image_formats_and_padded_rows(local_bundle, channels, padded):
-    """Convert supported channel counts and padded rows to RGBA images."""
+    """Store supported channel counts and padded rows as they are given."""
     _, states, _ = local_bundle
     shape = (3, 7 if padded else 4) + (() if channels == 1 else (channels,))
     storage = np.arange(np.prod(shape), dtype=np.uint8).reshape(shape)
     data = storage[:, :4]
-    rgba = np.empty((3, 4, 4), dtype=np.uint8)
+    states.image.image.set(data)
+    assert_array(states.image.image.get(), data)
+    states.image.images[79].set(data)
+    assert_array(states.image.images[79].get(), data)
+    patch = data[:2, :2]
+    states.image.image.update(patch, (1, 1))
+    expected = data.copy()
+    expected[1:3, 1:3] = data[:2, :2]
+    assert_array(states.image.image.get(), expected)
+
+    # An RGBA update widens any format to RGBA, as the client shows it.
+    states.image.image.update(np.full((1, 1, 4), 200, dtype=np.uint8), (0, 0))
+    widened = _to_rgba(expected, channels)
+    widened[0, 0] = 200
+    assert_array(states.image.image.get(), widened)
+
+
+def _to_rgba(data, channels):
+    rgba = np.empty((*data.shape[:2], 4), dtype=np.uint8)
     if channels <= 2:
         gray = data if channels == 1 else data[..., 0]
         rgba[..., :3] = gray[..., None]
     else:
         rgba[..., :3] = data[..., :3]
     rgba[..., 3] = data[..., -1] if channels in (2, 4) else 255  # noqa: PLR6201
-    states.image.image.set(data)
-    assert_array(states.image.image.get(), rgba)
-    states.image.images[79].set(data)
-    assert_array(states.image.images[79].get(), rgba)
-    patch = data[:2, :2]
-    states.image.image.update(patch, (1, 1))
-    expected = rgba.copy()
-    expected[1:3, 1:3] = rgba[:2, :2]
-    assert_array(states.image.image.get(), expected)
+    return rgba
 
 
 @pytest.mark.parametrize("view", ["rows", "columns", "channels"])

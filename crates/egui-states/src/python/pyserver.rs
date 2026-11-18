@@ -909,16 +909,17 @@ impl StateServerCore {
         Ok((size[0], size[1]))
     }
 
+    /// The pixels, `(height, width)` and channel count, `None` until the
+    /// image is set.
+    #[allow(clippy::type_complexity)]
     fn image_get<'py>(
         &self,
         py: Python<'py>,
         value_id: u64,
-    ) -> PyResult<(Bound<'py, PyByteArray>, (usize, usize))> {
-        let (array, size) = self.inner_image(value_id)?.get_image(|(data, size)| {
-            let array = PyByteArray::new(py, data);
-            (array, (size[0], size[1]))
-        });
-        Ok((array, size))
+    ) -> PyResult<Option<(Bound<'py, PyByteArray>, (usize, usize), usize)>> {
+        Ok(self
+            .inner_image(value_id)?
+            .get_image(|image| image.map(|image| pyimage::stored_image(py, image))))
     }
 
     fn image_is_idle(&self, value_id: u64) -> PyResult<bool> {
@@ -953,10 +954,10 @@ impl StateServerCore {
         update: bool,
         wait: bool,
     ) -> PyResult<()> {
-        let rgba = pyimage::image_color(color)?;
+        let (rgba, image_type) = pyimage::image_color(color)?;
         py.detach(|| {
             self.inner_image(value_id)?
-                .set_all_image(shape, rgba, update, wait)
+                .set_all_image(shape, rgba, image_type, update, wait)
                 .map_err(PyValueError::new_err)
         })
     }
@@ -1005,11 +1006,11 @@ impl StateServerCore {
         py: Python<'py>,
         value_id: u64,
         index: u32,
-    ) -> PyResult<(Bound<'py, PyByteArray>, (usize, usize))> {
+    ) -> PyResult<(Bound<'py, PyByteArray>, (usize, usize), usize)> {
         self.inner_image_multi(value_id)?.get_image(index, |image| {
-            let (data, size) =
+            let image =
                 image.ok_or_else(|| PyValueError::new_err("ImageMulti index not found."))?;
-            Ok((PyByteArray::new(py, data), (size[0], size[1])))
+            Ok(pyimage::stored_image(py, image))
         })
     }
 
@@ -1048,10 +1049,10 @@ impl StateServerCore {
         update: bool,
         wait: bool,
     ) -> PyResult<()> {
-        let rgba = pyimage::image_color(color)?;
+        let (rgba, image_type) = pyimage::image_color(color)?;
         py.detach(|| {
             self.inner_image_multi(value_id)?
-                .set_all_image(index, shape, rgba, update, wait)
+                .set_all_image(index, shape, rgba, image_type, update, wait)
                 .map_err(PyValueError::new_err)
         })
     }

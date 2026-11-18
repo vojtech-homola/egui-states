@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use crate::protocol::image::{ImageType, checked_image_bytes};
-use crate::server_core::states::image::common::checked_fill_size;
+use crate::server_core::states::image::common::{StoredImage, checked_fill_size};
 use crate::server_core::states::image::multi::ImageMulti as CoreImageMulti;
 use crate::server_core::states::image::single::{Image as CoreImage, ImageData};
 
@@ -33,11 +33,23 @@ impl ImageColor {
             Self::ColorAlpha(red, green, blue, alpha) => [red, green, blue, alpha],
         }
     }
+
+    /// The format a fill with this color is stored in.
+    #[inline]
+    fn image_type(self) -> ImageType {
+        match self {
+            Self::Gray(_) => ImageType::Gray,
+            Self::GrayAlpha(..) => ImageType::GrayAlpha,
+            Self::Color(..) => ImageType::Color,
+            Self::ColorAlpha(..) => ImageType::ColorAlpha,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// Channel layout of image bytes passed to [`Image::set`] or [`Image::update`].
-/// The client expands every format to its four-channel egui texture storage.
+/// Channel layout of image bytes passed to [`Image::set`] or [`Image::update`],
+/// and of the image the server stores, as [`Image::get`] returns it. The
+/// client expands every format to its four-channel egui texture storage.
 pub enum ImageFormat {
     /// Three bytes per pixel: RGB.
     Color,
@@ -62,10 +74,36 @@ impl ImageFormat {
     fn bytes_per_pixel(self) -> usize {
         self.image_type().bytes_per_pixel()
     }
+
+    fn from_image_type(image_type: ImageType) -> Self {
+        match image_type {
+            ImageType::Color => Self::Color,
+            ImageType::ColorAlpha => Self::ColorAlpha,
+            ImageType::Gray => Self::Gray,
+            ImageType::GrayAlpha => Self::GrayAlpha,
+        }
+    }
+}
+
+/// A copy of a stored image: its pixels, `[height, width]` shape and format.
+fn copy_stored(image: &StoredImage) -> (Vec<u8>, [usize; 2], ImageFormat) {
+    (
+        image.data().to_vec(),
+        image.size(),
+        ImageFormat::from_image_type(image.image_type()),
+    )
 }
 
 #[derive(Clone)]
-/// Server-controlled image retained as RGBA pixels and mirrored to the client.
+/// Server-controlled image mirrored to the client.
+///
+/// The server keeps the image in the format of the last [`set`](Self::set)
+/// or [`set_all`](Self::set_all). An [`update`](Self::update) with channels
+/// the image lacks widens it first, to the smallest format that holds both:
+/// gray gains color channels equal to it, and a missing alpha becomes 255,
+/// which is what the client shows. Until it is first set, the image has no
+/// format and no pixels.
+///
 /// Each dimension is limited to 65,536 pixels, inclusive. Client renderer and
 /// memory limits may be smaller.
 pub struct Image {
@@ -85,14 +123,22 @@ impl Image {
         Ok(Self { inner })
     }
 
-    /// Returns the image shape as `[height, width]`.
+    /// Returns the image shape as `[height, width]`, `[0, 0]` until the
+    /// image is set.
     pub fn shape(&self) -> [usize; 2] {
         self.inner.get_size()
     }
 
-    /// Returns a copy of the RGBA pixels and `[height, width]` shape.
-    pub fn get(&self) -> (Vec<u8>, [usize; 2]) {
-        self.inner.get_image(|(data, size)| (data.clone(), *size))
+    /// Returns the format the image is stored in, `None` until it is set.
+    pub fn format(&self) -> Option<ImageFormat> {
+        self.inner
+            .get_image(|image| image.map(|image| ImageFormat::from_image_type(image.image_type())))
+    }
+
+    /// Returns a copy of the pixels, the `[height, width]` shape and the
+    /// format they are stored in, `None` until the image is set.
+    pub fn get(&self) -> Option<(Vec<u8>, [usize; 2], ImageFormat)> {
+        self.inner.get_image(|image| image.map(copy_stored))
     }
 
     /// Returns whether nothing is being sent and nothing waits, so the next
@@ -109,8 +155,9 @@ impl Image {
     /// Replaces the complete image.
     ///
     /// `size` is `[height, width]`; `data` must contain exactly the number of
-    /// bytes implied by `size` and `format`. `update` requests a client repaint.
-    /// The client shows the new image only once all of it has arrived.
+    /// bytes implied by `size` and `format`, which the server keeps it in.
+    /// `update` requests a client repaint. The client shows the new image only
+    /// once all of it has arrived.
     ///
     /// One transfer of this image is sent at a time: the call blocks until
     /// the previous one has been acknowledged by the client, then queues the
@@ -142,10 +189,12 @@ impl Image {
 
     /// Fill an image with one color.
     ///
-    /// `shape` is `[height, width]`. When a client is connected, this sends only
-    /// a compact header; the server still retains the complete RGBA image for
-    /// subsequent reads, updates, and connection synchronization. It is
-    /// scheduled like [`set`](Self::set), including `wait`.
+    /// `shape` is `[height, width]`. The server keeps the image in the format
+    /// of `color`: [`ImageColor::Gray`] stores one channel, and so on. When a
+    /// client is connected, this sends only a compact header; the server
+    /// still retains the complete image for subsequent reads, updates, and
+    /// connection synchronization. It is scheduled like [`set`](Self::set),
+    /// including `wait`.
     ///
     /// # Errors
     ///
@@ -159,13 +208,15 @@ impl Image {
         wait: bool,
     ) -> Result<()> {
         self.inner
-            .set_all_image(shape, color.rgba(), update, wait)
+            .set_all_image(shape, color.rgba(), color.image_type(), update, wait)
             .map_err(ServerError::new)
     }
 
     /// Replaces a rectangular image region.
     ///
-    /// `origin` and `size` are `[y, x]` and `[height, width]`. Without
+    /// `origin` and `size` are `[y, x]` and `[height, width]`. When `format`
+    /// has channels the stored image lacks, the server first widens the whole
+    /// image to a format that holds both, as described at [`Image`]. Without
     /// `max_lines`, the client applies the whole rectangle at once. With
     /// `max_lines`, the rectangle is sent as parts of at most that many rows
     /// from the top; the client applies each part as it arrives, and `update`
@@ -226,7 +277,9 @@ impl Image {
 }
 
 #[derive(Clone)]
-/// Server-controlled images retained as RGBA pixels and indexed by sparse `u32` keys.
+/// Server-controlled images indexed by sparse `u32` keys. Each image keeps its
+/// own format, as described at [`Image`].
+///
 /// Each image dimension is limited to 65,536 pixels, inclusive. Client renderer
 /// and memory limits may be smaller.
 pub struct ImageMulti {
@@ -247,11 +300,17 @@ impl ImageMulti {
         self.inner.get_size(index)
     }
 
-    /// Returns a copy of the RGBA pixels and shape at `index`.
-    pub fn get(&self, index: u32) -> Option<(Vec<u8>, [usize; 2])> {
+    /// Returns the format the image at `index` is stored in.
+    pub fn format(&self, index: u32) -> Option<ImageFormat> {
         self.inner.get_image(index, |image| {
-            image.map(|(data, size)| (data.clone(), *size))
+            image.map(|image| ImageFormat::from_image_type(image.image_type()))
         })
+    }
+
+    /// Returns a copy of the pixels, the `[height, width]` shape and the
+    /// format of the image at `index`.
+    pub fn get(&self, index: u32) -> Option<(Vec<u8>, [usize; 2], ImageFormat)> {
+        self.inner.get_image(index, |image| image.map(copy_stored))
     }
 
     /// Returns the number of populated image keys.
@@ -307,8 +366,9 @@ impl ImageMulti {
             .map_err(ServerError::new)
     }
 
-    /// Creates or replaces the image at `index` with one uniform color. It is
-    /// scheduled like [`set`](Self::set), including `wait`.
+    /// Creates or replaces the image at `index` with one uniform color, stored
+    /// in the format of `color` as [`Image::set_all`] does. It is scheduled
+    /// like [`set`](Self::set), including `wait`.
     pub fn set_all(
         &self,
         index: u32,
@@ -318,7 +378,7 @@ impl ImageMulti {
         wait: bool,
     ) -> Result<()> {
         self.inner
-            .set_all_image(index, shape, color.rgba(), update, wait)
+            .set_all_image(index, shape, color.rgba(), color.image_type(), update, wait)
             .map_err(ServerError::new)
     }
 
@@ -506,7 +566,7 @@ mod tests {
                 );
             }
             assert_eq!(image.get(), before);
-            assert_eq!(images.get(7), Some(before));
+            assert_eq!(images.get(7), before);
             assert!(!images.contains(9));
         }
     }
@@ -520,9 +580,11 @@ mod tests {
     }
 
     #[test]
-    fn image_converts_to_rgba_and_updates() {
+    fn image_keeps_its_format_and_widens_for_an_update() {
         let server = StateServer::new().unwrap();
         let image = Image::new(&server, "root.image", false).unwrap();
+        assert_eq!(image.get(), None);
+        assert_eq!(image.format(), None);
 
         image
             .set(
@@ -534,7 +596,10 @@ mod tests {
             )
             .unwrap();
         assert_eq!(image.shape(), [1, 2]);
-        assert_eq!(image.get().0, vec![10, 20, 30, 255, 40, 50, 60, 255]);
+        assert_eq!(
+            image.get(),
+            Some((vec![10, 20, 30, 40, 50, 60], [1, 2], ImageFormat::Color))
+        );
 
         image
             .update(
@@ -548,7 +613,15 @@ mod tests {
                 false,
             )
             .unwrap();
-        assert_eq!(image.get().0, vec![7, 7, 7, 8, 40, 50, 60, 255]);
+        assert_eq!(
+            image.get(),
+            Some((
+                vec![7, 7, 7, 8, 40, 50, 60, 255],
+                [1, 2],
+                ImageFormat::ColorAlpha
+            ))
+        );
+        assert_eq!(image.format(), Some(ImageFormat::ColorAlpha));
     }
 
     #[test]
@@ -641,11 +714,11 @@ mod tests {
                 false,
             )
             .unwrap();
-        assert_eq!(&image.get().0[20..24], &[9, 9, 9, 255]);
+        assert_eq!(image.get().unwrap().0, [1, 2, 3, 4, 5, 9]);
     }
 
     #[test]
-    fn image_set_all_materializes_rgba_data() {
+    fn image_set_all_stores_the_format_of_its_color() {
         let server = StateServer::new().unwrap();
         let image = Image::new(&server, "root.image", false).unwrap();
 
@@ -654,7 +727,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(image.shape(), [2, 3]);
-        assert_eq!(image.get().0, [7, 7, 7, 8].repeat(6));
+        assert_eq!(
+            image.get(),
+            Some(([7, 8].repeat(6), [2, 3], ImageFormat::GrayAlpha))
+        );
         assert!(
             image
                 .set_all([0, 3], ImageColor::Gray(0), false, false)
@@ -720,11 +796,14 @@ mod tests {
         assert_eq!(images.indices(), vec![2, 7]);
         assert!(images.contains(2));
         assert_eq!(images.shape(7), Some([1, 2]));
+        // Every key keeps its own format.
         assert_eq!(
-            images.get(7).unwrap().0,
-            vec![10, 20, 30, 255, 40, 50, 60, 255]
+            images.get(7),
+            Some((vec![10, 20, 30, 40, 50, 60], [1, 2], ImageFormat::Color))
         );
-        assert_eq!(images.get(2).unwrap().0, [7, 7, 7, 8].repeat(2));
+        assert_eq!(images.format(2), Some(ImageFormat::GrayAlpha));
+        assert_eq!(images.format(9), None);
+        assert_eq!(images.get(2).unwrap().0, [7, 8].repeat(2));
 
         images
             .update(
@@ -739,7 +818,15 @@ mod tests {
                 false,
             )
             .unwrap();
-        assert_eq!(images.get(7).unwrap().0, vec![10, 20, 30, 255, 9, 9, 9, 10]);
+        // Gray-alpha and color meet at color-alpha.
+        assert_eq!(
+            images.get(7),
+            Some((
+                vec![10, 20, 30, 255, 9, 9, 9, 10],
+                [1, 2],
+                ImageFormat::ColorAlpha
+            ))
+        );
 
         let before = images.get(7).unwrap();
         assert!(
@@ -785,7 +872,11 @@ mod tests {
             .set_all(7, [1, 1], ImageColor::Color(1, 2, 3), false, false)
             .unwrap();
         assert_eq!(images.len(), 2);
-        assert_eq!(images.get(7).unwrap().0, vec![1, 2, 3, 255]);
+        // A fill narrows the image again, to the format of its color.
+        assert_eq!(
+            images.get(7),
+            Some((vec![1, 2, 3], [1, 1], ImageFormat::Color))
+        );
 
         images.remove_index(100, false).unwrap();
         assert_eq!(images.len(), 2);

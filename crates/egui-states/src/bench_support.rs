@@ -75,14 +75,21 @@ pub fn pack_image_set(pixels: &[u8], size: [usize; 2], format: PixelFormat) -> u
         .sum()
 }
 
-/// Converts `pixels` to the server's RGBA storage, as an image set of an
-/// unchanged size does.
-pub fn server_to_rgba(pixels: &[u8], format: PixelFormat, rgba: &mut Vec<u8>) {
+/// Converts `pixels` to RGBA into `rgba`, as the server does when it writes
+/// them into an RGBA image or widens an image to RGBA.
+pub fn server_to_rgba(pixels: &[u8], format: PixelFormat, rgba: &mut [u8]) {
     let image_type = format.image_type();
     let count = pixels.len() / image_type.bytes_per_pixel();
     assert_eq!(rgba.len(), count * 4);
-    let image = ImageData::packed(pixels, [1, count], image_type);
-    crate::server_core::states::image::common::store_rgba(rgba, &image, false);
+    // SAFETY: `MaybeUninit<u8>` has the layout of `u8`, and `widen` writes
+    // only initialized bytes.
+    let target = unsafe { &mut *(rgba as *mut [u8] as *mut [std::mem::MaybeUninit<u8>]) };
+    crate::protocol::image::widen(
+        image_type,
+        crate::protocol::image::ImageType::ColorAlpha,
+        pixels,
+        target,
+    );
 }
 
 /// Builds the client texture image for `pixels`, as a complete image set does.

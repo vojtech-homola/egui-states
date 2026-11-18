@@ -13,8 +13,7 @@ use crate::server_core::net::sender::MessageSender;
 use crate::server_core::server::{Acknowledge, SyncTrait};
 pub(crate) use crate::server_core::states::image::common::ImageData;
 use crate::server_core::states::image::common::{
-    checked_fill_size, checked_max_lines, pack_image_set, pack_image_update, store_rgba,
-    write_rectangle,
+    StoredImage, checked_fill_size, checked_max_lines, pack_image_set, pack_image_update,
 };
 use crate::server_core::states::scheduler::Scheduler;
 use crate::server_core::transfer::Messages;
@@ -22,15 +21,11 @@ use crate::server_core::transfer::Messages;
 /// The single key of an `Image` in its scheduler.
 const KEY: u32 = 0;
 
-struct ImageDataInner {
-    data: Vec<u8>,
-    size: [usize; 2],
-}
-
 pub(crate) struct Image {
     #[cfg_attr(not(feature = "python"), allow(dead_code))]
     pub(crate) name: String,
-    image: RwLock<ImageDataInner>,
+    /// `None` until the first set or fill.
+    image: RwLock<Option<StoredImage>>,
     scheduler: Scheduler,
 }
 
@@ -43,21 +38,19 @@ impl Image {
     ) -> Arc<Self> {
         Arc::new(Self {
             name,
-            image: RwLock::new(ImageDataInner {
-                data: Vec::with_capacity(0),
-                size: [0, 0],
-            }),
+            image: RwLock::new(None),
             scheduler: Scheduler::new(id, sender, connected),
         })
     }
 
+    /// The `[height, width]` of the image, `[0, 0]` until it is set.
     pub(crate) fn get_size(&self) -> [usize; 2] {
-        self.image.read().size
+        self.image.read().as_ref().map_or([0, 0], StoredImage::size)
     }
 
-    pub(crate) fn get_image<T>(&self, getter: impl FnOnce((&Vec<u8>, &[usize; 2])) -> T) -> T {
-        let w = self.image.read();
-        getter((&w.data, &w.size))
+    /// Calls `getter` with the stored image, `None` until it is set.
+    pub(crate) fn get_image<T>(&self, getter: impl FnOnce(Option<&StoredImage>) -> T) -> T {
+        getter(self.image.read().as_ref())
     }
 
     /// Whether nothing is in flight and nothing waits.
@@ -86,11 +79,10 @@ impl Image {
         // this is main lock for set and update operation
         let lock = self.scheduler.lock.lock();
         let mut w = self.image.write();
-
-        // Only allocate new data if the size has changed.
-        let resized = image.size != w.size;
-        w.size = image.size;
-        store_rgba(&mut w.data, &image, resized);
+        match w.as_mut() {
+            Some(stored) => stored.set(&image),
+            None => *w = Some(StoredImage::new(&image)),
+        }
 
         // A connection sync sends the latest complete image. Do not enqueue a
         // separate mutation until that initial sync has completed.
@@ -111,14 +103,17 @@ impl Image {
         Ok(())
     }
 
+    /// Fills the image with `rgba`, stored as `image_type`; the client gets
+    /// only the color.
     pub(crate) fn set_all_image(
         &self,
         size: [usize; 2],
         rgba: [u8; 4],
+        image_type: ImageType,
         update: bool,
         wait: bool,
     ) -> Result<(), String> {
-        let (wire_size, rgba_size) = checked_fill_size(size)?;
+        let (wire_size, _) = checked_fill_size(size)?;
         let id = self.scheduler.id;
 
         // Prepare the compact message before locking when possible, just like
@@ -133,23 +128,13 @@ impl Image {
         // keeps fill ordered with ordinary sets and updates.
         let lock = self.scheduler.lock.lock();
         let mut w = self.image.write();
-
-        w.size = size;
-
-        w.data.clear();
-        w.data.reserve(rgba_size);
-
-        let ptr = w.data.as_mut_ptr().cast::<[u8; 4]>();
-        unsafe {
-            for i in 0..(size[0] * size[1]) {
-                ptr.add(i).write(rgba);
-            }
-
-            w.data.set_len(rgba_size);
+        match w.as_mut() {
+            Some(stored) => stored.fill(size, rgba, image_type),
+            None => *w = Some(StoredImage::filled(size, rgba, image_type)),
         }
 
-        // The first sync for a connection always sends the complete cached
-        // RGBA image. A compact fill is only useful after sync has completed.
+        // The first sync for a connection always sends the complete stored
+        // image. A compact fill is only useful after sync has completed.
         let Some(generation) = self.scheduler.sendable() else {
             return Ok(());
         };
@@ -192,17 +177,12 @@ impl Image {
         // this is main lock for set and update operation
         let lock = self.scheduler.lock.lock();
         let mut w = self.image.write();
-
-        let end_row = origin[0].checked_add(image.size[0]);
-        let end_column = origin[1].checked_add(image.size[1]);
-        if end_row.is_none_or(|end| end > w.size[0]) || end_column.is_none_or(|end| end > w.size[1])
-        {
-            return Err("Image size exceeds bounds".to_string());
-        }
-
-        // update local image data
-        let width = w.size[1];
-        write_rectangle(&image, &mut w.data, width, origin);
+        let stored = w
+            .as_mut()
+            .filter(|stored| stored.contains(origin, image.size))
+            .ok_or_else(|| "Image size exceeds bounds".to_string())?;
+        // Widens the stored image first when the update has more channels.
+        stored.update(&image, origin);
 
         // A connection sync sends the latest complete image. Do not enqueue a
         // separate mutation until that initial sync has completed.
@@ -250,13 +230,13 @@ impl SyncTrait for Image {
             return Ok(());
         }
 
-        if w.size[0] == 0 || w.size[1] == 0 {
+        let Some(stored) = w.as_ref() else {
             self.scheduler.begin_sync(Vec::new(), 0);
             return Ok(());
-        }
+        };
 
-        let image_data = ImageData::packed(&w.data, w.size, ImageType::ColorAlpha);
-        let data = pack_set_data(self.scheduler.id, &image_data, false).map_err(|_| ())?;
+        // Sent in the stored format; the client expands it to RGBA.
+        let data = pack_set_data(self.scheduler.id, &stored.image_data(), false).map_err(|_| ())?;
         self.scheduler.begin_sync(data, 1);
         Ok(())
     }
@@ -366,12 +346,14 @@ mod tests {
     fn oversized_images_never_mutate_or_queue_even_when_disconnected() {
         for connected in [false, true] {
             let (image, _, mut receiver) = new_image(connected);
-            image.set_all_image([1, 1], [9; 4], false, false).unwrap();
+            image
+                .set_all_image([1, 1], [9; 4], ImageType::ColorAlpha, false, false)
+                .unwrap();
             for size in [[65_537, 1], [1, 65_537]] {
                 let data = || image_data(&[], size, ImageType::Gray);
                 for result in [
                     image.set_image(data(), false, false),
-                    image.set_all_image(size, [0; 4], false, false),
+                    image.set_all_image(size, [0; 4], ImageType::ColorAlpha, false, false),
                     image.update_image(&[0, 0], data(), false, false, None, false),
                     pack_set_data(1, &data(), false).map(|_| ()),
                     pack_fill_data(1, [size[0] as u32, size[1] as u32], [0; 4], false).map(|_| ()),
@@ -391,7 +373,10 @@ mod tests {
                 assert!(pack_update_data(1, &origin, &data, false, None).is_err());
             }
             assert_eq!(
-                image.get_image(|(data, size)| (data.clone(), *size)),
+                image.get_image(|image| {
+                    let image = image.unwrap();
+                    (image.data().to_vec(), image.size())
+                }),
                 (vec![9; 4], [1, 1])
             );
             assert!(image.is_idle());
@@ -401,7 +386,7 @@ mod tests {
 
     fn wait_for_image(image: &Image, expected: &[u8]) {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while image.get_image(|(data, _)| data.clone()) != expected {
+        while image.get_image(|image| image.unwrap().data().to_vec()) != expected {
             assert!(
                 std::time::Instant::now() < deadline,
                 "timed out waiting for image mutation"
@@ -502,7 +487,7 @@ mod tests {
 
         assert_no_message(&mut receiver);
         assert_eq!(
-            image.get_image(|(data, _)| data.clone()),
+            image.get_image(|image| image.unwrap().data().to_vec()),
             vec![7, 7, 7, 8, 40, 50, 60, 255]
         );
 
@@ -513,16 +498,17 @@ mod tests {
 
     #[test]
     #[cfg(feature = "client")]
-    fn fill_is_materialized_and_sent_without_pixel_data_after_sync() {
+    fn fill_is_stored_in_its_format_and_sent_without_pixel_data_after_sync() {
         let (image, connected, mut receiver) = new_image(false);
+        assert!(image.get_image(|image| image.is_none()));
 
         image
-            .set_all_image([2, 3], [10, 20, 30, 255], false, false)
+            .set_all_image([2, 3], [10, 20, 30, 255], ImageType::Color, false, false)
             .unwrap();
         assert_eq!(image.get_size(), [2, 3]);
         assert_eq!(
-            image.get_image(|(data, _)| data.clone()),
-            [10, 20, 30, 255].repeat(6)
+            image.get_image(|image| image.unwrap().data().to_vec()),
+            [10, 20, 30].repeat(6)
         );
         assert_no_message(&mut receiver);
 
@@ -536,17 +522,18 @@ mod tests {
                 1,
                 ImageHeader::Set(
                     crate::protocol::image::ImageSetHeader::All([3, 2], false),
-                    ImageType::ColorAlpha,
+                    ImageType::Color,
                 ),
-                24,
+                18,
             ) => {}
             _ => panic!("unexpected connection-sync header"),
         }
-        assert_eq!(&sync_bytes[sync_header_size..], [10, 20, 30, 255].repeat(6));
+        // The sync sends the three stored channels, not RGBA.
+        assert_eq!(&sync_bytes[sync_header_size..], [10, 20, 30].repeat(6));
         image.acknowledge();
 
         image
-            .set_all_image([4, 5], [7, 7, 7, 8], true, false)
+            .set_all_image([4, 5], [7, 7, 7, 8], ImageType::GrayAlpha, true, false)
             .unwrap();
         let (message, _) = receiver.try_recv().unwrap().unwrap();
         let bytes = message.into_bytes();
@@ -557,8 +544,8 @@ mod tests {
             _ => panic!("unexpected fill header"),
         }
         assert_eq!(
-            image.get_image(|(data, _)| data.clone()),
-            [7, 7, 7, 8].repeat(20)
+            image.get_image(|image| image.unwrap().data().to_vec()),
+            [7, 8].repeat(20)
         );
     }
 
@@ -566,7 +553,9 @@ mod tests {
     fn zero_sized_images_are_rejected_without_mutating_the_image() {
         for connected in [false, true] {
             let (image, _, mut receiver) = new_image(connected);
-            image.set_all_image([1, 1], [9; 4], false, false).unwrap();
+            image
+                .set_all_image([1, 1], [9; 4], ImageType::ColorAlpha, false, false)
+                .unwrap();
             for size in [[0, 5], [5, 0], [0, 0]] {
                 let data = || image_data(&[], size, ImageType::Gray);
                 assert!(
@@ -579,7 +568,10 @@ mod tests {
                 assert!(result.unwrap_err().contains("zero"));
             }
             assert_eq!(
-                image.get_image(|(data, size)| (data.clone(), *size)),
+                image.get_image(|image| {
+                    let image = image.unwrap();
+                    (image.data().to_vec(), image.size())
+                }),
                 (vec![9; 4], [1, 1])
             );
             assert_no_message(&mut receiver);
@@ -591,15 +583,18 @@ mod tests {
         let (image, _, mut receiver) = new_image(false);
 
         image
-            .set_all_image([1, 1], [9, 9, 9, 255], false, false)
+            .set_all_image([1, 1], [9, 9, 9, 255], ImageType::ColorAlpha, false, false)
             .unwrap();
         assert!(
             image
-                .set_all_image([0, 4], [0, 0, 0, 255], false, false)
+                .set_all_image([0, 4], [0, 0, 0, 255], ImageType::ColorAlpha, false, false)
                 .is_err()
         );
         assert_eq!(image.get_size(), [1, 1]);
-        assert_eq!(image.get_image(|(data, _)| data.clone()), [9, 9, 9, 255]);
+        assert_eq!(
+            image.get_image(|image| image.unwrap().data().to_vec()),
+            [9, 9, 9, 255]
+        );
         assert_no_message(&mut receiver);
     }
 
@@ -814,8 +809,8 @@ mod tests {
         image.acknowledge();
         assert!(image.is_idle());
         assert_eq!(
-            image.get_image(|(data, _)| data.clone()),
-            [5, 5, 5, 255].repeat(4)
+            image.get_image(|image| image.unwrap().data().to_vec()),
+            [5; 4]
         );
     }
 
@@ -919,8 +914,8 @@ mod tests {
         }
         assert!(image.is_idle());
         assert_eq!(
-            image.get_image(|(data, _)| data.clone()),
-            [2, 2, 2, 255].repeat(4)
+            image.get_image(|image| image.unwrap().data().to_vec()),
+            [2; 4]
         );
     }
 
@@ -1020,6 +1015,168 @@ mod packing_tests {
         let egui::ImageData::Color(pixels) = &changes[0].image;
         let bytes = pixels.pixels.iter().flat_map(|p| p.to_array()).collect();
         (changes[0].pos, pixels.size, bytes)
+    }
+
+    const FORMATS: [ImageType; 4] = [
+        ImageType::Gray,
+        ImageType::GrayAlpha,
+        ImageType::Color,
+        ImageType::ColorAlpha,
+    ];
+
+    fn pattern(len: usize, seed: usize) -> Vec<u8> {
+        (0..len).map(|i| ((i * 37 + seed) % 251) as u8).collect()
+    }
+
+    /// The stored image expanded to RGBA, as the client shows it.
+    fn server_rgba(image: &Image) -> Vec<u8> {
+        image.get_image(|image| {
+            let image = image.unwrap();
+            let mut rgba = vec![
+                std::mem::MaybeUninit::uninit();
+                image.data().len() / image.image_type().bytes_per_pixel() * 4
+            ];
+            crate::protocol::image::to_rgba(image.image_type(), image.data(), &mut rgba);
+            rgba.into_iter()
+                .map(|byte| unsafe { byte.assume_init() })
+                .collect()
+        })
+    }
+
+    /// Hands every queued server message to `client`, acknowledges what the
+    /// client acknowledged, and applies the published texture changes to
+    /// `texture` (RGBA, `width` pixels wide).
+    fn deliver(
+        server: &Image,
+        server_receiver: &mut crate::server_core::net::sender::MessageReceiver,
+        client: &ClientImage,
+        client_receiver: &mut ClientReceiver,
+        context: &egui::Context,
+        texture: &mut Vec<u8>,
+        width: usize,
+    ) {
+        while let Ok(Some((message, _))) = server_receiver.try_recv() {
+            let (mut parser, (header, payload)) =
+                MessagesParser::from_bytes(message.into_bytes()).unwrap();
+            match header {
+                ServerHeader::Image(71, ImageHeader::Set(message, kind), _) => {
+                    client.set_image(message, kind, &payload).unwrap();
+                }
+                ServerHeader::Image(71, ImageHeader::Update(message, kind), _) => {
+                    client.update_image(message, kind, &payload).unwrap();
+                }
+                _ => panic!("unexpected image message"),
+            }
+            assert!(parser.next().unwrap().is_none());
+        }
+        while client_receiver.try_recv().is_ok() {
+            server.acknowledge();
+        }
+        let delta = crate::test_support::texture_updates(context);
+        for change in &delta[&client.get_id().unwrap()] {
+            let egui::ImageData::Color(pixels) = &change.image;
+            let bytes: Vec<u8> = pixels.pixels.iter().flat_map(|p| p.to_array()).collect();
+            let Some([x, y]) = change.pos else {
+                *texture = bytes;
+                continue;
+            };
+            let row = pixels.size[0] * 4;
+            for (i, source) in bytes.chunks_exact(row).enumerate() {
+                let start = ((y + i) * width + x) * 4;
+                texture[start..start + row].copy_from_slice(source);
+            }
+        }
+    }
+
+    /// The client must end with the server's pixels whatever formats the
+    /// server stores, widens to and sends, before and after the sync.
+    #[test]
+    fn every_stored_format_reaches_the_client_as_the_server_holds_it() {
+        let shape = [2, 3];
+        let (origin, rect) = ([1, 1], [1, 2]);
+        for set_type in FORMATS {
+            for early_type in FORMATS {
+                for late_type in FORMATS {
+                    let connected = Arc::new(AtomicBool::new(false));
+                    let (sender, mut server_receiver) = MessageSender::new();
+                    let server = Image::new("image".into(), 71, sender, connected.clone());
+                    let context = egui::Context::default();
+                    let (client_sender, mut client_receiver) = ClientSender::new();
+                    let client =
+                        ClientImage::new("image".into(), 71, client_sender, context.clone());
+
+                    // Before the sync: only stored, widened by the update.
+                    let pixels = pattern(shape[0] * shape[1] * set_type.bytes_per_pixel(), 1);
+                    server
+                        .set_image(ImageData::packed(&pixels, shape, set_type), false, false)
+                        .unwrap();
+                    let pixels = pattern(rect[0] * rect[1] * early_type.bytes_per_pixel(), 2);
+                    server
+                        .update_image(
+                            &origin,
+                            ImageData::packed(&pixels, rect, early_type),
+                            false,
+                            false,
+                            None,
+                            false,
+                        )
+                        .unwrap();
+                    let stored = set_type.union(early_type);
+                    assert_eq!(server.get_image(|i| i.unwrap().image_type()), stored);
+
+                    // The sync sends the stored format.
+                    connected.store(true, std::sync::atomic::Ordering::Release);
+                    server.sync().unwrap();
+                    let mut texture = Vec::new();
+                    deliver(
+                        &server,
+                        &mut server_receiver,
+                        &client,
+                        &mut client_receiver,
+                        &context,
+                        &mut texture,
+                        shape[1],
+                    );
+                    assert_eq!(
+                        texture,
+                        server_rgba(&server),
+                        "{set_type:?} + {early_type:?}"
+                    );
+
+                    // After it, an update goes out in its own format.
+                    let pixels = pattern(rect[0] * rect[1] * late_type.bytes_per_pixel(), 3);
+                    server
+                        .update_image(
+                            &[0, 0],
+                            ImageData::packed(&pixels, rect, late_type),
+                            false,
+                            false,
+                            None,
+                            false,
+                        )
+                        .unwrap();
+                    assert_eq!(
+                        server.get_image(|i| i.unwrap().image_type()),
+                        stored.union(late_type)
+                    );
+                    deliver(
+                        &server,
+                        &mut server_receiver,
+                        &client,
+                        &mut client_receiver,
+                        &context,
+                        &mut texture,
+                        shape[1],
+                    );
+                    assert_eq!(
+                        texture,
+                        server_rgba(&server),
+                        "{set_type:?} + {early_type:?} + {late_type:?}"
+                    );
+                    assert!(server.is_idle());
+                }
+            }
+        }
     }
 
     #[test]
