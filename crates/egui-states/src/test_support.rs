@@ -89,3 +89,42 @@ pub(crate) fn texture_updates(
     delta.clear();
     updates
 }
+
+/// Sends `request` over TLS to the server on `port`, accepting any
+/// certificate, and reads the response until the server closes the
+/// connection, which it must do with a TLS close notification.
+#[cfg(all(
+    feature = "client",
+    feature = "tls",
+    any(feature = "server", feature = "python")
+))]
+pub(crate) fn https(port: u16, request: &[u8]) -> Vec<u8> {
+    use std::io::{Read, Write};
+
+    let mut stream = tls_connect(port);
+    stream.write_all(request).unwrap();
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).unwrap();
+    response
+}
+
+/// Opens a TLS connection to the server on `port`, accepting any
+/// certificate. The handshake completes with the first read or write.
+#[cfg(all(
+    feature = "client",
+    feature = "tls",
+    any(feature = "server", feature = "python")
+))]
+pub(crate) fn tls_connect(
+    port: u16,
+) -> tokio_rustls::rustls::StreamOwned<tokio_rustls::rustls::ClientConnection, std::net::TcpStream>
+{
+    use tokio_rustls::rustls::{ClientConnection, StreamOwned};
+
+    let (config, name) =
+        crate::client::net::tls::client_config(&crate::Tls::AcceptAny, "localhost").unwrap();
+    let tcp = std::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)).unwrap();
+    tcp.set_read_timeout(Some(std::time::Duration::from_secs(10)))
+        .unwrap();
+    StreamOwned::new(ClientConnection::new(config, name).unwrap(), tcp)
+}

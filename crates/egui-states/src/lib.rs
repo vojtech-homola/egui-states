@@ -49,7 +49,8 @@
 //! `client` is enabled by default. Enable `server` for the native Rust server
 //! API, `python` when building the PyO3 extension module, or `build_scripts` for
 //! `generate_python` and `generate_rust`. Native and WebAssembly egui clients
-//! use the same state API.
+//! use the same state API. `tls` encrypts the connection with TLS: the server's
+//! `ServerOptions::tls` and, on native clients, `ClientBuilder::tls`.
 //!
 //! See the [project README](https://github.com/vojtech-homola/egui-states) for
 //! complete setup instructions and runnable examples.
@@ -90,7 +91,26 @@ pub mod python;
 pub mod server;
 #[cfg(any(feature = "server", feature = "python"))]
 mod server_core;
+#[cfg(all(
+    feature = "tls",
+    not(target_arch = "wasm32"),
+    any(feature = "client", feature = "server", feature = "python")
+))]
+mod tls;
+// Only the client uses the platform verifier and only the server generates
+// certificates, but Cargo cannot enable a dependency for two features
+// together, so a build of one side gets the other's dependency too.
+#[cfg(all(
+    feature = "tls",
+    not(target_arch = "wasm32"),
+    not(any(feature = "server", feature = "python"))
+))]
+use rcgen as _;
+#[cfg(all(feature = "tls", not(target_arch = "wasm32"), not(feature = "client")))]
+use rustls_platform_verifier as _;
 
+#[cfg(all(feature = "client", feature = "tls"))]
+pub use client::tls::Tls;
 #[cfg(feature = "client")]
 pub use client::{
     client::ClientBuilder,

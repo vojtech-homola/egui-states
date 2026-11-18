@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::protocol::{deserialize_value, serialize};
 use crate::server_core::http::web::WebSite;
 use crate::server_core::net::heartbeat::Heartbeat;
-use crate::server_core::server::{Server as CoreServer, ServerConfig};
+use crate::server_core::server::{Server as CoreServer, ServerConfig, TlsSettings};
 use crate::server_core::signals::{
     CLIENT_MESSAGE_ID, Claim, ON_CONNECT_ID, ON_DISCONNECT_ID, SignalsManager as CoreSignalsManager,
 };
@@ -121,25 +121,37 @@ impl StateServer {
     }
 
     /// Creates a server with explicit application, worker, heartbeat, web
-    /// page, browser access, and file transfer options.
+    /// page, browser access, file transfer, and TLS options.
+    ///
+    /// With [`ServerOptions::tls`], this generates the certificate or reads
+    /// the supplied one.
     ///
     /// # Errors
     ///
     /// Returns an error if the heartbeat interval is zero, the heartbeat
     /// timeout is not greater than the interval, the web page path cannot be
     /// made absolute (for example because it is empty), or an allowed origin
-    /// is malformed.
+    /// is malformed. With TLS, it also fails if only one of the certificate and
+    /// key is given, either is given without [`ServerOptions::tls`], a file
+    /// cannot be read or holds no valid PEM certificate or unencrypted key, the
+    /// key does not belong to the certificate, or the `tls` feature is off.
     pub fn with_options(options: ServerOptions) -> Result<Self> {
         let heartbeat = Heartbeat::new(options.heartbeat_interval, options.heartbeat_timeout)
             .map_err(ServerError::new)?;
+        let tls = TlsSettings {
+            enabled: options.tls,
+            cert: options.tls_cert.as_deref(),
+            key: options.tls_key.as_deref(),
+        };
         let config = ServerConfig::new(
             options.version,
             heartbeat,
             options.web_path.as_deref(),
             &options.allowed_origins,
             options.transfer_profile,
+            tls,
         )
-        .map_err(ServerError::new)?;
+        .map_err(|error| ServerError::new(error.to_string()))?;
         let server = CoreServer::new(config);
         let signals = server.get_signals_manager();
 
@@ -228,6 +240,18 @@ impl StateServer {
     /// After starting on port 0, this reports the port the system assigned.
     pub fn address(&self) -> Option<SocketAddrV4> {
         self.inner.server.read().address()
+    }
+
+    /// Returns the SHA-256 fingerprint of the server's TLS certificate as 64
+    /// lowercase hexadecimal digits, or `None` when TLS is off.
+    ///
+    /// It identifies the certificate, generated or supplied, and is known as
+    /// soon as the server is created. Pass it to native clients as
+    /// `Tls::Fingerprint` so they connect to this server only, and
+    /// compare it with the SHA-256 fingerprint a browser shows for the
+    /// certificate before accepting it.
+    pub fn tls_fingerprint(&self) -> Option<String> {
+        self.inner.server.read().tls_fingerprint()
     }
 
     /// Starts serving the static web page from [`ServerOptions::web_path`] on
@@ -1640,6 +1664,31 @@ mod tests {
             "deserialized value did not consume all bytes"
         );
     }
+
+    #[test]
+    fn tls_options_are_checked_when_the_server_is_created() {
+        let server = StateServer::new().unwrap();
+        assert_eq!(server.tls_fingerprint(), None);
+
+        let mut options = ServerOptions::new();
+        options.tls_cert = Some("cert.pem".into());
+        let error = StateServer::with_options(options).err().unwrap();
+        #[cfg(feature = "tls")]
+        assert!(error.message().contains("require tls"), "{error}");
+        #[cfg(not(feature = "tls"))]
+        assert!(error.message().contains("not compiled in"), "{error}");
+
+        let mut options = ServerOptions::new();
+        options.tls = true;
+        let created = StateServer::with_options(options);
+        #[cfg(feature = "tls")]
+        assert_eq!(
+            created.unwrap().tls_fingerprint().map(|f| f.len()),
+            Some(64)
+        );
+        #[cfg(not(feature = "tls"))]
+        assert!(created.err().unwrap().message().contains("`tls` feature"));
+    }
 }
 
 #[cfg(all(test, feature = "client"))]
@@ -2950,5 +2999,270 @@ mod connection_tests {
             assert!(server.is_web_running());
         }
         assert_eq!(server.web_path().as_deref(), Some(page.0.as_path()));
+    }
+
+    /// Connections with TLS.
+    #[cfg(feature = "tls")]
+    mod tls {
+        use super::*;
+        use crate::server_core::tls::tests::{certificate_der, pem_pair};
+        use crate::test_support::https;
+        use crate::{Client, Tls};
+
+        fn tls_options() -> ServerOptions {
+            let mut options = ServerOptions::new();
+            options.tls = true;
+            options
+        }
+
+        /// Starts a client in `mode` and returns once it connected or failed.
+        fn connect(port: u16, mode: Option<Tls>) -> (ClientTestState, Client) {
+            let mut builder = ClientBuilder::<ClientTestState>::new(egui::Context::default(), port);
+            if let Some(mode) = mode {
+                builder = builder.tls(mode);
+            }
+            let (state, client) = builder.build();
+            client.connect();
+            wait("connection attempt", || {
+                matches!(
+                    client.get_state(),
+                    ConnectionState::Connected | ConnectionState::Failed
+                )
+            });
+            (state, client)
+        }
+
+        fn expect_connected(server: &StateServer, port: u16, mode: Tls) {
+            let (state, client) = connect(port, Some(mode.clone()));
+            assert_eq!(
+                client.get_state(),
+                ConnectionState::Connected,
+                "{mode:?}: {:?}",
+                client.last_error()
+            );
+            wait("value", || state.value.get() == 731);
+            client.disconnect();
+            wait("disconnect", || !server.is_connected());
+        }
+
+        fn expect_failure(port: u16, mode: Option<Tls>) -> String {
+            let (_state, client) = connect(port, mode);
+            assert_eq!(client.get_state(), ConnectionState::Failed);
+            client.last_error().unwrap()
+        }
+
+        /// Opens a WebSocket over TLS the way a browser page from `origin`
+        /// would, and returns the status the server answered the upgrade with.
+        fn secure_upgrade_from(port: u16, origin: &str) -> u16 {
+            use tokio_rustls::rustls::{ClientConnection, StreamOwned};
+            use tungstenite::client::IntoClientRequest;
+            let (config, name) =
+                crate::client::net::tls::client_config(&Tls::AcceptAny, "127.0.0.1").unwrap();
+            let tcp = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
+            let stream = StreamOwned::new(ClientConnection::new(config, name).unwrap(), tcp);
+            let mut request = format!("wss://127.0.0.1:{port}/ws")
+                .into_client_request()
+                .unwrap();
+            request
+                .headers_mut()
+                .insert("Origin", origin.parse().unwrap());
+            match tungstenite::client(request, stream) {
+                Ok((_socket, response)) => response.status().as_u16(),
+                Err(tungstenite::HandshakeError::Failure(tungstenite::Error::Http(response))) => {
+                    response.status().as_u16()
+                }
+                Err(error) => panic!("unexpected handshake failure: {error:?}"),
+            }
+        }
+
+        #[test]
+        fn native_clients_connect_in_each_mode() {
+            if crate::test_support::isolated() {
+                return;
+            }
+            let (server, _value, port) = server(tls_options(), None);
+            let fingerprint = server.tls_fingerprint().unwrap();
+
+            expect_connected(&server, port, Tls::AcceptAny);
+            expect_connected(&server, port, fingerprint.to_uppercase().parse().unwrap());
+
+            let first = if fingerprint.starts_with('0') {
+                "1"
+            } else {
+                "0"
+            };
+            let wrong = format!("{first}{}", &fingerprint[1..]);
+            let error = expect_failure(port, Some(Tls::Fingerprint(wrong)));
+            assert!(
+                error.contains("does not match the fingerprint") && error.contains(&fingerprint),
+                "{error}"
+            );
+            // The operating system does not trust a generated certificate.
+            let error = expect_failure(port, Some(Tls::System));
+            assert!(
+                error.starts_with("Connecting to server at wss://"),
+                "{error}"
+            );
+            let error = expect_failure(port, Some(Tls::Fingerprint("4f2a".into())));
+            assert!(error.contains("64 hexadecimal digits"), "{error}");
+            assert!(!server.is_connected());
+
+            // The certificate stays the same across a restart.
+            server.stop();
+            server.start(port, Some(Ipv4Addr::LOCALHOST), None).unwrap();
+            assert_eq!(server.tls_fingerprint().as_ref(), Some(&fingerprint));
+            expect_connected(&server, port, Tls::Fingerprint(fingerprint));
+            server.stop();
+        }
+
+        #[test]
+        fn plain_and_tls_peers_refuse_each_other() {
+            if crate::test_support::isolated() {
+                return;
+            }
+            let (secure, _value, port) = server(tls_options(), None);
+            let error = expect_failure(port, None);
+            assert!(error.contains("the server requires TLS"), "{error}");
+            assert_eq!(upgrade_from(port, &format!("http://127.0.0.1:{port}")), 426);
+            assert!(!secure.is_connected());
+            secure.stop();
+
+            let (plain, _value, port) = server(ServerOptions::new(), None);
+            assert_eq!(plain.tls_fingerprint(), None);
+            let error = expect_failure(port, Some(Tls::AcceptAny));
+            assert!(error.contains("TLS"), "{error}");
+            plain.stop();
+
+            // A server that serves a page answers with a plain HTTP error.
+            let page = WebDir::new("page");
+            let (plain, _value, port) = server(web_options(&page), None);
+            plain.start_web().unwrap();
+            let error = expect_failure(port, Some(Tls::AcceptAny));
+            assert!(error.contains("the server does not use TLS"), "{error}");
+            plain.stop();
+        }
+
+        #[test]
+        fn pages_are_served_over_tls_and_plain_requests_redirected() {
+            if crate::test_support::isolated() {
+                return;
+            }
+            let page = WebDir::new("secure page");
+            let mut options = web_options(&page);
+            options.tls = true;
+            let (server, _value, port) = server(options, None);
+            server.start_web().unwrap();
+
+            let response = https(port, b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n");
+            let response = String::from_utf8(response).unwrap();
+            assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
+            assert!(response.ends_with("secure page"), "{response}");
+
+            let response = get(port, "/app.wasm?v=2");
+            assert!(response.starts_with("HTTP/1.1 307"), "{response}");
+            assert!(
+                response.contains("\r\nLocation: https://localhost:80/app.wasm?v=2\r\n"),
+                "{response}"
+            );
+            let request = format!("GET / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n");
+            let response = http(port, &[request.as_bytes()]);
+            assert!(
+                response.contains(&format!("\r\nLocation: https://127.0.0.1:{port}/\r\n")),
+                "{response}"
+            );
+            let response = http(port, &[b"POST / HTTP/1.1\r\nHost: localhost\r\n\r\n"]);
+            assert!(response.starts_with("HTTP/1.1 426"), "{response}");
+
+            // The page the server serves over TLS may connect; its plain
+            // HTTP counterpart is another origin.
+            let origin = format!("https://127.0.0.1:{port}");
+            assert_eq!(secure_upgrade_from(port, &origin), 101);
+            let origin = format!("http://127.0.0.1:{port}");
+            assert_eq!(secure_upgrade_from(port, &origin), 403);
+            server.stop();
+        }
+
+        /// Clients drop connections they did not use, often without the
+        /// TLS closing message. That is no error, with or without a page.
+        #[test]
+        fn unused_tls_connections_are_not_reported() {
+            if crate::test_support::isolated() {
+                return;
+            }
+            let page = WebDir::new("page");
+            let mut options = web_options(&page);
+            options.tls = true;
+            let port = free_port();
+            let server = StateServer::with_options(options).unwrap();
+            server.finalize().unwrap();
+            let logging = crate::server::LoggingSignal::new(&server);
+            let (errors, error) = mpsc::channel();
+            let _errors = logging.add_logger(crate::server::LogLevel::Error, move |message| {
+                let _ = errors.send(message);
+            });
+            server.start_web().unwrap();
+            server.start(port, Some(Ipv4Addr::LOCALHOST), None).unwrap();
+
+            // The server sends session tickets right after the handshake. A
+            // client that leaves them unread makes the system reset the
+            // connection when it closes; one that read them closes it.
+            for read_tickets in [false, true] {
+                let mut unused = crate::test_support::tls_connect(port);
+                // Completes the handshake without sending a request.
+                while unused.conn.is_handshaking() {
+                    unused.conn.complete_io(&mut unused.sock).unwrap();
+                }
+                thread::sleep(Duration::from_millis(100));
+                if read_tickets {
+                    unused
+                        .sock
+                        .set_read_timeout(Some(Duration::from_millis(100)))
+                        .unwrap();
+                    while unused
+                        .conn
+                        .complete_io(&mut unused.sock)
+                        .is_ok_and(|(read, _)| read > 0)
+                    {}
+                }
+                // Dropped without the TLS closing message.
+                drop(unused);
+
+                // The server noticed the closed connection and still serves.
+                let response = https(port, b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n");
+                assert!(String::from_utf8_lossy(&response).ends_with("page"));
+                let reported = error.recv_timeout(Duration::from_millis(500));
+                assert!(
+                    reported.is_err(),
+                    "read tickets {read_tickets}: {reported:?}"
+                );
+            }
+            server.stop();
+        }
+
+        #[test]
+        fn supplied_certificates_are_presented() {
+            if crate::test_support::isolated() {
+                return;
+            }
+            let (cert, key) = pem_pair(&["pc-a.local"]);
+            let files = WebDir::new("");
+            std::fs::write(files.0.join("cert.pem"), &cert).unwrap();
+            std::fs::write(files.0.join("key.pem"), &key).unwrap();
+            let mut options = tls_options();
+            options.tls_cert = Some(files.0.join("cert.pem"));
+            options.tls_key = Some(files.0.join("key.pem"));
+            let (server, _value, port) = server(options, None);
+
+            let expected = crate::tls::hex(&crate::tls::fingerprint(&certificate_der(&cert)));
+            assert_eq!(server.tls_fingerprint().as_ref(), Some(&expected));
+            expect_connected(&server, port, Tls::Fingerprint(expected));
+            server.stop();
+
+            let mut options = tls_options();
+            options.tls_cert = Some(files.0.join("cert.pem"));
+            options.tls_key = Some(files.0.join("missing.pem"));
+            let error = StateServer::with_options(options).err().unwrap();
+            assert!(error.message().contains("missing.pem"), "{error}");
+        }
     }
 }

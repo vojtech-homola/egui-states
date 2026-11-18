@@ -79,6 +79,35 @@ pub struct ServerOptions {
     /// a transfer can go. Default [`TransferProfile::Balanced`]. The client
     /// uses the server's profile.
     pub transfer_profile: TransferProfile,
+    /// Whether clients connect with TLS, which encrypts the connection.
+    /// Default `false`.
+    ///
+    /// The server then speaks only TLS on its port: `wss://` WebSockets, and
+    /// `https://` for the web page and browser downloads. A plain HTTP request
+    /// from a browser is redirected to `https://`; other plain connections,
+    /// such as a native client without TLS, are refused.
+    ///
+    /// Without [`Self::tls_cert`], the server generates a self-signed
+    /// certificate when it is created. The certificate exists only in memory,
+    /// so every new server presents a new one; stopping and starting the same
+    /// server keeps it. Native clients pin it by its fingerprint
+    /// ([`StateServer::tls_fingerprint`](super::StateServer::tls_fingerprint))
+    /// or accept any certificate; browsers show a warning before the page
+    /// loads.
+    ///
+    /// Requires the `tls` feature; without it, a server with any TLS option
+    /// set cannot be created.
+    pub tls: bool,
+    /// A PEM file with the certificate to present instead of a generated one,
+    /// followed by any intermediate certificates. Requires [`Self::tls`] and
+    /// [`Self::tls_key`].
+    ///
+    /// Clients that trust the certificate, or the authority that issued it,
+    /// connect without a warning, provided they reach the server under a name
+    /// or address the certificate lists.
+    pub tls_cert: Option<PathBuf>,
+    /// The PEM file with the unencrypted private key of [`Self::tls_cert`].
+    pub tls_key: Option<PathBuf>,
 }
 
 impl ServerOptions {
@@ -88,7 +117,8 @@ impl ServerOptions {
     /// version, pings the client every 5 s, disconnecting it after 20 s
     /// without any response, and has no web page. Browser pages may connect
     /// only when the server serves them on an IP address or local name. File
-    /// transfers use [`TransferProfile::Balanced`].
+    /// transfers use [`TransferProfile::Balanced`]. Connections are not
+    /// encrypted.
     pub fn new() -> Self {
         Self::default()
     }
@@ -106,6 +136,9 @@ impl Default for ServerOptions {
             web_path: None,
             allowed_origins: Vec::new(),
             transfer_profile: TransferProfile::default(),
+            tls: false,
+            tls_cert: None,
+            tls_key: None,
         }
     }
 }

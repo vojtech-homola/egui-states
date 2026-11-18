@@ -9,7 +9,10 @@ name = "showcase-server"
 path = "main.rs"
 
 [dependencies]
-egui_states = { path = "../../../crates/egui-states", default-features = false, features = ["server"] }
+egui_states = { path = "../../../crates/egui-states", default-features = false, features = [
+    "server",
+    "tls",
+] }
 tokio = { workspace = true, features = ["rt", "signal"] }
 
 [build-dependencies]

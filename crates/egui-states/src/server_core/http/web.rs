@@ -1,10 +1,10 @@
 //! Optional static web page served on the same port as the WebSocket.
 //!
-//! While the page is served, every new connection is peeked (not read) until
-//! its HTTP request head is complete. WebSocket upgrades get the untouched
-//! `TcpStream` back, so the WebSocket path keeps its exact stream type and no
-//! wrapper or extra copy is involved. Other requests are answered from an
-//! in-memory snapshot of the page directory.
+//! While the page is served, every new connection's HTTP request head is read
+//! ahead into its [`Stream`] until it is complete. The bytes stay queued in the
+//! stream, so a WebSocket upgrade is handed on with its request still unread.
+//! Other requests are answered from an in-memory snapshot of the page
+//! directory.
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -16,7 +16,8 @@ use std::time::Duration;
 use bytes::Bytes;
 use parking_lot::RwLock;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
+
+use crate::server_core::net::stream::Stream;
 
 /// Shared slot holding the currently served page, read once per connection.
 pub(crate) type WebSlot = Arc<RwLock<Option<Arc<WebSite>>>>;
@@ -28,7 +29,6 @@ const MAX_DIRECTORY_DEPTH: usize = 32;
 // A built WASM client takes a few MB, so this only stops a mistaken path such
 // as a repository root from being read into memory.
 const MAX_PAGE_SIZE: u64 = 128 * 1024 * 1024;
-const PARTIAL_HEAD_RETRY: Duration = Duration::from_millis(5);
 pub(super) const LINGER_TIMEOUT: Duration = Duration::from_secs(1);
 // A slow link still makes progress; a peer that accepts nothing for this long
 // has stalled and would otherwise hold its socket and page snapshot forever.
@@ -256,11 +256,14 @@ struct RequestHead {
     method: String,
     path: String,
     if_none_match: Option<String>,
+    /// Where a plain request to a TLS server is redirected to.
+    #[cfg(feature = "tls")]
+    host: Option<String>,
 }
 
-enum Peeked {
-    /// The peer closed the connection before sending a request.
-    Closed,
+enum Parsed {
+    /// More of the head is needed.
+    Partial,
     WebSocket,
     Http(RequestHead),
     Invalid,
@@ -270,10 +273,10 @@ enum Peeked {
 
 /// Outcome of inspecting a new connection while the web page is served.
 pub(crate) enum Dispatch {
-    /// A WebSocket upgrade request; the stream is unread.
-    WebSocket(TcpStream),
+    /// A WebSocket upgrade request; its head is still unread.
+    WebSocket(Stream),
     /// A plain HTTP request; answer it with [`serve`].
-    Http(TcpStream, HttpRequest),
+    Http(Stream, HttpRequest),
     /// The peer closed the connection without sending anything.
     Closed,
 }
@@ -292,7 +295,7 @@ impl HttpRequest {
         self.0.as_ref().ok().map(|head| head.method.as_str())
     }
 
-    /// The bytes of the request head, still queued on the socket.
+    /// The bytes of the request head, still queued in the stream.
     pub(super) fn head_len(&self) -> Option<usize> {
         self.0.as_ref().ok().map(|head| head.length)
     }
@@ -303,84 +306,90 @@ impl HttpRequest {
     }
 }
 
-/// Peeks at the request head to tell WebSocket upgrades from HTTP requests.
+/// Reads the request head ahead to tell WebSocket upgrades from HTTP requests.
 ///
 /// The caller bounds this with a timeout; a peer that never completes its
 /// request head would otherwise keep the connection open.
-pub(crate) async fn dispatch(stream: TcpStream) -> io::Result<Dispatch> {
-    let mut buffer = vec![0; MAX_REQUEST_HEAD];
-    Ok(match peek_request(&stream, &mut buffer).await? {
-        Peeked::Closed => Dispatch::Closed,
-        Peeked::WebSocket => Dispatch::WebSocket(stream),
-        Peeked::Http(head) => Dispatch::Http(stream, HttpRequest(Ok(head))),
-        Peeked::Invalid => Dispatch::Http(stream, HttpRequest(Err(400))),
-        Peeked::TooLarge => Dispatch::Http(stream, HttpRequest(Err(431))),
-    })
+pub(crate) async fn dispatch(mut stream: Stream) -> io::Result<Dispatch> {
+    loop {
+        let parsed = parse_head(stream.ahead());
+        return Ok(match parsed {
+            Parsed::Partial if stream.ahead().len() >= MAX_REQUEST_HEAD => {
+                Dispatch::Http(stream, HttpRequest(Err(431)))
+            }
+            Parsed::Partial => match stream.read_ahead(MAX_REQUEST_HEAD).await {
+                Ok(0) => Dispatch::Closed,
+                Ok(_) => continue,
+                Err(error) if gone(&error) => Dispatch::Closed,
+                Err(error) => return Err(error),
+            },
+            Parsed::WebSocket => Dispatch::WebSocket(stream),
+            Parsed::Http(head) => Dispatch::Http(stream, HttpRequest(Ok(head))),
+            Parsed::Invalid => Dispatch::Http(stream, HttpRequest(Err(400))),
+            Parsed::TooLarge => Dispatch::Http(stream, HttpRequest(Err(431))),
+        });
+    }
 }
 
-async fn peek_request(stream: &TcpStream, buffer: &mut [u8]) -> io::Result<Peeked> {
-    let mut previous = 0;
-    loop {
-        let size = stream.peek(buffer).await?;
-        if size == 0 {
-            return Ok(Peeked::Closed);
-        }
+/// Whether `error` only says that the peer went away.
+///
+/// A peer that goes away before its request head is complete sent no request,
+/// as when a client drops a connection it opened in advance and never used.
+/// Over TLS that is common and often abrupt: the client has not read the
+/// session tickets the server sent after the handshake, so the system resets
+/// the connection, or the client closes it without the TLS closing message.
+fn gone(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::UnexpectedEof
+            | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::ConnectionAborted
+            | io::ErrorKind::BrokenPipe
+    )
+}
 
-        let mut headers = [httparse::EMPTY_HEADER; MAX_HEADERS];
-        let mut request = httparse::Request::new(&mut headers);
-        match request.parse(&buffer[..size]) {
-            Ok(httparse::Status::Complete(length)) => {
-                let header = |name: &str| {
-                    request
-                        .headers
-                        .iter()
-                        .find(|h| h.name.eq_ignore_ascii_case(name))
-                        .and_then(|h| std::str::from_utf8(h.value).ok())
-                };
-                let upgrade = header("Upgrade").is_some_and(|value| {
-                    value
-                        .split(',')
-                        .any(|p| p.trim().eq_ignore_ascii_case("websocket"))
-                });
-                if upgrade {
-                    return Ok(Peeked::WebSocket);
-                }
-                return Ok(Peeked::Http(RequestHead {
-                    length,
-                    method: request.method.unwrap_or_default().to_owned(),
-                    path: request.path.unwrap_or_default().to_owned(),
-                    if_none_match: header("If-None-Match").map(str::to_owned),
-                }));
+fn parse_head(buffer: &[u8]) -> Parsed {
+    let mut headers = [httparse::EMPTY_HEADER; MAX_HEADERS];
+    let mut request = httparse::Request::new(&mut headers);
+    match request.parse(buffer) {
+        Ok(httparse::Status::Complete(length)) => {
+            let header = |name: &str| {
+                request
+                    .headers
+                    .iter()
+                    .find(|h| h.name.eq_ignore_ascii_case(name))
+                    .and_then(|h| std::str::from_utf8(h.value).ok())
+            };
+            let upgrade = header("Upgrade").is_some_and(|value| {
+                value
+                    .split(',')
+                    .any(|p| p.trim().eq_ignore_ascii_case("websocket"))
+            });
+            if upgrade {
+                return Parsed::WebSocket;
             }
-            Ok(httparse::Status::Partial) if size == buffer.len() => {
-                return Ok(Peeked::TooLarge);
-            }
-            Ok(httparse::Status::Partial) => {
-                // Peeking leaves the bytes queued, so the socket stays readable
-                // and another peek would return at once. Back off until more
-                // of the head has arrived.
-                if size == previous {
-                    tokio::time::sleep(PARTIAL_HEAD_RETRY).await;
-                }
-                previous = size;
-            }
-            Err(httparse::Error::TooManyHeaders) => return Ok(Peeked::TooLarge),
-            Err(_) => return Ok(Peeked::Invalid),
+            Parsed::Http(RequestHead {
+                length,
+                method: request.method.unwrap_or_default().to_owned(),
+                path: request.path.unwrap_or_default().to_owned(),
+                if_none_match: header("If-None-Match").map(str::to_owned),
+                #[cfg(feature = "tls")]
+                host: header("Host").map(str::to_owned),
+            })
         }
+        Ok(httparse::Status::Partial) => Parsed::Partial,
+        Err(httparse::Error::TooManyHeaders) => Parsed::TooLarge,
+        Err(_) => Parsed::Invalid,
     }
 }
 
 /// Answers one HTTP request from `site` and closes the connection.
-pub(crate) async fn serve(
-    stream: TcpStream,
-    request: HttpRequest,
-    site: &WebSite,
-) -> io::Result<()> {
+pub(crate) async fn serve(stream: Stream, request: HttpRequest, site: &WebSite) -> io::Result<()> {
     serve_with_idle_timeout(stream, request, site, WRITE_IDLE_TIMEOUT).await
 }
 
 async fn serve_with_idle_timeout(
-    mut stream: TcpStream,
+    mut stream: Stream,
     request: HttpRequest,
     site: &WebSite,
     idle_timeout: Duration,
@@ -388,7 +397,7 @@ async fn serve_with_idle_timeout(
     let mut buffer = vec![0; MAX_REQUEST_HEAD];
     let response = match request.0 {
         Ok(head) => {
-            // Consume the peeked head; it is already queued, so this does not wait.
+            // Consume the head read ahead; it is already queued, so this does not wait.
             stream.read_exact(&mut buffer[..head.length]).await?;
             respond(&head, site)
         }
@@ -417,15 +426,29 @@ async fn serve_with_idle_timeout(
     }
     header.push_str("\r\n");
 
-    write_all_with_idle_timeout(&mut stream, header.as_bytes(), idle_timeout).await?;
-    if let Some(body) = response.body {
+    send_and_close(stream, &header, response.body, idle_timeout).await
+}
+
+/// Sends a response and closes the connection once the peer has read it.
+async fn send_and_close(
+    mut stream: Stream,
+    head: &str,
+    body: Option<&[u8]>,
+    idle_timeout: Duration,
+) -> io::Result<()> {
+    write_all_with_idle_timeout(&mut stream, head.as_bytes(), idle_timeout).await?;
+    if let Some(body) = body {
         write_all_with_idle_timeout(&mut stream, body, idle_timeout).await?;
     }
-    stream.shutdown().await?;
+    // Over TLS, this also sends what is still buffered, so it can stall too.
+    tokio::time::timeout(idle_timeout, stream.shutdown())
+        .await
+        .map_err(|_| io::Error::from(io::ErrorKind::TimedOut))??;
 
     // Closing a socket with unread input makes the kernel send a reset, which
     // can discard the response before the browser reads it. Drain whatever the
     // peer still sends until it closes its side.
+    let mut buffer = vec![0; 16 * 1024];
     let _ = tokio::time::timeout(LINGER_TIMEOUT, async {
         while stream.read(&mut buffer).await.is_ok_and(|size| size > 0) {}
     })
@@ -433,9 +456,91 @@ async fn serve_with_idle_timeout(
     Ok(())
 }
 
+/// What a plain connection to a server that speaks TLS is answered with.
+#[cfg(feature = "tls")]
+pub(crate) enum Refused {
+    /// A browser page request, redirected to `https://`.
+    Redirected,
+    /// A WebSocket or another request that cannot be redirected.
+    RequiresTls,
+    /// Nothing; the peer closed the connection.
+    Closed,
+}
+
+/// Answers a plain connection to a server that speaks TLS.
+///
+/// A browser that opens the `http://` address of a page is sent to its
+/// `https://` address. The redirect is temporary, so browsers do not keep
+/// using it once the server runs without TLS. Everything else, such as a
+/// native client without TLS, is told that the server requires TLS.
+///
+/// The caller bounds this with a timeout.
+#[cfg(feature = "tls")]
+pub(crate) async fn refuse_plain(stream: Stream) -> io::Result<Refused> {
+    const BODY: &[u8] = b"This server requires TLS (https:// or wss://).\n";
+    let (stream, location, status) = match dispatch(stream).await? {
+        Dispatch::Closed => return Ok(Refused::Closed),
+        Dispatch::WebSocket(stream) => (stream, None, 426),
+        Dispatch::Http(stream, HttpRequest(Err(status))) => (stream, None, status),
+        Dispatch::Http(stream, HttpRequest(Ok(head))) => {
+            let location = redirect_location(&head);
+            let status = if location.is_some() { 307 } else { 426 };
+            (stream, location.map(|l| (l, head.method == "HEAD")), status)
+        }
+    };
+    let mut header = format!(
+        "HTTP/1.1 {}\r\nConnection: close\r\nX-Content-Type-Options: nosniff\r\nCache-Control: no-store\r\nContent-Type: text/plain; charset=utf-8\r\n",
+        status_line(status)
+    );
+    let refused = match &location {
+        Some((location, _)) => {
+            let _ = write!(header, "Location: {location}\r\n");
+            Refused::Redirected
+        }
+        None => {
+            if status == 426 {
+                header.push_str("Upgrade: TLS/1.3, HTTP/1.1\r\n");
+            }
+            Refused::RequiresTls
+        }
+    };
+    let body = if status == 426 {
+        BODY
+    } else {
+        status_line(status).as_bytes()
+    };
+    let _ = write!(header, "Content-Length: {}\r\n\r\n", body.len());
+    let send_body = !matches!(location, Some((_, true)));
+    send_and_close(
+        stream,
+        &header,
+        send_body.then_some(body),
+        WRITE_IDLE_TIMEOUT,
+    )
+    .await?;
+    Ok(refused)
+}
+
+/// The `https://` address of a plain `GET` or `HEAD` request, when its `Host`
+/// is a valid address.
+///
+/// TLS is served on the port the request came to. A `Host` without a port
+/// means the browser used port 80, the default of `http://`, which the
+/// address must then name, or the browser would go to port 443.
+#[cfg(feature = "tls")]
+fn redirect_location(head: &RequestHead) -> Option<String> {
+    if !matches!(head.method.as_str(), "GET" | "HEAD") || !head.path.starts_with('/') {
+        return None;
+    }
+    let host = head.host.as_deref()?;
+    let (_, port) = crate::server_core::http::origin::split_authority(host)?;
+    let port = if port.is_none() { ":80" } else { "" };
+    Some(format!("https://{host}{port}{}", head.path))
+}
+
 /// Writes all of `data`, failing once the peer accepts nothing for `idle_timeout`.
 async fn write_all_with_idle_timeout(
-    stream: &mut TcpStream,
+    stream: &mut Stream,
     mut data: &[u8],
     idle_timeout: Duration,
 ) -> io::Result<()> {
@@ -542,9 +647,11 @@ fn status_line(status: u16) -> &'static str {
     match status {
         200 => "200 OK",
         304 => "304 Not Modified",
+        307 => "307 Temporary Redirect",
         400 => "400 Bad Request",
         404 => "404 Not Found",
         405 => "405 Method Not Allowed",
+        426 => "426 Upgrade Required",
         431 => "431 Request Header Fields Too Large",
         _ => "500 Internal Server Error",
     }
@@ -602,6 +709,8 @@ mod tests {
             method: method.into(),
             path: path.into(),
             if_none_match: None,
+            #[cfg(feature = "tls")]
+            host: None,
         }
     }
 
@@ -739,7 +848,7 @@ mod tests {
         let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
             .await
             .unwrap();
-        let mut peer = TcpStream::connect(listener.local_addr().unwrap())
+        let mut peer = tokio::net::TcpStream::connect(listener.local_addr().unwrap())
             .await
             .unwrap();
         let mut request = String::from("GET / HTTP/1.1\r\n");
@@ -751,7 +860,7 @@ mod tests {
         peer.write_all(request.as_bytes()).await.unwrap();
         let (stream, _) = listener.accept().await.unwrap();
 
-        let Dispatch::Http(_, request) = dispatch(stream).await.unwrap() else {
+        let Dispatch::Http(_, request) = dispatch(Stream::plain(stream)).await.unwrap() else {
             panic!("expected an HTTP request");
         };
         assert!(matches!(request.0, Err(431)));
@@ -765,13 +874,13 @@ mod tests {
         let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
             .await
             .unwrap();
-        let mut peer = TcpStream::connect(listener.local_addr().unwrap())
+        let mut peer = tokio::net::TcpStream::connect(listener.local_addr().unwrap())
             .await
             .unwrap();
         peer.write_all(b"GET / HTTP/1.1\r\n\r\n").await.unwrap();
         let (stream, _) = listener.accept().await.unwrap();
 
-        let Dispatch::Http(stream, request) = dispatch(stream).await.unwrap() else {
+        let Dispatch::Http(stream, request) = dispatch(Stream::plain(stream)).await.unwrap() else {
             panic!("expected an HTTP request");
         };
         let served = tokio::time::timeout(
@@ -781,6 +890,44 @@ mod tests {
         .await
         .expect("a stalled download must not block the server");
         assert_eq!(served.unwrap_err().kind(), io::ErrorKind::TimedOut);
+    }
+
+    #[cfg(feature = "tls")]
+    #[test]
+    fn plain_page_requests_are_redirected_to_the_same_port() {
+        let request = |method: &str, path: &str, host: Option<&str>| {
+            let mut head = head(method, path);
+            head.host = host.map(str::to_owned);
+            redirect_location(&head)
+        };
+        for (host, path, expected) in [
+            ("pc-a.local:8091", "/", "https://pc-a.local:8091/"),
+            (
+                "10.0.0.2:8091",
+                "/app.wasm?v=2",
+                "https://10.0.0.2:8091/app.wasm?v=2",
+            ),
+            ("[::1]:8091", "/", "https://[::1]:8091/"),
+            // Without a port the browser used port 80, where TLS is served too.
+            ("localhost", "/", "https://localhost:80/"),
+            ("[::1]", "/x", "https://[::1]:80/x"),
+        ] {
+            assert_eq!(request("GET", path, Some(host)).as_deref(), Some(expected));
+        }
+        assert!(request("HEAD", "/", Some("localhost:8091")).is_some());
+        for (method, path, host) in [
+            ("POST", "/", Some("localhost:8091")),
+            ("GET", "/", None),
+            ("GET", "relative", Some("localhost:8091")),
+            ("GET", "/", Some("user@localhost")),
+            ("GET", "/", Some("localhost/evil")),
+        ] {
+            assert_eq!(
+                request(method, path, host),
+                None,
+                "{method} {path} {host:?}"
+            );
+        }
     }
 
     #[test]
