@@ -17,6 +17,45 @@ fn report_error(sender: &MessageSender, error: String) {
     sender.send_message(&error);
 }
 
+/// The result of a [`Value::write`] closure, reporting whether it changed the
+/// value.
+///
+/// Implemented for `bool`, for widget responses ([`egui::Response::changed`]),
+/// and for the results of containers and popups that wrap one of these
+/// ([`egui::InnerResponse`] and `Option`, where `None` means no change).
+pub trait Changed {
+    /// Returns whether the closure changed the value.
+    fn changed(&self) -> bool;
+}
+
+impl Changed for bool {
+    #[inline]
+    fn changed(&self) -> bool {
+        *self
+    }
+}
+
+impl Changed for egui::Response {
+    #[inline]
+    fn changed(&self) -> bool {
+        egui::Response::changed(self)
+    }
+}
+
+impl<R: Changed> Changed for egui::InnerResponse<R> {
+    #[inline]
+    fn changed(&self) -> bool {
+        self.inner.changed()
+    }
+}
+
+impl<R: Changed> Changed for Option<R> {
+    #[inline]
+    fn changed(&self) -> bool {
+        self.as_ref().is_some_and(Changed::changed)
+    }
+}
+
 /// Editable snapshot that sends a [`Value`] only when it changed.
 ///
 /// Modify [`Self::v`], then consume the snapshot with [`Self::set`] or
@@ -209,7 +248,40 @@ where
         ));
     }
 
-    /// Modify the value in place and send it to the server.
+    fn write_with<R: Changed>(&self, f: impl FnOnce(&mut T) -> R, signal: bool) -> R {
+        let mut w = self.shared.value.write();
+        let result = f(&mut w);
+        if result.changed() {
+            self.write_inner(&*w, signal);
+        }
+        result
+    }
+
+    /// Modifies the value in place and sends it to the server if `f` reports a
+    /// change.
+    ///
+    /// Unlike [`Self::edit`], the value is not copied, which suits large values
+    /// such as a `Vec` or a `HashMap`. `f` reports whether it changed the
+    /// value through its result: a `bool`, or a widget's [`egui::Response`]
+    /// (see [`Changed`]). A change `f` does not report is kept locally but not
+    /// sent, so the peers stay out of sync until a later write or server
+    /// update.
+    ///
+    /// ```
+    /// # fn show(ui: &mut egui::Ui, points: &egui_states::Value<Vec<f32>>) {
+    /// points.write(|points| {
+    ///     let mut changed = false;
+    ///     for point in points.iter_mut() {
+    ///         changed |= ui.add(egui::DragValue::new(point)).changed();
+    ///     }
+    ///     if ui.button("Add").clicked() {
+    ///         points.push(0.0);
+    ///         changed = true;
+    ///     }
+    ///     changed
+    /// });
+    /// # }
+    /// ```
     ///
     /// If the modified value serializes to more than the maximum allowed size, it is
     /// kept locally but not sent, which leaves it out of sync with the server until
@@ -218,26 +290,17 @@ where
     ///
     /// The write lock is held while `f` runs, so do not call this handle or a
     /// clone of it from `f`: the nested call would wait for `f` forever.
-    ///
-    /// The value is sent on every call, even when `f` leaves it unchanged. To
-    /// edit a value with a widget, use [`Self::edit`], which sends only
-    /// changes and holds no lock while `f` runs.
-    pub fn write<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
-        let mut w = self.shared.value.write();
-        let result = f(&mut w);
-        self.write_inner(&*w, false);
-        result
+    pub fn write<R: Changed>(&self, f: impl FnOnce(&mut T) -> R) -> R {
+        self.write_with(f, false)
     }
 
-    /// Same as [`Value::write`], but the server side emits a signal for the new value.
+    /// Same as [`Value::write`], but a reported change also asks the server to
+    /// emit its callbacks, like [`Self::set_signal`].
     ///
-    /// The same out of sync caveat for oversized values and nested calls
-    /// applies.
-    pub fn write_signal<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
-        let mut w = self.shared.value.write();
-        let result = f(&mut w);
-        self.write_inner(&*w, true);
-        result
+    /// The same out of sync caveats for unreported changes, oversized values
+    /// and nested calls apply.
+    pub fn write_signal<R: Changed>(&self, f: impl FnOnce(&mut T) -> R) -> R {
+        self.write_with(f, true)
     }
 
     #[inline]
@@ -787,6 +850,43 @@ mod tests {
     }
 
     #[test]
+    fn write_sends_only_reported_changes() {
+        let (sender, mut rx) = MessageSender::new();
+        let value: Value<Vec<u8>> = Value::new("list".into(), 44, 8, vec![1], sender);
+
+        // an unreported change stays local and is not sent
+        assert!(!value.write(|v| {
+            v.push(2);
+            false
+        }));
+        assert_eq!(value.write(|v| Some(v.len() > 5)), Some(false));
+        assert!(rx.try_recv().is_err());
+        assert_eq!(value.get(), [1, 2]);
+
+        value.write_signal(|v| {
+            v.push(3);
+            true
+        });
+        value.write(|v| Some(v.pop().is_some()));
+        match rx.try_recv().unwrap().unwrap() {
+            ChannelMessage::Value(44, 8, true, data) => {
+                assert_eq!(
+                    deserialize::<Vec<u8>>(&data.into_bytes()).unwrap(),
+                    [1, 2, 3]
+                )
+            }
+            _ => panic!("expected signaled list first"),
+        }
+        match rx.try_recv().unwrap().unwrap() {
+            ChannelMessage::Value(44, 8, false, data) => {
+                assert_eq!(deserialize::<Vec<u8>>(&data.into_bytes()).unwrap(), [1, 2])
+            }
+            _ => panic!("expected unsignaled list second"),
+        }
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
     fn edit_holds_no_lock_while_the_closure_runs() {
         let (sender, mut rx) = MessageSender::new();
         let value: Value<i32> = Value::new("value".into(), 43, 7, 1, sender);
@@ -836,7 +936,10 @@ mod tests {
             rx.try_recv(),
             Ok(Some(ChannelMessage::Message(_)))
         ));
-        value.write(|v| *v = oversized.clone());
+        value.write(|v| {
+            *v = oversized.clone();
+            true
+        });
         assert_eq!(value.get(), oversized);
         assert!(matches!(
             rx.try_recv(),
