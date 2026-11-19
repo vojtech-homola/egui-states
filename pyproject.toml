@@ -121,7 +121,10 @@ sort_commits = "oldest"
 recurse_submodules = false
 # skip_tags = "^(0\\.[0-7]\\.|old-|legacy-)"
 commit_preprocessors = [
-    { pattern = "\\s*\\(#(\\d+)\\)$", replace = " [#$1](https://github.com/vojtech-homola/egui-states/pull/$1)" },
+    # Link the pull request number that ends the subject. `^` and `$` match the
+    # ends of the whole message, so the subject is matched up to its newline;
+    # a bare `$` would miss every commit that has a body.
+    { pattern = "^(.*?)\\s*\\(#(\\d+)\\)(\\n|$)", replace = "${1} [#${2}](https://github.com/vojtech-homola/egui-states/pull/${2})${3}" },
 ]
 
 [tool.pytest]
