@@ -77,14 +77,11 @@ jobs:
           {
             echo "Prepared by the Prepare release workflow: \`$LEVEL\` bump (requested: \`$BUMP\`)."
             echo
-            echo "**Squash-merging this pull request publishes $VERSION.** The Release workflow"
-            echo "builds and tests the wheels, tags the merge commit, uploads to PyPI, and"
-            echo "creates the GitHub release. Keep the title \`chore: release $VERSION\`; the"
-            echo "workflow recognizes the release commit by it."
+            # One line per paragraph: GitHub keeps the line breaks of a
+            # pull request body.
+            echo "**Squash-merging this pull request publishes $VERSION.** The Release workflow builds and tests the wheels, tags the merge commit, uploads to PyPI, and creates the GitHub release. Keep the title \`chore: release $VERSION\`; the workflow recognizes the release commit by it."
             echo
-            echo "If anything else is merged into \`main\` first, run Prepare release again to"
-            echo "update this pull request; the Release workflow refuses a changelog that"
-            echo "misses commits."
+            echo "If anything else is merged into \`main\` first, run Prepare release again to update this pull request; the Release workflow refuses a changelog that misses commits."
             echo
             echo "## Release notes"
             echo
