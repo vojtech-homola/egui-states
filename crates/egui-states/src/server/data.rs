@@ -180,7 +180,7 @@ where
 
     /// Borrows the buffer's native-endian byte representation for `f`,
     /// `None` while the data is not set.
-    pub fn read_bytes<R>(&self, f: impl Fn(Option<&[u8]>) -> R) -> R {
+    pub fn read_bytes<R>(&self, f: impl FnOnce(Option<&[u8]>) -> R) -> R {
         self.inner.get(f)
     }
 

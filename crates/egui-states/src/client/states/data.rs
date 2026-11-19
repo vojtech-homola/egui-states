@@ -420,7 +420,7 @@ where
     /// reentrant, so a nested read waits behind an incoming server update,
     /// which waits for `f`.
     /// Use [`Self::read_with_header`] to read the header with the buffer.
-    pub fn read<R>(&self, f: impl Fn(Option<&[T]>) -> R) -> R {
+    pub fn read<R>(&self, f: impl FnOnce(Option<&[T]>) -> R) -> R {
         f(self
             .inner
             .read()
@@ -439,7 +439,7 @@ where
     /// Do not call this handle or a clone of it from `f`: the read lock is not
     /// reentrant, so a nested read waits behind an incoming server update,
     /// which waits for `f`.
-    pub fn read_header<R>(&self, f: impl Fn(Option<&H>) -> R) -> R {
+    pub fn read_header<R>(&self, f: impl FnOnce(Option<&H>) -> R) -> R {
         f(self.inner.read().as_ref().map(|store| &store.header))
     }
 
@@ -462,7 +462,7 @@ where
     /// Do not call this handle or a clone of it from `f`: the read lock is not
     /// reentrant, so a nested read waits behind an incoming server update,
     /// which waits for `f`.
-    pub fn read_with_header<R>(&self, f: impl Fn(Option<(&[T], &H)>) -> R) -> R {
+    pub fn read_with_header<R>(&self, f: impl FnOnce(Option<(&[T], &H)>) -> R) -> R {
         let inner = self.inner.read();
         f(inner
             .as_ref()
@@ -771,7 +771,7 @@ where
     /// which waits for `f`.
     /// Use [`Self::read_with_header`] to read the header with the buffer.
     #[inline]
-    pub fn read<R>(&self, key: u32, f: impl Fn(Option<&[T]>) -> R) -> R {
+    pub fn read<R>(&self, key: u32, f: impl FnOnce(Option<&[T]>) -> R) -> R {
         f(self.inner.read().data.get(&key).map(Vec::as_slice))
     }
 
@@ -784,7 +784,7 @@ where
     /// which waits for `f`.
     /// Use [`Self::read_all_with_header`] to read the headers as well.
     #[inline]
-    pub fn read_all<R>(&self, f: impl Fn(&NoHashMap<u32, Vec<T>>) -> R) -> R {
+    pub fn read_all<R>(&self, f: impl FnOnce(&NoHashMap<u32, Vec<T>>) -> R) -> R {
         f(&self.inner.read().data)
     }
 
@@ -796,7 +796,7 @@ where
     /// which waits for `f`.
     pub fn read_all_with_header<R>(
         &self,
-        f: impl Fn(&NoHashMap<u32, Vec<T>>, &NoHashMap<u32, H>) -> R,
+        f: impl FnOnce(&NoHashMap<u32, Vec<T>>, &NoHashMap<u32, H>) -> R,
     ) -> R {
         let inner = self.inner.read();
         f(&inner.data, &inner.headers)
@@ -827,7 +827,7 @@ where
     /// Do not call this handle or a clone of it from `f`: the read lock is not
     /// reentrant, so a nested read waits behind an incoming server update,
     /// which waits for `f`.
-    pub fn read_header<R>(&self, key: u32, f: impl Fn(Option<&H>) -> R) -> R {
+    pub fn read_header<R>(&self, key: u32, f: impl FnOnce(Option<&H>) -> R) -> R {
         f(self.inner.read().headers.get(&key))
     }
 
@@ -852,7 +852,7 @@ where
     /// Do not call this handle or a clone of it from `f`: the read lock is not
     /// reentrant, so a nested read waits behind an incoming server update,
     /// which waits for `f`.
-    pub fn read_with_header<R>(&self, key: u32, f: impl Fn(Option<(&[T], &H)>) -> R) -> R {
+    pub fn read_with_header<R>(&self, key: u32, f: impl FnOnce(Option<(&[T], &H)>) -> R) -> R {
         let inner = self.inner.read();
         let entry = inner
             .data

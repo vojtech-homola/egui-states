@@ -54,7 +54,7 @@ impl<T: Typed + Clone> VecState<T> {
     /// Do not call this handle or a clone of it from `f`: the read lock is not
     /// reentrant, so a nested read waits behind an incoming server update,
     /// which waits for `f`.
-    pub fn read<R>(&self, mut f: impl FnMut(&Vec<T>) -> R) -> R {
+    pub fn read<R>(&self, f: impl FnOnce(&Vec<T>) -> R) -> R {
         let l = self.list.read();
         f(&*l)
     }
@@ -66,7 +66,7 @@ impl<T: Typed + Clone> VecState<T> {
     /// Do not call this handle or a clone of it from `f`: the read lock is not
     /// reentrant, so a nested read waits behind an incoming server update,
     /// which waits for `f`.
-    pub fn read_item<R>(&self, idx: usize, mut f: impl FnMut(Option<&T>) -> R) -> R {
+    pub fn read_item<R>(&self, idx: usize, f: impl FnOnce(Option<&T>) -> R) -> R {
         let l = self.list.read();
         f(l.get(idx))
     }
