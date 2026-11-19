@@ -13,9 +13,10 @@ since the last tag counts as a breaking change, because older peers can no
 longer connect.
 
 Writing updates ``[workspace.package] version`` in ``Cargo.toml``, refreshes
-``Cargo.lock``, and regenerates ``CHANGELOG.md`` with git-cliff. Committing and
-tagging are left to the caller. Running it again before the release is tagged
-recomputes the version from the last tag and refreshes the changelog.
+``Cargo.lock``, and regenerates ``CHANGELOG.md`` with git-cliff. Committing is
+left to the caller, and the Release workflow tags the release once its commit
+is on ``main``. Running it again before the release is tagged recomputes the
+version from the last tag and refreshes the changelog.
 """
 
 import argparse
@@ -236,7 +237,7 @@ def main() -> int:
         if parse_version(cargo_version) < version:
             raise ReleaseError(f"Cargo.toml has version {cargo_version}, older than the last tag {tag}")
         # A version ahead of the last tag is a prepared release that was never
-        # tagged, for example because its changelog went stale. Preparing again
+        # published, for example because its changelog went stale. Preparing again
         # recomputes the version from the last tag and refreshes the changelog.
         if cargo_version != tag:
             print(f"refreshing the untagged release {cargo_version}")
@@ -257,7 +258,10 @@ def main() -> int:
         # file even for commands that print to stdout.
         subprocess.run([args.git_cliff, "--tag", new_version, "--output", str(CHANGELOG)], cwd=ROOT, check=True)
         if not git("status", "--porcelain"):
-            raise ReleaseError(f"release {new_version} is already prepared and up to date; push its tag")
+            raise ReleaseError(
+                f"release {new_version} is already prepared and up to date; "
+                "merge its pull request, or run the Release workflow with publish if it is merged"
+            )
     except ReleaseError as error:
         print(f"error: {error}", file=sys.stderr)
         return 1

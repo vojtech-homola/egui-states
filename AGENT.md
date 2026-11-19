@@ -34,6 +34,8 @@
 7. Releases are prepared by the Prepare release workflow, which runs
    `scripts/prepare_release.py`: it picks the next version from the commit
    titles and `PROTOCOL_VERSION`, then updates `Cargo.toml`, `Cargo.lock`, and
-   `CHANGELOG.md` in a `chore: release X.Y.Z` pull request. Pushing the version
-   tag on the merged commit starts `release.yml`, which publishes to PyPI and
+   `CHANGELOG.md` in a `chore: release X.Y.Z` pull request. Merging that pull
+   request starts `release.yml`, which tags the commit, publishes to PyPI, and
    creates the GitHub release. Do not bump the version or create tags by hand.
+   `docs/releasing.md` is the maintainer's checklist for a release; keep it in
+   step with the two workflows.
