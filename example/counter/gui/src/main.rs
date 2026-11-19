@@ -20,10 +20,9 @@ impl eframe::App for CounterApp {
             if !connected && ui.button("Connect").clicked() {
                 self.client.connect();
             }
-            let mut count = self.state.count.get();
-            if ui.add(egui::DragValue::new(&mut count)).changed() {
-                self.state.count.set_signal(count);
-            }
+            self.state
+                .count
+                .edit_signal(|count| ui.add(egui::DragValue::new(count)));
             if ui.button("Reset").clicked() {
                 self.state.reset.set(());
             }

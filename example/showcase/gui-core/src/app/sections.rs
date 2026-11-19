@@ -3,152 +3,94 @@ use crate::state::sections::{PrimaryChoice, Summary};
 use super::{
     ViewState,
     helpers::{
-        format_summary, primary_choice_label, show_primary_choice_selector,
+        format_summary, primary_choice_label, show_optional, show_primary_choice_selector,
         show_secondary_choice_selector,
     },
 };
 
 pub(super) fn show_values(ui: &mut egui::Ui, state: &mut ViewState) {
     ui.collapsing("values", |ui| {
+        let values = &state.schema.values;
+
         ui.label("Value<bool>: root.values.bool_value");
-        let mut bool_value = state.schema.values.bool_value.get();
-        if ui.checkbox(&mut bool_value, "bool_value").changed() {
-            state.schema.values.bool_value.set_signal(bool_value);
-        }
+        values
+            .bool_value
+            .edit_signal(|value| ui.checkbox(value, "bool_value"));
 
         ui.separator();
 
         ui.label("Value<i32>: root.values.count");
-        let mut count = state.schema.values.count.get();
-        if ui
-            .add(egui::DragValue::new(&mut count).prefix("count "))
-            .changed()
-        {
-            state.schema.values.count.set_signal(count);
-        }
+        values
+            .count
+            .edit_signal(|count| ui.add(egui::DragValue::new(count).prefix("count ")));
 
         ui.separator();
 
         ui.label("ValueAtomic<f64>: root.values.ratio");
-        let mut ratio = state.schema.values.ratio.get();
-        if ui
-            .add(egui::Slider::new(&mut ratio, 0.0..=1.0).text("ratio"))
-            .changed()
-        {
-            state.schema.values.ratio.set_signal(ratio);
-        }
+        values
+            .ratio
+            .edit_signal(|ratio| ui.add(egui::Slider::new(ratio, 0.0..=1.0).text("ratio")));
 
         ui.separator();
 
         ui.label("Value<f32>, #[state(queue)]: root.values.queued_progress");
-        let mut queued_progress = state.schema.values.queued_progress.get();
-        if ui
-            .add(egui::Slider::new(&mut queued_progress, 0.0..=1.0).text("queued_progress"))
-            .changed()
-        {
-            state
-                .schema
-                .values
-                .queued_progress
-                .set_signal(queued_progress);
-        }
+        values.queued_progress.edit_signal(|progress| {
+            ui.add(egui::Slider::new(progress, 0.0..=1.0).text("queued_progress"))
+        });
 
         ui.separator();
 
         ui.label("Value<String>: root.values.title");
-        let mut title = state.schema.values.title.get();
-        if ui.text_edit_singleline(&mut title).changed() {
-            state.schema.values.title.set_signal(title);
-        }
+        values
+            .title
+            .edit_signal(|title| ui.text_edit_singleline(title));
 
         ui.separator();
 
         ui.label("Value<Option<i32>>: root.values.optional_value");
-        let mut optional_value = state.schema.values.optional_value.get();
-        let previous_has_value = optional_value.is_some();
-        let mut has_value = previous_has_value;
-        let mut optional_changed = ui.checkbox(&mut has_value, "has value").changed();
-        if has_value && !previous_has_value {
-            optional_value = Some(0);
-        }
-        if !has_value {
-            optional_value = None;
-        }
-        if let Some(value) = optional_value.as_mut() {
-            optional_changed |= ui
-                .add(egui::DragValue::new(value).prefix("optional "))
-                .changed();
-        }
-        if optional_changed {
-            state
-                .schema
-                .values
-                .optional_value
-                .set_signal(optional_value);
-        }
+        values.optional_value.edit_signal(|optional_value| {
+            show_optional(ui, optional_value, "has value", 0, |ui, value| {
+                ui.add(egui::DragValue::new(value).prefix("optional "));
+            });
+        });
 
         ui.separator();
 
         ui.label("Value<[u16; 3]>: root.values.fixed_numbers");
-        let mut fixed_numbers = state.schema.values.fixed_numbers.get();
-        let mut fixed_changed = false;
-        ui.horizontal(|ui| {
-            for value in &mut fixed_numbers {
-                fixed_changed |= ui.add(egui::DragValue::new(value)).changed();
-            }
+        values.fixed_numbers.edit_signal(|fixed_numbers| {
+            ui.horizontal(|ui| {
+                for value in fixed_numbers {
+                    ui.add(egui::DragValue::new(value));
+                }
+            });
         });
-        if fixed_changed {
-            state.schema.values.fixed_numbers.set_signal(fixed_numbers);
-        }
 
         ui.separator();
 
         ui.label("Value<PrimaryChoice>: root.values.primary_choice");
-        let mut primary_choice = state.schema.values.primary_choice.get();
-        if show_primary_choice_selector(ui, &mut primary_choice) {
-            state
-                .schema
-                .values
-                .primary_choice
-                .set_signal(primary_choice);
-        }
+        values
+            .primary_choice
+            .edit_signal(|choice| show_primary_choice_selector(ui, choice));
 
         ui.separator();
 
         ui.label("Nested values: root.values.nested.*");
-        let mut secondary_choice = state.schema.values.nested.secondary_choice.get();
-        if show_secondary_choice_selector(ui, &mut secondary_choice) {
-            state
-                .schema
-                .values
-                .nested
-                .secondary_choice
-                .set_signal(secondary_choice);
-        }
+        values
+            .nested
+            .secondary_choice
+            .edit_signal(|choice| show_secondary_choice_selector(ui, choice));
 
-        let mut selected_enum = state.schema.values.nested.selected_enum.get();
-        let previous_has_value = selected_enum.is_some();
-        let mut has_value = previous_has_value;
-        let mut selected_changed = ui
-            .checkbox(&mut has_value, "selected enum has value")
-            .changed();
-        if has_value && !previous_has_value {
-            selected_enum = Some(PrimaryChoice::default());
-        }
-        if !has_value {
-            selected_enum = None;
-        }
-        if let Some(value) = selected_enum.as_mut() {
-            selected_changed |= show_primary_choice_selector(ui, value);
-        }
-        if selected_changed {
-            state
-                .schema
-                .values
-                .nested
-                .selected_enum
-                .set_signal(selected_enum);
-        }
+        values.nested.selected_enum.edit_signal(|selected_enum| {
+            show_optional(
+                ui,
+                selected_enum,
+                "selected enum has value",
+                PrimaryChoice::default(),
+                |ui, value| {
+                    show_primary_choice_selector(ui, value);
+                },
+            );
+        });
     });
 }
 
@@ -235,47 +177,33 @@ pub(super) fn show_statics(ui: &mut egui::Ui, state: &mut ViewState) {
 pub(super) fn show_custom_values(ui: &mut egui::Ui, state: &mut ViewState) {
     ui.collapsing("custom values", |ui| {
         ui.label("Value<Point>: root.custom_values.point");
-        let mut point = state.schema.custom_values.point.get();
-        let mut point_changed = false;
-        ui.horizontal(|ui| {
-            point_changed |= ui
-                .add(egui::DragValue::new(&mut point.x).speed(0.1).prefix("x "))
-                .changed();
-            point_changed |= ui
-                .add(egui::DragValue::new(&mut point.y).speed(0.1).prefix("y "))
-                .changed();
+        state.schema.custom_values.point.edit_signal(|point| {
+            ui.horizontal(|ui| {
+                ui.add(egui::DragValue::new(&mut point.x).speed(0.1).prefix("x "));
+                ui.add(egui::DragValue::new(&mut point.y).speed(0.1).prefix("y "));
+            });
+            ui.text_edit_singleline(&mut point.label);
         });
-        point_changed |= ui.text_edit_singleline(&mut point.label).changed();
-        if point_changed {
-            state.schema.custom_values.point.set_signal(point);
-        }
 
         ui.separator();
 
         ui.label("Value<Option<Summary>>: root.custom_values.optional_struct");
-        let mut optional_struct = state.schema.custom_values.optional_struct.get();
-        let previous_has_value = optional_struct.is_some();
-        let mut has_value = previous_has_value;
-        let mut struct_changed = ui.checkbox(&mut has_value, "has value").changed();
-        if has_value && !previous_has_value {
-            optional_struct = Some(Summary::default());
-        }
-        if !has_value {
-            optional_struct = None;
-        }
-        if let Some(value) = optional_struct.as_mut() {
-            struct_changed |= ui.checkbox(&mut value.enabled, "enabled").changed();
-            struct_changed |= ui
-                .add(egui::DragValue::new(&mut value.level).prefix("level "))
-                .changed();
-            struct_changed |= ui.text_edit_singleline(&mut value.name).changed();
-        }
-        if struct_changed {
-            state
-                .schema
-                .custom_values
-                .optional_struct
-                .set_signal(optional_struct);
-        }
+        state
+            .schema
+            .custom_values
+            .optional_struct
+            .edit_signal(|optional_struct| {
+                show_optional(
+                    ui,
+                    optional_struct,
+                    "has value",
+                    Summary::default(),
+                    |ui, value| {
+                        ui.checkbox(&mut value.enabled, "enabled");
+                        ui.add(egui::DragValue::new(&mut value.level).prefix("level "));
+                        ui.text_edit_singleline(&mut value.name);
+                    },
+                );
+            });
     });
 }
