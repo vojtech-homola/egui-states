@@ -20,7 +20,8 @@ fn report_error(sender: &MessageSender, error: String) {
 /// Editable snapshot that sends a [`Value`] only when it changed.
 ///
 /// Modify [`Self::v`], then consume the snapshot with [`Self::set`] or
-/// [`Self::set_signal`].
+/// [`Self::set_signal`]. Unlike [`Value::edit`], a snapshot can outlive one
+/// closure, so several snapshots can be edited by the same widget.
 pub struct Diff<'a, T> {
     /// Editable copy of the synchronized value.
     pub v: T,
@@ -61,6 +62,8 @@ impl<'a, T: Serialize + Clone + PartialEq> Diff<'a, T> {
 }
 
 /// Editable snapshot that sends a [`ValueAtomic`] only when it changed.
+///
+/// See [`Diff`] for when to prefer it over [`ValueAtomic::edit`].
 pub struct DiffAtomic<'a, T: Atomic> {
     /// Editable copy of the synchronized value.
     pub v: T,
@@ -137,7 +140,8 @@ impl<V> Shared<V> {
 ///
 /// Client writes update the local copy immediately and are sent to the server.
 /// By default, server callbacks receive only the latest of the changes
-/// [`Self::set_signal`] and [`Self::write_signal`] produce while they are busy;
+/// [`Self::set_signal`], [`Self::edit_signal`] and [`Self::write_signal`]
+/// produce while they are busy;
 /// a field marked `#[state(queue)]` receives every change in arrival order.
 ///
 /// The server wins concurrent writes. A client write that reaches the server
@@ -214,6 +218,10 @@ where
     ///
     /// The write lock is held while `f` runs, so do not call this handle or a
     /// clone of it from `f`: the nested call would wait for `f` forever.
+    ///
+    /// The value is sent on every call, even when `f` leaves it unchanged. To
+    /// edit a value with a widget, use [`Self::edit`], which sends only
+    /// changes and holds no lock while `f` runs.
     pub fn write<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
         let mut w = self.shared.value.write();
         let result = f(&mut w);
@@ -265,6 +273,47 @@ where
     /// reported and the stored client value is left unchanged.
     pub fn set_signal(&self, value: T) {
         self.set_inner(value, true);
+    }
+}
+
+impl<T> Value<T>
+where
+    T: Serialize + Clone + PartialEq,
+{
+    fn edit_inner<R>(&self, f: impl FnOnce(&mut T) -> R, signal: bool) -> R {
+        let original = self.get();
+        let mut value = original.clone();
+        let result = f(&mut value);
+        if value != original {
+            self.set_inner(value, signal);
+        }
+        result
+    }
+
+    /// Edits a copy of the value and sends it without signaling if `f`
+    /// changed it.
+    ///
+    /// Use it to bind a widget to the value; the closure's result, such as the
+    /// widget's response, is returned:
+    ///
+    /// ```
+    /// # fn show(ui: &mut egui::Ui, gain: &egui_states::Value<f32>) {
+    /// let response = gain.edit(|gain| ui.add(egui::Slider::new(gain, 0.0..=1.0)));
+    /// # }
+    /// ```
+    ///
+    /// The copy is compared with the value read before `f` ran, using `T`'s
+    /// [`PartialEq`]; when they are equal nothing is sent. No lock is held
+    /// while `f` runs, so `f` may read this handle. A change is applied like
+    /// [`Self::set`]: an oversized value is reported and not stored.
+    pub fn edit<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
+        self.edit_inner(f, false)
+    }
+
+    /// Same as [`Self::edit`], but a change also asks the server to emit its
+    /// callbacks, like [`Self::set_signal`].
+    pub fn edit_signal<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
+        self.edit_inner(f, true)
     }
 }
 
@@ -352,6 +401,35 @@ where
     /// Atomically replaces the value and asks the server to emit callbacks.
     pub fn set_signal(&self, value: T) {
         self.set_inner(value, true);
+    }
+}
+
+impl<T> ValueAtomic<T>
+where
+    T: Serialize + Clone + PartialEq + Atomic,
+{
+    fn edit_inner<R>(&self, f: impl FnOnce(&mut T) -> R, signal: bool) -> R {
+        let original = self.get();
+        let mut value = original;
+        let result = f(&mut value);
+        if value != original {
+            self.set_inner(value, signal);
+        }
+        result
+    }
+
+    /// Edits a copy of the value and sends it without signaling if `f`
+    /// changed it.
+    ///
+    /// Behaves like [`Value::edit`].
+    pub fn edit<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
+        self.edit_inner(f, false)
+    }
+
+    /// Same as [`Self::edit`], but a change also asks the server to emit
+    /// callbacks, like [`Self::set_signal`].
+    pub fn edit_signal<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
+        self.edit_inner(f, true)
     }
 }
 
@@ -661,6 +739,90 @@ mod tests {
         assert!(rx.try_recv().is_err());
         assert_eq!(value.get(), -7);
         assert_eq!(atomic.get(), 2.75);
+    }
+
+    #[test]
+    fn edit_sends_only_changes_with_the_requested_signal() {
+        let (sender, mut rx) = MessageSender::new();
+        let value: Value<i32> = Value::new("value".into(), 41, 5, 3, sender.clone());
+        let atomic = ValueAtomic::new("atomic".into(), 42, 6, 1.5f64, sender);
+
+        // an unchanged edit sends nothing but still returns the closure result
+        assert_eq!(value.edit(|v| *v * 2), 6);
+        assert_eq!(atomic.edit_signal(|v| *v), 1.5);
+        assert!(rx.try_recv().is_err());
+
+        // `FnOnce` closures may move values and borrow state mutably
+        let mut calls = 0;
+        let owned = String::from("moved");
+        value.edit_signal(|v| {
+            calls += 1;
+            drop(owned);
+            *v = -7;
+        });
+        atomic.edit(|v| *v = 2.75);
+        assert_eq!(calls, 1);
+
+        // a change back to the original value sends nothing
+        value.edit(|v| {
+            *v += 1;
+            *v -= 1;
+        });
+
+        match rx.try_recv().unwrap().unwrap() {
+            ChannelMessage::Value(41, 5, true, data) => {
+                assert_eq!(deserialize::<i32>(&data.into_bytes()).unwrap(), -7)
+            }
+            _ => panic!("expected signaled value first"),
+        }
+        match rx.try_recv().unwrap().unwrap() {
+            ChannelMessage::Value(42, 6, false, data) => {
+                assert_eq!(deserialize::<f64>(&data.into_bytes()).unwrap(), 2.75)
+            }
+            _ => panic!("expected unsignaled atomic value second"),
+        }
+        assert!(rx.try_recv().is_err());
+        assert_eq!(value.get(), -7);
+        assert_eq!(atomic.get(), 2.75);
+    }
+
+    #[test]
+    fn edit_holds_no_lock_while_the_closure_runs() {
+        let (sender, mut rx) = MessageSender::new();
+        let value: Value<i32> = Value::new("value".into(), 43, 7, 1, sender);
+        let handle = value.clone();
+
+        // reading and even setting the same handle inside `f` must not deadlock
+        let seen = value.edit(|v| {
+            *v = 10;
+            handle.set(5);
+            handle.get()
+        });
+        assert_eq!(seen, 5);
+        // the edit compares with the value read before `f` and sends its copy
+        assert_eq!(value.get(), 10);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Some(ChannelMessage::Value(43, 7, false, _)))
+        ));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Some(ChannelMessage::Value(43, 7, false, _)))
+        ));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn oversized_edit_is_reported_and_not_stored() {
+        let (sender, mut rx) = MessageSender::new();
+        let value: Value<String> = Value::new("text".into(), 1, 2, "seed".into(), sender);
+        value.edit(|v| *v = "x".repeat(VALUE_MAX_SIZE + 1));
+        assert_eq!(value.get(), "seed");
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Some(ChannelMessage::Message(_)))
+        ));
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]

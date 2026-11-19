@@ -67,7 +67,14 @@ server port, start the server, and call `client.connect()` to synchronize.
 Rebuild bindings after changing the state definition; generated files should
 not be edited.
 
-On the client, `set_signal` changes a value and invokes server callbacks.
+On the client, `set` changes a value and `set_signal` also invokes server
+callbacks. To bind a widget to a value, `edit` and `edit_signal` pass a copy
+of it to a closure and send it only when the closure changed it:
+
+```rust
+state.count.edit_signal(|count| ui.add(egui::DragValue::new(count)));
+```
+
 Server setters can request an egui repaint with their `update` flag.
 
 ## File transfers
