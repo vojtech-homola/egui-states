@@ -61,34 +61,34 @@ def register_callbacks(server: StatesServer) -> None:  # noqa: PLR0915
         print(f"enum signal emitted: {value.name}")
 
     def _reset_value_vec() -> None:
-        states.value_vec.items.set(list(DEFAULT_VEC), update=True)
+        states.value_vec.items.set(list(DEFAULT_VEC))
 
     def _append_value_vec() -> None:
         current = states.value_vec.items.get()
         next_value = current[-1] + 5 if current else DEFAULT_VEC[0]
-        states.value_vec.items.add_item(next_value, update=True)
+        states.value_vec.items.add_item(next_value)
         print(f"value_vec appended: {next_value}")
 
     def _remove_last_value_vec() -> None:
         current = states.value_vec.items.get()
         if current:
-            states.value_vec.items.remove_item(len(current) - 1, update=True)
+            states.value_vec.items.remove_item(len(current) - 1)
             print("value_vec removed last item")
 
     def _reset_value_map() -> None:
-        states.value_map.items.set(dict(DEFAULT_MAP), update=True)
+        states.value_map.items.set(dict(DEFAULT_MAP))
 
     def _insert_next_value_map() -> None:
         current = states.value_map.items.get()
         next_key = max(current, default=0) + 1
-        states.value_map.items.set_item(next_key, next_key * 100, update=True)
+        states.value_map.items.set_item(next_key, next_key * 100)
         print(f"value_map inserted: {next_key} -> {next_key * 100}")
 
     def _remove_lowest_value_map() -> None:
         current = states.value_map.items.get()
         if current:
             lowest_key = min(current)
-            states.value_map.items.remove_item(lowest_key, update=True)
+            states.value_map.items.remove_item(lowest_key)
             print(f"value_map removed key: {lowest_key}")
 
     server.logging.add_logger(LogLevel.Debug, _print_debug)
@@ -112,9 +112,9 @@ def register_callbacks(server: StatesServer) -> None:  # noqa: PLR0915
     def upload_finished(handle: TransferHandle) -> None:
         if handle.status() is TransferStatus.Done:
             data = handle.take_data() or b""
-            states.transfers.upload_result.set(f"received {len(data)} bytes in {handle.name()}", update=True)
+            states.transfers.upload_result.set(f"received {len(data)} bytes in {handle.name()}")
         else:
-            states.transfers.upload_result.set(f"upload failed: {handle.error()}", update=True)
+            states.transfers.upload_result.set(f"upload failed: {handle.error()}")
 
     states.transfers.request_download.connect(send_sample)
     states.transfers.upload.on_offer(receive_upload)
@@ -164,58 +164,57 @@ def populate_initial_data(states: ShowcaseState) -> None:  # noqa: PLR0915
     states.custom_values.point.set(Point(1.5, -0.75, "editable point"))
     states.custom_values.optional_struct.set(Summary(True, 9, "optional payload"))
 
-    states.value_vec.items.set(list(DEFAULT_VEC), update=True)
-    states.value_map.items.set(dict(DEFAULT_MAP), update=True)
+    states.value_vec.items.set(list(DEFAULT_VEC))
+    states.value_map.items.set(dict(DEFAULT_MAP))
 
-    states.data.bytes.set(np.arange(32, dtype=np.uint8), update=True)
-    states.data.samples.set(np.linspace(0.0, 1.0, 1024 * 20, dtype=np.float32), update=True)
+    states.data.bytes.set(np.arange(32, dtype=np.uint8))
+    states.data.samples.set(np.linspace(0.0, 1.0, 1024 * 20, dtype=np.float32))
     temperatures = 20.0 + np.sin(np.arange(50, dtype=np.float32) / 8.0)
     states.data.measurement.set(
         temperatures.astype(np.float32),
-        update=True,
         header=Measurement("temperature", "°C", 10.0),
     )
-    states.data.nested.buffer.set(np.arange(8, dtype=np.uint16), update=True)
+    states.data.nested.buffer.set(np.arange(8, dtype=np.uint16))
 
-    states.multi_data.bytes[0].set(np.arange(12, dtype=np.uint8), update=True)
-    states.multi_data.bytes[0].replace(np.array([200, 201], dtype=np.uint8), 4, update=True)
-    states.multi_data.bytes[1].set(np.array([10, 20, 30], dtype=np.uint8), update=True)
-    states.multi_data.bytes[1].add(np.array([40, 50], dtype=np.uint8), update=True)
+    states.multi_data.bytes[0].set(np.arange(12, dtype=np.uint8))
+    states.multi_data.bytes[0].replace(np.array([200, 201], dtype=np.uint8), 4)
+    states.multi_data.bytes[1].set(np.array([10, 20, 30], dtype=np.uint8))
+    states.multi_data.bytes[1].add(np.array([40, 50], dtype=np.uint8))
 
-    states.multi_data.samples[0].set(np.linspace(0.0, 1.0, 8, dtype=np.float32), update=True)
-    states.multi_data.samples[2].set(np.linspace(-1.0, 1.0, 5, dtype=np.float32), update=True)
-    states.multi_data.samples[2].add(np.array([1.5, 2.0], dtype=np.float32), update=True)
+    states.multi_data.samples[0].set(np.linspace(0.0, 1.0, 8, dtype=np.float32))
+    states.multi_data.samples[2].set(np.linspace(-1.0, 1.0, 5, dtype=np.float32))
+    states.multi_data.samples[2].add(np.array([1.5, 2.0], dtype=np.float32))
 
-    states.multi_data.nested.buffer[0].set(np.arange(4, dtype=np.uint16), update=True)
-    states.multi_data.nested.buffer[0].add(np.array([10, 11], dtype=np.uint16), update=True)
-    states.multi_data.nested.buffer[3].set(np.array([100, 110, 120], dtype=np.uint16), update=True)
+    states.multi_data.nested.buffer[0].set(np.arange(4, dtype=np.uint16))
+    states.multi_data.nested.buffer[0].add(np.array([10, 11], dtype=np.uint16))
+    states.multi_data.nested.buffer[3].set(np.array([100, 110, 120], dtype=np.uint16))
 
-    states.value_take.take_text.set("ValueTake payload from server", update=True)
-    states.value_take.take_empty.set(update=True)
+    states.value_take.take_text.set("ValueTake payload from server")
+    states.value_take.take_empty.set()
 
-    states.data_take.take_buffer.set(np.arange(16, dtype=np.uint8), update=True, cache=True)
-    states.data_take.take_samples.set(np.linspace(0.0, 1.0, 8, dtype=np.float32), update=True, cache=True)
+    states.data_take.take_buffer.set(np.arange(16, dtype=np.uint8), cache=True)
+    states.data_take.take_samples.set(np.linspace(0.0, 1.0, 8, dtype=np.float32), cache=True)
 
-    states.data_multi_take.bytes[0].set(np.arange(6, dtype=np.uint8), update=True, cache=True)
-    states.data_multi_take.bytes[1].set(np.array([10, 20, 30], dtype=np.uint8), update=True, cache=True)
+    states.data_multi_take.bytes[0].set(np.arange(6, dtype=np.uint8), cache=True)
+    states.data_multi_take.bytes[1].set(np.array([10, 20, 30], dtype=np.uint8), cache=True)
 
-    states.data_multi_take.samples[0].set(np.linspace(0.0, 1.0, 4, dtype=np.float32), update=True, cache=True)
-    states.data_multi_take.samples[2].set(np.linspace(-1.0, 1.0, 3, dtype=np.float32), update=True, cache=True)
+    states.data_multi_take.samples[0].set(np.linspace(0.0, 1.0, 4, dtype=np.float32), cache=True)
+    states.data_multi_take.samples[2].set(np.linspace(-1.0, 1.0, 3, dtype=np.float32), cache=True)
 
-    states.data_multi_take.nested.buffer[0].set(np.arange(4, dtype=np.uint16), update=True, cache=True)
-    states.data_multi_take.nested.buffer[3].set(np.array([100, 110], dtype=np.uint16), update=True, cache=True)
+    states.data_multi_take.nested.buffer[0].set(np.arange(4, dtype=np.uint16), cache=True)
+    states.data_multi_take.nested.buffer[3].set(np.array([100, 110], dtype=np.uint16), cache=True)
 
     y, x = np.indices((256, 256), dtype=np.uint16)
     image = np.stack((x, y, (x + y) // 2), axis=-1).astype(np.uint8)
-    states.image.image.set(image, update=True)
+    states.image.image.set(image)
     image_patch = np.zeros((64, 64, 4), dtype=np.uint8)
     image_patch[..., 1] = 220
     image_patch[..., 3] = 255
-    states.image.image.update(image_patch, origin=(96, 96), update=True)
+    states.image.image.update(image_patch, origin=(96, 96))
 
-    states.image.images[2].set(image, update=True)
-    states.image.images[7].set_all((256, 256), (25, 35, 75), update=True)
-    states.image.images[7].update(image_patch, origin=(96, 96), update=True)
+    states.image.images[2].set(image)
+    states.image.images[7].set_all((256, 256), (25, 35, 75))
+    states.image.images[7].update(image_patch, origin=(96, 96))
 
 
 def setup_server(*, error_handler: Callable[[Exception], None] | None = None, tls: bool = False) -> StatesServer:

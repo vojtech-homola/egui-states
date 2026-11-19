@@ -118,7 +118,7 @@ impl Session {
         let seen = input_seen.clone();
         let input_callback = input.connect(move |value| seen.store(value, Ordering::Release));
         let echo_callback = ping.connect(move |value| {
-            let _ = echo.set(value, false);
+            let _ = echo.set(value);
         });
 
         let port = link.map_or(port, |link| relay(port, link));
@@ -158,7 +158,7 @@ impl Session {
         let last_state = ((SMALL_BURST - 1) % states as u64) as usize;
         let start = Instant::now();
         for i in 0..SMALL_BURST {
-            let _ = self.statics[(i % states as u64) as usize].set(first + i, false);
+            let _ = self.statics[(i % states as u64) as usize].set(first + i);
         }
         wait_until("static burst", || {
             self.states.statics[last_state].get() == last
@@ -171,7 +171,7 @@ impl Session {
         let last = first + SMALL_BURST - 1;
         let start = Instant::now();
         for i in 0..SMALL_BURST {
-            let _ = self.value.set(first + i, false);
+            let _ = self.value.set(first + i);
         }
         wait_until("value burst", || self.states.value.get() == last);
         start.elapsed()
@@ -185,12 +185,12 @@ impl Session {
         let last = first + count;
         let start = Instant::now();
         for i in 0..count {
-            let _ = self.blob.set(payload.clone(), false);
+            let _ = self.blob.set(payload.clone());
             if mixed {
-                let _ = self.statics[0].set(first + i, false);
+                let _ = self.statics[0].set(first + i);
             }
         }
-        let _ = self.marker.set(last, false);
+        let _ = self.marker.set(last);
         wait_until("blob burst", || self.states.marker.get() == last);
         start.elapsed()
     }
@@ -303,7 +303,7 @@ fn run_cases(session: &mut Session) {
                 }
                 due += PERIOD;
                 value += 1;
-                let _ = state.set(value, false);
+                let _ = state.set(value);
             }
         })
     };

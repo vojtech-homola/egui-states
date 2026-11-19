@@ -636,7 +636,7 @@ where
 {
     fn update_data(&self, (header, data): DataMessage) -> Result<(), String> {
         match header {
-            DataHeader::All(data_type, transport_type, _, _, header) => {
+            DataHeader::All(data_type, transport_type, _, header) => {
                 if let Err(error) = check_data_type(self.data_type, data_type, &self.name) {
                     self.sender.send_ack(self.id);
                     return Err(error);
@@ -645,23 +645,23 @@ where
             }
             DataHeader::StartBatch(count, _) => self.batch_start(&data, count),
             DataHeader::Batch(_) => self.batch(&data),
-            DataHeader::End(data_type, transport_type, _, _, header) => {
+            DataHeader::End(data_type, transport_type, _, header) => {
                 if let Err(error) = check_data_type(self.data_type, data_type, &self.name) {
                     self.sender.send_ack(self.id);
                     return Err(error);
                 }
                 self.batch_end(&data, transport_type, header)
             }
-            DataHeader::Drain(index, count, _, header) => self.drain(index, count, header, &data),
-            DataHeader::Clear(_, header) => self.clear(header, &data),
-            DataHeader::Header(_, header) => {
+            DataHeader::Drain(index, count, header) => self.drain(index, count, header, &data),
+            DataHeader::Clear(header) => self.clear(header, &data),
+            DataHeader::Header(header) => {
                 let header = decode_header_bytes(self.header_type, header, &data, &self.name)?;
                 let mut w = self.inner.write();
                 let store = w.as_mut().ok_or_else(|| self.not_set("Header"))?;
                 store.header = header;
                 Ok(())
             }
-            DataHeader::Reset(_) => {
+            DataHeader::Reset => {
                 let previous = self.inner.write().take();
                 self.buffer.lock().take();
                 drop(previous);
@@ -1044,7 +1044,7 @@ where
 {
     fn update(&self, index: u32, (header, data): DataMessage) -> Result<(), String> {
         match header {
-            DataHeader::All(data_type, transport_type, _, _, header) => {
+            DataHeader::All(data_type, transport_type, _, header) => {
                 if let Err(error) = check_data_type(self.data_type, data_type, &self.name) {
                     self.sender.send_ack(self.id);
                     return Err(error);
@@ -1053,18 +1053,18 @@ where
             }
             DataHeader::StartBatch(count, _) => self.batch_start(index, &data, count),
             DataHeader::Batch(_) => self.batch(index, &data),
-            DataHeader::End(data_type, transport_type, _, _, header) => {
+            DataHeader::End(data_type, transport_type, _, header) => {
                 if let Err(error) = check_data_type(self.data_type, data_type, &self.name) {
                     self.sender.send_ack(self.id);
                     return Err(error);
                 }
                 self.batch_end(index, &data, transport_type, header)
             }
-            DataHeader::Drain(start, count, _, header) => {
+            DataHeader::Drain(start, count, header) => {
                 self.drain(index, start, count, header, &data)
             }
-            DataHeader::Clear(_, update) => {
-                let header = self.decode_header(update, &data)?;
+            DataHeader::Clear(header_update) => {
+                let header = self.decode_header(header_update, &data)?;
                 // A later change of this key must not complete an older batch.
                 self.buffers.lock().remove(&index);
                 let mut w = self.inner.write();
@@ -1079,7 +1079,7 @@ where
                     None => Err(self.missing_key(index, "Clear")),
                 }
             }
-            DataHeader::Header(_, header) => {
+            DataHeader::Header(header) => {
                 let header = decode_header_bytes(self.header_type, header, &data, &self.name)?;
                 let mut w = self.inner.write();
                 if !w.data.contains_key(&index) {
@@ -1088,7 +1088,7 @@ where
                 w.set_header(index, Some(header));
                 Ok(())
             }
-            DataHeader::Reset(_) => Err(format!(
+            DataHeader::Reset => Err(format!(
                 "A Data reset is not valid for key {} in MultiData: {}",
                 index, self.name
             )),
@@ -1175,7 +1175,6 @@ mod tests {
                 DataHeader::End(
                     DataType::U8,
                     TransportType::Set(4),
-                    false,
                     0,
                     crate::protocol::data::HeaderUpdate::Keep,
                 ),
@@ -1196,7 +1195,7 @@ mod tests {
                 data.update(
                     1,
                     (
-                        DataHeader::Clear(false, crate::protocol::data::HeaderUpdate::Keep),
+                        DataHeader::Clear(crate::protocol::data::HeaderUpdate::Keep),
                         Bytes::new(),
                     ),
                 )
@@ -1229,7 +1228,6 @@ mod tests {
                     DataHeader::All(
                         DataType::U8,
                         TransportType::Set(2),
-                        false,
                         0,
                         crate::protocol::data::HeaderUpdate::Keep,
                     ),
@@ -1255,7 +1253,6 @@ mod tests {
                 DataHeader::All(
                     DataType::U16,
                     TransportType::Set(1),
-                    false,
                     0,
                     crate::protocol::data::HeaderUpdate::Keep
                 ),
@@ -1270,7 +1267,6 @@ mod tests {
                 DataHeader::End(
                     DataType::U16,
                     TransportType::Set(1),
-                    false,
                     0,
                     crate::protocol::data::HeaderUpdate::Keep
                 ),
@@ -1294,7 +1290,6 @@ mod tests {
                     DataHeader::All(
                         DataType::U16,
                         TransportType::Set(1),
-                        false,
                         0,
                         crate::protocol::data::HeaderUpdate::Keep
                     ),
@@ -1312,7 +1307,6 @@ mod tests {
                     DataHeader::End(
                         DataType::U16,
                         TransportType::Set(1),
-                        false,
                         0,
                         crate::protocol::data::HeaderUpdate::Keep
                     ),
@@ -1337,7 +1331,6 @@ mod malformed_tests {
             DataHeader::All(
                 DataType::U8,
                 TransportType::Set(2),
-                false,
                 0,
                 crate::protocol::data::HeaderUpdate::Keep,
             ),
@@ -1350,7 +1343,6 @@ mod malformed_tests {
                 DataHeader::All(
                     DataType::U8,
                     TransportType::Set(3),
-                    false,
                     0,
                     crate::protocol::data::HeaderUpdate::Keep
                 ),
@@ -1369,7 +1361,6 @@ mod malformed_tests {
                 DataHeader::End(
                     DataType::U8,
                     TransportType::Set(3),
-                    false,
                     0,
                     crate::protocol::data::HeaderUpdate::Keep
                 ),
@@ -1383,7 +1374,6 @@ mod malformed_tests {
             DataHeader::All(
                 DataType::U8,
                 TransportType::Set(1),
-                false,
                 0,
                 crate::protocol::data::HeaderUpdate::Keep,
             ),
@@ -1399,7 +1389,6 @@ mod malformed_tests {
             DataHeader::All(
                 DataType::U8,
                 TransportType::Set(values.len() as u64),
-                false,
                 0,
                 crate::protocol::data::HeaderUpdate::Keep,
             ),
@@ -1428,7 +1417,6 @@ mod malformed_tests {
                 DataHeader::End(
                     DataType::U8,
                     TransportType::Set(1),
-                    false,
                     0,
                     crate::protocol::data::HeaderUpdate::Keep
                 ),
@@ -1453,7 +1441,6 @@ mod malformed_tests {
             DataHeader::End(
                 DataType::U8,
                 TransportType::Set(2),
-                false,
                 0,
                 crate::protocol::data::HeaderUpdate::Keep,
             ),
@@ -1473,7 +1460,7 @@ mod malformed_tests {
 
         assert!(
             data.update_data((
-                DataHeader::Drain(2, 5, false, crate::protocol::data::HeaderUpdate::Keep),
+                DataHeader::Drain(2, 5, crate::protocol::data::HeaderUpdate::Keep),
                 Bytes::new()
             ))
             .is_err()
@@ -1482,7 +1469,7 @@ mod malformed_tests {
         data.read(|v| assert_eq!(v, Some(&[1, 2, 3][..])));
 
         data.update_data((
-            DataHeader::Drain(0, 1, false, crate::protocol::data::HeaderUpdate::Keep),
+            DataHeader::Drain(0, 1, crate::protocol::data::HeaderUpdate::Keep),
             Bytes::new(),
         ))
         .unwrap();
@@ -1502,7 +1489,6 @@ mod malformed_tests {
                 DataHeader::All(
                     DataType::U16,
                     TransportType::Set(3),
-                    false,
                     0,
                     crate::protocol::data::HeaderUpdate::Keep,
                 ),
@@ -1525,7 +1511,7 @@ mod malformed_tests {
         for start in [u64::MAX, u64::MAX - 1] {
             let drain = || {
                 (
-                    DataHeader::Drain(start, 2, false, crate::protocol::data::HeaderUpdate::Keep),
+                    DataHeader::Drain(start, 2, crate::protocol::data::HeaderUpdate::Keep),
                     Bytes::new(),
                 )
             };
@@ -1536,7 +1522,6 @@ mod malformed_tests {
                     DataHeader::All(
                         DataType::U16,
                         TransportType::Replace(start, 1),
-                        false,
                         0,
                         crate::protocol::data::HeaderUpdate::Keep,
                     ),
@@ -1582,7 +1567,7 @@ mod header_tests {
     fn set(update: HeaderUpdate, values: &[u16]) -> DataHeader {
         let count = values.len() as u64;
         let len = size_of_val(values) as u32;
-        DataHeader::All(DataType::U16, TransportType::Set(count), false, len, update)
+        DataHeader::All(DataType::U16, TransportType::Set(count), len, update)
     }
 
     fn acks(receiver: &mut UnboundedReceiver<Option<ChannelMessage>>) -> usize {
@@ -1653,7 +1638,7 @@ mod header_tests {
         assert_eq!(data.get_with_header(), None);
 
         let (update, bytes) = payload(&meta(5), type_id(), &[3]);
-        let end = DataHeader::End(DataType::U16, TransportType::Set(3), true, 2, update);
+        let end = DataHeader::End(DataType::U16, TransportType::Set(3), 2, update);
         data.update_data((end, bytes)).unwrap();
         assert_eq!(acks(&mut receiver), 1);
         data.read_with_header(|entry| {
@@ -1671,19 +1656,16 @@ mod header_tests {
         };
 
         let error = multi
-            .update(4, (DataHeader::Header(false, header), bytes.clone()))
+            .update(4, (DataHeader::Header(header), bytes.clone()))
             .unwrap_err();
         assert!(error.contains("does not exist"), "{error}");
         let error = multi
-            .update(4, (DataHeader::Clear(false, update), bytes.clone()))
+            .update(4, (DataHeader::Clear(update), bytes.clone()))
             .unwrap_err();
         assert!(error.contains("does not exist"), "{error}");
         // A clear that keeps the header loses nothing on a missing key.
         multi
-            .update(
-                4,
-                (DataHeader::Clear(false, HeaderUpdate::Keep), Bytes::new()),
-            )
+            .update(4, (DataHeader::Clear(HeaderUpdate::Keep), Bytes::new()))
             .unwrap();
         assert_eq!(multi.header(4), None);
 
@@ -1693,7 +1675,7 @@ mod header_tests {
         assert!(error.contains("without a header"), "{error}");
         assert_eq!(multi.get(4), None);
         let error = multi
-            .update(4, (DataHeader::Reset(false), Bytes::new()))
+            .update(4, (DataHeader::Reset, Bytes::new()))
             .unwrap_err();
         assert!(error.contains("reset"), "{error}");
 
@@ -1701,7 +1683,7 @@ mod header_tests {
         multi.update(4, (set(created, &[9]), values)).unwrap();
         assert_eq!(multi.header(4), Some(meta(0)));
         multi
-            .update(4, (DataHeader::Header(true, header), bytes))
+            .update(4, (DataHeader::Header(header), bytes))
             .unwrap();
         assert_eq!(multi.header(4), Some(meta(1)));
         assert_eq!(multi.get(4), Some(vec![9]));
@@ -1719,7 +1701,7 @@ mod header_tests {
 
         // A change other than a set needs data that is set.
         let (update, bytes) = payload(&meta(1), type_id(), &[1]);
-        let add = DataHeader::All(DataType::U16, TransportType::Add(1), false, 2, update);
+        let add = DataHeader::All(DataType::U16, TransportType::Add(1), 2, update);
         let error = data.update_data((add, bytes)).unwrap_err();
         assert!(error.contains("is not set"), "{error}");
         let (_, header_bytes) = payload(&meta(1), type_id(), &[]);
@@ -1727,10 +1709,10 @@ mod header_tests {
             unreachable!()
         };
         let error = data
-            .update_data((DataHeader::Header(false, header), header_bytes.clone()))
+            .update_data((DataHeader::Header(header), header_bytes.clone()))
             .unwrap_err();
         assert!(error.contains("is not set"), "{error}");
-        let drain = DataHeader::Drain(0, 0, false, HeaderUpdate::Keep);
+        let drain = DataHeader::Drain(0, 0, HeaderUpdate::Keep);
         let error = data.update_data((drain, Bytes::new())).unwrap_err();
         assert!(error.contains("is not set"), "{error}");
 
@@ -1750,7 +1732,7 @@ mod header_tests {
                 HeaderUpdate::Set(_) => header_bytes.clone(),
             };
             let error = data
-                .update_data((DataHeader::Clear(false, clear), bytes))
+                .update_data((DataHeader::Clear(clear), bytes))
                 .unwrap_err();
             assert!(error.contains("is not set"), "{error}");
             assert_eq!(data.get_with_header(), None);
@@ -1760,14 +1742,13 @@ mod header_tests {
         data.update_data((set(update, &[]), header_bytes)).unwrap();
         assert_eq!(data.get_with_header(), Some((vec![], meta(1))));
         assert_eq!(acks(&mut receiver), 1);
-        data.update_data((DataHeader::Reset(true), Bytes::new()))
-            .unwrap();
+        data.update_data((DataHeader::Reset, Bytes::new())).unwrap();
         assert_eq!(data.get_with_header(), None);
         assert_eq!(acks(&mut receiver), 0);
 
         // Without a header type, a set creates the data alone.
         let plain = Data::<u16>::new("root.plain".into(), 8, sender);
-        let clear = DataHeader::Clear(false, HeaderUpdate::Keep);
+        let clear = DataHeader::Clear(HeaderUpdate::Keep);
         let error = plain.update_data((clear, Bytes::new())).unwrap_err();
         assert!(error.contains("is not set"), "{error}");
         plain
@@ -1798,7 +1779,6 @@ mod header_tests {
             DataHeader::All(
                 DataType::U8,
                 TransportType::Set(0),
-                false,
                 0,
                 HeaderUpdate::Set(header),
             ),
@@ -1807,7 +1787,7 @@ mod header_tests {
         frame.extend([1, 2, 3]);
         assert!(MessagesParser::from_bytes(Bytes::from(frame)).is_err());
 
-        let message = ServerHeader::Data(7, DataHeader::Header(false, header));
+        let message = ServerHeader::Data(7, DataHeader::Header(header));
         let mut frame = postcard::to_stdvec(&message).unwrap();
         frame.extend([0; 10]);
         let (_, (_, payload)) = MessagesParser::from_bytes(Bytes::from(frame)).unwrap();

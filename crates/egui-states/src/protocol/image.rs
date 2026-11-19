@@ -184,27 +184,27 @@ pub(crate) fn to_rgba(
 
 #[derive(Serialize, Deserialize)]
 pub(crate) enum ImageSetHeader {
-    All([u32; 2], bool),  // [x, y], update
+    All([u32; 2]),        // [x, y]
     Start([u32; 2], u32), // [x, y], pixels
     Batch(u32),           // pixels
-    End(u32, bool),       // pixels, update
+    End(u32),             // pixels
 }
 
 /// Chunk framing of a rectangle update; it mirrors [`ImageSetHeader`]. The
 /// client applies the rectangle once, at `All` or `End`.
 #[derive(Serialize, Deserialize)]
 pub(crate) enum ImageUpdateHeader {
-    All([u32; 4], bool),  // [x, y, w, h], update
+    All([u32; 4]),        // [x, y, w, h]
     Start([u32; 4], u32), // [x, y, w, h], pixels
     Batch(u32),           // pixels
-    End(u32, bool),       // pixels, update
+    End(u32),             // pixels
 }
 
 #[derive(Serialize, Deserialize)]
 pub(crate) enum ImageMultiHeader {
-    Remove(u32, bool),             // index, update
+    Remove(u32),                   // index
     Modify(u32, ImageHeader, u32), // index, image header, payload size
-    Reset(bool),                   // update
+    Reset,
 }
 
 #[cfg(any(feature = "server", feature = "python"))]
@@ -252,24 +252,15 @@ impl ImageMultiHeader {
 pub(crate) enum ImageHeader {
     Set(ImageSetHeader, ImageType),       // header
     Update(ImageUpdateHeader, ImageType), // header
-    Fill([u32; 2], [u8; 4], bool),        // [width, height], RGBA, update
+    Fill([u32; 2], [u8; 4]),              // [width, height], RGBA
 }
 
 #[cfg(feature = "client")]
 impl ImageHeader {
-    /// Whether the message asks for a repaint; the first and middle chunks of
-    /// an image set or update never do.
-    pub(crate) fn update_flag(&self) -> bool {
-        match self {
-            Self::Set(ImageSetHeader::All(_, update) | ImageSetHeader::End(_, update), _)
-            | Self::Update(
-                ImageUpdateHeader::All(_, update) | ImageUpdateHeader::End(_, update),
-                _,
-            )
-            | Self::Fill(_, _, update) => *update,
-            Self::Set(ImageSetHeader::Start(..) | ImageSetHeader::Batch(_), _)
-            | Self::Update(ImageUpdateHeader::Start(..) | ImageUpdateHeader::Batch(_), _) => false,
-        }
+    /// Whether applying the message changes the image; the first and middle
+    /// chunks of an image set or update only buffer pixels.
+    pub(crate) fn changes_state(&self) -> bool {
+        self.requires_ack()
     }
 
     /// Whether the client acknowledges this message, also when it fails.
@@ -285,10 +276,11 @@ impl ImageHeader {
 
 #[cfg(feature = "client")]
 impl ImageMultiHeader {
-    pub(crate) fn update_flag(&self) -> bool {
+    /// Whether applying the message changes the collection of images.
+    pub(crate) fn changes_state(&self) -> bool {
         match self {
-            Self::Remove(_, update) | Self::Reset(update) => *update,
-            Self::Modify(_, header, _) => header.update_flag(),
+            Self::Remove(_) | Self::Reset => true,
+            Self::Modify(_, header, _) => header.changes_state(),
         }
     }
 

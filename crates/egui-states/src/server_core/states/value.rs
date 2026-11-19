@@ -75,12 +75,12 @@ impl ValueCore {
         self.value.read().0.clone()
     }
 
-    pub(crate) fn set(&self, value: Bytes, set_signals: bool, update: bool) -> Result<(), String> {
+    pub(crate) fn set(&self, value: Bytes, set_signals: bool) -> Result<(), String> {
         // checked even when disconnected, otherwise the value would be sent by sync()
         check_value_size(&self.name, value.len())?;
 
         if self.connected.load(Ordering::Acquire) {
-            let message = ServerHeader::serialize_value(self.id, self.type_id, update, &value)?;
+            let message = ServerHeader::serialize_value(self.id, self.type_id, &value)?;
             let mut w = self.value.write();
 
             w.1 += 1;
@@ -114,8 +114,7 @@ impl SyncTrait for ValueCore {
     fn sync(&self) -> Result<(), ()> {
         let mut w = self.value.write();
         w.1 = 1;
-        let data =
-            ServerHeader::serialize_value(self.id, self.type_id, false, &w.0).map_err(|_| ())?;
+        let data = ServerHeader::serialize_value(self.id, self.type_id, &w.0).map_err(|_| ())?;
         drop(w);
 
         self.sender.send(data);
@@ -154,17 +153,12 @@ impl ValueTakeCore {
         })
     }
 
-    pub(crate) fn set(&self, value: Bytes, blocking: bool, update: bool) -> Result<(), String> {
+    pub(crate) fn set(&self, value: Bytes, blocking: bool) -> Result<(), String> {
         check_value_size(&self.name, value.len())?;
 
         if self.connected.load(Ordering::Acquire) {
-            let message = ServerHeader::serialize_value_take(
-                self.id,
-                self.type_id,
-                blocking,
-                update,
-                &value,
-            )?;
+            let message =
+                ServerHeader::serialize_value_take(self.id, self.type_id, blocking, &value)?;
 
             let _guard = self.lock.write();
 
@@ -225,12 +219,12 @@ impl ValueStaticCore {
         })
     }
 
-    pub(crate) fn set(&self, value: Bytes, update: bool) -> Result<(), String> {
+    pub(crate) fn set(&self, value: Bytes) -> Result<(), String> {
         // checked even when disconnected, otherwise the value would be sent by sync()
         check_value_size(&self.name, value.len())?;
 
         if self.connected.load(Ordering::Acquire) {
-            let message = ServerHeader::serialize_static(self.id, self.type_id, update, &value)?;
+            let message = ServerHeader::serialize_static(self.id, self.type_id, &value)?;
             let mut w = self.value.write();
 
             *w = value;
@@ -251,8 +245,7 @@ impl ValueStaticCore {
 impl SyncTrait for ValueStaticCore {
     fn sync(&self) -> Result<(), ()> {
         let w = self.value.read();
-        let data =
-            ServerHeader::serialize_static(self.id, self.type_id, false, &w).map_err(|_| ())?;
+        let data = ServerHeader::serialize_static(self.id, self.type_id, &w).map_err(|_| ())?;
         drop(w);
 
         self.sender.send(data);
@@ -335,10 +328,10 @@ mod tests {
     #[test]
     fn client_update_is_ignored_while_a_server_send_is_unacknowledged() {
         let (value, signals, mut receiver) = value(true);
-        value.set(b("server"), false, false).unwrap();
+        value.set(b("server"), false).unwrap();
         assert!(matches!(
             next_message(&mut receiver),
-            (ServerHeader::Value(ID, TYPE_ID, false, 6), payload) if payload == b"server"
+            (ServerHeader::Value(ID, TYPE_ID, 6), payload) if payload == b"server"
         ));
 
         // The client has not yet seen "server", so its concurrent write must lose:
@@ -362,8 +355,8 @@ mod tests {
     #[test]
     fn every_unacknowledged_send_needs_its_own_acknowledgement() {
         let (value, _signals, mut receiver) = value(true);
-        value.set(b("first"), false, false).unwrap();
-        value.set(b("second"), false, false).unwrap();
+        value.set(b("first"), false).unwrap();
+        value.set(b("second"), false).unwrap();
         next_message(&mut receiver);
         next_message(&mut receiver);
 
@@ -384,8 +377,8 @@ mod tests {
     #[test]
     fn reset_discards_every_unacknowledged_send() {
         let (value, _signals, mut receiver) = value(true);
-        value.set(b("first"), false, false).unwrap();
-        value.set(b("second"), false, false).unwrap();
+        value.set(b("first"), false).unwrap();
+        value.set(b("second"), false).unwrap();
         next_message(&mut receiver);
         next_message(&mut receiver);
 
@@ -400,7 +393,7 @@ mod tests {
         value.sync().unwrap();
         assert!(matches!(
             next_message(&mut receiver),
-            (ServerHeader::Value(ID, TYPE_ID, false, 7), payload) if payload == b"initial"
+            (ServerHeader::Value(ID, TYPE_ID, 7), payload) if payload == b"initial"
         ));
 
         value.update_value(TYPE_ID, false, b("client")).unwrap();
@@ -413,7 +406,7 @@ mod tests {
     #[test]
     fn disconnected_server_writes_are_stored_without_sending_or_blocking_clients() {
         let (value, _signals, mut receiver) = value(false);
-        value.set(b("offline"), false, false).unwrap();
+        value.set(b("offline"), false).unwrap();
         assert!(receiver.try_recv().is_err());
         value.update_value(TYPE_ID, false, b("client")).unwrap();
         assert_eq!(value.get(), b("client"));
@@ -447,7 +440,7 @@ mod tests {
         let (value, mut receiver) = value_take(true);
         value.sync().unwrap();
         let error = value
-            .set(Bytes::from(vec![0; VALUE_MAX_SIZE + 1]), false, false)
+            .set(Bytes::from(vec![0; VALUE_MAX_SIZE + 1]), false)
             .unwrap_err();
         assert!(error.contains("root.take"), "{error}");
         assert!(receiver.try_recv().is_err());
@@ -459,7 +452,7 @@ mod tests {
         // A regression would block forever, so bound it from another thread.
         let (done, finished) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let result = value.set(b("payload"), true, false);
+            let result = value.set(b("payload"), true);
             let _ = done.send(result);
         });
         let result = finished
@@ -481,14 +474,14 @@ mod tests {
             sender,
             connected.clone(),
         );
-        value.set(b("latest"), true).unwrap();
+        value.set(b("latest")).unwrap();
         assert!(receiver.try_recv().is_err());
 
         connected.store(true, Ordering::Release);
         value.sync().unwrap();
         assert!(matches!(
             next_message(&mut receiver),
-            (ServerHeader::Static(42, TYPE_ID, false, 6), payload) if payload == b"latest"
+            (ServerHeader::Static(42, TYPE_ID, 6), payload) if payload == b"latest"
         ));
     }
 }

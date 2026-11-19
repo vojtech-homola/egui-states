@@ -39,33 +39,31 @@ impl<T> VecState<T>
 where
     T: Serialize,
 {
-    /// Replaces the complete vector and optionally requests a client repaint.
-    pub fn set(&self, value: Vec<T>, update: bool) -> Result<()> {
+    /// Replaces the complete vector.
+    pub fn set(&self, value: Vec<T>) -> Result<()> {
         let data = value
             .iter()
             .map(serialize_bytes)
             .collect::<Result<Vec<_>>>()?;
-        self.inner.set(data, update).map_err(ServerError::new)
+        self.inner.set(data).map_err(ServerError::new)
     }
 
-    /// Replaces the item at `index` and optionally requests a repaint.
+    /// Replaces the item at `index`.
     ///
     /// # Errors
     ///
     /// Returns an error if `index` is out of range or serialization fails.
-    pub fn set_item(&self, index: usize, value: T, update: bool) -> Result<()> {
+    pub fn set_item(&self, index: usize, value: T) -> Result<()> {
         let data = serialize_bytes(&value)?;
         self.inner
-            .set_item_py(index, data, update)
+            .set_item_py(index, data)
             .map_err(ServerError::new)
     }
 
-    /// Appends an item and optionally requests a repaint.
-    pub fn add_item(&self, value: T, update: bool) -> Result<()> {
+    /// Appends an item.
+    pub fn add_item(&self, value: T) -> Result<()> {
         let data = serialize_bytes(&value)?;
-        self.inner
-            .append_item(data, update)
-            .map_err(ServerError::new)
+        self.inner.append_item(data).map_err(ServerError::new)
     }
 }
 
@@ -97,11 +95,8 @@ where
     /// # Errors
     ///
     /// Returns an error if `index` is out of range or deserialization fails.
-    pub fn remove_item(&self, index: usize, update: bool) -> Result<T> {
-        let data = self
-            .inner
-            .remove_item(index, update)
-            .map_err(ServerError::new)?;
+    pub fn remove_item(&self, index: usize) -> Result<T> {
+        let data = self.inner.remove_item(index).map_err(ServerError::new)?;
         deserialize_bytes(&data)
     }
 }
@@ -145,19 +140,19 @@ where
     K: Serialize,
     V: Serialize,
 {
-    /// Replaces the complete map and optionally requests a client repaint.
-    pub fn set(&self, value: HashMap<K, V>, update: bool) -> Result<()> {
+    /// Replaces the complete map.
+    pub fn set(&self, value: HashMap<K, V>) -> Result<()> {
         let mut map = HashMap::with_capacity(value.len());
         for (key, value) in value {
             map.insert(serialize_bytes(&key)?, serialize_bytes(&value)?);
         }
-        self.inner.set(map, update).map_err(ServerError::new)
+        self.inner.set(map).map_err(ServerError::new)
     }
 
-    /// Inserts or replaces one entry and optionally requests a repaint.
-    pub fn set_item(&self, key: K, value: V, update: bool) -> Result<()> {
+    /// Inserts or replaces one entry.
+    pub fn set_item(&self, key: K, value: V) -> Result<()> {
         self.inner
-            .set_item(serialize_bytes(&key)?, serialize_bytes(&value)?, update)
+            .set_item(serialize_bytes(&key)?, serialize_bytes(&value)?)
             .map_err(ServerError::new)
     }
 }
@@ -193,11 +188,11 @@ where
     }
 
     /// Removes and returns the value at `key`, if present.
-    pub fn remove_item(&self, key: &K, update: bool) -> Result<Option<V>> {
+    pub fn remove_item(&self, key: &K) -> Result<Option<V>> {
         let key_data = serialize_bytes(key)?;
         match self
             .inner
-            .remove_item(&key_data, update)
+            .remove_item(&key_data)
             .map_err(|_| ServerError::new("failed to remove map item"))?
         {
             Some(value) => Ok(Some(deserialize_bytes(&value)?)),
@@ -228,18 +223,17 @@ mod tests {
         let values = VecState::<i32>::new(&server, "root.values").unwrap();
         let map = MapState::<u16, String>::new(&server, "root.map").unwrap();
 
-        values.set(vec![1, 2], false).unwrap();
-        values.add_item(3, false).unwrap();
-        values.set_item(1, 4, false).unwrap();
+        values.set(vec![1, 2]).unwrap();
+        values.add_item(3).unwrap();
+        values.set_item(1, 4).unwrap();
         assert_eq!(values.get().unwrap(), vec![1, 4, 3]);
-        assert_eq!(values.remove_item(0, false).unwrap(), 1);
+        assert_eq!(values.remove_item(0).unwrap(), 1);
         assert_eq!(values.get().unwrap(), vec![4, 3]);
 
-        map.set(HashMap::from([(1, String::from("one"))]), false)
-            .unwrap();
-        map.set_item(2, String::from("two"), false).unwrap();
+        map.set(HashMap::from([(1, String::from("one"))])).unwrap();
+        map.set_item(2, String::from("two")).unwrap();
         assert_eq!(map.get_item(&2).unwrap().as_deref(), Some("two"));
-        assert_eq!(map.remove_item(&1, false).unwrap().as_deref(), Some("one"));
+        assert_eq!(map.remove_item(&1).unwrap().as_deref(), Some("one"));
         assert_eq!(map.len(), 1);
     }
 
@@ -249,19 +243,18 @@ mod tests {
         let values = VecState::<i32>::new(&server, "root.values").unwrap();
         let map = MapState::<u16, String>::new(&server, "root.map").unwrap();
 
-        values.set(vec![1, 2], false).unwrap();
-        assert!(values.set_item(2, 9, false).is_err());
+        values.set(vec![1, 2]).unwrap();
+        assert!(values.set_item(2, 9).is_err());
         assert!(values.get_item(2).is_err());
-        assert!(values.remove_item(2, false).is_err());
+        assert!(values.remove_item(2).is_err());
         assert_eq!(values.get().unwrap(), vec![1, 2]);
 
         let too_large = "a".repeat(crate::protocol::VALUE_MAX_SIZE + 1);
-        map.set(HashMap::from([(1, String::from("one"))]), false)
-            .unwrap();
-        assert!(map.set_item(2, too_large.clone(), false).is_err());
-        assert!(map.set(HashMap::from([(3, too_large)]), false).is_err());
+        map.set(HashMap::from([(1, String::from("one"))])).unwrap();
+        assert!(map.set_item(2, too_large.clone()).is_err());
+        assert!(map.set(HashMap::from([(3, too_large)])).is_err());
         assert_eq!(map.get_item(&9).unwrap(), None);
-        assert_eq!(map.remove_item(&9, false).unwrap(), None);
+        assert_eq!(map.remove_item(&9).unwrap(), None);
         assert_eq!(
             map.get().unwrap(),
             HashMap::from([(1, String::from("one"))])

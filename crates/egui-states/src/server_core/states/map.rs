@@ -39,12 +39,7 @@ impl ValueMap {
     }
 
     /// Serializes a whole-map replacement, split into frame-sized messages.
-    /// Only the last message requests a UI update.
-    fn serialize_all(
-        &self,
-        map: &HashMap<Bytes, Bytes>,
-        update: bool,
-    ) -> Result<Vec<SenderData>, &'static str> {
+    fn serialize_all(&self, map: &HashMap<Bytes, Bytes>) -> Result<Vec<SenderData>, &'static str> {
         serialize_replacement(
             map.iter(),
             |(key, value)| key.len() + value.len(),
@@ -52,16 +47,9 @@ impl ValueMap {
                 message.extend_from_slice(key);
                 message.extend_from_slice(value);
             },
-            |part, count, size, update| {
-                ServerHeader::ValueMap(
-                    self.id,
-                    self.type_id,
-                    update,
-                    MapHeader::part(part, count),
-                    size,
-                )
+            |part, count, size| {
+                ServerHeader::ValueMap(self.id, self.type_id, MapHeader::part(part, count), size)
             },
-            update,
         )
     }
 
@@ -71,7 +59,7 @@ impl ValueMap {
         }
     }
 
-    pub(crate) fn set(&self, map: HashMap<Bytes, Bytes>, update: bool) -> Result<(), String> {
+    pub(crate) fn set(&self, map: HashMap<Bytes, Bytes>) -> Result<(), String> {
         // the limit applies to single items, not to the whole map
         for (key, value) in map.iter() {
             check_value_size(&self.name, key.len() + value.len())?;
@@ -80,7 +68,7 @@ impl ValueMap {
         let mut w = self.map.write();
 
         if self.connected.load(Ordering::Acquire) {
-            self.send_all(self.serialize_all(&map, update)?);
+            self.send_all(self.serialize_all(&map)?);
         }
 
         *w = map;
@@ -91,7 +79,7 @@ impl ValueMap {
         self.map.read().clone()
     }
 
-    pub(crate) fn set_item(&self, key: Bytes, value: Bytes, update: bool) -> Result<(), String> {
+    pub(crate) fn set_item(&self, key: Bytes, value: Bytes) -> Result<(), String> {
         check_value_size(&self.name, key.len() + value.len())?;
 
         let mut w = self.map.write();
@@ -100,7 +88,6 @@ impl ValueMap {
             let header = ServerHeader::ValueMap(
                 self.id,
                 self.type_id,
-                update,
                 MapHeader::Set,
                 (key.len() + value.len()) as u32,
             );
@@ -123,7 +110,7 @@ impl ValueMap {
         self.map.read().get(key).cloned()
     }
 
-    pub(crate) fn remove_item(&self, key: &Bytes, update: bool) -> Result<Option<Bytes>, ()> {
+    pub(crate) fn remove_item(&self, key: &Bytes) -> Result<Option<Bytes>, ()> {
         let mut w = self.map.write();
         let old = match w.remove(key) {
             Some(v) => v,
@@ -131,13 +118,8 @@ impl ValueMap {
         };
 
         if self.connected.load(Ordering::Acquire) {
-            let header = ServerHeader::ValueMap(
-                self.id,
-                self.type_id,
-                update,
-                MapHeader::Remove,
-                key.len() as u32,
-            );
+            let header =
+                ServerHeader::ValueMap(self.id, self.type_id, MapHeader::Remove, key.len() as u32);
             let mut data = serialize(&header)?;
             data.extend_from_slice(key);
             self.sender.send(data);
@@ -155,7 +137,7 @@ impl ValueMap {
 impl SyncTrait for ValueMap {
     fn sync(&self) -> Result<(), ()> {
         let r = self.map.read();
-        self.send_all(self.serialize_all(&r, false).map_err(|_| ())?);
+        self.send_all(self.serialize_all(&r).map_err(|_| ())?);
         Ok(())
     }
 }

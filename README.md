@@ -75,7 +75,9 @@ of it to a closure and send it only when the closure changed it:
 state.count.edit_signal(|count| ui.add(egui::DragValue::new(count)));
 ```
 
-Server setters can request an egui repaint with their `update` flag.
+The client repaints the UI after the server changes a state, once per
+received batch of changes; see
+[repaints](docs/architecture.md#repaints-and-runtimes).
 
 ## File transfers
 

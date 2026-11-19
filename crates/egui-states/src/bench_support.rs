@@ -52,7 +52,6 @@ pub fn pack_data_set(data: &[u8]) -> usize {
         count,
         DataType::U8,
         None,
-        false,
         WireHeader::KEEP,
     )
     .expect("pack data")
@@ -69,7 +68,7 @@ pub fn pack_image_set(pixels: &[u8], size: [usize; 2], format: PixelFormat) -> u
         size[0] * size[1] * image_type.bytes_per_pixel()
     );
     let image = ImageData::packed(pixels, size, image_type);
-    pack_set_data(1, &image, false)
+    pack_set_data(1, &image)
         .expect("pack image")
         .iter()
         .map(|(message, _)| message.len())
@@ -153,7 +152,7 @@ impl ClientData {
             [single] => self
                 .data
                 .update_data((
-                    DataHeader::All(DataType::U8, TransportType::Set(count), false, 0, Keep),
+                    DataHeader::All(DataType::U8, TransportType::Set(count), 0, Keep),
                     single.clone(),
                 ))
                 .expect("set"),
@@ -168,7 +167,7 @@ impl ClientData {
                 }
                 self.data
                     .update_data((
-                        DataHeader::End(DataType::U8, TransportType::Set(count), false, 0, Keep),
+                        DataHeader::End(DataType::U8, TransportType::Set(count), 0, Keep),
                         last.clone(),
                     ))
                     .expect("end");

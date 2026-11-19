@@ -563,19 +563,12 @@ impl StateServerCore {
         pyparsing::deserialize_py(py, &mut parser, object_type)
     }
 
-    fn value_set(
-        &self,
-        value_id: u64,
-        value: &Bound<PyAny>,
-        set_signal: bool,
-        update: bool,
-    ) -> PyResult<()> {
+    fn value_set(&self, value_id: u64, value: &Bound<PyAny>, set_signal: bool) -> PyResult<()> {
         let (val, object_type) = self.inner_values(value_id)?;
         let mut creator = ValueCreator::new();
         pyparsing::serialize_py(value, object_type, &mut creator)?;
         let data = creator.finalize();
-        val.set(data, set_signal, update)
-            .map_err(PyValueError::new_err)
+        val.set(data, set_signal).map_err(PyValueError::new_err)
     }
 
     // values take ------------------------------------------------------
@@ -585,16 +578,12 @@ impl StateServerCore {
         value_id: u64,
         value: &Bound<PyAny>,
         blocking: bool,
-        update: bool,
     ) -> PyResult<()> {
         let (val, object_type) = self.inner_value_take(value_id)?;
         let mut creator = ValueCreator::new();
         pyparsing::serialize_py(value, object_type, &mut creator)?;
         let data = creator.finalize();
-        py.detach(|| {
-            val.set(data, blocking, update)
-                .map_err(PyValueError::new_err)
-        })
+        py.detach(|| val.set(data, blocking).map_err(PyValueError::new_err))
     }
 
     // static values ----------------------------------------------------
@@ -604,12 +593,12 @@ impl StateServerCore {
         pyparsing::deserialize_py(py, &mut parser, object_type)
     }
 
-    fn static_set(&self, value_id: u64, value: &Bound<PyAny>, update: bool) -> PyResult<()> {
+    fn static_set(&self, value_id: u64, value: &Bound<PyAny>) -> PyResult<()> {
         let (val, object_type) = self.inner_static(value_id)?;
         let mut creator = ValueCreator::new();
         pyparsing::serialize_py(value, object_type, &mut creator)?;
         let data = creator.finalize();
-        val.set(data, update).map_err(PyValueError::new_err)
+        val.set(data).map_err(PyValueError::new_err)
     }
 
     // signals ----------------------------------------------------------
@@ -706,7 +695,7 @@ impl StateServerCore {
     }
 
     // lists ------------------------------------------------------------
-    fn list_set(&self, value_id: u64, py_list: &Bound<PyList>, update: bool) -> PyResult<()> {
+    fn list_set(&self, value_id: u64, py_list: &Bound<PyList>) -> PyResult<()> {
         let (list, value_type) = self.inner_vec(value_id)?;
         let mut vec = Vec::with_capacity(py_list.len());
         for item in py_list.iter() {
@@ -715,7 +704,7 @@ impl StateServerCore {
             let data = creator.finalize();
             vec.push(data);
         }
-        list.set(vec, update).map_err(PyValueError::new_err)
+        list.set(vec).map_err(PyValueError::new_err)
     }
 
     fn list_get<'py>(&self, py: Python<'py>, value_id: u64) -> PyResult<Bound<'py, PyList>> {
@@ -730,18 +719,12 @@ impl StateServerCore {
         Ok(py_list)
     }
 
-    fn list_set_item(
-        &self,
-        value_id: u64,
-        index: usize,
-        item: &Bound<PyAny>,
-        update: bool,
-    ) -> PyResult<()> {
+    fn list_set_item(&self, value_id: u64, index: usize, item: &Bound<PyAny>) -> PyResult<()> {
         let (list, value_type) = self.inner_vec(value_id)?;
         let mut creator = ValueCreator::new();
         pyparsing::serialize_py(item, value_type, &mut creator)?;
         let data = creator.finalize();
-        list.set_item_py(index, data, update)
+        list.set_item_py(index, data)
             .map_err(PyValueError::new_err)?;
         Ok(())
     }
@@ -766,24 +749,22 @@ impl StateServerCore {
         py: Python<'py>,
         value_id: u64,
         index: usize,
-        update: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
         let (list, value_type) = self.inner_vec(value_id)?;
         let data = list
-            .remove_item(index, update)
+            .remove_item(index)
             .map_err(pyo3::exceptions::PyValueError::new_err)?;
         let mut parser = ValueParser::new(data);
         let py_value = pyparsing::deserialize_py(py, &mut parser, value_type)?;
         Ok(py_value)
     }
 
-    fn list_append_item(&self, value_id: u64, item: &Bound<PyAny>, update: bool) -> PyResult<()> {
+    fn list_append_item(&self, value_id: u64, item: &Bound<PyAny>) -> PyResult<()> {
         let (list, value_type) = self.inner_vec(value_id)?;
         let mut creator = ValueCreator::new();
         pyparsing::serialize_py(item, value_type, &mut creator)?;
         let data = creator.finalize();
-        list.append_item(data, update)
-            .map_err(PyValueError::new_err)
+        list.append_item(data).map_err(PyValueError::new_err)
     }
 
     fn list_len(&self, value_id: u64) -> PyResult<usize> {
@@ -796,7 +777,7 @@ impl StateServerCore {
     }
 
     // maps -------------------------------------------------------------
-    fn map_set(&self, value_id: u64, py_dict: &Bound<PyDict>, update: bool) -> PyResult<()> {
+    fn map_set(&self, value_id: u64, py_dict: &Bound<PyDict>) -> PyResult<()> {
         let (map, key_type, value_type) = self.inner_map(value_id)?;
         let mut new_map = HashMap::with_capacity(py_dict.len());
         for (key, value) in py_dict.iter() {
@@ -810,7 +791,7 @@ impl StateServerCore {
 
             new_map.insert(key_data, value_data);
         }
-        map.set(new_map, update).map_err(PyValueError::new_err)
+        map.set(new_map).map_err(PyValueError::new_err)
     }
 
     fn map_get<'py>(&self, py: Python<'py>, value_id: u64) -> PyResult<Bound<'py, PyDict>> {
@@ -834,7 +815,6 @@ impl StateServerCore {
         value_id: u64,
         key: &Bound<PyAny>,
         value: &Bound<PyAny>,
-        update: bool,
     ) -> PyResult<()> {
         let (map, key_type, value_type) = self.inner_map(value_id)?;
         let mut key_creator = ValueCreator::new();
@@ -845,7 +825,7 @@ impl StateServerCore {
         pyparsing::serialize_py(value, value_type, &mut value_creator)?;
         let value_data = value_creator.finalize();
 
-        map.set_item(key_data, value_data, update)
+        map.set_item(key_data, value_data)
             .map_err(PyValueError::new_err)
     }
 
@@ -874,7 +854,6 @@ impl StateServerCore {
         py: Python<'py>,
         value_id: u64,
         key: &Bound<PyAny>,
-        update: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
         let (map, key_type, value_type) = self.inner_map(value_id)?;
         let mut key_creator = ValueCreator::new();
@@ -882,7 +861,7 @@ impl StateServerCore {
         let key_data = key_creator.finalize();
 
         match map
-            .remove_item(&key_data, update)
+            .remove_item(&key_data)
             .map_err(|_| PyRuntimeError::new_err("Failed to remove item from map."))?
         {
             Some(value_data) => {
@@ -926,43 +905,41 @@ impl StateServerCore {
         Ok(self.inner_image(value_id)?.is_idle())
     }
 
-    #[pyo3(signature = (value_id, image, update, wait=false))]
+    #[pyo3(signature = (value_id, image, wait=false))]
     fn image_set(
         &self,
         py: Python,
         value_id: u64,
         image: PyBuffer<u8>,
-        update: bool,
         wait: bool,
     ) -> PyResult<()> {
         py.detach(|| {
             let image_val = self.inner_image(value_id)?;
             let image_data = pyimage::image_data(&image)?;
             image_val
-                .set_image(image_data, update, wait)
+                .set_image(image_data, wait)
                 .map_err(PyValueError::new_err)
         })
     }
 
-    #[pyo3(signature = (value_id, shape, color, update, wait=false))]
+    #[pyo3(signature = (value_id, shape, color, wait=false))]
     fn image_set_all(
         &self,
         py: Python,
         value_id: u64,
         shape: [usize; 2],
         color: &Bound<'_, PyAny>,
-        update: bool,
         wait: bool,
     ) -> PyResult<()> {
         let fill = pyimage::image_color(color)?;
         py.detach(|| {
             self.inner_image(value_id)?
-                .set_all_image(shape, fill, update, wait)
+                .set_all_image(shape, fill, wait)
                 .map_err(PyValueError::new_err)
         })
     }
 
-    #[pyo3(signature = (value_id, image, origin, update, force=false, max_lines=None, wait=false))]
+    #[pyo3(signature = (value_id, image, origin, force=false, max_lines=None, wait=false))]
     #[allow(clippy::too_many_arguments)]
     fn image_update(
         &self,
@@ -970,7 +947,6 @@ impl StateServerCore {
         value_id: u64,
         image: PyBuffer<u8>,
         origin: [u32; 2],
-        update: bool,
         force: bool,
         max_lines: Option<i64>,
         wait: bool,
@@ -983,7 +959,6 @@ impl StateServerCore {
                 .update_image(
                     &[origin[0] as usize, origin[1] as usize],
                     image_data,
-                    update,
                     force,
                     max_lines,
                     wait,
@@ -1018,26 +993,25 @@ impl StateServerCore {
         Ok(self.inner_image_multi(value_id)?.is_idle())
     }
 
-    #[pyo3(signature = (value_id, index, image, update, wait=false))]
+    #[pyo3(signature = (value_id, index, image, wait=false))]
     fn image_multi_set(
         &self,
         py: Python,
         value_id: u64,
         index: u32,
         image: PyBuffer<u8>,
-        update: bool,
         wait: bool,
     ) -> PyResult<()> {
         py.detach(|| {
             let images = self.inner_image_multi(value_id)?;
             let image_data = pyimage::image_data(&image)?;
             images
-                .set_image(index, image_data, update, wait)
+                .set_image(index, image_data, wait)
                 .map_err(PyValueError::new_err)
         })
     }
 
-    #[pyo3(signature = (value_id, index, shape, color, update, wait=false))]
+    #[pyo3(signature = (value_id, index, shape, color, wait=false))]
     #[allow(clippy::too_many_arguments)]
     fn image_multi_set_all(
         &self,
@@ -1046,18 +1020,17 @@ impl StateServerCore {
         index: u32,
         shape: [usize; 2],
         color: &Bound<'_, PyAny>,
-        update: bool,
         wait: bool,
     ) -> PyResult<()> {
         let fill = pyimage::image_color(color)?;
         py.detach(|| {
             self.inner_image_multi(value_id)?
-                .set_all_image(index, shape, fill, update, wait)
+                .set_all_image(index, shape, fill, wait)
                 .map_err(PyValueError::new_err)
         })
     }
 
-    #[pyo3(signature = (value_id, index, image, origin, update, force=false, max_lines=None, wait=false))]
+    #[pyo3(signature = (value_id, index, image, origin, force=false, max_lines=None, wait=false))]
     #[allow(clippy::too_many_arguments)]
     fn image_multi_update(
         &self,
@@ -1066,7 +1039,6 @@ impl StateServerCore {
         index: u32,
         image: PyBuffer<u8>,
         origin: [u32; 2],
-        update: bool,
         force: bool,
         max_lines: Option<i64>,
         wait: bool,
@@ -1080,7 +1052,6 @@ impl StateServerCore {
                     index,
                     &[origin[0] as usize, origin[1] as usize],
                     image_data,
-                    update,
                     force,
                     max_lines,
                     wait,
@@ -1089,24 +1060,18 @@ impl StateServerCore {
         })
     }
 
-    fn image_multi_remove_index(
-        &self,
-        py: Python,
-        value_id: u64,
-        index: u32,
-        update: bool,
-    ) -> PyResult<()> {
+    fn image_multi_remove_index(&self, py: Python, value_id: u64, index: u32) -> PyResult<()> {
         py.detach(|| {
             self.inner_image_multi(value_id)?
-                .remove_index(index, update)
+                .remove_index(index)
                 .map_err(PyValueError::new_err)
         })
     }
 
-    fn image_multi_reset(&self, py: Python, value_id: u64, update: bool) -> PyResult<()> {
+    fn image_multi_reset(&self, py: Python, value_id: u64) -> PyResult<()> {
         py.detach(|| {
             self.inner_image_multi(value_id)?
-                .reset_images(update)
+                .reset_images()
                 .map_err(PyValueError::new_err)
         })
     }
@@ -1177,7 +1142,6 @@ impl StateServerCore {
         py: Python,
         value_id: u64,
         data: &Bound<PyAny>,
-        update: bool,
         header: Option<(Bound<PyAny>,)>,
         wait: bool,
     ) -> PyResult<()> {
@@ -1191,7 +1155,7 @@ impl StateServerCore {
 
         py.detach(|| {
             data_value
-                .set(elements, update, wait)
+                .set(elements, wait)
                 .map_err(PyValueError::new_err)
         })
     }
@@ -1202,7 +1166,6 @@ impl StateServerCore {
         py: Python,
         value_id: u64,
         data: &Bound<PyAny>,
-        update: bool,
         header: Option<(Bound<PyAny>,)>,
         wait: bool,
     ) -> PyResult<()> {
@@ -1216,7 +1179,7 @@ impl StateServerCore {
 
         py.detach(|| {
             data_value
-                .add(elements, update, wait)
+                .add(elements, wait)
                 .map_err(PyValueError::new_err)
         })
     }
@@ -1228,7 +1191,6 @@ impl StateServerCore {
         value_id: u64,
         data: &Bound<PyAny>,
         index: usize,
-        update: bool,
         header: Option<(Bound<PyAny>,)>,
         wait: bool,
     ) -> PyResult<()> {
@@ -1242,7 +1204,7 @@ impl StateServerCore {
 
         py.detach(|| {
             data_value
-                .replace(elements, index, update, wait)
+                .replace(elements, index, wait)
                 .map_err(PyValueError::new_err)
         })
     }
@@ -1254,7 +1216,6 @@ impl StateServerCore {
         value_id: u64,
         index: usize,
         count: usize,
-        update: bool,
         header: Option<(Bound<PyAny>,)>,
         wait: bool,
     ) -> PyResult<()> {
@@ -1262,7 +1223,7 @@ impl StateServerCore {
         let header = encode_header(header, header_type)?;
         py.detach(|| {
             data_value
-                .remove(index, count, header.as_deref(), update, wait)
+                .remove(index, count, header.as_deref(), wait)
                 .map_err(PyValueError::new_err)
         })
     }
@@ -1271,39 +1232,32 @@ impl StateServerCore {
         &self,
         py: Python,
         value_id: u64,
-        update: bool,
         header: Option<(Bound<PyAny>,)>,
     ) -> PyResult<()> {
         let (data_value, header_type) = self.inner_data(value_id)?;
         let header = encode_header(header, header_type)?;
         py.detach(|| {
             data_value
-                .clear(header.as_deref(), update)
+                .clear(header.as_deref())
                 .map_err(PyValueError::new_err)
         })
     }
 
-    fn data_set_header(
-        &self,
-        py: Python,
-        value_id: u64,
-        header: &Bound<PyAny>,
-        update: bool,
-    ) -> PyResult<()> {
+    fn data_set_header(&self, py: Python, value_id: u64, header: &Bound<PyAny>) -> PyResult<()> {
         let (data_value, header_type) = self.inner_data(value_id)?;
         let header = encode_single_header(header, header_type)?;
         py.detach(|| {
             data_value
-                .set_header(&header, update)
+                .set_header(&header)
                 .map_err(PyValueError::new_err)
         })
     }
 
-    fn data_reset(&self, py: Python, value_id: u64, update: bool) -> PyResult<()> {
+    fn data_reset(&self, py: Python, value_id: u64) -> PyResult<()> {
         py.detach(|| {
             self.inner_data(value_id)?
                 .0
-                .reset(update)
+                .reset()
                 .map_err(PyValueError::new_err)
         })
     }
@@ -1316,7 +1270,6 @@ impl StateServerCore {
         value_id: u64,
         data: &Bound<PyAny>,
         blocking: bool,
-        update: bool,
         cache: bool,
         header: Option<(Bound<PyAny>,)>,
     ) -> PyResult<()> {
@@ -1330,7 +1283,7 @@ impl StateServerCore {
 
         py.detach(|| {
             data_value
-                .set(elements, blocking, update, cache)
+                .set(elements, blocking, cache)
                 .map_err(PyValueError::new_err)
         })
     }
@@ -1392,7 +1345,6 @@ impl StateServerCore {
         value_id: u64,
         index: u32,
         data: &Bound<PyAny>,
-        update: bool,
         header: Option<(Bound<PyAny>,)>,
         wait: bool,
     ) -> PyResult<()> {
@@ -1406,7 +1358,7 @@ impl StateServerCore {
 
         py.detach(|| {
             data_value
-                .set(index, elements, update, wait)
+                .set(index, elements, wait)
                 .map_err(PyValueError::new_err)
         })
     }
@@ -1418,7 +1370,6 @@ impl StateServerCore {
         value_id: u64,
         index: u32,
         data: &Bound<PyAny>,
-        update: bool,
         header: Option<(Bound<PyAny>,)>,
         wait: bool,
     ) -> PyResult<()> {
@@ -1432,7 +1383,7 @@ impl StateServerCore {
 
         py.detach(|| {
             data_value
-                .add(index, elements, update, wait)
+                .add(index, elements, wait)
                 .map_err(PyValueError::new_err)
         })
     }
@@ -1445,7 +1396,6 @@ impl StateServerCore {
         index: u32,
         data: &Bound<PyAny>,
         data_index: usize,
-        update: bool,
         header: Option<(Bound<PyAny>,)>,
         wait: bool,
     ) -> PyResult<()> {
@@ -1459,7 +1409,7 @@ impl StateServerCore {
 
         py.detach(|| {
             data_value
-                .replace(index, data_index, elements, update, wait)
+                .replace(index, data_index, elements, wait)
                 .map_err(PyValueError::new_err)
         })
     }
@@ -1472,7 +1422,6 @@ impl StateServerCore {
         index: u32,
         data_index: usize,
         count: usize,
-        update: bool,
         header: Option<(Bound<PyAny>,)>,
         wait: bool,
     ) -> PyResult<()> {
@@ -1480,7 +1429,7 @@ impl StateServerCore {
         let header = encode_header(header, header_type)?;
         py.detach(|| {
             data_value
-                .remove(index, data_index, count, header.as_deref(), update, wait)
+                .remove(index, data_index, count, header.as_deref(), wait)
                 .map_err(PyValueError::new_err)
         })
     }
@@ -1490,14 +1439,13 @@ impl StateServerCore {
         py: Python,
         value_id: u64,
         index: u32,
-        update: bool,
         header: Option<(Bound<PyAny>,)>,
     ) -> PyResult<()> {
         let (data_value, header_type) = self.inner_data_multi(value_id)?;
         let header = encode_header(header, header_type)?;
         py.detach(|| {
             data_value
-                .clear(index, header.as_deref(), update)
+                .clear(index, header.as_deref())
                 .map_err(PyValueError::new_err)
         })
     }
@@ -1508,37 +1456,30 @@ impl StateServerCore {
         value_id: u64,
         index: u32,
         header: &Bound<PyAny>,
-        update: bool,
     ) -> PyResult<()> {
         let (data_value, header_type) = self.inner_data_multi(value_id)?;
         let header = encode_single_header(header, header_type)?;
         py.detach(|| {
             data_value
-                .set_header(index, &header, update)
+                .set_header(index, &header)
                 .map_err(PyValueError::new_err)
         })
     }
 
-    fn data_multi_remove_index(
-        &self,
-        py: Python,
-        value_id: u64,
-        index: u32,
-        update: bool,
-    ) -> PyResult<()> {
+    fn data_multi_remove_index(&self, py: Python, value_id: u64, index: u32) -> PyResult<()> {
         py.detach(|| {
             self.inner_data_multi(value_id)?
                 .0
-                .remove_index(index, update)
+                .remove_index(index)
                 .map_err(PyValueError::new_err)
         })
     }
 
-    fn data_multi_reset(&self, py: Python, value_id: u64, update: bool) -> PyResult<()> {
+    fn data_multi_reset(&self, py: Python, value_id: u64) -> PyResult<()> {
         py.detach(|| {
             self.inner_data_multi(value_id)?
                 .0
-                .reset(update)
+                .reset()
                 .map_err(PyValueError::new_err)
         })
     }
@@ -1552,7 +1493,6 @@ impl StateServerCore {
         index: u32,
         data: &Bound<PyAny>,
         blocking: bool,
-        update: bool,
         cache: bool,
         header: Option<(Bound<PyAny>,)>,
     ) -> PyResult<()> {
@@ -1566,31 +1506,25 @@ impl StateServerCore {
 
         py.detach(|| {
             data_value
-                .set(index, elements, blocking, update, cache)
+                .set(index, elements, blocking, cache)
                 .map_err(PyValueError::new_err)
         })
     }
 
-    fn data_multi_take_remove_index(
-        &self,
-        py: Python,
-        value_id: u64,
-        index: u32,
-        update: bool,
-    ) -> PyResult<()> {
+    fn data_multi_take_remove_index(&self, py: Python, value_id: u64, index: u32) -> PyResult<()> {
         py.detach(|| {
             self.inner_data_multi_take(value_id)?
                 .0
-                .remove_index(index, update)
+                .remove_index(index)
                 .map_err(PyValueError::new_err)
         })
     }
 
-    fn data_multi_take_reset(&self, py: Python, value_id: u64, update: bool) -> PyResult<()> {
+    fn data_multi_take_reset(&self, py: Python, value_id: u64) -> PyResult<()> {
         py.detach(|| {
             self.inner_data_multi_take(value_id)?
                 .0
-                .reset(update)
+                .reset()
                 .map_err(PyValueError::new_err)
         })
     }
@@ -2060,14 +1994,12 @@ mod tests {
         type Control = fn(&StateServerCore, Python, u64) -> PyResult<()>;
         let controls: [(&str, Control); 3] = [
             ("clear", |server, py, id| {
-                server.data_multi_clear(py, id, 0, false, None)
+                server.data_multi_clear(py, id, 0, None)
             }),
             ("remove_index", |server, py, id| {
-                server.data_multi_remove_index(py, id, 0, false)
+                server.data_multi_remove_index(py, id, 0)
             }),
-            ("reset", |server, py, id| {
-                server.data_multi_reset(py, id, false)
-            }),
+            ("reset", |server, py, id| server.data_multi_reset(py, id)),
         ];
         for (name, control) in controls {
             let (core, id, client) = silent_session();
@@ -2079,8 +2011,8 @@ mod tests {
                     Python::attach(|py| {
                         let server = core.borrow(py);
                         let data = PyBytes::new(py, &[1, 2, 3]);
-                        server.data_multi_set(py, id, 0, data.as_any(), false, None, false)?;
-                        server.data_multi_set(py, id, 0, data.as_any(), false, None, false)
+                        server.data_multi_set(py, id, 0, data.as_any(), None, false)?;
+                        server.data_multi_set(py, id, 0, data.as_any(), None, false)
                     })
                 })
             };

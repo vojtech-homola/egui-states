@@ -15,14 +15,14 @@ impl Drop for CounterServer {
 
 pub fn setup_server() -> s::Result<CounterServer> {
     let server = bindings::StatesServer::new()?;
-    server.states.count.set(0, false)?;
+    server.states.count.set(0)?;
     let log = server
         .states
         .count
         .connect(|value| println!("count: {value}"));
     let count = server.states.count.clone();
     let reset = server.states.reset.connect_empty(move || {
-        if let Err(error) = count.set(0, true) {
+        if let Err(error) = count.set(0) {
             eprintln!("reset failed: {error}");
         }
     });

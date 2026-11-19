@@ -168,15 +168,15 @@ def check_client_values(states, signals):
 def edit_collections(states):
     """Command 32: server edits of both collections."""
     items = states.value_vec.items
-    items.set([5, 6, 7], update=True)
-    items.set_item(1, 60, update=True)
-    items.add_item(8, update=True)
-    items.remove_item(0, update=True)
+    items.set([5, 6, 7])
+    items.set_item(1, 60)
+    items.add_item(8)
+    items.remove_item(0)
     mapping = states.value_map.items
-    mapping.set({1: 10, 2: 20}, update=True)
-    mapping.set_item(3, 30, update=True)
-    mapping.set_item(1, 11, update=True)
-    mapping.remove_item(2, update=True)
+    mapping.set({1: 10, 2: 20})
+    mapping.set_item(3, 30)
+    mapping.set_item(1, 11)
+    mapping.remove_item(2)
 
 
 def edit_numeric(states):
@@ -259,97 +259,95 @@ def configure(states):  # noqa: PLR0915
             TestEnum2.Z,
         )
     )
-    st.wire.connect(lambda packet: st.wire_echo.set(packet, update=True))
+    st.wire.connect(st.wire_echo.set)
     st.value.set(7)
     st.items.set([1, 2])
     st.cached.set(np.array([8, 9], dtype=np.uint8), cache=True)
     st.cached_multi[91].set(np.array([500, 600], dtype=np.uint16), cache=True)
-    st.value.connect(lambda value: st.callback_value.set(value, update=True))
+    st.value.connect(st.callback_value.set)
 
     def command(number):  # noqa: PLR0915
         if number == 1:
-            st.value.set(21, update=True)
+            st.value.set(21)
         elif number == 2:
-            st.items.add_item(st.value.get(), update=True)
-            st.map.set_item(9, 900, update=True)
+            st.items.add_item(st.value.get())
+            st.map.set_item(9, 900)
         elif number == 3:
-            states.data_take.take_samples.set(np.array([-1.25, 0, 2.5], dtype=np.float32), update=True)
-            states.data_multi_take.samples[513].set(np.array([9.5, -2.25], dtype=np.float32), update=True)
-            states.data_multi_take.nested.buffer[24].set(np.array([0, 65535], dtype=np.uint16), update=True)
-            st.take.set("payload", update=True)
-            st.empty.set(update=True)
-            st.data.set(np.array([0, 1, 255], dtype=np.uint8), update=True)
-            st.multi[7].set(np.array([100, 200], dtype=np.uint16), update=True)
-            st.multi[42].set(np.array([], dtype=np.uint16), update=True)
+            states.data_take.take_samples.set(np.array([-1.25, 0, 2.5], dtype=np.float32))
+            states.data_multi_take.samples[513].set(np.array([9.5, -2.25], dtype=np.float32))
+            states.data_multi_take.nested.buffer[24].set(np.array([0, 65535], dtype=np.uint16))
+            st.take.set("payload")
+            st.empty.set()
+            st.data.set(np.array([0, 1, 255], dtype=np.uint8))
+            st.multi[7].set(np.array([100, 200], dtype=np.uint16))
+            st.multi[42].set(np.array([], dtype=np.uint16))
         elif number == 4:
-            st.take.set("", update=True)
-            st.data.set(np.array([], dtype=np.uint8), update=True)
+            st.take.set("")
+            st.data.set(np.array([], dtype=np.uint8))
         elif number in {10, 11, 12, 13}:
 
             def send(second):
                 if number == 10:
-                    st.take.set("" if second else "first", blocking=True, update=True)
+                    st.take.set("" if second else "first", blocking=True)
                 elif number == 11:
-                    st.empty.set(blocking=True, update=True)
+                    st.empty.set(blocking=True)
                 elif number == 12:
-                    st.data.set(np.array([] if second else [1, 2], dtype=np.uint8), blocking=True, update=True)
+                    st.data.set(np.array([] if second else [1, 2], dtype=np.uint8), blocking=True)
                 else:
-                    st.multi[73].set(
-                        np.array([] if second else [100, 200], dtype=np.uint16), blocking=True, update=True
-                    )
+                    st.multi[73].set(np.array([] if second else [100, 200], dtype=np.uint16), blocking=True)
 
             send(False)
-            st.phase.set(1, update=True)
+            st.phase.set(1)
             send(True)
-            st.phase.set(2, update=True)
+            st.phase.set(2)
         elif number == 20:
-            st.cached.set(np.array([31, 32], dtype=np.uint8), cache=True, update=True)
-            st.cached_multi.remove_index(91, update=True)
-            st.cached_multi[513].set(np.array([17], dtype=np.uint16), cache=True, update=True)
-            st.phase.set(20, update=True)
+            st.cached.set(np.array([31, 32], dtype=np.uint8), cache=True)
+            st.cached_multi.remove_index(91)
+            st.cached_multi[513].set(np.array([17], dtype=np.uint16), cache=True)
+            st.phase.set(20)
         elif number == 21:
-            st.cached.set(np.array([41], dtype=np.uint8), cache=False, update=True)
-            st.cached_multi.reset(update=True)
-            st.phase.set(21, update=True)
+            st.cached.set(np.array([41], dtype=np.uint8), cache=False)
+            st.cached_multi.reset()
+            st.phase.set(21)
         elif number == 22:
-            st.multi[7].set(np.array([7], dtype=np.uint16), update=True)
-            st.multi[900].set(np.array([9], dtype=np.uint16), update=True)
-            st.multi.remove_index(7, update=True)
-            st.phase.set(22, update=True)
+            st.multi[7].set(np.array([7], dtype=np.uint16))
+            st.multi[900].set(np.array([9], dtype=np.uint16))
+            st.multi.remove_index(7)
+            st.phase.set(22)
         elif number == 23:
-            st.multi.reset(update=True)
-            st.phase.set(23, update=True)
+            st.multi.reset()
+            st.phase.set(23)
         elif number in (24, 25):  # noqa: PLR6201
-            st.multi[7].set(np.array([7], dtype=np.uint16), blocking=True, update=True)
+            st.multi[7].set(np.array([7], dtype=np.uint16), blocking=True)
             if number == 24:
-                st.multi.remove_index(7, update=True)
+                st.multi.remove_index(7)
             else:
-                st.multi.reset(update=True)
-            st.phase.set(24, update=True)
-            st.multi[513].set(np.array([9], dtype=np.uint16), blocking=True, update=True)
-            st.phase.set(25, update=True)
+                st.multi.reset()
+            st.phase.set(24)
+            st.multi[513].set(np.array([9], dtype=np.uint16), blocking=True)
+            st.phase.set(25)
         elif number == 30:
             set_wire_values(states)
-            st.phase.set(30, update=True)
+            st.phase.set(30)
         elif number == 31:
             try:
                 check_client_values(states, signals)
             finally:
-                st.phase.set(31, update=True)
+                st.phase.set(31)
         elif number in {32, 33, 34}:
             {32: edit_collections, 33: edit_numeric, 34: edit_images}[number](states)
-            st.phase.set(number, update=True)
+            st.phase.set(number)
         elif number in {35, 36}:
             edit_headers(states, number)
-            st.phase.set(number, update=True)
+            st.phase.set(number)
         elif number in {40, 41, 42, 43}:
             transfers(states, number, finished)
-            st.phase.set(number, update=True)
+            st.phase.set(number)
         elif number == 44:
             check_uploads(uploaded)
-            st.phase.set(44, update=True)
+            st.phase.set(44)
         elif number in {98, 99}:
-            st.phase.set(number, update=True)
+            st.phase.set(number)
         else:
             raise AssertionError(f"unknown command: {number}")
 

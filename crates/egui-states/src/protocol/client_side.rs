@@ -3,6 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::protocol::collections::{MapHeader, VecHeader};
 use crate::protocol::data::{DataMultiTakeHeader, MultiDataHeader};
 use crate::protocol::fastvec::FastVec;
 use crate::protocol::header::{ClientHeader, ServerHeader};
@@ -47,27 +48,29 @@ impl ServerHeader {
         }
     }
 
-    /// Whether the message asks the client to repaint once it is applied.
-    pub(crate) fn update_flag(&self) -> bool {
+    /// Whether applying the message changes a state the UI shows, so the
+    /// client repaints after the frame that carried it. The first and middle
+    /// chunks of a split transfer are only buffered and do not.
+    pub(crate) fn changes_state(&self) -> bool {
         match self {
-            Self::Value(_, _, update, _)
-            | Self::ValueTake(_, _, _, update, _)
-            | Self::Static(_, _, update, _)
-            | Self::ValueVec(_, _, update, _, _)
-            | Self::ValueMap(_, _, update, _, _) => *update,
-            Self::Image(_, header, _) => header.update_flag(),
-            Self::ImageMulti(_, header) => header.update_flag(),
-            Self::Data(_, header) => header.update_flag(),
-            Self::DataTake(_, header, _) => header.update_flag(),
+            Self::Value(..) | Self::ValueTake(..) | Self::Static(..) => true,
+            Self::ValueVec(_, _, header, _) => {
+                !matches!(header, VecHeader::Begin(_) | VecHeader::Chunk(_))
+            }
+            Self::ValueMap(_, _, header, _) => {
+                !matches!(header, MapHeader::Begin(_) | MapHeader::Chunk(_))
+            }
+            Self::Image(_, header, _) => header.changes_state(),
+            Self::ImageMulti(_, header) => header.changes_state(),
+            Self::Data(_, header) => header.changes_state(),
+            Self::DataTake(_, header, _) => header.is_terminal(),
             Self::MultiData(_, header) => match header {
-                MultiDataHeader::Remove(_, update) | MultiDataHeader::Reset(update) => *update,
-                MultiDataHeader::Modify(_, header) => header.update_flag(),
+                MultiDataHeader::Remove(_) | MultiDataHeader::Reset => true,
+                MultiDataHeader::Modify(_, header) => header.changes_state(),
             },
             Self::DataMultiTake(_, header) => match header {
-                DataMultiTakeHeader::Remove(_, update) | DataMultiTakeHeader::Reset(update) => {
-                    *update
-                }
-                DataMultiTakeHeader::Modify(_, header, _) => header.update_flag(),
+                DataMultiTakeHeader::Remove(_) | DataMultiTakeHeader::Reset => true,
+                DataMultiTakeHeader::Modify(_, header, _) => header.is_terminal(),
             },
             Self::Update(_)
             | Self::Transfer(..)

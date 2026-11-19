@@ -60,7 +60,7 @@ def test_image_value_roundtrip(local_bundle: tuple[StatesServer, State, list[Exc
     patch = np.zeros((2, 3, 4), dtype=np.uint8)
     patch[..., 1] = 80
     patch[..., 3] = 200
-    states.image.image.update(patch, origin=(3, 2), update=True)
+    states.image.image.update(patch, origin=(3, 2))
 
     image_result = states.image.image.get()
     expected = image.copy()
@@ -79,7 +79,7 @@ def test_image_fill_colors(local_bundle):
 
 
 def _fill(image, color):
-    image.set_all((2, 3), color, update=True)
+    image.set_all((2, 3), color)
     return image.get()
 
 
@@ -161,7 +161,7 @@ def test_image_multi_sparse_collection(local_bundle: tuple[StatesServer, State, 
     )
 
     patch = np.full((1, 2, 4), [20, 30, 40, 50], dtype=np.uint8)
-    images[7].update(patch, origin=(1, 1), update=True)
+    images[7].update(patch, origin=(1, 1))
     assert_array(images[7].get()[1:2, 1:3], patch)
 
     images[7].set_all((1, 2), 9)
@@ -183,9 +183,9 @@ def test_image_multi_sparse_collection(local_bundle: tuple[StatesServer, State, 
 
     images.remove_index(100)
     assert len(images) == 2
-    images.remove_index(2, update=True)
+    images.remove_index(2)
     assert images.indices() == [7]
-    images.reset(update=True)
+    images.reset()
     assert len(images) == 0
     assert images.indices() == []
 
@@ -224,7 +224,7 @@ def test_image_wait_force_and_max_lines(local_bundle, multi):
     image.set_all((4, 2), 0, wait=True)
 
     rows = np.arange(8, dtype=np.uint8).reshape(4, 2)
-    image.update(rows, (0, 0), update=True, max_lines=1)
+    image.update(rows, (0, 0), max_lines=1)
     assert_array(image.get(), rows)
     image.update(np.full((2, 2), 9, dtype=np.uint8), (1, 0), force=True, max_lines=10, wait=True)
     assert state.is_idle()

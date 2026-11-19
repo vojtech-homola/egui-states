@@ -174,6 +174,11 @@ impl MessagesParser {
         Ok((obj, message))
     }
 
+    /// Whether every message of the current frame has been returned.
+    pub(crate) fn is_drained(&self) -> bool {
+        self.is_empty || self.pointer >= self.data.len()
+    }
+
     pub(crate) fn next(&mut self) -> Result<Option<ServerMessage>, &'static str> {
         if self.is_empty {
             return Ok(None);
@@ -238,6 +243,12 @@ impl<S: ServerFrames> ServerReader<S> {
         }
     }
 
+    /// Whether every message of the last frame read has been returned, so
+    /// the next [`Self::read`] waits for a new frame.
+    pub(crate) fn frame_done(&self) -> bool {
+        self.parser.is_drained()
+    }
+
     /// Returns the next message, reading a frame when the current one is
     /// used up. An error ends the connection.
     pub(crate) async fn read(&mut self) -> Result<ServerMessage, ReadError> {
@@ -257,7 +268,6 @@ pub(crate) async fn handle_message(
     client: &ClientCore,
 ) -> Result<(), String> {
     let (header, payload) = message;
-    let update = header.update_flag();
     match header {
         ServerHeader::Update(t) => {
             client.update(t);
@@ -308,7 +318,7 @@ pub(crate) async fn handle_message(
                 ImageHeader::Update(update, image_type) => {
                     image.update_image(update, image_type, &payload)?
                 }
-                ImageHeader::Fill(size, rgba, _) => image.fill_image(size, rgba, &payload)?,
+                ImageHeader::Fill(size, rgba) => image.fill_image(size, rgba, &payload)?,
             },
             None => {
                 if header.requires_ack() {
@@ -317,11 +327,11 @@ pub(crate) async fn handle_message(
                 return Err(format!("Image with id {} not found", id));
             }
         },
-        ServerHeader::ValueVec(id, type_id, _, list_header, _) => match vals.vec(id) {
+        ServerHeader::ValueVec(id, type_id, list_header, _) => match vals.vec(id) {
             Some(value) => value.update_list(type_id, list_header, &payload)?,
             None => return Err(format!("List with id {} not found", id)),
         },
-        ServerHeader::ValueMap(id, type_id, _, map_header, _) => match vals.map(id) {
+        ServerHeader::ValueMap(id, type_id, map_header, _) => match vals.map(id) {
             Some(value) => value.update_map(type_id, map_header, &payload)?,
             None => return Err(format!("Map with id {} not found", id)),
         },
@@ -345,8 +355,8 @@ pub(crate) async fn handle_message(
         },
         ServerHeader::MultiData(id, header) => match vals.data_multi(id) {
             Some(multi_data) => match header {
-                MultiDataHeader::Remove(key, _) => multi_data.remove(key),
-                MultiDataHeader::Reset(_) => multi_data.reset(),
+                MultiDataHeader::Remove(key) => multi_data.remove(key),
+                MultiDataHeader::Reset => multi_data.reset(),
                 MultiDataHeader::Modify(key, header) => {
                     multi_data.update(key, (header, payload))?
                 }
@@ -360,8 +370,8 @@ pub(crate) async fn handle_message(
         },
         ServerHeader::DataMultiTake(id, header) => match vals.data_multi_take(id) {
             Some(data_multi_take) => match header {
-                DataMultiTakeHeader::Remove(key, _) => data_multi_take.remove(key),
-                DataMultiTakeHeader::Reset(_) => data_multi_take.reset(),
+                DataMultiTakeHeader::Remove(key) => data_multi_take.remove(key),
+                DataMultiTakeHeader::Reset => data_multi_take.reset(),
                 DataMultiTakeHeader::Modify(key, header, blocking) => {
                     data_multi_take.update(key, (header, payload), blocking)?
                 }
@@ -375,15 +385,15 @@ pub(crate) async fn handle_message(
         },
         ServerHeader::ImageMulti(id, header) => match vals.image_multi(id) {
             Some(images) => match header {
-                ImageMultiHeader::Remove(index, _) => images.remove(index),
-                ImageMultiHeader::Reset(_) => images.reset(),
+                ImageMultiHeader::Remove(index) => images.remove(index),
+                ImageMultiHeader::Reset => images.reset(),
                 ImageMultiHeader::Modify(index, ImageHeader::Set(set, image_type), _) => {
                     images.set_image(index, set, image_type, &payload)?
                 }
                 ImageMultiHeader::Modify(index, ImageHeader::Update(update, image_type), _) => {
                     images.update_image(index, update, image_type, &payload)?
                 }
-                ImageMultiHeader::Modify(index, ImageHeader::Fill(size, rgba, _), _) => {
+                ImageMultiHeader::Modify(index, ImageHeader::Fill(size, rgba), _) => {
                     images.fill_image(index, size, rgba, &payload)?
                 }
             },
@@ -394,10 +404,6 @@ pub(crate) async fn handle_message(
                 return Err(format!("ImageMulti with id {} not found", id));
             }
         },
-    }
-
-    if update {
-        client.update(0.);
     }
 
     Ok(())
@@ -447,6 +453,34 @@ mod tests {
         });
     }
 
+    /// The client repaints once a frame's messages are all handled, so the
+    /// reader reports the end of each frame, for one and for two messages.
+    #[test]
+    fn server_reader_reports_when_a_frame_is_done() {
+        let update = |dt| {
+            crate::protocol::serialize::<_, 32>(&ServerHeader::Update(dt))
+                .unwrap()
+                .into_bytes()
+        };
+        let both: Vec<u8> = [update(1.0), update(2.0)].concat();
+        let frames = QueuedFrames([update(0.0), Bytes::from(both)].into());
+        let mut reader = ServerReader::new(frames);
+        assert!(reader.frame_done());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            // A frame with a single message is done after reading it.
+            reader.read().await.unwrap();
+            assert!(reader.frame_done());
+            // A frame with two messages is done only after the second.
+            reader.read().await.unwrap();
+            assert!(!reader.frame_done());
+            reader.read().await.unwrap();
+            assert!(reader.frame_done());
+        });
+    }
+
     /// Payload sizes come from the network, so their end is computed without
     /// overflow, also for a pointer near the top of the address space (D7).
     #[test]
@@ -463,15 +497,14 @@ mod tests {
     #[test]
     fn oversized_payload_sizes_are_parse_errors() {
         let headers = [
-            ServerHeader::Value(1, 0, false, u32::MAX),
-            ServerHeader::ValueVec(1, 0, false, VecHeader::Add, u32::MAX),
-            ServerHeader::Image(1, ImageHeader::Fill([1, 1], [0; 4], false), u32::MAX),
+            ServerHeader::Value(1, 0, u32::MAX),
+            ServerHeader::ValueVec(1, 0, VecHeader::Add, u32::MAX),
+            ServerHeader::Image(1, ImageHeader::Fill([1, 1], [0; 4]), u32::MAX),
             ServerHeader::Data(
                 1,
                 DataHeader::All(
                     DataType::U8,
                     TransportType::Set(1),
-                    false,
                     u32::MAX,
                     crate::protocol::data::HeaderUpdate::Keep,
                 ),
@@ -588,15 +621,15 @@ mod tests {
     #[test]
     fn missing_value_and_blocking_value_take_ack() {
         assert_ack(
-            dispatch_missing((ServerHeader::Value(71, 0, false, 0), Bytes::new())),
+            dispatch_missing((ServerHeader::Value(71, 0, 0), Bytes::new())),
             71,
         );
         assert_ack(
-            dispatch_missing((ServerHeader::ValueTake(72, 0, true, false, 0), Bytes::new())),
+            dispatch_missing((ServerHeader::ValueTake(72, 0, true, 0), Bytes::new())),
             72,
         );
         assert_no_ack(dispatch_missing((
-            ServerHeader::ValueTake(73, 0, false, false, 0),
+            ServerHeader::ValueTake(73, 0, false, 0),
             Bytes::new(),
         )));
     }
@@ -605,7 +638,7 @@ mod tests {
     fn missing_image_acks_only_ack_boundaries() {
         assert_ack(
             dispatch_missing((
-                ServerHeader::Image(74, ImageHeader::Fill([1, 1], [0; 4], false), 0),
+                ServerHeader::Image(74, ImageHeader::Fill([1, 1], [0; 4]), 0),
                 Bytes::new(),
             )),
             74,
@@ -626,7 +659,7 @@ mod tests {
             dispatch_missing((
                 ServerHeader::ImageMulti(
                     83,
-                    ImageMultiHeader::Modify(7, ImageHeader::Fill([1, 1], [0; 4], true), 0),
+                    ImageMultiHeader::Modify(7, ImageHeader::Fill([1, 1], [0; 4]), 0),
                 ),
                 Bytes::new(),
             )),
@@ -644,7 +677,7 @@ mod tests {
             Bytes::new(),
         )));
         assert_no_ack(dispatch_missing((
-            ServerHeader::ImageMulti(85, ImageMultiHeader::Remove(7, true)),
+            ServerHeader::ImageMulti(85, ImageMultiHeader::Remove(7)),
             Bytes::new(),
         )));
     }
@@ -655,7 +688,7 @@ mod tests {
     }
 
     #[test]
-    fn image_multi_parser_preserves_keys_payloads_and_repaint_flags() {
+    fn image_multi_parser_preserves_keys_payloads_and_state_changes() {
         let mut bytes = Vec::new();
         append_server_message(
             &mut bytes,
@@ -663,7 +696,7 @@ mod tests {
                 90,
                 ImageMultiHeader::Modify(
                     7,
-                    ImageHeader::Set(ImageSetHeader::All([2, 1], true), ImageType::ColorAlpha),
+                    ImageHeader::Set(ImageSetHeader::All([2, 1]), ImageType::ColorAlpha),
                     8,
                 ),
             ),
@@ -671,40 +704,67 @@ mod tests {
         );
         append_server_message(
             &mut bytes,
-            &ServerHeader::ImageMulti(90, ImageMultiHeader::Remove(2, true)),
+            &ServerHeader::ImageMulti(90, ImageMultiHeader::Remove(2)),
             &[],
         );
         append_server_message(
             &mut bytes,
-            &ServerHeader::ImageMulti(90, ImageMultiHeader::Reset(false)),
+            &ServerHeader::ImageMulti(90, ImageMultiHeader::Reset),
             &[],
+        );
+        // The first chunk of a split set only buffers pixels.
+        append_server_message(
+            &mut bytes,
+            &ServerHeader::ImageMulti(
+                90,
+                ImageMultiHeader::Modify(
+                    4,
+                    ImageHeader::Set(ImageSetHeader::Start([2, 1], 1), ImageType::ColorAlpha),
+                    4,
+                ),
+            ),
+            &[9, 10, 11, 12],
         );
 
         let (mut parser, (header, data)) = MessagesParser::from_bytes(Bytes::from(bytes)).unwrap();
-        assert!(header.update_flag());
+        assert!(header.changes_state());
         match header {
             ServerHeader::ImageMulti(
                 90,
                 ImageMultiHeader::Modify(
                     7,
-                    ImageHeader::Set(ImageSetHeader::All([2, 1], true), ImageType::ColorAlpha),
+                    ImageHeader::Set(ImageSetHeader::All([2, 1]), ImageType::ColorAlpha),
                     8,
                 ),
             ) => assert_eq!(data.as_ref(), &[1, 2, 3, 4, 5, 6, 7, 8]),
             _ => panic!("unexpected ImageMulti set message"),
         }
         let (header, data) = parser.next().unwrap().unwrap();
-        assert!(header.update_flag() && data.is_empty());
+        assert!(header.changes_state() && data.is_empty());
         assert!(matches!(
             header,
-            ServerHeader::ImageMulti(90, ImageMultiHeader::Remove(2, true))
+            ServerHeader::ImageMulti(90, ImageMultiHeader::Remove(2))
         ));
         let (header, _) = parser.next().unwrap().unwrap();
-        assert!(!header.update_flag());
+        assert!(header.changes_state());
         assert!(matches!(
             header,
-            ServerHeader::ImageMulti(90, ImageMultiHeader::Reset(false))
+            ServerHeader::ImageMulti(90, ImageMultiHeader::Reset)
         ));
+        let (header, data) = parser.next().unwrap().unwrap();
+        assert!(!header.changes_state());
+        assert!(matches!(
+            header,
+            ServerHeader::ImageMulti(
+                90,
+                ImageMultiHeader::Modify(
+                    4,
+                    ImageHeader::Set(ImageSetHeader::Start([2, 1], 1), ImageType::ColorAlpha),
+                    4,
+                ),
+            )
+        ));
+        assert_eq!(data.as_ref(), &[9, 10, 11, 12]);
         assert!(parser.next().unwrap().is_none());
     }
 
@@ -714,10 +774,7 @@ mod tests {
             91,
             ImageMultiHeader::Modify(
                 3,
-                ImageHeader::Update(
-                    ImageUpdateHeader::All([0, 0, 1, 1], true),
-                    ImageType::GrayAlpha,
-                ),
+                ImageHeader::Update(ImageUpdateHeader::All([0, 0, 1, 1]), ImageType::GrayAlpha),
                 2,
             ),
         );
@@ -738,7 +795,6 @@ mod tests {
                     DataHeader::All(
                         DataType::U8,
                         TransportType::Set(1),
-                        false,
                         0,
                         crate::protocol::data::HeaderUpdate::Keep,
                     ),
@@ -760,7 +816,6 @@ mod tests {
                         DataHeader::All(
                             DataType::U8,
                             TransportType::Set(1),
-                            false,
                             0,
                             crate::protocol::data::HeaderUpdate::Keep,
                         ),
@@ -776,11 +831,7 @@ mod tests {
     fn missing_take_data_acks_only_blocking_terminal_operations() {
         assert_ack(
             dispatch_missing((
-                ServerHeader::DataTake(
-                    79,
-                    DataTakeHeader::All(DataType::U8, 1, false, 0, None),
-                    true,
-                ),
+                ServerHeader::DataTake(79, DataTakeHeader::All(DataType::U8, 1, 0, None), true),
                 Bytes::from_static(&[1]),
             )),
             79,
@@ -795,7 +846,7 @@ mod tests {
                     81,
                     DataMultiTakeHeader::Modify(
                         3,
-                        DataTakeHeader::All(DataType::U8, 1, false, 0, None),
+                        DataTakeHeader::All(DataType::U8, 1, 0, None),
                         true,
                     ),
                 ),
@@ -808,7 +859,7 @@ mod tests {
                 82,
                 DataMultiTakeHeader::Modify(
                     3,
-                    DataTakeHeader::All(DataType::U8, 1, false, 0, None),
+                    DataTakeHeader::All(DataType::U8, 1, 0, None),
                     false,
                 ),
             ),
@@ -825,7 +876,7 @@ mod malformed_tests {
 
     #[test]
     fn truncated_headers_payloads_and_later_messages_do_not_hide_valid_updates() {
-        let header = ServerHeader::Value(17, 2, false, 2);
+        let header = ServerHeader::Value(17, 2, 2);
         let mut full = postcard::to_stdvec(&header).unwrap();
         full.extend([1, 2]);
         for length in 0..full.len() {
@@ -838,7 +889,7 @@ mod malformed_tests {
         mixed.push(255);
         let (mut parser, first) = MessagesParser::from_bytes(mixed.into()).unwrap();
         assert!(
-            matches!(first, (ServerHeader::Value(17, 2, false, 2), ref data) if data.as_ref() == [1, 2])
+            matches!(first, (ServerHeader::Value(17, 2, 2), ref data) if data.as_ref() == [1, 2])
         );
         assert!(parser.next().is_err());
         assert!(
@@ -867,7 +918,7 @@ mod malformed_tests {
             assert!(
                 runtime
                     .block_on(handle_message(
-                        (ServerHeader::Value(id, kind, false, 0), payload),
+                        (ServerHeader::Value(id, kind, 0), payload),
                         &values,
                         &client
                     ))
@@ -879,7 +930,7 @@ mod malformed_tests {
         runtime
             .block_on(handle_message(
                 (
-                    ServerHeader::Value(id, type_id, false, 0),
+                    ServerHeader::Value(id, type_id, 0),
                     postcard::to_stdvec(&-91i32).unwrap().into(),
                 ),
                 &values,

@@ -12,16 +12,17 @@ use crate::protocol::image::{ImageHeader, ImageMultiHeader};
 // ----------------------------------------------------------------------------
 #[derive(Serialize, Deserialize)]
 pub(crate) enum ServerHeader {
-    Value(u64, u32, bool, u32),
-    ValueTake(u64, u32, bool, bool, u32),
-    Static(u64, u32, bool, u32),
+    Value(u64, u32, u32),
+    /// Id, type id, blocking, payload length.
+    ValueTake(u64, u32, bool, u32),
+    Static(u64, u32, u32),
     Image(u64, ImageHeader, u32),
     Data(u64, DataHeader),
     DataTake(u64, DataTakeHeader, bool),
     MultiData(u64, MultiDataHeader),
     DataMultiTake(u64, DataMultiTakeHeader),
-    ValueVec(u64, u32, bool, VecHeader, u32),
-    ValueMap(u64, u32, bool, MapHeader, u32),
+    ValueVec(u64, u32, VecHeader, u32),
+    ValueMap(u64, u32, MapHeader, u32),
     Update(f32),
     ImageMulti(u64, ImageMultiHeader),
     /// A file transfer frame: endpoint id, frame, payload length.
@@ -68,13 +69,13 @@ mod tests {
     fn image_multi_is_appended_to_the_server_header_protocol() {
         let image: FastVec<32> = serialize(&ServerHeader::Image(
             1,
-            ImageHeader::Fill([1, 1], [0; 4], false),
+            ImageHeader::Fill([1, 1], [0; 4]),
             0,
         ))
         .unwrap();
         let update: FastVec<32> = serialize(&ServerHeader::Update(0.0)).unwrap();
         let image_multi: FastVec<32> =
-            serialize(&ServerHeader::ImageMulti(1, ImageMultiHeader::Reset(false))).unwrap();
+            serialize(&ServerHeader::ImageMulti(1, ImageMultiHeader::Reset)).unwrap();
 
         assert_eq!(first_byte(&image), 3);
         assert_eq!(first_byte(&update), 10);
@@ -92,18 +93,18 @@ mod tests {
         };
 
         let server = [
-            ServerHeader::Value(1, 2, false, 0),
-            ServerHeader::ValueTake(1, 2, false, false, 0),
-            ServerHeader::Static(1, 2, false, 0),
-            ServerHeader::Image(1, ImageHeader::Fill([1, 1], [0; 4], false), 0),
-            ServerHeader::Data(1, DataHeader::Clear(false, HeaderUpdate::Keep)),
+            ServerHeader::Value(1, 2, 0),
+            ServerHeader::ValueTake(1, 2, false, 0),
+            ServerHeader::Static(1, 2, 0),
+            ServerHeader::Image(1, ImageHeader::Fill([1, 1], [0; 4]), 0),
+            ServerHeader::Data(1, DataHeader::Clear(HeaderUpdate::Keep)),
             ServerHeader::DataTake(1, DataTakeHeader::Batch(0), false),
-            ServerHeader::MultiData(1, MultiDataHeader::Reset(false)),
-            ServerHeader::DataMultiTake(1, DataMultiTakeHeader::Reset(false)),
-            ServerHeader::ValueVec(1, 2, false, VecHeader::Add, 0),
-            ServerHeader::ValueMap(1, 2, false, MapHeader::Set, 0),
+            ServerHeader::MultiData(1, MultiDataHeader::Reset),
+            ServerHeader::DataMultiTake(1, DataMultiTakeHeader::Reset),
+            ServerHeader::ValueVec(1, 2, VecHeader::Add, 0),
+            ServerHeader::ValueMap(1, 2, MapHeader::Set, 0),
             ServerHeader::Update(0.0),
-            ServerHeader::ImageMulti(1, ImageMultiHeader::Reset(false)),
+            ServerHeader::ImageMulti(1, ImageMultiHeader::Reset),
             ServerHeader::Transfer(1, TransferFrame::Reject { serial: 0 }, 0),
             ServerHeader::TransferLimits(1, 1),
             ServerHeader::LaneMark,
@@ -191,51 +192,39 @@ mod tests {
         assert_tags(
             "DataHeader",
             &[
-                DataHeader::All(
-                    DataType::U8,
-                    TransportType::Set(0),
-                    false,
-                    0,
-                    HeaderUpdate::Keep,
-                ),
+                DataHeader::All(DataType::U8, TransportType::Set(0), 0, HeaderUpdate::Keep),
                 DataHeader::StartBatch(0, 0),
                 DataHeader::Batch(0),
-                DataHeader::End(
-                    DataType::U8,
-                    TransportType::Set(0),
-                    false,
-                    0,
-                    HeaderUpdate::Keep,
-                ),
-                DataHeader::Drain(0, 0, false, HeaderUpdate::Keep),
-                DataHeader::Clear(false, HeaderUpdate::Keep),
-                DataHeader::Header(false, header),
-                DataHeader::Reset(false),
+                DataHeader::End(DataType::U8, TransportType::Set(0), 0, HeaderUpdate::Keep),
+                DataHeader::Drain(0, 0, HeaderUpdate::Keep),
+                DataHeader::Clear(HeaderUpdate::Keep),
+                DataHeader::Header(header),
+                DataHeader::Reset,
             ],
         );
         assert_tags(
             "DataTakeHeader",
             &[
-                DataTakeHeader::All(DataType::U8, 0, false, 0, None),
+                DataTakeHeader::All(DataType::U8, 0, 0, None),
                 DataTakeHeader::StartBatch(0, 0),
                 DataTakeHeader::Batch(0),
-                DataTakeHeader::End(DataType::U8, 0, false, 0, None),
+                DataTakeHeader::End(DataType::U8, 0, 0, None),
             ],
         );
         assert_tags(
             "MultiDataHeader",
             &[
-                MultiDataHeader::Remove(0, false),
-                MultiDataHeader::Modify(0, DataHeader::Clear(false, HeaderUpdate::Keep)),
-                MultiDataHeader::Reset(false),
+                MultiDataHeader::Remove(0),
+                MultiDataHeader::Modify(0, DataHeader::Clear(HeaderUpdate::Keep)),
+                MultiDataHeader::Reset,
             ],
         );
         assert_tags(
             "DataMultiTakeHeader",
             &[
-                DataMultiTakeHeader::Remove(0, false),
+                DataMultiTakeHeader::Remove(0),
                 DataMultiTakeHeader::Modify(0, DataTakeHeader::Batch(0), false),
-                DataMultiTakeHeader::Reset(false),
+                DataMultiTakeHeader::Reset,
             ],
         );
         assert_tags(
@@ -250,19 +239,19 @@ mod tests {
         assert_tags(
             "ImageSetHeader",
             &[
-                ImageSetHeader::All([0; 2], false),
+                ImageSetHeader::All([0; 2]),
                 ImageSetHeader::Start([0; 2], 0),
                 ImageSetHeader::Batch(0),
-                ImageSetHeader::End(0, false),
+                ImageSetHeader::End(0),
             ],
         );
         assert_tags(
             "ImageUpdateHeader",
             &[
-                ImageUpdateHeader::All([0; 4], false),
+                ImageUpdateHeader::All([0; 4]),
                 ImageUpdateHeader::Start([0; 4], 0),
                 ImageUpdateHeader::Batch(0),
-                ImageUpdateHeader::End(0, false),
+                ImageUpdateHeader::End(0),
             ],
         );
         assert_tags(
@@ -270,15 +259,15 @@ mod tests {
             &[
                 ImageHeader::Set(ImageSetHeader::Batch(0), ImageType::Color),
                 ImageHeader::Update(ImageUpdateHeader::Batch(0), ImageType::Color),
-                ImageHeader::Fill([0; 2], [0; 4], false),
+                ImageHeader::Fill([0; 2], [0; 4]),
             ],
         );
         assert_tags(
             "ImageMultiHeader",
             &[
-                ImageMultiHeader::Remove(0, false),
-                ImageMultiHeader::Modify(0, ImageHeader::Fill([0; 2], [0; 4], false), 0),
-                ImageMultiHeader::Reset(false),
+                ImageMultiHeader::Remove(0),
+                ImageMultiHeader::Modify(0, ImageHeader::Fill([0; 2], [0; 4]), 0),
+                ImageMultiHeader::Reset,
             ],
         );
         assert_tags(
@@ -323,23 +312,17 @@ mod tests {
 
         // postcard: enum tags and integers are varints, `bool` is one byte,
         // `f32` is four little-endian bytes and arrays have no length prefix.
-        assert_eq!(bytes(&ServerHeader::Value(5, 7, true, 3)), [0, 5, 7, 1, 3]);
+        assert_eq!(bytes(&ServerHeader::Value(5, 7, 3)), [0, 5, 7, 3]);
         assert_eq!(
-            bytes(&ServerHeader::ValueTake(300, 1, true, false, 2)),
-            [1, 0xac, 0x02, 1, 1, 0, 2]
+            bytes(&ServerHeader::ValueTake(300, 1, true, 2)),
+            [1, 0xac, 0x02, 1, 1, 2]
         );
         assert_eq!(
             bytes(&ServerHeader::Data(
                 5,
-                DataHeader::All(
-                    DataType::U16,
-                    TransportType::Set(3),
-                    true,
-                    6,
-                    HeaderUpdate::Keep
-                )
+                DataHeader::All(DataType::U16, TransportType::Set(3), 6, HeaderUpdate::Keep)
             )),
-            [4, 5, 0, 1, 0, 3, 1, 6, 0]
+            [4, 5, 0, 1, 0, 3, 6, 0]
         );
         assert_eq!(
             bytes(&ServerHeader::Data(
@@ -347,34 +330,33 @@ mod tests {
                 DataHeader::End(
                     DataType::F64,
                     TransportType::Replace(2, 4),
-                    false,
                     32,
                     HeaderUpdate::Keep
                 )
             )),
-            [4, 5, 3, 9, 2, 2, 4, 0, 32, 0]
+            [4, 5, 3, 9, 2, 2, 4, 32, 0]
         );
         assert_eq!(
             bytes(&ServerHeader::Data(
                 5,
-                DataHeader::Drain(1, 2, true, HeaderUpdate::Keep)
+                DataHeader::Drain(1, 2, HeaderUpdate::Keep)
             )),
-            [4, 5, 4, 1, 2, 1, 0]
+            [4, 5, 4, 1, 2, 0]
         );
         assert_eq!(
             bytes(&ServerHeader::DataTake(
                 5,
-                DataTakeHeader::All(DataType::U8, 4, true, 4, None),
+                DataTakeHeader::All(DataType::U8, 4, 4, None),
                 true
             )),
-            [5, 5, 0, 0, 4, 1, 4, 0, 1]
+            [5, 5, 0, 0, 4, 4, 0, 1]
         );
         assert_eq!(
             bytes(&ServerHeader::MultiData(
                 5,
-                MultiDataHeader::Modify(9, DataHeader::Clear(true, HeaderUpdate::Keep))
+                MultiDataHeader::Modify(9, DataHeader::Clear(HeaderUpdate::Keep))
             )),
-            [6, 5, 1, 9, 5, 1, 0]
+            [6, 5, 1, 9, 5, 0]
         );
         assert_eq!(
             bytes(&ServerHeader::DataMultiTake(
@@ -388,35 +370,32 @@ mod tests {
             size: 2,
         };
         assert_eq!(
-            bytes(&ServerHeader::Data(5, DataHeader::Header(true, header))),
-            [4, 5, 6, 1, 0xac, 0x02, 2]
+            bytes(&ServerHeader::Data(5, DataHeader::Header(header))),
+            [4, 5, 6, 0xac, 0x02, 2]
         );
         assert_eq!(
             bytes(&ServerHeader::Data(
                 5,
-                DataHeader::Clear(false, HeaderUpdate::Set(header))
+                DataHeader::Clear(HeaderUpdate::Set(header))
             )),
-            [4, 5, 5, 0, 1, 0xac, 0x02, 2]
+            [4, 5, 5, 1, 0xac, 0x02, 2]
         );
-        assert_eq!(
-            bytes(&ServerHeader::Data(5, DataHeader::Reset(true))),
-            [4, 5, 7, 1]
-        );
+        assert_eq!(bytes(&ServerHeader::Data(5, DataHeader::Reset)), [4, 5, 7]);
         assert_eq!(
             bytes(&ServerHeader::DataTake(
                 5,
-                DataTakeHeader::End(DataType::U8, 4, false, 4, Some(header)),
+                DataTakeHeader::End(DataType::U8, 4, 4, Some(header)),
                 false
             )),
-            [5, 5, 3, 0, 4, 0, 4, 1, 0xac, 0x02, 2, 0]
+            [5, 5, 3, 0, 4, 4, 1, 0xac, 0x02, 2, 0]
         );
         assert_eq!(
             bytes(&ServerHeader::Image(
                 5,
-                ImageHeader::Set(ImageSetHeader::All([2, 3], true), ImageType::Gray),
+                ImageHeader::Set(ImageSetHeader::All([2, 3]), ImageType::Gray),
                 6
             )),
-            [3, 5, 0, 0, 2, 3, 1, 2, 6]
+            [3, 5, 0, 0, 2, 3, 2, 6]
         );
         assert_eq!(
             bytes(&ServerHeader::ImageMulti(
@@ -424,23 +403,17 @@ mod tests {
                 ImageMultiHeader::Modify(
                     1,
                     ImageHeader::Update(
-                        ImageUpdateHeader::All([0, 1, 2, 3], true),
+                        ImageUpdateHeader::All([0, 1, 2, 3]),
                         ImageType::ColorAlpha
                     ),
                     24
                 )
             )),
-            [11, 5, 1, 1, 1, 0, 0, 1, 2, 3, 1, 1, 24]
+            [11, 5, 1, 1, 1, 0, 0, 1, 2, 3, 1, 24]
         );
         assert_eq!(
-            bytes(&ServerHeader::ValueVec(
-                5,
-                7,
-                false,
-                VecHeader::Remove(2),
-                0
-            )),
-            [8, 5, 7, 0, 3, 2, 0]
+            bytes(&ServerHeader::ValueVec(5, 7, VecHeader::Remove(2), 0)),
+            [8, 5, 7, 3, 2, 0]
         );
         assert_eq!(bytes(&ServerHeader::Update(1.0)), [10, 0, 0, 0x80, 0x3f]);
         assert_eq!(bytes(&ClientHeader::Ack(300)), [2, 0xac, 0x02]);

@@ -148,8 +148,7 @@ impl Image {
     ///
     /// `size` is `[height, width]`; `data` must contain exactly the number of
     /// bytes implied by `size` and `format`, which the server keeps it in.
-    /// `update` requests a client repaint. The client shows the new image only
-    /// once all of it has arrived.
+    /// The client shows the new image only once all of it has arrived.
     ///
     /// One transfer of this image is sent at a time: the call blocks until
     /// the previous one has been acknowledged by the client, then queues the
@@ -169,14 +168,11 @@ impl Image {
         data: &[u8],
         size: [usize; 2],
         format: ImageFormat,
-        update: bool,
         wait: bool,
     ) -> Result<()> {
         self.check_image_data(data, size, format)?;
         let image = ImageData::packed(data, size, format.image_type());
-        self.inner
-            .set_image(image, update, wait)
-            .map_err(ServerError::new)
+        self.inner.set_image(image, wait).map_err(ServerError::new)
     }
 
     /// Fill an image with one color.
@@ -192,15 +188,9 @@ impl Image {
     ///
     /// Returns an error for zero dimensions, dimensions exceeding 65,536 pixels,
     /// overflowing dimensions, or when the update cannot be queued.
-    pub fn set_all(
-        &self,
-        shape: [usize; 2],
-        color: ImageColor,
-        update: bool,
-        wait: bool,
-    ) -> Result<()> {
+    pub fn set_all(&self, shape: [usize; 2], color: ImageColor, wait: bool) -> Result<()> {
         self.inner
-            .set_all_image(shape, color.fill(), update, wait)
+            .set_all_image(shape, color.fill(), wait)
             .map_err(ServerError::new)
     }
 
@@ -211,8 +201,7 @@ impl Image {
     /// image to a format that holds both, as described at [`Image`]. Without
     /// `max_lines`, the client applies the whole rectangle at once. With
     /// `max_lines`, the rectangle is sent as parts of at most that many rows
-    /// from the top; the client applies each part as it arrives, and `update`
-    /// requests a repaint after every part.
+    /// from the top; the client applies and shows each part as it arrives.
     ///
     /// Like [`set`](Self::set), the call blocks until the previous transfer
     /// has been acknowledged, then queues the update and returns. A split
@@ -238,7 +227,6 @@ impl Image {
         origin: [usize; 2],
         size: [usize; 2],
         format: ImageFormat,
-        update: bool,
         force: bool,
         max_lines: Option<usize>,
         wait: bool,
@@ -246,7 +234,7 @@ impl Image {
         self.check_image_data(data, size, format)?;
         let image = ImageData::packed(data, size, format.image_type());
         self.inner
-            .update_image(&origin, image, update, force, max_lines, wait)
+            .update_image(&origin, image, force, max_lines, wait)
             .map_err(ServerError::new)
     }
 
@@ -344,7 +332,6 @@ impl ImageMulti {
         data: &[u8],
         size: [usize; 2],
         format: ImageFormat,
-        update: bool,
         wait: bool,
     ) -> Result<()> {
         check_image_multi_data(data, size, format)?;
@@ -352,7 +339,6 @@ impl ImageMulti {
             .set_image(
                 index,
                 ImageData::packed(data, size, format.image_type()),
-                update,
                 wait,
             )
             .map_err(ServerError::new)
@@ -366,11 +352,10 @@ impl ImageMulti {
         index: u32,
         shape: [usize; 2],
         color: ImageColor,
-        update: bool,
         wait: bool,
     ) -> Result<()> {
         self.inner
-            .set_all_image(index, shape, color.fill(), update, wait)
+            .set_all_image(index, shape, color.fill(), wait)
             .map_err(ServerError::new)
     }
 
@@ -388,7 +373,6 @@ impl ImageMulti {
         origin: [usize; 2],
         size: [usize; 2],
         format: ImageFormat,
-        update: bool,
         force: bool,
         max_lines: Option<usize>,
         wait: bool,
@@ -399,7 +383,6 @@ impl ImageMulti {
                 index,
                 &origin,
                 ImageData::packed(data, size, format.image_type()),
-                update,
                 force,
                 max_lines,
                 wait,
@@ -411,18 +394,16 @@ impl ImageMulti {
     ///
     /// Unsent parts of a split update of `index` are dropped, then the call
     /// waits until nothing is in flight before it queues the removal.
-    pub fn remove_index(&self, index: u32, update: bool) -> Result<()> {
-        self.inner
-            .remove_index(index, update)
-            .map_err(ServerError::new)
+    pub fn remove_index(&self, index: u32) -> Result<()> {
+        self.inner.remove_index(index).map_err(ServerError::new)
     }
 
     /// Removes all image keys.
     ///
     /// Unsent parts of a split update are dropped, then the call waits until
     /// nothing is in flight before it queues the reset.
-    pub fn reset(&self, update: bool) -> Result<()> {
-        self.inner.reset_images(update).map_err(ServerError::new)
+    pub fn reset(&self) -> Result<()> {
+        self.inner.reset_images().map_err(ServerError::new)
     }
 }
 
@@ -454,30 +435,17 @@ mod tests {
         let images = ImageMulti::new(&server, "root.images", false).unwrap();
         for shape in [[65_536, 1], [1, 65_536]] {
             let data = vec![7; 65_536];
-            image
-                .set(&data, shape, ImageFormat::Gray, false, false)
-                .unwrap();
+            image.set(&data, shape, ImageFormat::Gray, false).unwrap();
             images
-                .set(7, &data, shape, ImageFormat::Gray, false, false)
+                .set(7, &data, shape, ImageFormat::Gray, false)
                 .unwrap();
-            image
-                .set_all(shape, ImageColor::Gray(9), false, false)
-                .unwrap();
+            image.set_all(shape, ImageColor::Gray(9), false).unwrap();
             images
-                .set_all(7, shape, ImageColor::Gray(9), false, false)
+                .set_all(7, shape, ImageColor::Gray(9), false)
                 .unwrap();
             let origin = [shape[0] - 1, shape[1] - 1];
             image
-                .update(
-                    &[8],
-                    origin,
-                    [1, 1],
-                    ImageFormat::Gray,
-                    false,
-                    false,
-                    None,
-                    false,
-                )
+                .update(&[8], origin, [1, 1], ImageFormat::Gray, false, None, false)
                 .unwrap();
             images
                 .update(
@@ -486,7 +454,6 @@ mod tests {
                     origin,
                     [1, 1],
                     ImageFormat::Gray,
-                    false,
                     false,
                     None,
                     false,
@@ -497,16 +464,15 @@ mod tests {
             let before = image.get();
             for oversized in [[65_537, 1], [1, 65_537]] {
                 for result in [
-                    image.set(&[], oversized, ImageFormat::Gray, false, false),
-                    images.set(9, &[], oversized, ImageFormat::Gray, false, false),
-                    image.set_all(oversized, ImageColor::Gray(0), false, false),
-                    images.set_all(9, oversized, ImageColor::Gray(0), false, false),
+                    image.set(&[], oversized, ImageFormat::Gray, false),
+                    images.set(9, &[], oversized, ImageFormat::Gray, false),
+                    image.set_all(oversized, ImageColor::Gray(0), false),
+                    images.set_all(9, oversized, ImageColor::Gray(0), false),
                     image.update(
                         &[],
                         [0, 0],
                         oversized,
                         ImageFormat::Gray,
-                        false,
                         false,
                         None,
                         false,
@@ -518,7 +484,6 @@ mod tests {
                         oversized,
                         ImageFormat::Gray,
                         false,
-                        false,
                         None,
                         false,
                     ),
@@ -529,16 +494,7 @@ mod tests {
             for origin in [[65_536, 0], [0, 65_536], [usize::MAX, 0], [0, usize::MAX]] {
                 assert!(
                     image
-                        .update(
-                            &[0],
-                            origin,
-                            [1, 1],
-                            ImageFormat::Gray,
-                            false,
-                            false,
-                            None,
-                            false
-                        )
+                        .update(&[0], origin, [1, 1], ImageFormat::Gray, false, None, false)
                         .is_err()
                 );
                 assert!(
@@ -550,9 +506,8 @@ mod tests {
                             [1, 1],
                             ImageFormat::Gray,
                             false,
-                            false,
                             None,
-                            false,
+                            false
                         )
                         .is_err()
                 );
@@ -582,13 +537,7 @@ mod tests {
         assert_eq!(image.format(), None);
 
         image
-            .set(
-                &[10, 20, 30, 40, 50, 60],
-                [1, 2],
-                ImageFormat::Color,
-                false,
-                false,
-            )
+            .set(&[10, 20, 30, 40, 50, 60], [1, 2], ImageFormat::Color, false)
             .unwrap();
         assert_eq!(image.shape(), [1, 2]);
         assert_eq!(
@@ -602,7 +551,6 @@ mod tests {
                 [0, 0],
                 [1, 1],
                 ImageFormat::GrayAlpha,
-                false,
                 false,
                 None,
                 false,
@@ -626,12 +574,12 @@ mod tests {
 
         assert!(
             image
-                .set(&[], [1, 1], ImageFormat::ColorAlpha, false, false)
+                .set(&[], [1, 1], ImageFormat::ColorAlpha, false)
                 .is_err()
         );
         assert!(
             image
-                .set(&[], [usize::MAX, 2], ImageFormat::ColorAlpha, false, false)
+                .set(&[], [usize::MAX, 2], ImageFormat::ColorAlpha, false)
                 .is_err()
         );
     }
@@ -646,22 +594,13 @@ mod tests {
         // Nothing has been set yet, so every rectangle is outside the image.
         assert!(
             image
-                .update(
-                    &[1],
-                    [0, 0],
-                    [1, 1],
-                    ImageFormat::Gray,
-                    false,
-                    false,
-                    None,
-                    false
-                )
+                .update(&[1], [0, 0], [1, 1], ImageFormat::Gray, false, None, false)
                 .is_err()
         );
         assert_eq!(image.shape(), [0, 0]);
 
         image
-            .set(&[1, 2, 3, 4, 5, 6], [2, 3], ImageFormat::Gray, false, false)
+            .set(&[1, 2, 3, 4, 5, 6], [2, 3], ImageFormat::Gray, false)
             .unwrap();
         let before = image.get();
         for (origin, size) in [
@@ -676,16 +615,7 @@ mod tests {
             let data = vec![9; size[0] * size[1]];
             assert!(
                 image
-                    .update(
-                        &data,
-                        origin,
-                        size,
-                        ImageFormat::Gray,
-                        false,
-                        false,
-                        None,
-                        false
-                    )
+                    .update(&data, origin, size, ImageFormat::Gray, false, None, false)
                     .is_err(),
                 "accepted {size:?} at {origin:?}"
             );
@@ -698,16 +628,7 @@ mod tests {
 
         // The last row and column are still inside.
         image
-            .update(
-                &[9],
-                [1, 2],
-                [1, 1],
-                ImageFormat::Gray,
-                false,
-                false,
-                None,
-                false,
-            )
+            .update(&[9], [1, 2], [1, 1], ImageFormat::Gray, false, None, false)
             .unwrap();
         assert_eq!(image.get().unwrap().0, [1, 2, 3, 4, 5, 9]);
     }
@@ -718,7 +639,7 @@ mod tests {
         let image = Image::new(&server, "root.image", false).unwrap();
 
         image
-            .set_all([2, 3], ImageColor::GrayAlpha(7, 8), false, false)
+            .set_all([2, 3], ImageColor::GrayAlpha(7, 8), false)
             .unwrap();
 
         assert_eq!(image.shape(), [2, 3]);
@@ -726,11 +647,7 @@ mod tests {
             image.get(),
             Some(([7, 8].repeat(6), [2, 3], ImageFormat::GrayAlpha))
         );
-        assert!(
-            image
-                .set_all([0, 3], ImageColor::Gray(0), false, false)
-                .is_err()
-        );
+        assert!(image.set_all([0, 3], ImageColor::Gray(0), false).is_err());
     }
 
     #[test]
@@ -742,7 +659,7 @@ mod tests {
         assert_eq!(images.get(7), None);
         assert!(
             images
-                .set(9, &[], [0, 1], ImageFormat::Gray, false, false)
+                .set(9, &[], [0, 1], ImageFormat::Gray, false)
                 .is_err()
         );
         assert!(!images.contains(9));
@@ -751,7 +668,7 @@ mod tests {
             let too_large = u32::MAX as usize + 1;
             assert!(
                 images
-                    .set(9, &[], [1, too_large], ImageFormat::Gray, false, false)
+                    .set(9, &[], [1, too_large], ImageFormat::Gray, false)
                     .unwrap_err()
                     .to_string()
                     .contains("65536")
@@ -767,9 +684,8 @@ mod tests {
                     [1, 1],
                     ImageFormat::Gray,
                     false,
-                    false,
                     None,
-                    false,
+                    false
                 )
                 .is_err()
         );
@@ -781,11 +697,10 @@ mod tests {
                 [1, 2],
                 ImageFormat::Color,
                 false,
-                false,
             )
             .unwrap();
         images
-            .set_all(2, [2, 1], ImageColor::GrayAlpha(7, 8), false, false)
+            .set_all(2, [2, 1], ImageColor::GrayAlpha(7, 8), false)
             .unwrap();
         assert_eq!(images.len(), 2);
         assert_eq!(images.indices(), vec![2, 7]);
@@ -807,7 +722,6 @@ mod tests {
                 [0, 1],
                 [1, 1],
                 ImageFormat::GrayAlpha,
-                false,
                 false,
                 None,
                 false,
@@ -833,9 +747,8 @@ mod tests {
                     [0, 1],
                     ImageFormat::Gray,
                     false,
-                    false,
                     None,
-                    false,
+                    false
                 )
                 .is_err()
         );
@@ -849,22 +762,21 @@ mod tests {
                     [1, 1],
                     ImageFormat::Gray,
                     false,
-                    false,
                     None,
-                    false,
+                    false
                 )
                 .is_err()
         );
         assert_eq!(images.get(7).unwrap(), before);
         assert!(
             images
-                .set(9, &[], [1, 1], ImageFormat::Color, false, false)
+                .set(9, &[], [1, 1], ImageFormat::Color, false)
                 .is_err()
         );
         assert!(!images.contains(9));
 
         images
-            .set_all(7, [1, 1], ImageColor::Color(1, 2, 3), false, false)
+            .set_all(7, [1, 1], ImageColor::Color(1, 2, 3), false)
             .unwrap();
         assert_eq!(images.len(), 2);
         // A fill narrows the image again, to the format of its color.
@@ -873,11 +785,11 @@ mod tests {
             Some((vec![1, 2, 3], [1, 1], ImageFormat::Color))
         );
 
-        images.remove_index(100, false).unwrap();
+        images.remove_index(100).unwrap();
         assert_eq!(images.len(), 2);
-        images.remove_index(2, false).unwrap();
+        images.remove_index(2).unwrap();
         assert_eq!(images.indices(), vec![7]);
-        images.reset(false).unwrap();
+        images.reset().unwrap();
         assert!(images.is_empty());
     }
 }

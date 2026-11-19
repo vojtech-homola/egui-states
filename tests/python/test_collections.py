@@ -9,13 +9,13 @@ def test_vector_mutation(local_bundle):
     """Verify vector replacement, append, removal, and clearing."""
     _, states, _ = local_bundle
     values = states.value_vec.items
-    values.set([10, -3, 27], update=True)
+    values.set([10, -3, 27])
     assert values.get() == [10, -3, 27]
-    values.add_item(32, update=True)
+    values.add_item(32)
     assert values.get() == [10, -3, 27, 32]
-    assert values.remove_item(3, update=True) == 32
+    assert values.remove_item(3) == 32
     assert values.get() == [10, -3, 27]
-    values.set([], update=True)
+    values.set([])
     assert values.get() == []
 
 
@@ -23,13 +23,13 @@ def test_map_mutation(local_bundle):
     """Verify map replacement, insertion, removal, and clearing."""
     _, states, _ = local_bundle
     values = states.value_map.items
-    values.set({1: 100, 2: 200, 5: 500}, update=True)
+    values.set({1: 100, 2: 200, 5: 500})
     assert values.get() == {1: 100, 2: 200, 5: 500}
-    values.set_item(6, 600, update=True)
+    values.set_item(6, 600)
     assert values.get() == {1: 100, 2: 200, 5: 500, 6: 600}
-    assert values.remove_item(1, update=True) == 100
+    assert values.remove_item(1) == 100
     assert values.get() == {2: 200, 5: 500, 6: 600}
-    values.set({}, update=True)
+    values.set({})
     assert values.get() == {}
 
 

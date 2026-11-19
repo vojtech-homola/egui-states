@@ -29,10 +29,9 @@ impl ServerHeader {
     pub fn serialize_value<const N: usize>(
         id: u64,
         type_id: u32,
-        update: bool,
         value_data: &[u8],
     ) -> Result<FastVec<N>, &'static str> {
-        let header = ServerHeader::Value(id, type_id, update, value_data.len() as u32);
+        let header = ServerHeader::Value(id, type_id, value_data.len() as u32);
         let mut data = FastVec::<N>::new();
         serialize_to_data(&header, &mut data).map_err(|_| "Failed to serialize header")?;
         data.extend_from_slice(value_data);
@@ -42,10 +41,9 @@ impl ServerHeader {
     pub fn serialize_static<const N: usize>(
         id: u64,
         type_id: u32,
-        update: bool,
         value_data: &[u8],
     ) -> Result<FastVec<N>, &'static str> {
-        let header = ServerHeader::Static(id, type_id, update, value_data.len() as u32);
+        let header = ServerHeader::Static(id, type_id, value_data.len() as u32);
         let mut data = FastVec::<N>::new();
         serialize_to_data(&header, &mut data).map_err(|_| "Failed to serialize header")?;
         data.extend_from_slice(value_data);
@@ -56,11 +54,9 @@ impl ServerHeader {
         id: u64,
         type_id: u32,
         blocking: bool,
-        update: bool,
         value_data: &[u8],
     ) -> Result<FastVec<N>, &'static str> {
-        let header =
-            ServerHeader::ValueTake(id, type_id, blocking, update, value_data.len() as u32);
+        let header = ServerHeader::ValueTake(id, type_id, blocking, value_data.len() as u32);
         let mut data = FastVec::<N>::new();
         serialize_to_data(&header, &mut data).map_err(|_| "Failed to serialize header")?;
         data.extend_from_slice(value_data);
@@ -163,21 +159,21 @@ mod tests {
         let transport = TransportType::Replace(u64::MAX, u64::MAX);
         let data = || {
             [
-                DataHeader::All(DataType::F64, transport, true, u32::MAX, set),
+                DataHeader::All(DataType::F64, transport, u32::MAX, set),
                 DataHeader::StartBatch(u64::MAX, u32::MAX),
                 DataHeader::Batch(u32::MAX),
-                DataHeader::End(DataType::F64, transport, true, u32::MAX, set),
-                DataHeader::Drain(u64::MAX, u64::MAX, true, set),
-                DataHeader::Clear(true, set),
-                DataHeader::Header(true, header),
+                DataHeader::End(DataType::F64, transport, u32::MAX, set),
+                DataHeader::Drain(u64::MAX, u64::MAX, set),
+                DataHeader::Clear(set),
+                DataHeader::Header(header),
             ]
         };
         let take = || {
             [
-                DataTakeHeader::All(DataType::F64, u64::MAX, true, u32::MAX, Some(header)),
+                DataTakeHeader::All(DataType::F64, u64::MAX, u32::MAX, Some(header)),
                 DataTakeHeader::StartBatch(u64::MAX, u32::MAX),
                 DataTakeHeader::Batch(u32::MAX),
-                DataTakeHeader::End(DataType::F64, u64::MAX, true, u32::MAX, Some(header)),
+                DataTakeHeader::End(DataType::F64, u64::MAX, u32::MAX, Some(header)),
             ]
         };
         let mut messages = Vec::new();

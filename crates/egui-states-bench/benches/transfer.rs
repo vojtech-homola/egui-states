@@ -125,7 +125,7 @@ fn data_set(c: &mut Criterion, session: &Session) {
                 for _ in 0..iterations {
                     marker = marker.wrapping_add(1);
                     buffer[0] = marker;
-                    session.data.set(&buffer, false, false).expect("set data");
+                    session.data.set(&buffer, false).expect("set data");
                     wait_until("data", || {
                         session.states.data.read(|data| {
                             data.is_some_and(|data| data.len() == len && data[0] == marker)
@@ -163,13 +163,7 @@ fn image_set(c: &mut Criterion, session: &Session) {
                     };
                     session
                         .image
-                        .set(
-                            &pixels,
-                            [height, width],
-                            ImageFormat::ColorAlpha,
-                            false,
-                            false,
-                        )
+                        .set(&pixels, [height, width], ImageFormat::ColorAlpha, false)
                         .expect("set image");
                     wait_until("image", || {
                         session.states.image.get_size() == Some([width, height])
@@ -192,13 +186,7 @@ fn image_update(c: &mut Criterion, session: &Session) {
     let base = pattern(50 * 256 * width * 4);
     session
         .image
-        .set(
-            &base,
-            [50 * 256, width],
-            ImageFormat::ColorAlpha,
-            false,
-            false,
-        )
+        .set(&base, [50 * 256, width], ImageFormat::ColorAlpha, false)
         .expect("set base image");
     wait_until("base image", || {
         session.states.image.get_size() == Some([width, 50 * 256])
@@ -219,7 +207,6 @@ fn image_update(c: &mut Criterion, session: &Session) {
                             [0, 0],
                             size,
                             ImageFormat::ColorAlpha,
-                            false,
                             true,
                             None,
                             false,
@@ -237,13 +224,12 @@ fn image_update(c: &mut Criterion, session: &Session) {
                             [1, 1],
                             ImageFormat::ColorAlpha,
                             false,
-                            false,
                             None,
                             false,
                         )
                         .expect("update corner");
                     marker += 1;
-                    session.marker.set(marker, false).expect("set marker");
+                    session.marker.set(marker).expect("set marker");
                     wait_until("image update", || session.states.marker.get() == marker);
                 }
                 start.elapsed()

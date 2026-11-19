@@ -22,7 +22,7 @@ def setup_server(*, error_handler: Callable[[Exception], None] | None = None) ->
     states = server.states
     states.count.set(0)
     states.count.connect(lambda value: print(f"count: {value}"))
-    states.reset.connect(lambda: states.count.set(0, update=True))
+    states.reset.connect(lambda: states.count.set(0))
     return server
 
 

@@ -138,7 +138,7 @@ impl Image {
         data: &[u8],
     ) -> Result<(), String> {
         match message {
-            ImageSetHeader::All(size, _) => {
+            ImageSetHeader::All(size) => {
                 self.sender.send(ChannelMessage::Ack(self.id));
                 let image_size = [size[0] as usize, size[1] as usize];
                 let c_image = create_color_image(&self.name, image_size, image_type, data)?;
@@ -154,7 +154,7 @@ impl Image {
                 }
                 _ => return Err(format!("No image buffer found for image: {}", self.name)),
             },
-            ImageSetHeader::End(pixels, _) => {
+            ImageSetHeader::End(pixels) => {
                 self.sender.send(ChannelMessage::Ack(self.id));
                 let Some(partial) = self.buffer.lock().take().filter(|p| p.origin.is_none()) else {
                     return Err(format!("No image buffer found for image: {}", self.name));
@@ -176,7 +176,7 @@ impl Image {
         data: &[u8],
     ) -> Result<(), String> {
         match header {
-            ImageUpdateHeader::All(rect, _) => {
+            ImageUpdateHeader::All(rect) => {
                 self.sender.send(ChannelMessage::Ack(self.id));
                 let (origin, size) = self.checked_update(rect)?;
                 let image = create_color_image(&self.name, size, image_type, data)?;
@@ -195,7 +195,7 @@ impl Image {
                 }
                 _ => Err(self.no_update_buffer()),
             },
-            ImageUpdateHeader::End(pixels, _) => {
+            ImageUpdateHeader::End(pixels) => {
                 self.sender.send(ChannelMessage::Ack(self.id));
                 let partial = self.buffer.lock().take();
                 let Some((partial, origin)) =
@@ -370,7 +370,7 @@ impl ImageMulti {
         data: &[u8],
     ) -> Result<(), String> {
         match message {
-            ImageSetHeader::All(size, _) => {
+            ImageSetHeader::All(size) => {
                 self.sender.send_ack(self.id);
                 let image_size = [size[0] as usize, size[1] as usize];
                 let image = create_color_image(&self.name, image_size, image_type, data)?;
@@ -390,7 +390,7 @@ impl ImageMulti {
                     .ok_or_else(|| self.no_buffer(index))?;
                 partial.append(&self.label(index), pixels, image_type, data)
             }
-            ImageSetHeader::End(pixels, _) => {
+            ImageSetHeader::End(pixels) => {
                 self.sender.send_ack(self.id);
                 let partial = self
                     .buffers
@@ -416,7 +416,7 @@ impl ImageMulti {
     ) -> Result<(), String> {
         let label = self.label(index);
         match header {
-            ImageUpdateHeader::All(rect, _) => {
+            ImageUpdateHeader::All(rect) => {
                 self.sender.send_ack(self.id);
                 let (origin, size) = self.checked_update(index, rect)?;
                 // Convert outside the map lock, which UI reads of every key
@@ -439,7 +439,7 @@ impl ImageMulti {
                     .ok_or_else(|| self.no_buffer(index))?;
                 partial.append(&label, pixels, image_type, data)
             }
-            ImageUpdateHeader::End(pixels, _) => {
+            ImageUpdateHeader::End(pixels) => {
                 self.sender.send_ack(self.id);
                 let partial = self.buffers.lock().remove(&index);
                 let (partial, origin) = partial
@@ -808,25 +808,18 @@ mod tests {
             for size in [[65_537, 1], [1, 65_537]] {
                 for operation in 0..4 {
                     let result = match operation {
-                        0 => {
-                            image.set_image(ImageSetHeader::All(size, false), ImageType::Gray, &[])
-                        }
+                        0 => image.set_image(ImageSetHeader::All(size), ImageType::Gray, &[]),
                         1 => image.set_image(ImageSetHeader::Start(size, 1), ImageType::Gray, &[9]),
                         2 => image.fill_image(size, [9; 4], &[]),
                         _ => image.update_image(
-                            ImageUpdateHeader::All([0, 0, size[0], size[1]], false),
+                            ImageUpdateHeader::All([0, 0, size[0], size[1]]),
                             ImageType::Gray,
                             &[],
                         ),
                     };
                     assert!(result.unwrap_err().contains("65536"));
                     let result = match operation {
-                        0 => images.set_image(
-                            7,
-                            ImageSetHeader::All(size, false),
-                            ImageType::Gray,
-                            &[],
-                        ),
+                        0 => images.set_image(7, ImageSetHeader::All(size), ImageType::Gray, &[]),
                         1 => images.set_image(
                             7,
                             ImageSetHeader::Start(size, 1),
@@ -836,7 +829,7 @@ mod tests {
                         2 => images.fill_image(7, size, [9; 4], &[]),
                         _ => images.update_image(
                             7,
-                            ImageUpdateHeader::All([0, 0, size[0], size[1]], false),
+                            ImageUpdateHeader::All([0, 0, size[0], size[1]]),
                             ImageType::Gray,
                             &[],
                         ),
@@ -860,17 +853,12 @@ mod tests {
                 let rect = [origin[0], origin[1], 1, 1];
                 assert!(
                     image
-                        .update_image(ImageUpdateHeader::All(rect, false), ImageType::Gray, &[9])
+                        .update_image(ImageUpdateHeader::All(rect), ImageType::Gray, &[9])
                         .is_err()
                 );
                 assert!(
                     images
-                        .update_image(
-                            7,
-                            ImageUpdateHeader::All(rect, false),
-                            ImageType::Gray,
-                            &[9]
-                        )
+                        .update_image(7, ImageUpdateHeader::All(rect), ImageType::Gray, &[9])
                         .is_err()
                 );
                 assert_single_ack(&mut receiver, 1);
@@ -896,19 +884,10 @@ mod tests {
             let wire_size = [size[0] as u32, size[1] as u32];
             let data = vec![7; 65_536];
             image
-                .set_image(
-                    ImageSetHeader::All(wire_size, false),
-                    ImageType::Gray,
-                    &data,
-                )
+                .set_image(ImageSetHeader::All(wire_size), ImageType::Gray, &data)
                 .unwrap();
             images
-                .set_image(
-                    7,
-                    ImageSetHeader::All(wire_size, false),
-                    ImageType::Gray,
-                    &data,
-                )
+                .set_image(7, ImageSetHeader::All(wire_size), ImageType::Gray, &data)
                 .unwrap();
             assert_single_ack(&mut receiver, 1);
             assert_single_ack(&mut multi_receiver, 2);
@@ -926,7 +905,7 @@ mod tests {
                 .unwrap();
             image
                 .set_image(
-                    ImageSetHeader::End(65_535, false),
+                    ImageSetHeader::End(65_535),
                     ImageType::Gray,
                     &data[..65_535],
                 )
@@ -934,7 +913,7 @@ mod tests {
             images
                 .set_image(
                     7,
-                    ImageSetHeader::End(65_535, false),
+                    ImageSetHeader::End(65_535),
                     ImageType::Gray,
                     &data[..65_535],
                 )
@@ -948,15 +927,10 @@ mod tests {
             assert_single_ack(&mut multi_receiver, 2);
             let rect = [wire_size[0] - 1, wire_size[1] - 1, 1, 1];
             image
-                .update_image(ImageUpdateHeader::All(rect, false), ImageType::Gray, &[10])
+                .update_image(ImageUpdateHeader::All(rect), ImageType::Gray, &[10])
                 .unwrap();
             images
-                .update_image(
-                    7,
-                    ImageUpdateHeader::All(rect, false),
-                    ImageType::Gray,
-                    &[10],
-                )
+                .update_image(7, ImageUpdateHeader::All(rect), ImageType::Gray, &[10])
                 .unwrap();
             assert_single_ack(&mut receiver, 1);
             assert_single_ack(&mut multi_receiver, 2);
@@ -972,7 +946,7 @@ mod tests {
             [
                 (ImageSetHeader::Start([3, 1], 1), &[1][..]),
                 (ImageSetHeader::Batch(2), &[2, 3][..]),
-                (ImageSetHeader::End(0, false), &[][..]),
+                (ImageSetHeader::End(0), &[][..]),
             ]
         };
         let context = egui::Context::default();
@@ -1014,12 +988,12 @@ mod tests {
 
         assert!(
             image
-                .set_image(ImageSetHeader::End(1, false), ImageType::Gray, &[2])
+                .set_image(ImageSetHeader::End(1), ImageType::Gray, &[2])
                 .is_err()
         );
         assert!(
             images
-                .set_image(7, ImageSetHeader::End(1, false), ImageType::Gray, &[2])
+                .set_image(7, ImageSetHeader::End(1), ImageType::Gray, &[2])
                 .is_err()
         );
         assert_single_ack(&mut receiver, 1);
@@ -1051,7 +1025,7 @@ mod tests {
             [
                 (ImageUpdateHeader::Start(rect, 1), &[1][..]),
                 (ImageUpdateHeader::Batch(2), &[2, 3][..]),
-                (ImageUpdateHeader::End(1, true), &[4][..]),
+                (ImageUpdateHeader::End(1), &[4][..]),
             ]
         };
         for (n, (header, data)) in chunks().into_iter().enumerate() {
@@ -1090,7 +1064,7 @@ mod tests {
             .unwrap();
         assert!(
             image
-                .set_image(ImageSetHeader::End(3, false), ImageType::Gray, &[2, 3, 4])
+                .set_image(ImageSetHeader::End(3), ImageType::Gray, &[2, 3, 4])
                 .is_err()
         );
         assert_single_ack(&mut receiver, 1);
@@ -1104,11 +1078,7 @@ mod tests {
         );
         assert!(
             image
-                .update_image(
-                    ImageUpdateHeader::End(3, false),
-                    ImageType::Gray,
-                    &[2, 3, 4]
-                )
+                .update_image(ImageUpdateHeader::End(3), ImageType::Gray, &[2, 3, 4])
                 .is_err()
         );
         assert_single_ack(&mut receiver, 1);
@@ -1130,21 +1100,12 @@ mod tests {
         images.disconnected();
         assert!(
             image
-                .update_image(
-                    ImageUpdateHeader::End(3, false),
-                    ImageType::Gray,
-                    &[2, 3, 4]
-                )
+                .update_image(ImageUpdateHeader::End(3), ImageType::Gray, &[2, 3, 4])
                 .is_err()
         );
         assert!(
             images
-                .update_image(
-                    7,
-                    ImageUpdateHeader::End(3, false),
-                    ImageType::Gray,
-                    &[2, 3, 4]
-                )
+                .update_image(7, ImageUpdateHeader::End(3), ImageType::Gray, &[2, 3, 4])
                 .is_err()
         );
         assert_single_ack(&mut receiver, 1);
@@ -1195,7 +1156,7 @@ mod tests {
         let deliveries: [fn(&Image); 3] = [
             |image| {
                 image
-                    .set_image(ImageSetHeader::All([2, 1], false), ImageType::Gray, &[1, 2])
+                    .set_image(ImageSetHeader::All([2, 1]), ImageType::Gray, &[1, 2])
                     .unwrap()
             },
             |image| {
@@ -1203,7 +1164,7 @@ mod tests {
                     .set_image(ImageSetHeader::Start([2, 1], 1), ImageType::Gray, &[1])
                     .unwrap();
                 image
-                    .set_image(ImageSetHeader::End(1, false), ImageType::Gray, &[2])
+                    .set_image(ImageSetHeader::End(1), ImageType::Gray, &[2])
                     .unwrap();
             },
             |image| image.fill_image([2, 1], [1, 2, 3, 255], &[]).unwrap(),
@@ -1216,11 +1177,7 @@ mod tests {
             assert!(image.get().is_none());
 
             let error = image
-                .update_image(
-                    ImageUpdateHeader::All([0, 0, 1, 1], false),
-                    ImageType::Gray,
-                    &[9],
-                )
+                .update_image(ImageUpdateHeader::All([0, 0, 1, 1]), ImageType::Gray, &[9])
                 .unwrap_err();
             assert!(error.contains("before a complete image"), "{error}");
             assert_single_ack(&mut receiver, 1);
@@ -1248,11 +1205,7 @@ mod tests {
         let placeholder = |size| ColorImage::filled(size, egui::Color32::BLACK);
         let server_image = |image: &Image| {
             image
-                .set_image(
-                    ImageSetHeader::All([3, 1], false),
-                    ImageType::Gray,
-                    &[1, 2, 3],
-                )
+                .set_image(ImageSetHeader::All([3, 1]), ImageType::Gray, &[1, 2, 3])
                 .unwrap()
         };
 
@@ -1303,12 +1256,7 @@ mod tests {
 
         // The first image for a key creates its texture without any setup.
         images
-            .set_image(
-                7,
-                ImageSetHeader::All([2, 1], false),
-                ImageType::Gray,
-                &[10, 20],
-            )
+            .set_image(7, ImageSetHeader::All([2, 1]), ImageType::Gray, &[10, 20])
             .unwrap();
         assert_single_ack(&mut receiver, id);
         images.fill_image(2, [1, 3], [1, 2, 3, 4], &[]).unwrap();
@@ -1329,7 +1277,7 @@ mod tests {
             images
                 .update_image(
                     99,
-                    ImageUpdateHeader::All([0, 0, 1, 1], false),
+                    ImageUpdateHeader::All([0, 0, 1, 1]),
                     ImageType::Gray,
                     &[5],
                 )
@@ -1367,7 +1315,7 @@ mod tests {
         images
             .set_image(
                 7,
-                ImageSetHeader::End(1, false),
+                ImageSetHeader::End(1),
                 ImageType::ColorAlpha,
                 &[70, 0, 0, 255],
             )
@@ -1389,7 +1337,7 @@ mod tests {
         images
             .set_image(
                 2,
-                ImageSetHeader::End(1, false),
+                ImageSetHeader::End(1),
                 ImageType::ColorAlpha,
                 &[20, 0, 0, 255],
             )
@@ -1415,7 +1363,7 @@ mod tests {
         images.remove(11);
         assert!(
             images
-                .set_image(11, ImageSetHeader::End(1, false), ImageType::Gray, &[2],)
+                .set_image(11, ImageSetHeader::End(1), ImageType::Gray, &[2],)
                 .is_err()
         );
         assert_single_ack(&mut receiver, id);

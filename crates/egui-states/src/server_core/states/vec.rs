@@ -38,22 +38,14 @@ impl ValueList {
     }
 
     /// Serializes a whole-list replacement, split into frame-sized messages.
-    /// Only the last message requests a UI update.
-    fn serialize_all(&self, vec: &[Bytes], update: bool) -> Result<Vec<SenderData>, &'static str> {
+    fn serialize_all(&self, vec: &[Bytes]) -> Result<Vec<SenderData>, &'static str> {
         serialize_replacement(
             vec.iter(),
             |item| item.len(),
             |message, item| message.extend_from_slice(item),
-            |part, count, size, update| {
-                ServerHeader::ValueVec(
-                    self.id,
-                    self.type_id,
-                    update,
-                    VecHeader::part(part, count),
-                    size,
-                )
+            |part, count, size| {
+                ServerHeader::ValueVec(self.id, self.type_id, VecHeader::part(part, count), size)
             },
-            update,
         )
     }
 
@@ -63,7 +55,7 @@ impl ValueList {
         }
     }
 
-    pub(crate) fn set(&self, list: Vec<Bytes>, update: bool) -> Result<(), String> {
+    pub(crate) fn set(&self, list: Vec<Bytes>) -> Result<(), String> {
         // the limit applies to single items, not to the whole list
         for value in list.iter() {
             check_value_size(&self.name, value.len())?;
@@ -72,7 +64,7 @@ impl ValueList {
         let mut w = self.list.write();
 
         if self.connected.load(Ordering::Acquire) {
-            self.send_all(self.serialize_all(&list, update)?);
+            self.send_all(self.serialize_all(&list)?);
         }
 
         *w = list;
@@ -83,7 +75,7 @@ impl ValueList {
         self.list.read().clone()
     }
 
-    pub(crate) fn set_item_py(&self, idx: usize, value: Bytes, update: bool) -> Result<(), String> {
+    pub(crate) fn set_item_py(&self, idx: usize, value: Bytes) -> Result<(), String> {
         check_value_size(&self.name, value.len())?;
 
         let mut w = self.list.write();
@@ -95,7 +87,6 @@ impl ValueList {
             let header = ServerHeader::ValueVec(
                 self.id,
                 self.type_id,
-                update,
                 VecHeader::Set(idx as u64),
                 value.len() as u32,
             );
@@ -120,7 +111,7 @@ impl ValueList {
         self.list.read().len()
     }
 
-    pub(crate) fn remove_item(&self, idx: usize, update: bool) -> Result<Bytes, &'static str> {
+    pub(crate) fn remove_item(&self, idx: usize) -> Result<Bytes, &'static str> {
         let mut w = self.list.write();
         if idx >= w.len() {
             return Err("Index out of bounds");
@@ -128,13 +119,8 @@ impl ValueList {
         let value = w.remove(idx);
 
         if self.connected.load(Ordering::Acquire) {
-            let header = ServerHeader::ValueVec(
-                self.id,
-                self.type_id,
-                update,
-                VecHeader::Remove(idx as u64),
-                0,
-            );
+            let header =
+                ServerHeader::ValueVec(self.id, self.type_id, VecHeader::Remove(idx as u64), 0);
             let message = serialize(&header).map_err(|_| "Serialization error")?;
             self.sender.send(message);
         }
@@ -142,18 +128,13 @@ impl ValueList {
         Ok(value)
     }
 
-    pub(crate) fn append_item(&self, value: Bytes, update: bool) -> Result<(), String> {
+    pub(crate) fn append_item(&self, value: Bytes) -> Result<(), String> {
         check_value_size(&self.name, value.len())?;
 
         let mut w = self.list.write();
         if self.connected.load(Ordering::Acquire) {
-            let header = ServerHeader::ValueVec(
-                self.id,
-                self.type_id,
-                update,
-                VecHeader::Add,
-                value.len() as u32,
-            );
+            let header =
+                ServerHeader::ValueVec(self.id, self.type_id, VecHeader::Add, value.len() as u32);
             let mut message = serialize(&header).map_err(|_| "Failed to serialize header")?;
             message.extend_from_slice(&value);
             self.sender.send(message);
@@ -166,7 +147,7 @@ impl ValueList {
 impl SyncTrait for ValueList {
     fn sync(&self) -> Result<(), ()> {
         let r = self.list.read();
-        self.send_all(self.serialize_all(&r, false).map_err(|_| ())?);
+        self.send_all(self.serialize_all(&r).map_err(|_| ())?);
         Ok(())
     }
 }
@@ -176,15 +157,15 @@ mod tests {
     use super::*;
     use crate::protocol::{TRANSFER_CHUNK_SIZE, deserialize_value};
 
-    /// Returns `(header kind, item count, update, payload bytes)` per sent message.
+    /// Returns `(header kind, item count, payload bytes)` per sent message.
     fn sent(
         receiver: &mut crate::server_core::net::sender::MessageReceiver,
-    ) -> Vec<(&'static str, u64, bool, usize)> {
+    ) -> Vec<(&'static str, u64, usize)> {
         let mut messages = Vec::new();
         while let Ok(Some((message, _))) = receiver.try_recv() {
             let message = message.into_bytes();
             let (header, used) = deserialize_value::<ServerHeader>(&message).unwrap();
-            let ServerHeader::ValueVec(7, 3, update, header, size) = header else {
+            let ServerHeader::ValueVec(7, 3, header, size) = header else {
                 panic!("not a list message");
             };
             assert_eq!(message.len() - used, size as usize);
@@ -195,13 +176,13 @@ mod tests {
                 VecHeader::End(count) => ("end", count),
                 _ => panic!("not a replacement"),
             };
-            messages.push((kind, count, update, message.len()));
+            messages.push((kind, count, message.len()));
         }
         messages
     }
 
     #[test]
-    fn a_large_replacement_is_split_and_only_its_end_requests_an_update() {
+    fn a_large_replacement_is_split_into_chunks() {
         let (sender, mut receiver) = MessageSender::new();
         let list = ValueList::new(
             "root.list".into(),
@@ -210,26 +191,20 @@ mod tests {
             sender,
             Arc::new(AtomicBool::new(true)),
         );
-        let kinds = |messages: &[(&'static str, u64, bool, usize)]| {
+        let kinds = |messages: &[(&'static str, u64, usize)]| {
             messages
                 .iter()
-                .map(|(kind, count, update, _)| (*kind, *count, *update))
+                .map(|(kind, count, _)| (*kind, *count))
                 .collect::<Vec<_>>()
         };
 
-        list.set(vec![Bytes::from(vec![1u8; 4]); 2], true).unwrap();
-        assert_eq!(kinds(&sent(&mut receiver)), [("all", 2, true)]);
+        list.set(vec![Bytes::from(vec![1u8; 4]); 2]).unwrap();
+        assert_eq!(kinds(&sent(&mut receiver)), [("all", 2)]);
 
-        list.set(
-            vec![Bytes::from(vec![0u8; TRANSFER_CHUNK_SIZE / 10]); 25],
-            true,
-        )
-        .unwrap();
+        list.set(vec![Bytes::from(vec![0u8; TRANSFER_CHUNK_SIZE / 10]); 25])
+            .unwrap();
         let messages = sent(&mut receiver);
-        assert_eq!(
-            kinds(&messages),
-            [("begin", 10, false), ("chunk", 10, false), ("end", 5, true)]
-        );
+        assert_eq!(kinds(&messages), [("begin", 10), ("chunk", 10), ("end", 5)]);
         // Headers are a few bytes on top of the chunk size.
         assert!(
             messages

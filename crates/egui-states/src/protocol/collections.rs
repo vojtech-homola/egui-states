@@ -91,23 +91,20 @@ pub(crate) fn split_collection(sizes: impl IntoIterator<Item = usize>) -> Vec<(P
 /// Serializes a whole-collection replacement into messages of at most one
 /// transfer chunk each, split at item boundaries.
 ///
-/// `header` builds the message header from the part, its item count, its
-/// payload size and whether it requests a UI update, which only the last
-/// message does; `write` appends one item.
+/// `header` builds the message header from the part, its item count and its
+/// payload size; `write` appends one item.
 #[cfg(any(feature = "server", feature = "python"))]
 pub(crate) fn serialize_replacement<I: Iterator + Clone>(
     items: I,
     size: impl Fn(&I::Item) -> usize,
     mut write: impl FnMut(&mut FastVec<32>, I::Item),
-    header: impl Fn(Part, u64, u32, bool) -> ServerHeader,
-    update: bool,
+    header: impl Fn(Part, u64, u32) -> ServerHeader,
 ) -> Result<Vec<FastVec<32>>, &'static str> {
     let chunks = split_collection(items.clone().map(|item| size(&item)));
-    let last = chunks.len() - 1;
     let mut items = items;
     let mut messages = Vec::with_capacity(chunks.len());
-    for (i, (part, count, bytes)) in chunks.into_iter().enumerate() {
-        let header = header(part, count, bytes as u32, update && i == last);
+    for (part, count, bytes) in chunks {
+        let header = header(part, count, bytes as u32);
         let mut message = serialize(&header).map_err(|_| "Failed to serialize header")?;
         message.reserve_exact(bytes);
         items

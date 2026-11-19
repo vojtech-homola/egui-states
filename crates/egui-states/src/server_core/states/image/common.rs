@@ -73,7 +73,6 @@ pub(crate) fn pack_image_set(
     id: u64,
     image: &ImageData,
     size: [u32; 2],
-    update: bool,
     chunk_limit: usize,
     header: impl Fn(ImageSetHeader, u32) -> Result<FastVec<32>, ()>,
 ) -> Result<Messages, String> {
@@ -83,10 +82,10 @@ pub(crate) fn pack_image_set(
         let len = range.len();
         let pixels = (len / pixel_size) as u32;
         let set = match chunk {
-            Chunk::All => ImageSetHeader::All(size, update),
+            Chunk::All => ImageSetHeader::All(size),
             Chunk::Start => ImageSetHeader::Start(size, pixels),
             Chunk::Batch => ImageSetHeader::Batch(pixels),
-            Chunk::End => ImageSetHeader::End(pixels, update),
+            Chunk::End => ImageSetHeader::End(pixels),
         };
         let mut message = header(set, len as u32)
             .map_err(|_| format!("Failed to serialize header for image {}", id))?;
@@ -110,13 +109,11 @@ pub(crate) fn checked_max_lines(max_lines: Option<usize>) -> Result<(), String> 
 ///
 /// The rectangle is cut into sub-rectangles of at most `max_lines` rows, or
 /// kept whole without a limit. Each sub-rectangle is one group of messages,
-/// chunked like an image set, which the client applies once; `update` asks
-/// for a repaint after every group.
+/// chunked like an image set, which the client applies once.
 pub(crate) fn pack_image_update(
     id: u64,
     image: &ImageData,
     rect: [u32; 4],
-    update: bool,
     max_lines: Option<usize>,
     chunk_limit: usize,
     header: impl Fn(ImageHeader, u32) -> Result<FastVec<32>, ()>,
@@ -141,10 +138,10 @@ pub(crate) fn pack_image_update(
                 let len = range.len();
                 let pixels = (len / pixel_size) as u32;
                 let part_header = match chunk {
-                    Chunk::All => ImageUpdateHeader::All(part, update),
+                    Chunk::All => ImageUpdateHeader::All(part),
                     Chunk::Start => ImageUpdateHeader::Start(part, pixels),
                     Chunk::Batch => ImageUpdateHeader::Batch(pixels),
-                    Chunk::End => ImageUpdateHeader::End(pixels, update),
+                    Chunk::End => ImageUpdateHeader::End(pixels),
                 };
                 let mut message = header(
                     ImageHeader::Update(part_header, image.image_type),

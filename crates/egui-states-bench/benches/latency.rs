@@ -97,7 +97,7 @@ fn start_server(port: u16, addr: Ipv4Addr) -> Server {
     server.start(port, Some(addr), None).expect("start");
 
     let echo_callback = value.connect(move |value| {
-        let _ = echo.set(value, false);
+        let _ = echo.set(value);
     });
     let download: Arc<Mutex<Option<TransferHandle>>> = Arc::default();
     let data_running = Arc::new(AtomicBool::new(false));
@@ -129,7 +129,7 @@ fn start_server(port: u16, addr: Ipv4Addr) -> Server {
             *producer.lock().unwrap() = Some(thread::spawn(move || {
                 let buffer = vec![0x5a; 16 * MIB];
                 while running.load(Ordering::Acquire) {
-                    if data.set(&buffer, false, false).is_err() {
+                    if data.set(&buffer, false).is_err() {
                         break;
                     }
                     bytes.fetch_add(buffer.len() as u64, Ordering::AcqRel);

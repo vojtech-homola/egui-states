@@ -172,7 +172,7 @@ last part arrives. These parts need no acknowledgement.
 An image update is applied on the client once, like a set, unless `max_lines`
 splits its rectangle into parts of at most that many rows from the top. Each
 part is a complete update, chunked like any other, applied and acknowledged on
-its own, and `update` requests a repaint after every part. The call queues the
+its own, and the client repaints after every part. The call queues the
 first part and returns; each further part is sent once the client has
 acknowledged the one before. A split update is therefore the one exception to
 the order above: later changes of other states can reach the client before its
@@ -231,8 +231,9 @@ the new frame. Where that order matters, `wait` on the bulk change keeps it.
 The same holds for everything else the server sends in the normal lane, such
 as a file transfer offer: it can arrive before a low-priority change made
 earlier, also before the first value of a low-priority state on a new
-connection. A repaint request is the exception: the server sends one in each
-lane, so the client repaints again when the low-priority changes have arrived.
+connection. The client repaints when the low-priority changes arrive, like
+after any other change, and an explicit repaint request (`server.update`) is
+sent in each lane, so it also follows the low-priority changes made before it.
 
 The lane has a window, the file transfer window of the server's profile. The
 server follows every frame of the lane with a small mark, which the client
@@ -368,10 +369,19 @@ complete set or reconnect.
 
 ## Repaints and runtimes
 
-Synchronization and repainting are separate. Server methods with an `update`
-argument change state regardless of that flag; `update = true` additionally
-asks the connected egui client to repaint. A delayed repaint is expressed in
-seconds.
+The client repaints after every change the server makes; server setters
+have no repaint argument. The server merges its messages into WebSocket
+frames, and the client repaints once per frame that changed a state, after
+applying all of the frame's messages, so changes made one after another
+usually reach the UI in one repaint. Only the first and middle parts of a
+split transfer, which the client buffers, do not repaint. A change made after
+slow work, such as reading hardware between two sets, travels in a frame of
+its own and repaints again; the client also repaints for its own reasons,
+such as user input, so a sequence of changes is never guaranteed to appear in
+one repaint. Changes that must appear together belong in one state.
+
+`server.update` asks the client to repaint without changing a state, at once or
+after a delay expressed in seconds.
 
 Native clients and servers each own a background thread and Tokio runtime.
 WASM clients run their synchronization future on the browser executor.

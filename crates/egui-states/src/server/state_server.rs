@@ -1041,13 +1041,13 @@ mod tests {
             source.connect({
                 let target = target.clone();
                 move |value| {
-                    let _ = target.set(value, false);
+                    let _ = target.set(value);
                 }
             }),
             source.connect_previous({
                 let target = target.clone();
                 move |value, _| {
-                    let _ = target.set(value, false);
+                    let _ = target.set(value);
                 }
             }),
             signal.connect({
@@ -1115,7 +1115,7 @@ mod tests {
         signal.signal_set_to_single();
 
         // The state itself stays usable locally, like every other handle.
-        value.set(2, false).unwrap();
+        value.set(2).unwrap();
         assert_eq!(value.get().unwrap(), 2);
     }
 
@@ -1133,12 +1133,12 @@ mod tests {
         let signals = server.inner.signals.clone();
 
         // Left pending: workers are never started.
-        value.set_signal(1, false).unwrap();
+        value.set_signal(1).unwrap();
         signal.set(1).unwrap();
         drop(server);
 
         for index in 0..3 {
-            value.set_signal(index, false).unwrap();
+            value.set_signal(index).unwrap();
             signal.set(index).unwrap();
         }
         assert!(
@@ -1221,7 +1221,7 @@ mod tests {
         }
         assert!(connected, "Rust client did not connect to the Rust server");
 
-        server_value.set(123, true).unwrap();
+        server_value.set(123).unwrap();
         for _ in 0..100 {
             if client_state.value.get() == 123 {
                 break;
@@ -1281,12 +1281,12 @@ mod tests {
             client.connect();
             server.is_connected()
         });
-        server_value.set(5, false).unwrap();
+        server_value.set(5).unwrap();
         wait("synchronization", || client_state.value.get() == 5);
 
         // Another clone keeps the client running.
         drop(client);
-        server_value.set(6, false).unwrap();
+        server_value.set(6).unwrap();
         wait("synchronization after dropping a clone", || {
             client_state.value.get() == 6
         });
@@ -1339,7 +1339,7 @@ mod tests {
             thread::sleep(Duration::from_millis(10));
         }
         assert!(server.is_connected(), "first client did not connect");
-        server_value.set(41, false).unwrap();
+        server_value.set(41).unwrap();
         first_client.disconnect();
         server.stop();
         drop(first_state);
@@ -1415,8 +1415,8 @@ mod tests {
 
         server.start_signal_workers();
         // The initial value seeds the chain, so the first change already has a previous.
-        value.set_signal(2, false).unwrap();
-        value.set_signal(3, false).unwrap();
+        value.set_signal(2).unwrap();
+        value.set_signal(3).unwrap();
 
         let mut seen = Vec::new();
         while seen.len() < 2 {
@@ -1450,7 +1450,7 @@ mod tests {
         });
 
         server.start_signal_workers();
-        value.set_signal(2, false).unwrap();
+        value.set_signal(2).unwrap();
 
         assert_eq!(plain_receiver.recv_timeout(Duration::from_secs(1)), Ok(2));
         assert_eq!(
@@ -1509,12 +1509,12 @@ mod tests {
 
         let plain = value.connect(|_: i32| {});
         let with_previous = value.connect_previous(|_: i32, _: i32| {});
-        value.set_signal(2, false).unwrap();
+        value.set_signal(2).unwrap();
         let (id, _, previous) = server.inner.signals.try_claim(None).unwrap();
         assert_eq!(previous, Some(serialize_bytes(&1_i32).unwrap()));
 
         drop(with_previous);
-        value.set_signal(3, false).unwrap();
+        value.set_signal(3).unwrap();
         // `id` has to come back as `last_id`, otherwise it stays blocked and is skipped.
         let (_, _, previous) = server.inner.signals.try_claim(Some(id)).unwrap();
         assert_eq!(
@@ -1725,7 +1725,7 @@ mod tests {
 
         server.start_signal_workers();
         for new in 1..=40 {
-            value.set_signal(new, false).unwrap();
+            value.set_signal(new).unwrap();
         }
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         while seen.lock().len() < 40 && std::time::Instant::now() < deadline {
@@ -1808,7 +1808,7 @@ mod wire_tests {
             let (header, length) = ServerHeader::deserialize(&bytes[offset..]).unwrap();
             offset += length;
             match header {
-                ServerHeader::Value(_, _, false, length) => {
+                ServerHeader::Value(_, _, length) => {
                     assert_eq!(
                         postcard::from_bytes::<i32>(&bytes[offset..offset + length as usize])
                             .unwrap(),
@@ -2176,7 +2176,7 @@ mod connection_tests {
             "the replaced client stayed connected or was not told why"
         );
 
-        value.set(5, false).unwrap();
+        value.set(5).unwrap();
         second.wait_for_value(5);
         assert!(server.is_connected());
         server.stop();
@@ -2200,7 +2200,7 @@ mod connection_tests {
             "a rejected client must be closed without data, with the reason"
         );
 
-        value.set(6, false).unwrap();
+        value.set(6).unwrap();
         accepted.wait_for_value(6);
         assert!(server.is_connected());
         server.stop();
@@ -2911,7 +2911,7 @@ mod connection_tests {
         client.connect();
         wait("first connection", || state.value.get().0 == 731);
 
-        value.set(PANIC_VALUE, false).unwrap();
+        value.set(PANIC_VALUE).unwrap();
         wait("receive panic", || {
             client.get_state() == ConnectionState::Failed
         });
@@ -2922,7 +2922,7 @@ mod connection_tests {
         );
         wait("server disconnect", || !server.is_connected());
 
-        value.set(5, false).unwrap();
+        value.set(5).unwrap();
         wait("reconnection", || {
             client.connect();
             state.value.get().0 == 5
@@ -2958,7 +2958,7 @@ mod connection_tests {
         );
         wait("server disconnect", || !server.is_connected());
 
-        value.set(5, false).unwrap();
+        value.set(5).unwrap();
         wait("reconnection", || {
             client.connect();
             state.value.get() == 5
@@ -2985,7 +2985,7 @@ mod connection_tests {
 
         server.update(Some(f32::INFINITY)).unwrap();
         server.update(Some(1e20)).unwrap();
-        value.set(5, false).unwrap();
+        value.set(5).unwrap();
         wait("update after the delays", || state.value.get() == 5);
         assert_eq!(client.get_state(), ConnectionState::Connected);
         client.disconnect();
@@ -3079,9 +3079,7 @@ mod connection_tests {
             client.connect();
             server.is_connected()
         });
-        items
-            .set(vec!["x".repeat(VALUE_MAX_SIZE - 8); 13], false)
-            .unwrap();
+        items.set(vec!["x".repeat(VALUE_MAX_SIZE - 8); 13]).unwrap();
         let deadline = Instant::now() + Duration::from_secs(10);
         while state.items.read(Vec::len) != 13 && Instant::now() < deadline {
             thread::sleep(Duration::from_millis(10));
@@ -3138,14 +3136,10 @@ mod connection_tests {
                     let mut round = 0_u16;
                     while !stop.load(Ordering::Acquire) {
                         round = round.wrapping_add(1);
-                        data.set(&[writer, round], false, false).unwrap();
-                        data.add(&[round], false, false).unwrap();
-                        multi
-                            .set(u32::from(writer), &[round], false, false)
-                            .unwrap();
-                        multi
-                            .add(u32::from(writer), &[round], false, false)
-                            .unwrap();
+                        data.set(&[writer, round], false).unwrap();
+                        data.add(&[round], false).unwrap();
+                        multi.set(u32::from(writer), &[round], false).unwrap();
+                        multi.add(u32::from(writer), &[round], false).unwrap();
                     }
                 })
             })
@@ -3186,7 +3180,6 @@ mod connection_tests {
                 (0..13)
                     .map(|key| (key, "x".repeat(VALUE_MAX_SIZE - 16)))
                     .collect(),
-                false,
             )
             .unwrap();
         server.start(port, Some(Ipv4Addr::LOCALHOST), None).unwrap();
@@ -3304,7 +3297,7 @@ mod connection_tests {
         assert_eq!(upgrade_from(port, "http://localhost:8090"), 101);
 
         // The refused pages did not replace the connected client.
-        value.set(5, false).unwrap();
+        value.set(5).unwrap();
         peer.wait_for_value(5);
         assert!(server.is_connected());
         server.stop();
@@ -3408,7 +3401,7 @@ mod connection_tests {
         assert!(get(port, "/").ends_with("third"));
 
         // None of the above disturbed the connected client.
-        value.set(5, false).unwrap();
+        value.set(5).unwrap();
         peer.wait_for_value(5);
         assert!(server.is_connected());
         server.stop();

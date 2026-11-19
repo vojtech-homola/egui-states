@@ -74,7 +74,6 @@ impl DataTake {
         &self,
         data: DataSlice,
         blocking: bool,
-        update: bool,
         cache: bool,
     ) -> Result<(), CoreError> {
         let elements = check_data_type(&data, self.data_type, self.item_size)?;
@@ -92,7 +91,6 @@ impl DataTake {
                     elements as u64,
                     self.data_type,
                     blocking,
-                    update,
                     self.take_header(header),
                 )?;
                 wait_for_slot(&self.event, blocking);
@@ -150,7 +148,6 @@ impl SyncTrait for DataTake {
                 data,
                 count as u64,
                 self.data_type,
-                false,
                 false,
                 self.take_header(header.as_deref()),
             )
@@ -218,7 +215,6 @@ impl DataMultiTake {
         index: u32,
         data: DataSlice,
         blocking: bool,
-        update: bool,
         cache: bool,
     ) -> Result<(), CoreError> {
         let elements = check_data_type(&data, self.data_type, self.item_size)?;
@@ -237,7 +233,6 @@ impl DataMultiTake {
                     elements as u64,
                     self.data_type,
                     blocking,
-                    update,
                     take_header(&self.header_type, header),
                 )?;
                 wait_for_slot(&self.event, blocking);
@@ -274,11 +269,11 @@ impl DataMultiTake {
         }
     }
 
-    pub(crate) fn remove_index(&self, index: u32, update: bool) -> Result<(), String> {
+    pub(crate) fn remove_index(&self, index: u32) -> Result<(), String> {
         let mut w = self.state.write();
         w.values.remove(&index);
         if w.sync.sendable(&self.connected).is_some() {
-            let header = DataMultiTakeHeader::Remove(index, update);
+            let header = DataMultiTakeHeader::Remove(index);
             let message = header
                 .serialize(self.id)
                 .map_err(|_| "Failed to serialize remove index header".to_string())?;
@@ -288,11 +283,11 @@ impl DataMultiTake {
         Ok(())
     }
 
-    pub(crate) fn reset(&self, update: bool) -> Result<(), String> {
+    pub(crate) fn reset(&self) -> Result<(), String> {
         let mut w = self.state.write();
         w.values.clear();
         if w.sync.sendable(&self.connected).is_some() {
-            let header = DataMultiTakeHeader::Reset(update);
+            let header = DataMultiTakeHeader::Reset;
             let message = header
                 .serialize(self.id)
                 .map_err(|_| "Failed to serialize reset header".to_string())?;
@@ -321,7 +316,7 @@ impl SyncTrait for DataMultiTake {
 
         // The client keeps the values it has not taken across a disconnect;
         // drop them, so it holds exactly the cached keys, like a DataMulti.
-        let message = DataMultiTakeHeader::Reset(false).serialize(self.id)?;
+        let message = DataMultiTakeHeader::Reset.serialize(self.id)?;
         self.sender.send(message);
         for (index, (data, count, header)) in w.values.iter() {
             let messages = pack_data_multi_take(
@@ -330,7 +325,6 @@ impl SyncTrait for DataMultiTake {
                 data,
                 *count as u64,
                 self.data_type,
-                false,
                 false,
                 take_header(&self.header_type, header.as_deref()),
             )
@@ -413,7 +407,6 @@ fn pack_data_take(
     data_count: u64,
     data_type: DataType,
     blocking: bool,
-    update: bool,
     header: TakeHeader,
 ) -> Result<Vec<(FastVec<32>, bool)>, String> {
     pack_data_take_chunked(
@@ -422,7 +415,6 @@ fn pack_data_take(
         data_count,
         data_type,
         blocking,
-        update,
         header,
         TRANSFER_CHUNK_SIZE,
     )
@@ -435,7 +427,6 @@ fn pack_take(
     data: &[u8],
     data_count: u64,
     data_type: DataType,
-    update: bool,
     header: TakeHeader,
     chunk_limit: usize,
     wrap: impl Fn(DataTakeHeader) -> Result<FastVec<32>, String>,
@@ -452,13 +443,13 @@ fn pack_take(
             let len = range.len() as u32;
             let (message, header_bytes) = match chunk {
                 Chunk::All => (
-                    DataTakeHeader::All(data_type, data_count, update, len, description),
+                    DataTakeHeader::All(data_type, data_count, len, description),
                     header_bytes,
                 ),
                 Chunk::Start => (DataTakeHeader::StartBatch(data_count, len), &[][..]),
                 Chunk::Batch => (DataTakeHeader::Batch(len), &[][..]),
                 Chunk::End => (
-                    DataTakeHeader::End(data_type, data_count, update, len, description),
+                    DataTakeHeader::End(data_type, data_count, len, description),
                     header_bytes,
                 ),
             };
@@ -478,23 +469,14 @@ pub(in crate::server_core) fn pack_data_take_chunked(
     data_count: u64,
     data_type: DataType,
     blocking: bool,
-    update: bool,
     header: TakeHeader,
     chunk_limit: usize,
 ) -> Result<Vec<(FastVec<32>, bool)>, String> {
-    pack_take(
-        data,
-        data_count,
-        data_type,
-        update,
-        header,
-        chunk_limit,
-        |header| {
-            header
-                .serialize(id, blocking, true)
-                .map_err(|_| "Failed to serialize DataTake header".to_string())
-        },
-    )
+    pack_take(data, data_count, data_type, header, chunk_limit, |header| {
+        header
+            .serialize(id, blocking, true)
+            .map_err(|_| "Failed to serialize DataTake header".to_string())
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -505,7 +487,6 @@ fn pack_data_multi_take(
     data_count: u64,
     data_type: DataType,
     blocking: bool,
-    update: bool,
     header: TakeHeader,
 ) -> Result<Vec<(FastVec<32>, bool)>, String> {
     pack_data_multi_take_chunked(
@@ -515,7 +496,6 @@ fn pack_data_multi_take(
         data_count,
         data_type,
         blocking,
-        update,
         header,
         TRANSFER_CHUNK_SIZE,
     )
@@ -529,22 +509,13 @@ pub(in crate::server_core) fn pack_data_multi_take_chunked(
     data_count: u64,
     data_type: DataType,
     blocking: bool,
-    update: bool,
     header: TakeHeader,
     chunk_limit: usize,
 ) -> Result<Vec<(FastVec<32>, bool)>, String> {
-    pack_take(
-        data,
-        data_count,
-        data_type,
-        update,
-        header,
-        chunk_limit,
-        |header| {
-            DataMultiTakeHeader::serialize_modify(id, index, header, blocking)
-                .map_err(|_| "Failed to serialize DataMultiTake header".to_string())
-        },
-    )
+    pack_take(data, data_count, data_type, header, chunk_limit, |header| {
+        DataMultiTakeHeader::serialize_modify(id, index, header, blocking)
+            .map_err(|_| "Failed to serialize DataMultiTake header".to_string())
+    })
 }
 
 #[cfg(test)]
@@ -596,14 +567,14 @@ mod tests {
         );
         connected.store(true, Ordering::Release);
         take.sync().unwrap();
-        take.set(holder(&[1]), false, false, true).unwrap();
+        take.set(holder(&[1]), false, true).unwrap();
         assert_eq!(count(&mut receiver), 1);
 
         connected.store(false, Ordering::Release);
         Acknowledge::reset(&*take);
         connected.store(true, Ordering::Release);
         // Blocking: it consumes the slot the reset set, and must return it.
-        take.set(holder(&[2]), true, false, true).unwrap();
+        take.set(holder(&[2]), true, true).unwrap();
         assert_eq!(count(&mut receiver), 0, "a window take was sent");
         take.sync().unwrap();
         assert_eq!(
@@ -615,12 +586,12 @@ mod tests {
         // The slot is free again: one blocking take goes out, the next waits.
         let first = take.clone();
         within("first blocking take after sync", move || {
-            first.set(holder(&[3]), true, false, true)
+            first.set(holder(&[3]), true, true)
         })
         .unwrap();
         assert_eq!(count(&mut receiver), 1);
         let second = take.clone();
-        let waiting = std::thread::spawn(move || second.set(holder(&[4]), true, false, true));
+        let waiting = std::thread::spawn(move || second.set(holder(&[4]), true, true));
         std::thread::sleep(Duration::from_millis(100));
         assert_eq!(count(&mut receiver), 0, "a blocking take did not wait");
         take.acknowledge();
@@ -646,14 +617,14 @@ mod tests {
         connected.store(true, Ordering::Release);
         take.sync().unwrap();
         assert_eq!(count(&mut receiver), 1, "empty synchronization resets");
-        take.set(1, holder(&[1]), false, false, true).unwrap();
+        take.set(1, holder(&[1]), false, true).unwrap();
         assert_eq!(count(&mut receiver), 1);
 
         connected.store(false, Ordering::Release);
         Acknowledge::reset(&*take);
         connected.store(true, Ordering::Release);
-        take.set(1, holder(&[2]), true, false, true).unwrap();
-        take.remove_index(3, false).unwrap();
+        take.set(1, holder(&[2]), true, true).unwrap();
+        take.remove_index(3).unwrap();
         assert_eq!(count(&mut receiver), 0, "a window change was sent");
         take.sync().unwrap();
         assert_eq!(
@@ -664,7 +635,7 @@ mod tests {
 
         let first = take.clone();
         within("first blocking multi take after sync", move || {
-            first.set(1, holder(&[3]), true, false, true)
+            first.set(1, holder(&[3]), true, true)
         })
         .unwrap();
         assert_eq!(count(&mut receiver), 1);
@@ -748,11 +719,11 @@ mod tests {
             connected.clone(),
         );
         take.sync().unwrap();
-        take.set(holder(&[1]), true, false, true).unwrap();
+        take.set(holder(&[1]), true, true).unwrap();
         assert_eq!(count(&mut receiver), 1);
 
         let producer = take.clone();
-        let waiting = std::thread::spawn(move || producer.set(holder(&[2]), true, false, true));
+        let waiting = std::thread::spawn(move || producer.set(holder(&[2]), true, true));
         std::thread::sleep(Duration::from_millis(100));
         assert_eq!(count(&mut receiver), 0, "a blocking take did not wait");
 
@@ -777,11 +748,11 @@ mod tests {
             connected.clone(),
         );
         take.sync().unwrap();
-        take.set(1, holder(&[1]), true, false, true).unwrap();
+        take.set(1, holder(&[1]), true, true).unwrap();
         assert_eq!(count(&mut receiver), 2, "the reset and the take");
 
         let producer = take.clone();
-        let waiting = std::thread::spawn(move || producer.set(1, holder(&[2]), true, false, true));
+        let waiting = std::thread::spawn(move || producer.set(1, holder(&[2]), true, true));
         std::thread::sleep(Duration::from_millis(100));
         assert_eq!(count(&mut receiver), 0, "a blocking take did not wait");
 
@@ -812,7 +783,7 @@ mod transfer_tests {
             let (mut parser, (header, payload)) =
                 MessagesParser::from_bytes(message.into_bytes()).unwrap();
             match header {
-                ServerHeader::DataMultiTake(61, DataMultiTakeHeader::Reset(_)) => client.reset(),
+                ServerHeader::DataMultiTake(61, DataMultiTakeHeader::Reset) => client.reset(),
                 ServerHeader::DataMultiTake(
                     61,
                     DataMultiTakeHeader::Modify(key, header, blocking),
@@ -849,8 +820,8 @@ mod transfer_tests {
         };
 
         server.sync().unwrap();
-        server.set(1, data(&[1]), false, false, true).unwrap();
-        server.set(2, data(&[2]), false, false, false).unwrap();
+        server.set(1, data(&[1]), false, true).unwrap();
+        server.set(2, data(&[2]), false, false).unwrap();
         apply(&mut receiver, &client);
         assert!(client.is_some(1) && client.is_some(2));
 
@@ -887,7 +858,6 @@ mod transfer_tests {
                                 size as u64,
                                 DataType::U8,
                                 blocking,
-                                true,
                                 None,
                             ),
                             Some(key) => pack_data_multi_take(
@@ -897,7 +867,6 @@ mod transfer_tests {
                                 size as u64,
                                 DataType::U8,
                                 blocking,
-                                true,
                                 None,
                             ),
                         }
@@ -907,7 +876,7 @@ mod transfer_tests {
                         for (n, (message, _)) in messages.into_iter().enumerate() {
                             let (mut parser, (header, payload)) =
                                 MessagesParser::from_bytes(message.into_bytes()).unwrap();
-                            assert_eq!(header.update_flag(), n + 1 == total);
+                            assert_eq!(header.changes_state(), n + 1 == total);
                             match header {
                                 ServerHeader::DataTake(61, header, actual_blocking) => {
                                     assert_eq!(actual_blocking, blocking);

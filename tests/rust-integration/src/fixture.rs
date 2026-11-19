@@ -29,31 +29,25 @@ fn edit_headers(all: &State, command: u32) -> s::Result<()> {
     let h = &all.headers;
     if command == 35 {
         h.series
-            .set_with_header(&[1.0, 2.0], &meta(1.5, "series", &[3]), false, false)?;
-        h.series.add(&[3.0], false, false)?;
+            .set_with_header(&[1.0, 2.0], &meta(1.5, "series", &[3]), false)?;
+        h.series.add(&[3.0], false)?;
         h.keyed
-            .set_with_header(1, &[7], &meta(1.0, "first", &[1]), false, false)?;
+            .set_with_header(1, &[7], &meta(1.0, "first", &[1]), false)?;
         h.keyed
-            .set_with_header(2, &[8], &meta(2.0, "keyed", &[1]), false, false)?;
-        h.keyed.set_header(2, &meta(3.0, "renamed", &[]), false)?;
+            .set_with_header(2, &[8], &meta(2.0, "keyed", &[1]), false)?;
+        h.keyed.set_header(2, &meta(3.0, "renamed", &[]))?;
         h.take
-            .set_with_header(&[5], &meta(0.5, "take", &[1]), false, false, true)?;
-        h.keyed_take.set_with_header(
-            4,
-            &[6],
-            &meta(0.25, "keyed take", &[]),
-            false,
-            false,
-            false,
-        )?;
+            .set_with_header(&[5], &meta(0.5, "take", &[1]), false, true)?;
+        h.keyed_take
+            .set_with_header(4, &[6], &meta(0.25, "keyed take", &[]), false, false)?;
         h.transient
-            .set_with_header(&[9], &meta(9.0, "transient", &[1]), false, false)?;
+            .set_with_header(&[9], &meta(9.0, "transient", &[1]), false)?;
         return Ok(());
     }
-    h.series.clear(false)?;
-    h.series.set_header(&meta(4.0, "cleared", &[0]), false)?;
-    h.keyed.remove_index(1, false)?;
-    h.transient.reset(false)?;
+    h.series.clear()?;
+    h.series.set_header(&meta(4.0, "cleared", &[0]))?;
+    h.keyed.remove_index(1)?;
+    h.transient.reset()?;
     let expected = (
         Some(meta(4.0, "cleared", &[0])),
         None,
@@ -75,76 +69,62 @@ fn edit_headers(all: &State, command: u32) -> s::Result<()> {
 /// Command 30: non-default values of every shape for the client to check.
 fn set_wire_values(all: &State) -> s::Result<()> {
     let v = &all.values;
-    v.bool_value.set(true, false)?;
-    v.count.set(-123_456, false)?;
-    v.ratio.set(0.375, false)?;
-    v.queued_progress.set(0.625, false)?;
-    v.title.set("ünïcødé 🦀".into(), false)?;
-    v.optional_value.set(Some(-5), false)?;
-    v.fixed_numbers.set([1, 65535, 0], false)?;
-    v.test_enum.set(TestEnum::C, false)?;
-    v.nested.secondary_choice.set(TestEnum2::X, false)?;
-    v.nested.selected_enum.set(Some(TestEnum::B), false)?;
+    v.bool_value.set(true)?;
+    v.count.set(-123_456)?;
+    v.ratio.set(0.375)?;
+    v.queued_progress.set(0.625)?;
+    v.title.set("ünïcødé 🦀".into())?;
+    v.optional_value.set(Some(-5))?;
+    v.fixed_numbers.set([1, 65535, 0])?;
+    v.test_enum.set(TestEnum::C)?;
+    v.nested.secondary_choice.set(TestEnum2::X)?;
+    v.nested.selected_enum.set(Some(TestEnum::B))?;
     let c = &all.custom_values;
-    c.point.set(
-        TestStruct {
-            x: -1.5,
-            y: 2.25,
-            label: "point".into(),
-        },
-        false,
-    )?;
-    c.optional_struct.set(
-        Some(TestStruct2 {
-            enabled: true,
-            level: 7,
-            name: "seven".into(),
-        }),
-        false,
-    )?;
+    c.point.set(TestStruct {
+        x: -1.5,
+        y: 2.25,
+        label: "point".into(),
+    })?;
+    c.optional_struct.set(Some(TestStruct2 {
+        enabled: true,
+        level: 7,
+        name: "seven".into(),
+    }))?;
     let st = &all.statics;
-    st.status_text.set("ready".into(), false)?;
-    st.summary.set(
+    st.status_text.set("ready".into())?;
+    st.summary.set(TestStruct2 {
+        enabled: false,
+        level: 65535,
+        name: "max".into(),
+    })?;
+    st.pair.set([0.5, -0.25])?;
+    st.nested.label.set("label".into())?;
+    st.nested.enum_hint.set(TestEnum::C)?;
+    let w = &all.wire_types;
+    w.small_unsigned.set(255)?;
+    w.small_signed.set(-128)?;
+    w.short.set(-32768)?;
+    w.wide.set(u64::MAX)?;
+    w.single.set(-0.125)?;
+    w.tuple.set((-7, "tuple".into(), true))?;
+    w.list.set(vec![
+        TestStruct2 {
+            enabled: true,
+            level: 1,
+            name: "a".into(),
+        },
         TestStruct2 {
             enabled: false,
-            level: 65535,
-            name: "max".into(),
+            level: 2,
+            name: "b".into(),
         },
-        false,
-    )?;
-    st.pair.set([0.5, -0.25], false)?;
-    st.nested.label.set("label".into(), false)?;
-    st.nested.enum_hint.set(TestEnum::C, false)?;
-    let w = &all.wire_types;
-    w.small_unsigned.set(255, false)?;
-    w.small_signed.set(-128, false)?;
-    w.short.set(-32768, false)?;
-    w.wide.set(u64::MAX, false)?;
-    w.single.set(-0.125, false)?;
-    w.tuple.set((-7, "tuple".into(), true), false)?;
-    w.list.set(
-        vec![
-            TestStruct2 {
-                enabled: true,
-                level: 1,
-                name: "a".into(),
-            },
-            TestStruct2 {
-                enabled: false,
-                level: 2,
-                name: "b".into(),
-            },
-        ],
-        false,
-    )?;
-    w.table.set(
-        HashMap::from([("pi".into(), 3.5), ("neg".into(), -0.5)]),
-        false,
-    )?;
+    ])?;
+    w.table
+        .set(HashMap::from([("pi".into(), 3.5), ("neg".into(), -0.5)]))?;
     w.keyed_enum
-        .set(HashMap::from([(TestEnum::A, 1), (TestEnum::C, 3)]), false)?;
-    w.optional_enum.set(Some(TestEnum2::Z), false)?;
-    w.bytes.set(vec![0, 127, 255], false)
+        .set(HashMap::from([(TestEnum::A, 1), (TestEnum::C, 3)]))?;
+    w.optional_enum.set(Some(TestEnum2::Z))?;
+    w.bytes.set(vec![0, 127, 255])
 }
 
 /// Command 31: the values and signals the client sent after command 30.
@@ -213,47 +193,47 @@ fn check_client_values(all: &State, signals: &Signals) -> Result<(), String> {
 /// Command 32: server edits of both collections.
 fn edit_collections(all: &State) -> s::Result<()> {
     let items = &all.value_vec.items;
-    items.set(vec![5, 6, 7], true)?;
-    items.set_item(1, 60, true)?;
-    items.add_item(8, true)?;
-    items.remove_item(0, true)?;
+    items.set(vec![5, 6, 7])?;
+    items.set_item(1, 60)?;
+    items.add_item(8)?;
+    items.remove_item(0)?;
     let map = &all.value_map.items;
-    map.set(HashMap::from([(1, 10), (2, 20)]), true)?;
-    map.set_item(3, 30, true)?;
-    map.set_item(1, 11, true)?;
-    map.remove_item(&2, true)?;
+    map.set(HashMap::from([(1, 10), (2, 20)]))?;
+    map.set_item(3, 30)?;
+    map.set_item(1, 11)?;
+    map.remove_item(&2)?;
     Ok(())
 }
 
 /// Command 33: numeric edits and the limits of every element type.
 fn edit_numeric(all: &State) -> s::Result<()> {
     let d = &all.data;
-    d.bytes.set(&[1, 2, 3, 4, 5], false, false)?;
-    d.bytes.add(&[6], false, false)?;
-    d.bytes.replace(&[20, 30], 1, false, false)?;
-    d.bytes.remove(0, 1, false, false)?;
-    d.samples.set(&[-1.5, 0.25], false, false)?;
-    d.nested.buffer.set(&[1, 2, 3], false, false)?;
-    d.nested.buffer.clear(false)?;
+    d.bytes.set(&[1, 2, 3, 4, 5], false)?;
+    d.bytes.add(&[6], false)?;
+    d.bytes.replace(&[20, 30], 1, false)?;
+    d.bytes.remove(0, 1, false)?;
+    d.samples.set(&[-1.5, 0.25], false)?;
+    d.nested.buffer.set(&[1, 2, 3], false)?;
+    d.nested.buffer.clear()?;
     let n = &all.numeric;
-    n.u8_data.set(&[u8::MIN, 0, u8::MAX], false, false)?;
-    n.i8_data.set(&[i8::MIN, 0, i8::MAX], false, false)?;
-    n.u16_data.set(&[u16::MIN, 0, u16::MAX], false, false)?;
-    n.i16_data.set(&[i16::MIN, 0, i16::MAX], false, false)?;
-    n.u32_data.set(&[u32::MIN, 0, u32::MAX], false, false)?;
-    n.i32_data.set(&[i32::MIN, 0, i32::MAX], false, false)?;
-    n.u64_data.set(&[u64::MIN, 0, u64::MAX], false, false)?;
-    n.i64_data.set(&[i64::MIN, 0, i64::MAX], false, false)?;
-    n.f32_data.set(&[f32::MIN, 0.0, f32::MAX], false, false)?;
-    n.f64_data.set(&[f64::MIN, 0.0, f64::MAX], false, false)?;
+    n.u8_data.set(&[u8::MIN, 0, u8::MAX], false)?;
+    n.i8_data.set(&[i8::MIN, 0, i8::MAX], false)?;
+    n.u16_data.set(&[u16::MIN, 0, u16::MAX], false)?;
+    n.i16_data.set(&[i16::MIN, 0, i16::MAX], false)?;
+    n.u32_data.set(&[u32::MIN, 0, u32::MAX], false)?;
+    n.i32_data.set(&[i32::MIN, 0, i32::MAX], false)?;
+    n.u64_data.set(&[u64::MIN, 0, u64::MAX], false)?;
+    n.i64_data.set(&[i64::MIN, 0, i64::MAX], false)?;
+    n.f32_data.set(&[f32::MIN, 0.0, f32::MAX], false)?;
+    n.f64_data.set(&[f64::MIN, 0.0, f64::MAX], false)?;
     let m = &all.multi_data;
-    m.bytes.set(1, &[1, 2], false, false)?;
-    m.bytes.add(1, &[3], false, false)?;
-    m.bytes.set(2, &[9], false, false)?;
-    m.bytes.remove_index(2, false)?;
-    m.samples.set(7, &[0.5], false, false)?;
-    m.nested.buffer.set(3, &[4, 5], false, false)?;
-    m.nested.buffer.replace(3, 1, &[6], false, false)
+    m.bytes.set(1, &[1, 2], false)?;
+    m.bytes.add(1, &[3], false)?;
+    m.bytes.set(2, &[9], false)?;
+    m.bytes.remove_index(2)?;
+    m.samples.set(7, &[0.5], false)?;
+    m.nested.buffer.set(3, &[4, 5], false)?;
+    m.nested.buffer.replace(3, 1, &[6], false)
 }
 
 /// Command 34: a full image, partial updates, and sparse images. The first
@@ -262,20 +242,19 @@ fn edit_numeric(all: &State) -> s::Result<()> {
 fn edit_images(all: &State) -> s::Result<()> {
     let pixels: Vec<u8> = (0..18).collect();
     let image = &all.image.image;
-    image.set(&pixels, [2, 3], s::ImageFormat::Color, false, true)?;
+    image.set(&pixels, [2, 3], s::ImageFormat::Color, true)?;
     image.update(
         &[200, 201, 202, 210, 211, 212],
         [1, 1],
         [1, 2],
         s::ImageFormat::Color,
-        false,
         true,
         None,
         false,
     )?;
     let images = &all.image.images;
-    images.set(2, &[9], [1, 1], s::ImageFormat::Gray, false, false)?;
-    images.set_all(7, [2, 2], s::ImageColor::Color(1, 2, 3), false, false)?;
+    images.set(2, &[9], [1, 1], s::ImageFormat::Gray, false)?;
+    images.set_all(7, [2, 2], s::ImageColor::Color(1, 2, 3), false)?;
     images.update(
         7,
         &[4, 5, 6].repeat(4),
@@ -283,11 +262,10 @@ fn edit_images(all: &State) -> s::Result<()> {
         [2, 2],
         s::ImageFormat::Color,
         false,
-        false,
         Some(1),
         false,
     )?;
-    images.remove_index(2, false)
+    images.remove_index(2)
 }
 
 impl Fixture {
@@ -308,28 +286,23 @@ impl Fixture {
             ..s::ServerOptions::default()
         })?;
         let states = &server.states.integration;
-        states.value.set(7, false)?;
-        states.items.set(vec![1, 2], false)?;
-        states.cached.set(&[8, 9], false, false, true)?;
-        states
-            .cached_multi
-            .set(91, &[500, 600], false, false, true)?;
-        states.wire.set(
-            crate::bindings::structs::WirePacket {
-                signed: i64::MIN,
-                unsigned: u64::MAX,
-                text: "žluťoučký 🦀".into(),
-                optional: Some(i32::MIN),
-                fixed: [0, 32768, u16::MAX],
-                nested: crate::bindings::structs::TestStruct2 {
-                    enabled: true,
-                    level: u16::MAX,
-                    name: "中".into(),
-                },
-                choice: crate::bindings::enums::TestEnum2::Z,
+        states.value.set(7)?;
+        states.items.set(vec![1, 2])?;
+        states.cached.set(&[8, 9], false, true)?;
+        states.cached_multi.set(91, &[500, 600], false, true)?;
+        states.wire.set(crate::bindings::structs::WirePacket {
+            signed: i64::MIN,
+            unsigned: u64::MAX,
+            text: "žluťoučký 🦀".into(),
+            optional: Some(i32::MIN),
+            fixed: [0, 32768, u16::MAX],
+            nested: crate::bindings::structs::TestStruct2 {
+                enabled: true,
+                level: u16::MAX,
+                name: "中".into(),
             },
-            false,
-        )?;
+            choice: crate::bindings::enums::TestEnum2::Z,
+        })?;
         let on_error = errors.clone();
         let mut callbacks = vec![server.logging.add_logger(s::LogLevel::Error, move |error| {
             on_error.lock().unwrap().push(error.to_string())
@@ -384,13 +357,13 @@ impl Fixture {
         let callback_value = states.callback_value.clone();
         let on_error = errors.clone();
         callbacks.push(states.value.connect(move |value| {
-            if let Err(e) = callback_value.set(value, true) {
+            if let Err(e) = callback_value.set(value) {
                 on_error.lock().unwrap().push(e.to_string());
             }
         }));
         let echo = states.wire_echo.clone();
         callbacks.push(states.wire.connect(move |packet| {
-            echo.set(packet, true).unwrap();
+            echo.set(packet).unwrap();
         }));
         let extra_takes = server.states.data_take.clone();
         let extra_multi = server.states.data_multi_take.clone();
@@ -413,115 +386,113 @@ impl Fixture {
         callbacks.push(states.command.connect(move |command| {
             let result = (|| -> s::Result<()> {
                 match command {
-                    1 => st.value.set(21, true)?,
+                    1 => st.value.set(21)?,
                     2 => {
-                        st.items.add_item(st.value.get()?, true)?;
-                        st.map.set_item(9, 900, true)?;
+                        st.items.add_item(st.value.get()?)?;
+                        st.map.set_item(9, 900)?;
                     }
                     3 => {
                         extra_takes
                             .take_samples
-                            .set(&[-1.25, 0.0, 2.5], false, true, false)?;
-                        extra_multi
-                            .samples
-                            .set(513, &[9.5, -2.25], false, true, false)?;
+                            .set(&[-1.25, 0.0, 2.5], false, false)?;
+                        extra_multi.samples.set(513, &[9.5, -2.25], false, false)?;
                         extra_multi
                             .nested
                             .buffer
-                            .set(24, &[0, u16::MAX], false, true, false)?;
-                        st.take.set("payload".into(), false, true)?;
-                        st.empty.set((), false, true)?;
-                        st.data.set(&[0, 1, 255], false, true, false)?;
-                        st.multi.set(7, &[100, 200], false, true, false)?;
-                        st.multi.set(42, &[], false, true, false)?;
+                            .set(24, &[0, u16::MAX], false, false)?;
+                        st.take.set("payload".into(), false)?;
+                        st.empty.set((), false)?;
+                        st.data.set(&[0, 1, 255], false, false)?;
+                        st.multi.set(7, &[100, 200], false, false)?;
+                        st.multi.set(42, &[], false, false)?;
                     }
                     4 => {
-                        st.take.set(String::new(), false, true)?;
-                        st.data.set(&[], false, true, false)?;
+                        st.take.set(String::new(), false)?;
+                        st.data.set(&[], false, false)?;
                     }
                     10..=13 => {
                         match command {
-                            10 => st.take.set("first".into(), true, true)?,
-                            11 => st.empty.set((), true, true)?,
-                            12 => st.data.set(&[1, 2], true, true, false)?,
-                            _ => st.multi.set(73, &[100, 200], true, true, false)?,
+                            10 => st.take.set("first".into(), true)?,
+                            11 => st.empty.set((), true)?,
+                            12 => st.data.set(&[1, 2], true, false)?,
+                            _ => st.multi.set(73, &[100, 200], true, false)?,
                         }
-                        st.phase.set(1, true)?;
+                        st.phase.set(1)?;
                         match command {
-                            10 => st.take.set(String::new(), true, true)?,
-                            11 => st.empty.set((), true, true)?,
-                            12 => st.data.set(&[], true, true, false)?,
-                            _ => st.multi.set(73, &[], true, true, false)?,
+                            10 => st.take.set(String::new(), true)?,
+                            11 => st.empty.set((), true)?,
+                            12 => st.data.set(&[], true, false)?,
+                            _ => st.multi.set(73, &[], true, false)?,
                         }
-                        st.phase.set(2, true)?;
+                        st.phase.set(2)?;
                     }
                     20 => {
-                        st.cached.set(&[31, 32], false, true, true)?;
-                        st.cached_multi.remove_index(91, true)?;
-                        st.cached_multi.set(513, &[17], false, true, true)?;
-                        st.phase.set(20, true)?;
+                        st.cached.set(&[31, 32], false, true)?;
+                        st.cached_multi.remove_index(91)?;
+                        st.cached_multi.set(513, &[17], false, true)?;
+                        st.phase.set(20)?;
                     }
                     21 => {
-                        st.cached.set(&[41], false, true, false)?;
-                        st.cached_multi.reset(true)?;
-                        st.phase.set(21, true)?;
+                        st.cached.set(&[41], false, false)?;
+                        st.cached_multi.reset()?;
+                        st.phase.set(21)?;
                     }
                     22 => {
-                        st.multi.set(7, &[7], false, true, false)?;
-                        st.multi.set(900, &[9], false, true, false)?;
-                        st.multi.remove_index(7, true)?;
-                        st.phase.set(22, true)?;
+                        st.multi.set(7, &[7], false, false)?;
+                        st.multi.set(900, &[9], false, false)?;
+                        st.multi.remove_index(7)?;
+                        st.phase.set(22)?;
                     }
                     23 => {
-                        st.multi.reset(true)?;
-                        st.phase.set(23, true)?;
+                        st.multi.reset()?;
+                        st.phase.set(23)?;
                     }
                     24 | 25 => {
-                        st.multi.set(7, &[7], true, true, false)?;
+                        st.multi.set(7, &[7], true, false)?;
                         if command == 24 {
-                            st.multi.remove_index(7, true)?;
+                            st.multi.remove_index(7)?;
                         } else {
-                            st.multi.reset(true)?;
+                            st.multi.reset()?;
                         }
-                        st.phase.set(24, true)?;
-                        st.multi.set(513, &[9], true, true, false)?;
-                        st.phase.set(25, true)?;
+                        st.phase.set(24)?;
+                        st.multi.set(513, &[9], true, false)?;
+                        st.phase.set(25)?;
                     }
                     30 => {
                         set_wire_values(&all)?;
-                        st.phase.set(30, true)?;
+                        st.phase.set(30)?;
                     }
                     31 => {
                         if let Err(error) = check_client_values(&all, &signals) {
                             on_error.lock().unwrap().push(error);
                         }
-                        st.phase.set(31, true)?;
+                        st.phase.set(31)?;
                     }
                     32 => {
                         edit_collections(&all)?;
-                        st.phase.set(32, true)?;
+                        st.phase.set(32)?;
                     }
                     33 => {
                         edit_numeric(&all)?;
-                        st.phase.set(33, true)?;
+                        st.phase.set(33)?;
                     }
                     34 => {
                         edit_images(&all)?;
-                        st.phase.set(34, true)?;
+                        st.phase.set(34)?;
                     }
                     35 | 36 => {
                         edit_headers(&all, command)?;
-                        st.phase.set(command, true)?;
+                        st.phase.set(command)?;
                     }
                     40..=43 => {
                         transfers(&all, command, &finished)?;
-                        st.phase.set(command, true)?;
+                        st.phase.set(command)?;
                     }
                     44 => {
                         check_uploads(&uploaded);
-                        st.phase.set(44, true)?;
+                        st.phase.set(44)?;
                     }
-                    98 | 99 => st.phase.set(command, true)?,
+                    98 | 99 => st.phase.set(command)?,
                     _ => panic!("unknown fixture command"),
                 }
                 Ok(())

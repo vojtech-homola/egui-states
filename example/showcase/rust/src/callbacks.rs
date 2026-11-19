@@ -45,7 +45,7 @@ pub fn register_callbacks(server: &StatesServer) -> Vec<s::CallbackHandle> {
             }
             _ => format!("upload failed: {:?}", handle.error()),
         };
-        let _ = result.set(text, true);
+        let _ = result.set(text);
     }));
 
     callbacks.push(states.values.ratio.connect(|value| {
@@ -72,7 +72,7 @@ pub fn register_callbacks(server: &StatesServer) -> Vec<s::CallbackHandle> {
 
     let value_vec = states.value_vec.items.clone();
     callbacks.push(states.value_vec.actions.reset_demo.connect_empty(move || {
-        if let Err(error) = value_vec.set(DEFAULT_VEC.to_vec(), true) {
+        if let Err(error) = value_vec.set(DEFAULT_VEC.to_vec()) {
             eprintln!("failed to reset value_vec: {error}");
         }
     }));
@@ -82,7 +82,7 @@ pub fn register_callbacks(server: &StatesServer) -> Vec<s::CallbackHandle> {
         move || match value_vec.get() {
             Ok(current) => {
                 let next_value = current.last().map_or(DEFAULT_VEC[0], |value| value + 5);
-                if let Err(error) = value_vec.add_item(next_value, true) {
+                if let Err(error) = value_vec.add_item(next_value) {
                     eprintln!("failed to append value_vec item: {error}");
                 } else {
                     println!("value_vec appended: {next_value}");
@@ -96,7 +96,7 @@ pub fn register_callbacks(server: &StatesServer) -> Vec<s::CallbackHandle> {
     callbacks.push(states.value_vec.actions.remove_last.connect_empty(move || {
         match value_vec.len().checked_sub(1) {
             Some(index) => {
-                if let Err(error) = value_vec.remove_item(index, true) {
+                if let Err(error) = value_vec.remove_item(index) {
                     eprintln!("failed to remove value_vec item: {error}");
                 } else {
                     println!("value_vec removed last item");
@@ -108,7 +108,7 @@ pub fn register_callbacks(server: &StatesServer) -> Vec<s::CallbackHandle> {
 
     let value_map = states.value_map.items.clone();
     callbacks.push(states.value_map.actions.reset_demo.connect_empty(move || {
-        if let Err(error) = value_map.set(default_map(), true) {
+        if let Err(error) = value_map.set(default_map()) {
             eprintln!("failed to reset value_map: {error}");
         }
     }));
@@ -119,7 +119,7 @@ pub fn register_callbacks(server: &StatesServer) -> Vec<s::CallbackHandle> {
             Ok(current) => {
                 let next_key = current.keys().copied().max().unwrap_or(0) + 1;
                 let next_value = u32::from(next_key) * 100;
-                if let Err(error) = value_map.set_item(next_key, next_value, true) {
+                if let Err(error) = value_map.set_item(next_key, next_value) {
                     eprintln!("failed to insert value_map item: {error}");
                 } else {
                     println!("value_map inserted: {next_key} -> {next_value}");
@@ -138,7 +138,7 @@ pub fn register_callbacks(server: &StatesServer) -> Vec<s::CallbackHandle> {
             .connect_empty(move || match value_map.get() {
                 Ok(current) => {
                     if let Some(lowest_key) = current.keys().copied().min() {
-                        if let Err(error) = value_map.remove_item(&lowest_key, true) {
+                        if let Err(error) = value_map.remove_item(&lowest_key) {
                             eprintln!("failed to remove value_map item: {error}");
                         } else {
                             println!("value_map removed key: {lowest_key}");

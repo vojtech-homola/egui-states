@@ -46,7 +46,7 @@ Run the same script with `--interactive` to return to the prompt with
 ```ipython
 %run example/showcase/python/run.py --interactive
 states.values.count.get()
-states.values.count.set(42, update=True)
+states.values.count.set(42)
 ```
 
 Connect the GUI as usual. Interactive mode also accepts `--port` and the `--web`

@@ -144,7 +144,7 @@ where
 {
     fn update(&self, (header, data): DataTakeMessage, blocking: bool) -> Result<(), String> {
         match header {
-            DataTakeHeader::All(data_type, count, _, _, header) => {
+            DataTakeHeader::All(data_type, count, _, header) => {
                 let result = (|| {
                     if data_type != self.data_type {
                         return Err(format!(
@@ -235,7 +235,7 @@ where
                 }
                 Ok(())
             }
-            DataTakeHeader::End(data_type, count, _, _, header) => {
+            DataTakeHeader::End(data_type, count, _, header) => {
                 let batch = std::mem::take(&mut *self.batch.lock());
                 let (buffer, batch_blocking) = match batch {
                     TakeBatch::Receiving { buffer, blocking } => (buffer, blocking),
@@ -408,7 +408,7 @@ where
         blocking: bool,
     ) -> Result<(), String> {
         match header {
-            DataTakeHeader::All(data_type, count, _, _, header) => {
+            DataTakeHeader::All(data_type, count, _, header) => {
                 let result = (|| {
                     if data_type != self.data_type {
                         return Err(format!(
@@ -494,7 +494,7 @@ where
                 }
                 Ok(())
             }
-            DataTakeHeader::End(data_type, count, _, _, header) => {
+            DataTakeHeader::End(data_type, count, _, header) => {
                 let batch = self.batches.lock().remove(&key).unwrap_or_default();
                 let (buffer, batch_blocking) = match batch {
                     TakeBatch::Receiving { buffer, blocking } => (buffer, blocking),
@@ -624,7 +624,7 @@ mod tests {
 
         let invalid = || {
             (
-                DataTakeHeader::All(DataType::U16, 1, false, 0, None),
+                DataTakeHeader::All(DataType::U16, 1, 0, None),
                 Bytes::from_static(&[0, 0]),
             )
         };
@@ -643,7 +643,7 @@ mod tests {
 
         take.update(
             (
-                DataTakeHeader::All(DataType::U16, 1, false, 0, None),
+                DataTakeHeader::All(DataType::U16, 1, 0, None),
                 Bytes::copy_from_slice(&9_u16.to_ne_bytes()),
             ),
             false,
@@ -664,7 +664,7 @@ mod tests {
         assert!(
             take.update(
                 (
-                    DataTakeHeader::End(DataType::U16, 3, false, 0, None),
+                    DataTakeHeader::End(DataType::U16, 3, 0, None),
                     Bytes::copy_from_slice(&2_u16.to_ne_bytes())
                 ),
                 true,
@@ -687,7 +687,7 @@ mod tests {
         for count in [u64::MAX, u64::MAX / 2 + 1, 1 << 62] {
             let all = || {
                 (
-                    DataTakeHeader::All(DataType::U16, count, false, 0, None),
+                    DataTakeHeader::All(DataType::U16, count, 0, None),
                     Bytes::new(),
                 )
             };
@@ -702,7 +702,7 @@ mod tests {
             };
             let end = || {
                 (
-                    DataTakeHeader::End(DataType::U16, count, false, 0, None),
+                    DataTakeHeader::End(DataType::U16, count, 0, None),
                     Bytes::new(),
                 )
             };
@@ -733,7 +733,7 @@ mod tests {
             };
             let end = || {
                 (
-                    DataTakeHeader::End(DataType::U16, 101, false, 0, None),
+                    DataTakeHeader::End(DataType::U16, 101, 0, None),
                     tail.clone(),
                 )
             };
@@ -767,7 +767,7 @@ mod tests {
 
         take.update(
             (
-                DataTakeHeader::All(DataType::U8, 2, false, 0, None),
+                DataTakeHeader::All(DataType::U8, 2, 0, None),
                 Bytes::from_static(&[1, 2]),
             ),
             true,
@@ -788,7 +788,7 @@ mod tests {
             take.update(
                 3,
                 (
-                    DataTakeHeader::All(DataType::U8, 1, false, 0, None),
+                    DataTakeHeader::All(DataType::U8, 1, 0, None),
                     Bytes::from_static(&[0])
                 ),
                 true,
@@ -817,7 +817,7 @@ mod tests {
             take.update(
                 7,
                 (
-                    DataTakeHeader::End(DataType::U16, 3, false, 0, None),
+                    DataTakeHeader::End(DataType::U16, 3, 0, None),
                     Bytes::copy_from_slice(&2_u16.to_ne_bytes())
                 ),
                 true,
@@ -839,7 +839,7 @@ mod lifecycle_tests {
         data.update(
             7,
             (
-                DataTakeHeader::All(DataType::U8, 1, false, 0, None),
+                DataTakeHeader::All(DataType::U8, 1, 0, None),
                 Bytes::from_static(&[7]),
             ),
             true,
@@ -862,7 +862,7 @@ mod lifecycle_tests {
         data.update(
             513,
             (
-                DataTakeHeader::All(DataType::U8, 1, false, 0, None),
+                DataTakeHeader::All(DataType::U8, 1, 0, None),
                 Bytes::from_static(&[9]),
             ),
             true,
@@ -891,7 +891,7 @@ mod lifecycle_tests {
         let multi = DataMultiTake::<u8>::new("takes".into(), 95, sender);
         let message = || {
             (
-                DataTakeHeader::All(DataType::U8, 1, false, 0, None),
+                DataTakeHeader::All(DataType::U8, 1, 0, None),
                 Bytes::from_static(&[7]),
             )
         };

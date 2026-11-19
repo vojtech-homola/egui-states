@@ -19,7 +19,8 @@ use tokio::sync::mpsc::{self, UnboundedReceiver};
 use crate::PROTOCOL_VERSION;
 use crate::State;
 use crate::client::messages::{
-    ChannelMessage, MessageSender, MessagesSerializer, ReadError, ServerMessage, handle_message,
+    ChannelMessage, MessageSender, MessagesSerializer, ReadError, ServerFrames, ServerMessage,
+    ServerReader, handle_message,
 };
 use crate::client::net::timer::{self, Sleep};
 use crate::client::states_creator::{StatesCreatorClient, ValuesList};
@@ -403,19 +404,29 @@ async fn run_session(
 
 /// Reads and applies server messages, starting with `message`, until the
 /// connection ends.
+///
+/// The UI is repainted once per frame of messages that changed a state, after
+/// all of the frame's messages are applied, so states the server sets one
+/// after another reach the UI in one repaint.
 async fn receive(
-    mut socket_read: WsClientRead,
+    mut socket_read: ServerReader<impl ServerFrames>,
     vals: &ValuesList,
     client: &ClientCore,
     sender: &MessageSender,
     mut message: ServerMessage,
 ) -> SessionEnd {
+    let mut repaint = false;
     let error = loop {
+        repaint |= message.0.changes_state();
         if let Err(e) = handle_message(message, vals, client).await {
             let error = format!("handling message from server failed: {:?}", e);
             sender.send_message(&error);
             print_error(&error);
             // break; TODO: decide if we want to break the loop on error
+        }
+        if repaint && socket_read.frame_done() {
+            client.update(0.);
+            repaint = false;
         }
         match socket_read.read().await {
             Ok(next) => message = next,
@@ -1228,6 +1239,94 @@ mod tests {
         let client = ClientCore::new(context, sender);
         client.update(delay);
         requests.lock().clone()
+    }
+
+    /// Runs one egui pass and drops its texture changes, as a UI would apply
+    /// them.
+    fn run_pass(context: &egui::Context) {
+        let mut output = context.run_ui(egui::RawInput::default(), |_| {});
+        output.textures_delta.clear();
+    }
+
+    /// Frames queued in advance; each read first runs an egui pass, as the
+    /// UI would between frames, so every repaint request is observable.
+    /// `in_pass` is set during the pass, whose own repaint requests (egui
+    /// follows a requested pass with one more) are not the client's.
+    struct FramesBetweenPasses {
+        context: egui::Context,
+        in_pass: Arc<std::sync::atomic::AtomicBool>,
+        frames: std::collections::VecDeque<bytes::Bytes>,
+    }
+
+    impl ServerFrames for FramesBetweenPasses {
+        async fn next_frame(&mut self) -> Result<bytes::Bytes, ReadError> {
+            self.in_pass.store(true, Ordering::SeqCst);
+            run_pass(&self.context);
+            self.in_pass.store(false, Ordering::SeqCst);
+            self.frames.pop_front().ok_or(ReadError::Closed(None))
+        }
+    }
+
+    /// The client repaints once per frame that changed a state, after all of
+    /// the frame's messages are applied, and not after a frame that changed
+    /// none.
+    #[test]
+    fn the_client_repaints_once_per_frame_that_changed_a_state() {
+        use crate::client::states_creator::StatesCreatorClient;
+        use crate::protocol::serialize;
+        use crate::{StatesCreator, Typed};
+
+        let context = egui::Context::default();
+        for _ in 0..3 {
+            run_pass(&context);
+        }
+        let (sender, _receiver) = MessageSender::new();
+        let mut creator = StatesCreatorClient::new(sender.clone(), context.clone(), "root".into());
+        let status: crate::Static<i32> = creator.add_static("status", 0);
+        let values = creator.get_values();
+        let id = *values.states.keys().next().unwrap();
+        let type_id = <i32 as Typed>::get_type().get_hash();
+
+        // Records the value the UI would show at each repaint request.
+        let seen = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let in_pass = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (record, shown, passing) = (seen.clone(), status.clone(), in_pass.clone());
+        context.set_request_repaint_callback(move |_| {
+            if !passing.load(Ordering::SeqCst) {
+                record.lock().push(shown.get());
+            }
+        });
+
+        let set = |value: i32| {
+            let payload = postcard::to_stdvec(&value).unwrap();
+            let header = ServerHeader::Static(id, type_id, payload.len() as u32);
+            let mut message = serialize::<_, 32>(&header).unwrap().into_bytes().to_vec();
+            message.extend_from_slice(&payload);
+            message
+        };
+        let lane_mark = serialize::<_, 32>(&ServerHeader::LaneMark)
+            .unwrap()
+            .into_bytes()
+            .to_vec();
+        let frames = [[set(1), set(2)].concat(), lane_mark, set(3)]
+            .map(bytes::Bytes::from)
+            .into();
+        let mut reader = ServerReader::new(FramesBetweenPasses {
+            context: context.clone(),
+            in_pass,
+            frames,
+        });
+        let client = ClientCore::new(context, sender.clone());
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let first = reader.read().await.unwrap();
+            receive(reader, &values, &client, &sender, first).await;
+        });
+        assert_eq!(*seen.lock(), [2, 3]);
+        assert_eq!(status.get(), 3);
     }
 
     #[test]
