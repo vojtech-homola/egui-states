@@ -116,9 +116,9 @@ jobs:
               exit 1
             fi
           fi
+          # A release of only `chore` and `ci` commits has no changelog section.
           if [[ ! -s release-notes.md ]]; then
-            echo "::error::CHANGELOG.md has no section for $VERSION; run the Prepare release workflow."
-            exit 1
+            echo "Maintenance release without user-facing changes." > release-notes.md
           fi
           cat release-notes.md
       - uses: actions/upload-artifact@v7

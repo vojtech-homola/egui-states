@@ -88,11 +88,13 @@ jobs:
             echo
             echo "## Release notes"
             echo
-            awk -v heading="## [$VERSION]" '
+            notes=$(awk -v heading="## [$VERSION]" '
               index($0, heading) == 1 { found = 1; next }
               found && /^## \[/ { exit }
               found { print }
-            ' CHANGELOG.md
+            ' CHANGELOG.md)
+            # A release of only `chore` and `ci` commits has no changelog section.
+            echo "${notes:-Maintenance release without user-facing changes.}"
           } > pr-body.md
 
           if [[ -n "$(gh pr list --head "$branch" --state open --json number --jq '.[].number')" ]]; then
