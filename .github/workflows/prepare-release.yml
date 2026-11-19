@@ -3,10 +3,11 @@ name: Prepare release
 # Run from the Actions tab on `main`. Opens a `chore: release X.Y.Z` pull
 # request that bumps the version, refreshes Cargo.lock, and regenerates
 # CHANGELOG.md (see scripts/prepare_release.py for how the bump is chosen).
-# After merging it, push the version tag on the merge commit to start the
-# Release workflow. Opening the pull request needs "Allow GitHub Actions to
-# create and approve pull requests" in Settings > Actions > General; without
-# it the branch is still pushed and the run summary links to open it by hand.
+# Merging it starts the Release workflow, which publishes the release;
+# docs/releasing.md describes the whole procedure. Opening the pull request
+# needs "Allow GitHub Actions to create and approve pull requests" in
+# Settings > Actions > General; without it the branch is still pushed and the
+# run summary links to open it by hand.
 on:
   workflow_dispatch:
     inputs:
@@ -76,15 +77,14 @@ jobs:
           {
             echo "Prepared by the Prepare release workflow: \`$LEVEL\` bump (requested: \`$BUMP\`)."
             echo
-            echo "After merging, tag the merge commit on \`main\` to publish:"
+            echo "**Squash-merging this pull request publishes $VERSION.** The Release workflow"
+            echo "builds and tests the wheels, tags the merge commit, uploads to PyPI, and"
+            echo "creates the GitHub release. Keep the title \`chore: release $VERSION\`; the"
+            echo "workflow recognizes the release commit by it."
             echo
-            echo '```bash'
-            echo "git switch main && git pull"
-            echo "git tag $VERSION && git push origin $VERSION"
-            echo '```'
-            echo
-            echo "If anything else is merged into \`main\` first, run Prepare release again;"
-            echo "the Release workflow refuses a changelog that misses commits."
+            echo "If anything else is merged into \`main\` first, run Prepare release again to"
+            echo "update this pull request; the Release workflow refuses a changelog that"
+            echo "misses commits."
             echo
             echo "## Release notes"
             echo
