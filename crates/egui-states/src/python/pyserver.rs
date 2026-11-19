@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use pyo3::buffer::PyBuffer;
-use pyo3::exceptions::{PyRuntimeError, PyValueError};
+use pyo3::exceptions::{PyIndexError, PyKeyError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyByteArray, PyDict, PyList};
 
@@ -719,26 +719,24 @@ impl StateServerCore {
         Ok(py_list)
     }
 
-    fn list_set_item(&self, value_id: u64, index: usize, item: &Bound<PyAny>) -> PyResult<()> {
+    fn list_set_item(&self, value_id: u64, index: isize, item: &Bound<PyAny>) -> PyResult<()> {
         let (list, value_type) = self.inner_vec(value_id)?;
+        let index = list_index(index, list.len())?;
         let mut creator = ValueCreator::new();
         pyparsing::serialize_py(item, value_type, &mut creator)?;
         let data = creator.finalize();
-        list.set_item_py(index, data)
-            .map_err(PyValueError::new_err)?;
-        Ok(())
+        list.set_item_py(index, data).map_err(list_error)
     }
 
     fn list_get_item<'py>(
         &self,
         py: Python<'py>,
         value_id: u64,
-        index: usize,
+        index: isize,
     ) -> PyResult<Bound<'py, PyAny>> {
         let (list, value_type) = self.inner_vec(value_id)?;
-        let data = list
-            .get_item(index)
-            .map_err(pyo3::exceptions::PyValueError::new_err)?;
+        let index = list_index(index, list.len())?;
+        let data = list.get_item(index).map_err(list_error)?;
         let mut parser = ValueParser::new(data);
         let py_value = pyparsing::deserialize_py(py, &mut parser, value_type)?;
         Ok(py_value)
@@ -748,12 +746,11 @@ impl StateServerCore {
         &self,
         py: Python<'py>,
         value_id: u64,
-        index: usize,
+        index: isize,
     ) -> PyResult<Bound<'py, PyAny>> {
         let (list, value_type) = self.inner_vec(value_id)?;
-        let data = list
-            .remove_item(index)
-            .map_err(pyo3::exceptions::PyValueError::new_err)?;
+        let index = list_index(index, list.len())?;
+        let data = list.remove_item(index).map_err(list_error)?;
         let mut parser = ValueParser::new(data);
         let py_value = pyparsing::deserialize_py(py, &mut parser, value_type)?;
         Ok(py_value)
@@ -845,8 +842,19 @@ impl StateServerCore {
                 let py_value = pyparsing::deserialize_py(py, &mut value_parser, value_type)?;
                 Ok(py_value)
             }
-            None => Err(PyValueError::new_err("Key not found in map.")),
+            None => Err(PyKeyError::new_err(key.clone().unbind())),
         }
+    }
+
+    /// Whether the map holds `key`. A key that is not of the map's key type
+    /// is not in it, as for a dict.
+    fn map_contains(&self, value_id: u64, key: &Bound<PyAny>) -> PyResult<bool> {
+        let (map, key_type, _) = self.inner_map(value_id)?;
+        let mut key_creator = ValueCreator::new();
+        if pyparsing::serialize_py(key, key_type, &mut key_creator).is_err() {
+            return Ok(false);
+        }
+        Ok(map.get_item(&key_creator.finalize()).is_some())
     }
 
     fn map_del_item<'py>(
@@ -869,7 +877,7 @@ impl StateServerCore {
                 let py_value = pyparsing::deserialize_py(py, &mut value_parser, value_type)?;
                 Ok(py_value)
             }
-            None => Err(PyValueError::new_err("Key not found in map.")),
+            None => Err(PyKeyError::new_err(key.clone().unbind())),
         }
     }
 
@@ -1913,6 +1921,30 @@ impl StateServerCore {
     }
 }
 
+/// The error of a Vec operation: a missing index is an `IndexError`, as for a
+/// Python list; anything else, such as an oversized item, a `ValueError`.
+fn list_error(error: impl Into<String>) -> PyErr {
+    let error = error.into();
+    if error == "Index out of bounds" {
+        PyIndexError::new_err("list index out of range")
+    } else {
+        PyValueError::new_err(error)
+    }
+}
+
+/// Resolves a Python list index, where a negative index counts from the end,
+/// to a position in a list of `len` items.
+fn list_index(index: isize, len: usize) -> PyResult<usize> {
+    let resolved = if index < 0 {
+        len.checked_sub(index.unsigned_abs())
+    } else {
+        Some(index.unsigned_abs())
+    };
+    resolved
+        .filter(|&index| index < len)
+        .ok_or_else(|| PyIndexError::new_err("list index out of range"))
+}
+
 #[cfg(test)]
 mod tests {
     use std::net::{Ipv4Addr, TcpListener, TcpStream};
@@ -1925,6 +1957,24 @@ mod tests {
 
     use super::*;
     use crate::protocol::ClientHeader;
+
+    #[test]
+    fn list_indices_resolve_like_python_lists() {
+        for (index, len, expected) in [
+            (0, 3, Some(0)),
+            (2, 3, Some(2)),
+            (3, 3, None),
+            (-1, 3, Some(2)),
+            (-3, 3, Some(0)),
+            (-4, 3, None),
+            (0, 0, None),
+            (-1, 0, None),
+            (isize::MIN, 3, None),
+            (isize::MAX, 3, None),
+        ] {
+            assert_eq!(list_index(index, len).ok(), expected, "{index} of {len}");
+        }
+    }
 
     /// A raw client that completes the handshake and never acknowledges.
     fn silent_client(port: u16) -> tungstenite::WebSocket<TcpStream> {

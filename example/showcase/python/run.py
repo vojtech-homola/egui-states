@@ -64,23 +64,22 @@ def register_callbacks(server: StatesServer) -> None:  # noqa: PLR0915
         states.value_vec.items.set(list(DEFAULT_VEC))
 
     def _append_value_vec() -> None:
-        current = states.value_vec.items.get()
-        next_value = current[-1] + 5 if current else DEFAULT_VEC[0]
-        states.value_vec.items.add_item(next_value)
+        items = states.value_vec.items
+        next_value = items[-1] + 5 if len(items) else DEFAULT_VEC[0]
+        items.add_item(next_value)
         print(f"value_vec appended: {next_value}")
 
     def _remove_last_value_vec() -> None:
-        current = states.value_vec.items.get()
-        if current:
-            states.value_vec.items.remove_item(len(current) - 1)
+        items = states.value_vec.items
+        if len(items):
+            del items[-1]
             print("value_vec removed last item")
 
     def _reset_value_map() -> None:
         states.value_map.items.set(dict(DEFAULT_MAP))
 
     def _insert_next_value_map() -> None:
-        current = states.value_map.items.get()
-        next_key = max(current, default=0) + 1
+        next_key = max(states.value_map.items, default=0) + 1
         states.value_map.items.set_item(next_key, next_key * 100)
         print(f"value_map inserted: {next_key} -> {next_key * 100}")
 

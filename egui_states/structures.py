@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import os
 from abc import ABC, abstractmethod
-from collections.abc import Buffer, Callable, Sequence
+from collections.abc import Buffer, Callable, Iterator, Sequence
 from typing import Any, Final
 
 import numpy as np
@@ -673,7 +673,13 @@ class ImageMulti(_StaticBase):
 
 
 class Map[K, V](_StaticBase):
-    """Server-controlled dictionary mirrored read-only to the client."""
+    """Server-controlled dictionary mirrored read-only to the client.
+
+    It supports the dict operations ``map[key]``, ``map[key] = value``,
+    ``del map[key]``, ``key in map``, ``len(map)`` and iteration over its
+    keys. A missing key raises :class:`KeyError`. Iteration walks a copy taken
+    when it starts.
+    """
 
     def __init__(self, key_id: int, value_id: int) -> None:
         self._key_id = key_id
@@ -717,6 +723,9 @@ class Map[K, V](_StaticBase):
 
         Returns:
             V: The value of the item.
+
+        Raises:
+            KeyError: If the dict has no such key.
         """
         return self._server.map_get_item(self._value_id, key)
 
@@ -728,6 +737,9 @@ class Map[K, V](_StaticBase):
 
         Returns:
             V: The removed value.
+
+        Raises:
+            KeyError: If the dict has no such key.
         """
         return self._server.map_del_item(self._value_id, key)
 
@@ -743,9 +755,27 @@ class Map[K, V](_StaticBase):
         """Remove the item from the UI dict."""
         self.remove_item(key)
 
+    def __contains__(self, key: object) -> bool:
+        """Return whether the UI dict has ``key``."""
+        return self._server.map_contains(self._value_id, key)
+
+    def __len__(self) -> int:
+        """Return the number of items in the UI dict."""
+        return self._server.map_len(self._value_id)
+
+    def __iter__(self) -> Iterator[K]:
+        """Iterate over a copy of the keys of the UI dict."""
+        return iter(self.get())
+
 
 class Vec[T](_StaticBase):
-    """Server-controlled list mirrored read-only to the client."""
+    """Server-controlled list mirrored read-only to the client.
+
+    It supports the list operations ``vec[i]``, ``vec[i] = value``,
+    ``del vec[i]``, ``value in vec``, ``len(vec)`` and iteration. A negative
+    index counts from the end, and an index out of range raises
+    :class:`IndexError`. Iteration walks a copy taken when it starts.
+    """
 
     def __init__(self, obj_id: int) -> None:
         self._obj_id = obj_id
@@ -774,8 +804,12 @@ class Vec[T](_StaticBase):
         """Set the item in the UI list.
 
         Args:
-            idx (int): The index of the item.
+            idx (int): The index of the item; a negative index counts from
+                the end.
             value (T): The value of the item.
+
+        Raises:
+            IndexError: If the index is out of range.
         """
         self._server.list_set_item(self._value_id, idx, value)
 
@@ -783,10 +817,14 @@ class Vec[T](_StaticBase):
         """Get the item in the UI list.
 
         Args:
-            idx (int): The index of the item.
+            idx (int): The index of the item; a negative index counts from
+                the end.
 
         Returns:
             T: The value of the item.
+
+        Raises:
+            IndexError: If the index is out of range.
         """
         return self._server.list_get_item(self._value_id, idx)
 
@@ -794,10 +832,14 @@ class Vec[T](_StaticBase):
         """Remove the item from the UI list and return it.
 
         Args:
-            idx (int): The index of the item.
+            idx (int): The index of the item; a negative index counts from
+                the end.
 
         Returns:
             T: The removed item.
+
+        Raises:
+            IndexError: If the index is out of range.
         """
         return self._server.list_del_item(self._value_id, idx)
 
@@ -816,6 +858,22 @@ class Vec[T](_StaticBase):
     def __setitem__(self, idx: int, value: T) -> None:
         """Set the item in the UI list."""
         self.set_item(idx, value)
+
+    def __delitem__(self, idx: int) -> None:
+        """Remove the item from the UI list."""
+        self.remove_item(idx)
+
+    def __contains__(self, value: object) -> bool:
+        """Return whether the UI list holds ``value``."""
+        return value in self.get()
+
+    def __len__(self) -> int:
+        """Return the number of items in the UI list."""
+        return self._server.list_len(self._value_id)
+
+    def __iter__(self) -> Iterator[T]:
+        """Iterate over a copy of the items of the UI list."""
+        return iter(self.get())
 
 
 _DTYPE_TO_ID = {
