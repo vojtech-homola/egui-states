@@ -101,6 +101,20 @@ jobs:
             echo "::warning::Could not open the pull request; open it from $url"
             echo "Open the release pull request: $url" >> "$GITHUB_STEP_SUMMARY"
           fi
+      - name: Close superseded release pull requests
+        # Commits merged since an earlier run can change the version, which
+        # leaves that run's pull request open under another branch name.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          gh pr list --state open --json number,headRefName,isCrossRepository --jq "
+            .[] | select(.isCrossRepository | not)
+            | select(.headRefName | startswith(\"release/\"))
+            | select(.headRefName != \"release/$VERSION\") | .number
+          " | while read -r number; do
+            gh pr close "$number" --delete-branch --comment "Superseded by the release of $VERSION."
+          done
       - name: Start CI on the release branch
         # Pushes made with GITHUB_TOKEN start no workflows, but dispatches do.
         env:
