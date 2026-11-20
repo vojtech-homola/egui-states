@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use crate::client::client::print_error;
 use crate::client::messages::{ChannelMessage, MessageSender};
-use crate::client::states::atomics::{Atomic, AtomicLock, AtomicLockStatic, AtomicStatic};
+use crate::client::states::atomics::{Atomic, AtomicCell, UpdateLock};
 use crate::protocol::{check_value_size, deserialize, to_message};
 
 /// Report a value that cannot be sent, locally and to the server.
@@ -413,14 +413,17 @@ impl<T> Clone for Value<T> {
 
 /// Atomic variant of [`Value`] for small copyable values.
 ///
-/// Built-in implementations cover integers, `bool`, `f32`, `f64`, `(f32,
-/// f32)`, and `[f32; 2]`. Custom [`Atomic`] implementations must preserve the
-/// synchronization and size guarantees documented by that unsafe trait.
+/// [`get`](Self::get) is one atomic load, without a lock, so it is much
+/// faster than [`Value::get`] and never waits behind an incoming server
+/// update. Built-in implementations cover integers, `bool`, `f32`, `f64`,
+/// `(f32, f32)`, and `[f32; 2]`, and `#[derive(Atomic)]` covers fieldless
+/// enums; [`Atomic`] shows how to implement it for another value of up to 64
+/// bits.
 ///
 /// Concurrent writes and `#[state(queue)]` follow the same rules as
 /// [`Value`]: the server wins.
 pub struct ValueAtomic<T: Atomic> {
-    shared: Arc<Shared<T::Lock>>,
+    shared: Arc<Shared<UpdateLock<T>>>,
 }
 
 impl<T> ValueAtomic<T>
@@ -435,7 +438,7 @@ where
         sender: MessageSender,
     ) -> Self {
         Self {
-            shared: Shared::new(name, id, type_id, T::Lock::new(value), sender),
+            shared: Shared::new(name, id, type_id, UpdateLock::new(value), sender),
         }
     }
 
@@ -598,14 +601,16 @@ impl<T> Clone for Static<T> {
 }
 
 /// Atomic server-controlled value that is read-only on the client.
-pub struct StaticAtomic<T: AtomicStatic> {
-    shared: Arc<StaticShared<T::Lock>>,
+///
+/// [`get`](Self::get) is one atomic load, as for [`ValueAtomic`].
+pub struct StaticAtomic<T: Atomic> {
+    shared: Arc<StaticShared<AtomicCell<T>>>,
 }
 
-impl<T: AtomicStatic> StaticAtomic<T> {
+impl<T: Atomic> StaticAtomic<T> {
     pub(crate) fn new(name: String, type_id: u32, value: T) -> Self {
         Self {
-            shared: StaticShared::new(name, type_id, T::Lock::new(value)),
+            shared: StaticShared::new(name, type_id, AtomicCell::new(value)),
         }
     }
 
@@ -615,11 +620,11 @@ impl<T: AtomicStatic> StaticAtomic<T> {
     }
 }
 
-impl<T: for<'a> Deserialize<'a> + AtomicStatic + Send + Sync> UpdateValue for StaticAtomic<T> {
+impl<T: for<'a> Deserialize<'a> + Atomic + Send + Sync> UpdateValue for StaticAtomic<T> {
     fn update_value(&self, type_id: u32, data: &[u8]) -> Result<(), String> {
         if type_id != self.shared.type_id {
             return Err(format!(
-                "Type id mismatch for AtomicStatic: {}",
+                "Type id mismatch for StaticAtomic: {}",
                 self.shared.name
             ));
         }
@@ -630,7 +635,7 @@ impl<T: for<'a> Deserialize<'a> + AtomicStatic + Send + Sync> UpdateValue for St
     }
 }
 
-impl<T: AtomicStatic> Clone for StaticAtomic<T> {
+impl<T: Atomic> Clone for StaticAtomic<T> {
     fn clone(&self) -> Self {
         Self {
             shared: self.shared.clone(),

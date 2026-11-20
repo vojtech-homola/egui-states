@@ -28,6 +28,10 @@ pub struct CounterState {
   [concurrent writes](docs/architecture.md#concurrent-value-writes).
 - `Static<T>` stores a value the server controls and the client reads.
 - `Signal<T>` sends a client event to server callbacks without retaining a value.
+- `ValueAtomic<T>` and `StaticAtomic<T>` work like `Value` and `Static` for a
+  small copyable value: a number, `bool`, or a fieldless enum with
+  `#[derive(egui_states::Atomic)]`. Their `get()` is one atomic load instead
+  of a lock, for values the UI reads every frame.
 
 `Value` and `Static` fields (and their atomic variants) start from
 `Default::default()`. Give a field another initial value with

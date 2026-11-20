@@ -22,10 +22,7 @@ enum MacroEnum {
 
 #[egui_states::typed]
 #[derive(Clone, Copy, Debug, PartialEq)]
-#[cfg_attr(
-    feature = "client",
-    derive(egui_states::Atomic, egui_states::AtomicStatic)
-)]
+#[cfg_attr(feature = "client", derive(egui_states::Atomic))]
 #[repr(i32)]
 enum BoundaryEnum {
     Min = -2147483648,
@@ -174,41 +171,22 @@ fn typed_attribute_preserves_i32_boundaries_and_wire_values() {
 }
 
 #[cfg(feature = "client")]
-fn assert_boundary_storage<L: egui_states::AtomicLockStatic<BoundaryEnum>>() {
-    let lock = L::new(BoundaryEnum::Max);
-    assert_eq!(lock.load(), BoundaryEnum::Max);
-    for value in BOUNDARY_VALUES {
-        assert_eq!(L::new(value).load(), value);
-        lock.store(value);
-        assert_eq!(lock.load(), value);
-    }
-}
-
-#[cfg(feature = "client")]
-#[test]
-fn atomic_static_derive_preserves_i32_boundaries() {
-    assert_boundary_storage::<<BoundaryEnum as egui_states::AtomicStatic>::Lock>();
-}
-
-#[cfg(feature = "client")]
 #[test]
 fn atomic_derive_preserves_i32_boundaries() {
-    use egui_states::{AtomicLock, AtomicLockStatic};
+    use egui_states::Atomic;
 
-    type Lock = <BoundaryEnum as egui_states::Atomic>::Lock;
-    assert_boundary_storage::<Lock>();
-    let lock = Lock::new(BoundaryEnum::Max);
-    let mut previous = BoundaryEnum::Max;
     for value in BOUNDARY_VALUES {
-        let mut notified = false;
-        lock.update(value, || {
-            assert_eq!(lock.load(), previous);
-            notified = true;
-        });
-        assert!(notified);
-        assert_eq!(lock.load(), value);
-        previous = value;
+        assert_eq!(BoundaryEnum::from_atomic(value.to_atomic()), value);
     }
+}
+
+#[cfg(feature = "client")]
+#[test]
+#[should_panic(expected = "Invalid enum value for BoundaryEnum: 7")]
+fn atomic_derive_rejects_an_unknown_discriminant() {
+    use egui_states::Atomic;
+
+    BoundaryEnum::from_atomic(7);
 }
 
 #[test]

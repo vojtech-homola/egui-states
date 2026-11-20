@@ -109,11 +109,6 @@ path = "src/bin/initial-tuple.rs"
 required-features = ["invalid"]
 
 [[bin]]
-name = "atomic-static-payload"
-path = "src/bin/atomic-static-payload.rs"
-required-features = ["invalid"]
-
-[[bin]]
 name = "typed-serde-skip"
 path = "src/bin/typed-serde-skip.rs"
 required-features = ["invalid"]

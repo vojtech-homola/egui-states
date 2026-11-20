@@ -4,7 +4,7 @@ use std::hash::{Hash, Hasher};
 use serde::{Deserialize, Serialize};
 
 use crate::State;
-use crate::client::states::atomics::{Atomic, AtomicStatic};
+use crate::client::states::atomics::Atomic;
 use crate::client::states::data::{
     Data, DataMulti, HeaderValue, data_type_hash, private::GetDataType,
 };
@@ -384,7 +384,7 @@ impl StatesCreator for StatesCreatorBuild {
             + Clone
             + Send
             + Sync
-            + AtomicStatic
+            + Atomic
             + 'static,
     {
         self.collect_rust_derives::<T>();

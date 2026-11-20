@@ -1,5 +1,5 @@
 use proc_macro::TokenStream;
-use quote::{format_ident, quote};
+use quote::quote;
 use syn::{self, Lit, Path, parse_macro_input};
 
 pub(crate) fn impl_typed(input: TokenStream, rust_derives: &[Path]) -> TokenStream {
@@ -129,19 +129,6 @@ fn impl_enum_initial_value(input: TokenStream) -> TokenStream {
 }
 
 pub(crate) fn impl_atomic(input: TokenStream) -> TokenStream {
-    impl_enum_atomic(input, AtomicKind::Atomic)
-}
-
-pub(crate) fn impl_atomic_static(input: TokenStream) -> TokenStream {
-    impl_enum_atomic(input, AtomicKind::AtomicStatic)
-}
-
-enum AtomicKind {
-    Atomic,
-    AtomicStatic,
-}
-
-fn impl_enum_atomic(input: TokenStream, kind: AtomicKind) -> TokenStream {
     let EnumInfo {
         ident,
         names,
@@ -149,47 +136,17 @@ fn impl_enum_atomic(input: TokenStream, kind: AtomicKind) -> TokenStream {
     } = parse_enum(input);
     let values = discriminant_expressions(&values);
 
-    let (private_ident, private_mod) = match kind {
-        AtomicKind::Atomic => (
-            format_ident!("__PrivateAtomic{}", ident),
-            format_ident!("__private_atomic_{}", ident),
-        ),
-        AtomicKind::AtomicStatic => (
-            format_ident!("__PrivateAtomicStatic{}", ident),
-            format_ident!("__private_atomic_static_{}", ident),
-        ),
-    };
-
-    let atomic_impl = match kind {
-        AtomicKind::Atomic => quote!(
-            unsafe impl egui_states::Atomic for #ident {
-                type Lock = egui_states::UpdateLock<#private_mod::#private_ident>;
-            }
-        ),
-        AtomicKind::AtomicStatic => quote!(
-            unsafe impl egui_states::AtomicStatic for #ident {
-                type Lock = #private_mod::#private_ident;
-            }
-        ),
-    };
-
+    // The discriminant is stored with the bit pattern of its i32.
     let out = quote!(
-        #[allow(non_snake_case)]
-        mod #private_mod {
-            use std::sync::atomic::AtomicI32;
-
-            pub struct #private_ident(pub AtomicI32);
-        }
-
-        unsafe impl egui_states::AtomicLockStatic<#ident> for #private_mod::#private_ident {
+        impl egui_states::Atomic for #ident {
             #[inline]
-            fn new(value: #ident) -> Self {
-                Self(std::sync::atomic::AtomicI32::new(value as i32))
+            fn to_atomic(self) -> u64 {
+                self as i32 as u32 as u64
             }
 
             #[inline]
-            fn load(&self) -> #ident {
-                match self.0.load(std::sync::atomic::Ordering::Acquire) {
+            fn from_atomic(bits: u64) -> Self {
+                match bits as u32 as i32 {
                     #(#values => #ident::#names),*,
                     raw => panic!(
                         "Invalid enum value for {}: {}",
@@ -198,14 +155,7 @@ fn impl_enum_atomic(input: TokenStream, kind: AtomicKind) -> TokenStream {
                     ),
                 }
             }
-
-            #[inline]
-            fn store(&self, value: #ident) {
-                self.0.store(value as i32, std::sync::atomic::Ordering::Release);
-            }
         }
-
-        #atomic_impl
     );
 
     out.into()

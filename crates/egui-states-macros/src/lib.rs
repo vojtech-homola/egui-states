@@ -96,22 +96,14 @@ pub fn initial_value(input: TokenStream) -> TokenStream {
     objects::impl_initial_value(input)
 }
 
-/// Derives the client-side `egui_states::Atomic` synchronization traits.
+/// Derives `egui_states::Atomic`, so the type can be stored in a
+/// `ValueAtomic` and a `StaticAtomic`.
 ///
 /// The input must be a non-generic fieldless enum whose discriminants fit in
 /// `i32`; the generated implementation stores the discriminant atomically.
 #[proc_macro_derive(Atomic)]
 pub fn atomic(input: TokenStream) -> TokenStream {
     objects::impl_atomic(input)
-}
-
-/// Derives `egui_states::AtomicStatic` for a copyable value.
-///
-/// The input must be a non-generic fieldless enum whose discriminants fit in
-/// `i32`; the generated implementation stores the discriminant atomically.
-#[proc_macro_derive(AtomicStatic)]
-pub fn atomic_static(input: TokenStream) -> TokenStream {
-    objects::impl_atomic_static(input)
 }
 
 /// Derives `egui_states::State` for a struct whose fields are state handles.

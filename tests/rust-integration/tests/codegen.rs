@@ -104,7 +104,6 @@ compile_fail! {
     state_struct_attribute: "state-struct-attribute" => "`state` attributes belong on fields, not on the struct",
     atomic_payload: "atomic-payload" => "Enum variants must be unit variants",
     initial_tuple: "initial-tuple" => "Struct fields must be named",
-    atomic_static_payload: "atomic-static-payload" => "Enum variants must be unit variants",
     typed_discriminant_range: "typed-discriminant-range" => "Enum discriminants must fit in i32",
     typed_discriminant_expression: "typed-discriminant-expression" => "Enum discriminants must be integer literals",
     typed_discriminant_overflow: "typed-discriminant-overflow" => "Enum discriminants must fit in i32",

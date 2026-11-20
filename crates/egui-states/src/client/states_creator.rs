@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::State;
 use crate::client::messages::MessageSender;
-use crate::client::states::atomics::{Atomic, AtomicStatic};
+use crate::client::states::atomics::Atomic;
 use crate::client::states::data::{
     Data, DataMulti, HeaderValue, UpdateData, UpdateMultiData, data_type_hash, private::GetDataType,
 };
@@ -108,7 +108,7 @@ pub trait StatesCreator {
             + Clone
             + Send
             + Sync
-            + AtomicStatic
+            + Atomic
             + 'static;
 
     /// Creates a client-to-server event carrying values of type `T`.
@@ -506,7 +506,7 @@ impl StatesCreator for StatesCreatorClient {
             + Clone
             + Send
             + Sync
-            + AtomicStatic
+            + Atomic
             + 'static,
     {
         let (name, id) = state_path(&self.parent, name);
