@@ -387,7 +387,7 @@ pub(crate) async fn run<L: Listener>(
             if connected.load(Ordering::Acquire) {
                 close_slot
                     .lock()
-                    .get_or_insert_with(|| Close::new(close::CLOSED_BY_SERVER, "server stopped"));
+                    .get_or_insert_with(|| Close::new(close::SERVER_STOPPED, "server stopped"));
             }
             connected.store(false, Ordering::Release);
             sender.close();

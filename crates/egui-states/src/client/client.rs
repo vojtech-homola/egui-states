@@ -596,16 +596,18 @@ pub enum CloseReason {
     Refused,
     /// Another client took over the connection.
     Replaced,
-    /// The server closed the connection: it disconnected the client, stopped,
-    /// or failed to synchronize it.
+    /// The server closed the connection: it disconnected the client or failed
+    /// to synchronize it.
     ClosedByServer,
+    /// The server stopped.
+    ServerStopped,
     /// The connection broke, or the server closed it without a reason.
     ConnectionLost,
 }
 
 impl CloseReason {
     /// The reasons the server's close codes stand for.
-    const CODES: [(u16, Self); 7] = [
+    const CODES: [(u16, Self); 8] = [
         (close::PROTOCOL_MISMATCH, Self::ProtocolMismatch),
         (close::VERSION_MISMATCH, Self::VersionMismatch),
         (close::TOKEN_REJECTED, Self::TokenRejected),
@@ -613,6 +615,7 @@ impl CloseReason {
         (close::REFUSED, Self::Refused),
         (close::REPLACED, Self::Replaced),
         (close::CLOSED_BY_SERVER, Self::ClosedByServer),
+        (close::SERVER_STOPPED, Self::ServerStopped),
     ];
 
     /// The reason the server's close `code` stands for.
@@ -636,6 +639,7 @@ impl fmt::Display for CloseReason {
             Self::Refused => "the server refused the connection",
             Self::Replaced => "another client took over the connection",
             Self::ClosedByServer => "the server closed the connection",
+            Self::ServerStopped => "the server stopped",
             Self::ConnectionLost => "the connection was lost",
         })
     }

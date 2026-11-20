@@ -2846,7 +2846,7 @@ mod connection_tests {
         wait("server stopped", || {
             fourth.get_state() == ConnectionState::Disconnected
         });
-        assert_eq!(fourth.last_reason(), Some(CloseReason::ClosedByServer));
+        assert_eq!(fourth.last_reason(), Some(CloseReason::ServerStopped));
     }
 
     const PANIC_VALUE: i32 = -13;

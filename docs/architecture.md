@@ -65,11 +65,11 @@ as a `CloseReason`.
 5. The connected client, if any, is closed with 4005, and the new one is
    synchronized.
 
-The server also closes with 4006 when it disconnects the client, stops, or fails
-to synchronize a new client. A client that stops answering is dropped by the
-heartbeat without a close frame, as it no longer reads; the client then reports
-`ConnectionLost`. A client attempt that gets no answer at all fails with
-`Timeout` after the client's connect timeout.
+The server also closes with 4006 when it disconnects the client or fails to
+synchronize a new client, and with 4007 when it stops. A client that stops
+answering is dropped by the heartbeat without a close frame, as it no longer
+reads; the client then reports `ConnectionLost`. A client attempt that gets no
+answer at all fails with `Timeout` after the client's connect timeout.
 
 ## State directions
 

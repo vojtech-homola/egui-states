@@ -307,10 +307,10 @@ On the client, `get_state()` reports `Connecting` during an attempt,
 `WaitingForApproval` while the server's callback decides, then `Connected`.
 After `Failed` or `Disconnected`, `last_reason()` returns why as a
 `CloseReason`, such as `Unreachable`, `Timeout`, `VersionMismatch`,
-`TokenRejected`, `Busy`, `Refused`, `Replaced`, `ClosedByServer`, or
-`ConnectionLost`, and `last_error()` describes it in words. An attempt the
-server does not answer fails after the client
-builder's `connect_timeout` (10 s by default). The server sends its reasons in
+`TokenRejected`, `Busy`, `Refused`, `Replaced`, `ClosedByServer`,
+`ServerStopped`, or `ConnectionLost`, and `last_error()` describes it in words.
+An attempt the server does not answer fails after the client builder's
+`connect_timeout` (10 s by default). The server sends its reasons in
 the WebSocket close frame, so browser clients receive them too.
 
 ## Examples

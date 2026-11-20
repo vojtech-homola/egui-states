@@ -592,7 +592,7 @@ impl Server {
                 *state = RunnerState::Stopped(rx);
             }
             RunnerState::Running(handle, _) => {
-                self.close_with(close::CLOSED_BY_SERVER, "server stopped");
+                self.close_with(close::SERVER_STOPPED, "server stopped");
                 self.connected.store(false, Ordering::Release);
                 self.stop_event.set();
                 self.sender.close();
