@@ -324,6 +324,11 @@ class SignalEmpty(_SignalBase):
         self._signals_manager.clear_callbacks(self._value_id)
 
 
+def _is_index(index: object) -> bool:
+    """Return whether ``index`` can be a key of a multi state: an ``int`` in the ``u32`` range."""
+    return isinstance(index, int) and 0 <= index <= 0xFFFF_FFFF
+
+
 def _image_array(data: bytearray, shape: tuple[int, int], channels: int) -> npt.NDArray[np.uint8]:
     """Return stored image bytes as an array shaped like an image to set."""
     array = np.frombuffer(data, dtype=np.uint8)
@@ -1539,6 +1544,22 @@ class DataMulti[T: np.generic](_StaticBase):
     def reset(self) -> None:
         """Reset (clear all indices and headers) in the DataMulti."""
         self._server.data_multi_reset(self._value_id)
+
+    def indices(self) -> list[int]:
+        """Return the indices that hold data.
+
+        Returns:
+            list[int]: The indices in ascending order.
+        """
+        return self._server.data_multi_indices(self._value_id)
+
+    def __len__(self) -> int:
+        return self._server.data_multi_len(self._value_id)
+
+    def __contains__(self, index: object) -> bool:
+        if not _is_index(index):
+            return False
+        return self._server.data_multi_contains(self._value_id, index)
 
     def __getitem__(self, index: int) -> SingleData[T]:
         if isinstance(index, int):

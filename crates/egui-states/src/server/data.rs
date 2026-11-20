@@ -467,6 +467,27 @@ where
         })
     }
 
+    /// Returns the number of indices that hold data, not the highest index
+    /// plus one.
+    pub fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    /// Returns whether no index holds data.
+    pub fn is_empty(&self) -> bool {
+        self.inner.len() == 0
+    }
+
+    /// Returns whether `index` holds data.
+    pub fn contains(&self, index: u32) -> bool {
+        self.inner.contains(index)
+    }
+
+    /// Returns the indices that hold data, in ascending order.
+    pub fn indices(&self) -> Vec<u32> {
+        self.inner.indices()
+    }
+
     /// Returns whether no change of any key waits for the client's
     /// acknowledgement, as [`Data::is_idle`].
     pub fn is_idle(&self) -> bool {
@@ -760,6 +781,27 @@ mod tests {
         assert_eq!(data.get(3).unwrap(), Some(vec![4.0, 3.0]));
         data.remove_index(3).unwrap();
         assert_eq!(data.get(3).unwrap(), None);
+    }
+
+    #[test]
+    fn multi_data_lists_its_indices() {
+        let server = StateServer::new().unwrap();
+        let data = DataMulti::<u8>::new(&server, "root.data", false).unwrap();
+        assert!(data.is_empty());
+        assert_eq!(data.indices(), Vec::<u32>::new());
+
+        data.set(9, &[1], false).unwrap();
+        data.set(1, &[], false).unwrap();
+        assert_eq!(data.len(), 2);
+        assert_eq!(data.indices(), vec![1, 9]);
+        assert!(data.contains(1));
+        assert!(!data.contains(2));
+
+        data.remove_index(9).unwrap();
+        assert_eq!(data.indices(), vec![1]);
+        data.reset().unwrap();
+        assert!(data.is_empty());
+        assert!(!data.contains(1));
     }
 
     #[test]

@@ -865,6 +865,29 @@ where
         self.inner.read().data.get(&key).cloned()
     }
 
+    /// Returns the number of keys that hold a buffer, not the highest key
+    /// plus one.
+    pub fn len(&self) -> usize {
+        self.inner.read().data.len()
+    }
+
+    /// Returns whether no key holds a buffer.
+    pub fn is_empty(&self) -> bool {
+        self.inner.read().data.is_empty()
+    }
+
+    /// Returns whether `key` holds a buffer.
+    pub fn contains(&self, key: u32) -> bool {
+        self.inner.read().data.contains_key(&key)
+    }
+
+    /// Returns a snapshot of the keys that hold a buffer, in ascending order.
+    pub fn indices(&self) -> Vec<u32> {
+        let mut indices = self.inner.read().data.keys().copied().collect::<Vec<_>>();
+        indices.sort_unstable();
+        indices
+    }
+
     /// Borrows the buffer at `key` for the duration of `f`.
     ///
     /// The synchronization read lock remains held while `f` runs.
@@ -1632,6 +1655,30 @@ mod malformed_tests {
         assert!(data.take_changed(2));
         assert!(data.take_any_changed());
         assert!(!data.take_changed(3));
+    }
+
+    #[test]
+    fn data_multi_lists_the_keys_that_hold_a_buffer() {
+        let (sender, _receiver) = MessageSender::new();
+        let data = DataMulti::<u8>::new("data".to_string(), 3, sender);
+        assert!(data.is_empty());
+        assert_eq!(data.indices(), Vec::<u32>::new());
+
+        set_key(&data, 7, &[1]);
+        set_key(&data, 2, &[]);
+        // A batch still arriving is not a key yet.
+        data.update(5, (DataHeader::StartBatch(2, 0), Bytes::from_static(&[4])))
+            .unwrap();
+        assert_eq!(data.len(), 2);
+        assert_eq!(data.indices(), vec![2, 7]);
+        assert!(data.contains(2));
+        assert!(!data.contains(5));
+
+        data.remove(7);
+        assert_eq!(data.indices(), vec![2]);
+        assert!(!data.contains(7));
+        data.reset();
+        assert!(data.is_empty());
     }
 
     #[test]

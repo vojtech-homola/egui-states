@@ -835,6 +835,26 @@ impl DataMulti {
         f(storage.values.get(&key).map(|value| value.bytes.as_slice()))
     }
 
+    pub(crate) fn len(&self) -> usize {
+        self.storage.read().values.len()
+    }
+
+    pub(crate) fn contains(&self, key: u32) -> bool {
+        self.storage.read().values.contains_key(&key)
+    }
+
+    pub(crate) fn indices(&self) -> Vec<u32> {
+        let mut indices = self
+            .storage
+            .read()
+            .values
+            .keys()
+            .copied()
+            .collect::<Vec<_>>();
+        indices.sort_unstable();
+        indices
+    }
+
     /// Calls `f` with the encoded header of `key`, `None` for a missing key;
     /// a state without a header type has an empty one.
     pub(crate) fn header<R>(&self, key: u32, f: impl FnOnce(Option<&[u8]>) -> R) -> R {

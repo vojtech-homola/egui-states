@@ -86,6 +86,35 @@ def test_multi_data_methods(local_bundle: tuple[StatesServer, State, list[Except
         states.multi_data.bytes[2].get()
 
 
+def test_multi_data_lists_its_indices(local_bundle: tuple[StatesServer, State, list[Exception]]) -> None:
+    _server, states, _errors = local_bundle
+    data = states.multi_data.bytes
+    assert data.indices() == []
+    assert len(data) == 0
+
+    data[9].set(np.array([1], dtype=np.uint8))
+    data[1].set(np.array([], dtype=np.uint8))
+    assert data.indices() == [1, 9]
+    assert len(data) == 2
+    assert 9 in data
+    assert 2 not in data
+    # Keys that cannot exist are not in it, as for a dict.
+    for key in (-1, 2**32, "9", 9.0, None):
+        assert key not in data
+
+    data.remove_index(9)
+    assert data.indices() == [1]
+    data.reset()
+    assert len(data) == 0
+    assert 1 not in data
+
+    # The header variant inherits the listing.
+    keyed = states.headers.keyed
+    keyed[3].set(np.array([7], dtype=np.uint16), header=HeaderMeta(0.5, "y", []))
+    assert keyed.indices() == [3]
+    assert 3 in keyed
+
+
 def test_sparse_float_storage(local_bundle):
     _, states, _ = local_bundle
     samples = np.linspace(0.0, 1.0, 5, dtype=np.float32)

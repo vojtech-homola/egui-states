@@ -1346,6 +1346,18 @@ impl StateServerCore {
         Ok(self.inner_data_multi(value_id)?.0.is_idle())
     }
 
+    fn data_multi_len(&self, value_id: u64) -> PyResult<usize> {
+        Ok(self.inner_data_multi(value_id)?.0.len())
+    }
+
+    fn data_multi_contains(&self, value_id: u64, index: u32) -> PyResult<bool> {
+        Ok(self.inner_data_multi(value_id)?.0.contains(index))
+    }
+
+    fn data_multi_indices(&self, value_id: u64) -> PyResult<Vec<u32>> {
+        Ok(self.inner_data_multi(value_id)?.0.indices())
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn data_multi_set(
         &self,
