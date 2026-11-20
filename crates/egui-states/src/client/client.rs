@@ -340,6 +340,8 @@ async fn start_gui_client(
                 continue;
             }
         };
+        // Take values from the closed connection were takeable until now.
+        vals.connected();
         client.set_state(ConnectionState::Connected);
         retry.reset();
 

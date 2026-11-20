@@ -151,6 +151,9 @@ pub(crate) trait UpdateValueTake: Sync + Send {
     /// The server releases blocking sends when a connection ends, so pending
     /// values from it must not be acknowledged on the next connection.
     fn disconnected(&self);
+    /// Drops the values a closed connection left untaken, without
+    /// acknowledging them.
+    fn connected(&self);
 }
 
 /// What all clones of a value handle share, in one allocation.
@@ -692,7 +695,9 @@ type Pending<T> = RwLock<Option<(T, bool)>>;
 /// A one-shot value sent by the server and consumed by the client.
 ///
 /// A newly received value replaces an untaken value. Taking a blocking value
-/// sends the acknowledgement that releases the server's next send.
+/// sends the acknowledgement that releases the server's next send. An untaken
+/// value stays takeable while the client is disconnected, and is dropped once
+/// a new connection is accepted.
 pub struct ValueTake<T> {
     shared: Arc<Shared<Pending<T>>>,
 }
@@ -755,6 +760,10 @@ where
         if let Some((_, blocking)) = self.shared.value.write().as_mut() {
             *blocking = false;
         }
+    }
+
+    fn connected(&self) {
+        *self.shared.value.write() = None;
     }
 }
 
@@ -964,6 +973,21 @@ mod tests {
         value.update_take(4, &[5], true).unwrap();
         value.disconnected();
         assert_eq!(value.take(), Some(5));
+        assert!(rx.try_recv().is_err());
+    }
+
+    /// A value stays takeable while the client is disconnected, and is
+    /// dropped once a new connection is accepted, without an
+    /// acknowledgement.
+    #[test]
+    fn a_new_connection_drops_untaken_values() {
+        let (sender, mut rx) = MessageSender::new();
+        let value = ValueTake::<u8>::new("take".into(), 34, 4, sender);
+        value.update_take(4, &[5], true).unwrap();
+        value.disconnected();
+        assert!(value.is_some());
+        value.connected();
+        assert_eq!(value.take(), None);
         assert!(rx.try_recv().is_err());
     }
 }

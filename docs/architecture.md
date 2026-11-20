@@ -226,9 +226,10 @@ calls `take`, so the next send waits until then. A remove or reset of a
 `DataMultiTake` key does not wait: the client acknowledges the blocking value
 it drops. A `ValueTake` is not acknowledged unless it is blocking, which works
 the same way. For numeric takes, `cache = true` also retains the last transfer
-for synchronization with a newly connected client. A reconnected
-`DataMultiTake` holds only the cached keys: values the client had not taken
-before the disconnect are dropped.
+for synchronization with a newly connected client. Values the client had not
+taken stay takeable while it is disconnected, and are dropped once a new
+connection is accepted, before the synchronization: a reconnected client holds
+only the cached values.
 
 ## Send priority
 

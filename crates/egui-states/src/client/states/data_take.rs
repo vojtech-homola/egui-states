@@ -172,6 +172,9 @@ pub(crate) trait UpdateDataTake: Sync + Send {
     /// The server releases blocking sends when a connection ends, so pending
     /// values from it must not be acknowledged on the next connection.
     fn disconnected(&self);
+    /// Drops the buffer a closed connection left untaken, without
+    /// acknowledging it.
+    fn connected(&self);
 }
 
 /// A one-shot numeric buffer sent from the server to the client, with an
@@ -180,8 +183,9 @@ pub(crate) trait UpdateDataTake: Sync + Send {
 /// A transfer becomes available only after every batch has arrived, and a
 /// new one replaces a buffer that was not taken. The client acknowledges a
 /// transfer when it arrives, so the server sends the next one; a blocking
-/// transfer only once it is taken. Every transfer of a state with a header
-/// type comes with its header.
+/// transfer only once it is taken. An untaken buffer stays takeable while the
+/// client is disconnected, and is dropped once a new connection is accepted.
+/// Every transfer of a state with a header type comes with its header.
 pub struct DataTake<T, H = ()> {
     name: Arc<String>,
     id: u64,
@@ -300,6 +304,10 @@ where
         // A batch from the closed connection can never complete.
         *self.batch.lock() = TakeBatch::Empty;
     }
+
+    fn connected(&self) {
+        *self.inner.write() = None;
+    }
 }
 
 // DataMultiTake ----------------------------------------------------------------
@@ -310,6 +318,9 @@ pub(crate) trait UpdateDataMultiTake: Sync + Send {
     /// The server releases blocking sends when a connection ends, so pending
     /// values from it must not be acknowledged on the next connection.
     fn disconnected(&self);
+    /// Drops the buffers a closed connection left untaken, without
+    /// acknowledging them.
+    fn connected(&self);
 }
 
 /// The buffers of a `DataMultiTake` waiting to be taken, each with the
@@ -544,6 +555,10 @@ where
         }
         // Batches from the closed connection can never complete.
         self.batches.lock().clear();
+    }
+
+    fn connected(&self) {
+        self.inner.write().values.clear();
     }
 }
 
@@ -928,6 +943,33 @@ mod lifecycle_tests {
     #[test]
     fn resetting_pending_blocking_key_acknowledges_once() {
         discard_pending(true);
+    }
+
+    /// Buffers stay takeable while the client is disconnected, and are
+    /// dropped once a new connection is accepted, without an
+    /// acknowledgement.
+    #[test]
+    fn a_new_connection_drops_untaken_buffers() {
+        let (sender, mut receiver) = MessageSender::new();
+        let single = DataTake::<u8>::new("take".into(), 99, sender.clone());
+        let multi = DataMultiTake::<u8>::new("takes".into(), 100, sender);
+        let message = || {
+            (
+                DataTakeHeader::All(DataType::U8, 1, 0, None),
+                Bytes::from_static(&[7]),
+            )
+        };
+        single.update(message(), true).unwrap();
+        multi.update(7, message(), true).unwrap();
+        single.disconnected();
+        multi.disconnected();
+        assert!(single.is_some() && multi.is_some(7));
+
+        single.connected();
+        multi.connected();
+        assert_eq!(single.take(), None);
+        assert_eq!(multi.take_next(), None);
+        assert!(receiver.try_recv().is_err());
     }
 
     /// The server releases blocking sends on disconnect; acknowledging a buffer

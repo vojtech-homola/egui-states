@@ -283,6 +283,19 @@ impl ValuesList {
             }
         }
     }
+
+    /// Drops the take values a closed connection left untaken, once a new
+    /// connection is accepted and before any of its messages is handled.
+    pub(crate) fn connected(&self) {
+        for state in self.states.values() {
+            match state {
+                ClientState::ValueTake(state) => state.connected(),
+                ClientState::DataTake(state) => state.connected(),
+                ClientState::DataMultiTake(state) => state.connected(),
+                _ => {}
+            }
+        }
+    }
 }
 
 /// The full path and id of the state `name` below `parent`.

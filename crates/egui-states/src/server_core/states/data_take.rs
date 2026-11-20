@@ -280,9 +280,9 @@ impl SyncTrait for DataMultiTake {
         let lock = self.scheduler.lock_all();
         let cache = self.cache.lock();
 
-        // The client keeps the values it has not taken across a disconnect;
-        // drop them, so it holds exactly the cached keys, like a DataMulti.
-        // Each cached key is packed and queued on its own.
+        // The client dropped its untaken values when the connection was
+        // accepted; the reset says so on the wire as well, as for a
+        // DataMulti. Each cached key is packed and queued on its own.
         let message = DataMultiTakeHeader::Reset.serialize(self.scheduler.id)?;
         let keys = cache.keys().copied().collect::<Vec<_>>();
         self.scheduler
