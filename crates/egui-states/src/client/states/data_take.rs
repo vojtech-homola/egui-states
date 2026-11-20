@@ -235,6 +235,14 @@ where
     pub fn is_some(&self) -> bool {
         self.inner.read().is_some()
     }
+
+    /// Drops the buffer waiting to be taken, if any. A blocking one is
+    /// acknowledged, as taking it would.
+    pub fn clear(&self) {
+        if let Some((_, _, true)) = self.inner.write().take() {
+            self.sender.send_ack(self.id);
+        }
+    }
 }
 
 impl<T, H> Clone for DataTake<T, H> {
@@ -304,6 +312,39 @@ pub(crate) trait UpdateDataMultiTake: Sync + Send {
     fn disconnected(&self);
 }
 
+/// The buffers of a `DataMultiTake` waiting to be taken, each with the
+/// sequence number of its key's first untaken arrival.
+struct MultiPending<T, H> {
+    values: NoHashMap<u32, (Completed<T, H>, u64)>,
+    next: u64,
+}
+
+impl<T, H> MultiPending<T, H> {
+    fn insert(&mut self, key: u32, completed: Completed<T, H>) {
+        // A key that already waits keeps its place.
+        let sequence = match self.values.get(&key) {
+            Some((_, sequence)) => *sequence,
+            None => {
+                self.next += 1;
+                self.next
+            }
+        };
+        self.values.insert(key, (completed, sequence));
+    }
+
+    fn remove(&mut self, key: u32) -> Option<Completed<T, H>> {
+        self.values.remove(&key).map(|(completed, _)| completed)
+    }
+
+    /// The key that has waited longest.
+    fn oldest(&self) -> Option<u32> {
+        self.values
+            .iter()
+            .min_by_key(|(_, (_, sequence))| *sequence)
+            .map(|(key, _)| *key)
+    }
+}
+
 /// Keyed one-shot numeric buffers sent from the server to the client.
 ///
 /// Each `u32` key has an independent pending transfer, acknowledged as for
@@ -314,7 +355,7 @@ pub struct DataMultiTake<T, H = ()> {
     data_type: DataType,
     element_size: usize,
     header_type: Option<u32>,
-    inner: Arc<RwLock<NoHashMap<u32, Completed<T, H>>>>,
+    inner: Arc<RwLock<MultiPending<T, H>>>,
     batches: Arc<Mutex<NoHashMap<u32, TakeBatch<T>>>>,
     sender: MessageSender,
 }
@@ -332,7 +373,10 @@ where
             data_type: T::get_type(),
             element_size: T::get_type().item_size(),
             header_type: header_type_id::<H>(),
-            inner: Arc::new(RwLock::new(NoHashMap::default())),
+            inner: Arc::new(RwLock::new(MultiPending {
+                values: NoHashMap::default(),
+                next: 0,
+            })),
             batches: Arc::new(Mutex::new(NoHashMap::default())),
             sender,
         }
@@ -348,16 +392,79 @@ where
 
     /// Like [`Self::take`], with the header the buffer was sent with.
     pub fn take_with_header(&self, key: u32) -> Option<(Vec<T>, H)> {
-        let (value, header, blocking) = self.inner.write().remove(&key)?;
+        let (value, header, blocking) = self.inner.write().remove(key)?;
         if blocking {
             self.sender.send_ack_key(self.id, key);
         }
         Some((value, header))
     }
 
+    /// Removes and returns the buffer that has waited longest, with its key,
+    /// so the UI can take every waiting buffer without knowing the keys:
+    ///
+    /// ```no_run
+    /// # fn show(key: u32, frame: Vec<u8>) {}
+    /// # fn ui(frames: &egui_states::DataMultiTake<u8>) {
+    /// while let Some((key, frame)) = frames.take_next() {
+    ///     show(key, frame);
+    /// }
+    /// # }
+    /// ```
+    ///
+    /// A key's place is that of the first buffer that arrived since it was
+    /// last taken; a newer buffer of the key replaces that one and keeps
+    /// the place. Taking a blocking transfer acknowledges it, as
+    /// [`Self::take`] does.
+    pub fn take_next(&self) -> Option<(u32, Vec<T>)> {
+        self.take_next_with_header()
+            .map(|(key, value, _)| (key, value))
+    }
+
+    /// Like [`Self::take_next`], with the header the buffer was sent with.
+    pub fn take_next_with_header(&self) -> Option<(u32, Vec<T>, H)> {
+        let (key, (value, header, blocking)) = {
+            let mut pending = self.inner.write();
+            let key = pending.oldest()?;
+            (key, pending.remove(key)?)
+        };
+        if blocking {
+            self.sender.send_ack_key(self.id, key);
+        }
+        Some((key, value, header))
+    }
+
     /// Returns whether a completed buffer at `key` is waiting to be taken.
     pub fn is_some(&self, key: u32) -> bool {
-        self.inner.read().contains_key(&key)
+        self.inner.read().values.contains_key(&key)
+    }
+
+    /// Returns the number of keys with a buffer waiting to be taken.
+    pub fn len(&self) -> usize {
+        self.inner.read().values.len()
+    }
+
+    /// Returns whether no buffer waits to be taken.
+    pub fn is_empty(&self) -> bool {
+        self.inner.read().values.is_empty()
+    }
+
+    /// Drops every buffer waiting to be taken. Blocking ones are
+    /// acknowledged, as taking them would.
+    pub fn clear(&self) {
+        for key in self.drain_blocking() {
+            self.sender.send_ack_key(self.id, key);
+        }
+    }
+
+    /// Drops every waiting buffer and returns the keys of the blocking ones.
+    fn drain_blocking(&self) -> Vec<u32> {
+        self.inner
+            .write()
+            .values
+            .drain()
+            .filter(|(_, ((_, _, blocking), _))| *blocking)
+            .map(|(key, _)| key)
+            .collect()
     }
 }
 
@@ -419,7 +526,7 @@ where
     // A discarded blocking buffer will never be taken, so acknowledge it here or
     // the server keeps waiting before it sends the next transfer.
     fn remove(&self, key: u32) {
-        let removed = self.inner.write().remove(&key);
+        let removed = self.inner.write().remove(key);
         self.batches.lock().remove(&key);
         if let Some((_, _, true)) = removed {
             self.sender.send_ack_key(self.id, key);
@@ -427,21 +534,12 @@ where
     }
 
     fn reset(&self) {
-        let blocking = self
-            .inner
-            .write()
-            .drain()
-            .filter(|(_, (_, _, blocking))| *blocking)
-            .map(|(key, _)| key)
-            .collect::<Vec<_>>();
         self.batches.lock().clear();
-        for key in blocking {
-            self.sender.send_ack_key(self.id, key);
-        }
+        self.clear();
     }
 
     fn disconnected(&self) {
-        for (_, _, blocking) in self.inner.write().values_mut() {
+        for ((_, _, blocking), _) in self.inner.write().values.values_mut() {
             *blocking = false;
         }
         // Batches from the closed connection can never complete.
@@ -747,6 +845,80 @@ mod lifecycle_tests {
         assert_eq!(data.take(513), Some(vec![9]));
         crate::test_support::ack(&mut receiver, 93);
         assert!(data.take(513).is_none());
+    }
+
+    fn arrive(data: &DataMultiTake<u8>, key: u32, value: u8, blocking: bool) {
+        data.update(
+            key,
+            (
+                DataTakeHeader::All(DataType::U8, 1, 0, None),
+                Bytes::copy_from_slice(&[value]),
+            ),
+            blocking,
+        )
+        .unwrap();
+    }
+
+    /// `take_next` returns the key that has waited longest; a newer buffer
+    /// of a waiting key replaces it and keeps its place.
+    #[test]
+    fn take_next_returns_the_buffers_in_arrival_order() {
+        let (sender, mut receiver) = MessageSender::new();
+        let data = DataMultiTake::<u8>::new("takes".into(), 96, sender);
+        assert_eq!(data.take_next(), None);
+        arrive(&data, 9, 1, false);
+        arrive(&data, 2, 2, false);
+        arrive(&data, 5, 3, true);
+        arrive(&data, 9, 4, false);
+        assert_eq!(data.len(), 3);
+        while let Ok(Some(_)) = receiver.try_recv() {}
+
+        assert_eq!(data.take_next(), Some((9, vec![4])));
+        assert_eq!(data.take_next(), Some((2, vec![2])));
+        assert!(receiver.try_recv().is_err());
+        // A key taken and arriving again goes to the back.
+        arrive(&data, 9, 5, false);
+        assert!(matches!(
+            receiver.try_recv(),
+            Ok(Some(crate::client::messages::ChannelMessage::AckKey(96, 9)))
+        ));
+        assert_eq!(data.take_next(), Some((5, vec![3])));
+        crate::test_support::ack(&mut receiver, 96);
+        assert_eq!(data.take_next(), Some((9, vec![5])));
+        assert_eq!(data.take_next(), None);
+        assert!(data.is_empty());
+    }
+
+    /// `clear` drops every waiting buffer and acknowledges the blocking ones
+    /// once, as taking them would.
+    #[test]
+    fn clear_acknowledges_the_blocking_buffers_once() {
+        let (sender, mut receiver) = MessageSender::new();
+        let multi = DataMultiTake::<u8>::new("takes".into(), 97, sender.clone());
+        let single = DataTake::<u8>::new("take".into(), 98, sender);
+        arrive(&multi, 1, 1, false);
+        arrive(&multi, 2, 2, true);
+        crate::test_support::ack(&mut receiver, 97);
+        multi.clear();
+        crate::test_support::ack(&mut receiver, 97);
+        multi.clear();
+        assert!(receiver.try_recv().is_err());
+        assert!(multi.is_empty());
+
+        single
+            .update(
+                (
+                    DataTakeHeader::All(DataType::U8, 1, 0, None),
+                    Bytes::from_static(&[3]),
+                ),
+                true,
+            )
+            .unwrap();
+        single.clear();
+        crate::test_support::ack(&mut receiver, 98);
+        assert!(!single.is_some());
+        single.clear();
+        assert!(receiver.try_recv().is_err());
     }
 
     #[test]

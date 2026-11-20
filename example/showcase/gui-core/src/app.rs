@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::error::Error;
 
 use eframe::{App, CreationContext};
@@ -21,9 +22,9 @@ struct ViewState {
     enum_signal_value: PrimaryChoice,
     last_take_buffer: Vec<u8>,
     last_take_samples: Vec<f32>,
-    last_multi_take_bytes: Vec<(u32, Vec<u8>)>,
-    last_multi_take_samples: Vec<(u32, Vec<f32>)>,
-    last_multi_take_nested: Vec<(u32, Vec<u16>)>,
+    last_multi_take_bytes: BTreeMap<u32, Vec<u8>>,
+    last_multi_take_samples: BTreeMap<u32, Vec<f32>>,
+    last_multi_take_nested: BTreeMap<u32, Vec<u16>>,
     last_offer_note: String,
     /// The summary of `root.data.samples`, computed only when it changed.
     samples_summary: String,
@@ -39,9 +40,9 @@ impl ViewState {
             enum_signal_value: PrimaryChoice::default(),
             last_take_buffer: Vec::new(),
             last_take_samples: Vec::new(),
-            last_multi_take_bytes: Vec::new(),
-            last_multi_take_samples: Vec::new(),
-            last_multi_take_nested: Vec::new(),
+            last_multi_take_bytes: BTreeMap::new(),
+            last_multi_take_samples: BTreeMap::new(),
+            last_multi_take_nested: BTreeMap::new(),
             last_offer_note: String::new(),
             samples_summary: "not set".to_string(),
         }
@@ -159,40 +160,16 @@ fn poll_take_values(state: &mut ViewState) {
         state.last_take_samples = value;
     }
 
-    for key in 0..4 {
-        if let Some(value) = state.schema.data_multi_take.bytes.take(key) {
-            if let Some(entry) = state
-                .last_multi_take_bytes
-                .iter_mut()
-                .find(|(k, _)| *k == key)
-            {
-                entry.1 = value;
-            } else {
-                state.last_multi_take_bytes.push((key, value));
-            }
-        }
-        if let Some(value) = state.schema.data_multi_take.samples.take(key) {
-            if let Some(entry) = state
-                .last_multi_take_samples
-                .iter_mut()
-                .find(|(k, _)| *k == key)
-            {
-                entry.1 = value;
-            } else {
-                state.last_multi_take_samples.push((key, value));
-            }
-        }
-        if let Some(value) = state.schema.data_multi_take.nested.buffer.take(key) {
-            if let Some(entry) = state
-                .last_multi_take_nested
-                .iter_mut()
-                .find(|(k, _)| *k == key)
-            {
-                entry.1 = value;
-            } else {
-                state.last_multi_take_nested.push((key, value));
-            }
-        }
+    // Every key that arrived, without knowing the keys in advance.
+    let multi = &state.schema.data_multi_take;
+    while let Some((key, value)) = multi.bytes.take_next() {
+        state.last_multi_take_bytes.insert(key, value);
+    }
+    while let Some((key, value)) = multi.samples.take_next() {
+        state.last_multi_take_samples.insert(key, value);
+    }
+    while let Some((key, value)) = multi.nested.buffer.take_next() {
+        state.last_multi_take_nested.insert(key, value);
     }
 }
 

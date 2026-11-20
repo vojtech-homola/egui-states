@@ -155,10 +155,8 @@ pub(super) fn show_multi_data(ui: &mut egui::Ui, state: &mut ViewState) {
 pub(super) fn show_multi_data_take(ui: &mut egui::Ui, state: &mut ViewState) {
     ui.collapsing("multi_data_take", |ui| {
         ui.label("DataMultiTake<u8>: root.data_multi_take.bytes");
-        let mut bytes_items = state.last_multi_take_bytes.clone();
-        bytes_items.sort_by_key(|(index, _)| *index);
-        for (index, values) in bytes_items {
-            let preview = preview_slice(&values);
+        for (index, values) in &state.last_multi_take_bytes {
+            let preview = preview_slice(values);
             ui.label(format!(
                 "  key {}: len = {}, preview = {}",
                 index,
@@ -173,10 +171,8 @@ pub(super) fn show_multi_data_take(ui: &mut egui::Ui, state: &mut ViewState) {
         ui.separator();
 
         ui.label("DataMultiTake<f32>: root.data_multi_take.samples");
-        let mut samples_items = state.last_multi_take_samples.clone();
-        samples_items.sort_by_key(|(index, _)| *index);
-        for (index, values) in samples_items {
-            let preview = preview_f32_slice(&values);
+        for (index, values) in &state.last_multi_take_samples {
+            let preview = preview_f32_slice(values);
             ui.label(format!(
                 "  key {}: len = {}, preview = {}",
                 index,
@@ -191,10 +187,8 @@ pub(super) fn show_multi_data_take(ui: &mut egui::Ui, state: &mut ViewState) {
         ui.separator();
 
         ui.label("Nested DataMultiTake<u16>: root.data_multi_take.nested.buffer");
-        let mut buffer_items = state.last_multi_take_nested.clone();
-        buffer_items.sort_by_key(|(index, _)| *index);
-        for (index, values) in buffer_items {
-            let preview = preview_slice(&values);
+        for (index, values) in &state.last_multi_take_nested {
+            let preview = preview_slice(values);
             ui.label(format!(
                 "  key {}: len = {}, preview = {}",
                 index,
