@@ -426,8 +426,9 @@ where
 /// Server-side numeric buffers indexed by `u32` keys, each with an optional
 /// typed header `H`.
 ///
-/// Changes wait for the client as in [`Data`]; all keys share one stream, so
-/// a change waits for the previous acknowledged change of any key.
+/// Changes wait for the client as in [`Data`], each key on its own: a change
+/// waits for the previous acknowledged change of its key only, so changes of
+/// different keys can reach the client in another order than they were made.
 pub struct DataMulti<T, H = ()> {
     inner: Arc<CoreDataMulti>,
     _type: PhantomData<fn() -> (T, H)>,
@@ -492,6 +493,12 @@ where
     /// acknowledgement, as [`Data::is_idle`].
     pub fn is_idle(&self) -> bool {
         self.inner.is_idle()
+    }
+
+    /// Returns whether no change of `index` waits for the client's
+    /// acknowledgement, so its next change is sent at once.
+    pub fn is_index_idle(&self, index: u32) -> bool {
+        self.inner.is_index_idle(index)
     }
 
     /// Returns the header at `index`, or `None` if the index is absent.
@@ -619,7 +626,7 @@ where
 
     /// Replaces the header at `index` alone. Like [`Data::set_header`], it
     /// does not wait for the client itself, but it is queued after a buffer
-    /// change to any key that another thread is still sending.
+    /// change to `index` that another thread is still sending.
     ///
     /// # Errors
     ///

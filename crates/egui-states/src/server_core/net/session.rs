@@ -746,17 +746,14 @@ async fn reader<S: FrameSource>(
                 signals.reset();
                 break;
             }
-            Ok(ClientMessage::Ack(id)) => {
-                let val_res = values.ack.get(&id);
-                match val_res {
-                    Some(val) => {
-                        val.acknowledge();
-                    }
-                    None => {
-                        signals.error(format!("value with id {} not found for Acknowledge", id))
-                    }
-                }
-            }
+            Ok(ClientMessage::Ack(id)) => match values.ack.get(&id) {
+                Some(val) => val.acknowledge(),
+                None => signals.error(format!("value with id {} not found for Acknowledge", id)),
+            },
+            Ok(ClientMessage::AckKey(id, key)) => match values.ack.get(&id) {
+                Some(val) => val.acknowledge_key(key),
+                None => signals.error(format!("value with id {} not found for Acknowledge", id)),
+            },
             Ok(ClientMessage::Value(id, type_id, signal, data)) => match values.values.get(&id) {
                 Some(val) => {
                     if let Err(e) = val.update_value(type_id, signal, data) {

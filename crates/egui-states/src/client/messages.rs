@@ -16,6 +16,8 @@ pub(crate) enum ChannelMessage {
     Signal(u64, u32, MessageData),
     Message(MessageData),
     Ack(u64),
+    /// Acknowledges a transfer of one key of a keyed state.
+    AckKey(u64, u32),
     /// Answers a mark of the server's low-priority lane.
     LaneAck,
     /// An encoded file transfer message.
@@ -50,6 +52,10 @@ impl MessageSender {
         self.send(ChannelMessage::Ack(id));
     }
 
+    pub(crate) fn send_ack_key(&self, id: u64, key: u32) {
+        self.send(ChannelMessage::AckKey(id, key));
+    }
+
     pub(crate) fn close(&self) {
         let _ = self.sender.send(None);
     }
@@ -70,6 +76,9 @@ fn parse_to_send(message: ChannelMessage, data: &mut FastVec<64>) {
         ChannelMessage::Ack(id) => {
             let header = ClientHeader::Ack(id);
             serialize_to_data(&header, data).unwrap();
+        }
+        ChannelMessage::AckKey(id, key) => {
+            serialize_to_data(&ClientHeader::AckKey(id, key), data).unwrap();
         }
         ChannelMessage::LaneAck => serialize_to_data(&ClientHeader::LaneAck, data).unwrap(),
         ChannelMessage::Message(msg_data) => {
@@ -362,8 +371,8 @@ pub(crate) async fn handle_message(
                 }
             },
             None => {
-                if header.requires_ack() {
-                    client.send_ack(id);
+                if let Some(key) = header.ack_key() {
+                    client.send_ack_key(id, key);
                 }
                 return Err(format!("MultiData with id {} not found", id));
             }
@@ -398,8 +407,8 @@ pub(crate) async fn handle_message(
                 }
             },
             None => {
-                if header.requires_ack() {
-                    client.send_ack(id);
+                if let Some(index) = header.ack_key() {
+                    client.send_ack_key(id, index);
                 }
                 return Err(format!("ImageMulti with id {} not found", id));
             }
@@ -592,7 +601,9 @@ mod tests {
 
     fn assert_ack(mut receiver: UnboundedReceiver<Option<ChannelMessage>>, expected_id: u64) {
         match receiver.try_recv() {
-            Ok(Some(ChannelMessage::Ack(id))) => assert_eq!(id, expected_id),
+            Ok(Some(ChannelMessage::Ack(id) | ChannelMessage::AckKey(id, _))) => {
+                assert_eq!(id, expected_id)
+            }
             _ => panic!("expected an ACK for {expected_id}"),
         }
         assert!(matches!(
@@ -962,7 +973,10 @@ mod serializer_tests {
                 | ClientHeader::Signal(_, _, size)
                 | ClientHeader::Message(size)
                 | ClientHeader::Transfer(_, _, size) => size as usize,
-                ClientHeader::Ack(_) | ClientHeader::Handshake(..) | ClientHeader::LaneAck => 0,
+                ClientHeader::Ack(_)
+                | ClientHeader::AckKey(..)
+                | ClientHeader::Handshake(..)
+                | ClientHeader::LaneAck => 0,
             };
             rest = &after[payload..];
             headers.push(header);

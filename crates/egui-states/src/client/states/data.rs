@@ -1015,7 +1015,7 @@ where
         transport_type: TransportType,
         header: HeaderUpdate,
     ) -> Result<(), String> {
-        self.sender.send(ChannelMessage::Ack(self.id));
+        self.sender.send_ack_key(self.id, key);
         let (header_bytes, data) = split_header(payload, header.len(), &self.name)?;
         element_count::<T>(data, "Data")?;
         let header = self.decode_header(header, header_bytes)?;
@@ -1045,7 +1045,7 @@ where
         transport_type: TransportType,
         header: HeaderUpdate,
     ) -> Result<(), String> {
-        self.sender.send(ChannelMessage::Ack(self.id));
+        self.sender.send_ack_key(self.id, key);
 
         let (header_bytes, data) = split_header(payload, header.len(), &self.name)?;
         match self.buffers.lock().remove(&key) {
@@ -1069,7 +1069,7 @@ where
         header: HeaderUpdate,
         payload: &[u8],
     ) -> Result<(), String> {
-        self.sender.send(ChannelMessage::Ack(self.id));
+        self.sender.send_ack_key(self.id, key);
         let header = self.decode_header(header, payload)?;
 
         let mut w = self.inner.write();
@@ -1217,7 +1217,7 @@ where
         match header {
             DataHeader::All(data_type, transport_type, _, header) => {
                 if let Err(error) = check_data_type(self.data_type, data_type, &self.name) {
-                    self.sender.send_ack(self.id);
+                    self.sender.send_ack_key(self.id, index);
                     return Err(error);
                 }
                 self.set_all(index, &data, transport_type, header)
@@ -1226,7 +1226,7 @@ where
             DataHeader::Batch(_) => self.batch(index, &data),
             DataHeader::End(data_type, transport_type, _, header) => {
                 if let Err(error) = check_data_type(self.data_type, data_type, &self.name) {
-                    self.sender.send_ack(self.id);
+                    self.sender.send_ack_key(self.id, index);
                     return Err(error);
                 }
                 self.batch_end(index, &data, transport_type, header)
@@ -1310,7 +1310,9 @@ mod tests {
         expected_id: u64,
     ) {
         match receiver.try_recv() {
-            Ok(Some(ChannelMessage::Ack(id))) => assert_eq!(id, expected_id),
+            Ok(Some(ChannelMessage::Ack(id) | ChannelMessage::AckKey(id, _))) => {
+                assert_eq!(id, expected_id)
+            }
             _ => panic!("expected an ACK for {expected_id}"),
         }
         assert!(matches!(receiver.try_recv(), Err(TryRecvError::Empty)));
@@ -1658,6 +1660,20 @@ mod malformed_tests {
     }
 
     #[test]
+    fn data_multi_acknowledges_each_key_on_its_own() {
+        let (sender, mut receiver) = MessageSender::new();
+        let data = DataMulti::<u8>::new("data".to_string(), 4, sender);
+        set_key(&data, 7, &[1]);
+        set_key(&data, 2, &[2]);
+        for key in [7, 2] {
+            assert!(matches!(
+                receiver.try_recv(),
+                Ok(Some(ChannelMessage::AckKey(4, acked))) if acked == key
+            ));
+        }
+    }
+
+    #[test]
     fn data_multi_lists_the_keys_that_hold_a_buffer() {
         let (sender, _receiver) = MessageSender::new();
         let data = DataMulti::<u8>::new("data".to_string(), 3, sender);
@@ -1856,7 +1872,9 @@ mod header_tests {
 
     fn acks(receiver: &mut UnboundedReceiver<Option<ChannelMessage>>) -> usize {
         let mut count = 0;
-        while let Ok(Some(ChannelMessage::Ack(_))) = receiver.try_recv() {
+        while let Ok(Some(ChannelMessage::Ack(_) | ChannelMessage::AckKey(..))) =
+            receiver.try_recv()
+        {
             count += 1;
         }
         assert!(matches!(receiver.try_recv(), Err(TryRecvError::Empty)));

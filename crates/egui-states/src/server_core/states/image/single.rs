@@ -73,7 +73,7 @@ impl Image {
         };
 
         // this is main lock for set and update operation
-        let lock = self.scheduler.lock.lock();
+        let lock = self.scheduler.lock(KEY);
         let mut w = self.image.write();
         w.get_or_insert_with(StoredImage::empty).set(&image);
 
@@ -91,8 +91,7 @@ impl Image {
         };
         drop(w);
 
-        self.scheduler
-            .send_set(lock, KEY, to_send, wait, generation);
+        self.scheduler.send_set(lock, to_send, wait, generation);
         Ok(())
     }
 
@@ -118,7 +117,7 @@ impl Image {
 
         // Use the same producer lock and set scheduling as set_image. This
         // keeps fill ordered with ordinary sets and updates.
-        let lock = self.scheduler.lock.lock();
+        let lock = self.scheduler.lock(KEY);
         let mut w = self.image.write();
         w.get_or_insert_with(StoredImage::empty).fill(size, fill);
 
@@ -134,8 +133,7 @@ impl Image {
         };
         drop(w);
 
-        self.scheduler
-            .send_set(lock, KEY, to_send, wait, generation);
+        self.scheduler.send_set(lock, to_send, wait, generation);
         Ok(())
     }
 
@@ -163,7 +161,7 @@ impl Image {
         };
 
         // this is main lock for set and update operation
-        let lock = self.scheduler.lock.lock();
+        let lock = self.scheduler.lock(KEY);
         let mut w = self.image.write();
         let stored = w
             .as_mut()
@@ -188,14 +186,14 @@ impl Image {
 
         let rect = [origin[0], origin[1], image.size[0], image.size[1]];
         self.scheduler
-            .send_update(lock, KEY, rect, to_send, force, wait, generation);
+            .send_update(lock, rect, to_send, force, wait, generation);
         Ok(())
     }
 }
 
 impl Acknowledge for Image {
     fn acknowledge(&self) {
-        self.scheduler.acknowledge();
+        self.scheduler.acknowledge(KEY);
     }
 
     fn reset(&self) {
@@ -212,20 +210,20 @@ impl SyncTrait for Image {
         // may hold this lock while waiting for reset() to set the event; taking
         // the lock here prevents sync from clearing that wake-up before the
         // producer consumes it and observes the new generation.
-        let _lock = self.scheduler.lock.lock();
+        let lock = self.scheduler.lock_all();
         let w = self.image.write();
         if !self.scheduler.required() {
             return Ok(());
         }
 
         let Some(stored) = w.as_ref() else {
-            self.scheduler.begin_sync(Vec::new(), 0);
+            self.scheduler.begin_sync(&lock, Vec::new(), &[]);
             return Ok(());
         };
 
         // Sent in the stored format; the client expands it to RGBA.
         let data = pack_set_data(self.scheduler.id, &stored.image_data()).map_err(|_| ())?;
-        self.scheduler.begin_sync(data, 1);
+        self.scheduler.begin_sync(&lock, data, &[KEY]);
         Ok(())
     }
 }
@@ -634,7 +632,7 @@ mod tests {
             });
 
             wait_for_image(&image, &expected);
-            assert!(image.scheduler.lock.try_lock().is_none());
+            assert!(image.scheduler.is_locked(KEY));
 
             connected.store(false, Ordering::Release);
             image.reset();

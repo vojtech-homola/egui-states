@@ -154,6 +154,8 @@ def test_image_multi_sparse_collection(local_bundle: tuple[StatesServer, State, 
     assert len(images) == 2
     assert images.indices() == [2, 7]
     assert 2 in images
+    assert images.is_idle(2)
+    assert images[2].is_idle()
     # Indices that cannot exist are not in it, instead of raising.
     for index in (-1, 2**32, "2", 2.0):
         assert index not in images

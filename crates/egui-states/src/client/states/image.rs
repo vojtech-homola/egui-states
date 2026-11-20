@@ -371,7 +371,7 @@ impl ImageMulti {
     ) -> Result<(), String> {
         match message {
             ImageSetHeader::All(size) => {
-                self.sender.send_ack(self.id);
+                self.sender.send_ack_key(self.id, index);
                 let image_size = [size[0] as usize, size[1] as usize];
                 let image = create_color_image(&self.name, image_size, image_type, data)?;
                 self.set_texture(index, image)
@@ -391,7 +391,7 @@ impl ImageMulti {
                 partial.append(&self.label(index), pixels, image_type, data)
             }
             ImageSetHeader::End(pixels) => {
-                self.sender.send_ack(self.id);
+                self.sender.send_ack_key(self.id, index);
                 let partial = self
                     .buffers
                     .lock()
@@ -417,7 +417,7 @@ impl ImageMulti {
         let label = self.label(index);
         match header {
             ImageUpdateHeader::All(rect) => {
-                self.sender.send_ack(self.id);
+                self.sender.send_ack_key(self.id, index);
                 let (origin, size) = self.checked_update(index, rect)?;
                 // Convert outside the map lock, which UI reads of every key
                 // wait for.
@@ -440,7 +440,7 @@ impl ImageMulti {
                 partial.append(&label, pixels, image_type, data)
             }
             ImageUpdateHeader::End(pixels) => {
-                self.sender.send_ack(self.id);
+                self.sender.send_ack_key(self.id, index);
                 let partial = self.buffers.lock().remove(&index);
                 let (partial, origin) = partial
                     .and_then(|p| p.origin.map(|origin| (p, origin)))
@@ -507,7 +507,7 @@ impl ImageMulti {
         rgba: [u8; 4],
         data: &[u8],
     ) -> Result<(), String> {
-        self.sender.send_ack(self.id);
+        self.sender.send_ack_key(self.id, index);
         if !data.is_empty() {
             return Err(format!(
                 "Fill message for image {} index {} contains unexpected pixel data",
@@ -781,7 +781,9 @@ mod tests {
         expected_id: u64,
     ) {
         match receiver.try_recv() {
-            Ok(Some(ChannelMessage::Ack(id))) => assert_eq!(id, expected_id),
+            Ok(Some(ChannelMessage::Ack(id) | ChannelMessage::AckKey(id, _))) => {
+                assert_eq!(id, expected_id)
+            }
             _ => panic!("expected an ACK for {expected_id}"),
         }
         assert!(matches!(receiver.try_recv(), Err(TryRecvError::Empty)));
@@ -1246,6 +1248,22 @@ mod tests {
         image.initialize(placeholder([2, 2])).unwrap();
         assert_eq!(image.get(), received);
         assert!(crate::test_support::texture_updates(&context).is_empty());
+    }
+
+    #[test]
+    fn image_multi_acknowledges_each_index_on_its_own() {
+        let (sender, mut receiver) = MessageSender::new();
+        let images = ImageMulti::new("images".to_string(), 54, sender, egui::Context::default());
+        images
+            .set_image(7, ImageSetHeader::All([1, 1]), ImageType::Gray, &[10])
+            .unwrap();
+        images.fill_image(2, [1, 1], [1, 2, 3, 4], &[]).unwrap();
+        for key in [7, 2] {
+            assert!(matches!(
+                receiver.try_recv(),
+                Ok(Some(ChannelMessage::AckKey(54, acked))) if acked == key
+            ));
+        }
     }
 
     #[test]

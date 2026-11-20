@@ -997,8 +997,13 @@ impl StateServerCore {
         })
     }
 
-    fn image_multi_is_idle(&self, value_id: u64) -> PyResult<bool> {
-        Ok(self.inner_image_multi(value_id)?.is_idle())
+    #[pyo3(signature = (value_id, index=None))]
+    fn image_multi_is_idle(&self, value_id: u64, index: Option<u32>) -> PyResult<bool> {
+        let images = self.inner_image_multi(value_id)?;
+        Ok(match index {
+            Some(index) => images.is_index_idle(index),
+            None => images.is_idle(),
+        })
     }
 
     #[pyo3(signature = (value_id, index, image, wait=false))]
@@ -1342,8 +1347,13 @@ impl StateServerCore {
         Ok((bytes, decode_header(py, header, header_type)?))
     }
 
-    fn data_multi_is_idle(&self, value_id: u64) -> PyResult<bool> {
-        Ok(self.inner_data_multi(value_id)?.0.is_idle())
+    #[pyo3(signature = (value_id, index=None))]
+    fn data_multi_is_idle(&self, value_id: u64, index: Option<u32>) -> PyResult<bool> {
+        let data = self.inner_data_multi(value_id)?.0;
+        Ok(match index {
+            Some(index) => data.is_index_idle(index),
+            None => data.is_idle(),
+        })
     }
 
     fn data_multi_len(&self, value_id: u64) -> PyResult<usize> {

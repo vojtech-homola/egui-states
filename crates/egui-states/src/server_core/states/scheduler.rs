@@ -5,9 +5,11 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use parking_lot::{Mutex, MutexGuard};
+use parking_lot::lock_api::ArcMutexGuard;
+use parking_lot::{Mutex, RawMutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use crate::event::Event;
+use crate::hashing::NoHashMap;
 use crate::protocol::FastVec;
 use crate::server_core::net::sender::MessageSender;
 use crate::server_core::transfer::Messages;
@@ -67,55 +69,111 @@ fn covers(outer: [usize; 4], inner: [usize; 4]) -> bool {
 
 /// The parts of a split update that wait behind the part in flight.
 struct Waiting {
-    key: u32,
     /// The rectangle (`[y, x, height, width]`) of the whole update.
     rect: [usize; 4],
     parts: VecDeque<Messages>,
 }
 
 struct State {
-    waiting: Option<Waiting>,
     sync: SyncState,
-    /// Acknowledgements the connection synchronization still waits for.
-    sync_acks: usize,
+    /// The waiting parts of a split update, by key.
+    waiting: NoHashMap<u32, Waiting>,
+    /// The keys whose synchronization transfer the client has not
+    /// acknowledged yet.
+    syncing: NoHashMap<u32, ()>,
+}
+
+/// The transfer of one key.
+struct Slot {
+    /// Serializes the producers of the key; held while they wait.
+    producer: Arc<Mutex<()>>,
+    /// Set while nothing of the key is in flight and nothing waits.
+    event: Event,
+}
+
+impl Slot {
+    fn new() -> Self {
+        let event = Event::new();
+        event.set();
+        Self {
+            producer: Arc::new(Mutex::new(())),
+            event,
+        }
+    }
+}
+
+/// A producer's hold on one key: no other producer of the key runs, and no
+/// operation on every key starts, until it is dropped.
+pub(super) struct KeyLock<'a> {
+    key: u32,
+    slot: Arc<Slot>,
+    _producer: ArcMutexGuard<RawMutex, ()>,
+    _gate: RwLockReadGuard<'a, ()>,
+}
+
+/// A hold on every key: no producer runs until it is dropped.
+pub(super) struct AllLock<'a> {
+    _gate: RwLockWriteGuard<'a, ()>,
+}
+
+/// The keys a lock holds: one, or every key (`None`).
+pub(super) trait Held {
+    fn key(&self) -> Option<u32>;
+}
+
+impl Held for KeyLock<'_> {
+    fn key(&self) -> Option<u32> {
+        Some(self.key)
+    }
+}
+
+impl Held for AllLock<'_> {
+    fn key(&self) -> Option<u32> {
+        None
+    }
 }
 
 /// Schedules the acknowledged transfers of one state on its connection.
 ///
-/// One transfer is in flight at a time. A producer waits until the state is
-/// idle, with nothing in flight and nothing waiting, and then sends. Only a
-/// split update leaves work behind: its first part is sent and the others
-/// wait, each sent when the client acknowledged the one before. A set of the
-/// same key drops those waiting parts, because it overwrites all of them, and
-/// so does a forced update whose rectangle covers theirs.
+/// Each key has its own transfer: one is in flight at a time per key, and the
+/// keys do not wait for each other. A state with a single value uses one key.
+/// A producer waits until its key is idle, with nothing in flight and nothing
+/// waiting, and then sends. Only a split update leaves work behind: its first
+/// part is sent and the others wait, each sent when the client acknowledged
+/// the one before. A set of the same key drops those waiting parts, because it
+/// overwrites all of them, and so does a forced update whose rectangle covers
+/// theirs.
 ///
-/// `event` is set while the state is idle. Producers are serialized by
-/// `lock`, which they hold while they wait, so the changes of one state reach
-/// the client in the order they were made.
+/// Producers of a key are serialized by its [`KeyLock`], which they hold while
+/// they wait, so the changes of one key reach the client in the order they
+/// were made; changes of different keys can overtake each other. An operation
+/// on every key (a reset of a keyed state, a synchronization) holds an
+/// [`AllLock`], so it waits until no producer is between storing a change and
+/// sending it. All messages of a transfer are queued under the state lock, so
+/// the transfers of different keys never interleave on the wire.
 pub(super) struct Scheduler {
     pub(super) id: u64,
-    pub(super) lock: Mutex<()>,
+    /// Held shared by [`KeyLock`] and exclusively by [`AllLock`].
+    gate: RwLock<()>,
+    slots: Mutex<NoHashMap<u32, Arc<Slot>>>,
     state: Mutex<State>,
     pub(super) sender: MessageSender,
     connected: Arc<AtomicBool>,
-    event: Event,
 }
 
 impl Scheduler {
     pub(super) fn new(id: u64, sender: MessageSender, connected: Arc<AtomicBool>) -> Self {
-        let event = Event::new();
-        event.set();
         Self {
             id,
-            lock: Mutex::new(()),
+            gate: RwLock::new(()),
+            slots: Mutex::new(NoHashMap::default()),
             state: Mutex::new(State {
-                waiting: None,
                 sync: SyncState::new(),
-                sync_acks: 0,
+                waiting: NoHashMap::default(),
+                syncing: NoHashMap::default(),
             }),
             sender,
             connected,
-            event,
         }
     }
 
@@ -141,26 +199,71 @@ impl Scheduler {
         self.state.lock().sync.generation()
     }
 
-    /// Whether parts of a split update wait behind the part in flight.
+    /// Whether parts of a split update wait behind a part in flight.
     #[cfg(all(test, feature = "client"))]
     pub(super) fn has_waiting(&self) -> bool {
-        self.state.lock().waiting.is_some()
+        !self.state.lock().waiting.is_empty()
     }
 
-    /// Whether nothing is in flight and nothing waits, so a change would be
-    /// sent at once. Also true while no client is synchronized, because a
-    /// change is then only stored.
+    /// Whether a producer of `key` holds its lock.
+    #[cfg(test)]
+    pub(super) fn is_locked(&self, key: u32) -> bool {
+        self.slot(key).producer.try_lock().is_none()
+    }
+
+    fn slot(&self, key: u32) -> Arc<Slot> {
+        self.slots
+            .lock()
+            .entry(key)
+            .or_insert_with(|| Arc::new(Slot::new()))
+            .clone()
+    }
+
+    /// Waits until no other producer of `key` runs and no operation on every
+    /// key does, and holds the key until the lock is dropped.
+    pub(super) fn lock(&self, key: u32) -> KeyLock<'_> {
+        let gate = self.gate.read();
+        let slot = self.slot(key);
+        let producer = slot.producer.lock_arc();
+        KeyLock {
+            key,
+            slot,
+            _producer: producer,
+            _gate: gate,
+        }
+    }
+
+    /// Waits until no producer runs, and holds every key until the lock is
+    /// dropped.
+    pub(super) fn lock_all(&self) -> AllLock<'_> {
+        AllLock {
+            _gate: self.gate.write(),
+        }
+    }
+
+    /// Whether nothing is in flight and nothing waits, for every key, so a
+    /// change would be sent at once. Also true while no client is
+    /// synchronized, because a change is then only stored.
     pub(super) fn is_idle(&self) -> bool {
-        let state = self.state.lock();
-        state.sync.sendable(&self.connected).is_none() || self.event.is_set()
+        self.sendable().is_none() || self.slots.lock().values().all(|slot| slot.event.is_set())
     }
 
-    /// Sends a set of `key` once the state is idle. Waiting parts of the same
-    /// key are dropped first: the set overwrites them.
+    /// Whether nothing of `key` is in flight and nothing of it waits, as
+    /// [`is_idle`](Self::is_idle) for one key.
+    pub(super) fn is_key_idle(&self, key: u32) -> bool {
+        self.sendable().is_none()
+            || self
+                .slots
+                .lock()
+                .get(&key)
+                .is_none_or(|slot| slot.event.is_set())
+    }
+
+    /// Sends a set of the locked key once the key is idle. Its waiting parts
+    /// are dropped first: the set overwrites them.
     pub(super) fn send_set(
         &self,
-        lock: MutexGuard<'_, ()>,
-        key: u32,
+        lock: KeyLock<'_>,
         messages: Messages,
         wait: bool,
         generation: u64,
@@ -170,32 +273,17 @@ impl Scheduler {
             if state.sync.generation() != generation {
                 return;
             }
-            if state
-                .waiting
-                .as_ref()
-                .is_some_and(|waiting| waiting.key == key)
-            {
-                state.waiting = None;
-            }
+            state.waiting.remove(&lock.key);
         }
-        self.send(
-            lock,
-            key,
-            [0; 4],
-            VecDeque::from([messages]),
-            wait,
-            generation,
-        );
+        self.send(lock, [0; 4], VecDeque::from([messages]), wait, generation);
     }
 
-    /// Sends the parts of an update of `key` once the state is idle. With
-    /// `force`, waiting parts of the same key are dropped first when `rect`
-    /// covers their rectangle.
-    #[allow(clippy::too_many_arguments)]
+    /// Sends the parts of an update of the locked key once the key is idle.
+    /// With `force`, its waiting parts are dropped first when `rect` covers
+    /// their rectangle.
     pub(super) fn send_update(
         &self,
-        lock: MutexGuard<'_, ()>,
-        key: u32,
+        lock: KeyLock<'_>,
         rect: [usize; 4],
         parts: VecDeque<Messages>,
         force: bool,
@@ -210,28 +298,27 @@ impl Scheduler {
             if force
                 && state
                     .waiting
-                    .as_ref()
-                    .is_some_and(|waiting| waiting.key == key && covers(rect, waiting.rect))
+                    .get(&lock.key)
+                    .is_some_and(|waiting| covers(rect, waiting.rect))
             {
-                state.waiting = None;
+                state.waiting.remove(&lock.key);
             }
         }
-        self.send(lock, key, rect, parts, wait, generation);
+        self.send(lock, rect, parts, wait, generation);
     }
 
-    /// Waits until the state is idle, sends the first part and leaves the
+    /// Waits until the key is idle, sends the first part and leaves the
     /// others waiting. With `wait`, also waits until the client acknowledged
     /// the last part.
     fn send(
         &self,
-        _lock: MutexGuard<'_, ()>,
-        key: u32,
+        lock: KeyLock<'_>,
         rect: [usize; 4],
         mut parts: VecDeque<Messages>,
         wait: bool,
         generation: u64,
     ) {
-        self.event.wait_clear();
+        lock.slot.event.wait_clear();
         // Keep reset from changing the generation between this check and the
         // enqueue, which could otherwise leak stale work into a new
         // connection. Stale work leaves the event clear: the next
@@ -241,116 +328,157 @@ impl Scheduler {
             return;
         }
         let Some(first) = parts.pop_front() else {
-            self.event.set();
+            lock.slot.event.set();
             return;
         };
         if !parts.is_empty() {
-            state.waiting = Some(Waiting { key, rect, parts });
+            state.waiting.insert(lock.key, Waiting { rect, parts });
         }
         self.send_all(first);
         drop(state);
 
-        // The producer lock is still held, so only this transfer's
+        // The key's lock is still held, so only this transfer's
         // acknowledgements or a disconnect set the event.
         if wait {
-            self.event.wait();
+            lock.slot.event.wait();
         }
     }
 
-    /// Drops the waiting parts of `key`, or of every key for `None`, then
-    /// queues `message`, which the client does not acknowledge, once the
-    /// state is idle.
-    pub(super) fn send_control(
-        &self,
-        _lock: MutexGuard<'_, ()>,
-        key: Option<u32>,
-        message: FastVec<32>,
-        generation: u64,
-    ) {
-        {
-            let mut state = self.state.lock();
-            if key.is_none_or(|key| state.waiting.as_ref().is_some_and(|w| w.key == key)) {
-                state.waiting = None;
-            }
-        }
-        self.event.wait();
+    /// Drops the waiting parts of the locked key, then queues `message`,
+    /// which the client does not acknowledge, once the key is idle.
+    pub(super) fn send_control(&self, lock: KeyLock<'_>, message: FastVec<32>, generation: u64) {
+        self.state.lock().waiting.remove(&lock.key);
+        lock.slot.event.wait();
         let state = self.state.lock();
         if state.sync.generation() != generation || !self.is_connected() {
             return;
         }
         self.sender.send(message);
+    }
+
+    /// Drops the waiting parts of every key, then queues `message`, which the
+    /// client does not acknowledge, once every key is idle. The keys are
+    /// forgotten, as after a reset of the state.
+    pub(super) fn send_control_all(
+        &self,
+        lock: AllLock<'_>,
+        message: FastVec<32>,
+        generation: u64,
+    ) {
+        self.state.lock().waiting.clear();
+        let slots = self.slots.lock().values().cloned().collect::<Vec<_>>();
+        for slot in slots {
+            slot.event.wait();
+        }
+        {
+            let state = self.state.lock();
+            if state.sync.generation() == generation && self.is_connected() {
+                self.sender.send(message);
+            }
+        }
+        self.forget_idle_keys(&lock);
     }
 
     /// Queues `message`, which the client does not acknowledge, at once: it
-    /// follows the transfers of earlier producers on the wire without waiting
-    /// for their acknowledgement. Only for states that never leave split
-    /// parts waiting, which it would overtake; others use
+    /// follows the transfers of earlier producers of the locked keys on the
+    /// wire without waiting for their acknowledgement. Only for states that
+    /// never leave split parts waiting, which it would overtake; others use
     /// [`send_control`](Self::send_control).
-    pub(super) fn send_unacked(
-        &self,
-        _lock: MutexGuard<'_, ()>,
-        message: FastVec<32>,
-        generation: u64,
-    ) {
+    pub(super) fn send_unacked(&self, lock: impl Held, message: FastVec<32>, generation: u64) {
         let state = self.state.lock();
-        debug_assert!(state.waiting.is_none(), "would overtake waiting parts");
+        debug_assert!(
+            match lock.key() {
+                Some(key) => !state.waiting.contains_key(&key),
+                None => state.waiting.is_empty(),
+            },
+            "would overtake waiting parts"
+        );
         if state.sync.generation() != generation || !self.is_connected() {
             return;
         }
         self.sender.send(message);
+        drop(state);
+        if lock.key().is_none() {
+            self.forget_idle_keys(&lock);
+        }
     }
 
-    /// Starts a connection synchronization that sends `messages` and waits
-    /// for `ack_count` acknowledgements.
-    pub(super) fn begin_sync(&self, messages: Messages, ack_count: usize) {
+    /// Drops the slots of idle keys that no producer holds, so a state whose
+    /// keys change does not keep a slot for every key it ever had.
+    fn forget_idle_keys(&self, _lock: &impl Held) {
+        self.slots
+            .lock()
+            .retain(|_, slot| Arc::strong_count(slot) > 1 || !slot.event.is_set());
+    }
+
+    /// Starts a connection synchronization: sends `messages`, and makes each
+    /// of `keys` wait for the acknowledgement of its synchronization
+    /// transfer. The caller queues the transfers of `keys` that are not in
+    /// `messages` itself, with [`send_synced`](Self::send_synced).
+    pub(super) fn begin_sync(&self, _lock: &AllLock<'_>, messages: Messages, keys: &[u32]) {
         let mut state = self.state.lock();
         state.sync.synchronized();
-        state.waiting = None;
-        state.sync_acks = ack_count;
-        if ack_count == 0 {
-            self.event.set();
-        } else {
-            self.event.clear();
+        state.waiting.clear();
+        state.syncing.clear();
+        // No producer runs: the events stale work left clear are set again.
+        for slot in self.slots.lock().values() {
+            slot.event.set();
+        }
+        for &key in keys {
+            state.syncing.insert(key, ());
+            self.slot(key).event.clear();
         }
         self.send_all(messages);
     }
 
-    pub(super) fn acknowledge(&self) {
-        let mut state = self.state.lock();
-        if state.sync_acks > 0 {
-            state.sync_acks -= 1;
-            if state.sync_acks > 0 {
-                return;
-            }
-        }
+    /// Queues a synchronization transfer of a key passed to
+    /// [`begin_sync`](Self::begin_sync).
+    pub(super) fn send_synced(&self, _lock: &AllLock<'_>, messages: Messages) {
+        self.send_all(messages);
+    }
 
-        let next = state
-            .waiting
-            .as_mut()
-            .and_then(|waiting| waiting.parts.pop_front());
-        if state
-            .waiting
-            .as_ref()
-            .is_some_and(|waiting| waiting.parts.is_empty())
-        {
-            state.waiting = None;
-        }
+    pub(super) fn acknowledge(&self, key: u32) {
+        let mut state = self.state.lock();
+        let next = if state.syncing.remove(&key).is_some() {
+            None
+        } else {
+            let next = state
+                .waiting
+                .get_mut(&key)
+                .and_then(|waiting| waiting.parts.pop_front());
+            if state
+                .waiting
+                .get(&key)
+                .is_some_and(|waiting| waiting.parts.is_empty())
+            {
+                state.waiting.remove(&key);
+            }
+            next
+        };
         match next {
             Some(part) => self.send_all(part),
-            None => self.event.set(),
+            // An acknowledgement of a key without a slot belongs to a key
+            // that was forgotten; nothing waits for it.
+            None => {
+                if let Some(slot) = self.slots.lock().get(&key) {
+                    slot.event.set();
+                }
+            }
         }
     }
 
     pub(super) fn reset(&self) {
-        // Bump the generation before releasing a waiting producer, so it sees
-        // that its work belongs to the old connection.
+        // Bump the generation before releasing waiting producers, so they see
+        // that their work belongs to the old connection.
         {
             let mut state = self.state.lock();
-            state.waiting = None;
-            state.sync_acks = 0;
+            state.waiting.clear();
+            state.syncing.clear();
             state.sync.reset();
         }
-        self.event.set();
+        for slot in self.slots.lock().values() {
+            slot.event.set();
+        }
     }
 
     fn send_all(&self, messages: Messages) {
@@ -376,7 +504,7 @@ mod tests {
         let connected = Arc::new(AtomicBool::new(true));
         let (sender, receiver) = MessageSender::new();
         let scheduler = Arc::new(Scheduler::new(1, sender, connected.clone()));
-        scheduler.begin_sync(Vec::new(), 0);
+        scheduler.begin_sync(&scheduler.lock_all(), Vec::new(), &[]);
         (scheduler, connected, receiver)
     }
 
@@ -401,7 +529,7 @@ mod tests {
 
     fn set(scheduler: &Scheduler, key: u32, value: u8, wait: bool) {
         let generation = scheduler.generation();
-        scheduler.send_set(scheduler.lock.lock(), key, part(value), wait, generation);
+        scheduler.send_set(scheduler.lock(key), part(value), wait, generation);
     }
 
     fn update(
@@ -414,20 +542,15 @@ mod tests {
     ) {
         let generation = scheduler.generation();
         let parts = values.iter().map(|&value| part(value)).collect();
-        scheduler.send_update(
-            scheduler.lock.lock(),
-            key,
-            rect,
-            parts,
-            force,
-            wait,
-            generation,
-        );
+        scheduler.send_update(scheduler.lock(key), rect, parts, force, wait, generation);
     }
 
     fn control(scheduler: &Scheduler, key: Option<u32>, value: u8) {
         let generation = scheduler.generation();
-        scheduler.send_control(scheduler.lock.lock(), key, marker(value), generation);
+        match key {
+            Some(key) => scheduler.send_control(scheduler.lock(key), marker(value), generation),
+            None => scheduler.send_control_all(scheduler.lock_all(), marker(value), generation),
+        }
     }
 
     /// Runs `operation` on another thread and checks that it blocks.
@@ -469,10 +592,12 @@ mod tests {
             "a change before the sync is only stored"
         );
 
-        scheduler.begin_sync(part(1), 1);
+        scheduler.begin_sync(&scheduler.lock_all(), part(1), &[0]);
         assert_marker(&mut receiver, 1);
         assert!(!scheduler.is_idle());
-        scheduler.acknowledge();
+        assert!(!scheduler.is_key_idle(0));
+        assert!(scheduler.is_key_idle(1), "a key without a transfer is idle");
+        scheduler.acknowledge(0);
         assert!(scheduler.is_idle());
     }
 
@@ -488,10 +613,38 @@ mod tests {
 
         let done = spawn_blocked(&scheduler, |s| set(s, 7, 2, false));
         assert_no_message(&mut receiver);
-        scheduler.acknowledge();
+        scheduler.acknowledge(7);
         finished(&done);
         assert_marker(&mut receiver, 2);
-        scheduler.acknowledge();
+        scheduler.acknowledge(7);
+        assert!(scheduler.is_idle());
+    }
+
+    #[test]
+    fn the_keys_do_not_wait_for_each_other() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let (scheduler, _, mut receiver) = scheduler();
+        set(&scheduler, 7, 1, false);
+        set(&scheduler, 9, 2, false);
+        assert_marker(&mut receiver, 1);
+        assert_marker(&mut receiver, 2);
+
+        // An acknowledgement releases its own key only.
+        scheduler.acknowledge(9);
+        assert!(scheduler.is_key_idle(9));
+        assert!(!scheduler.is_key_idle(7));
+        assert!(!scheduler.is_idle());
+        let done = spawn_blocked(&scheduler, |s| set(s, 7, 3, false));
+        set(&scheduler, 9, 4, false);
+        assert_marker(&mut receiver, 4);
+        scheduler.acknowledge(9);
+        assert_blocked(&done);
+        scheduler.acknowledge(7);
+        finished(&done);
+        assert_marker(&mut receiver, 3);
+        scheduler.acknowledge(7);
         assert!(scheduler.is_idle());
     }
 
@@ -507,14 +660,14 @@ mod tests {
 
         let done = spawn_blocked(&scheduler, |s| update(s, 7, RECT, &[4], false, false));
         for value in [2, 3] {
-            scheduler.acknowledge();
+            scheduler.acknowledge(7);
             assert_marker(&mut receiver, value);
             assert_blocked(&done);
         }
-        scheduler.acknowledge();
+        scheduler.acknowledge(7);
         finished(&done);
         assert_marker(&mut receiver, 4);
-        scheduler.acknowledge();
+        scheduler.acknowledge(7);
         assert!(scheduler.is_idle());
     }
 
@@ -528,23 +681,22 @@ mod tests {
         assert_marker(&mut receiver, 1);
         // It still waits for the part in flight.
         let done = spawn_blocked(&scheduler, |s| set(s, 7, 4, false));
-        scheduler.acknowledge();
+        scheduler.acknowledge(7);
         finished(&done);
         assert_marker(&mut receiver, 4);
         assert_no_message(&mut receiver);
-        scheduler.acknowledge();
+        scheduler.acknowledge(7);
         assert!(scheduler.is_idle());
 
+        // A set of another key is sent at once and keeps the parts.
         update(&scheduler, 7, RECT, &[5, 6], false, false);
         assert_marker(&mut receiver, 5);
-        let done = spawn_blocked(&scheduler, |s| set(s, 9, 7, false));
-        scheduler.acknowledge();
-        assert_marker(&mut receiver, 6);
-        assert_blocked(&done);
-        scheduler.acknowledge();
-        finished(&done);
+        set(&scheduler, 9, 7, false);
         assert_marker(&mut receiver, 7);
-        scheduler.acknowledge();
+        scheduler.acknowledge(7);
+        assert_marker(&mut receiver, 6);
+        scheduler.acknowledge(7);
+        scheduler.acknowledge(9);
         assert!(scheduler.is_idle());
     }
 
@@ -557,29 +709,39 @@ mod tests {
         update(&scheduler, 7, [1, 1, 2, 2], &[1, 2, 3], false, false);
         assert_marker(&mut receiver, 1);
         let done = spawn_blocked(&scheduler, |s| update(s, 7, RECT, &[4, 5], true, false));
-        scheduler.acknowledge();
+        scheduler.acknowledge(7);
         finished(&done);
         for value in [4, 5] {
             assert_marker(&mut receiver, value);
             assert_no_message(&mut receiver);
-            scheduler.acknowledge();
+            scheduler.acknowledge(7);
         }
         assert!(scheduler.is_idle());
 
-        // A rectangle that does not cover, or another key: every part is sent.
-        for (key, rect) in [(7, [0, 0, 1, 1]), (9, RECT)] {
-            update(&scheduler, 7, [0, 0, 2, 2], &[6, 7], false, false);
-            assert_marker(&mut receiver, 6);
-            let done = spawn_blocked(&scheduler, move |s| update(s, key, rect, &[8], true, false));
-            scheduler.acknowledge();
-            assert_marker(&mut receiver, 7);
-            assert_blocked(&done);
-            scheduler.acknowledge();
-            finished(&done);
-            assert_marker(&mut receiver, 8);
-            scheduler.acknowledge();
-            assert!(scheduler.is_idle());
-        }
+        // A rectangle that does not cover: every part is sent.
+        update(&scheduler, 7, [0, 0, 2, 2], &[6, 7], false, false);
+        assert_marker(&mut receiver, 6);
+        let done = spawn_blocked(&scheduler, |s| {
+            update(s, 7, [0, 0, 1, 1], &[8], true, false)
+        });
+        scheduler.acknowledge(7);
+        assert_marker(&mut receiver, 7);
+        assert_blocked(&done);
+        scheduler.acknowledge(7);
+        finished(&done);
+        assert_marker(&mut receiver, 8);
+        scheduler.acknowledge(7);
+
+        // Another key: sent at once, and the parts of the first stay.
+        update(&scheduler, 7, [0, 0, 2, 2], &[9, 10], false, false);
+        assert_marker(&mut receiver, 9);
+        update(&scheduler, 9, RECT, &[11], true, false);
+        assert_marker(&mut receiver, 11);
+        scheduler.acknowledge(7);
+        assert_marker(&mut receiver, 10);
+        scheduler.acknowledge(7);
+        scheduler.acknowledge(9);
+        assert!(scheduler.is_idle());
     }
 
     #[test]
@@ -592,28 +754,30 @@ mod tests {
         update(&scheduler, 7, RECT, &[1, 2, 3], false, false);
         assert_marker(&mut receiver, 1);
         let done = spawn_blocked(&scheduler, |s| control(s, Some(7), 10));
-        scheduler.acknowledge();
+        scheduler.acknowledge(7);
         finished(&done);
         assert_marker(&mut receiver, 10);
         assert_no_message(&mut receiver);
         assert!(scheduler.is_idle());
 
-        // Removing another key waits for every part.
+        // Removing another key neither waits nor drops the parts.
         update(&scheduler, 7, RECT, &[2, 3], false, false);
         assert_marker(&mut receiver, 2);
-        let done = spawn_blocked(&scheduler, |s| control(s, Some(9), 11));
-        scheduler.acknowledge();
-        assert_marker(&mut receiver, 3);
-        assert_blocked(&done);
-        scheduler.acknowledge();
-        finished(&done);
+        control(&scheduler, Some(9), 11);
         assert_marker(&mut receiver, 11);
+        scheduler.acknowledge(7);
+        assert_marker(&mut receiver, 3);
+        scheduler.acknowledge(7);
 
-        // A control of every key drops every part.
+        // A control of every key drops every part and waits for each key.
         update(&scheduler, 7, RECT, &[4, 5], false, false);
+        set(&scheduler, 9, 6, false);
         assert_marker(&mut receiver, 4);
+        assert_marker(&mut receiver, 6);
         let done = spawn_blocked(&scheduler, |s| control(s, None, 12));
-        scheduler.acknowledge();
+        scheduler.acknowledge(7);
+        assert_blocked(&done);
+        scheduler.acknowledge(9);
         finished(&done);
         assert_marker(&mut receiver, 12);
         assert_no_message(&mut receiver);
@@ -624,6 +788,71 @@ mod tests {
         assert_marker(&mut receiver, 13);
     }
 
+    /// A control of every key waits for producers that stored a change and
+    /// wait to send it, so it cannot drop a change they send afterwards.
+    #[test]
+    fn an_operation_on_every_key_waits_for_the_producers() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let (scheduler, _, mut receiver) = scheduler();
+        set(&scheduler, 7, 1, false);
+        assert_marker(&mut receiver, 1);
+        let producer = spawn_blocked(&scheduler, |s| set(s, 7, 2, false));
+        let reset = spawn_blocked(&scheduler, |s| control(s, None, 3));
+        scheduler.acknowledge(7);
+        finished(&producer);
+        assert_marker(&mut receiver, 2);
+        assert_blocked(&reset);
+        scheduler.acknowledge(7);
+        finished(&reset);
+        assert_marker(&mut receiver, 3);
+    }
+
+    #[test]
+    fn a_synchronization_waits_for_the_acknowledgement_of_each_key() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let (scheduler, connected, mut receiver) = scheduler();
+        connected.store(false, Ordering::Release);
+        scheduler.reset();
+        connected.store(true, Ordering::Release);
+        let mut messages = part(1);
+        messages.extend(part(2));
+        scheduler.begin_sync(&scheduler.lock_all(), messages, &[1, 2]);
+        assert_marker(&mut receiver, 1);
+        assert_marker(&mut receiver, 2);
+
+        // A key the synchronization did not send is idle.
+        set(&scheduler, 3, 3, false);
+        assert_marker(&mut receiver, 3);
+        let done = spawn_blocked(&scheduler, |s| set(s, 1, 4, false));
+        scheduler.acknowledge(2);
+        assert_blocked(&done);
+        scheduler.acknowledge(1);
+        finished(&done);
+        assert_marker(&mut receiver, 4);
+    }
+
+    #[test]
+    fn a_control_of_every_key_forgets_the_idle_keys() {
+        let (scheduler, _, mut receiver) = scheduler();
+        set(&scheduler, 7, 1, false);
+        set(&scheduler, 9, 2, false);
+        scheduler.acknowledge(7);
+        scheduler.acknowledge(9);
+        assert_eq!(scheduler.slots.lock().len(), 2);
+        control(&scheduler, None, 3);
+        assert!(scheduler.slots.lock().is_empty());
+        for value in [1, 2, 3] {
+            assert_marker(&mut receiver, value);
+        }
+        // An acknowledgement of a forgotten key is ignored.
+        scheduler.acknowledge(7);
+        assert!(scheduler.is_idle());
+    }
+
     #[test]
     fn an_unacknowledged_message_is_queued_behind_the_transfer_in_flight() {
         let (scheduler, _, mut receiver) = scheduler();
@@ -631,10 +860,10 @@ mod tests {
         assert_marker(&mut receiver, 1);
 
         let generation = scheduler.generation();
-        scheduler.send_unacked(scheduler.lock.lock(), marker(2), generation);
+        scheduler.send_unacked(scheduler.lock(7), marker(2), generation);
         assert_marker(&mut receiver, 2);
         assert!(!scheduler.is_idle(), "the set is still in flight");
-        scheduler.acknowledge();
+        scheduler.acknowledge(7);
         assert!(scheduler.is_idle());
     }
 
@@ -646,16 +875,19 @@ mod tests {
         let (scheduler, _, mut receiver) = scheduler();
         let done = spawn_blocked(&scheduler, |s| set(s, 7, 1, true));
         assert_marker(&mut receiver, 1);
-        scheduler.acknowledge();
+        scheduler.acknowledge(7);
         finished(&done);
         assert!(scheduler.is_idle());
 
         let done = spawn_blocked(&scheduler, |s| update(s, 7, RECT, &[2, 3], false, true));
         assert_marker(&mut receiver, 2);
-        scheduler.acknowledge();
+        scheduler.acknowledge(7);
         assert_marker(&mut receiver, 3);
         assert_blocked(&done);
-        scheduler.acknowledge();
+        // Another key's acknowledgement does not release it.
+        scheduler.acknowledge(9);
+        assert_blocked(&done);
+        scheduler.acknowledge(7);
         finished(&done);
         assert!(scheduler.is_idle());
     }
@@ -676,7 +908,11 @@ mod tests {
         assert!(scheduler.is_idle());
 
         connected.store(true, Ordering::Release);
-        scheduler.begin_sync(Vec::new(), 0);
+        scheduler.begin_sync(&scheduler.lock_all(), Vec::new(), &[]);
+        assert!(
+            scheduler.is_key_idle(7),
+            "the synchronization frees the key"
+        );
         let done = spawn_blocked(&scheduler, |s| set(s, 7, 3, true));
         assert_marker(&mut receiver, 3);
         connected.store(false, Ordering::Release);
@@ -691,13 +927,14 @@ mod tests {
         let (scheduler, _, mut receiver) = scheduler();
         let stale = scheduler.generation();
         scheduler.reset();
-        scheduler.begin_sync(Vec::new(), 0);
+        scheduler.begin_sync(&scheduler.lock_all(), Vec::new(), &[]);
 
-        scheduler.send_set(scheduler.lock.lock(), 7, part(1), false, stale);
+        scheduler.send_set(scheduler.lock(7), part(1), false, stale);
         let parts = VecDeque::from([part(2), part(3)]);
-        scheduler.send_update(scheduler.lock.lock(), 7, RECT, parts, false, false, stale);
-        scheduler.send_control(scheduler.lock.lock(), None, marker(4), stale);
-        scheduler.send_unacked(scheduler.lock.lock(), marker(6), stale);
+        scheduler.send_update(scheduler.lock(7), RECT, parts, false, false, stale);
+        scheduler.send_control(scheduler.lock(7), marker(4), stale);
+        scheduler.send_control_all(scheduler.lock_all(), marker(4), stale);
+        scheduler.send_unacked(scheduler.lock(7), marker(6), stale);
         assert_no_message(&mut receiver);
         assert!(scheduler.is_idle(), "stale work consumed the idle state");
 

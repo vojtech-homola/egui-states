@@ -261,10 +261,12 @@ impl MultiDataHeader {
 
 #[cfg(feature = "client")]
 impl MultiDataHeader {
-    pub(crate) fn requires_ack(&self) -> bool {
+    /// The key to acknowledge for this message, if the client acknowledges
+    /// it.
+    pub(crate) fn ack_key(&self) -> Option<u32> {
         match self {
-            Self::Modify(_, header) => header.requires_ack(),
-            Self::Remove(_) | Self::Reset => false,
+            Self::Modify(key, header) if header.requires_ack() => Some(*key),
+            _ => None,
         }
     }
 }

@@ -319,10 +319,16 @@ impl ImageMulti {
         self.inner.is_idle()
     }
 
+    /// Returns whether nothing of `index` is being sent and nothing of it
+    /// waits, so its next change is sent at once.
+    pub fn is_index_idle(&self, index: u32) -> bool {
+        self.inner.is_index_idle(index)
+    }
+
     /// Creates or replaces the complete image at `index`.
     ///
-    /// All indices share one transfer stream, so this waits for the previous
-    /// transfer of any index, as [`Image::set`] does. Only unsent parts of a
+    /// Each index has its own transfer: this waits for the previous transfer
+    /// of `index` only, as [`Image::set`] does. Only unsent parts of a
     /// split update of the same `index` are dropped. With `wait`, the call
     /// returns only once the client has acknowledged this image, or the
     /// connection has ended.

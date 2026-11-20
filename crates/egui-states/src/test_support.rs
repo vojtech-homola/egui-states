@@ -69,7 +69,13 @@ pub(crate) fn ack(
     id: u64,
 ) {
     assert!(
-        matches!(receiver.try_recv(), Ok(Some(crate::client::messages::ChannelMessage::Ack(actual))) if actual == id),
+        matches!(
+            receiver.try_recv(),
+            Ok(Some(
+                crate::client::messages::ChannelMessage::Ack(actual)
+                    | crate::client::messages::ChannelMessage::AckKey(actual, _)
+            )) if actual == id
+        ),
         "expected ACK for {id}"
     );
     assert!(receiver.try_recv().is_err(), "unexpected extra message");

@@ -98,6 +98,10 @@ def test_multi_data_lists_its_indices(local_bundle: tuple[StatesServer, State, l
     assert len(data) == 2
     assert 9 in data
     assert 2 not in data
+    # Without a client nothing waits, for any index or one.
+    assert data.is_idle()
+    assert data.is_idle(9)
+    assert data[9].is_idle()
     # Keys that cannot exist are not in it, as for a dict.
     for key in (-1, 2**32, "9", 9.0, None):
         assert key not in data

@@ -505,12 +505,22 @@ class SingleImage:
         self._value_id = value_id
         self._index = index
 
+    def is_idle(self) -> bool:
+        """Return whether nothing of this index is being sent and nothing waits.
+
+        See :meth:`ImageMulti.is_idle`.
+
+        Returns:
+            bool: Whether this index is idle.
+        """
+        return self._server.image_multi_is_idle(self._value_id, self._index)
+
     def set(self, image: Buffer, wait: bool = False) -> None:
         """Create or replace this indexed image.
 
-        All indices share one transfer stream, so the call waits for the
-        previous transfer of any index, as :meth:`Image.set` does. Only parts
-        of a split update of this index that are not sent yet are dropped.
+        Each index has its own transfer, so the call waits for the previous
+        transfer of this index only, as :meth:`Image.set` does. Only parts of
+        a split update of this index that are not sent yet are dropped.
 
         Args:
             image (Buffer): Image data shaped as ``(height, width)`` or
@@ -531,9 +541,9 @@ class SingleImage:
     ) -> None:
         """Update a rectangular part of this existing indexed image.
 
-        It works as :meth:`Image.update`. All indices share one transfer
-        stream; ``force`` drops only parts of this index, never parts of
-        other indices.
+        It works as :meth:`Image.update`, for this index on its own:
+        ``force`` drops only parts of this index, never parts of other
+        indices, and the call waits only for transfers of this index.
 
         Args:
             image (Buffer): The image rectangle to write.
@@ -632,15 +642,19 @@ class ImageMulti(_StaticBase):
             raise TypeError("index must be an integer")
         return SingleImage(self._server, self._value_id, index)
 
-    def is_idle(self) -> bool:
-        """Return whether nothing is being sent and nothing waits, for any index.
+    def is_idle(self, index: int | None = None) -> bool:
+        """Return whether nothing is being sent and nothing waits.
 
         See :meth:`Image.is_idle`.
 
+        Args:
+            index (int | None, optional): The index to ask about. Defaults to
+                None, which asks about every index.
+
         Returns:
-            bool: Whether the collection is idle.
+            bool: Whether the index, or every index, is idle.
         """
-        return self._server.image_multi_is_idle(self._value_id)
+        return self._server.image_multi_is_idle(self._value_id, index)
 
     def remove_index(self, index: int) -> None:
         """Remove an image index; an absent index is a no-op.
@@ -1304,6 +1318,16 @@ class SingleData[T: np.generic]:
         self._value_id = value_id
         self._index = index
 
+    def is_idle(self) -> bool:
+        """Return whether no change of this index waits for the client.
+
+        See :meth:`DataMulti.is_idle`.
+
+        Returns:
+            bool: Whether this index is idle.
+        """
+        return self._server.data_multi_is_idle(self._value_id, self._index)
+
     def get(self) -> npt.NDArray[T]:
         """Return a locally mutable snapshot of the buffer at this index.
 
@@ -1473,7 +1497,7 @@ class SingleDataWithHeader[T: np.generic, H](SingleData[T]):
         """Replace the header at this index alone.
 
         It does not wait for the client itself, but it is queued after a
-        buffer change to any index that another thread is still sending.
+        buffer change to this index that another thread is still sending.
 
         Args:
             header (H): New header.
@@ -1487,9 +1511,10 @@ class SingleDataWithHeader[T: np.generic, H](SingleData[T]):
 class DataMulti[T: np.generic](_StaticBase):
     """Collection of numeric buffers indexed by non-negative integers.
 
-    Changes wait for the client as in :class:`Data`. All indices share one
-    stream, so a change waits for the previous acknowledged change of any
-    index.
+    Changes wait for the client as in :class:`Data`, each index on its own:
+    a change waits for the previous acknowledged change of its index only, so
+    changes of different indices can reach the client in another order than
+    they were made.
 
     Args:
         dtype (type[T]): One of the integer or floating-point NumPy scalar
@@ -1523,15 +1548,19 @@ class DataMulti[T: np.generic](_StaticBase):
         """
         return SingleData(self._dtype, self._server, self._value_id, index)
 
-    def is_idle(self) -> bool:
-        """Return whether no change of any index waits for the client.
+    def is_idle(self, index: int | None = None) -> bool:
+        """Return whether no change waits for the client.
 
         See :meth:`Data.is_idle`.
 
+        Args:
+            index (int | None, optional): The index to ask about. Defaults to
+                None, which asks about every index.
+
         Returns:
-            bool: Whether the collection is idle.
+            bool: Whether the index, or every index, is idle.
         """
-        return self._server.data_multi_is_idle(self._value_id)
+        return self._server.data_multi_is_idle(self._value_id, index)
 
     def remove_index(self, index: int) -> None:
         """Remove the given index and its header from the DataMulti.

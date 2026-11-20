@@ -51,6 +51,8 @@ pub(crate) enum ClientHeader {
     Transfer(u64, TransferFrame, u32),
     /// Answers the oldest unanswered [`ServerHeader::LaneMark`].
     LaneAck,
+    /// Acknowledges a transfer of one key of a keyed state: state id, key.
+    AckKey(u64, u32),
 }
 
 #[cfg(test)]
@@ -127,6 +129,7 @@ mod tests {
             ClientHeader::Handshake(1, None, None),
             ClientHeader::Transfer(1, TransferFrame::Reject { serial: 0 }, 0),
             ClientHeader::LaneAck,
+            ClientHeader::AckKey(1, 2),
         ];
         for (index, header) in client.iter().enumerate() {
             let data: FastVec<32> = serialize(header).unwrap();
@@ -417,6 +420,7 @@ mod tests {
         );
         assert_eq!(bytes(&ServerHeader::Update(1.0)), [10, 0, 0, 0x80, 0x3f]);
         assert_eq!(bytes(&ClientHeader::Ack(300)), [2, 0xac, 0x02]);
+        assert_eq!(bytes(&ClientHeader::AckKey(300, 5)), [7, 0xac, 0x02, 5]);
         assert_eq!(
             bytes(&ClientHeader::Handshake(7, Some(1), None)),
             [4, 7, 1, 1, 0]

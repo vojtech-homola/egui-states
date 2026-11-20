@@ -216,7 +216,7 @@ impl Data {
         let header = self.header_type.check(&self.name, data.header)?;
         let slice = data.bytes;
 
-        let lock = self.scheduler.lock.lock();
+        let lock = self.scheduler.lock(KEY);
         let generation = {
             let mut w = self.storage.write();
             match w.value.as_mut() {
@@ -243,8 +243,7 @@ impl Data {
             None,
             self.header_type.change(header),
         )?;
-        self.scheduler
-            .send_set(lock, KEY, messages, wait, generation);
+        self.scheduler.send_set(lock, messages, wait, generation);
         Ok(())
     }
 
@@ -253,7 +252,7 @@ impl Data {
         let header = self.header_type.check(&self.name, data.header)?;
         let slice = data.bytes;
 
-        let lock = self.scheduler.lock.lock();
+        let lock = self.scheduler.lock(KEY);
         let generation = {
             let mut w = self.storage.write();
             let value = w.value.as_mut().ok_or_else(|| self.not_set())?;
@@ -276,8 +275,7 @@ impl Data {
             None,
             self.header_type.change(header),
         )?;
-        self.scheduler
-            .send_set(lock, KEY, messages, wait, generation);
+        self.scheduler.send_set(lock, messages, wait, generation);
         Ok(())
     }
 
@@ -291,7 +289,7 @@ impl Data {
         let header = self.header_type.check(&self.name, data.header)?;
         let slice = data.bytes;
 
-        let lock = self.scheduler.lock.lock();
+        let lock = self.scheduler.lock(KEY);
         let generation = {
             let mut w = self.storage.write();
             let value = w.value.as_mut().ok_or_else(|| self.not_set())?;
@@ -324,8 +322,7 @@ impl Data {
             None,
             self.header_type.change(header),
         )?;
-        self.scheduler
-            .send_set(lock, KEY, messages, wait, generation);
+        self.scheduler.send_set(lock, messages, wait, generation);
         Ok(())
     }
 
@@ -341,7 +338,7 @@ impl Data {
         }
         let header = self.header_type.check(&self.name, header)?;
 
-        let lock = self.scheduler.lock.lock();
+        let lock = self.scheduler.lock(KEY);
         let generation = {
             let mut w = self.storage.write();
             let value = w.value.as_mut().ok_or_else(|| self.not_set())?;
@@ -370,14 +367,14 @@ impl Data {
                 .serialize(self.scheduler.id, false)
         })?;
         self.scheduler
-            .send_set(lock, KEY, vec![(message, false)], wait, generation);
+            .send_set(lock, vec![(message, false)], wait, generation);
         Ok(())
     }
 
     /// Empties the buffer; the header stays unless a new one is given.
     pub(crate) fn clear(&self, header: Option<&[u8]>) -> Result<(), CoreError> {
         let header = self.header_type.check(&self.name, header)?;
-        let lock = self.scheduler.lock.lock();
+        let lock = self.scheduler.lock(KEY);
         let mut w = self.storage.write();
         let value = w.value.as_mut().ok_or_else(|| self.not_set())?;
         value.bytes.clear();
@@ -403,7 +400,7 @@ impl Data {
     /// header that change carries.
     pub(crate) fn set_header(&self, header: &[u8]) -> Result<(), CoreError> {
         self.header_type.check(&self.name, Some(header))?;
-        let lock = self.scheduler.lock.lock();
+        let lock = self.scheduler.lock(KEY);
         let mut w = self.storage.write();
         let value = w.value.as_mut().ok_or_else(|| self.not_set())?;
         value.store_header(Some(header));
@@ -428,7 +425,7 @@ impl Data {
             .serialize(self.scheduler.id, false)
             .map_err(|_| "Failed to serialize reset header".to_string())?;
         let previous = {
-            let lock = self.scheduler.lock.lock();
+            let lock = self.scheduler.lock(KEY);
             let mut w = self.storage.write();
             let previous = w.value.take();
             let generation = self.scheduler.sendable();
@@ -479,7 +476,7 @@ impl Data {
 
 impl Acknowledge for Data {
     fn acknowledge(&self) {
-        self.scheduler.acknowledge();
+        self.scheduler.acknowledge(KEY);
     }
 
     fn reset(&self) {
@@ -496,7 +493,7 @@ impl SyncTrait for Data {
         // reset from consuming this synchronization's acknowledgement. No
         // producer of this state waits for an acknowledgement here: until this
         // point the state required a synchronization, so producers only stored.
-        let _lock = self.scheduler.lock.lock();
+        let lock = self.scheduler.lock_all();
         let w = self.storage.write();
 
         // The client keeps its data across a disconnect, so a synchronization
@@ -507,7 +504,8 @@ impl SyncTrait for Data {
                 let message = DataHeader::Reset
                     .serialize(self.scheduler.id, false)
                     .map_err(|_| ())?;
-                self.scheduler.begin_sync(vec![(message, false)], 0);
+                self.scheduler
+                    .begin_sync(&lock, vec![(message, false)], &[]);
             }
             Some(value) => {
                 let count = value.count as u64;
@@ -521,7 +519,7 @@ impl SyncTrait for Data {
                     self.header_type.change(Some(&value.header)),
                 )
                 .map_err(|_| ())?;
-                self.scheduler.begin_sync(messages, 1);
+                self.scheduler.begin_sync(&lock, messages, &[KEY]);
             }
         }
 
@@ -543,8 +541,8 @@ fn missing_key(index: u32) -> CoreError {
 /// Only [`DataMulti::set`] creates a key, with a header when the state has a
 /// header type; every other change needs an existing key.
 ///
-/// Uses the same producer protocol as [`Data`]; all keys share one stream of
-/// acknowledgements.
+/// Uses the same producer protocol as [`Data`], for each key on its own: the
+/// keys do not wait for each other's acknowledgements.
 pub(crate) struct DataMulti {
     pub(crate) name: String,
     pub(crate) data_type: DataType,
@@ -577,7 +575,7 @@ impl DataMulti {
 
     /// Removes `index` and its header.
     pub(crate) fn remove_index(&self, index: u32) -> Result<(), String> {
-        let lock = self.scheduler.lock.lock();
+        let lock = self.scheduler.lock(index);
         let mut w = self.storage.write();
         if w.values.remove(&index).is_some()
             && let Some(generation) = self.scheduler.sendable()
@@ -594,7 +592,7 @@ impl DataMulti {
 
     /// Removes every key and header.
     pub(crate) fn reset(&self) -> Result<(), String> {
-        let lock = self.scheduler.lock.lock();
+        let lock = self.scheduler.lock_all();
         let mut w = self.storage.write();
         if !w.values.is_empty() {
             w.values.clear();
@@ -617,7 +615,7 @@ impl DataMulti {
         let header = self.header_type.check(&self.name, data.header)?;
         let slice = data.bytes;
 
-        let lock = self.scheduler.lock.lock();
+        let lock = self.scheduler.lock(index);
         let generation = {
             let mut w = self.storage.write();
             match w.values.get_mut(&index) {
@@ -647,8 +645,7 @@ impl DataMulti {
             Some(index),
             self.header_type.change(header),
         )?;
-        self.scheduler
-            .send_set(lock, index, messages, wait, generation);
+        self.scheduler.send_set(lock, messages, wait, generation);
         Ok(())
     }
 
@@ -657,7 +654,7 @@ impl DataMulti {
         let header = self.header_type.check(&self.name, data.header)?;
         let slice = data.bytes;
 
-        let lock = self.scheduler.lock.lock();
+        let lock = self.scheduler.lock(index);
         let generation = {
             let mut w = self.storage.write();
             let value = w.values.get_mut(&index).ok_or_else(|| missing_key(index))?;
@@ -680,8 +677,7 @@ impl DataMulti {
             Some(index),
             self.header_type.change(header),
         )?;
-        self.scheduler
-            .send_set(lock, index, messages, wait, generation);
+        self.scheduler.send_set(lock, messages, wait, generation);
         Ok(())
     }
 
@@ -696,7 +692,7 @@ impl DataMulti {
         let header = self.header_type.check(&self.name, data.header)?;
         let slice = data.bytes;
 
-        let lock = self.scheduler.lock.lock();
+        let lock = self.scheduler.lock(index);
         let generation = {
             let mut w = self.storage.write();
             let value = w.values.get_mut(&index).ok_or_else(|| missing_key(index))?;
@@ -728,8 +724,7 @@ impl DataMulti {
             Some(index),
             self.header_type.change(header),
         )?;
-        self.scheduler
-            .send_set(lock, index, messages, wait, generation);
+        self.scheduler.send_set(lock, messages, wait, generation);
         Ok(())
     }
 
@@ -747,7 +742,7 @@ impl DataMulti {
         }
         let header = self.header_type.check(&self.name, header)?;
 
-        let lock = self.scheduler.lock.lock();
+        let lock = self.scheduler.lock(index);
         let generation = {
             let mut w = self.storage.write();
             let value = w.values.get_mut(&index).ok_or_else(|| missing_key(index))?;
@@ -778,7 +773,7 @@ impl DataMulti {
             MultiDataHeader::serialize_modify(self.scheduler.id, index, header)
         })?;
         self.scheduler
-            .send_set(lock, index, vec![(message, false)], wait, generation);
+            .send_set(lock, vec![(message, false)], wait, generation);
         Ok(())
     }
 
@@ -786,7 +781,7 @@ impl DataMulti {
     /// given.
     pub(crate) fn clear(&self, index: u32, header: Option<&[u8]>) -> Result<(), CoreError> {
         let header = self.header_type.check(&self.name, header)?;
-        let lock = self.scheduler.lock.lock();
+        let lock = self.scheduler.lock(index);
         let mut w = self.storage.write();
         let value = w.values.get_mut(&index).ok_or_else(|| missing_key(index))?;
         value.bytes.clear();
@@ -810,7 +805,7 @@ impl DataMulti {
     /// Replaces the header of `index` alone; queued at once like a clear.
     pub(crate) fn set_header(&self, index: u32, header: &[u8]) -> Result<(), CoreError> {
         self.header_type.check(&self.name, Some(header))?;
-        let lock = self.scheduler.lock.lock();
+        let lock = self.scheduler.lock(index);
         let mut w = self.storage.write();
         let value = w.values.get_mut(&index).ok_or_else(|| missing_key(index))?;
         value.store_header(Some(header));
@@ -885,11 +880,20 @@ impl DataMulti {
     pub(crate) fn is_idle(&self) -> bool {
         self.scheduler.is_idle()
     }
+
+    /// Whether no transfer of `key` waits for the client's acknowledgement.
+    pub(crate) fn is_index_idle(&self, key: u32) -> bool {
+        self.scheduler.is_key_idle(key)
+    }
 }
 
 impl Acknowledge for DataMulti {
-    fn acknowledge(&self) {
-        self.scheduler.acknowledge();
+    /// The client acknowledges each key on its own, with
+    /// [`acknowledge_key`](Acknowledge::acknowledge_key).
+    fn acknowledge(&self) {}
+
+    fn acknowledge_key(&self, key: u32) {
+        self.scheduler.acknowledge(key);
     }
 
     fn reset(&self) {
@@ -903,7 +907,7 @@ impl Acknowledge for DataMulti {
 impl SyncTrait for DataMulti {
     fn sync(&self) -> Result<(), ()> {
         // See `Data::sync` for why the scheduler's lock is taken.
-        let _lock = self.scheduler.lock.lock();
+        let lock = self.scheduler.lock_all();
         let w = self.storage.write();
 
         // The client keeps its keys across a disconnect; drop the ones removed
@@ -911,8 +915,9 @@ impl SyncTrait for DataMulti {
         // queued on its own, so the whole collection is never copied at once;
         // no acknowledgement can arrive before its key is queued.
         let message = MultiDataHeader::Reset.serialize(self.scheduler.id)?;
+        let keys = w.values.keys().copied().collect::<Vec<_>>();
         self.scheduler
-            .begin_sync(vec![(message, false)], w.values.len());
+            .begin_sync(&lock, vec![(message, false)], &keys);
         for (index, value) in w.values.iter() {
             let messages = pack_data(
                 self.scheduler.id,
@@ -924,10 +929,7 @@ impl SyncTrait for DataMulti {
                 self.header_type.change(Some(&value.header)),
             )
             .map_err(|_| ())?;
-
-            for (message, single) in messages {
-                self.scheduler.sender.send_set(message, single);
-            }
+            self.scheduler.send_synced(&lock, messages);
 
             if !self.scheduler.is_connected() {
                 return Ok(());
@@ -1162,8 +1164,43 @@ mod tests {
         let done = blocked(move || setting.set(1, holder(&[4]), true));
         assert_eq!(queued(&mut receiver).len(), 1, "the set was not sent");
         assert!(!multi.is_idle());
-        multi.acknowledge();
+        multi.acknowledge_key(1);
         done.recv_timeout(Duration::from_secs(2)).unwrap().unwrap();
+        assert!(multi.is_idle());
+    }
+
+    /// A change of one key does not wait for the acknowledgement of another.
+    #[test]
+    fn the_keys_of_a_data_multi_do_not_wait_for_each_other() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let (sender, mut receiver) = MessageSender::new();
+        let connected = Arc::new(AtomicBool::new(true));
+        let multi = DataMulti::new(
+            "root.multi".into(),
+            6,
+            DataType::U16,
+            None,
+            sender,
+            connected,
+        );
+        multi.sync().unwrap();
+        queued(&mut receiver);
+        multi.set(1, holder(&[1]), false).unwrap();
+        multi.set(2, holder(&[2]), false).unwrap();
+        assert_eq!(queued(&mut receiver).len(), 2);
+        assert!(!multi.is_index_idle(1));
+
+        let setting = multi.clone();
+        let done = blocked(move || setting.set(1, holder(&[3]), false));
+        multi.acknowledge_key(2);
+        assert!(multi.is_index_idle(2));
+        assert!(done.recv_timeout(Duration::from_millis(100)).is_err());
+        multi.acknowledge_key(1);
+        done.recv_timeout(Duration::from_secs(2)).unwrap().unwrap();
+        assert_eq!(queued(&mut receiver).len(), 1);
+        multi.acknowledge_key(1);
         assert!(multi.is_idle());
     }
 
@@ -1705,12 +1742,15 @@ mod transfer_tests {
                 }
             }
             while let Ok(Some(message)) = self.acks.try_recv() {
-                if let ChannelMessage::Ack(id) = message {
-                    moved = true;
-                    let ack = postcard::to_stdvec(&ClientHeader::Ack(id)).unwrap();
-                    // The connection may already be closing.
-                    let _ = client.send.send(Incoming::Binary(ack.into()));
-                }
+                let header = match message {
+                    ChannelMessage::Ack(id) => ClientHeader::Ack(id),
+                    ChannelMessage::AckKey(id, key) => ClientHeader::AckKey(id, key),
+                    _ => continue,
+                };
+                moved = true;
+                let ack = postcard::to_stdvec(&header).unwrap();
+                // The connection may already be closing.
+                let _ = client.send.send(Incoming::Binary(ack.into()));
             }
             moved
         }
@@ -2004,7 +2044,7 @@ mod header_tests {
             }
         }
         let mut count = 0;
-        while let Ok(Some(ChannelMessage::Ack(_))) = acks.try_recv() {
+        while let Ok(Some(ChannelMessage::Ack(_) | ChannelMessage::AckKey(..))) = acks.try_recv() {
             count += 1;
         }
         count
@@ -2270,7 +2310,7 @@ mod header_tests {
         data.header(1, |header| assert_eq!(header, None));
         data.set(1, with(&[1], Some(&encoded(0))), false).unwrap();
         deliver(&client);
-        data.acknowledge();
+        data.acknowledge_key(1);
         assert_eq!(client.header(1), Some(meta(0)));
         data.header(1, |header| assert_eq!(header, Some(&encoded(0)[..])));
 
@@ -2278,7 +2318,7 @@ mod header_tests {
         deliver(&client);
         data.set(1, with(&[2, 3], None), false).unwrap();
         deliver(&client);
-        data.acknowledge();
+        data.acknowledge_key(1);
         client.read_with_header(1, |entry| {
             assert_eq!(entry, Some((&[2, 3][..], &meta(1))));
         });
@@ -2290,7 +2330,7 @@ mod header_tests {
 
         data.set(2, with(&[4], Some(&encoded(2))), false).unwrap();
         deliver(&client);
-        data.acknowledge();
+        data.acknowledge_key(2);
         let mut seen = Vec::new();
         client.for_each_with_header(|key, values, header| {
             seen.push((key, values.to_vec(), header.clone()))
@@ -2317,7 +2357,7 @@ mod header_tests {
         // A reconnecting client gets every key with its stored header.
         data.set(3, with(&[5], Some(&encoded(5))), false).unwrap();
         deliver(&client);
-        data.acknowledge();
+        data.acknowledge_key(3);
         Acknowledge::reset(&*data);
         let (client_sender, _acks) = ClientSender::new();
         let fresh = ClientMulti::<u16, Meta>::new("root.multi".into(), 5, client_sender);

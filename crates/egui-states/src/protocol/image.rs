@@ -284,8 +284,13 @@ impl ImageMultiHeader {
         }
     }
 
-    pub(crate) fn requires_ack(&self) -> bool {
-        matches!(self, Self::Modify(_, header, _) if header.requires_ack())
+    /// The index to acknowledge for this message, if the client
+    /// acknowledges it.
+    pub(crate) fn ack_key(&self) -> Option<u32> {
+        match self {
+            Self::Modify(index, header, _) if header.requires_ack() => Some(*index),
+            _ => None,
+        }
     }
 }
 

@@ -72,7 +72,7 @@ impl ClientHeader {
             | Self::Signal(.., size)
             | Self::Message(size)
             | Self::Transfer(.., size) => *size,
-            Self::Ack(_) | Self::Handshake(..) | Self::LaneAck => 0,
+            Self::Ack(_) | Self::AckKey(..) | Self::Handshake(..) | Self::LaneAck => 0,
         }
     }
 

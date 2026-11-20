@@ -74,9 +74,14 @@ impl ImageMulti {
         getter(self.inner.read().images.get(&index))
     }
 
-    /// Whether nothing is in flight and nothing waits, for any key.
+    /// Whether nothing is in flight and nothing waits, for every index.
     pub(crate) fn is_idle(&self) -> bool {
         self.transfer.is_idle()
+    }
+
+    /// Whether nothing of `index` is in flight and nothing of it waits.
+    pub(crate) fn is_index_idle(&self, index: u32) -> bool {
+        self.transfer.is_key_idle(index)
     }
 
     /// Creates or replaces the image at `index`. Sends it once the state is
@@ -89,7 +94,7 @@ impl ImageMulti {
         } else {
             None
         };
-        let lock = self.transfer.lock.lock();
+        let lock = self.transfer.lock(index);
         let mut inner = self.inner.write();
         let stored = inner.images.entry(index);
         stored.or_insert_with(StoredImage::empty).set(&image);
@@ -101,8 +106,7 @@ impl ImageMulti {
             None => pack_set_data(self.transfer.id, index, &image)?,
         };
         drop(inner);
-        self.transfer
-            .send_set(lock, index, to_send, wait, generation);
+        self.transfer.send_set(lock, to_send, wait, generation);
         Ok(())
     }
 
@@ -122,7 +126,7 @@ impl ImageMulti {
         } else {
             None
         };
-        let lock = self.transfer.lock.lock();
+        let lock = self.transfer.lock(index);
         let mut inner = self.inner.write();
         let stored = inner.images.entry(index);
         stored.or_insert_with(StoredImage::empty).fill(size, fill);
@@ -134,8 +138,7 @@ impl ImageMulti {
             None => pack_fill_data(self.transfer.id, index, wire_size, rgba)?,
         };
         drop(inner);
-        self.transfer
-            .send_set(lock, index, to_send, wait, generation);
+        self.transfer.send_set(lock, to_send, wait, generation);
         Ok(())
     }
 
@@ -166,7 +169,7 @@ impl ImageMulti {
         } else {
             None
         };
-        let lock = self.transfer.lock.lock();
+        let lock = self.transfer.lock(index);
         let mut inner = self.inner.write();
         let stored = inner
             .images
@@ -187,12 +190,12 @@ impl ImageMulti {
         let rect = [origin[0], origin[1], image.size[0], image.size[1]];
         drop(inner);
         self.transfer
-            .send_update(lock, index, rect, to_send, force, wait, generation);
+            .send_update(lock, rect, to_send, force, wait, generation);
         Ok(())
     }
 
     pub(crate) fn remove_index(&self, index: u32) -> Result<(), String> {
-        let lock = self.transfer.lock.lock();
+        let lock = self.transfer.lock(index);
         let mut inner = self.inner.write();
         if inner.images.remove(&index).is_none() {
             return Ok(());
@@ -204,13 +207,12 @@ impl ImageMulti {
         let message = ImageMultiHeader::Remove(index)
             .serialize(self.transfer.id)
             .map_err(|_| "Failed to serialize ImageMulti remove header".to_string())?;
-        self.transfer
-            .send_control(lock, Some(index), message, generation);
+        self.transfer.send_control(lock, message, generation);
         Ok(())
     }
 
     pub(crate) fn reset_images(&self) -> Result<(), String> {
-        let lock = self.transfer.lock.lock();
+        let lock = self.transfer.lock_all();
         let mut inner = self.inner.write();
         if inner.images.is_empty() {
             return Ok(());
@@ -223,14 +225,18 @@ impl ImageMulti {
         let message = ImageMultiHeader::Reset
             .serialize(self.transfer.id)
             .map_err(|_| "Failed to serialize ImageMulti reset header".to_string())?;
-        self.transfer.send_control(lock, None, message, generation);
+        self.transfer.send_control_all(lock, message, generation);
         Ok(())
     }
 }
 
 impl Acknowledge for ImageMulti {
-    fn acknowledge(&self) {
-        self.transfer.acknowledge();
+    /// The client acknowledges each index on its own, with
+    /// [`acknowledge_key`](Acknowledge::acknowledge_key).
+    fn acknowledge(&self) {}
+
+    fn acknowledge_key(&self, index: u32) {
+        self.transfer.acknowledge(index);
     }
 
     fn reset(&self) {
@@ -243,7 +249,7 @@ impl Acknowledge for ImageMulti {
 
 impl SyncTrait for ImageMulti {
     fn sync(&self) -> Result<(), ()> {
-        let _lock = self.transfer.lock.lock();
+        let lock = self.transfer.lock_all();
         let inner = self.inner.write();
         if !self.transfer.required() {
             return Ok(());
@@ -257,15 +263,14 @@ impl SyncTrait for ImageMulti {
         let mut indices = inner.images.keys().copied().collect::<Vec<_>>();
         indices.sort_unstable();
         let mut messages = Vec::new();
-        for index in indices {
+        for &index in &indices {
             let image = inner.images.get(&index).ok_or(())?;
             // Sent in the stored format; the client expands it to RGBA.
             messages.extend(
                 pack_set_data(self.transfer.id, index, &image.image_data()).map_err(|_| ())?,
             );
         }
-        let ack_count = inner.images.len();
-        self.transfer.begin_sync(messages, ack_count);
+        self.transfer.begin_sync(&lock, messages, &indices);
         Ok(())
     }
 }
@@ -550,18 +555,13 @@ mod tests {
         assert_no_message(&mut receiver);
         assert!(!images.is_idle());
 
-        // A set waits until every image of the synchronization is acknowledged.
-        let waiting_images = images.clone();
-        let waiter = std::thread::spawn(move || {
-            waiting_images.set_all_image(9, [1, 1], ImageFill::ColorAlpha([9, 9, 9, 255]), false)
-        });
-        wait_until(|| images.contains(9));
-        assert_no_message(&mut receiver);
-        images.acknowledge();
-        assert_no_message(&mut receiver);
-        images.acknowledge();
-        waiter.join().unwrap().unwrap();
+        assert!(!images.is_index_idle(2));
+        assert!(images.is_index_idle(9));
 
+        // A key the synchronization did not send is sent at once.
+        images
+            .set_all_image(9, [1, 1], ImageFill::ColorAlpha([9, 9, 9, 255]), false)
+            .unwrap();
         let (message, _) = receiver.try_recv().unwrap().unwrap();
         let (header, _) = ServerHeader::deserialize(&message.into_bytes()).unwrap();
         assert!(matches!(
@@ -571,7 +571,21 @@ mod tests {
                 ImageMultiHeader::Modify(9, ImageHeader::Fill([1, 1], [9, 9, 9, 255]), 0)
             )
         ));
-        images.acknowledge();
+        images.acknowledge_key(9);
+
+        // A set of a synchronized key waits for the acknowledgement of its
+        // own image only.
+        let waiting_images = images.clone();
+        let waiter = std::thread::spawn(move || {
+            waiting_images.set_all_image(7, [1, 1], ImageFill::ColorAlpha([8, 8, 8, 255]), false)
+        });
+        wait_until(|| images.get_image(7, |image| image.unwrap().data() == [8, 8, 8, 255]));
+        images.acknowledge_key(2);
+        assert_no_message(&mut receiver);
+        images.acknowledge_key(7);
+        waiter.join().unwrap().unwrap();
+        assert_message(&mut receiver);
+        images.acknowledge_key(7);
         assert!(images.is_idle());
     }
 
@@ -593,9 +607,9 @@ mod tests {
         connected.store(true, Ordering::Release);
         images.sync().unwrap();
         assert_message(&mut receiver); // reset
-        for _ in 0..3 {
+        for index in [3, 5, 8] {
             assert_message(&mut receiver);
-            images.acknowledge();
+            images.acknowledge_key(index);
         }
 
         connected.store(false, Ordering::Release);
@@ -640,7 +654,7 @@ mod tests {
         images.sync().unwrap();
         assert_message(&mut receiver); // reset
         assert_message(&mut receiver); // initial image
-        images.acknowledge();
+        images.acknowledge_key(1);
 
         images
             .set_all_image(1, [1, 1], ImageFill::ColorAlpha([2, 2, 2, 255]), false)
@@ -650,7 +664,7 @@ mod tests {
         let remove = std::thread::spawn(move || removing_images.remove_index(1));
         wait_until(|| !images.contains(1));
         assert_no_message(&mut receiver);
-        images.acknowledge();
+        images.acknowledge_key(1);
         remove.join().unwrap().unwrap();
         assert_message(&mut receiver); // remove
         assert!(images.is_idle());
@@ -663,7 +677,7 @@ mod tests {
         let reset = std::thread::spawn(move || resetting_images.reset_images());
         wait_until(|| images.len() == 0);
         assert_no_message(&mut receiver);
-        images.acknowledge();
+        images.acknowledge_key(2);
         reset.join().unwrap().unwrap();
         assert_message(&mut receiver); // reset
         assert!(images.is_idle());
@@ -672,7 +686,7 @@ mod tests {
             .set_all_image(3, [1, 1], ImageFill::ColorAlpha([4, 4, 4, 255]), false)
             .unwrap();
         assert_message(&mut receiver);
-        images.acknowledge();
+        images.acknowledge_key(3);
         assert!(images.is_idle());
     }
 
@@ -749,8 +763,8 @@ mod tests {
         for _ in 0..3 {
             assert_message(&mut receiver);
         }
-        images.acknowledge();
-        images.acknowledge();
+        images.acknowledge_key(1);
+        images.acknowledge_key(2);
         let column = |index: u32| images.get_image(index, |image| image.unwrap().data().to_vec());
 
         // A split update of index 1: the first row goes out, the second waits.
@@ -767,11 +781,11 @@ mod tests {
             .unwrap();
         assert_update(&mut receiver, 1, &[10]);
 
-        // A forced update of index 2 does not drop that row.
-        let waiting_images = images.clone();
-        let other_index = std::thread::spawn(move || {
-            let rows = [20, 21];
-            waiting_images.update_image(
+        // A forced update of index 2 does not drop that row, and does not
+        // wait for index 1.
+        let rows = [20, 21];
+        images
+            .update_image(
                 2,
                 &[0, 0],
                 image_data(&rows, [2, 1], ImageType::Gray),
@@ -779,15 +793,12 @@ mod tests {
                 None,
                 false,
             )
-        });
-        wait_until(|| column(2) == [20, 20, 20, 255, 21, 21, 21, 255]);
-        assert_no_message(&mut receiver);
-        images.acknowledge();
-        assert_update(&mut receiver, 1, &[11]);
-        images.acknowledge();
-        other_index.join().unwrap().unwrap();
+            .unwrap();
         assert_update(&mut receiver, 2, &[20, 21]);
-        images.acknowledge();
+        images.acknowledge_key(2);
+        images.acknowledge_key(1);
+        assert_update(&mut receiver, 1, &[11]);
+        images.acknowledge_key(1);
 
         // A forced update of index 1 that covers the waiting row drops it.
         let rows = [30, 31];
@@ -819,11 +830,11 @@ mod tests {
         // acknowledgement in between would send that row and leave the
         // forced update waiting for an acknowledgement that never comes.
         wait_until(|| !images.transfer.has_waiting());
-        images.acknowledge();
+        images.acknowledge_key(1);
         same_index.join().unwrap().unwrap();
         assert_update(&mut receiver, 1, &[40, 41]);
         assert_no_message(&mut receiver);
-        images.acknowledge();
+        images.acknowledge_key(1);
         assert!(images.is_idle());
     }
 }

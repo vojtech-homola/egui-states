@@ -45,6 +45,13 @@ pub(crate) trait SyncTrait: Sync + Send {
 pub(crate) trait Acknowledge: Sync + Send {
     fn acknowledge(&self);
 
+    /// Acknowledges a transfer of one key of a keyed state, which the client
+    /// acknowledges per key.
+    fn acknowledge_key(&self, key: u32) {
+        let _ = key;
+        self.acknowledge();
+    }
+
     fn reset(&self) {
         self.acknowledge();
     }

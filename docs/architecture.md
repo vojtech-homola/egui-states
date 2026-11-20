@@ -155,10 +155,13 @@ every partial socket write, so large frames cost time quadratic in their size.
 Acknowledgements provide backpressure and release pending server work.
 
 `Data`, `DataMulti`, `Image` and `ImageMulti` send one acknowledged transfer
-at a time. A change waits until the client has acknowledged the previous one,
-then queues its transfer and returns, so the changes one thread makes to these
-states and to any other state reach the client in the order they were made,
-unless the state has [low send priority](#send-priority).
+at a time, and a `DataMulti` or `ImageMulti` one per key: the client
+acknowledges each key on its own (`AckKey`), and the keys do not wait for each
+other. A change waits until the client has acknowledged the previous one of
+its key, then queues its transfer and returns, so the changes one thread makes
+to these states and to any other state reach the client in the order they
+were made, unless the state has [low send priority](#send-priority). Changes
+that different threads make to different keys can overtake each other.
 With `wait`, a change returns only once the client has acknowledged it, or
 the connection has ended; the call does not tell the two apart.
 `is_idle` tells whether nothing is in flight, so a producer can skip a frame
@@ -193,14 +196,16 @@ otherwise it waits like any other. Either way the call still waits for the part
 in flight, and the client ends with the server's pixels, because what is
 dropped is overwritten.
 
-All keys in an `ImageMulti` share one ordered transfer stream, and a set or a
-forced update drops only waiting parts of its own key. A remove drops the
-waiting parts of its key, and a reset those of every key; both are queued once
-nothing is in flight and need no acknowledgement. A disconnect invalidates
-pending work with a transfer generation, and reconnect synchronization resets
-the client collection before sending the server's current keys. Each
-synchronized image must be acknowledged before subsequently queued work is
-released.
+Each key of an `ImageMulti` has its own transfer, and a set or a forced update
+drops only waiting parts of its own key. A remove drops the waiting parts of
+its key and is queued once nothing of that key is in flight. A reset drops the
+waiting parts of every key and is queued once nothing of any key is in flight;
+it first waits for the producers of every key, so none sends an image the
+reset would leave on the client only. Neither needs an acknowledgement. A
+disconnect invalidates pending work with a transfer generation, and reconnect
+synchronization resets the client collection before sending the server's
+current keys. A key's next change waits until the client has acknowledged its
+synchronized image; keys the synchronization did not send are free at once.
 
 Waiting for acknowledgements slows the server down to the client's pace. A
 client that disappears without closing the connection would make it wait
@@ -365,7 +370,7 @@ headers with the data. A header can also be sent alone, for data that is set.
 Unlike a buffer change, the client does not acknowledge it, so a header sent
 alone does not wait for the client itself, as with values. It keeps its place
 after the buffer changes of its state, though: while another thread's change
-to the state, or to any key of a `DataMulti`, waits for the client's
+to the state, or to the same key of a `DataMulti`, waits for the client's
 acknowledgement, the header waits behind it.
 
 A header that the client cannot accept, because it has the wrong type, is too

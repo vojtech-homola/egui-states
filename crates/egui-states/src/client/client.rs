@@ -997,6 +997,10 @@ impl ClientCore {
         self.0.sender.send_ack(id);
     }
 
+    pub(crate) fn send_ack_key(&self, id: u64, key: u32) {
+        self.0.sender.send_ack_key(id, key);
+    }
+
     /// Answers a mark of the server's low-priority lane.
     #[inline]
     pub(crate) fn lane_ack(&self) {
