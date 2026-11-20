@@ -271,6 +271,27 @@ automatically. Change either time, or disable the heartbeat, with
 `heartbeat_interval` and `heartbeat_timeout` in the Rust `ServerOptions` or the
 Python server's constructor.
 
+By default a client connects only when `client.connect()` is called, also
+after a connection ended. Build it with `.reconnect(Reconnect::default())` to
+have it connect again by itself, for example while the Python server
+restarts:
+
+```rust
+let (state, client) = ClientBuilder::<AppState>::new(ctx, 8091)
+    .reconnect(Reconnect::default())
+    .build();
+client.connect();
+```
+
+After the first `connect()`, a client that cannot reach the server, loses the
+connection or sees the server stop tries again after 0.5 s, waiting twice as
+long after each failed attempt up to 5 s. A client refused as `Busy` tries
+every 5 s. Other causes, such as a version mismatch, a refusal, or another
+client taking over, wait for `connect()` as before. Between attempts
+`get_state()` reports `Reconnecting`; `connect()` tries at once and
+`disconnect()` stops. Each connection synchronizes every state from the
+server, so what the UI changed while disconnected is replaced.
+
 ## One client at a time
 
 The server serves one client. By default a client that connects takes over and
@@ -305,13 +326,13 @@ disconnected. In Rust the callback is `StateServer::on_connect_request`.
 
 On the client, `get_state()` reports `Connecting` during an attempt,
 `WaitingForApproval` while the server's callback decides, then `Connected`.
-After `Failed` or `Disconnected`, `last_reason()` returns why as a
-`CloseReason`, such as `Unreachable`, `Timeout`, `VersionMismatch`,
+After `Failed`, `Disconnected` or `Reconnecting`, `last_reason()` returns why
+as a `CloseReason`, such as `Unreachable`, `Timeout`, `VersionMismatch`,
 `TokenRejected`, `Busy`, `Refused`, `Replaced`, `ClosedByServer`,
 `ServerStopped`, or `ConnectionLost`, and `last_error()` describes it in words.
 An attempt the server does not answer fails after the client builder's
-`connect_timeout` (10 s by default). The server sends its reasons in
-the WebSocket close frame, so browser clients receive them too.
+`connect_timeout` (10 s by default). The server sends its reasons in the
+WebSocket close frame, so browser clients receive them too.
 
 ## Examples
 

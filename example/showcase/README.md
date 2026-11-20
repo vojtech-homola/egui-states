@@ -30,7 +30,8 @@ cargo run -p showcase_gui --bin showcase-gui
 
 Click **Connect** and expand the feature sections to edit values, emit signals,
 and explore collection and data controls. Both servers use loopback port
-**8091**; run only one at a time. Stop the server with Ctrl+C.
+**8091**; run only one at a time. Stop the server with Ctrl+C; the GUI shows
+**Reconnecting…** and connects again by itself once a server runs again.
 
 ## IPython console
 

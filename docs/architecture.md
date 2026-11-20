@@ -71,6 +71,13 @@ answering is dropped by the heartbeat without a close frame, as it no longer
 reads; the client then reports `ConnectionLost`. A client attempt that gets no
 answer at all fails with `Timeout` after the client's connect timeout.
 
+A client built with reconnecting starts a new attempt by itself only after
+causes that can pass: an unreachable server, a timeout, a lost connection or a
+stopped server (4007), with a wait that doubles up to a maximum, and a busy
+server (4003), with a wait of its own. A busy server frees its place once the
+heartbeat drops a client that vanished. The client does not retry 4006: the
+server disconnecting it would otherwise be undone at once.
+
 ## State directions
 
 - `Value` is stored by both peers. Either peer can replace it; signaling an

@@ -2,7 +2,7 @@ use std::error::Error;
 
 use eframe::{App, CreationContext};
 use egui::{Color32, ColorImage};
-use egui_states::{Client, ClientBuilder, ConnectionState, Tls};
+use egui_states::{Client, ClientBuilder, ConnectionState, Reconnect, Tls};
 
 mod collections;
 mod data;
@@ -59,7 +59,10 @@ impl MainApp {
         host: Option<String>,
         tls: Option<Tls>,
     ) -> Result<Box<dyn App>, Box<dyn Error + Send + Sync>> {
-        let mut builder = ClientBuilder::<ShowcaseState>::new(cc.egui_ctx.clone(), port);
+        // After the first connect, the client connects again by itself when
+        // the server restarts or the connection drops.
+        let mut builder = ClientBuilder::<ShowcaseState>::new(cc.egui_ctx.clone(), port)
+            .reconnect(Reconnect::default());
         if let Some(host) = host {
             builder = builder.host(host);
         }
@@ -99,6 +102,10 @@ impl eframe::App for MainApp {
                         }
                         ConnectionState::Disconnected => {
                             egui::Button::new("Reconnect").fill(egui::Color32::LIGHT_RED)
+                        }
+                        // A click tries at once instead of after the delay.
+                        ConnectionState::Reconnecting => {
+                            egui::Button::new("Reconnecting…").fill(egui::Color32::LIGHT_YELLOW)
                         }
                         // `Failed` and any state added in the future.
                         _ => egui::Button::new("Retry").fill(egui::Color32::LIGHT_RED),

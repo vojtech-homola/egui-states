@@ -52,6 +52,164 @@ struct Settings {
     version: Option<u64>,
     token: Option<String>,
     connect_timeout: Duration,
+    reconnect: Option<Reconnect>,
+}
+
+/// When the client connects again by itself after a connection attempt
+/// failed or a connection ended.
+///
+/// Set it with [`ClientBuilder::reconnect`]. The client retries only when
+/// the cause can pass:
+///
+/// - [`CloseReason::Unreachable`], [`CloseReason::Timeout`],
+///   [`CloseReason::ConnectionLost`] and [`CloseReason::ServerStopped`] after
+///   [`Self::delay`], which doubles with each failed attempt up to
+///   [`Self::max_delay`];
+/// - [`CloseReason::Busy`] after [`Self::busy_delay`], since another client
+///   holds the connection. The server drops a client that stopped answering
+///   after its heartbeat timeout, so a connection the network left half-open
+///   frees the server in time.
+///
+/// Every other reason waits for [`Client::connect`], as without reconnecting:
+/// a version, token or protocol mismatch would fail again, a refusal was the
+/// server's decision, and retrying after [`CloseReason::Replaced`] would take
+/// the connection back from the client that replaced this one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Reconnect {
+    /// How long the client waits before the first new attempt. Default
+    /// 500 ms.
+    pub delay: Duration,
+    /// The longest wait between attempts. Default 5 s.
+    pub max_delay: Duration,
+    /// How long the client waits after the server refused it as
+    /// [`CloseReason::Busy`]. Default 5 s.
+    pub busy_delay: Duration,
+}
+
+impl Default for Reconnect {
+    fn default() -> Self {
+        Self {
+            delay: Duration::from_millis(500),
+            max_delay: Duration::from_secs(5),
+            busy_delay: Duration::from_secs(5),
+        }
+    }
+}
+
+/// The waits of the client's automatic reconnecting.
+struct Retry {
+    policy: Option<Reconnect>,
+    /// The wait before the next attempt after an unreachable server or a
+    /// lost connection.
+    delay: Duration,
+}
+
+impl Retry {
+    fn new(policy: Option<Reconnect>) -> Self {
+        let delay = policy.map_or(Duration::ZERO, |policy| policy.delay);
+        Self { policy, delay }
+    }
+
+    /// Restarts the waits from the policy's first delay.
+    fn reset(&mut self) {
+        *self = Self::new(self.policy);
+    }
+
+    /// How long to wait before the next attempt after one that ended for
+    /// `reason`; `None` when the client waits for `Client::connect`.
+    fn after(&mut self, reason: Option<CloseReason>) -> Option<Duration> {
+        let policy = self.policy?;
+        match reason? {
+            CloseReason::Busy => Some(policy.busy_delay),
+            CloseReason::Unreachable
+            | CloseReason::Timeout
+            | CloseReason::ConnectionLost
+            | CloseReason::ServerStopped => {
+                let delay = self.delay.min(policy.max_delay);
+                self.delay = delay.saturating_mul(2).min(policy.max_delay);
+                Some(delay)
+            }
+            _ => None,
+        }
+    }
+
+    /// Ends an attempt that failed for `reason`, in `Reconnecting` or
+    /// `Failed`; returns the wait before the next attempt.
+    fn failed(
+        &mut self,
+        client: &ClientCore,
+        reason: Option<CloseReason>,
+        error: String,
+    ) -> Option<Duration> {
+        let next = self.after(reason);
+        match next {
+            Some(_) => client.reconnecting(reason, Some(error)),
+            None => client.fail(reason, error),
+        }
+        next
+    }
+
+    /// Ends an established connection that ended for `reason`, in
+    /// `Reconnecting` or `Disconnected`; returns the wait before the next
+    /// attempt.
+    fn disconnected(
+        &mut self,
+        client: &ClientCore,
+        reason: Option<CloseReason>,
+        error: Option<String>,
+    ) -> Option<Duration> {
+        let next = self.after(reason);
+        match next {
+            Some(_) => client.reconnecting(reason, error),
+            None => client.disconnected(reason, error),
+        }
+        next
+    }
+}
+
+/// How the wait for the next connection attempt ended.
+enum Wake {
+    /// The attempt is due.
+    Attempt,
+    /// The user disconnected, which stops the reconnecting.
+    Cancelled,
+}
+
+/// Waits `delay` for an automatic attempt, or less if the user calls
+/// `Client::connect`.
+async fn wait_retry(delay: Duration, rx: &mut MessageReceiver, client: &ClientCore) -> Wake {
+    let requested = pin!(client.wait_connection());
+    let due = select(timer::sleep(delay), requested);
+    match select(due, pin!(disconnect_requested(rx, client))).await {
+        Either::Left(_) => Wake::Attempt,
+        Either::Right(_) => Wake::Cancelled,
+    }
+}
+
+/// Completes once the user calls `Client::disconnect`.
+///
+/// It reads the message queue, dropping what the UI queued: outside a
+/// connection it belongs to none. A disconnect made before the last call to
+/// `Client::connect` is ignored; it left only its close in the queue.
+async fn disconnect_requested(rx: &mut MessageReceiver, client: &ClientCore) {
+    loop {
+        match rx.recv().await {
+            Some(None) if client.disconnect_requested() => return,
+            Some(_) => {}
+            // The connection task holds a sender, so the queue never closes.
+            None => std::future::pending().await,
+        }
+    }
+}
+
+/// Drops what the UI queued, and tells whether the user called
+/// `Client::disconnect` meanwhile, as [`disconnect_requested`] does.
+fn drain_queue(rx: &mut MessageReceiver, client: &ClientCore) -> bool {
+    let mut disconnected = false;
+    while let Ok(message) = rx.try_recv() {
+        disconnected |= message.is_none() && client.disconnect_requested();
+    }
+    disconnected
 }
 
 async fn start_gui_client(
@@ -61,57 +219,82 @@ async fn start_gui_client(
     sender: MessageSender,
     client: ClientCore,
 ) {
+    let mut retry = Retry::new(settings.reconnect);
+    // The wait before the next automatic attempt; `None` waits for
+    // `Client::connect`.
+    let mut next: Option<Duration> = None;
     // Every exit from this loop is a shutdown: the user dropped the last
     // `Client` handle, so nothing can observe the connection state anymore.
     loop {
-        // wait for the connection signal
-        if client.is_shut_down()
-            || client
-                .until_shutdown(client.wait_connection())
-                .await
-                .is_none()
-        {
+        if client.is_shut_down() {
             return;
+        }
+        let wake = match next.take() {
+            Some(delay) => {
+                client
+                    .until_shutdown(wait_retry(delay, &mut rx, &client))
+                    .await
+            }
+            None => {
+                retry.reset();
+                let requested = client.until_shutdown(client.wait_connection()).await;
+                requested.map(|()| Wake::Attempt)
+            }
+        };
+        let Some(wake) = wake else {
+            return;
+        };
+        if let Wake::Cancelled = wake {
+            retry.reset();
+            client.set_state(ConnectionState::NotConnected);
+            continue;
         }
         client.set_state(ConnectionState::Connecting);
 
-        // On native targets the timeout bounds the whole attempt. In the
-        // browser it starts once the socket is open: the browser bounds the
-        // opening itself, and an abandoned opening would leave its socket.
+        // On native targets the timeout bounds the whole attempt, and a
+        // disconnect cancels the opening. In the browser the timeout starts
+        // once the socket is open: the browser bounds the opening itself, and
+        // an abandoned opening would leave its socket, so a disconnect waits
+        // for the opening to end.
         #[cfg(not(target_arch = "wasm32"))]
         let mut deadline = timer::sleep(settings.connect_timeout);
         #[cfg(not(target_arch = "wasm32"))]
-        let opening = until(build_ws(&settings.target), deadline.as_mut());
+        let opening = until(
+            until(build_ws(&settings.target), deadline.as_mut()),
+            disconnect_requested(&mut rx, &client),
+        );
         #[cfg(target_arch = "wasm32")]
-        let opening = async { Some(build_ws(&settings.target).await) };
+        let opening = async { Some(Some(build_ws(&settings.target).await)) };
 
         // try to connect to the server
         let Some(opened) = client.until_shutdown(opening).await else {
             return;
         };
         let (socket_read, mut socket_send) = match opened {
-            Some(Ok(socket)) => socket,
-            Some(Err(error)) => {
-                client.fail(Some(CloseReason::Unreachable), error);
+            Some(Some(Ok(socket))) => socket,
+            Some(Some(Err(error))) => {
+                next = retry.failed(&client, Some(CloseReason::Unreachable), error);
+                continue;
+            }
+            Some(None) => {
+                let error = no_answer(settings.connect_timeout);
+                next = retry.failed(&client, Some(CloseReason::Timeout), error);
                 continue;
             }
             None => {
-                client.fail(
-                    Some(CloseReason::Timeout),
-                    no_answer(settings.connect_timeout),
-                );
+                client.set_state(ConnectionState::NotConnected);
                 continue;
             }
         };
         #[cfg(target_arch = "wasm32")]
         let deadline = timer::sleep(settings.connect_timeout);
 
-        // clean message queue before starting
-        while !rx.is_empty() {
-            let _ = rx.recv().await;
+        // What the UI queued so far belongs to no connection.
+        if drain_queue(&mut rx, &client) {
+            let _ = client.until_shutdown(socket_send.close()).await;
+            client.set_state(ConnectionState::NotConnected);
+            continue;
         }
-        // A disconnect requested before this point went with the queue.
-        client.0.closed_by_user.store(false, Ordering::Release);
 
         // communicate handshake and initialization -------------------------
         let message = ClientHeader::serialize_handshake(
@@ -124,10 +307,8 @@ async fn start_gui_client(
             return;
         };
         if let Err(error) = sent {
-            client.fail(
-                Some(CloseReason::ConnectionLost),
-                format!("Sending handshake failed: {error}"),
-            );
+            let error = format!("Sending handshake failed: {error}");
+            next = retry.failed(&client, Some(CloseReason::ConnectionLost), error);
             continue;
         }
 
@@ -144,7 +325,7 @@ async fn start_gui_client(
             Ok(Answer::Accepted(first)) => first,
             Ok(Answer::NotAccepted(reason, error)) => {
                 client.end_attempt();
-                client.fail(Some(reason), error);
+                next = retry.failed(&client, Some(reason), error);
                 continue;
             }
             Ok(Answer::Cancelled) => {
@@ -160,6 +341,7 @@ async fn start_gui_client(
             }
         };
         client.set_state(ConnectionState::Connected);
+        retry.reset();
 
         let session =
             run_session(socket_read, socket_send, rx, &vals, &sender, &client, first).await;
@@ -190,10 +372,12 @@ async fn start_gui_client(
                 client.fail(None, format!("Client {} task panicked: {}", task, message))
             }
             // The user's own disconnect has no reason to report.
-            SessionEnd::Closed(..) if client.0.closed_by_user.load(Ordering::Acquire) => {
+            SessionEnd::Closed(..) if client.disconnect_requested() => {
                 client.disconnected(None, None)
             }
-            SessionEnd::Closed(reason, error) => client.disconnected(reason, error),
+            SessionEnd::Closed(reason, error) => {
+                next = retry.disconnected(&client, reason, error);
+            }
         }
     }
 }
@@ -230,8 +414,7 @@ async fn await_answer(
         timeout,
     } = attempt;
     let mut waiting = false;
-    // Ends when the user disconnects, which closes the queue.
-    let mut cancelled = pin!(async { while let Some(Some(_)) = rx.recv().await {} });
+    let mut cancelled = pin!(disconnect_requested(rx, client));
     loop {
         let read = until(socket_read.read(), deadline.as_mut());
         let read = match select(pin!(read), cancelled.as_mut()).await {
@@ -542,8 +725,10 @@ pub(crate) fn print_error(error: &str) {
 /// [`Self::WaitingForApproval`]. An established connection that ends becomes
 /// [`Self::Disconnected`]. An attempt that does not reach an established
 /// connection, or a connection whose background task panicked, ends in
-/// [`Self::Failed`]. [`Client::last_reason`] and [`Client::last_error`] tell
-/// why a connection failed or ended.
+/// [`Self::Failed`]. A client built with [`ClientBuilder::reconnect`] goes to
+/// [`Self::Reconnecting`] instead when the cause can pass, and starts the
+/// next attempt by itself. [`Client::last_reason`] and [`Client::last_error`]
+/// tell why a connection failed or ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ConnectionState {
@@ -566,12 +751,17 @@ pub enum ConnectionState {
     /// [`Client::last_error`] describe the cause; call [`Client::connect`] to
     /// retry.
     Failed,
+    /// An attempt failed or a connection ended, and the client tries again
+    /// after a delay ([`ClientBuilder::reconnect`]). [`Client::last_reason`]
+    /// and [`Client::last_error`] describe the cause. [`Client::connect`]
+    /// starts the attempt at once; [`Client::disconnect`] stops trying.
+    Reconnecting,
 }
 
 /// Why a connection attempt failed or a connection ended.
 ///
-/// [`Client::last_reason`] returns it after [`ConnectionState::Failed`] and
-/// [`ConnectionState::Disconnected`]. The server sends the reasons it decides
+/// [`Client::last_reason`] returns it after [`ConnectionState::Failed`],
+/// [`ConnectionState::Disconnected`] and [`ConnectionState::Reconnecting`]. The server sends the reasons it decides
 /// on, so they reach the client also in the browser.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
@@ -648,9 +838,9 @@ impl fmt::Display for CloseReason {
 /// The connection state with why it was reached.
 struct Status {
     state: ConnectionState,
-    /// Set only together with `Failed` or `Disconnected`.
+    /// Set only together with `Failed`, `Disconnected` or `Reconnecting`.
     reason: Option<CloseReason>,
-    /// Set only together with `Failed` or `Disconnected`.
+    /// Set only together with `Failed`, `Disconnected` or `Reconnecting`.
     error: Option<String>,
 }
 
@@ -661,7 +851,8 @@ struct ClientInner {
     shutdown: Event,
     status: RwLock<Status>,
     /// Set by `Client::disconnect`, so the end of the connection it closes
-    /// has no reason to report.
+    /// has no reason to report and no reconnecting follows; cleared by
+    /// `Client::connect`.
     closed_by_user: AtomicBool,
     sender: MessageSender,
 }
@@ -769,6 +960,24 @@ impl ClientCore {
         });
     }
 
+    /// Ends the attempt or connection in `Reconnecting`.
+    fn reconnecting(&self, reason: Option<CloseReason>, error: Option<String>) {
+        if let Some(error) = &error {
+            print_error(error);
+        }
+        self.set_status(Status {
+            state: ConnectionState::Reconnecting,
+            reason,
+            error,
+        });
+    }
+
+    /// Tells whether the user called `Client::disconnect` after the last call
+    /// to `Client::connect`.
+    fn disconnect_requested(&self) -> bool {
+        self.0.closed_by_user.load(Ordering::Acquire)
+    }
+
     /// Ends an established connection in `Disconnected`.
     fn disconnected(&self, reason: Option<CloseReason>, error: Option<String>) {
         self.set_status(Status {
@@ -834,18 +1043,25 @@ impl Client {
 
     /// Starts or retries a connection to the configured server asynchronously.
     ///
-    /// A failed attempt waits for another call to `connect`; it does not block
-    /// the calling UI thread.
+    /// It does not block the calling UI thread. A failed attempt waits for
+    /// another call to `connect`, unless the client was built with
+    /// [`ClientBuilder::reconnect`]; then a call during
+    /// [`ConnectionState::Reconnecting`] starts the next attempt at once.
     pub fn connect(&self) {
-        self.core().0.connect_signal.set();
+        let inner = &self.core().0;
+        inner.closed_by_user.store(false, Ordering::Release);
+        inner.connect_signal.set();
     }
 
-    /// Closes the active connection, or cancels a connection attempt that
-    /// waits for the server's answer.
+    /// Closes the active connection, cancels a connection attempt, or stops
+    /// reconnecting.
     ///
     /// After a closed connection the client reports
     /// [`ConnectionState::Disconnected`] without a reason; after a cancelled
-    /// attempt, [`ConnectionState::NotConnected`].
+    /// attempt or reconnecting, [`ConnectionState::NotConnected`]. The client
+    /// connects again only after [`Self::connect`]. In the browser, a
+    /// disconnect while the connection is being opened takes effect once it
+    /// is open or has failed.
     pub fn disconnect(&self) {
         self.core().0.closed_by_user.store(true, Ordering::Release);
         self.core().0.sender.close();
@@ -856,8 +1072,8 @@ impl Client {
         self.core().0.status.read().state
     }
 
-    /// Returns why the client is in [`ConnectionState::Failed`] or
-    /// [`ConnectionState::Disconnected`].
+    /// Returns why the client is in [`ConnectionState::Failed`],
+    /// [`ConnectionState::Disconnected`] or [`ConnectionState::Reconnecting`].
     ///
     /// Returns `None` in every other state, after [`Self::disconnect`], and
     /// after a background task panicked, which [`Self::last_error`] describes.
@@ -867,7 +1083,8 @@ impl Client {
     }
 
     /// Returns a description of why the client is in
-    /// [`ConnectionState::Failed`] or [`ConnectionState::Disconnected`].
+    /// [`ConnectionState::Failed`], [`ConnectionState::Disconnected`] or
+    /// [`ConnectionState::Reconnecting`].
     ///
     /// The description is meant for people; it includes the server's own
     /// explanation when the server refused or closed the connection. Use
@@ -897,6 +1114,7 @@ pub struct ClientBuilder<T> {
     version: Option<u64>,
     token: Option<String>,
     connect_timeout: Duration,
+    reconnect: Option<Reconnect>,
     #[cfg(all(feature = "tls", not(target_arch = "wasm32")))]
     tls: Option<Tls>,
 }
@@ -916,8 +1134,9 @@ where
     ///
     /// The client requests repaints of `context` when the connection state
     /// changes or the server asks for an update. No application version or
-    /// authentication token is set by default, and a connection attempt waits
-    /// [`DEFAULT_CONNECT_TIMEOUT`] for the server. The derived [`State::new`]
+    /// authentication token is set by default, a connection attempt waits
+    /// [`DEFAULT_CONNECT_TIMEOUT`] for the server, and the client does not
+    /// reconnect by itself. The derived [`State::new`]
     /// implementation runs during this call.
     pub fn new(context: Context, port: u16) -> Self {
         let (sender, rx) = MessageSender::new();
@@ -937,6 +1156,7 @@ where
             version: None,
             token: None,
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
+            reconnect: None,
             #[cfg(all(feature = "tls", not(target_arch = "wasm32")))]
             tls: None,
         }
@@ -995,6 +1215,35 @@ where
         }
     }
 
+    /// Connects again by itself after a connection attempt failed or a
+    /// connection ended, as `reconnect` says.
+    ///
+    /// Reconnecting starts with the first call to [`Client::connect`] and
+    /// stops with [`Client::disconnect`]. Between attempts the client reports
+    /// [`ConnectionState::Reconnecting`]. Each connection synchronizes every
+    /// state from the server, which replaces what the UI changed while
+    /// disconnected.
+    ///
+    /// ```no_run
+    /// # use egui_states::{ClientBuilder, Reconnect, State, StatesCreator, Value};
+    /// # struct AppState { count: Value<i32> }
+    /// # impl State for AppState {
+    /// #     const NAME: &'static str = "AppState";
+    /// #     fn new(c: &mut impl StatesCreator) -> Self { Self { count: c.value("count", 0) } }
+    /// # }
+    /// # let context = egui::Context::default();
+    /// let (state, client) = ClientBuilder::<AppState>::new(context, 8091)
+    ///     .reconnect(Reconnect::default())
+    ///     .build();
+    /// client.connect();
+    /// ```
+    pub fn reconnect(self, reconnect: Reconnect) -> Self {
+        Self {
+            reconnect: Some(reconnect),
+            ..self
+        }
+    }
+
     /// Connects with TLS, which encrypts the connection, checking the server
     /// as `tls` says.
     ///
@@ -1049,6 +1298,7 @@ where
             version,
             token,
             connect_timeout,
+            reconnect,
             #[cfg(all(feature = "tls", not(target_arch = "wasm32")))]
             tls,
         } = self;
@@ -1084,6 +1334,7 @@ where
             version,
             token,
             connect_timeout,
+            reconnect,
         };
 
         #[cfg(not(target_arch = "wasm32"))]
@@ -1331,6 +1582,42 @@ mod tests {
         });
         assert_eq!(*seen.lock(), [2, 3]);
         assert_eq!(status.get(), 3);
+    }
+
+    /// Unreachable servers and lost connections are retried with waits that
+    /// double up to the longest, a busy server after its own wait, and the
+    /// other causes not at all.
+    #[test]
+    fn reconnecting_retries_only_causes_that_can_pass() {
+        let policy = Reconnect {
+            delay: Duration::from_millis(100),
+            max_delay: Duration::from_millis(350),
+            busy_delay: Duration::from_secs(2),
+        };
+        let mut retry = Retry::new(Some(policy));
+        let millis = |retry: &mut Retry, reason| retry.after(Some(reason)).map(|d| d.as_millis());
+        assert_eq!(millis(&mut retry, CloseReason::Unreachable), Some(100));
+        assert_eq!(millis(&mut retry, CloseReason::Timeout), Some(200));
+        assert_eq!(millis(&mut retry, CloseReason::Busy), Some(2000));
+        assert_eq!(millis(&mut retry, CloseReason::ConnectionLost), Some(350));
+        assert_eq!(millis(&mut retry, CloseReason::ServerStopped), Some(350));
+        for reason in [
+            CloseReason::ProtocolMismatch,
+            CloseReason::VersionMismatch,
+            CloseReason::TokenRejected,
+            CloseReason::Refused,
+            CloseReason::Replaced,
+            CloseReason::ClosedByServer,
+        ] {
+            assert_eq!(retry.after(Some(reason)), None, "{reason:?}");
+        }
+        // A panic has no reason and is not retried either.
+        assert_eq!(retry.after(None), None);
+        retry.reset();
+        assert_eq!(millis(&mut retry, CloseReason::Unreachable), Some(100));
+
+        let mut never = Retry::new(None);
+        assert_eq!(never.after(Some(CloseReason::Unreachable)), None);
     }
 
     #[test]

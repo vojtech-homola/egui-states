@@ -114,7 +114,7 @@ pub use client::tls::Tls;
 #[cfg(feature = "client")]
 pub use client::{
     client::ClientBuilder,
-    client::{Client, CloseReason, ConnectionState, DEFAULT_CONNECT_TIMEOUT},
+    client::{Client, CloseReason, ConnectionState, DEFAULT_CONNECT_TIMEOUT, Reconnect},
     states::{
         atomics::{Atomic, AtomicLock, AtomicLockStatic, AtomicStatic, FallbackLock, UpdateLock},
         data::{Data, DataMulti, HeaderValue},

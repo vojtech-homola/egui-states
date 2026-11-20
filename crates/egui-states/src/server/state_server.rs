@@ -2037,7 +2037,15 @@ mod connection_tests {
         options: ServerOptions,
         token: Option<&str>,
     ) -> (StateServer, crate::server::Value<i32>, u16) {
-        let port = free_port();
+        server_on(options, token, free_port())
+    }
+
+    /// A server with one `i32` value, started on `port`.
+    fn server_on(
+        options: ServerOptions,
+        token: Option<&str>,
+        port: u16,
+    ) -> (StateServer, crate::server::Value<i32>, u16) {
         let server = StateServer::with_options(options).unwrap();
         let value = crate::server::Value::new(&server, "root.value", 731_i32, false).unwrap();
         server.finalize().unwrap();
@@ -2847,6 +2855,154 @@ mod connection_tests {
             fourth.get_state() == ConnectionState::Disconnected
         });
         assert_eq!(fourth.last_reason(), Some(CloseReason::ServerStopped));
+    }
+
+    /// Waits short enough for the tests to see several attempts.
+    const QUICK_RECONNECT: crate::Reconnect = crate::Reconnect {
+        delay: Duration::from_millis(20),
+        max_delay: Duration::from_millis(50),
+        busy_delay: Duration::from_millis(50),
+    };
+
+    /// A client that reconnects by itself, not connected yet.
+    fn reconnecting_client(port: u16) -> crate::Client {
+        ClientBuilder::<ClientTestState>::new(egui::Context::default(), port)
+            .reconnect(QUICK_RECONNECT)
+            .build()
+            .1
+    }
+
+    /// Tells that `client` stays in `state` while it would have made several
+    /// attempts.
+    fn stays(client: &crate::Client, state: ConnectionState) -> bool {
+        thread::sleep(Duration::from_millis(200));
+        client.get_state() == state
+    }
+
+    /// A reconnecting client keeps trying until the server is up, and again
+    /// after the server stopped, until it disconnects; a server that
+    /// disconnects it is not reconnected to.
+    #[test]
+    fn a_reconnecting_client_waits_for_the_server() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let port = free_port();
+        let client = reconnecting_client(port);
+        client.connect();
+        wait("server unreachable", || {
+            client.get_state() == ConnectionState::Reconnecting
+        });
+        assert_eq!(client.last_reason(), Some(CloseReason::Unreachable));
+        assert!(client.last_error().is_some());
+
+        let (server, _value, _) = server_on(ServerOptions::new(), None, port);
+        wait("connected once the server is up", || {
+            client.get_state() == ConnectionState::Connected
+        });
+
+        server.disconnect_client();
+        wait("disconnected by the server", || {
+            client.get_state() == ConnectionState::Disconnected
+        });
+        assert_eq!(client.last_reason(), Some(CloseReason::ClosedByServer));
+        assert!(stays(&client, ConnectionState::Disconnected));
+        assert!(!server.is_connected());
+
+        client.connect();
+        wait("connected again", || {
+            client.get_state() == ConnectionState::Connected
+        });
+        server.stop();
+        wait("server stopped", || {
+            client.get_state() == ConnectionState::Reconnecting
+        });
+        assert!(matches!(
+            client.last_reason(),
+            Some(CloseReason::ServerStopped | CloseReason::Unreachable)
+        ));
+
+        client.disconnect();
+        wait("reconnecting stopped", || {
+            client.get_state() == ConnectionState::NotConnected
+        });
+        assert_eq!(client.last_reason(), None);
+        assert!(stays(&client, ConnectionState::NotConnected));
+    }
+
+    /// A client the server refuses as busy tries again and gets in once the
+    /// connected client leaves; a replaced client does not take the
+    /// connection back.
+    #[test]
+    fn a_reconnecting_client_retries_only_causes_that_can_pass() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let options = ServerOptions {
+            client_policy: crate::server::ClientPolicy::Reject,
+            ..ServerOptions::new()
+        };
+        let (rejecting, _value, port) = server(options, None);
+        let first = reconnecting_client(port);
+        first.connect();
+        wait("first connected", || {
+            first.get_state() == ConnectionState::Connected
+        });
+        let second = reconnecting_client(port);
+        second.connect();
+        wait("second refused as busy", || {
+            second.get_state() == ConnectionState::Reconnecting
+        });
+        assert_eq!(second.last_reason(), Some(CloseReason::Busy));
+        assert_eq!(first.get_state(), ConnectionState::Connected);
+
+        first.disconnect();
+        wait("second connected once the first left", || {
+            second.get_state() == ConnectionState::Connected
+        });
+        rejecting.stop();
+
+        let (server, _value, port) = server(ServerOptions::new(), None);
+        let first = reconnecting_client(port);
+        first.connect();
+        wait("first connected", || {
+            first.get_state() == ConnectionState::Connected
+        });
+        let second = reconnecting_client(port);
+        second.connect();
+        wait("first replaced", || {
+            first.get_state() == ConnectionState::Disconnected
+        });
+        assert_eq!(first.last_reason(), Some(CloseReason::Replaced));
+        assert!(stays(&first, ConnectionState::Disconnected));
+        assert_eq!(second.get_state(), ConnectionState::Connected);
+        server.stop();
+    }
+
+    /// A disconnect cancels an attempt that is opening the connection, also
+    /// with reconnecting, and one made before the next connect does not
+    /// cancel it.
+    #[test]
+    fn disconnect_cancels_an_opening_attempt() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        // A listener that never answers keeps the attempt opening.
+        let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let client = reconnecting_client(port);
+        client.disconnect();
+        client.connect();
+        wait("connecting", || {
+            client.get_state() == ConnectionState::Connecting
+        });
+        assert!(stays(&client, ConnectionState::Connecting));
+        client.disconnect();
+        wait("cancelled", || {
+            client.get_state() == ConnectionState::NotConnected
+        });
+        assert!(stays(&client, ConnectionState::NotConnected));
+        drop(listener);
     }
 
     const PANIC_VALUE: i32 = -13;
