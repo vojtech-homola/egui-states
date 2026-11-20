@@ -318,7 +318,7 @@ impl StatesCreator for StatesCreatorBuild {
             states_creator::VALUE_TAKE_HASH_ID,
         );
 
-        let value = ValueTake::new(full_name, id, type_id, self.sender.clone());
+        let value = ValueTake::new(full_name, id, type_id, None, self.sender.clone());
 
         self.states
             .push(StateType::ValueTake(name.to_owned(), T::get_type()));

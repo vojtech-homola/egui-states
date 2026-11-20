@@ -124,7 +124,8 @@ pub use client::{
         initial_value::{InitValue, InitialValue},
         map::MapState,
         values::{
-            Changed, Diff, DiffAtomic, Signal, Static, StaticAtomic, Value, ValueAtomic, ValueTake,
+            Changed, Diff, DiffAtomic, Signal, Static, StaticAtomic, VALUE_TAKE_QUEUE, Value,
+            ValueAtomic, ValueTake,
         },
         vec::VecState,
     },

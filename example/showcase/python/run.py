@@ -51,8 +51,15 @@ def register_callbacks(server: StatesServer) -> None:  # noqa: PLR0915
     def on_enum(value: PrimaryChoice) -> None:
         print(f"enum changed: {value.name}")
 
+    emitted = 0
+
     def on_empty_signal() -> None:
+        nonlocal emitted
+        emitted += 1
         print("empty signal emitted")
+        # A burst the queued take keeps in full.
+        for line in ("received", "working", "done"):
+            states.value_take.take_log.set(f"empty signal {emitted}: {line}")
 
     def on_number_signal(value: float) -> None:
         print(f"number signal emitted: {value:.3f}")

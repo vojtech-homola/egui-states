@@ -1,6 +1,8 @@
 #![cfg(feature = "client")]
 
-use egui_states::{ClientBuilder, Signal, State, Static, StaticAtomic, Value, ValueAtomic};
+use egui_states::{
+    ClientBuilder, Signal, State, Static, StaticAtomic, Value, ValueAtomic, ValueTake,
+};
 
 #[egui_states::typed]
 #[derive(Clone, Copy, Debug, Default, PartialEq, egui_states::InitialValue)]
@@ -47,6 +49,10 @@ struct Initials {
     flag: StaticAtomic<bool>,
     #[state(queue, init = 3)]
     queued: Value<u8>,
+    #[state(queue)]
+    events: ValueTake<String>,
+    #[state(queue = 3)]
+    few_events: ValueTake<u8>,
     plain: Value<i32>,
     reset: Signal<()>,
     forwarded: Forwarded,
@@ -57,6 +63,7 @@ fn init_options_set_the_client_values() {
     let (state, _client) = ClientBuilder::<Initials>::new(egui::Context::default(), 0).build();
 
     assert_eq!(state.gain.get(), 0.5);
+    assert!(state.events.is_empty() && state.few_events.is_empty());
     assert_eq!(state.from_item.get(), 0.25);
     assert_eq!(state.status.get(), "ready");
     assert_eq!(state.mode.get(), Mode::Auto);

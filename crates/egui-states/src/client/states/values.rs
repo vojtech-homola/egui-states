@@ -2,6 +2,7 @@
 
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
@@ -689,44 +690,118 @@ impl<T> Clone for Signal<T> {
 }
 
 // ValueTake --------------------------------------------
-/// An untaken value and whether taking it sends an acknowledgement.
-type Pending<T> = RwLock<Option<(T, bool)>>;
+/// The default capacity of a queued [`ValueTake`], `#[state(queue)]`.
+pub const VALUE_TAKE_QUEUE: usize = 100;
+
+/// The untaken values, each with whether taking it sends an
+/// acknowledgement, oldest first.
+struct Pending<T> {
+    values: VecDeque<(T, bool)>,
+    /// `None` for a single value that a new one replaces.
+    capacity: Option<usize>,
+    /// Whether a full queue dropped a value since it was last below its
+    /// capacity, so the overflow was reported.
+    overflowed: bool,
+}
 
 /// A one-shot value sent by the server and consumed by the client.
 ///
-/// A newly received value replaces an untaken value. Taking a blocking value
-/// sends the acknowledgement that releases the server's next send. An untaken
-/// value stays takeable while the client is disconnected, and is dropped once
-/// a new connection is accepted.
+/// By default a newly received value replaces an untaken value. A field
+/// marked `#[state(queue)]` keeps every value in arrival order instead, up to
+/// [`VALUE_TAKE_QUEUE`] values, or N with `#[state(queue = N)]`; when the
+/// queue is full the oldest value is dropped, and the client reports that
+/// once to the server as an error, until the queue was below its capacity
+/// again.
+///
+/// Taking a blocking value sends the acknowledgement that releases the
+/// server's next send. Untaken values stay takeable while the client is
+/// disconnected, and are dropped once a new connection is accepted.
 pub struct ValueTake<T> {
-    shared: Arc<Shared<Pending<T>>>,
+    shared: Arc<Shared<RwLock<Pending<T>>>>,
 }
 
 impl<T> ValueTake<T> {
-    pub(crate) fn new(name: String, id: u64, type_id: u32, sender: MessageSender) -> Self {
+    /// A value that keeps up to `capacity` untaken values, or one that a new
+    /// one replaces for `None`.
+    pub(crate) fn new(
+        name: String,
+        id: u64,
+        type_id: u32,
+        capacity: Option<usize>,
+        sender: MessageSender,
+    ) -> Self {
+        let pending = Pending {
+            values: VecDeque::new(),
+            capacity: capacity.map(|capacity| capacity.max(1)),
+            overflowed: false,
+        };
         Self {
-            shared: Shared::new(name, id, type_id, RwLock::new(None), sender),
+            shared: Shared::new(name, id, type_id, RwLock::new(pending), sender),
         }
     }
 
-    /// Removes and returns the pending value, if one has arrived.
+    /// Removes and returns the oldest untaken value, if one has arrived.
     ///
     /// Each value can be taken once. Taking a blocking value also acknowledges
-    /// it, allowing the server to send the next pending value.
+    /// it, allowing the server to send the next pending value. A queued value
+    /// is drained in arrival order:
+    ///
+    /// ```no_run
+    /// # fn ui(events: &egui_states::ValueTake<String>, log: &mut Vec<String>) {
+    /// while let Some(event) = events.take() {
+    ///     log.push(event);
+    /// }
+    /// # }
+    /// ```
     pub fn take(&self) -> Option<T> {
-        let value = self.shared.value.write().take();
-        if let Some((val, blocking)) = value {
-            if blocking {
-                self.shared.sender.send(ChannelMessage::Ack(self.shared.id));
+        let (value, blocking) = {
+            let mut pending = self.shared.value.write();
+            let taken = pending.values.pop_front()?;
+            if pending
+                .capacity
+                .is_some_and(|capacity| pending.values.len() < capacity)
+            {
+                pending.overflowed = false;
             }
-            return Some(val);
+            taken
+        };
+        if blocking {
+            self.shared.sender.send(ChannelMessage::Ack(self.shared.id));
         }
-        None
+        Some(value)
     }
 
     /// Returns whether a value is waiting to be taken.
     pub fn is_some(&self) -> bool {
-        self.shared.value.read().is_some()
+        !self.shared.value.read().values.is_empty()
+    }
+
+    /// Returns the number of values waiting to be taken: at most one without
+    /// a queue.
+    pub fn len(&self) -> usize {
+        self.shared.value.read().values.len()
+    }
+
+    /// Returns whether no value waits to be taken.
+    pub fn is_empty(&self) -> bool {
+        self.shared.value.read().values.is_empty()
+    }
+
+    /// Drops every value waiting to be taken. A blocking one is
+    /// acknowledged, as taking it would.
+    pub fn clear(&self) {
+        let blocking = {
+            let mut pending = self.shared.value.write();
+            pending.overflowed = false;
+            pending
+                .values
+                .drain(..)
+                .filter(|(_, blocking)| *blocking)
+                .count()
+        };
+        for _ in 0..blocking {
+            self.shared.sender.send(ChannelMessage::Ack(self.shared.id));
+        }
     }
 }
 
@@ -751,19 +826,46 @@ where
             }
             format!("Parse error: {} for value: {}", e, self.shared.name)
         })?;
-        *self.shared.value.write() = Some((value, blocking));
 
-        Ok(())
+        let (dropped, report) = {
+            let mut pending = self.shared.value.write();
+            let Some(capacity) = pending.capacity else {
+                // The server sends no value while a blocking one is untaken,
+                // so a replaced value never waits for an acknowledgement.
+                pending.values.clear();
+                pending.values.push_back((value, blocking));
+                return Ok(());
+            };
+            pending.values.push_back((value, blocking));
+            if pending.values.len() <= capacity {
+                return Ok(());
+            }
+            let dropped = pending.values.pop_front();
+            let report = !std::mem::replace(&mut pending.overflowed, true);
+            (dropped, report)
+        };
+        if let Some((_, true)) = dropped {
+            self.shared.sender.send(ChannelMessage::Ack(self.shared.id));
+        }
+        match report {
+            true => Err(format!(
+                "ValueTake queue of {} is full; the oldest values are dropped until the UI takes them",
+                self.shared.name
+            )),
+            false => Ok(()),
+        }
     }
 
     fn disconnected(&self) {
-        if let Some((_, blocking)) = self.shared.value.write().as_mut() {
+        for (_, blocking) in self.shared.value.write().values.iter_mut() {
             *blocking = false;
         }
     }
 
     fn connected(&self) {
-        *self.shared.value.write() = None;
+        let mut pending = self.shared.value.write();
+        pending.values.clear();
+        pending.overflowed = false;
     }
 }
 
@@ -969,11 +1071,78 @@ mod tests {
     #[test]
     fn value_from_a_closed_connection_is_not_acknowledged() {
         let (sender, mut rx) = MessageSender::new();
-        let value = ValueTake::<u8>::new("take".into(), 33, 4, sender);
+        let value = ValueTake::<u8>::new("take".into(), 33, 4, None, sender);
         value.update_take(4, &[5], true).unwrap();
         value.disconnected();
         assert_eq!(value.take(), Some(5));
         assert!(rx.try_recv().is_err());
+    }
+
+    fn acks(rx: &mut tokio::sync::mpsc::UnboundedReceiver<Option<ChannelMessage>>) -> usize {
+        let mut count = 0;
+        while let Ok(Some(ChannelMessage::Ack(35))) = rx.try_recv() {
+            count += 1;
+        }
+        count
+    }
+
+    /// A queued value keeps every value in arrival order, up to its capacity;
+    /// a full queue drops the oldest and reports it once.
+    #[test]
+    fn a_queued_value_keeps_its_values_in_arrival_order() {
+        let (sender, mut rx) = MessageSender::new();
+        let value = ValueTake::<u8>::new("take".into(), 35, 4, Some(3), sender);
+        for byte in [1, 2, 3] {
+            value.update_take(4, &[byte], false).unwrap();
+        }
+        assert_eq!(value.len(), 3);
+        let error = value.update_take(4, &[4], false).unwrap_err();
+        assert!(error.contains("is full"), "{error}");
+        // Reported once until the queue was below its capacity again.
+        value.update_take(4, &[5], false).unwrap();
+        assert_eq!(value.take(), Some(3));
+        assert_eq!(value.take(), Some(4));
+        value.update_take(4, &[6], false).unwrap();
+        value.update_take(4, &[7], false).unwrap();
+        assert!(value.update_take(4, &[8], false).is_err());
+        assert_eq!(value.take(), Some(6));
+        assert_eq!(value.take(), Some(7));
+        assert_eq!(value.take(), Some(8));
+        assert_eq!(value.take(), None);
+        assert_eq!(acks(&mut rx), 0);
+
+        // Taking or clearing a blocking value acknowledges it once.
+        value.update_take(4, &[9], false).unwrap();
+        value.update_take(4, &[10], true).unwrap();
+        assert_eq!(value.take(), Some(9));
+        assert_eq!(acks(&mut rx), 0);
+        assert_eq!(value.take(), Some(10));
+        assert_eq!(acks(&mut rx), 1);
+        value.update_take(4, &[11], true).unwrap();
+        value.clear();
+        value.clear();
+        assert!(value.is_empty());
+        assert_eq!(acks(&mut rx), 1);
+
+        // A full queue that drops a blocking value acknowledges it.
+        let (sender, mut rx) = MessageSender::new();
+        let value = ValueTake::<u8>::new("take".into(), 35, 4, Some(1), sender);
+        value.update_take(4, &[1], true).unwrap();
+        assert!(value.update_take(4, &[2], false).is_err());
+        assert_eq!(acks(&mut rx), 1);
+        assert_eq!(value.take(), Some(2));
+    }
+
+    /// Without a queue a new value replaces the untaken one.
+    #[test]
+    fn a_value_without_a_queue_keeps_only_the_latest() {
+        let (sender, _rx) = MessageSender::new();
+        let value = ValueTake::<u8>::new("take".into(), 36, 4, None, sender);
+        value.update_take(4, &[1], false).unwrap();
+        value.update_take(4, &[2], false).unwrap();
+        assert_eq!(value.len(), 1);
+        assert_eq!(value.take(), Some(2));
+        assert_eq!(value.take(), None);
     }
 
     /// A value stays takeable while the client is disconnected, and is
@@ -982,7 +1151,7 @@ mod tests {
     #[test]
     fn a_new_connection_drops_untaken_values() {
         let (sender, mut rx) = MessageSender::new();
-        let value = ValueTake::<u8>::new("take".into(), 34, 4, sender);
+        let value = ValueTake::<u8>::new("take".into(), 34, 4, None, sender);
         value.update_take(4, &[5], true).unwrap();
         value.disconnected();
         assert!(value.is_some());

@@ -131,7 +131,10 @@ pub fn atomic_static(input: TokenStream) -> TokenStream {
 ///   any depth.
 /// - `queue`: server callbacks receive every change of the field in arrival
 ///   order, as `StatesCreator::queue` describes, instead of only the latest
-///   one. It applies to `Value`, `ValueAtomic` and `Signal`.
+///   one. It applies to `Value`, `ValueAtomic` and `Signal`. On a
+///   `ValueTake`, the client keeps up to `VALUE_TAKE_QUEUE` (100) untaken
+///   values in arrival order instead of only the latest.
+/// - `queue = N`: a `ValueTake` keeps up to `N` untaken values, at least 1.
 /// - `init = <expr>`: the field starts from this value instead of
 ///   `Default::default()`, on the client and in the generated server bindings.
 ///   It applies to `Value`, `ValueAtomic`, `Static` and `StaticAtomic`. The
@@ -152,6 +155,8 @@ pub fn atomic_static(input: TokenStream) -> TokenStream {
 ///     camera: Image,
 ///     #[state(queue)]
 ///     clicks: Signal<u32>,
+///     #[state(queue = 20)]
+///     events: ValueTake<String>,
 ///     #[state(init = 0.5)]
 ///     gain: Value<f32>,
 ///     #[state(init = "ready")]

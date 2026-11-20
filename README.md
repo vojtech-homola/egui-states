@@ -93,6 +93,24 @@ if state.samples.take_changed() {
 `DataMulti` has a flag per key, `take_changed(key)`, which also reports a
 removed key, and `take_any_changed()` for the whole collection.
 
+A `ValueTake<T>` delivers a one-shot value from the server, which the UI
+consumes with `take()`. By default a new value replaces one the UI has not
+taken yet. Mark it `#[state(queue)]` to keep every value in arrival order, up
+to 100, or `#[state(queue = N)]` for another limit; when the queue is full,
+the oldest value is dropped and the client reports it to the server:
+
+```rust
+#[derive(egui_states::State)]
+pub struct JobState {
+    #[state(queue)]
+    pub log: ValueTake<String>,
+}
+
+while let Some(line) = state.log.take() {
+    self.lines.push(line);
+}
+```
+
 ## File transfers
 
 `Download<M>` sends files from the server to the client and `Upload<M>` from

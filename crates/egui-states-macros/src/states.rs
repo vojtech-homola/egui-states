@@ -93,7 +93,7 @@ const BULK_HANDLES: [&str; 6] = [
 ];
 
 /// State handles that `#[state(queue)]` applies to.
-const QUEUE_HANDLES: [&str; 3] = ["Value", "ValueAtomic", "Signal"];
+const QUEUE_HANDLES: [&str; 4] = ["Value", "ValueAtomic", "Signal", "ValueTake"];
 
 /// State handles that `#[state(init = ...)]` applies to.
 const INIT_HANDLES: [&str; 4] = ["Value", "ValueAtomic", "Static", "StaticAtomic"];
@@ -116,12 +116,13 @@ const HANDLES: [&str; 10] = [
 #[derive(Default)]
 struct FieldOptions {
     low_priority: Option<syn::Path>,
-    queue: Option<syn::Path>,
+    /// The `queue` path, and the capacity of `queue = N`.
+    queue: Option<(syn::Path, Option<syn::LitInt>)>,
     /// The `init` path and its initial value expression.
     init: Option<(syn::Path, syn::Expr)>,
 }
 
-const EXPECTED_OPTIONS: &str = "`init = <expr>`, `low_priority`, or `queue`";
+const EXPECTED_OPTIONS: &str = "`init = <expr>`, `low_priority`, `queue`, or `queue = N`";
 
 fn field_options(field: &syn::Field) -> syn::Result<FieldOptions> {
     let parser = Punctuated::<Meta, Token![,]>::parse_terminated;
@@ -148,11 +149,35 @@ fn field_options(field: &syn::Field) -> syn::Result<FieldOptions> {
             let duplicate =
                 |path: &syn::Path| syn::Error::new_spanned(path, "duplicate `state` option");
             match meta {
+                Meta::Path(path) if path.is_ident("queue") => {
+                    if options.queue.is_some() {
+                        return Err(duplicate(&path));
+                    }
+                    options.queue = Some((path, None));
+                }
+                Meta::NameValue(meta) if meta.path.is_ident("queue") => {
+                    if options.queue.is_some() {
+                        return Err(duplicate(&meta.path));
+                    }
+                    let capacity = match &meta.value {
+                        syn::Expr::Lit(syn::ExprLit {
+                            lit: syn::Lit::Int(capacity),
+                            ..
+                        }) if capacity.base10_parse::<usize>().is_ok_and(|n| n >= 1) => {
+                            capacity.clone()
+                        }
+                        value => {
+                            return Err(syn::Error::new_spanned(
+                                value,
+                                "`queue = N` takes a capacity of at least 1",
+                            ));
+                        }
+                    };
+                    options.queue = Some((meta.path, Some(capacity)));
+                }
                 Meta::Path(path) => {
                     let option = if path.is_ident("low_priority") {
                         &mut options.low_priority
-                    } else if path.is_ident("queue") {
-                        &mut options.queue
                     } else if path.is_ident("init") {
                         return Err(syn::Error::new_spanned(
                             path,
@@ -172,12 +197,10 @@ fn field_options(field: &syn::Field) -> syn::Result<FieldOptions> {
                     }
                     options.init = Some((meta.path, meta.value));
                 }
-                Meta::NameValue(meta)
-                    if meta.path.is_ident("low_priority") || meta.path.is_ident("queue") =>
-                {
+                Meta::NameValue(meta) if meta.path.is_ident("low_priority") => {
                     return Err(syn::Error::new_spanned(
                         meta,
-                        "`low_priority` and `queue` take no value",
+                        "`low_priority` takes no value",
                     ));
                 }
                 Meta::NameValue(syn::MetaNameValue { path, .. })
@@ -264,7 +287,7 @@ fn field_initializer(field: &syn::Field, c: &syn::Ident) -> syn::Result<proc_mac
         None => initializer,
     };
     let initializer = match options.queue {
-        Some(option) if !QUEUE_HANDLES.contains(&type_name.as_str()) => {
+        Some((option, _)) if !QUEUE_HANDLES.contains(&type_name.as_str()) => {
             return Err(syn::Error::new_spanned(
                 option,
                 format!(
@@ -273,7 +296,16 @@ fn field_initializer(field: &syn::Field, c: &syn::Ident) -> syn::Result<proc_mac
                 ),
             ));
         }
-        Some(_) => quote!(#c.queue(|#c| #initializer)),
+        Some((_, Some(capacity))) if type_name != "ValueTake" => {
+            return Err(syn::Error::new_spanned(
+                capacity,
+                format!(
+                    "`queue = N` applies to ValueTake, whose queue is on the client; `{type_name}` takes `queue`"
+                ),
+            ));
+        }
+        Some((_, Some(capacity))) => quote!(#c.queue_capacity(#capacity, |#c| #initializer)),
+        Some((_, None)) => quote!(#c.queue(|#c| #initializer)),
         None => initializer,
     };
 

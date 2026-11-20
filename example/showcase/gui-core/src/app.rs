@@ -18,6 +18,8 @@ struct ViewState {
     schema: ShowcaseState,
     last_take_text: String,
     empty_take_count: u32,
+    /// The newest lines of `root.value_take.take_log`.
+    take_log: Vec<String>,
     number_signal_value: f64,
     enum_signal_value: PrimaryChoice,
     last_take_buffer: Vec<u8>,
@@ -36,6 +38,7 @@ impl ViewState {
             schema,
             last_take_text: String::new(),
             empty_take_count: 0,
+            take_log: Vec::new(),
             number_signal_value: 0.0,
             enum_signal_value: PrimaryChoice::default(),
             last_take_buffer: Vec::new(),
@@ -151,6 +154,13 @@ fn poll_take_values(state: &mut ViewState) {
     if state.schema.value_take.take_empty.take().is_some() {
         state.empty_take_count += 1;
     }
+
+    // A queued take: every line of a burst, in order.
+    while let Some(line) = state.schema.value_take.take_log.take() {
+        state.take_log.push(line);
+    }
+    let excess = state.take_log.len().saturating_sub(8);
+    state.take_log.drain(..excess);
 
     if let Some(value) = state.schema.data_take.take_buffer.take() {
         state.last_take_buffer = value;

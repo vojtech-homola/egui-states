@@ -60,8 +60,17 @@ pub fn register_callbacks(server: &StatesServer) -> Vec<s::CallbackHandle> {
     callbacks.push(states.values.primary_choice.connect(|value| {
         println!("enum changed: {value:?}");
     }));
-    callbacks.push(states.signals.empty_signal.connect_empty(|| {
+    let take_log = states.value_take.take_log.clone();
+    let emitted = std::sync::atomic::AtomicU32::new(0);
+    callbacks.push(states.signals.empty_signal.connect_empty(move || {
         println!("empty signal emitted");
+        let emitted = emitted.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        // A burst the queued take keeps in full.
+        for line in ["received", "working", "done"] {
+            if let Err(error) = take_log.set(format!("empty signal {emitted}: {line}"), false) {
+                eprintln!("failed to send the take log: {error}");
+            }
+        }
     }));
     callbacks.push(states.signals.number_signal.connect(|value| {
         println!("number signal emitted: {value:.3}");

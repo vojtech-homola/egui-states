@@ -12,6 +12,17 @@ pub(super) fn show_value_take(ui: &mut egui::Ui, state: &mut ViewState) {
 
         ui.label("ValueTake<()>: root.value_take.take_empty");
         ui.label(format!("empty take count: {}", state.empty_take_count));
+
+        ui.separator();
+
+        ui.label("ValueTake<String>, queued: root.value_take.take_log");
+        ui.label("Emit the empty signal: the server answers with three lines at once.");
+        if state.take_log.is_empty() {
+            ui.label("  (no lines yet)");
+        }
+        for line in &state.take_log {
+            ui.label(format!("  {line}"));
+        }
     });
 }
 

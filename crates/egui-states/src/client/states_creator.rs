@@ -186,18 +186,34 @@ pub trait StatesCreator {
         f(self)
     }
 
-    /// Creates the values and signals that `f` makes in queue mode.
+    /// Creates the values, signals and one-shot values that `f` makes in
+    /// queue mode.
     ///
     /// Server callbacks then receive every change a client makes with
     /// `set_signal`, and every event of a signal, in arrival order. By
     /// default they receive only the latest change made while they are busy.
-    /// It applies to the values, atomic values and signals `f` creates
-    /// itself, not to those of substates. The derive spells it
+    /// A [`ValueTake`] keeps up to [`VALUE_TAKE_QUEUE`] untaken values in
+    /// arrival order instead of only the latest. It applies to the states
+    /// `f` creates itself, not to those of substates. The derive spells it
     /// `#[state(queue)]`.
+    ///
+    /// [`VALUE_TAKE_QUEUE`]: crate::VALUE_TAKE_QUEUE
     fn queue<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R
     where
         Self: Sized,
     {
+        f(self)
+    }
+
+    /// Creates the one-shot values that `f` makes with a queue of up to
+    /// `capacity` untaken values, at least one, as
+    /// [`queue`](Self::queue) does with its default capacity. Other states
+    /// are not affected. The derive spells it `#[state(queue = N)]`.
+    fn queue_capacity<R>(&mut self, capacity: usize, f: impl FnOnce(&mut Self) -> R) -> R
+    where
+        Self: Sized,
+    {
+        let _ = capacity;
         f(self)
     }
 }
@@ -331,6 +347,9 @@ pub struct StatesCreatorClient {
     context: egui::Context,
     parent: String,
     version_hasher: StableHasher,
+    /// The queue capacity of the one-shot values created now, `None` for
+    /// none.
+    take_queue: Option<usize>,
 }
 
 impl StatesCreatorClient {
@@ -356,6 +375,7 @@ impl StatesCreatorClient {
             context,
             parent,
             version_hasher: StableHasher::new(),
+            take_queue: None,
         }
     }
 
@@ -422,7 +442,7 @@ impl StatesCreator for StatesCreatorClient {
         let type_id = T::get_type().get_hash();
         hash_id_type(&mut self.version_hasher, id, type_id, VALUE_TAKE_HASH_ID);
 
-        let value = ValueTake::new(name, id, type_id, self.sender.clone());
+        let value = ValueTake::new(name, id, type_id, self.take_queue, self.sender.clone());
 
         self.val
             .states
@@ -666,6 +686,17 @@ impl StatesCreator for StatesCreatorClient {
         Download::new(id, self.val.transfers.clone())
     }
 
+    fn queue<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        self.queue_capacity(crate::VALUE_TAKE_QUEUE, f)
+    }
+
+    fn queue_capacity<R>(&mut self, capacity: usize, f: impl FnOnce(&mut Self) -> R) -> R {
+        let outer = self.take_queue.replace(capacity);
+        let result = f(self);
+        self.take_queue = outer;
+        result
+    }
+
     fn upload<M: TransferMeta>(&mut self, name: &str) -> Upload<M> {
         let (_, id) = state_path(&self.parent, name);
         hash_id_type(
@@ -678,5 +709,42 @@ impl StatesCreator for StatesCreatorClient {
             .transfers
             .register(id, Role::Send, meta_type_id::<M>());
         Upload::new(id, self.val.transfers.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::client::states::values::UpdateValueTake;
+
+    /// Fills `value` with `count` values and tells whether the last one
+    /// overflowed the queue.
+    fn overflows(value: &ValueTake<u8>, count: usize) -> bool {
+        let mut overflowed = false;
+        for _ in 0..count {
+            let data = postcard::to_stdvec(&1_u8).unwrap();
+            overflowed = value
+                .update_take(<u8 as crate::Typed>::get_type().get_hash(), &data, false)
+                .is_err();
+        }
+        overflowed
+    }
+
+    #[test]
+    fn queue_scopes_set_the_capacity_of_value_takes() {
+        let (sender, _receiver) = MessageSender::new();
+        let mut creator = StatesCreatorClient::new(sender, egui::Context::default(), "root".into());
+        let plain = creator.value_take::<u8>("plain");
+        let queued = creator.queue(|c| c.value_take::<u8>("queued"));
+        let few = creator.queue_capacity(2, |c| c.value_take::<u8>("few"));
+        let after = creator.value_take::<u8>("after");
+
+        assert!(!overflows(&plain, 3));
+        assert_eq!(plain.len(), 1);
+        assert!(!overflows(&queued, crate::VALUE_TAKE_QUEUE));
+        assert!(overflows(&queued, 1));
+        assert!(!overflows(&few, 2));
+        assert!(overflows(&few, 1));
+        assert!(!overflows(&after, 3), "the scope leaked");
     }
 }
