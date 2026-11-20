@@ -104,8 +104,8 @@ def test_blocking_takes_without_a_client_return_immediately(local_bundle, kind):
     send = {
         "value": lambda: st.take.set("payload", blocking=True),
         "empty": lambda: st.empty.set(blocking=True),
-        "data": lambda: st.data.set(np.array([1, 2], dtype=np.uint8), blocking=True),
-        "sparse": lambda: st.multi[3].set(np.array([1, 2], dtype=np.uint16), blocking=True),
+        "data": lambda: st.data.set(np.array([1, 2], dtype=np.uint8), blocking=True, wait=True),
+        "sparse": lambda: st.multi[3].set(np.array([1, 2], dtype=np.uint16), blocking=True, wait=True),
     }[kind]
     errors = []
 
@@ -122,3 +122,9 @@ def test_blocking_takes_without_a_client_return_immediately(local_bundle, kind):
     worker.join(5)
     assert not worker.is_alive(), f"blocking {kind} take waited without a client"
     assert errors == []
+    if kind == "data":
+        assert st.data.is_idle()
+    elif kind == "sparse":
+        assert st.multi.is_idle()
+        assert st.multi.is_idle(3)
+        assert st.multi[3].is_idle()

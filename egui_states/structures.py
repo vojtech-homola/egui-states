@@ -1236,6 +1236,7 @@ class DataTake[T: np.generic](_StaticBase):
         data: Buffer,
         blocking: bool = False,
         cache: bool = False,
+        wait: bool = False,
     ) -> None:
         """Set the data in the UI DataTake.
 
@@ -1243,15 +1244,35 @@ class DataTake[T: np.generic](_StaticBase):
         the server. It is an alternative to Signal with the opposite transport
         direction.
 
+        Transfers are sent one at a time: the call first waits until the
+        client has received the previous transfer, or taken it if it
+        was blocking. With no client connected it does not wait, and the data
+        is dropped unless ``cache`` keeps it for the next client.
+
         Args:
             data (Buffer): Data to send. NumPy arrays and other buffer-protocol
                 objects are accepted.
-            blocking (bool, optional): Whether the next send waits until the
-                client consumes this data. Defaults to False.
+            blocking (bool, optional): Whether the client acknowledges this
+                data only once the UI takes it, so the next send waits until
+                then. Defaults to False.
             cache (bool, optional): Whether to cache the last sent data so a
                 newly initialized client receives it. Defaults to False.
+            wait (bool, optional): Whether to return only once the client has
+                acknowledged this data, by receiving it or, with ``blocking``,
+                taking it, or the connection has ended. Defaults to False.
         """
-        self._server.data_take_set(self._value_id, data, blocking, cache, None)
+        self._server.data_take_set(self._value_id, data, blocking, cache, None, wait)
+
+    def is_idle(self) -> bool:
+        """Return whether no transfer waits for the client.
+
+        The next :meth:`set` is then sent at once. It is also true while no
+        client is connected.
+
+        Returns:
+            bool: Whether the DataTake is idle.
+        """
+        return self._server.data_take_is_idle(self._value_id)
 
 
 class DataTakeWithHeader[T: np.generic, H](DataTake[T]):
@@ -1282,22 +1303,27 @@ class DataTakeWithHeader[T: np.generic, H](DataTake[T]):
         blocking: bool = False,
         cache: bool = False,
         header: H | _Unset = UNSET,
+        wait: bool = False,
     ) -> None:
-        """Send data with its header.
+        """Send data with its header, as :meth:`DataTake.set`.
 
         Args:
             data (Buffer): Data to send.
-            blocking (bool, optional): Whether the next send waits until the
-                client consumes this data. Defaults to False.
+            blocking (bool, optional): Whether the client acknowledges this
+                data only once the UI takes it, so the next send waits until
+                then. Defaults to False.
             cache (bool, optional): Whether to cache the last sent data and
                 header for a newly initialized client. Defaults to False.
             header (H | _Unset, optional): Header sent with the data; it is
                 required, :data:`UNSET` raises. Defaults to :data:`UNSET`.
+            wait (bool, optional): Whether to return only once the client has
+                acknowledged this data, by receiving it or, with ``blocking``,
+                taking it, or the connection has ended. Defaults to False.
 
         Raises:
             ValueError: If no header is given.
         """
-        self._server.data_take_set(self._value_id, data, blocking, cache, _header(header))
+        self._server.data_take_set(self._value_id, data, blocking, cache, _header(header), wait)
 
 
 class SingleData[T: np.generic]:
@@ -1651,17 +1677,26 @@ class SingleDataTake[T: np.generic]:
         self._value_id = value_id
         self._index = index
 
-    def set(self, data: Buffer, blocking: bool = False, cache: bool = False) -> None:
+    def set(self, data: Buffer, blocking: bool = False, cache: bool = False, wait: bool = False) -> None:
         """Set the data in the UI DataMultiTake at this index.
+
+        Transfers are sent one at a time: the call first waits until the
+        client has received the previous transfer of this index, or taken it if it
+        was blocking. With no client connected it does not wait, and the data
+        is dropped unless ``cache`` keeps it for the next client.
 
         Args:
             data (Buffer): Data to send. NumPy arrays and other buffer-protocol
                 objects are accepted.
-            blocking (bool, optional): Whether the next send waits until the
-                client consumes this data. Defaults to False.
+            blocking (bool, optional): Whether the client acknowledges this
+                data only once the UI takes it, so the next send waits until
+                then. Defaults to False.
             cache (bool, optional): Whether to cache the last sent data for a
                 newly initialized client, which holds only cached indices.
                 Defaults to False.
+            wait (bool, optional): Whether to return only once the client has
+                acknowledged this data, by receiving it or, with ``blocking``,
+                taking it, or the connection has ended. Defaults to False.
         """
         self._server.data_multi_take_set(
             self._value_id,
@@ -1670,7 +1705,16 @@ class SingleDataTake[T: np.generic]:
             blocking,
             cache,
             None,
+            wait,
         )
+
+    def is_idle(self) -> bool:
+        """Return whether no transfer of this index waits for the client.
+
+        Returns:
+            bool: Whether this index is idle.
+        """
+        return self._server.data_multi_take_is_idle(self._value_id, self._index)
 
 
 class SingleDataTakeWithHeader[T: np.generic, H](SingleDataTake[T]):
@@ -1682,18 +1726,23 @@ class SingleDataTakeWithHeader[T: np.generic, H](SingleDataTake[T]):
         blocking: bool = False,
         cache: bool = False,
         header: H | _Unset = UNSET,
+        wait: bool = False,
     ) -> None:
-        """Send data at this index with its header.
+        """Send data at this index with its header, as :meth:`SingleDataTake.set`.
 
         Args:
             data (Buffer): Data to send.
-            blocking (bool, optional): Whether the next send waits until the
-                client consumes this data. Defaults to False.
+            blocking (bool, optional): Whether the client acknowledges this
+                data only once the UI takes it, so the next send waits until
+                then. Defaults to False.
             cache (bool, optional): Whether to cache the last sent data and
                 header for a newly initialized client, which holds only cached
                 indices. Defaults to False.
             header (H | _Unset, optional): Header sent with the data; it is
                 required, :data:`UNSET` raises. Defaults to :data:`UNSET`.
+            wait (bool, optional): Whether to return only once the client has
+                acknowledged this data, by receiving it or, with ``blocking``,
+                taking it, or the connection has ended. Defaults to False.
 
         Raises:
             ValueError: If no header is given.
@@ -1705,6 +1754,7 @@ class SingleDataTakeWithHeader[T: np.generic, H](SingleDataTake[T]):
             blocking,
             cache,
             _header(header),
+            wait,
         )
 
 
@@ -1756,6 +1806,20 @@ class DataMultiTake[T: np.generic](_StaticBase):
             index (int): The index to remove.
         """
         self._server.data_multi_take_remove_index(self._value_id, index)
+
+    def is_idle(self, index: int | None = None) -> bool:
+        """Return whether no transfer waits for the client.
+
+        See :meth:`DataTake.is_idle`; each index has its own transfer.
+
+        Args:
+            index (int | None, optional): The index to ask about. Defaults to
+                None, which asks about every index.
+
+        Returns:
+            bool: Whether the index, or every index, is idle.
+        """
+        return self._server.data_multi_take_is_idle(self._value_id, index)
 
     def reset(self) -> None:
         """Reset (clear all indices) in the DataMultiTake."""

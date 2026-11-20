@@ -280,12 +280,12 @@ pub(crate) enum DataMultiTakeHeader {
 
 #[cfg(feature = "client")]
 impl DataMultiTakeHeader {
-    /// Whether a failure of this message must still be acknowledged: only a
-    /// blocking transfer's last message waits for one.
-    pub(crate) fn requires_ack_on_failure(&self) -> bool {
+    /// The key to acknowledge when this message fails: every transfer's last
+    /// message waits for an acknowledgement.
+    pub(crate) fn ack_key_on_failure(&self) -> Option<u32> {
         match self {
-            Self::Modify(_, header, blocking) => *blocking && header.is_terminal(),
-            Self::Remove(_) | Self::Reset => false,
+            Self::Modify(key, header, _) if header.is_terminal() => Some(*key),
+            _ => None,
         }
     }
 }

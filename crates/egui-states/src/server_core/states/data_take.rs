@@ -1,9 +1,8 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 
-use parking_lot::{Mutex, RwLock};
+use parking_lot::Mutex;
 
-use crate::event::Event;
 use crate::hashing::NoHashMap;
 use crate::protocol::data::{DataMultiTakeHeader, DataTakeHeader, DataType, HeaderBytes};
 use crate::protocol::{FastVec, TRANSFER_CHUNK_SIZE};
@@ -11,38 +10,32 @@ use crate::server_core::error::CoreError;
 use crate::server_core::net::sender::MessageSender;
 use crate::server_core::server::{Acknowledge, SyncTrait};
 use crate::server_core::states::data::{DataSlice, HeaderType, check_data_type};
-use crate::server_core::states::scheduler::SyncState;
+use crate::server_core::states::scheduler::Scheduler;
 use crate::server_core::transfer::{Chunk, chunk_transfer};
 
 // DataTake --------------------------------------------------
 /// A cached transfer: its elements, their count and its encoded header.
 type Cached = (Vec<u8>, usize, Option<Vec<u8>>);
 
-struct TakeState {
-    cache: Option<Cached>,
-    sync: SyncState,
-}
+/// The single key of a `DataTake` in its scheduler.
+const KEY: u32 = 0;
 
 /// Server side of a one-shot numeric transfer.
 ///
-/// A producer waits for the client to take a pending blocking value before it
-/// takes the state lock, so a remove or reset can still cancel that value.
-/// It then stores the cache and queues its chunks under the lock. While the
-/// state awaits a synchronization with a newly connected client, it only
-/// stores: the synchronization sends the cache, and sending as well would
-/// deliver the value twice. When a synchronization ran after the producer
-/// checked the connection, it sent the previous cache, so the producer starts
-/// over for the new connection; see [`finish`].
+/// Transfers are sent one at a time, as for `Data`: a producer waits until
+/// the client acknowledged the previous transfer, which it does when the
+/// transfer arrives, or when the UI takes it for a blocking one. A producer
+/// stores the cache and checks whether it may send under the state lock, so
+/// a disconnect either invalidates its transfer or leaves it only stored:
+/// while no client is synchronized nothing is sent and nothing waits, and
+/// the synchronization sends the cache.
 pub(crate) struct DataTake {
     pub(crate) name: String,
-    id: u64,
     pub(crate) data_type: DataType,
     item_size: usize,
     header_type: HeaderType,
-    event: Event,
-    state: Mutex<TakeState>,
-    sender: MessageSender,
-    connected: Arc<AtomicBool>,
+    cache: Mutex<Option<Cached>>,
+    scheduler: Scheduler,
 }
 
 impl DataTake {
@@ -56,17 +49,11 @@ impl DataTake {
     ) -> Arc<Self> {
         Arc::new(Self {
             name,
-            id,
             data_type,
             item_size: data_type.item_size(),
             header_type: HeaderType::new(header_type),
-            event: Event::new(),
-            state: Mutex::new(TakeState {
-                cache: None,
-                sync: SyncState::new(),
-            }),
-            sender,
-            connected,
+            cache: Mutex::new(None),
+            scheduler: Scheduler::new(id, sender, connected),
         })
     }
 
@@ -75,6 +62,7 @@ impl DataTake {
         data: DataSlice,
         blocking: bool,
         cache: bool,
+        wait: bool,
     ) -> Result<(), CoreError> {
         let elements = check_data_type(&data, self.data_type, self.item_size)?;
         let header = self.header_type.check(&self.name, data.header)?;
@@ -82,107 +70,82 @@ impl DataTake {
             .require(&self.name, header, "with every take")?;
         let slice = data.bytes;
 
-        loop {
-            let generation = self.state.lock().sync.generation();
-            let messages = if self.connected.load(Ordering::Acquire) {
-                let messages = pack_data_take(
-                    self.id,
-                    slice,
-                    elements as u64,
-                    self.data_type,
-                    blocking,
-                    self.take_header(header),
-                )?;
-                wait_for_slot(&self.event, blocking);
-                Some(messages)
-            } else {
-                None
-            };
-
-            let mut state = self.state.lock();
-            let messages = match finish(
-                &state.sync,
-                &self.event,
-                &self.connected,
-                generation,
-                blocking,
-                messages,
-            ) {
-                Finish::Retry => continue,
-                Finish::Store => None,
-                Finish::Send(messages) => Some(messages),
-            };
-            state.cache = cache.then(|| (slice.to_vec(), elements, header.map(<[u8]>::to_vec)));
-            for (message, single) in messages.into_iter().flatten() {
-                self.sender.send_set(message, single);
-            }
+        let lock = self.scheduler.lock(KEY);
+        let generation = {
+            let mut stored = self.cache.lock();
+            *stored = cache.then(|| (slice.to_vec(), elements, header.map(<[u8]>::to_vec)));
+            self.scheduler.sendable()
+        };
+        let Some(generation) = generation else {
             return Ok(());
-        }
+        };
+        let messages = pack_data_take(
+            self.scheduler.id,
+            slice,
+            elements as u64,
+            self.data_type,
+            blocking,
+            take_header(&self.header_type, header),
+        )?;
+        self.scheduler.send_set(lock, messages, wait, generation);
+        Ok(())
     }
-}
 
-impl DataTake {
-    fn take_header<'a>(&self, header: Option<&'a [u8]>) -> TakeHeader<'a> {
-        take_header(&self.header_type, header)
+    /// Whether no transfer waits for the client's acknowledgement, so the
+    /// next one is sent at once. Also true while no client is synchronized.
+    pub(crate) fn is_idle(&self) -> bool {
+        self.scheduler.is_idle()
     }
 }
 
 impl Acknowledge for DataTake {
     fn acknowledge(&self) {
-        self.event.set();
+        self.scheduler.acknowledge(KEY);
     }
 
     fn reset(&self) {
-        self.state.lock().sync.reset();
-        self.event.set();
+        // Under the state lock, so a producer either checked whether it may
+        // send before this reset, or sees the new state.
+        let _cache = self.cache.lock();
+        self.scheduler.reset();
     }
 }
 
 impl SyncTrait for DataTake {
     fn sync(&self) -> Result<(), ()> {
-        let mut state = self.state.lock();
-
-        if let Some((ref data, count, ref header)) = state.cache {
-            let messages = pack_data_take(
-                self.id,
-                data,
-                count as u64,
-                self.data_type,
-                false,
-                self.take_header(header.as_deref()),
-            )
-            .map_err(|_| ())?;
-
-            for (message, single) in messages {
-                self.sender.send_set(message, single);
+        // See `Data::sync` for why every key is locked.
+        let lock = self.scheduler.lock_all();
+        let cache = self.cache.lock();
+        match &*cache {
+            Some((data, count, header)) => {
+                let messages = pack_data_take(
+                    self.scheduler.id,
+                    data,
+                    *count as u64,
+                    self.data_type,
+                    false,
+                    take_header(&self.header_type, header.as_deref()),
+                )
+                .map_err(|_| ())?;
+                self.scheduler.begin_sync(&lock, messages, &[KEY]);
             }
+            None => self.scheduler.begin_sync(&lock, Vec::new(), &[]),
         }
-
-        state.sync.synchronized();
-        self.event.set();
-
         Ok(())
     }
 }
 
 // DataMultiTake --------------------------------------------------
-struct MultiTakeState {
-    values: NoHashMap<u32, Cached>,
-    sync: SyncState,
-}
-
 /// One-shot numeric transfers indexed by key; see [`DataTake`] for the
-/// producer protocol. All keys share one acknowledgement stream.
+/// producer protocol, which runs for each key on its own: the keys do not
+/// wait for each other's acknowledgements.
 pub(crate) struct DataMultiTake {
     pub(crate) name: String,
-    id: u64,
     pub(crate) data_type: DataType,
     item_size: usize,
     header_type: HeaderType,
-    state: RwLock<MultiTakeState>,
-    sender: MessageSender,
-    connected: Arc<AtomicBool>,
-    event: Event,
+    cache: Mutex<NoHashMap<u32, Cached>>,
+    scheduler: Scheduler,
 }
 
 impl DataMultiTake {
@@ -196,17 +159,11 @@ impl DataMultiTake {
     ) -> Arc<Self> {
         Arc::new(Self {
             name,
-            id,
             data_type,
             item_size: data_type.item_size(),
             header_type: HeaderType::new(header_type),
-            state: RwLock::new(MultiTakeState {
-                values: NoHashMap::default(),
-                sync: SyncState::new(),
-            }),
-            sender,
-            connected,
-            event: Event::new(),
+            cache: Mutex::new(NoHashMap::default()),
+            scheduler: Scheduler::new(id, sender, connected),
         })
     }
 
@@ -216,6 +173,7 @@ impl DataMultiTake {
         data: DataSlice,
         blocking: bool,
         cache: bool,
+        wait: bool,
     ) -> Result<(), CoreError> {
         let elements = check_data_type(&data, self.data_type, self.item_size)?;
         let header = self.header_type.check(&self.name, data.header)?;
@@ -223,104 +181,115 @@ impl DataMultiTake {
             .require(&self.name, header, "with every take")?;
         let slice = data.bytes;
 
-        loop {
-            let generation = self.state.read().sync.generation();
-            let messages = if self.connected.load(Ordering::Acquire) {
-                let messages = pack_data_multi_take(
-                    self.id,
-                    index,
-                    slice,
-                    elements as u64,
-                    self.data_type,
-                    blocking,
-                    take_header(&self.header_type, header),
-                )?;
-                wait_for_slot(&self.event, blocking);
-                Some(messages)
-            } else {
-                None
-            };
-
-            // Held until every chunk is queued, so concurrent non-blocking
-            // transfers cannot interleave their chunks on the wire.
-            let mut w = self.state.write();
-            let messages = match finish(
-                &w.sync,
-                &self.event,
-                &self.connected,
-                generation,
-                blocking,
-                messages,
-            ) {
-                Finish::Retry => continue,
-                Finish::Store => None,
-                Finish::Send(messages) => Some(messages),
-            };
+        let lock = self.scheduler.lock(index);
+        let generation = {
+            let mut stored = self.cache.lock();
             if cache {
                 let cached = (slice.to_vec(), elements, header.map(<[u8]>::to_vec));
-                w.values.insert(index, cached);
+                stored.insert(index, cached);
             } else {
-                w.values.remove(&index);
+                stored.remove(&index);
             }
-            for (message, single) in messages.into_iter().flatten() {
-                self.sender.send_set(message, single);
-            }
+            self.scheduler.sendable()
+        };
+        let Some(generation) = generation else {
             return Ok(());
-        }
+        };
+        let messages = pack_data_multi_take(
+            self.scheduler.id,
+            index,
+            slice,
+            elements as u64,
+            self.data_type,
+            blocking,
+            take_header(&self.header_type, header),
+        )?;
+        self.scheduler.send_set(lock, messages, wait, generation);
+        Ok(())
     }
 
+    /// Removes `index`: its cache, and the value the client has not taken.
+    ///
+    /// It is queued at once, without waiting for the transfers of `index`: a
+    /// blocking one is acknowledged only when the UI takes it, and the client
+    /// acknowledges it when it removes it.
     pub(crate) fn remove_index(&self, index: u32) -> Result<(), String> {
-        let mut w = self.state.write();
-        w.values.remove(&index);
-        if w.sync.sendable(&self.connected).is_some() {
-            let header = DataMultiTakeHeader::Remove(index);
-            let message = header
-                .serialize(self.id)
-                .map_err(|_| "Failed to serialize remove index header".to_string())?;
-            self.sender.send(message);
+        let message = DataMultiTakeHeader::Remove(index)
+            .serialize(self.scheduler.id)
+            .map_err(|_| "Failed to serialize remove index header".to_string())?;
+        let generation = {
+            let mut stored = self.cache.lock();
+            stored.remove(&index);
+            self.scheduler.sendable()
+        };
+        if let Some(generation) = generation {
+            self.scheduler.send_now(message, generation);
         }
-
         Ok(())
     }
 
+    /// Removes every key, as [`remove_index`](Self::remove_index) one.
     pub(crate) fn reset(&self) -> Result<(), String> {
-        let mut w = self.state.write();
-        w.values.clear();
-        if w.sync.sendable(&self.connected).is_some() {
-            let header = DataMultiTakeHeader::Reset;
-            let message = header
-                .serialize(self.id)
-                .map_err(|_| "Failed to serialize reset header".to_string())?;
-            self.sender.send(message);
+        let message = DataMultiTakeHeader::Reset
+            .serialize(self.scheduler.id)
+            .map_err(|_| "Failed to serialize reset header".to_string())?;
+        let generation = {
+            let mut stored = self.cache.lock();
+            stored.clear();
+            self.scheduler.sendable()
+        };
+        if let Some(generation) = generation {
+            self.scheduler.send_now(message, generation);
         }
-
         Ok(())
+    }
+
+    /// Whether no transfer of any key waits for the client's
+    /// acknowledgement.
+    pub(crate) fn is_idle(&self) -> bool {
+        self.scheduler.is_idle()
+    }
+
+    /// Whether no transfer of `index` waits for the client's
+    /// acknowledgement.
+    pub(crate) fn is_index_idle(&self, index: u32) -> bool {
+        self.scheduler.is_key_idle(index)
     }
 }
 
 impl Acknowledge for DataMultiTake {
-    fn acknowledge(&self) {
-        self.event.set();
+    /// The client acknowledges each key on its own, with
+    /// [`acknowledge_key`](Acknowledge::acknowledge_key).
+    fn acknowledge(&self) {}
+
+    fn acknowledge_key(&self, key: u32) {
+        self.scheduler.acknowledge(key);
     }
 
     fn reset(&self) {
-        self.state.write().sync.reset();
-        self.event.set();
+        // Under the state lock, so a producer either checked whether it may
+        // send before this reset, or sees the new state.
+        let _cache = self.cache.lock();
+        self.scheduler.reset();
     }
 }
 
 impl SyncTrait for DataMultiTake {
     fn sync(&self) -> Result<(), ()> {
-        let mut w = self.state.write();
-        w.sync.synchronized();
+        // See `Data::sync` for why every key is locked.
+        let lock = self.scheduler.lock_all();
+        let cache = self.cache.lock();
 
         // The client keeps the values it has not taken across a disconnect;
         // drop them, so it holds exactly the cached keys, like a DataMulti.
-        let message = DataMultiTakeHeader::Reset.serialize(self.id)?;
-        self.sender.send(message);
-        for (index, (data, count, header)) in w.values.iter() {
+        // Each cached key is packed and queued on its own.
+        let message = DataMultiTakeHeader::Reset.serialize(self.scheduler.id)?;
+        let keys = cache.keys().copied().collect::<Vec<_>>();
+        self.scheduler
+            .begin_sync(&lock, vec![(message, false)], &keys);
+        for (index, (data, count, header)) in cache.iter() {
             let messages = pack_data_multi_take(
-                self.id,
+                self.scheduler.id,
                 *index,
                 data,
                 *count as u64,
@@ -329,17 +298,12 @@ impl SyncTrait for DataMultiTake {
                 take_header(&self.header_type, header.as_deref()),
             )
             .map_err(|_| ())?;
+            self.scheduler.send_synced(&lock, messages);
 
-            for (message, single) in messages {
-                self.sender.send_set(message, single);
-            }
-
-            if !self.connected.load(Ordering::Acquire) {
+            if !self.scheduler.is_connected() {
                 return Ok(());
             }
         }
-        self.event.set();
-
         Ok(())
     }
 }
@@ -351,53 +315,6 @@ type TakeHeader<'a> = Option<(HeaderBytes, &'a [u8])>;
 fn take_header<'a>(header_type: &HeaderType, header: Option<&'a [u8]>) -> TakeHeader<'a> {
     let header = header?;
     Some((header_type.bytes(header)?, header))
-}
-
-/// Waits until no blocking transfer is pending. A blocking send takes the
-/// slot, so the next send waits until the client took this one; a
-/// non-blocking send leaves it free.
-fn wait_for_slot(event: &Event, blocking: bool) {
-    match blocking {
-        true => event.wait_clear(),
-        false => event.wait(),
-    }
-}
-
-/// What a producer does with its transfer once it holds the state lock.
-enum Finish {
-    /// Store the value and queue these messages.
-    Send(Vec<(FastVec<32>, bool)>),
-    /// Only store the value: no client is synchronized, and the next
-    /// synchronization sends the cache.
-    Store,
-    /// Start over: a synchronization ran after the producer checked the
-    /// connection, so it sent the previous cache and the transfer packed for
-    /// the old connection, if any, is stale.
-    Retry,
-}
-
-/// Decides, under the caller's state lock, how a producer finishes the
-/// transfer it packed (`Some`) or skipped (`None`) after it read `generation`
-/// and checked the connection. A blocking producer that does not send returns
-/// the slot its wait consumed.
-fn finish(
-    sync: &SyncState,
-    event: &Event,
-    connected: &AtomicBool,
-    generation: u64,
-    blocking: bool,
-    messages: Option<Vec<(FastVec<32>, bool)>>,
-) -> Finish {
-    let packed = messages.is_some();
-    let finish = match (sync.sendable(connected), messages) {
-        (Some(current), Some(messages)) if current == generation => return Finish::Send(messages),
-        (None, _) => Finish::Store,
-        (Some(_), _) => Finish::Retry,
-    };
-    if blocking && packed {
-        event.set();
-    }
-    finish
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -520,6 +437,7 @@ pub(in crate::server_core) fn pack_data_multi_take_chunked(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::Ordering;
     use std::time::Duration;
 
     use super::*;
@@ -548,15 +466,33 @@ mod tests {
             .unwrap_or_else(|_| panic!("blocked: {label}"))
     }
 
-    /// A cached take set in the reconnect window used to be queued by the
-    /// producer and again by the synchronization from the cache (D8).
-    #[test]
-    fn a_cached_take_in_the_reconnect_window_is_delivered_once() {
-        if crate::test_support::isolated() {
-            return;
-        }
-        let (sender, mut receiver) = MessageSender::new();
-        let connected = Arc::new(AtomicBool::new(false));
+    /// Runs `f` on another thread and checks that it blocks.
+    fn blocked<T: Send + 'static>(
+        f: impl FnOnce() -> T + Send + 'static,
+    ) -> std::sync::mpsc::Receiver<T> {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || sender.send(f()).unwrap());
+        assert!(matches!(
+            receiver.recv_timeout(Duration::from_millis(100)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ));
+        receiver
+    }
+
+    fn finished<T>(done: &std::sync::mpsc::Receiver<T>) -> T {
+        done.recv_timeout(Duration::from_secs(2))
+            .expect("blocked producer did not finish")
+    }
+
+    fn take(
+        connected: bool,
+    ) -> (
+        Arc<DataTake>,
+        Arc<AtomicBool>,
+        crate::server_core::net::sender::MessageReceiver,
+    ) {
+        let (sender, receiver) = MessageSender::new();
+        let connected = Arc::new(AtomicBool::new(connected));
         let take = DataTake::new(
             "root.take".into(),
             5,
@@ -565,47 +501,18 @@ mod tests {
             sender,
             connected.clone(),
         );
-        connected.store(true, Ordering::Release);
-        take.sync().unwrap();
-        take.set(holder(&[1]), false, true).unwrap();
-        assert_eq!(count(&mut receiver), 1);
-
-        connected.store(false, Ordering::Release);
-        Acknowledge::reset(&*take);
-        connected.store(true, Ordering::Release);
-        // Blocking: it consumes the slot the reset set, and must return it.
-        take.set(holder(&[2]), true, true).unwrap();
-        assert_eq!(count(&mut receiver), 0, "a window take was sent");
-        take.sync().unwrap();
-        assert_eq!(
-            count(&mut receiver),
-            1,
-            "the synchronization sends the cache"
-        );
-
-        // The slot is free again: one blocking take goes out, the next waits.
-        let first = take.clone();
-        within("first blocking take after sync", move || {
-            first.set(holder(&[3]), true, true)
-        })
-        .unwrap();
-        assert_eq!(count(&mut receiver), 1);
-        let second = take.clone();
-        let waiting = std::thread::spawn(move || second.set(holder(&[4]), true, true));
-        std::thread::sleep(Duration::from_millis(100));
-        assert_eq!(count(&mut receiver), 0, "a blocking take did not wait");
-        take.acknowledge();
-        within("second blocking take", move || waiting.join().unwrap()).unwrap();
-        assert_eq!(count(&mut receiver), 1);
+        (take, connected, receiver)
     }
 
-    #[test]
-    fn a_cached_multi_take_in_the_reconnect_window_is_delivered_once() {
-        if crate::test_support::isolated() {
-            return;
-        }
-        let (sender, mut receiver) = MessageSender::new();
-        let connected = Arc::new(AtomicBool::new(false));
+    fn multi(
+        connected: bool,
+    ) -> (
+        Arc<DataMultiTake>,
+        Arc<AtomicBool>,
+        crate::server_core::net::sender::MessageReceiver,
+    ) {
+        let (sender, receiver) = MessageSender::new();
+        let connected = Arc::new(AtomicBool::new(connected));
         let take = DataMultiTake::new(
             "root.take".into(),
             5,
@@ -614,16 +521,134 @@ mod tests {
             sender,
             connected.clone(),
         );
+        (take, connected, receiver)
+    }
+
+    /// Every transfer waits for the acknowledgement of the one before, which
+    /// the client sends on arrival for a non-blocking one.
+    #[test]
+    fn a_take_waits_for_the_acknowledgement_of_the_previous_one() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let (take, _, mut receiver) = take(true);
+        take.sync().unwrap();
+        assert!(take.is_idle());
+        for blocking in [false, true] {
+            take.set(holder(&[1]), blocking, false, false).unwrap();
+            assert_eq!(count(&mut receiver), 1);
+            assert!(!take.is_idle());
+
+            let producer = take.clone();
+            let done = blocked(move || producer.set(holder(&[2]), false, false, false));
+            take.acknowledge();
+            finished(&done).unwrap();
+            assert_eq!(count(&mut receiver), 1);
+            take.acknowledge();
+            assert!(take.is_idle());
+        }
+
+        // With `wait`, the call returns once its own transfer is
+        // acknowledged.
+        let producer = take.clone();
+        let done = blocked(move || producer.set(holder(&[3]), true, false, true));
+        assert_eq!(count(&mut receiver), 1);
+        take.acknowledge();
+        finished(&done).unwrap();
+        assert!(take.is_idle());
+    }
+
+    /// With no client connected nothing waits, also for a blocking take; the
+    /// value is dropped, or cached for the next client.
+    #[test]
+    fn without_a_client_a_take_is_only_cached_and_nothing_waits() {
+        let (take, connected, mut receiver) = take(false);
+        for _ in 0..2 {
+            take.set(holder(&[1]), true, false, true).unwrap();
+        }
         connected.store(true, Ordering::Release);
         take.sync().unwrap();
-        assert_eq!(count(&mut receiver), 1, "empty synchronization resets");
-        take.set(1, holder(&[1]), false, true).unwrap();
+        assert_eq!(count(&mut receiver), 0, "an uncached take was sent");
+
+        connected.store(false, Ordering::Release);
+        Acknowledge::reset(&*take);
+        take.set(holder(&[2]), true, true, true).unwrap();
+        connected.store(true, Ordering::Release);
+        take.sync().unwrap();
+        assert_eq!(count(&mut receiver), 1, "the cache was not sent");
+    }
+
+    /// A cached take set in the reconnect window used to be queued by the
+    /// producer and again by the synchronization from the cache (D8).
+    #[test]
+    fn a_cached_take_in_the_reconnect_window_is_delivered_once() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let (take, connected, mut receiver) = take(true);
+        take.sync().unwrap();
+        take.set(holder(&[1]), false, true, false).unwrap();
         assert_eq!(count(&mut receiver), 1);
 
         connected.store(false, Ordering::Release);
         Acknowledge::reset(&*take);
         connected.store(true, Ordering::Release);
-        take.set(1, holder(&[2]), true, true).unwrap();
+        take.set(holder(&[2]), true, true, false).unwrap();
+        assert_eq!(count(&mut receiver), 0, "a window take was sent");
+        take.sync().unwrap();
+        assert_eq!(
+            count(&mut receiver),
+            1,
+            "the synchronization sends the cache"
+        );
+
+        // The next take waits for the cache's acknowledgement.
+        let first = take.clone();
+        let done = blocked(move || first.set(holder(&[3]), true, true, false));
+        take.acknowledge();
+        finished(&done).unwrap();
+        assert_eq!(count(&mut receiver), 1);
+    }
+
+    /// A blocking take whose wait spans a disconnect is dropped by its
+    /// producer; with `cache`, the synchronization delivers it.
+    #[test]
+    fn a_take_whose_wait_spans_a_reconnect_reaches_the_new_connection_from_the_cache() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let (take, connected, mut receiver) = take(true);
+        take.sync().unwrap();
+        take.set(holder(&[1]), true, true, false).unwrap();
+        assert_eq!(count(&mut receiver), 1);
+
+        let producer = take.clone();
+        let done = blocked(move || producer.set(holder(&[2]), true, true, false));
+        connected.store(false, Ordering::Release);
+        Acknowledge::reset(&*take);
+        finished(&done).unwrap();
+        assert_eq!(count(&mut receiver), 0, "a stale take was sent");
+        connected.store(true, Ordering::Release);
+        take.sync().unwrap();
+        assert_eq!(count(&mut receiver), 1, "the new value was not sent");
+    }
+
+    #[test]
+    fn a_cached_multi_take_in_the_reconnect_window_is_delivered_once() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let (take, connected, mut receiver) = multi(false);
+        connected.store(true, Ordering::Release);
+        take.sync().unwrap();
+        assert_eq!(count(&mut receiver), 1, "empty synchronization resets");
+        take.set(1, holder(&[1]), false, true, false).unwrap();
+        assert_eq!(count(&mut receiver), 1);
+
+        connected.store(false, Ordering::Release);
+        Acknowledge::reset(&*take);
+        connected.store(true, Ordering::Release);
+        take.set(1, holder(&[2]), true, true, false).unwrap();
         take.remove_index(3).unwrap();
         assert_eq!(count(&mut receiver), 0, "a window change was sent");
         take.sync().unwrap();
@@ -634,139 +659,74 @@ mod tests {
         );
 
         let first = take.clone();
-        within("first blocking multi take after sync", move || {
-            first.set(1, holder(&[3]), true, true)
-        })
-        .unwrap();
+        let done = blocked(move || first.set(1, holder(&[3]), true, true, false));
+        take.acknowledge_key(1);
+        finished(&done).unwrap();
         assert_eq!(count(&mut receiver), 1);
     }
 
-    /// A synchronization that ran after the producer checked the connection
-    /// sent the previous cache, so the producer must start over instead of
-    /// only storing; a blocking producer returns the slot it consumed.
     #[test]
-    fn finish_retries_after_a_synchronization_it_did_not_see() {
-        let event = Event::new();
-        let connected = AtomicBool::new(true);
-        let mut sync = SyncState::new();
-        let packed = || Some(vec![(FastVec::new(), false)]);
-
-        // Awaiting a synchronization: only store, and free the slot.
-        assert!(matches!(
-            finish(&sync, &event, &connected, 0, true, packed()),
-            Finish::Store
-        ));
-        assert!(event.is_set());
-        event.clear();
-
-        sync.synchronized();
-        assert!(matches!(
-            finish(&sync, &event, &connected, 0, true, packed()),
-            Finish::Send(_)
-        ));
-        assert!(!event.is_set(), "a sent blocking transfer keeps the slot");
-        // Not connected at the check, synchronized now.
-        assert!(matches!(
-            finish(&sync, &event, &connected, 0, true, None),
-            Finish::Retry
-        ));
-        assert!(!event.is_set(), "a producer that did not wait has no slot");
-
-        // A reset and a resynchronization while the producer waited.
-        sync.reset();
-        sync.synchronized();
-        assert!(matches!(
-            finish(&sync, &event, &connected, 0, true, packed()),
-            Finish::Retry
-        ));
-        assert!(event.is_set());
-        event.clear();
-
-        connected.store(false, Ordering::Release);
-        assert!(matches!(
-            finish(&sync, &event, &connected, 1, false, packed()),
-            Finish::Store
-        ));
-        assert!(!event.is_set(), "a non-blocking producer consumed no slot");
-    }
-
-    /// Releases a producer waiting for the slot with a reset and finishes a
-    /// resynchronization before the producer can take the state lock.
-    fn reconnect_under_lock(sync: &mut SyncState, event: &Event, connected: &AtomicBool) {
-        connected.store(false, Ordering::Release);
-        sync.reset();
-        event.set();
-        connected.store(true, Ordering::Release);
-        sync.synchronized();
-    }
-
-    /// A blocking take whose wait spanned a reset and a resynchronization
-    /// used to be only cached, after the synchronization had sent the old
-    /// cache, so the new connection never received it.
-    #[test]
-    fn a_take_whose_wait_spans_a_resync_reaches_the_new_connection() {
+    fn a_multi_take_whose_wait_spans_a_reconnect_reaches_the_new_connection_from_the_cache() {
         if crate::test_support::isolated() {
             return;
         }
-        let (sender, mut receiver) = MessageSender::new();
-        let connected = Arc::new(AtomicBool::new(true));
-        let take = DataTake::new(
-            "root.take".into(),
-            5,
-            DataType::U8,
-            None,
-            sender,
-            connected.clone(),
-        );
+        let (take, connected, mut receiver) = multi(true);
         take.sync().unwrap();
-        take.set(holder(&[1]), true, true).unwrap();
-        assert_eq!(count(&mut receiver), 1);
-
-        let producer = take.clone();
-        let waiting = std::thread::spawn(move || producer.set(holder(&[2]), true, true));
-        std::thread::sleep(Duration::from_millis(100));
-        assert_eq!(count(&mut receiver), 0, "a blocking take did not wait");
-
-        reconnect_under_lock(&mut take.state.lock().sync, &take.event, &connected);
-        within("take after the resync", move || waiting.join().unwrap()).unwrap();
-        assert_eq!(count(&mut receiver), 1, "the new value was not sent");
-    }
-
-    #[test]
-    fn a_multi_take_whose_wait_spans_a_resync_reaches_the_new_connection() {
-        if crate::test_support::isolated() {
-            return;
-        }
-        let (sender, mut receiver) = MessageSender::new();
-        let connected = Arc::new(AtomicBool::new(true));
-        let take = DataMultiTake::new(
-            "root.take".into(),
-            5,
-            DataType::U8,
-            None,
-            sender,
-            connected.clone(),
-        );
-        take.sync().unwrap();
-        take.set(1, holder(&[1]), true, true).unwrap();
+        take.set(1, holder(&[1]), true, true, false).unwrap();
         assert_eq!(count(&mut receiver), 2, "the reset and the take");
 
         let producer = take.clone();
-        let waiting = std::thread::spawn(move || producer.set(1, holder(&[2]), true, true));
-        std::thread::sleep(Duration::from_millis(100));
-        assert_eq!(count(&mut receiver), 0, "a blocking take did not wait");
+        let done = blocked(move || producer.set(1, holder(&[2]), true, true, false));
+        connected.store(false, Ordering::Release);
+        Acknowledge::reset(&*take);
+        finished(&done).unwrap();
+        connected.store(true, Ordering::Release);
+        take.sync().unwrap();
+        assert_eq!(count(&mut receiver), 2, "the reset and the new value");
+    }
 
-        reconnect_under_lock(&mut take.state.write().sync, &take.event, &connected);
-        within("multi take after the resync", move || {
-            waiting.join().unwrap()
+    /// A blocking take of one key does not hold up the others, and a remove
+    /// or reset does not wait for it to be taken.
+    #[test]
+    fn the_keys_of_a_multi_take_do_not_wait_for_each_other() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let (take, _, mut receiver) = multi(true);
+        take.sync().unwrap();
+        count(&mut receiver);
+        take.set(1, holder(&[1]), true, false, false).unwrap();
+        take.set(2, holder(&[2]), false, false, false).unwrap();
+        assert_eq!(count(&mut receiver), 2);
+        assert!(!take.is_index_idle(1));
+        take.acknowledge_key(2);
+        assert!(take.is_index_idle(2));
+        assert!(!take.is_idle());
+
+        let producer = take.clone();
+        let done = blocked(move || producer.set(1, holder(&[3]), false, false, false));
+        within("remove of a key in flight", {
+            let take = take.clone();
+            move || take.remove_index(1)
         })
         .unwrap();
-        assert_eq!(count(&mut receiver), 1, "the new value was not sent");
+        within("reset while a key is in flight", {
+            let take = take.clone();
+            move || take.reset()
+        })
+        .unwrap();
+        assert_eq!(count(&mut receiver), 2, "the remove and the reset");
+        // The client acknowledges the removed blocking value.
+        take.acknowledge_key(1);
+        finished(&done).unwrap();
+        assert_eq!(count(&mut receiver), 1);
     }
 }
 
 #[cfg(all(test, feature = "client"))]
 mod transfer_tests {
+    use std::sync::atomic::Ordering;
+
     use super::*;
     use crate::client::messages::{MessageSender as ClientSender, MessagesParser};
     use crate::client::states::data_take::{
@@ -820,8 +780,8 @@ mod transfer_tests {
         };
 
         server.sync().unwrap();
-        server.set(1, data(&[1]), false, true).unwrap();
-        server.set(2, data(&[2]), false, false).unwrap();
+        server.set(1, data(&[1]), false, true, false).unwrap();
+        server.set(2, data(&[2]), false, false, false).unwrap();
         apply(&mut receiver, &client);
         assert!(client.is_some(1) && client.is_some(2));
 
@@ -837,7 +797,7 @@ mod transfer_tests {
     }
 
     #[test]
-    fn real_take_chunks_publish_once_and_ack_only_after_consumption() {
+    fn real_take_chunks_publish_once_and_ack_on_arrival_or_consumption() {
         for size in [
             TRANSFER_CHUNK_SIZE - 1,
             TRANSFER_CHUNK_SIZE,
@@ -894,6 +854,11 @@ mod transfer_tests {
                                 _ => panic!("wrong packed take message"),
                             }
                             assert!(parser.next().unwrap().is_none());
+                            if n + 1 == total && !blocking {
+                                // A non-blocking transfer is acknowledged
+                                // when it arrives.
+                                crate::test_support::ack(&mut receiver, 61);
+                            }
                             assert!(receiver.try_recv().is_err(), "ACK before consumption");
                             if n + 1 < total {
                                 assert!(single.take().is_none());

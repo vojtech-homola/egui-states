@@ -1285,6 +1285,7 @@ impl StateServerCore {
         blocking: bool,
         cache: bool,
         header: Option<(Bound<PyAny>,)>,
+        wait: bool,
     ) -> PyResult<()> {
         let buffer = data_buffer(data)?;
         let (data_value, header_type) = self.inner_data_take(value_id)?;
@@ -1296,9 +1297,13 @@ impl StateServerCore {
 
         py.detach(|| {
             data_value
-                .set(elements, blocking, cache)
+                .set(elements, blocking, cache, wait)
                 .map_err(PyValueError::new_err)
         })
+    }
+
+    fn data_take_is_idle(&self, value_id: u64) -> PyResult<bool> {
+        Ok(self.inner_data_take(value_id)?.0.is_idle())
     }
 
     // data multi -------------------------------------------------------
@@ -1525,6 +1530,7 @@ impl StateServerCore {
         blocking: bool,
         cache: bool,
         header: Option<(Bound<PyAny>,)>,
+        wait: bool,
     ) -> PyResult<()> {
         let buffer = data_buffer(data)?;
         let (data_value, header_type) = self.inner_data_multi_take(value_id)?;
@@ -1536,8 +1542,17 @@ impl StateServerCore {
 
         py.detach(|| {
             data_value
-                .set(index, elements, blocking, cache)
+                .set(index, elements, blocking, cache, wait)
                 .map_err(PyValueError::new_err)
+        })
+    }
+
+    #[pyo3(signature = (value_id, index=None))]
+    fn data_multi_take_is_idle(&self, value_id: u64, index: Option<u32>) -> PyResult<bool> {
+        let take = self.inner_data_multi_take(value_id)?.0;
+        Ok(match index {
+            Some(index) => take.is_index_idle(index),
+            None => take.is_idle(),
         })
     }
 

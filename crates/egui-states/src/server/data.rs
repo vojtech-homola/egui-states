@@ -394,17 +394,25 @@ where
 
     /// Sends `data` to the client.
     ///
-    /// `blocking` waits for the client to consume the previous transfer before
-    /// the next send. `cache` retains the last transfer for a newly connecting
-    /// client.
+    /// Transfers are sent one at a time: the call first waits until the
+    /// client has received the previous transfer, or taken it if it was
+    /// blocking. With no client connected it does not wait, and the data is
+    /// dropped unless `cache` keeps it.
+    ///
+    /// - `blocking`: the client acknowledges this transfer only once the UI
+    ///   takes it, so the next send waits until then.
+    /// - `cache`: retains this transfer for a newly connecting client.
+    /// - `wait`: returns only once the client has acknowledged this transfer
+    ///   (received it, or with `blocking` taken it), or the connection has
+    ///   ended.
     ///
     /// # Errors
     ///
     /// Returns an error when the state has a header type: every take carries
     /// a header, so use [`Self::set_with_header`].
-    pub fn set(&self, data: &[T], blocking: bool, cache: bool) -> Result<()> {
+    pub fn set(&self, data: &[T], blocking: bool, cache: bool, wait: bool) -> Result<()> {
         self.inner
-            .set(data_slice(data), blocking, cache)
+            .set(data_slice(data), blocking, cache, wait)
             .map_err(ServerError::new)
     }
 
@@ -415,11 +423,19 @@ where
         header: &H,
         blocking: bool,
         cache: bool,
+        wait: bool,
     ) -> Result<()> {
         let header = serialize_bytes(header)?;
         self.inner
-            .set(with_header(data, Some(&header)), blocking, cache)
+            .set(with_header(data, Some(&header)), blocking, cache, wait)
             .map_err(ServerError::new)
+    }
+
+    /// Returns whether no transfer waits for the client's acknowledgement,
+    /// so the next one is sent at once. Also true while no client is
+    /// connected.
+    pub fn is_idle(&self) -> bool {
+        self.inner.is_idle()
     }
 }
 
@@ -683,7 +699,8 @@ where
         })
     }
 
-    /// Sends a buffer at `index` with blocking and caching controls.
+    /// Sends a buffer at `index`, as [`DataTake::set`] does for `index` on
+    /// its own: the call waits only for the previous transfer of `index`.
     ///
     /// A reconnected client holds only the cached keys; values it had not
     /// taken before the disconnect are dropped.
@@ -692,13 +709,21 @@ where
     ///
     /// Returns an error when the state has a header type: every take carries
     /// a header, so use [`Self::set_with_header`].
-    pub fn set(&self, index: u32, data: &[T], blocking: bool, cache: bool) -> Result<()> {
+    pub fn set(
+        &self,
+        index: u32,
+        data: &[T],
+        blocking: bool,
+        cache: bool,
+        wait: bool,
+    ) -> Result<()> {
         self.inner
-            .set(index, data_slice(data), blocking, cache)
+            .set(index, data_slice(data), blocking, cache, wait)
             .map_err(ServerError::new)
     }
 
     /// Like [`Self::set`], sending `header` with the buffer.
+    #[allow(clippy::too_many_arguments)]
     pub fn set_with_header(
         &self,
         index: u32,
@@ -706,14 +731,34 @@ where
         header: &H,
         blocking: bool,
         cache: bool,
+        wait: bool,
     ) -> Result<()> {
         let header = serialize_bytes(header)?;
         self.inner
-            .set(index, with_header(data, Some(&header)), blocking, cache)
+            .set(
+                index,
+                with_header(data, Some(&header)),
+                blocking,
+                cache,
+                wait,
+            )
             .map_err(ServerError::new)
     }
 
-    /// Removes the cached or pending transfer at `index`.
+    /// Returns whether no transfer of any index waits for the client's
+    /// acknowledgement, as [`DataTake::is_idle`].
+    pub fn is_idle(&self) -> bool {
+        self.inner.is_idle()
+    }
+
+    /// Returns whether no transfer of `index` waits for the client's
+    /// acknowledgement.
+    pub fn is_index_idle(&self, index: u32) -> bool {
+        self.inner.is_index_idle(index)
+    }
+
+    /// Removes the cached or pending transfer at `index`. It does not wait
+    /// for transfers of `index` the client has not taken.
     pub fn remove_index(&self, index: u32) -> Result<()> {
         self.inner.remove_index(index).map_err(ServerError::new)
     }
@@ -943,9 +988,9 @@ mod tests {
         assert_eq!(multi.get_with_header(2).unwrap(), None);
 
         // Every take carries a header.
-        let error = take.set(&[1], false, true).unwrap_err();
+        let error = take.set(&[1], false, true, false).unwrap_err();
         assert!(error.to_string().contains("needs a header"), "{error}");
-        take.set_with_header(&[1], &(6, "f".into()), false, true)
+        take.set_with_header(&[1], &(6, "f".into()), false, true, false)
             .unwrap();
 
         let error = plain.set_with_header(&[1], &(), false).unwrap_err();

@@ -37,9 +37,15 @@ fn edit_headers(all: &State, command: u32) -> s::Result<()> {
             .set_with_header(2, &[8], &meta(2.0, "keyed", &[1]), false)?;
         h.keyed.set_header(2, &meta(3.0, "renamed", &[]))?;
         h.take
-            .set_with_header(&[5], &meta(0.5, "take", &[1]), false, true)?;
-        h.keyed_take
-            .set_with_header(4, &[6], &meta(0.25, "keyed take", &[]), false, false)?;
+            .set_with_header(&[5], &meta(0.5, "take", &[1]), false, true, false)?;
+        h.keyed_take.set_with_header(
+            4,
+            &[6],
+            &meta(0.25, "keyed take", &[]),
+            false,
+            false,
+            false,
+        )?;
         h.transient
             .set_with_header(&[9], &meta(9.0, "transient", &[1]), false)?;
         return Ok(());
@@ -288,8 +294,10 @@ impl Fixture {
         let states = &server.states.integration;
         states.value.set(7)?;
         states.items.set(vec![1, 2])?;
-        states.cached.set(&[8, 9], false, true)?;
-        states.cached_multi.set(91, &[500, 600], false, true)?;
+        states.cached.set(&[8, 9], false, true, false)?;
+        states
+            .cached_multi
+            .set(91, &[500, 600], false, true, false)?;
         states.wire.set(crate::bindings::structs::WirePacket {
             signed: i64::MIN,
             unsigned: u64::MAX,
@@ -394,52 +402,54 @@ impl Fixture {
                     3 => {
                         extra_takes
                             .take_samples
-                            .set(&[-1.25, 0.0, 2.5], false, false)?;
-                        extra_multi.samples.set(513, &[9.5, -2.25], false, false)?;
+                            .set(&[-1.25, 0.0, 2.5], false, false, false)?;
+                        extra_multi
+                            .samples
+                            .set(513, &[9.5, -2.25], false, false, false)?;
                         extra_multi
                             .nested
                             .buffer
-                            .set(24, &[0, u16::MAX], false, false)?;
+                            .set(24, &[0, u16::MAX], false, false, false)?;
                         st.take.set("payload".into(), false)?;
                         st.empty.set((), false)?;
-                        st.data.set(&[0, 1, 255], false, false)?;
-                        st.multi.set(7, &[100, 200], false, false)?;
-                        st.multi.set(42, &[], false, false)?;
+                        st.data.set(&[0, 1, 255], false, false, false)?;
+                        st.multi.set(7, &[100, 200], false, false, false)?;
+                        st.multi.set(42, &[], false, false, false)?;
                     }
                     4 => {
                         st.take.set(String::new(), false)?;
-                        st.data.set(&[], false, false)?;
+                        st.data.set(&[], false, false, false)?;
                     }
                     10..=13 => {
                         match command {
                             10 => st.take.set("first".into(), true)?,
                             11 => st.empty.set((), true)?,
-                            12 => st.data.set(&[1, 2], true, false)?,
-                            _ => st.multi.set(73, &[100, 200], true, false)?,
+                            12 => st.data.set(&[1, 2], true, false, false)?,
+                            _ => st.multi.set(73, &[100, 200], true, false, false)?,
                         }
                         st.phase.set(1)?;
                         match command {
                             10 => st.take.set(String::new(), true)?,
                             11 => st.empty.set((), true)?,
-                            12 => st.data.set(&[], true, false)?,
-                            _ => st.multi.set(73, &[], true, false)?,
+                            12 => st.data.set(&[], true, false, false)?,
+                            _ => st.multi.set(73, &[], true, false, false)?,
                         }
                         st.phase.set(2)?;
                     }
                     20 => {
-                        st.cached.set(&[31, 32], false, true)?;
+                        st.cached.set(&[31, 32], false, true, false)?;
                         st.cached_multi.remove_index(91)?;
-                        st.cached_multi.set(513, &[17], false, true)?;
+                        st.cached_multi.set(513, &[17], false, true, false)?;
                         st.phase.set(20)?;
                     }
                     21 => {
-                        st.cached.set(&[41], false, false)?;
+                        st.cached.set(&[41], false, false, false)?;
                         st.cached_multi.reset()?;
                         st.phase.set(21)?;
                     }
                     22 => {
-                        st.multi.set(7, &[7], false, false)?;
-                        st.multi.set(900, &[9], false, false)?;
+                        st.multi.set(7, &[7], false, false, false)?;
+                        st.multi.set(900, &[9], false, false, false)?;
                         st.multi.remove_index(7)?;
                         st.phase.set(22)?;
                     }
@@ -448,14 +458,14 @@ impl Fixture {
                         st.phase.set(23)?;
                     }
                     24 | 25 => {
-                        st.multi.set(7, &[7], true, false)?;
+                        st.multi.set(7, &[7], true, false, false)?;
                         if command == 24 {
                             st.multi.remove_index(7)?;
                         } else {
                             st.multi.reset()?;
                         }
                         st.phase.set(24)?;
-                        st.multi.set(513, &[9], true, false)?;
+                        st.multi.set(513, &[9], true, false, false)?;
                         st.phase.set(25)?;
                     }
                     30 => {

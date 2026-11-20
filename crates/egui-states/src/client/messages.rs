@@ -356,7 +356,7 @@ pub(crate) async fn handle_message(
         ServerHeader::DataTake(id, header, blocking) => match vals.data_take(id) {
             Some(data_take) => data_take.update((header, payload), blocking)?,
             None => {
-                if blocking && header.is_terminal() {
+                if header.is_terminal() {
                     client.send_ack(id);
                 }
                 return Err(format!("DataTake with id {} not found", id));
@@ -386,8 +386,8 @@ pub(crate) async fn handle_message(
                 }
             },
             None => {
-                if header.requires_ack_on_failure() {
-                    client.send_ack(id);
+                if let Some(key) = header.ack_key_on_failure() {
+                    client.send_ack_key(id, key);
                 }
                 return Err(format!("DataMultiTake with id {} not found", id));
             }
@@ -839,7 +839,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_take_data_acks_only_blocking_terminal_operations() {
+    fn missing_take_data_acks_only_terminal_operations() {
         assert_ack(
             dispatch_missing((
                 ServerHeader::DataTake(79, DataTakeHeader::All(DataType::U8, 1, 0, None), true),
@@ -865,16 +865,24 @@ mod tests {
             )),
             81,
         );
-        assert_no_ack(dispatch_missing((
-            ServerHeader::DataMultiTake(
-                82,
-                DataMultiTakeHeader::Modify(
-                    3,
-                    DataTakeHeader::All(DataType::U8, 1, 0, None),
-                    false,
+        // A non-blocking transfer is acknowledged as well.
+        assert_ack(
+            dispatch_missing((
+                ServerHeader::DataMultiTake(
+                    82,
+                    DataMultiTakeHeader::Modify(
+                        3,
+                        DataTakeHeader::All(DataType::U8, 1, 0, None),
+                        false,
+                    ),
                 ),
-            ),
-            Bytes::from_static(&[1]),
+                Bytes::from_static(&[1]),
+            )),
+            82,
+        );
+        assert_no_ack(dispatch_missing((
+            ServerHeader::DataMultiTake(82, DataMultiTakeHeader::Remove(3)),
+            Bytes::new(),
         )));
     }
 }

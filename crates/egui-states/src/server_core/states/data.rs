@@ -2394,19 +2394,20 @@ mod header_tests {
         };
         take.sync().unwrap();
 
-        take.set(with(&[1, 2], Some(&encoded(1))), false, true)
+        take.set(with(&[1, 2], Some(&encoded(1))), false, true, false)
             .unwrap();
         deliver();
+        take.acknowledge();
         assert_eq!(client.take_with_header(), Some((vec![1, 2], meta(1))));
 
         // Every take needs a header.
-        let error = take.set(with(&[3], None), false, true).unwrap_err();
+        let error = take.set(with(&[3], None), false, true, false).unwrap_err();
         assert_eq!(error.kind, ErrorKind::InvalidArgument);
         deliver();
         assert_eq!(client.take_with_header(), None);
 
         // A reconnect replays the cache with its header.
-        take.set(with(&[4], Some(&encoded(4))), false, true)
+        take.set(with(&[4], Some(&encoded(4))), false, true, false)
             .unwrap();
         deliver();
         client.take();
@@ -2423,7 +2424,9 @@ mod header_tests {
             sender,
             connected,
         );
-        let error = multi.set(1, with(&[1], None), false, true).unwrap_err();
+        let error = multi
+            .set(1, with(&[1], None), false, true, false)
+            .unwrap_err();
         assert_eq!(error.kind, ErrorKind::InvalidArgument);
     }
 }

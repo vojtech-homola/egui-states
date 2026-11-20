@@ -264,20 +264,24 @@ class StateServerCore:
         blocking: bool,
         cache: bool,
         header: tuple[object] | None,
+        wait: bool,
     ) -> None:
         """Send a one-shot buffer to the client.
 
         Args:
             value_id (int): Protocol id of the data state.
             data (Buffer): Buffer-protocol object to send.
-            blocking (bool): Whether to wait until the client consumes the
-                preceding value before sending.
+            blocking (bool): Whether the client acknowledges the data only
+                once the UI takes it.
             cache (bool): Whether to retain the data for a newly initialized
                 client.
             header (tuple[object] | None): The header sent with the data as
                 ``(header,)``; ``None`` only for a state without a header
                 type.
+            wait (bool): Whether to return only once the client has
+                acknowledged the data.
         """
+    def data_take_is_idle(self, value_id: int) -> bool: ...
 
     # data multi --------------------------------------------------------------------
     def data_multi_get(self, value_id: int, index: int) -> bytearray: ...
@@ -325,6 +329,7 @@ class StateServerCore:
         blocking: bool,
         cache: bool,
         header: tuple[object] | None,
+        wait: bool,
     ) -> None:
         """Send one keyed, one-shot buffer to the client.
 
@@ -332,14 +337,17 @@ class StateServerCore:
             value_id (int): Protocol id of the data state.
             index (int): Non-negative buffer index.
             data (Buffer): Buffer-protocol object to send.
-            blocking (bool): Whether to wait until the client consumes the
-                preceding value before sending.
+            blocking (bool): Whether the client acknowledges the data only
+                once the UI takes it.
             cache (bool): Whether to retain the data for a newly initialized
                 client.
             header (tuple[object] | None): The header sent with the data as
                 ``(header,)``; ``None`` only for a state without a header
                 type.
+            wait (bool): Whether to return only once the client has
+                acknowledged the data.
         """
+    def data_multi_take_is_idle(self, value_id: int, index: int | None = None) -> bool: ...
     def data_multi_take_remove_index(self, value_id: int, index: int) -> None: ...
     def data_multi_take_reset(self, value_id: int) -> None: ...
 

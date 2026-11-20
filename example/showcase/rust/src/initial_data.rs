@@ -123,39 +123,39 @@ pub fn populate_initial_data(states: &ShowcaseState) -> s::Result<()> {
     states
         .data_take
         .take_buffer
-        .set(&take_buffer, false, true)?;
+        .set(&take_buffer, false, true, false)?;
     let take_samples = (0..8).map(|index| index as f32 / 7.0).collect::<Vec<_>>();
     states
         .data_take
         .take_samples
-        .set(&take_samples, false, true)?;
+        .set(&take_samples, false, true, false)?;
 
     states
         .data_multi_take
         .bytes
-        .set(0, &[0, 1, 2, 3, 4, 5], false, true)?;
+        .set(0, &[0, 1, 2, 3, 4, 5], false, true, false)?;
     states
         .data_multi_take
         .bytes
-        .set(1, &[10, 20, 30], false, true)?;
+        .set(1, &[10, 20, 30], false, true, false)?;
     states
         .data_multi_take
         .samples
-        .set(0, &[0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0], false, true)?;
+        .set(0, &[0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0], false, true, false)?;
     states
         .data_multi_take
         .samples
-        .set(2, &[-1.0, 0.0, 1.0], false, true)?;
+        .set(2, &[-1.0, 0.0, 1.0], false, true, false)?;
     states
         .data_multi_take
         .nested
         .buffer
-        .set(0, &[0, 1, 2, 3], false, true)?;
+        .set(0, &[0, 1, 2, 3], false, true, false)?;
     states
         .data_multi_take
         .nested
         .buffer
-        .set(3, &[100, 110], false, true)?;
+        .set(3, &[100, 110], false, true, false)?;
 
     let mut image = vec![0u8; 256 * 256 * 3];
     for y in 0..256usize {

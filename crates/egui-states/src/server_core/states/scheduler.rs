@@ -1,5 +1,6 @@
 //! Transfer scheduling shared by the states whose transfers the client
-//! acknowledges: `Data`, `DataMulti`, `Image` and `ImageMulti`.
+//! acknowledges: `Data`, `DataMulti`, `Image`, `ImageMulti`, `DataTake` and
+//! `DataMultiTake`.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -400,6 +401,17 @@ impl Scheduler {
         drop(state);
         if lock.key().is_none() {
             self.forget_idle_keys(&lock);
+        }
+    }
+
+    /// Queues `message`, which the client does not acknowledge, at once and
+    /// without any lock: for the controls of take states, which must not wait
+    /// for a blocking value the UI has not taken. Take states never leave
+    /// split parts waiting.
+    pub(super) fn send_now(&self, message: FastVec<32>, generation: u64) {
+        let state = self.state.lock();
+        if state.sync.generation() == generation && self.is_connected() {
+            self.sender.send(message);
         }
     }
 

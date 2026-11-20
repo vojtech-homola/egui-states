@@ -154,8 +154,8 @@ of its own: the WebSocket library moves the unsent rest of a message after
 every partial socket write, so large frames cost time quadratic in their size.
 Acknowledgements provide backpressure and release pending server work.
 
-`Data`, `DataMulti`, `Image` and `ImageMulti` send one acknowledged transfer
-at a time, and a `DataMulti` or `ImageMulti` one per key: the client
+`Data`, `DataMulti`, `Image`, `ImageMulti`, `DataTake` and `DataMultiTake`
+send one acknowledged transfer at a time, and the multi states one per key: the client
 acknowledges each key on its own (`AckKey`), and the keys do not wait for each
 other. A change waits until the client has acknowledged the previous one of
 its key, then queues its transfer and returns, so the changes one thread makes
@@ -218,12 +218,17 @@ browsers answer them outside the page, so a busy UI does not count as silence.
 A client receiving a large message sends nothing until it arrives, so the
 timeout must exceed the longest transfer over the slowest expected network.
 
-For one-shot transfers, `blocking = true` prevents a later send from overtaking
-the pending transfer. Calling the client handle's `take` method consumes the
-value and sends the acknowledgement. For numeric takes, `cache = true` also
-retains the last transfer for synchronization with a newly connected client.
-A reconnected `DataMultiTake` holds only the cached keys: values the client
-had not taken before the disconnect are dropped.
+A numeric take (`DataTake`, `DataMultiTake`) is acknowledged when it arrives,
+so a fast producer on a slow link waits for the client instead of queuing
+transfers the UI never sees; a new one replaces a buffer the UI has not taken.
+With `blocking = true` the client acknowledges the transfer only when the UI
+calls `take`, so the next send waits until then. A remove or reset of a
+`DataMultiTake` key does not wait: the client acknowledges the blocking value
+it drops. A `ValueTake` is not acknowledged unless it is blocking, which works
+the same way. For numeric takes, `cache = true` also retains the last transfer
+for synchronization with a newly connected client. A reconnected
+`DataMultiTake` holds only the cached keys: values the client had not taken
+before the disconnect are dropped.
 
 ## Send priority
 
