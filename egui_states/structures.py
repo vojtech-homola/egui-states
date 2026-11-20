@@ -669,7 +669,7 @@ class ImageMulti(_StaticBase):
         return self._server.image_multi_len(self._value_id)
 
     def __contains__(self, index: object) -> bool:
-        if not isinstance(index, int):
+        if not _is_index(index):
             return False
         return self._server.image_multi_contains(self._value_id, index)
 
