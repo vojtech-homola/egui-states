@@ -1159,6 +1159,11 @@ mod tests {
 
     #[test]
     fn bind_errors_are_reported_and_start_can_be_retried() {
+        // In its own process: a test running alongside could bind the port
+        // between the drop of the listener and the retry.
+        if crate::test_support::isolated() {
+            return;
+        }
         let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
         let server = StateServer::new().unwrap();
