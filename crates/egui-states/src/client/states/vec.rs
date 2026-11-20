@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use serde::Deserialize;
 
+use super::ChangedFlag;
 use crate::protocol::collections::{Part, Replacement, VecHeader};
 use crate::protocol::{Deserializer, deserialize};
 use crate::typed::Typed;
@@ -25,6 +26,7 @@ pub struct VecState<T> {
     list: Arc<RwLock<Vec<T>>>,
     // Items of a chunked replacement received so far; applied on `End`.
     pending: Arc<Replacement<Vec<T>>>,
+    changed: ChangedFlag,
 }
 
 impl<T: Typed + Clone> VecState<T> {
@@ -34,7 +36,29 @@ impl<T: Typed + Clone> VecState<T> {
             type_id,
             list: Arc::new(RwLock::new(Vec::new())),
             pending: Arc::new(Replacement::new()),
+            changed: ChangedFlag::default(),
         }
+    }
+
+    /// Tells whether the server changed the vector since the last call, and
+    /// clears the flag.
+    ///
+    /// Only this call clears it; reading the vector does not. Call it once
+    /// per frame, before reading, and use the result wherever the UI rebuilds
+    /// something from the vector: a second call in the same frame returns
+    /// `false`. The synchronization after a connection also counts as a
+    /// change.
+    ///
+    /// ```no_run
+    /// # fn rebuild(items: &[String]) -> Vec<String> { items.to_vec() }
+    /// # fn example(items: egui_states::VecState<String>, sorted: &mut Vec<String>) {
+    /// if items.take_changed() {
+    ///     *sorted = items.read(|items| rebuild(items));
+    /// }
+    /// # }
+    /// ```
+    pub fn take_changed(&self) -> bool {
+        self.changed.take()
     }
 
     /// Returns a copy of the complete vector.
@@ -109,6 +133,8 @@ impl<T: for<'a> Deserialize<'a> + Send + Sync> UpdateList for VecState<T> {
             return Err(format!("Type id mismatch for list {}", self.name));
         }
 
+        // A chunk changes nothing readers can see yet.
+        let changes = !matches!(header, VecHeader::Begin(_) | VecHeader::Chunk(_));
         match header {
             VecHeader::All(size) => self.replace(Part::All, size, data)?,
             VecHeader::Begin(size) => self.replace(Part::Begin, size, data)?,
@@ -138,6 +164,9 @@ impl<T: for<'a> Deserialize<'a> + Send + Sync> UpdateList for VecState<T> {
                 }
             }
         }
+        if changes {
+            self.changed.mark();
+        }
         Ok(())
     }
 
@@ -153,6 +182,7 @@ impl<T> Clone for VecState<T> {
             type_id: self.type_id,
             list: self.list.clone(),
             pending: self.pending.clone(),
+            changed: self.changed.clone(),
         }
     }
 }
@@ -192,6 +222,34 @@ mod tests {
         assert_eq!(list.get_item(3), None);
         list.update_list(TYPE_ID, VecHeader::All(0), &[]).unwrap();
         assert!(list.get().is_empty());
+    }
+
+    /// Every change readers can see is reported once, a chunk only with its
+    /// end, and reading leaves the flag alone.
+    #[test]
+    fn take_changed_reports_each_visible_change_once() {
+        let list = VecState::<i32>::new("root.list".into(), TYPE_ID);
+        assert!(!list.take_changed());
+        list.update_list(TYPE_ID, VecHeader::All(2), &items(&[1, 2]))
+            .unwrap();
+        assert!(list.take_changed());
+        assert!(!list.take_changed());
+
+        list.update_list(TYPE_ID, VecHeader::Add, &items(&[3]))
+            .unwrap();
+        assert_eq!(list.get(), [1, 2, 3]);
+        assert!(list.clone().take_changed());
+
+        list.update_list(TYPE_ID, VecHeader::Begin(1), &items(&[4]))
+            .unwrap();
+        list.update_list(TYPE_ID, VecHeader::Chunk(1), &items(&[5]))
+            .unwrap();
+        assert!(!list.take_changed());
+        list.update_list(TYPE_ID, VecHeader::End(0), &[]).unwrap();
+        assert!(list.take_changed());
+
+        assert!(list.update_list(TYPE_ID, VecHeader::Add, &[]).is_err());
+        assert!(!list.take_changed());
     }
 
     /// Pins current behavior: the server validates indexes, so the client ignores

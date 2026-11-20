@@ -1,12 +1,14 @@
 //! Read-only client handles for server-controlled numeric buffers.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use bytes::Bytes;
 use parking_lot::{Mutex, RwLock};
 
 use serde::de::DeserializeOwned;
 
+use super::ChangedFlag;
 use crate::client::messages::{ChannelMessage, MessageSender};
 use crate::hashing::NoHashMap;
 use crate::protocol::data::{DataHeader, DataType, HeaderBytes, HeaderUpdate, TransportType};
@@ -379,6 +381,7 @@ pub struct Data<T, H = ()> {
     inner: Arc<RwLock<Option<Store<T, H>>>>,
     buffer: Arc<Mutex<Option<BatchBuffer<T>>>>,
     sender: MessageSender,
+    changed: ChangedFlag,
 }
 
 #[allow(private_bounds)]
@@ -397,7 +400,29 @@ where
             inner: Arc::new(RwLock::new(None)),
             buffer: Arc::new(Mutex::new(None)),
             sender,
+            changed: ChangedFlag::default(),
         }
+    }
+
+    /// Tells whether the server changed the data or its header since the
+    /// last call, and clears the flag.
+    ///
+    /// Only this call clears it; reading the data does not. Call it once per
+    /// frame, before reading, and use the result wherever the UI rebuilds
+    /// something from the data, such as a plot: a second call in the same
+    /// frame returns `false`. The synchronization after a connection also
+    /// counts as a change, and so does a reset to "not set".
+    ///
+    /// ```no_run
+    /// # fn downsample(samples: &[f32]) -> Vec<f32> { samples.to_vec() }
+    /// # fn example(samples: egui_states::Data<f32>, plot: &mut Vec<f32>) {
+    /// if samples.take_changed() {
+    ///     *plot = samples.read(|samples| samples.map(downsample).unwrap_or_default());
+    /// }
+    /// # }
+    /// ```
+    pub fn take_changed(&self) -> bool {
+        self.changed.take()
     }
 
     /// Returns a copy of the complete buffer, or `None` while the data is not
@@ -634,7 +659,29 @@ where
     T: private::GetDataType + Sync + Send,
     H: HeaderValue,
 {
-    fn update_data(&self, (header, data): DataMessage) -> Result<(), String> {
+    fn update_data(&self, message: DataMessage) -> Result<(), String> {
+        // A batch changes nothing readers can see before its end.
+        let changes = !matches!(message.0, DataHeader::StartBatch(..) | DataHeader::Batch(_));
+        let result = self.apply(message);
+        if changes && result.is_ok() {
+            self.changed.mark();
+        }
+        result
+    }
+
+    fn disconnected(&self) {
+        self.buffer.lock().take();
+    }
+}
+
+#[allow(private_bounds)]
+impl<T, H> Data<T, H>
+where
+    T: private::GetDataType + Sync + Send,
+    H: HeaderValue,
+{
+    /// Applies one server message; a failed one changes nothing readers see.
+    fn apply(&self, (header, data): DataMessage) -> Result<(), String> {
         match header {
             DataHeader::All(data_type, transport_type, _, header) => {
                 if let Err(error) = check_data_type(self.data_type, data_type, &self.name) {
@@ -669,10 +716,6 @@ where
             }
         }
     }
-
-    fn disconnected(&self) {
-        self.buffer.lock().take();
-    }
 }
 
 impl<T, H> Clone for Data<T, H> {
@@ -686,6 +729,7 @@ impl<T, H> Clone for Data<T, H> {
             inner: self.inner.clone(),
             buffer: self.buffer.clone(),
             sender: self.sender.clone(),
+            changed: self.changed.clone(),
         }
     }
 }
@@ -704,6 +748,9 @@ pub(crate) trait UpdateMultiData: Sync + Send {
 struct MultiStore<T, H> {
     data: NoHashMap<u32, Vec<T>>,
     headers: NoHashMap<u32, H>,
+    /// Whether the server changed a key since the UI took its flag. A key
+    /// keeps its flag after it is removed, so the removal is reported.
+    changed: NoHashMap<u32, AtomicBool>,
 }
 
 impl<T, H: HeaderValue> MultiStore<T, H> {
@@ -730,6 +777,7 @@ pub struct DataMulti<T, H = ()> {
     inner: Arc<RwLock<MultiStore<T, H>>>,
     buffers: Arc<Mutex<NoHashMap<u32, BatchBuffer<T>>>>,
     sender: MessageSender,
+    any_changed: ChangedFlag,
 }
 
 #[allow(private_bounds)]
@@ -748,10 +796,65 @@ where
             inner: Arc::new(RwLock::new(MultiStore {
                 data: NoHashMap::default(),
                 headers: NoHashMap::default(),
+                changed: NoHashMap::default(),
             })),
             buffers: Arc::new(Mutex::new(NoHashMap::default())),
             sender,
+            any_changed: ChangedFlag::default(),
         }
+    }
+
+    /// Tells whether the server changed, created or removed the buffer at
+    /// `key`, or its header, since the last call for `key`, and clears the
+    /// flag of `key`.
+    ///
+    /// Only this call clears it; reading does not, and the flags of the other
+    /// keys and of [`Self::take_any_changed`] are separate. Call it once per
+    /// frame and key, before reading, and use the result wherever the UI
+    /// rebuilds something from that buffer: a second call in the same frame
+    /// returns `false`. After a removal it returns `true` once, and reading
+    /// the key returns `None`. The synchronization after a connection also
+    /// counts as a change.
+    ///
+    /// ```no_run
+    /// # fn downsample(samples: &[f32]) -> Vec<f32> { samples.to_vec() }
+    /// # fn example(channels: egui_states::DataMulti<f32>, plots: &mut [Vec<f32>; 4]) {
+    /// for (key, plot) in (0..).zip(plots.iter_mut()) {
+    ///     if channels.take_changed(key) {
+    ///         *plot = channels.read(key, |samples| samples.map(downsample).unwrap_or_default());
+    ///     }
+    /// }
+    /// # }
+    /// ```
+    pub fn take_changed(&self, key: u32) -> bool {
+        let inner = self.inner.read();
+        inner
+            .changed
+            .get(&key)
+            .is_some_and(|flag| flag.swap(false, Ordering::AcqRel))
+    }
+
+    /// Tells whether the server changed, created or removed any buffer or
+    /// header since the last call, and clears this flag.
+    ///
+    /// It is separate from the flags of [`Self::take_changed`], for UI that
+    /// rebuilds from the whole collection, such as with [`Self::read_all`].
+    pub fn take_any_changed(&self) -> bool {
+        self.any_changed.take()
+    }
+
+    /// Records a server change of `key` that readers can already see.
+    fn mark(&self, key: u32) {
+        let inner = self.inner.read();
+        match inner.changed.get(&key) {
+            Some(flag) => flag.store(true, Ordering::Release),
+            None => {
+                drop(inner);
+                let flag = AtomicBool::new(true);
+                self.inner.write().changed.insert(key, flag);
+            }
+        }
+        self.any_changed.mark();
     }
 
     /// Returns a copy of the buffer at `key`, or `None` when it is absent.
@@ -1042,7 +1145,52 @@ where
     T: private::GetDataType + Sync + Send,
     H: HeaderValue,
 {
-    fn update(&self, index: u32, (header, data): DataMessage) -> Result<(), String> {
+    fn update(&self, index: u32, message: DataMessage) -> Result<(), String> {
+        // A batch changes nothing readers can see before its end.
+        let changes = !matches!(message.0, DataHeader::StartBatch(..) | DataHeader::Batch(_));
+        let result = self.apply(index, message);
+        if changes && result.is_ok() {
+            self.mark(index);
+        }
+        result
+    }
+
+    fn remove(&self, index: u32) {
+        let mut w = self.inner.write();
+        w.data.remove(&index);
+        w.headers.remove(&index);
+        drop(w);
+        self.buffers.lock().remove(&index);
+        self.mark(index);
+    }
+
+    fn reset(&self) {
+        let mut w = self.inner.write();
+        w.data.clear();
+        w.headers.clear();
+        // Every key is removed; the flags stay to report it.
+        for flag in w.changed.values() {
+            flag.store(true, Ordering::Release);
+        }
+        drop(w);
+        self.buffers.lock().clear();
+        self.any_changed.mark();
+    }
+
+    fn disconnected(&self) {
+        self.buffers.lock().clear();
+    }
+}
+
+#[allow(private_bounds)]
+impl<T, H> DataMulti<T, H>
+where
+    T: private::GetDataType + Sync + Send,
+    H: HeaderValue,
+{
+    /// Applies one server message for `index`; a failed one changes nothing
+    /// readers see.
+    fn apply(&self, index: u32, (header, data): DataMessage) -> Result<(), String> {
         match header {
             DataHeader::All(data_type, transport_type, _, header) => {
                 if let Err(error) = check_data_type(self.data_type, data_type, &self.name) {
@@ -1094,26 +1242,6 @@ where
             )),
         }
     }
-
-    fn remove(&self, index: u32) {
-        let mut w = self.inner.write();
-        w.data.remove(&index);
-        w.headers.remove(&index);
-        drop(w);
-        self.buffers.lock().remove(&index);
-    }
-
-    fn reset(&self) {
-        let mut w = self.inner.write();
-        w.data.clear();
-        w.headers.clear();
-        drop(w);
-        self.buffers.lock().clear();
-    }
-
-    fn disconnected(&self) {
-        self.buffers.lock().clear();
-    }
 }
 
 impl<T, H> Clone for DataMulti<T, H> {
@@ -1127,6 +1255,7 @@ impl<T, H> Clone for DataMulti<T, H> {
             inner: self.inner.clone(),
             buffers: self.buffers.clone(),
             sender: self.sender.clone(),
+            any_changed: self.any_changed.clone(),
         }
     }
 }
@@ -1395,6 +1524,114 @@ mod malformed_tests {
             Bytes::copy_from_slice(values),
         ))
         .unwrap();
+    }
+
+    fn set_key(data: &DataMulti<u8>, key: u32, values: &[u8]) {
+        data.update(
+            key,
+            (
+                DataHeader::All(
+                    DataType::U8,
+                    TransportType::Set(values.len() as u64),
+                    0,
+                    crate::protocol::data::HeaderUpdate::Keep,
+                ),
+                Bytes::copy_from_slice(values),
+            ),
+        )
+        .unwrap();
+    }
+
+    /// The flag reports each change readers can see once, is cleared only by
+    /// taking it, and is shared by clones.
+    #[test]
+    fn take_changed_reports_each_visible_change_once() {
+        let (sender, _receiver) = MessageSender::new();
+        let data = Data::<u8>::new("data".to_string(), 1, sender);
+        assert!(!data.take_changed());
+
+        set(&data, &[1, 2]);
+        assert!(data.take_changed());
+        assert!(!data.take_changed());
+
+        // Reading leaves the flag alone.
+        set(&data, &[3]);
+        assert_eq!(data.get(), Some(vec![3]));
+        data.read(|_| ());
+        assert!(data.clone().take_changed());
+        assert!(!data.take_changed());
+
+        // A batch is visible, and reported, only at its end.
+        data.update_data((DataHeader::StartBatch(2, 0), Bytes::from_static(&[4])))
+            .unwrap();
+        data.update_data((DataHeader::Batch(0), Bytes::new()))
+            .unwrap();
+        assert!(!data.take_changed());
+        data.update_data((
+            DataHeader::End(
+                DataType::U8,
+                TransportType::Set(2),
+                0,
+                crate::protocol::data::HeaderUpdate::Keep,
+            ),
+            Bytes::from_static(&[5]),
+        ))
+        .unwrap();
+        assert!(data.take_changed());
+
+        // A failed update changes nothing.
+        let drain = DataHeader::Drain(5, 1, crate::protocol::data::HeaderUpdate::Keep);
+        assert!(data.update_data((drain, Bytes::new())).is_err());
+        assert!(!data.take_changed());
+
+        data.update_data((DataHeader::Reset, Bytes::new())).unwrap();
+        assert!(data.take_changed());
+        assert_eq!(data.get(), None);
+    }
+
+    /// Every key has its own flag, which also reports a removal, and one more
+    /// flag reports a change of any key.
+    #[test]
+    fn data_multi_flags_changes_per_key_and_for_any_key() {
+        let (sender, _receiver) = MessageSender::new();
+        let data = DataMulti::<u8>::new("data".to_string(), 2, sender);
+        assert!(!data.take_changed(1));
+        assert!(!data.take_any_changed());
+
+        set_key(&data, 1, &[1]);
+        assert!(!data.take_changed(2));
+        assert!(data.take_changed(1));
+        assert!(!data.take_changed(1));
+        assert!(data.take_any_changed());
+        assert!(!data.take_any_changed());
+
+        set_key(&data, 2, &[2]);
+        assert!(!data.take_changed(1));
+        assert!(data.take_changed(2));
+        assert!(data.take_any_changed());
+
+        // Reading leaves the flags alone; a batch counts at its end.
+        set_key(&data, 1, &[3]);
+        assert_eq!(data.get(1), Some(vec![3]));
+        data.read_all(|_| ());
+        data.update(1, (DataHeader::StartBatch(2, 0), Bytes::from_static(&[4])))
+            .unwrap();
+        assert!(data.clone().take_changed(1));
+        data.update(1, (DataHeader::Batch(0), Bytes::new()))
+            .unwrap();
+        assert!(!data.take_changed(1));
+
+        data.remove(1);
+        assert!(data.take_changed(1));
+        assert_eq!(data.get(1), None);
+        assert!(!data.take_changed(1));
+        assert!(data.take_any_changed());
+
+        data.reset();
+        assert!(data.take_changed(1));
+        assert!(data.take_changed(2));
+        assert!(data.take_any_changed());
+        assert!(!data.take_changed(3));
     }
 
     #[test]

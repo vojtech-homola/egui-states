@@ -37,6 +37,19 @@ pub(super) fn show_data_take(ui: &mut egui::Ui, state: &mut ViewState) {
     });
 }
 
+/// A preview of `values` with their range.
+fn summarize_f32(values: &[f32]) -> String {
+    if values.is_empty() {
+        return preview_f32_slice(values);
+    }
+    let min = values.iter().copied().fold(f32::INFINITY, f32::min);
+    let max = values.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    format!(
+        "{}, min = {min:.2}, max = {max:.2}",
+        preview_f32_slice(values)
+    )
+}
+
 /// Describes a Data buffer, which is `None` until the server sets it.
 fn describe<T>(data: Option<&[T]>, preview: impl Fn(&[T]) -> String) -> String {
     match data {
@@ -57,13 +70,14 @@ pub(super) fn show_data(ui: &mut egui::Ui, state: &mut ViewState) {
 
         ui.separator();
 
-        let samples = state
-            .schema
-            .data
-            .samples
-            .read(|data| describe(data, preview_f32_slice));
+        // The summary of these 20,480 samples is computed only after the
+        // server changed them, not on every frame.
+        let samples = &state.schema.data.samples;
+        if samples.take_changed() {
+            state.samples_summary = samples.read(|data| describe(data, summarize_f32));
+        }
         ui.label("Data<f32>: root.data.samples");
-        ui.label(samples);
+        ui.label(&state.samples_summary);
 
         ui.separator();
 

@@ -79,6 +79,20 @@ The client repaints the UI after the server changes a state, once per
 received batch of changes; see
 [repaints](docs/architecture.md#repaints-and-runtimes).
 
+To rebuild something from a `Data`, `VecState` or `MapState` only when the
+server changed it, such as a plot of a large buffer, call `take_changed()`
+once per frame before reading. It returns `true` once after each change, and
+only this call clears it, so other reads don't interfere:
+
+```rust
+if state.samples.take_changed() {
+    self.plot = state.samples.read(|samples| downsample(samples));
+}
+```
+
+`DataMulti` has a flag per key, `take_changed(key)`, which also reports a
+removed key, and `take_any_changed()` for the whole collection.
+
 ## File transfers
 
 `Download<M>` sends files from the server to the client and `Upload<M>` from

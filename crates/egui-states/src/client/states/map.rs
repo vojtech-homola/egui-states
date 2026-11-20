@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use serde::Deserialize;
 
+use super::ChangedFlag;
 use crate::protocol::collections::{MapHeader, Part, Replacement};
 use crate::protocol::{Deserializer, deserialize};
 use crate::typed::Typed;
@@ -27,6 +28,7 @@ pub struct MapState<K, V> {
     dict: Arc<RwLock<HashMap<K, V>>>,
     // Items of a chunked replacement received so far; applied on `End`.
     pending: Arc<Replacement<HashMap<K, V>>>,
+    changed: ChangedFlag,
 }
 
 impl<K, V> MapState<K, V>
@@ -40,7 +42,20 @@ where
             type_id,
             dict: Arc::new(RwLock::new(HashMap::new())),
             pending: Arc::new(Replacement::new()),
+            changed: ChangedFlag::default(),
         }
+    }
+
+    /// Tells whether the server changed the map since the last call, and
+    /// clears the flag.
+    ///
+    /// Only this call clears it; reading the map does not. Call it once per
+    /// frame, before reading, and use the result wherever the UI rebuilds
+    /// something from the map: a second call in the same frame returns
+    /// `false`. The synchronization after a connection also counts as a
+    /// change.
+    pub fn take_changed(&self) -> bool {
+        self.changed.take()
     }
 
     /// Returns a copy of the complete map.
@@ -129,6 +144,8 @@ where
             return Err(format!("Type id mismatch for map {}", self.name));
         }
 
+        // A chunk changes nothing readers can see yet.
+        let changes = !matches!(header, MapHeader::Begin(_) | MapHeader::Chunk(_));
         match header {
             MapHeader::All(size) => self.replace(Part::All, size, data)?,
             MapHeader::Begin(size) => self.replace(Part::Begin, size, data)?,
@@ -147,6 +164,9 @@ where
                 self.dict.write().remove(&key);
             }
         }
+        if changes {
+            self.changed.mark();
+        }
         Ok(())
     }
 
@@ -162,6 +182,7 @@ impl<K, V> Clone for MapState<K, V> {
             type_id: self.type_id,
             dict: self.dict.clone(),
             pending: self.pending.clone(),
+            changed: self.changed.clone(),
         }
     }
 }
@@ -225,6 +246,29 @@ mod tests {
         assert_eq!(map.get_item(&3).as_deref(), Some("three"));
         map.update_map(TYPE_ID, MapHeader::All(0), &[]).unwrap();
         assert!(map.get().is_empty());
+    }
+
+    /// Every change readers can see is reported once, a chunk only with its
+    /// end, and reading leaves the flag alone.
+    #[test]
+    fn take_changed_reports_each_visible_change_once() {
+        let map = MapState::<u16, String>::new("root.map".into(), TYPE_ID);
+        assert!(!map.take_changed());
+        map.update_map(TYPE_ID, MapHeader::Set, &entries(&[entry(1, "one")]))
+            .unwrap();
+        assert_eq!(map.get_item(&1).as_deref(), Some("one"));
+        assert!(map.clone().take_changed());
+        assert!(!map.take_changed());
+
+        let chunk = entries(&[entry(2, "two")]);
+        map.update_map(TYPE_ID, MapHeader::Begin(1), &chunk)
+            .unwrap();
+        assert!(!map.take_changed());
+        map.update_map(TYPE_ID, MapHeader::End(0), &[]).unwrap();
+        assert!(map.take_changed());
+
+        assert!(map.update_map(TYPE_ID, MapHeader::Remove, &[]).is_err());
+        assert!(!map.take_changed());
     }
 
     #[test]

@@ -25,6 +25,8 @@ struct ViewState {
     last_multi_take_samples: Vec<(u32, Vec<f32>)>,
     last_multi_take_nested: Vec<(u32, Vec<u16>)>,
     last_offer_note: String,
+    /// The summary of `root.data.samples`, computed only when it changed.
+    samples_summary: String,
 }
 
 impl ViewState {
@@ -41,6 +43,7 @@ impl ViewState {
             last_multi_take_samples: Vec::new(),
             last_multi_take_nested: Vec::new(),
             last_offer_note: String::new(),
+            samples_summary: "not set".to_string(),
         }
     }
 }
