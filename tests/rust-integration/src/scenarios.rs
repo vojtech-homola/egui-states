@@ -661,8 +661,8 @@ fn images_wire(port: u16) {
 
     assert_eq!(state.image.image.get_size(), Some([3, 2]));
     // `images` uses the low-priority lane, so the phase can arrive before the
-    // removal. The lane keeps its own order: once the removal is in, so is
-    // everything sent before it.
+    // removal. The servers send the removal once the split update of key 7
+    // is acknowledged, so once the removal is in, so is that update.
     wait("sparse image removal", || {
         (state.image.images.indices() == [7]).then_some(())
     });

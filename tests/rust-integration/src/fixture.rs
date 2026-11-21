@@ -269,7 +269,9 @@ fn edit_images(all: &State) -> s::Result<()> {
         s::ImageFormat::Color,
         false,
         Some(1),
-        false,
+        // The keys do not wait for each other: the remove of key 2 follows
+        // the last part of this split update only once it is acknowledged.
+        true,
     )?;
     images.remove_index(2)
 }

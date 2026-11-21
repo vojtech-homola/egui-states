@@ -216,10 +216,11 @@ def edit_numeric(states):
 def edit_images(states):
     """Command 34: a full image, partial updates, and sparse images.
 
-    The first set returns once the client acknowledged it. The split update
-    finishes before the remove, which waits for every acknowledgement. The
-    sparse images use the low-priority lane, so the phase can reach the client
-    before the remove.
+    The first set returns once the client acknowledged it. The keys of the
+    sparse images do not wait for each other, so the split update of key 7
+    waits for its last part: the remove of key 2 follows it. The sparse images
+    use the low-priority lane, so the phase can reach the client before the
+    remove.
     """
     image = states.image.image
     image.set(np.arange(18, dtype=np.uint8).reshape(2, 3, 3), wait=True)
@@ -227,7 +228,7 @@ def edit_images(states):
     images = states.image.images
     images[2].set(np.array([[9]], dtype=np.uint8))
     images[7].set_all((2, 2), (1, 2, 3))
-    images[7].update(np.full((2, 2, 3), (4, 5, 6), dtype=np.uint8), (0, 0), max_lines=1)
+    images[7].update(np.full((2, 2, 3), (4, 5, 6), dtype=np.uint8), (0, 0), max_lines=1, wait=True)
     images.remove_index(2)
 
 
