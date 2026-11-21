@@ -4,12 +4,14 @@ use std::path::Path;
 
 use crate::State;
 use crate::build_scripts::states_creator_build::{RustDerives, StateType, StatesCreatorBuild};
-use crate::typed::ObjectType;
+use crate::typed::{ObjectType, VariantFields};
 
 /// Enum name to its `(variant, value)` pairs.
-type Enums = BTreeMap<String, Vec<(String, i32)>>;
+pub(crate) type Enums = BTreeMap<String, Vec<(String, i32)>>;
 /// Struct name to its `(field, type)` pairs.
-type Structs = BTreeMap<String, Vec<(String, ObjectType)>>;
+pub(crate) type Structs = BTreeMap<String, Vec<(String, ObjectType)>>;
+/// Enum with data name to its variants.
+pub(crate) type DataEnums = BTreeMap<String, Vec<(String, VariantFields)>>;
 
 pub(crate) fn parse_states<S: State>() -> (StateType, u64, RustDerives) {
     let mut creator = StatesCreatorBuild::new("root");
@@ -81,135 +83,107 @@ pub(crate) fn write_generated_files<const N: usize>(
     Ok(())
 }
 
-fn collect_enums(type_info: &ObjectType, enums: &mut Enums) {
-    match type_info {
-        ObjectType::Enum(name, variants) => {
-            if enums.contains_key(name) && enums[name] != *variants {
-                panic!(
-                    "Enum {} defined multiple times with different variants",
-                    name
-                );
-            }
+/// The custom types a state tree uses, by name.
+#[derive(Default)]
+pub(crate) struct CustomTypes {
+    /// Fieldless enums and their `(variant, value)` pairs.
+    pub(crate) enums: Enums,
+    /// Enums with data and their variants.
+    pub(crate) data_enums: DataEnums,
+    /// Structs and their `(field, type)` pairs.
+    pub(crate) structs: Structs,
+}
 
-            enums.insert(name.clone(), variants.clone());
-        }
-        ObjectType::Struct(_, fields) => {
-            for (_, field_type) in fields {
-                collect_enums(field_type, enums);
+impl CustomTypes {
+    fn collect(&mut self, type_info: &ObjectType) {
+        match type_info {
+            ObjectType::Enum(name, variants) => {
+                if self.enums.get(name).is_some_and(|known| known != variants)
+                    || self.data_enums.contains_key(name)
+                {
+                    panic!("Enum {name} defined multiple times with different variants");
+                }
+                self.enums.insert(name.clone(), variants.clone());
             }
-        }
-        ObjectType::Tuple(elements) => {
-            for elem in elements {
-                collect_enums(elem, enums);
+            ObjectType::DataEnum(name, variants) => {
+                if self
+                    .data_enums
+                    .get(name)
+                    .is_some_and(|known| known != variants)
+                    || self.enums.contains_key(name)
+                {
+                    panic!("Enum {name} defined multiple times with different variants");
+                }
+                self.data_enums.insert(name.clone(), variants.clone());
+                for (_, fields) in variants {
+                    match fields {
+                        VariantFields::Unit => {}
+                        VariantFields::Named(fields) => {
+                            for (_, field_type) in fields {
+                                self.collect(field_type);
+                            }
+                        }
+                        VariantFields::Tuple(fields) => {
+                            for field_type in fields {
+                                self.collect(field_type);
+                            }
+                        }
+                    }
+                }
             }
+            ObjectType::Struct(name, fields) => {
+                if self.structs.get(name).is_some_and(|known| known != fields) {
+                    panic!("Struct {name} defined multiple times with different fields");
+                }
+                self.structs.insert(name.clone(), fields.clone());
+                for (_, field_type) in fields {
+                    self.collect(field_type);
+                }
+            }
+            ObjectType::Tuple(elements) => {
+                for element in elements {
+                    self.collect(element);
+                }
+            }
+            ObjectType::List(_, element)
+            | ObjectType::Option(element)
+            | ObjectType::Vec(element) => self.collect(element),
+            ObjectType::Map(key_type, value_type) => {
+                self.collect(key_type);
+                self.collect(value_type);
+            }
+            _ => { /* ignore basic types */ }
         }
-        ObjectType::List(_, element) => {
-            collect_enums(element, enums);
-        }
-        ObjectType::Option(element) => {
-            collect_enums(element, enums);
-        }
-        ObjectType::Vec(element) => {
-            collect_enums(element, enums);
-        }
-        ObjectType::Map(key_type, value_type) => {
-            collect_enums(key_type, enums);
-            collect_enums(value_type, enums);
-        }
-        _ => { /* ignore basic types */ }
     }
 }
 
-fn collect_structs(type_info: &ObjectType, structs: &mut Structs) {
-    match type_info {
-        ObjectType::Struct(name, fields) => {
-            if structs.contains_key(name) && structs[name] != *fields {
-                panic!(
-                    "Struct {} defined multiple times with different fields",
-                    name
-                );
-            }
-
-            structs.insert(name.clone(), fields.clone());
-            for (_, field_type) in fields {
-                collect_structs(field_type, structs);
-            }
-        }
-        ObjectType::Enum(_, variants) => {
-            for (_, _) in variants {
-                // Enums don't have nested types in this design
-            }
-        }
-        ObjectType::Tuple(elements) => {
-            for elem in elements {
-                collect_structs(elem, structs);
-            }
-        }
-        ObjectType::List(_, element) => {
-            collect_structs(element, structs);
-        }
-        ObjectType::Option(element) => {
-            collect_structs(element, structs);
-        }
-        ObjectType::Vec(element) => {
-            collect_structs(element, structs);
-        }
-        ObjectType::Map(key_type, value_type) => {
-            collect_structs(key_type, structs);
-            collect_structs(value_type, structs);
-        }
-        _ => { /* ignore basic types */ }
-    }
-}
-
-pub(crate) fn get_all_enums_struct(values: &[StateType]) -> (Enums, Structs) {
-    let mut enums = BTreeMap::new();
-    let mut structs = BTreeMap::new();
+pub(crate) fn get_custom_types(values: &[StateType]) -> CustomTypes {
+    let mut types = CustomTypes::default();
 
     for value in values {
         match value {
-            StateType::Value(_, info, _, _) => {
-                collect_enums(info, &mut enums);
-                collect_structs(info, &mut structs);
-            }
-            StateType::Static(_, info, _) => {
-                collect_enums(info, &mut enums);
-                collect_structs(info, &mut structs);
-            }
-            StateType::ValueMap(_, key_info, value_info) => {
-                collect_enums(key_info, &mut enums);
-                collect_enums(value_info, &mut enums);
-                collect_structs(key_info, &mut structs);
-                collect_structs(value_info, &mut structs);
-            }
-            StateType::ValueVec(_, elem_info) => {
-                collect_enums(elem_info, &mut enums);
-                collect_structs(elem_info, &mut structs);
-            }
-            StateType::Signal(_, info, _) => {
-                collect_enums(info, &mut enums);
-                collect_structs(info, &mut structs);
-            }
-            StateType::ValueTake(_, info) => {
-                collect_enums(info, &mut enums);
-                collect_structs(info, &mut structs);
-            }
-            StateType::Data(_, _, Some(info), _)
+            StateType::Value(_, info, _, _)
+            | StateType::Static(_, info, _)
+            | StateType::ValueVec(_, info)
+            | StateType::Signal(_, info, _)
+            | StateType::ValueTake(_, info)
+            | StateType::Data(_, _, Some(info), _)
             | StateType::DataTake(_, _, Some(info), _)
             | StateType::DataMulti(_, _, Some(info), _)
             | StateType::DataMultiTake(_, _, Some(info), _)
             | StateType::Download(_, Some(info))
             | StateType::Upload(_, Some(info))
             | StateType::Image(_, Some(info), _)
-            | StateType::ImageMulti(_, Some(info), _) => {
-                collect_enums(info, &mut enums);
-                collect_structs(info, &mut structs);
+            | StateType::ImageMulti(_, Some(info), _) => types.collect(info),
+            StateType::ValueMap(_, key_info, value_info) => {
+                types.collect(key_info);
+                types.collect(value_info);
             }
             _ => { /* ignore other types */ }
         }
     }
 
-    (enums, structs)
+    types
 }
 
 pub(crate) fn states_into_values_list(state: &StateType, list: &mut Vec<StateType>) {

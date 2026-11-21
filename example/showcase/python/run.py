@@ -8,7 +8,7 @@ import threading
 
 import numpy as np
 from showcase_bindings import ShowcaseState, StatesServer
-from showcase_bindings.enums import PrimaryChoice, SecondaryChoice
+from showcase_bindings.enums import Command, PrimaryChoice, SecondaryChoice, Status
 from showcase_bindings.structs import ImageInfo, Measurement, Point, SampleInfo, Summary
 from egui_states import LogLevel, TransferError, TransferHandle, TransferOffer, TransferStatus
 
@@ -122,6 +122,33 @@ def register_callbacks(server: StatesServer) -> None:  # noqa: PLR0915
         else:
             states.transfers.upload_result.set(f"upload failed: {handle.error()}")
 
+    handled = 0
+
+    def on_command(command: Command) -> None:
+        # One queued signal keeps the commands in order; `match` reads each
+        # variant's fields.
+        nonlocal handled
+        handled += 1
+        print(f"command {handled}: {command}")
+        match command:
+            case Command.Stop:
+                status = Status.Idle
+            case Command.MoveTo(x=x, y=y):
+                status = Status.At(x, y)
+            case Command.SetGain(gain) if gain > 2:
+                status = Status.Failed(f"gain {gain:.2f} is above 2")
+            case Command.Mark(number, text):
+                print(f"mark {number}: {text}")
+                status = Status.Handled(handled)
+            case _:
+                status = Status.Handled(handled)
+        history = states.commands.history
+        if len(history) >= 8:
+            del history[0]
+        history.add_item(command)
+        states.commands.status.set(status)
+
+    states.commands.command.connect(on_command)
     states.transfers.request_download.connect(send_sample)
     states.transfers.upload.on_offer(receive_upload)
     states.transfers.upload.connect(upload_finished)

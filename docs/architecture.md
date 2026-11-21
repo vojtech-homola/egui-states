@@ -412,6 +412,62 @@ For images:
   an image; `Image::initialize_with_header` gives it one. Neither replaces an
   image or header from the server.
 
+## Enums with data
+
+`#[egui_states::typed]` accepts an enum whose variants carry data, alongside
+fieldless enums. A typical use is commands with parameters: one
+`#[state(queue)] Signal<Command>` delivers every command, in order, to one
+callback, whereas separate signals can run their callbacks at the same time on
+different workers. An enum with data can be used wherever a typed value can:
+in values, statics, signals, takes, collections, data and image headers and
+transfer metadata, and inside structs and other enums.
+
+```rust
+#[egui_states::typed]
+#[derive(Clone, egui_states::InitialValue)]
+pub enum Command {
+    Stop,                      // unit variant
+    MoveTo { x: f32, y: f32 }, // named fields
+    SetGain(f32),              // tuple variant
+    Mark(u32, String),
+}
+```
+
+- **Wire.** Postcard sends the variant's position, then its fields in order,
+  so the protocol is unchanged. Fieldless enums keep their encoding and type
+  hash: the macro describes an enum as `ObjectType::DataEnum` only when a
+  variant has fields. The type hash covers the variant names and kinds and the
+  field types, not the field names, as for structs.
+- **Not supported**, as compile errors: explicit discriminants (the wire never
+  carries them), empty `Variant {}` or `Variant()` variants (write `Variant`),
+  generics, and a field that contains the enum itself. `#[derive(Atomic)]`
+  supports only fieldless enums; an enum with data that fits in 64 bits can
+  implement `Atomic` by hand.
+- **Initial values.** With `#[derive(InitialValue)]`, `#[state(init = ...)]`
+  can start a `Value` or `Static` from any variant, which both generators
+  emit.
+
+In Python, a fieldless enum stays an `IntEnum`. An enum with data is a class,
+and each variant a subclass of it, so `isinstance(c, Command)` holds for every
+variant:
+
+- A unit variant is one constant, `Command.Stop`, matched as
+  `case Command.Stop:`. A received value is that same object, so
+  `c is Command.Stop` works too.
+- A variant with named fields is a frozen dataclass:
+  `Command.MoveTo(x=1.0, y=2.0)`, `c.x`, `case Command.MoveTo(x=x, y=y):`.
+- A tuple variant is a `tuple`: `Command.Mark(1, "a")`, `c[0]`,
+  `number, text = c`, `case Command.Mark(number, text):`. Its equality and
+  hash include the variant, so it never equals a plain tuple or another
+  variant with the same fields.
+
+Every value can be a dict key. A variant or field name that is a Python keyword
+gets an underscore (`Command.None_`, `from_`). The generated `enums.py` builds
+the variant classes at runtime, which a module cannot write as classes nested
+in their own base; the generated `enums.pyi` stub describes them as nested
+classes, so type checkers see `Command.MoveTo` with typed fields and
+constructor arguments.
+
 ## Repaints and runtimes
 
 The client repaints after every change the server makes; server setters

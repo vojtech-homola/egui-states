@@ -304,6 +304,7 @@ pub fn run(port: u16, scenario: &str) {
         "numeric-wire" => numeric_wire(&state),
         "data-headers" => data_headers(port, &state, connection),
         "image-headers" => image_headers(port, &state, connection),
+        "data-enums" => data_enums(&state),
         "file-transfers" => file_transfers(&state),
         "uploads" => uploads(&state),
         _ => panic!("unknown scenario: {scenario}"),
@@ -332,6 +333,124 @@ fn image_headers(port: u16, state: &State, connection: Connection) {
         (i.framed.header() == Some(framed.clone())).then_some(())
     });
     assert_eq!(i.framed_keys.header(5), Some(renamed));
+}
+
+/// Every variant shape of the enum with data, as the servers' `all_commands`.
+fn all_commands() -> Vec<egui_states_test_schema::data_enums::TestCommand> {
+    use egui_states_test_schema::data_enums::{TestCommand, TestStatus};
+    use egui_states_test_schema::sections::{TestEnum, TestStruct2};
+    vec![
+        TestCommand::Stop,
+        TestCommand::MoveTo { x: 1.5, y: -2.5 },
+        TestCommand::SetGain(0.25),
+        TestCommand::Pair(-3, "pair".into()),
+        TestCommand::Choose(TestEnum::C),
+        TestCommand::Load {
+            path: "a.tif".into(),
+            summary: Some(TestStruct2 {
+                enabled: true,
+                level: 7,
+                name: "seven".into(),
+            }),
+        },
+        TestCommand::Report(TestStatus::Busy { progress: 0.5 }),
+        TestCommand::None,
+        TestCommand::Keyword { from: 255 },
+    ]
+}
+
+/// Enums with data in every state kind, header and transfer: the servers
+/// set them on command 38 and check what the client sent on command 39.
+fn data_enums(state: &State) {
+    use egui_states::TransferStatus;
+    use egui_states_test_schema::data_enums::{TestCommand, TestJob, TestStatus};
+    use egui_states_test_schema::sections::TestEnum;
+    use std::collections::HashMap;
+
+    let s = &state.integration;
+    let e = &state.data_enums;
+    // The initial values of the definition, synchronized from the server.
+    assert_eq!(e.command.get(), TestCommand::MoveTo { x: 1.5, y: -2.0 });
+    assert_eq!(e.fixed.get(), TestCommand::SetGain(0.5));
+    assert_eq!(
+        e.job.get(),
+        TestJob {
+            name: "job".into(),
+            status: TestStatus::Busy { progress: 0.25 }
+        }
+    );
+    assert_eq!(e.optional.get(), Some(TestStatus::Failed("init".into())));
+
+    s.command.set(38u32);
+    let offer = wait("download with an enum as metadata", || {
+        e.download.take_offer()
+    });
+    assert_eq!(
+        offer.meta(),
+        &TestCommand::Report(TestStatus::Busy { progress: 1.0 })
+    );
+    let download = offer.accept_memory(1024);
+    phase(s, 38);
+    assert_eq!(download.take_data().unwrap(), b"enum");
+    assert_eq!(e.command.get(), TestCommand::Pair(-1, "server".into()));
+    assert_eq!(
+        e.fixed.get(),
+        TestCommand::Report(TestStatus::Failed("fixed".into()))
+    );
+    assert_eq!(
+        e.job.get(),
+        TestJob {
+            name: "server".into(),
+            status: TestStatus::Idle
+        }
+    );
+    assert_eq!(e.optional.get(), None);
+    e.list.read(|list| assert_eq!(list, &all_commands()));
+    e.table.read(|table| {
+        assert_eq!(
+            table,
+            &HashMap::from([(1, TestStatus::Busy { progress: 0.75 })])
+        )
+    });
+    let load = TestCommand::Load {
+        path: "data.bin".into(),
+        summary: None,
+    };
+    assert_eq!(e.data.get_with_header(), Some((vec![1, 2], load)));
+    assert_eq!(
+        e.data_multi.header(3),
+        Some(TestCommand::Choose(TestEnum::B))
+    );
+    assert_eq!(
+        e.image.header(),
+        Some(TestCommand::MoveTo { x: 0.5, y: 1.5 })
+    );
+    assert_eq!(e.images.header(2), Some(TestCommand::None));
+    once("take", TestCommand::Keyword { from: 9 }, || e.take.take());
+    once("data take", (vec![5], TestCommand::Stop), || {
+        e.data_take.take_with_header()
+    });
+    once(
+        "keyed data take",
+        (vec![6], TestCommand::SetGain(6.0)),
+        || e.data_multi_take.take_with_header(6),
+    );
+
+    e.command.set(TestCommand::Load {
+        path: "client".into(),
+        summary: None,
+    });
+    e.optional.set(Some(TestStatus::Busy { progress: 0.125 }));
+    for command in all_commands() {
+        e.commands.set(command);
+    }
+    let sent = e
+        .upload
+        .send_bytes(b"up".to_vec(), "up.bin", TestCommand::Pair(2, "up".into()));
+    let status = wait("upload", || sent.is_finished().then(|| sent.status()));
+    assert_eq!(status, TransferStatus::Done);
+    s.command.set(39u32);
+    phase(s, 39);
 }
 
 /// Downloads in memory, with metadata, rejected, and as a folder of files;

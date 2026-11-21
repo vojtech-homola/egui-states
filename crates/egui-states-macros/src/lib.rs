@@ -20,9 +20,12 @@ mod states;
 /// type, and prerequisite derives are not inferred.
 ///
 /// The attribute supports non-generic unit structs or structs with named
-/// fields, and non-generic fieldless enums whose discriminants fit in `i32`;
-/// unions, tuple structs, data-carrying enums, and generic items are not
-/// supported. Every field type must implement `egui_states::Typed`.
+/// fields, and non-generic enums. A fieldless enum may have discriminants that
+/// fit in `i32`. An enum with data may mix unit variants, variants with named
+/// fields and tuple variants, but has no explicit discriminants, no empty
+/// `Variant {}` or `Variant()` variants, and no field that contains the enum
+/// itself. Unions, tuple structs and generic items are not supported. Every
+/// field type must implement `egui_states::Typed`.
 #[proc_macro_attribute]
 pub fn typed(args: TokenStream, input: TokenStream) -> TokenStream {
     let args = TokenStream2::from(args);
@@ -87,7 +90,7 @@ fn parse_typed_args(args: TokenStream2) -> syn::Result<Vec<Path>> {
     Ok(rust_derives.unwrap_or_default())
 }
 
-/// Derives `egui_states::InitialValue` for a struct or fieldless enum.
+/// Derives `egui_states::InitialValue` for a struct or enum.
 ///
 /// This supports the same item shapes as [`typed`]. Every struct field must
 /// implement `egui_states::InitialValue`.
@@ -100,7 +103,9 @@ pub fn initial_value(input: TokenStream) -> TokenStream {
 /// `ValueAtomic` and a `StaticAtomic`.
 ///
 /// The input must be a non-generic fieldless enum whose discriminants fit in
-/// `i32`; the generated implementation stores the discriminant atomically.
+/// `i32`; the generated implementation stores the discriminant atomically. An
+/// enum with data that fits in 64 bits can implement `egui_states::Atomic` by
+/// hand instead.
 #[proc_macro_derive(Atomic)]
 pub fn atomic(input: TokenStream) -> TokenStream {
     objects::impl_atomic(input)
@@ -212,6 +217,9 @@ fn add_serde_attributes(item: &mut DeriveInput) -> syn::Result<()> {
         syn::Data::Enum(data) => {
             for variant in &data.variants {
                 check_serde_attributes(&variant.attrs)?;
+                for field in &variant.fields {
+                    check_serde_attributes(&field.attrs)?;
+                }
             }
         }
         syn::Data::Union(_) => {}

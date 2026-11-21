@@ -7,7 +7,7 @@ use crate::State;
 use crate::build_scripts::scripts;
 use crate::build_scripts::states_creator_build::StateType;
 use crate::protocol::data::DataType;
-use crate::typed::ObjectType;
+use crate::typed::{ObjectType, VariantFields};
 
 fn data_type_to_rust_type(data_type: &DataType) -> &'static str {
     match data_type {
@@ -28,6 +28,7 @@ fn data_type_to_rust_type(data_type: &DataType) -> &'static str {
 enum RustTypeContext {
     States,
     Structs,
+    Enums,
 }
 
 fn type_to_rust_type(object_type: &ObjectType, context: RustTypeContext) -> String {
@@ -45,13 +46,15 @@ fn type_to_rust_type(object_type: &ObjectType, context: RustTypeContext) -> Stri
         ObjectType::Bool => "bool".to_string(),
         ObjectType::String => "String".to_string(),
         ObjectType::Empty => "()".to_string(),
-        ObjectType::Enum(name, _) => match context {
+        ObjectType::Enum(name, _) | ObjectType::DataEnum(name, _) => match context {
             RustTypeContext::States => format!("enums::{name}"),
             RustTypeContext::Structs => format!("super::enums::{name}"),
+            RustTypeContext::Enums => name.clone(),
         },
         ObjectType::Struct(name, _) => match context {
             RustTypeContext::States => format!("structs::{name}"),
             RustTypeContext::Structs => name.clone(),
+            RustTypeContext::Enums => format!("super::structs::{name}"),
         },
         ObjectType::Tuple(elements) => match elements.len() {
             0 => "()".to_string(),
@@ -108,6 +111,36 @@ fn init_to_rust_value(init: &InitValue, object_type: &ObjectType) -> String {
         (InitValue::String(value), ObjectType::String) => format!("String::from({value:?})"),
         (InitValue::Enum(variant), ObjectType::Enum(name, _)) => {
             format!("enums::{name}::{variant}")
+        }
+        (InitValue::DataEnum(variant, values), ObjectType::DataEnum(name, variants)) => {
+            let fields = variants
+                .iter()
+                .find(|(known, _)| known == variant)
+                .map(|(_, fields)| fields)
+                .expect("Mismatched InitValue and ObjectType");
+            match fields {
+                VariantFields::Unit => format!("enums::{name}::{variant}"),
+                VariantFields::Named(fields) => {
+                    let values = values
+                        .iter()
+                        .zip(fields.iter())
+                        .map(|(value, (field, typ))| {
+                            format!("{field}: {}", init_to_rust_value(value, typ))
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!("enums::{name}::{variant} {{ {values} }}")
+                }
+                VariantFields::Tuple(types) => {
+                    let values = values
+                        .iter()
+                        .zip(types.iter())
+                        .map(|(value, typ)| init_to_rust_value(value, typ))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!("enums::{name}::{variant}({values})")
+                }
+            }
         }
         (InitValue::Option(None), ObjectType::Option(element)) => format!(
             "None::<{}>",
@@ -477,6 +510,7 @@ fn order_structs(items: &[(String, ObjectType)], order: &mut VecDeque<String>) {
 
 const ENUM_DERIVES: &[&str] = &["Clone", "Copy", "Debug", "PartialEq", "Eq", "Hash"];
 const STRUCT_DERIVES: &[&str] = &["Clone"];
+const DATA_ENUM_DERIVES: &[&str] = &["Clone"];
 const TYPED_DERIVES: &[&str] = &[
     "Serialize",
     "Deserialize",
@@ -525,7 +559,11 @@ fn render_rust<S: State>() -> Result<(String, String, String), String> {
 
     let mut values_list = Vec::new();
     scripts::states_into_values_list(&states, &mut values_list);
-    let (enums, structs) = scripts::get_all_enums_struct(&values_list);
+    let scripts::CustomTypes {
+        enums,
+        data_enums,
+        structs,
+    } = scripts::get_custom_types(&values_list);
 
     let mut struct_order = VecDeque::new();
     for (struct_name, items) in &structs {
@@ -551,6 +589,54 @@ fn render_rust<S: State>() -> Result<(String, String, String), String> {
                 "    /// Protocol variant with discriminant `{value}`.\n    {variant} = {value},"
             )
             .unwrap();
+        }
+        enums_output.push_str("}\n");
+    }
+    for (enum_name, variants) in &data_enums {
+        let derives = merged_derives(DATA_ENUM_DERIVES, rust_derives.enum_derives(enum_name));
+        writeln!(
+            enums_output,
+            "\n/// Generated protocol enum `{enum_name}`.\n#[egui_states::typed]\n#[derive({derives})]\npub enum {enum_name} {{"
+        )
+        .unwrap();
+        for (variant, fields) in variants {
+            match fields {
+                VariantFields::Unit => {
+                    writeln!(
+                        enums_output,
+                        "    /// Protocol variant `{variant}`.\n    {variant},"
+                    )
+                    .unwrap();
+                }
+                VariantFields::Named(fields) => {
+                    writeln!(
+                        enums_output,
+                        "    /// Protocol variant `{variant}`.\n    {variant} {{"
+                    )
+                    .unwrap();
+                    for (field, typ) in fields {
+                        writeln!(
+                            enums_output,
+                            "        /// Generated `{field}` field.\n        {field}: {},",
+                            type_to_rust_type(typ, RustTypeContext::Enums)
+                        )
+                        .unwrap();
+                    }
+                    enums_output.push_str("    },\n");
+                }
+                VariantFields::Tuple(types) => {
+                    let types = types
+                        .iter()
+                        .map(|typ| type_to_rust_type(typ, RustTypeContext::Enums))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    writeln!(
+                        enums_output,
+                        "    /// Protocol variant `{variant}`.\n    {variant}({types}),"
+                    )
+                    .unwrap();
+                }
+            }
         }
         enums_output.push_str("}\n");
     }

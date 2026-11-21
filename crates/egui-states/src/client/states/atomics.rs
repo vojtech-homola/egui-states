@@ -39,6 +39,34 @@ use parking_lot::Mutex;
 /// }
 /// ```
 ///
+/// `#[derive(Atomic)]` covers only fieldless enums. An enum with data that
+/// fits in 64 bits converts itself the same way, here with the variant in the
+/// upper half and an `f32` in the lower:
+///
+/// ```
+/// #[derive(Clone, Copy)]
+/// enum Exposure {
+///     Auto,
+///     Manual(f32),
+/// }
+///
+/// impl egui_states::Atomic for Exposure {
+///     fn to_atomic(self) -> u64 {
+///         match self {
+///             Exposure::Auto => 0,
+///             Exposure::Manual(ms) => (1 << 32) | u64::from(ms.to_bits()),
+///         }
+///     }
+///
+///     fn from_atomic(bits: u64) -> Self {
+///         match bits >> 32 {
+///             0 => Exposure::Auto,
+///             _ => Exposure::Manual(f32::from_bits(bits as u32)),
+///         }
+///     }
+/// }
+/// ```
+///
 /// `from_atomic` must return the value `to_atomic` was given, for every
 /// value; it is only called with bits that `to_atomic` returned. The value
 /// also needs `#[egui_states::typed]` and `InitialValue` to be a state, as

@@ -1,4 +1,5 @@
 pub mod collections;
+pub mod commands;
 pub mod data;
 pub mod image;
 pub mod sections;
@@ -24,4 +25,5 @@ pub struct ShowcaseState {
     pub data_multi_take: MultiDataTakeStates,
     pub image: ImageStates,
     pub transfers: transfers::TransferStates,
+    pub commands: commands::CommandStates,
 }

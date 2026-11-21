@@ -8,7 +8,7 @@ use crate::State;
 use crate::build_scripts::scripts;
 use crate::build_scripts::states_creator_build::StateType;
 use crate::protocol::data::DataType;
-use crate::typed::ObjectType;
+use crate::typed::{ObjectType, VariantFields};
 
 /// Python's hard keywords. Soft keywords (`match`, `case`, `type`, `_`) are valid
 /// identifiers and need no escaping.
@@ -71,6 +71,35 @@ fn type_to_pytype(type_info: &ObjectType) -> String {
         ObjectType::String => "s.st".to_string(),
         ObjectType::Empty => "s.emp".to_string(),
         ObjectType::Enum(name, _) => format!("s.enu(enums.{name})"),
+        ObjectType::DataEnum(name, variants) => {
+            let variants = variants
+                .iter()
+                .map(|(variant, fields)| {
+                    let attr = format!("enums.{name}.{}", python_name(variant));
+                    match fields {
+                        VariantFields::Unit => format!("s.vunit(\"{variant}\", {attr})"),
+                        VariantFields::Named(fields) => {
+                            let fields = fields
+                                .iter()
+                                .map(|(_, object)| type_to_pytype(object))
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            format!("s.vnamed(\"{variant}\", [{fields}], {attr})")
+                        }
+                        VariantFields::Tuple(types) => {
+                            let types = types
+                                .iter()
+                                .map(type_to_pytype)
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            format!("s.vtuple(\"{variant}\", [{types}], {attr})")
+                        }
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("s.denu(enums.{name}, [{variants}])")
+        }
         ObjectType::Struct(name, elements) => {
             let fields = elements
                 .iter()
@@ -258,6 +287,8 @@ fn object_type_index(types: &[ObjectType], object_type: &ObjectType) -> usize {
 enum PythonTypeContext {
     States,
     Structs,
+    /// The `enums.pyi` stub, next to the enums.
+    Enums,
 }
 
 fn type_info_to_python_type(
@@ -278,9 +309,12 @@ fn type_info_to_python_type(
         ObjectType::Bool => "bool".to_string(),
         ObjectType::String => "str".to_string(),
         ObjectType::Empty => String::new(),
-        ObjectType::Enum(name, _) => format!("enums.{name}"),
+        ObjectType::Enum(name, _) | ObjectType::DataEnum(name, _) => match context {
+            PythonTypeContext::States | PythonTypeContext::Structs => format!("enums.{name}"),
+            PythonTypeContext::Enums => name.clone(),
+        },
         ObjectType::Struct(name, _) => match context {
-            PythonTypeContext::States => format!("structs.{name}"),
+            PythonTypeContext::States | PythonTypeContext::Enums => format!("structs.{name}"),
             PythonTypeContext::Structs => name.clone(),
         },
         ObjectType::Tuple(elements) => {
@@ -367,6 +401,26 @@ fn init_to_python_value(init: &InitValue, object_type: &ObjectType) -> String {
         },
         (InitValue::Enum(variant), ObjectType::Enum(name, _)) => {
             format!("enums.{name}.{}", python_name(variant))
+        }
+        (InitValue::DataEnum(variant, values), ObjectType::DataEnum(name, variants)) => {
+            let fields = variants
+                .iter()
+                .find(|(known, _)| known == variant)
+                .map(|(_, fields)| fields)
+                .expect("Mismatched InitValue and ObjectType");
+            let attr = format!("enums.{name}.{}", python_name(variant));
+            let types: Vec<&ObjectType> = match fields {
+                VariantFields::Unit => return attr,
+                VariantFields::Named(fields) => fields.iter().map(|(_, typ)| typ).collect(),
+                VariantFields::Tuple(types) => types.iter().collect(),
+            };
+            let values = values
+                .iter()
+                .zip(types)
+                .map(|(value, typ)| init_to_python_value(value, typ))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{attr}({values})")
         }
         (InitValue::Option(value), ObjectType::Option(inner)) => match value {
             Some(value) => init_to_python_value(value, inner),
@@ -617,14 +671,178 @@ fn order_structs(items: &[(String, ObjectType)], order: &mut VecDeque<String>) {
     }
 }
 
-fn render_python<S: State>() -> (String, String, String) {
+/// The fields of a variant as `(Python name, Python type)`, with the
+/// positional names `_0`, `_1`, ... of a tuple variant.
+fn variant_fields(fields: &VariantFields) -> Vec<(String, String)> {
+    let python_type = |typ| type_info_to_python_type(typ, false, PythonTypeContext::Enums);
+    match fields {
+        VariantFields::Unit => Vec::new(),
+        VariantFields::Named(fields) => fields
+            .iter()
+            .map(|(field, typ)| (python_name(field).into_owned(), python_type(typ)))
+            .collect(),
+        VariantFields::Tuple(types) => types
+            .iter()
+            .enumerate()
+            .map(|(index, typ)| (format!("_{index}"), python_type(typ)))
+            .collect(),
+    }
+}
+
+/// Renders `enums.py` and its `enums.pyi` stub. The module builds the
+/// variants of an enum with data at runtime; the stub describes them to type
+/// checkers as classes nested in the enum, which a module cannot define.
+fn render_enums(enums: &scripts::Enums, data_enums: &scripts::DataEnums) -> (String, String) {
+    let header = "# Generated by build.rs, do not edit\n";
+    let docstring = "\"\"\"Custom enum types used by the generated state server.\"\"\"\n";
+    let mut module = format!("{header}{docstring}\nfrom enum import IntEnum\n");
+    let mut stub = format!("{header}# ruff: noqa\n{docstring}\nfrom enum import IntEnum\n");
+    if !data_enums.is_empty() {
+        module.push_str("\nimport egui_states.structures as s\n");
+        stub = format!(
+            "{header}# ruff: noqa\n{docstring}\nfrom dataclasses import dataclass\nfrom enum import IntEnum\nfrom typing import ClassVar, Self, final\n\nimport egui_states.structures as s\n\nfrom . import structs\n"
+        );
+    }
+
+    for (enum_name, variants) in enums {
+        let mut class = format!(
+            "\n\nclass {enum_name}(IntEnum):\n    \"\"\"A generated protocol enumeration.\"\"\"\n"
+        );
+        for (variant, value) in variants {
+            writeln!(class, "    {} = {value}", python_name(variant)).unwrap();
+        }
+        class.push_str(&wire_names_line(
+            enum_name,
+            variants.iter().map(|(variant, _)| variant.as_str()),
+        ));
+        module.push_str(&class);
+        stub.push_str(&class);
+    }
+
+    for (enum_name, variants) in data_enums {
+        // Rejects an escaped variant name that collides with another one. The
+        // wire names go to `s.denu` explicitly, so no `__egui_names__`.
+        let _ = wire_names_line(
+            enum_name,
+            variants.iter().map(|(variant, _)| variant.as_str()),
+        );
+        writeln!(
+            module,
+            "\n\nclass {enum_name}(s._CustomEnum):\n    \"\"\"A generated protocol enum with data.\"\"\"\n\n    __slots__ = ()\n\n"
+        )
+        .unwrap();
+        writeln!(
+            stub,
+            "\n\nclass {enum_name}(s._CustomEnum):\n    \"\"\"A generated protocol enum with data.\"\"\""
+        )
+        .unwrap();
+
+        for (variant, fields) in variants {
+            let attr = python_name(variant);
+            let doc = format!("\"\"\"Protocol variant `{enum_name}.{attr}`.\"\"\"");
+            match fields {
+                VariantFields::Unit => {
+                    writeln!(
+                        module,
+                        "{enum_name}.{attr} = s._unit_variant({enum_name}, \"{attr}\")"
+                    )
+                    .unwrap();
+                    writeln!(
+                        stub,
+                        "\n    @final\n    class _{attr}({enum_name}):\n        {doc}\n\n    {attr}: ClassVar[_{attr}]"
+                    )
+                    .unwrap();
+                }
+                VariantFields::Named(named) => {
+                    let fields = variant_fields(fields);
+                    let names = fields
+                        .iter()
+                        .map(|(field, _)| format!("\"{field}\""))
+                        .collect::<Vec<_>>();
+                    let names = match names.len() {
+                        1 => format!("({},)", names[0]),
+                        _ => format!("({})", names.join(", ")),
+                    };
+                    let wire_names = wire_names_line(
+                        &format!("{enum_name}.{variant}"),
+                        named.iter().map(|(field, _)| field.as_str()),
+                    );
+                    let wire_names = match wire_names.trim().strip_prefix("__egui_names__ = ") {
+                        Some(names) => format!(", {names}"),
+                        None => String::new(),
+                    };
+                    writeln!(
+                        module,
+                        "{enum_name}.{attr} = s._named_variant({enum_name}, \"{attr}\", {names}{wire_names})"
+                    )
+                    .unwrap();
+                    writeln!(
+                        stub,
+                        "\n    @final\n    @dataclass(frozen=True)\n    class {attr}({enum_name}):\n        {doc}\n"
+                    )
+                    .unwrap();
+                    for (field, typ) in fields {
+                        writeln!(stub, "        {field}: {typ}").unwrap();
+                    }
+                }
+                VariantFields::Tuple(_) => {
+                    let fields = variant_fields(fields);
+                    let size = fields.len();
+                    writeln!(
+                        module,
+                        "{enum_name}.{attr} = s._tuple_variant({enum_name}, \"{attr}\", {size})"
+                    )
+                    .unwrap();
+                    let types = fields
+                        .iter()
+                        .map(|(_, typ)| typ.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let names = fields
+                        .iter()
+                        .map(|(field, _)| format!("\"{field}\""))
+                        .collect::<Vec<_>>();
+                    let names = match names.len() {
+                        1 => format!("({},)", names[0]),
+                        _ => format!("({})", names.join(", ")),
+                    };
+                    let parameters = fields
+                        .iter()
+                        .map(|(field, typ)| format!("{field}: {typ}"))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    writeln!(
+                        stub,
+                        "\n    @final\n    class {attr}({enum_name}, tuple[{types}]):\n        {doc}\n\n        __match_args__ = {names}\n\n        def __new__(cls, {parameters}, /) -> Self: ..."
+                    )
+                    .unwrap();
+                    for (field, typ) in &fields {
+                        writeln!(
+                            stub,
+                            "        @property\n        def {field}(self) -> {typ}: ..."
+                        )
+                        .unwrap();
+                    }
+                }
+            }
+        }
+    }
+
+    (module, stub)
+}
+
+fn render_python<S: State>() -> (String, String, String, String) {
     let (states, version_hash, _) = scripts::parse_states::<S>();
     scripts::validate_states(&states);
 
     let mut values_list = Vec::new();
     scripts::states_into_values_list(&states, &mut values_list);
 
-    let (enums, structs) = scripts::get_all_enums_struct(&values_list);
+    let scripts::CustomTypes {
+        enums,
+        data_enums,
+        structs,
+    } = scripts::get_custom_types(&values_list);
     let types_list = collect_object_types(&values_list);
 
     // Ordering structs for Python generation, so that dependencies are defined before they are used.
@@ -636,23 +854,7 @@ fn render_python<S: State>() -> (String, String, String) {
         }
     }
 
-    let mut enums_output = String::from(
-        "# Generated by build.rs, do not edit\n\"\"\"Custom enum types used by the generated state server.\"\"\"\n\nfrom enum import IntEnum\n",
-    );
-    for (enum_name, variants) in &enums {
-        writeln!(
-            enums_output,
-            "\n\nclass {enum_name}(IntEnum):\n    \"\"\"A generated protocol enumeration.\"\"\""
-        )
-        .unwrap();
-        for (variant, value) in variants {
-            writeln!(enums_output, "    {} = {value}", python_name(variant)).unwrap();
-        }
-        enums_output.push_str(&wire_names_line(
-            enum_name,
-            variants.iter().map(|(variant, _)| variant.as_str()),
-        ));
-    }
+    let (enums_output, enums_stub) = render_enums(&enums, &data_enums);
 
     let mut structs_output = String::from(
         "# Generated by build.rs, do not edit\n# ruff: noqa: E501 F401\n\"\"\"Custom dataclasses used by the generated state server.\"\"\"\n\nfrom __future__ import annotations\n\nfrom dataclasses import dataclass\n\nimport egui_states.structures as s\n\nfrom . import enums\n",
@@ -827,13 +1029,14 @@ class StatesServer(StateServerBase[{root_name}]):
     )
     .unwrap();
 
-    (states_output, enums_output, structs_output)
+    (states_output, enums_output, enums_stub, structs_output)
 }
 
-/// Generates typed Python server bindings as a three-file package.
+/// Generates typed Python server bindings as a package.
 ///
 /// The output directory is created when necessary and receives `__init__.py`,
-/// `enums.py`, and `structs.py`. Files whose contents did not change are left
+/// `enums.py`, `structs.py`, and `enums.pyi`, which describes the variants of
+/// enums with data to type checkers. Files whose contents did not change are left
 /// untouched so the generator does not trigger unnecessary downstream work.
 /// Add the output directory's parent to Python's import path and import the
 /// generated `StatesServer` from the package.
@@ -856,12 +1059,13 @@ class StatesServer(StateServerBase[{root_name}]):
 /// conflicts with a generated symbol such as `StatesServer`, `enums`,
 /// `structs`, or `s`.
 pub fn generate_python<S: State>(directory: impl AsRef<Path>) -> Result<(), String> {
-    let (states, enums, structs) = render_python::<S>();
+    let (states, enums, enums_stub, structs) = render_python::<S>();
     scripts::write_generated_files(
         directory.as_ref(),
         [
             ("__init__.py", states.as_str()),
             ("enums.py", enums.as_str()),
+            ("enums.pyi", enums_stub.as_str()),
             ("structs.py", structs.as_str()),
         ],
     )

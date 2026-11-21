@@ -1,7 +1,7 @@
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict, PyString};
 
-use crate::typed::ObjectType;
+use crate::typed::{ObjectType, VariantFields};
 
 /// Generated bindings escape Python keywords (`from_`) and record the original
 /// names in `__egui_names__`; type hashes must use the original names.
@@ -38,6 +38,59 @@ pub(crate) enum PyObjectType {
     Map(Box<PyObjectType>, Box<PyObjectType>),
     Option(Box<PyObjectType>),
     Empty,
+    /// A generated enum with data: the enum class and its variants in
+    /// declaration order, so a variant's index is its position on the wire.
+    DataEnum(Py<PyAny>, Vec<PyVariant>),
+}
+
+/// One variant of a [`PyObjectType::DataEnum`].
+pub(crate) struct PyVariant {
+    /// The variant name on the wire.
+    pub(crate) name: String,
+    pub(crate) fields: PyVariantFields,
+}
+
+pub(crate) enum PyVariantFields {
+    /// The constant of a unit variant.
+    Unit(Py<PyAny>),
+    /// The fields as `(Python attribute, type)`, and the variant class.
+    Named(Vec<(Py<PyString>, PyObjectType)>, Py<PyAny>),
+    /// The field types, and the variant class (a `tuple` subclass).
+    Tuple(Vec<PyObjectType>, Py<PyAny>),
+}
+
+impl PyVariant {
+    fn clone_py(&self, py: Python) -> Self {
+        let fields = match &self.fields {
+            PyVariantFields::Unit(value) => PyVariantFields::Unit(value.clone_ref(py)),
+            PyVariantFields::Named(fields, class) => PyVariantFields::Named(
+                fields
+                    .iter()
+                    .map(|(name, t)| (name.clone_ref(py), t.clone_py(py)))
+                    .collect(),
+                class.clone_ref(py),
+            ),
+            PyVariantFields::Tuple(types, class) => PyVariantFields::Tuple(
+                types.iter().map(|t| t.clone_py(py)).collect(),
+                class.clone_ref(py),
+            ),
+        };
+        Self {
+            name: self.name.clone(),
+            fields,
+        }
+    }
+
+    /// Whether `obj` is a value of this variant.
+    pub(crate) fn matches(&self, obj: &Bound<PyAny>) -> bool {
+        let class = match &self.fields {
+            PyVariantFields::Unit(value) => value.bind(obj.py()).get_type().into_any(),
+            PyVariantFields::Named(_, class) | PyVariantFields::Tuple(_, class) => {
+                class.bind(obj.py()).clone()
+            }
+        };
+        obj.get_type().is(&class)
+    }
 }
 
 impl PyObjectType {
@@ -79,6 +132,13 @@ impl PyObjectType {
                 PyObjectType::Option(Box::new(inner_type.clone_py(py)))
             }
             PyObjectType::Empty => PyObjectType::Empty,
+            PyObjectType::DataEnum(class, variants) => PyObjectType::DataEnum(
+                class.clone_ref(py),
+                variants
+                    .iter()
+                    .map(|variant| variant.clone_py(py))
+                    .collect(),
+            ),
         }
     }
 
@@ -142,6 +202,32 @@ impl PyObjectType {
                 ObjectType::Option(Box::new(inner_type.get_core_type(py)?))
             }
             PyObjectType::Empty => ObjectType::Empty,
+            PyObjectType::DataEnum(class, variants) => {
+                let name = class.bind(py).getattr("__name__")?.extract::<String>()?;
+                let mut core_variants = Vec::with_capacity(variants.len());
+                for variant in variants {
+                    let fields = match &variant.fields {
+                        PyVariantFields::Unit(_) => VariantFields::Unit,
+                        PyVariantFields::Named(fields, class) => {
+                            let class = class.bind(py);
+                            let mut core_fields = Vec::with_capacity(fields.len());
+                            for (field, t) in fields {
+                                let field = field.bind(py).to_str()?.to_string();
+                                core_fields.push((wire_name(class, field)?, t.get_core_type(py)?));
+                            }
+                            VariantFields::Named(core_fields)
+                        }
+                        PyVariantFields::Tuple(types, _) => VariantFields::Tuple(
+                            types
+                                .iter()
+                                .map(|t| t.get_core_type(py))
+                                .collect::<PyResult<_>>()?,
+                        ),
+                    };
+                    core_variants.push((variant.name.clone(), fields));
+                }
+                ObjectType::DataEnum(name, core_variants)
+            }
         };
 
         Ok(obj)
@@ -333,6 +419,111 @@ pub(crate) fn map(
 
     Ok(PyObjectClass {
         object_type: PyObjectType::Map(Box::new(k_type), Box::new(v_type)),
+    })
+}
+
+/// A variant of an enum with data, for [`denu`].
+#[pyclass(name = "PyVariant")]
+pub(crate) struct PyVariantClass {
+    variant: PyVariant,
+}
+
+/// Field types for a variant; a field cannot be empty.
+fn variant_field_types(
+    py: Python,
+    name: &str,
+    elements: &[Bound<PyObjectClass>],
+) -> PyResult<Vec<PyObjectType>> {
+    let types: Vec<PyObjectType> = elements
+        .iter()
+        .map(|t| t.borrow().object_type.clone_py(py))
+        .collect();
+    if types.is_empty() || types.iter().any(|t| matches!(t, PyObjectType::Empty)) {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "Variant {name} needs at least one field and no Empty field"
+        )));
+    }
+    Ok(types)
+}
+
+#[pyfunction]
+pub(crate) fn vunit(name: String, value: Py<PyAny>) -> PyVariantClass {
+    PyVariantClass {
+        variant: PyVariant {
+            name,
+            fields: PyVariantFields::Unit(value),
+        },
+    }
+}
+
+#[pyfunction]
+pub(crate) fn vnamed(
+    py: Python,
+    name: String,
+    elements: Vec<Bound<PyObjectClass>>,
+    class_type: Py<PyAny>,
+) -> PyResult<PyVariantClass> {
+    let types = variant_field_types(py, &name, &elements)?;
+    // Fields are read by name, in the order of the dataclass fields.
+    let names = class_type
+        .bind(py)
+        .getattr("__match_args__")?
+        .extract::<Vec<String>>()?;
+    if names.len() != types.len() {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "{} has {} fields in __match_args__ but {} field types were given",
+            class_type.bind(py),
+            names.len(),
+            types.len()
+        )));
+    }
+    let fields = names
+        .into_iter()
+        .map(|name| PyString::intern(py, &name).unbind())
+        .zip(types)
+        .collect();
+    Ok(PyVariantClass {
+        variant: PyVariant {
+            name,
+            fields: PyVariantFields::Named(fields, class_type),
+        },
+    })
+}
+
+#[pyfunction]
+pub(crate) fn vtuple(
+    py: Python,
+    name: String,
+    elements: Vec<Bound<PyObjectClass>>,
+    class_type: Py<PyAny>,
+) -> PyResult<PyVariantClass> {
+    let types = variant_field_types(py, &name, &elements)?;
+    Ok(PyVariantClass {
+        variant: PyVariant {
+            name,
+            fields: PyVariantFields::Tuple(types, class_type),
+        },
+    })
+}
+
+#[pyfunction]
+pub(crate) fn denu(
+    py: Python,
+    enum_type: Py<PyAny>,
+    variants: Vec<Bound<PyVariantClass>>,
+) -> PyResult<PyObjectClass> {
+    if variants.is_empty() {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "{} needs at least one variant",
+            enum_type.bind(py)
+        )));
+    }
+    let variants = variants
+        .iter()
+        .map(|variant| variant.borrow().variant.clone_py(py))
+        .collect();
+    Ok(PyObjectClass {
+        object_type: PyObjectType::DataEnum(enum_type, variants),
     })
 }
 

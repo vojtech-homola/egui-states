@@ -48,6 +48,35 @@ pub fn register_callbacks(server: &StatesServer) -> Vec<s::CallbackHandle> {
         let _ = result.set(text);
     }));
 
+    // One queued signal keeps the commands in order; `match` reads each
+    // variant's fields.
+    let commands = states.commands.clone();
+    let handled = std::sync::atomic::AtomicU32::new(0);
+    callbacks.push(states.commands.command.connect(move |command| {
+        use crate::bindings::enums::{Command, Status};
+
+        let count = handled.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        println!("command {count}: {command:?}");
+        let status = match &command {
+            Command::Stop => Status::Idle,
+            Command::MoveTo { x, y } => Status::At { x: *x, y: *y },
+            Command::SetGain(gain) if *gain > 2.0 => {
+                Status::Failed(format!("gain {gain:.2} is above 2"))
+            }
+            Command::SetGain(_) | Command::Mark(..) | Command::Choose(_) => Status::Handled(count),
+        };
+        let result = (|| -> s::Result<()> {
+            if commands.history.len() >= 8 {
+                commands.history.remove_item(0)?;
+            }
+            commands.history.add_item(command)?;
+            commands.status.set(status)
+        })();
+        if let Err(error) = result {
+            eprintln!("failed to handle a command: {error}");
+        }
+    }));
+
     callbacks.push(states.values.ratio.connect(|value| {
         println!("ratio changed: {value:.3}");
     }));

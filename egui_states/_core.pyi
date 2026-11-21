@@ -10,7 +10,7 @@ from os import PathLike
 from pathlib import Path
 from typing import Any
 
-from egui_states.structures import _CustomStruct
+from egui_states.structures import _CustomEnum, _CustomStruct
 
 __version__: str
 """Package version, taken from the workspace version in Cargo.toml at compile time."""
@@ -40,6 +40,14 @@ def li(element_type: PyObjectType, size: int) -> PyObjectType: ...
 def vec(element_type: PyObjectType) -> PyObjectType: ...
 def map(key_type: PyObjectType, value_type: PyObjectType) -> PyObjectType: ...
 def enu(enum_obj: type[IntEnum]) -> PyObjectType: ...
+
+class PyVariant:
+    """A variant of an enum with data, for :func:`denu`."""
+
+def vunit(name: str, value: _CustomEnum) -> PyVariant: ...
+def vnamed(name: str, elements: list[PyObjectType], class_type: type[_CustomEnum]) -> PyVariant: ...
+def vtuple(name: str, elements: list[PyObjectType], class_type: type[_CustomEnum]) -> PyVariant: ...
+def denu(enum_type: type[_CustomEnum], variants: list[PyVariant]) -> PyObjectType: ...
 
 class _ConnectRequest:
     """Native state of a connect request; see :class:`egui_states.ConnectRequest`."""
@@ -441,4 +449,9 @@ __all__ = [
     "vec",
     "map",
     "enu",
+    "PyVariant",
+    "vunit",
+    "vnamed",
+    "vtuple",
+    "denu",
 ]

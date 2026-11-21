@@ -6,6 +6,7 @@ use egui::{Color32, ColorImage};
 use egui_states::{Client, ClientBuilder, ConnectionState, Reconnect, Tls};
 
 mod collections;
+mod commands;
 mod data;
 mod helpers;
 mod image;
@@ -30,6 +31,7 @@ struct ViewState {
     last_offer_note: String,
     /// The summary of `root.data.samples`, computed only when it changed.
     samples_summary: String,
+    command_inputs: commands::CommandInputs,
 }
 
 impl ViewState {
@@ -48,6 +50,7 @@ impl ViewState {
             last_multi_take_nested: BTreeMap::new(),
             last_offer_note: String::new(),
             samples_summary: "not set".to_string(),
+            command_inputs: commands::CommandInputs::default(),
         }
     }
 }
@@ -209,4 +212,6 @@ fn show_content(ui: &mut egui::Ui, state: &mut ViewState) {
     image::show_image_section(ui, state);
     ui.separator();
     transfers::show_transfers(ui, state);
+    ui.separator();
+    commands::show_commands(ui, state);
 }

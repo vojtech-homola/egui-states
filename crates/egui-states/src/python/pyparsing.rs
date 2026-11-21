@@ -2,7 +2,7 @@ use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::types::{PyDict, PyList, PyNone, PySequence, PySequenceMethods, PyTuple};
 use pyo3::{IntoPyObjectExt, prelude::*};
 
-use crate::python::pytypes::PyObjectType;
+use crate::python::pytypes::{PyObjectType, PyVariantFields};
 use crate::python::value_parsing::{ValueCreator, ValueParser};
 
 pub(crate) fn serialize_py(
@@ -149,6 +149,46 @@ pub(crate) fn serialize_py(
             Ok(())
         }
         PyObjectType::Empty => Ok(()),
+        PyObjectType::DataEnum(class, variants) => {
+            let class = class.bind(obj.py());
+            let Some((index, variant)) = obj
+                .is_instance(class)?
+                .then(|| variants.iter().enumerate().find(|(_, v)| v.matches(obj)))
+                .flatten()
+            else {
+                return Err(PyTypeError::new_err(format!(
+                    "Expected a variant of {class}, got {}",
+                    obj.repr()?
+                )));
+            };
+            creator
+                .add(&(index as u32))
+                .map_err(|_| PyRuntimeError::new_err("Failed to serialize value."))?;
+            match &variant.fields {
+                PyVariantFields::Unit(_) => {}
+                PyVariantFields::Named(fields, _) => {
+                    for (name, field_type) in fields {
+                        let item = obj.getattr(name.bind(obj.py()))?;
+                        serialize_py(&item, field_type, creator)?;
+                    }
+                }
+                PyVariantFields::Tuple(types, _) => {
+                    let tuple = obj.cast::<PyTuple>()?;
+                    if tuple.len() != types.len() {
+                        return Err(PyValueError::new_err(format!(
+                            "{} has {} fields, expected {}",
+                            obj.repr()?,
+                            tuple.len(),
+                            types.len()
+                        )));
+                    }
+                    for (item, item_type) in tuple.iter().zip(types) {
+                        serialize_py(&item, item_type, creator)?;
+                    }
+                }
+            }
+            Ok(())
+        }
     }
     .map_err(|_| PyRuntimeError::new_err("Failed to serialize value."))
 }
@@ -331,6 +371,32 @@ pub(crate) fn deserialize_py<'py, 'a>(
             }
         }
         PyObjectType::Empty => Ok(PyTuple::empty(py).into_any()),
+        PyObjectType::DataEnum(class, variants) => {
+            let mut index = 0u32;
+            parser
+                .get(&mut index)
+                .map_err(|_| PyValueError::new_err("Failed to parse enum variant"))?;
+            let variant = variants.get(index as usize).ok_or_else(|| {
+                PyValueError::new_err(format!("Unknown variant {index} of {}", class.bind(py)))
+            })?;
+            match &variant.fields {
+                PyVariantFields::Unit(value) => Ok(value.bind(py).clone()),
+                PyVariantFields::Named(fields, class) => {
+                    let mut items = Vec::with_capacity(fields.len());
+                    for (_, item_type) in fields {
+                        items.push(deserialize_py(py, parser, item_type)?);
+                    }
+                    class.bind(py).call1(PyTuple::new(py, items)?)
+                }
+                PyVariantFields::Tuple(types, class) => {
+                    let mut items = Vec::with_capacity(types.len());
+                    for item_type in types {
+                        items.push(deserialize_py(py, parser, item_type)?);
+                    }
+                    class.bind(py).call1(PyTuple::new(py, items)?)
+                }
+            }
+        }
     }
 }
 

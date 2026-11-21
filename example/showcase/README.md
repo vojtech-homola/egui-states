@@ -1,7 +1,7 @@
 # Showcase
 
-Explore values, signals, custom types, collections, numeric buffers, one-shot
-transfers, and images. Native and browser GUIs share the same application;
+Explore values, signals, custom types, enums with data, collections, numeric
+buffers, one-shot transfers, and images. Native and browser GUIs share the same application;
 Python and Rust servers provide the same data and actions.
 
 ## Run

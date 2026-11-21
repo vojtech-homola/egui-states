@@ -1,6 +1,6 @@
 //! Deterministic server setup for the integration-only fixture schema.
-use crate::bindings::enums::{TestEnum, TestEnum2};
-use crate::bindings::structs::{HeaderMeta, TestStruct, TestStruct2};
+use crate::bindings::enums::{TestCommand, TestEnum, TestEnum2, TestStatus};
+use crate::bindings::structs::{HeaderMeta, TestJob, TestStruct, TestStruct2};
 use crate::bindings::{State, StatesServer};
 use egui_states::server::{self as s, CallbackHandle};
 use std::collections::HashMap;
@@ -70,6 +70,113 @@ fn edit_headers(all: &State, command: u32) -> s::Result<()> {
         return Err(s::ServerError::new(format!("stored headers: {stored:?}")));
     }
     Ok(())
+}
+
+/// Every variant shape of the enum with data, sent in this order by the
+/// client in the `data-enums` scenario.
+fn all_commands() -> Vec<TestCommand> {
+    vec![
+        TestCommand::Stop,
+        TestCommand::MoveTo { x: 1.5, y: -2.5 },
+        TestCommand::SetGain(0.25),
+        TestCommand::Pair(-3, "pair".into()),
+        TestCommand::Choose(TestEnum::C),
+        TestCommand::Load {
+            path: "a.tif".into(),
+            summary: Some(TestStruct2 {
+                enabled: true,
+                level: 7,
+                name: "seven".into(),
+            }),
+        },
+        TestCommand::Report(TestStatus::Busy { progress: 0.5 }),
+        TestCommand::None,
+        TestCommand::Keyword { from: 255 },
+    ]
+}
+
+/// Command 38: enums with data in every state kind and header, and as the
+/// metadata of a download, for the client to check.
+fn set_data_enums(all: &State) -> s::Result<()> {
+    let e = &all.data_enums;
+    let gray = s::ImageFormat::Gray;
+    e.command.set(TestCommand::Pair(-1, "server".into()))?;
+    e.fixed
+        .set(TestCommand::Report(TestStatus::Failed("fixed".into())))?;
+    e.job.set(TestJob {
+        name: "server".into(),
+        status: TestStatus::Idle,
+    })?;
+    e.optional.set(None)?;
+    e.list.set(all_commands())?;
+    e.table
+        .set(HashMap::from([(1, TestStatus::Busy { progress: 0.75 })]))?;
+    let load = TestCommand::Load {
+        path: "data.bin".into(),
+        summary: None,
+    };
+    e.data.set_with_header(&[1, 2], &load, false)?;
+    e.data_multi
+        .set_with_header(3, &[4], &TestCommand::Choose(TestEnum::B), false)?;
+    let moved = TestCommand::MoveTo { x: 0.5, y: 1.5 };
+    e.image
+        .set_with_header(&[1, 2], [2, 1], gray, &moved, false)?;
+    e.images
+        .set_with_header(2, &[3], [1, 1], gray, &TestCommand::None, false)?;
+    e.take.set(TestCommand::Keyword { from: 9 }, false)?;
+    e.data_take
+        .set_with_header(&[5], &TestCommand::Stop, false, false, false)?;
+    e.data_multi_take
+        .set_with_header(6, &[6], &TestCommand::SetGain(6.0), false, false, false)?;
+    let failed = |error: s::TransferError| s::ServerError::new(error.to_string());
+    let meta = TestCommand::Report(TestStatus::Busy { progress: 1.0 });
+    e.download
+        .send_bytes(b"enum".to_vec(), "enum.bin", &meta, false, None)
+        .map_err(failed)?
+        .wait(Some(Duration::from_secs(10)))
+        .map_err(failed)
+}
+
+/// Command 39: the values, the queued commands in their order, and the
+/// upload metadata the client sent.
+fn check_data_enums(
+    all: &State,
+    commands: &Mutex<Vec<TestCommand>>,
+    uploads: &Mutex<Vec<TestCommand>>,
+) -> Result<(), String> {
+    let e = &all.data_enums;
+    let command = e.command.get().map_err(|e| e.to_string())?;
+    let expected = TestCommand::Load {
+        path: "client".into(),
+        summary: None,
+    };
+    if command != expected {
+        return Err(format!(
+            "command: received {command:?}, expected {expected:?}"
+        ));
+    }
+    let optional = e.optional.get().map_err(|e| e.to_string())?;
+    if optional != Some(TestStatus::Busy { progress: 0.125 }) {
+        return Err(format!("optional: received {optional:?}"));
+    }
+    // The queued signal runs on the callback workers; give it time.
+    let expected = (all_commands(), vec![TestCommand::Pair(2, "up".into())]);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let received = (
+            commands.lock().unwrap().clone(),
+            uploads.lock().unwrap().clone(),
+        );
+        if received == expected {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "commands and uploads: received {received:?}, expected {expected:?}"
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
 }
 
 /// Command 30: non-default values of every shape for the client to check.
@@ -420,6 +527,21 @@ impl Fixture {
         callbacks.push(server.states.transfers.inputs.connect(move |handle| {
             seen.lock().unwrap().push(handle);
         }));
+        let enum_commands = Arc::new(Mutex::new(Vec::new()));
+        let record = enum_commands.clone();
+        callbacks.push(
+            server
+                .states
+                .data_enums
+                .commands
+                .connect(move |command| record.lock().unwrap().push(command)),
+        );
+        let enum_uploads = Arc::new(Mutex::new(Vec::new()));
+        let record = enum_uploads.clone();
+        callbacks.push(server.states.data_enums.upload.on_offer(move |offer| {
+            record.lock().unwrap().push(offer.meta().clone());
+            offer.accept_memory(1024).unwrap();
+        }));
         let st = states.clone();
         let all = server.states.clone();
         let on_error = errors.clone();
@@ -529,6 +651,16 @@ impl Fixture {
                     37 => {
                         edit_image_headers(&all)?;
                         st.phase.set(37)?;
+                    }
+                    38 => {
+                        set_data_enums(&all)?;
+                        st.phase.set(38)?;
+                    }
+                    39 => {
+                        if let Err(error) = check_data_enums(&all, &enum_commands, &enum_uploads) {
+                            on_error.lock().unwrap().push(error);
+                        }
+                        st.phase.set(39)?;
                     }
                     40..=43 => {
                         transfers(&all, command, &finished)?;

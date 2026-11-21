@@ -79,6 +79,62 @@ def transfers(states, number, finished):
         ], reported
 
 
+def all_commands():
+    """Every variant shape of the enum with data, in the order the client sends them."""
+    from egui_states_test_bindings.enums import TestCommand, TestEnum, TestStatus  # ty: ignore[import-not-found]
+    from egui_states_test_bindings.structs import TestStruct2  # ty: ignore[import-not-found]
+
+    return [
+        TestCommand.Stop,
+        TestCommand.MoveTo(1.5, -2.5),
+        TestCommand.SetGain(0.25),
+        TestCommand.Pair(-3, "pair"),
+        TestCommand.Choose(TestEnum.C),
+        TestCommand.Load("a.tif", TestStruct2(True, 7, "seven")),
+        TestCommand.Report(TestStatus.Busy(0.5)),
+        TestCommand.None_,
+        TestCommand.Keyword(255),
+    ]
+
+
+def set_data_enums(states):
+    """Command 38: enums with data in every state kind, header and download."""
+    from egui_states_test_bindings.enums import TestCommand, TestEnum, TestStatus  # ty: ignore[import-not-found]
+    from egui_states_test_bindings.structs import TestJob  # ty: ignore[import-not-found]
+
+    e = states.data_enums
+    e.command.set(TestCommand.Pair(-1, "server"))
+    e.fixed.set(TestCommand.Report(TestStatus.Failed("fixed")))
+    e.job.set(TestJob("server", TestStatus.Idle))
+    e.optional.set(None)
+    e.list.set(all_commands())
+    e.table.set({1: TestStatus.Busy(0.75)})
+    e.data.set(np.array([1, 2], dtype=np.uint8), header=TestCommand.Load("data.bin", None))
+    e.data_multi[3].set(np.array([4], dtype=np.uint8), header=TestCommand.Choose(TestEnum.B))
+    e.image.set(np.array([[1], [2]], dtype=np.uint8), header=TestCommand.MoveTo(0.5, 1.5))
+    e.images[2].set(np.array([[3]], dtype=np.uint8), header=TestCommand.None_)
+    e.take.set(TestCommand.Keyword(9))
+    e.data_take.set(np.array([5], dtype=np.uint8), header=TestCommand.Stop)
+    e.data_multi_take[6].set(np.array([6], dtype=np.uint8), header=TestCommand.SetGain(6.0))
+    meta = TestCommand.Report(TestStatus.Busy(1.0))
+    sent = e.download.send_bytes(b"enum", "enum.bin", meta=meta)
+    sent.wait(10)
+    assert sent.meta() == meta
+
+
+def check_data_enums(states, commands, uploads):
+    """Command 39: the values, the queued commands in order, and the upload metadata."""
+    from egui_states_test_bindings.enums import TestCommand, TestStatus  # ty: ignore[import-not-found]
+
+    e = states.data_enums
+    assert e.command.get() == TestCommand.Load("client", None)
+    assert e.optional.get() == TestStatus.Busy(0.125)
+    wait_until(lambda: len(commands) == len(all_commands()) and len(uploads) == 1)
+    assert commands == all_commands()
+    assert commands[0] is TestCommand.Stop
+    assert uploads == [TestCommand.Pair(2, "up")]
+
+
 def check_uploads(uploaded):
     """Command 44: the upload the client sent arrived with its metadata."""
     from egui_states import TransferStatus
@@ -264,6 +320,15 @@ def configure(states):  # noqa: PLR0915
     states.transfers.files.connect(finished.append)
     states.transfers.inputs.on_offer(lambda offer: offer.accept_memory(1024))
     states.transfers.inputs.connect(uploaded.append)
+    enum_commands = []
+    enum_uploads = []
+    states.data_enums.commands.connect(enum_commands.append)
+
+    def accept_enum_upload(offer):
+        enum_uploads.append(offer.meta())
+        offer.accept_memory(1024)
+
+    states.data_enums.upload.on_offer(accept_enum_upload)
     states.signals.empty_signal.connect(lambda: signals.append("empty"))
     states.signals.number_signal.connect(lambda value: signals.append(f"number:{value}"))
     states.signals.enum_signal.connect(lambda value: signals.append(f"enum:{value.name}"))
@@ -364,6 +429,14 @@ def configure(states):  # noqa: PLR0915
         elif number == 37:  # noqa: PLR2004
             edit_image_headers(states)
             st.phase.set(37)
+        elif number == 38:  # noqa: PLR2004
+            set_data_enums(states)
+            st.phase.set(38)
+        elif number == 39:  # noqa: PLR2004
+            try:
+                check_data_enums(states, enum_commands, enum_uploads)
+            finally:
+                st.phase.set(39)
         elif number in {40, 41, 42, 43}:
             transfers(states, number, finished)
             st.phase.set(number)

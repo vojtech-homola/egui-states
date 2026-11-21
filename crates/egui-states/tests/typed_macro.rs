@@ -251,3 +251,104 @@ fn typed_attribute_reports_empty_rust_derives() {
         [RustDerive::Enum("MacroEnum", &[])]
     );
 }
+
+#[egui_states::typed(rust_derive(Hash))]
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "client", derive(egui_states::InitialValue))]
+struct CommandTarget {
+    id: u16,
+}
+
+#[egui_states::typed(rust_derive(Eq))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "client", derive(egui_states::InitialValue))]
+enum CommandMode {
+    Fast,
+    Slow,
+}
+
+#[egui_states::typed(rust_derive(Debug))]
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "client", derive(egui_states::InitialValue))]
+enum MacroCommand {
+    Stop,
+    MoveTo {
+        x: f32,
+        inner: Option<CommandTarget>,
+    },
+    Pair(u8, String),
+    Wrap(CommandMode),
+}
+
+#[test]
+fn typed_attribute_describes_enums_with_data() {
+    use egui_states::VariantFields;
+
+    assert_traits::<MacroCommand>();
+    let ObjectType::DataEnum(name, variants) = MacroCommand::get_type() else {
+        panic!("expected an enum with data");
+    };
+    assert_eq!(name, "MacroCommand");
+    let names: Vec<_> = variants.iter().map(|(name, _)| name.as_str()).collect();
+    assert_eq!(names, ["Stop", "MoveTo", "Pair", "Wrap"]);
+    assert_eq!(variants[0].1, VariantFields::Unit);
+    assert!(
+        matches!(&variants[1].1, VariantFields::Named(fields) if fields[0] == ("x".to_string(), ObjectType::F32) && fields[1].0 == "inner")
+    );
+    assert_eq!(
+        variants[2].1,
+        VariantFields::Tuple(vec![ObjectType::U8, ObjectType::String])
+    );
+    assert_eq!(
+        variants[3].1,
+        VariantFields::Tuple(vec![CommandMode::get_type()])
+    );
+
+    // Postcard sends the variant's position, then its fields in order.
+    assert_eq!(postcard::to_stdvec(&MacroCommand::Stop).unwrap(), [0]);
+    assert_eq!(
+        postcard::to_stdvec(&MacroCommand::Pair(7, "ab".into())).unwrap(),
+        [2, 7, 2, b'a', b'b']
+    );
+    assert_round_trip(MacroCommand::MoveTo {
+        x: 1.5,
+        inner: Some(CommandTarget { id: 4 }),
+    });
+    assert_round_trip(MacroCommand::Wrap(CommandMode::Slow));
+
+    // Field types report their own derives after the enum's.
+    let derives = MacroCommand::rust_derives();
+    assert_eq!(derives[0], RustDerive::Enum("MacroCommand", &["Debug"]));
+    assert_eq!(
+        derives[1..],
+        [
+            RustDerive::Struct("CommandTarget", &["Hash"]),
+            RustDerive::Enum("CommandMode", &["Eq"]),
+        ]
+    );
+}
+
+#[cfg(feature = "client")]
+#[test]
+fn initial_values_of_enums_with_data_carry_their_fields() {
+    use egui_states::{InitValue, InitialValue};
+    assert_eq!(
+        MacroCommand::Stop.init_value(),
+        InitValue::DataEnum("Stop", vec![])
+    );
+    assert_eq!(
+        MacroCommand::Pair(3, "x".into()).init_value(),
+        InitValue::DataEnum(
+            "Pair",
+            vec![InitValue::U8(3), InitValue::String("x".into())]
+        )
+    );
+    assert_eq!(
+        MacroCommand::MoveTo {
+            x: 0.5,
+            inner: None
+        }
+        .init_value(),
+        InitValue::DataEnum("MoveTo", vec![InitValue::F32(0.5), InitValue::Option(None)])
+    );
+}

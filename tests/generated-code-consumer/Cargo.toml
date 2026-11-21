@@ -34,8 +34,28 @@ path = "src/bin/typed-tuple.rs"
 required-features = ["invalid"]
 
 [[bin]]
-name = "typed-payload-enum"
-path = "src/bin/typed-payload-enum.rs"
+name = "typed-empty-braces"
+path = "src/bin/typed-empty-braces.rs"
+required-features = ["invalid"]
+
+[[bin]]
+name = "typed-empty-parentheses"
+path = "src/bin/typed-empty-parentheses.rs"
+required-features = ["invalid"]
+
+[[bin]]
+name = "typed-data-discriminant"
+path = "src/bin/typed-data-discriminant.rs"
+required-features = ["invalid"]
+
+[[bin]]
+name = "typed-recursive-enum"
+path = "src/bin/typed-recursive-enum.rs"
+required-features = ["invalid"]
+
+[[bin]]
+name = "typed-serde-variant-field"
+path = "src/bin/typed-serde-variant-field.rs"
 required-features = ["invalid"]
 
 [[bin]]

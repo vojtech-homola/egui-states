@@ -263,6 +263,7 @@ fn all_files(dir: &std::path::Path) -> Vec<Vec<u8>> {
         "python/__init__.py",
         "python/structs.py",
         "python/enums.py",
+        "python/enums.pyi",
     ]
     .into_iter()
     .map(|file| std::fs::read(dir.join(file)).unwrap())
@@ -270,7 +271,7 @@ fn all_files(dir: &std::path::Path) -> Vec<Vec<u8>> {
 }
 
 #[test]
-fn unchanged_generation_preserves_old_timestamps_for_all_six_files() {
+fn unchanged_generation_preserves_old_timestamps_for_all_seven_files() {
     let dir = output_dir("mtime", 0);
     generate(&dir);
     let before = all_files(&dir);
@@ -281,6 +282,7 @@ fn unchanged_generation_preserves_old_timestamps_for_all_six_files() {
         "python/__init__.py",
         "python/structs.py",
         "python/enums.py",
+        "python/enums.pyi",
     ]
     .into_iter()
     .map(|file| dir.join(file))
@@ -565,6 +567,106 @@ fn bindings_carry_image_header_types() {
     // A header changes the layout hash; an image without one keeps it.
     let client =
         ClientBuilder::<WithImageHeaders>::new(egui::Context::default(), 0).get_version_hash();
+    assert_eq!(
+        generated_hash(&rust, "pub const VERSION_HASH: u64 = "),
+        client
+    );
+    assert_eq!(generated_hash(&python, "VERSION_HASH: int = "), client);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// An enum with data: a unit variant, named fields with a struct, and
+/// tuple variants with a fieldless enum and with two fields.
+#[egui_states::typed(rust_derive(Debug, PartialEq))]
+#[derive(Clone, Default, PartialEq, egui_states::InitialValue)]
+enum GeneratedCommand {
+    #[default]
+    Stop,
+    MoveTo {
+        x: f32,
+        inner: GeneratedInner,
+    },
+    Wrap(GeneratedEnum),
+    Pair(u8, String),
+}
+
+#[derive(State)]
+#[allow(dead_code)]
+struct WithDataEnums {
+    #[state(init = GeneratedCommand::MoveTo { x: 0.5, inner: GeneratedInner { enabled: true } })]
+    command: Value<GeneratedCommand>,
+    #[state(init = GeneratedCommand::Pair(3, "three".into()))]
+    fixed: Static<GeneratedCommand>,
+    #[state(queue)]
+    commands: Signal<GeneratedCommand>,
+    data: Data<u8, GeneratedCommand>,
+}
+
+#[test]
+fn bindings_carry_enums_with_data() {
+    let dir = output_dir("with_data_enums", 0);
+    generate_rust::<WithDataEnums>(&dir).unwrap();
+    generate_python::<WithDataEnums>(dir.join("python")).unwrap();
+    let read = |file: &str| std::fs::read_to_string(dir.join(file)).unwrap();
+
+    let (rust, enums) = (read("mod.rs"), read("enums.rs"));
+    for expected in [
+        "s::Value::new(server, format!(\"{parent}.command\"), enums::GeneratedCommand::MoveTo { x: 0.5f32, inner: structs::GeneratedInner { enabled: true } }, false)?",
+        "s::Static::new(server, format!(\"{parent}.fixed\"), enums::GeneratedCommand::Pair(3u8, String::from(\"three\")))?",
+        "pub data: s::Data<u8, enums::GeneratedCommand>,",
+    ] {
+        assert!(rust.contains(expected), "missing {expected} in\n{rust}");
+    }
+    for expected in [
+        "#[derive(Clone, Debug, PartialEq)]\npub enum GeneratedCommand {",
+        "    Stop,\n",
+        "    MoveTo {\n        /// Generated `x` field.\n        x: f32,\n        /// Generated `inner` field.\n        inner: super::structs::GeneratedInner,\n    },",
+        "    Wrap(GeneratedEnum),",
+        "    Pair(u8, String),",
+        "pub enum GeneratedEnum {",
+    ] {
+        assert!(enums.contains(expected), "missing {expected} in\n{enums}");
+    }
+
+    let (python, module, stub) = (
+        read("python/__init__.py"),
+        read("python/enums.py"),
+        read("python/enums.pyi"),
+    );
+    for expected in [
+        "s.Value[enums.GeneratedCommand](0, enums.GeneratedCommand.MoveTo(0.5, structs.GeneratedInner(True)))",
+        "s.Static[enums.GeneratedCommand](0, enums.GeneratedCommand.Pair(3, \"three\"))",
+        "self.commands: s.Signal[enums.GeneratedCommand] = s.Signal[enums.GeneratedCommand](0, True)",
+        "s.DataWithHeader[np.uint8, enums.GeneratedCommand]",
+        "s.denu(enums.GeneratedCommand, [s.vunit(\"Stop\", enums.GeneratedCommand.Stop), s.vnamed(\"MoveTo\", [s.f32, s.cl([s.bo], structs.GeneratedInner)], enums.GeneratedCommand.MoveTo), s.vtuple(\"Wrap\", [s.enu(enums.GeneratedEnum)], enums.GeneratedCommand.Wrap), s.vtuple(\"Pair\", [s.u8, s.st], enums.GeneratedCommand.Pair)])",
+    ] {
+        assert!(python.contains(expected), "missing {expected} in\n{python}");
+    }
+    for expected in [
+        "class GeneratedEnum(IntEnum):",
+        "class GeneratedCommand(s._CustomEnum):",
+        "GeneratedCommand.Stop = s._unit_variant(GeneratedCommand, \"Stop\")",
+        "GeneratedCommand.MoveTo = s._named_variant(GeneratedCommand, \"MoveTo\", (\"x\", \"inner\"))",
+        "GeneratedCommand.Wrap = s._tuple_variant(GeneratedCommand, \"Wrap\", 1)",
+        "GeneratedCommand.Pair = s._tuple_variant(GeneratedCommand, \"Pair\", 2)",
+    ] {
+        assert!(module.contains(expected), "missing {expected} in\n{module}");
+    }
+    for expected in [
+        "class GeneratedEnum(IntEnum):",
+        "    class _Stop(GeneratedCommand):",
+        "    Stop: ClassVar[_Stop]",
+        "    @dataclass(frozen=True)\n    class MoveTo(GeneratedCommand):",
+        "        x: float\n        inner: structs.GeneratedInner",
+        "    class Wrap(GeneratedCommand, tuple[GeneratedEnum]):",
+        "        def __new__(cls, _0: int, _1: str, /) -> Self: ...",
+        "        def _1(self) -> str: ...",
+    ] {
+        assert!(stub.contains(expected), "missing {expected} in\n{stub}");
+    }
+
+    let client =
+        ClientBuilder::<WithDataEnums>::new(egui::Context::default(), 0).get_version_hash();
     assert_eq!(
         generated_hash(&rust, "pub const VERSION_HASH: u64 = "),
         client

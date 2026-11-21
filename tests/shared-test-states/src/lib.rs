@@ -1,5 +1,6 @@
 pub mod collections;
 pub mod data;
+pub mod data_enums;
 pub mod image;
 pub mod integration;
 pub mod sections;
@@ -32,4 +33,5 @@ pub struct State {
     #[state(low_priority)]
     pub headers: data::HeaderStates,
     pub transfers: transfers::TransferStates,
+    pub data_enums: data_enums::DataEnumStates,
 }
