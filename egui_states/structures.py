@@ -8,7 +8,7 @@ import operator
 import os
 from abc import ABC, abstractmethod
 from collections.abc import Buffer, Callable, Iterator, Sequence
-from typing import Any, Final
+from typing import Any, Final, TypeGuard
 
 import numpy as np
 import numpy.typing as npt
@@ -442,7 +442,7 @@ def _header(header: object) -> tuple[object] | None:
     return None if header is UNSET else (header,)
 
 
-def _is_index(index: object) -> bool:
+def _is_index(index: object) -> TypeGuard[int]:
     """Return whether ``index`` can be a key of a multi state: an ``int`` in the ``u32`` range."""
     return isinstance(index, int) and 0 <= index <= 0xFFFF_FFFF
 
@@ -1695,8 +1695,8 @@ class DataTakeWithHeader[T: np.generic, H](DataTake[T]):
         data: Buffer,
         blocking: bool = False,
         cache: bool = False,
-        header: H | _Unset = UNSET,
         wait: bool = False,
+        header: H | _Unset = UNSET,
     ) -> None:
         """Send data with its header, as :meth:`DataTake.set`.
 
@@ -1707,11 +1707,11 @@ class DataTakeWithHeader[T: np.generic, H](DataTake[T]):
                 then. Defaults to False.
             cache (bool, optional): Whether to cache the last sent data and
                 header for a newly initialized client. Defaults to False.
-            header (H | _Unset, optional): Header sent with the data; it is
-                required, :data:`UNSET` raises. Defaults to :data:`UNSET`.
             wait (bool, optional): Whether to return only once the client has
                 acknowledged this data, by receiving it or, with ``blocking``,
                 taking it, or the connection has ended. Defaults to False.
+            header (H | _Unset, optional): Header sent with the data; it is
+                required, :data:`UNSET` raises. Defaults to :data:`UNSET`.
 
         Raises:
             ValueError: If no header is given.
@@ -2118,8 +2118,8 @@ class SingleDataTakeWithHeader[T: np.generic, H](SingleDataTake[T]):
         data: Buffer,
         blocking: bool = False,
         cache: bool = False,
-        header: H | _Unset = UNSET,
         wait: bool = False,
+        header: H | _Unset = UNSET,
     ) -> None:
         """Send data at this index with its header, as :meth:`SingleDataTake.set`.
 
@@ -2131,11 +2131,11 @@ class SingleDataTakeWithHeader[T: np.generic, H](SingleDataTake[T]):
             cache (bool, optional): Whether to cache the last sent data and
                 header for a newly initialized client, which holds only cached
                 indices. Defaults to False.
-            header (H | _Unset, optional): Header sent with the data; it is
-                required, :data:`UNSET` raises. Defaults to :data:`UNSET`.
             wait (bool, optional): Whether to return only once the client has
                 acknowledged this data, by receiving it or, with ``blocking``,
                 taking it, or the connection has ended. Defaults to False.
+            header (H | _Unset, optional): Header sent with the data; it is
+                required, :data:`UNSET` raises. Defaults to :data:`UNSET`.
 
         Raises:
             ValueError: If no header is given.
