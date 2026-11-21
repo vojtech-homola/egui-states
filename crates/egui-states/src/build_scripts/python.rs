@@ -124,6 +124,31 @@ fn data_state(
     }
 }
 
+/// The attribute of an image state of kind `kind`; with a header, the
+/// `WithHeader` class of the kind.
+fn image_state(
+    attr: &str,
+    kind: &str,
+    header: Option<&ObjectType>,
+    priority: Priority,
+    object_types: &[ObjectType],
+) -> String {
+    match header {
+        None => format!(
+            "        self.{attr}: s.{kind} = s.{kind}({})\n",
+            priority.argument("")
+        ),
+        Some(header) => {
+            let index = object_type_index(object_types, header);
+            let py_type = type_info_to_python_type(header, false, PythonTypeContext::States);
+            let priority = priority.argument(", ");
+            format!(
+                "        self.{attr}: s.{kind}WithHeader[{py_type}] = s.{kind}WithHeader({index}{priority})\n"
+            )
+        }
+    }
+}
+
 /// Where the send priority of a bulk state or substate field comes from.
 #[derive(Clone, Copy)]
 enum Priority {
@@ -204,7 +229,9 @@ fn collect_object_types(values: &[StateType]) -> Vec<ObjectType> {
             | StateType::DataMulti(_, _, Some(header), _)
             | StateType::DataMultiTake(_, _, Some(header), _)
             | StateType::Download(_, Some(header))
-            | StateType::Upload(_, Some(header)) => push_type(header),
+            | StateType::Upload(_, Some(header))
+            | StateType::Image(_, Some(header), _)
+            | StateType::ImageMulti(_, Some(header), _) => push_type(header),
             StateType::SubState(..)
             | StateType::Image(..)
             | StateType::ImageMulti(..)
@@ -507,13 +534,19 @@ fn state_to_line(state: &StateType, object_types: &[ObjectType], inherits: bool)
             transfer_state(&attr, "Download", meta.as_ref(), object_types)
         }
         StateType::Upload(_, meta) => transfer_state(&attr, "Upload", meta.as_ref(), object_types),
-        StateType::Image(_, low) => format!(
-            "        self.{attr}: s.Image = s.Image({})\n",
-            Priority::new(*low, inherits).argument("")
+        StateType::Image(_, header, low) => image_state(
+            &attr,
+            "Image",
+            header.as_ref(),
+            Priority::new(*low, inherits),
+            object_types,
         ),
-        StateType::ImageMulti(_, low) => format!(
-            "        self.{attr}: s.ImageMulti = s.ImageMulti({})\n",
-            Priority::new(*low, inherits).argument("")
+        StateType::ImageMulti(_, header, low) => image_state(
+            &attr,
+            "ImageMulti",
+            header.as_ref(),
+            Priority::new(*low, inherits),
+            object_types,
         ),
         StateType::SubState(name, state_class, _, low) => {
             // Only a class with bulk states takes the priority.

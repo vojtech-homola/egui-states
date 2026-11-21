@@ -20,6 +20,11 @@ impl HeaderType {
         Self { type_id, kind }
     }
 
+    /// Whether the state was registered with a header type.
+    pub(crate) fn has_type(&self) -> bool {
+        self.type_id.is_some()
+    }
+
     /// Checks a header given to state `name`: the state must have a header
     /// type and the header must fit the value size limit.
     pub(crate) fn check<'a>(

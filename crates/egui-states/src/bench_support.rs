@@ -69,7 +69,7 @@ pub fn pack_image_set(pixels: &[u8], size: [usize; 2], format: PixelFormat) -> u
         size[0] * size[1] * image_type.bytes_per_pixel()
     );
     let image = ImageData::packed(pixels, size, image_type);
-    pack_set_data(1, &image)
+    pack_set_data(1, &image, WireHeader::KEEP)
         .expect("pack image")
         .iter()
         .map(|(message, _)| message.len())

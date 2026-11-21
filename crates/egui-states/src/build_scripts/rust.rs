@@ -227,13 +227,16 @@ fn state_field_type(state: &StateType) -> String {
         }
         StateType::Download(_, meta) => format!("s::Download{}", meta_parameter(meta)),
         StateType::Upload(_, meta) => format!("s::Upload{}", meta_parameter(meta)),
-        StateType::Image(..) => "s::Image".to_string(),
-        StateType::ImageMulti(..) => "s::ImageMulti".to_string(),
+        StateType::Image(_, header, _) => format!("s::Image{}", meta_parameter(header)),
+        StateType::ImageMulti(_, header, _) => {
+            format!("s::ImageMulti{}", meta_parameter(header))
+        }
         StateType::SubState(_, state_class, ..) => state_class.to_string(),
     }
 }
 
-/// The type parameter of a transfer endpoint: empty without metadata.
+/// The type parameter of a transfer endpoint or image: empty without
+/// metadata or a header.
 fn meta_parameter(meta: &Option<ObjectType>) -> String {
     match meta {
         None => String::new(),
@@ -251,6 +254,15 @@ fn data_parameters(data_type: &DataType, header: &Option<ObjectType>) -> String 
             "{element}, {}",
             type_to_rust_type(header, RustTypeContext::States)
         ),
+    }
+}
+
+/// The turbofish of an image constructor: none without a header, whose type
+/// the field infers.
+fn image_turbofish(header: &Option<ObjectType>) -> String {
+    match header {
+        None => String::new(),
+        Some(header) => format!("<{}>::", type_to_rust_type(header, RustTypeContext::States)),
     }
 }
 
@@ -365,13 +377,15 @@ fn state_initializer(state: &StateType, inherits: bool) -> String {
             turbofish(meta),
             name
         ),
-        StateType::Image(name, low) => format!(
-            "s::Image::new(server, format!(\"{{parent}}.{}\"), {})?",
+        StateType::Image(name, header, low) => format!(
+            "s::Image::{}new(server, format!(\"{{parent}}.{}\"), {})?",
+            image_turbofish(header),
             name,
             priority(*low, inherits)
         ),
-        StateType::ImageMulti(name, low) => format!(
-            "s::ImageMulti::new(server, format!(\"{{parent}}.{}\"), {})?",
+        StateType::ImageMulti(name, header, low) => format!(
+            "s::ImageMulti::{}new(server, format!(\"{{parent}}.{}\"), {})?",
+            image_turbofish(header),
             name,
             priority(*low, inherits)
         ),

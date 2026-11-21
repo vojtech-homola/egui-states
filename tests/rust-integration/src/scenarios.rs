@@ -303,10 +303,35 @@ pub fn run(port: u16, scenario: &str) {
         "collections-wire" => collections_wire(&state),
         "numeric-wire" => numeric_wire(&state),
         "data-headers" => data_headers(port, &state, connection),
+        "image-headers" => image_headers(port, &state, connection),
         "file-transfers" => file_transfers(&state),
         "uploads" => uploads(&state),
         _ => panic!("unknown scenario: {scenario}"),
     }
+}
+
+/// Typed image headers arrive with their images, stay or change with
+/// updates and alone, and come again with the images to a new client.
+fn image_headers(port: u16, state: &State, connection: Connection) {
+    let s = &state.integration;
+    let i = &state.image;
+    assert_eq!(i.framed.header(), None);
+    s.command.set(37u32);
+    phase(s, 37);
+    let framed = meta(3.0, "frame 3", &[2]);
+    let (_, size, header) = i.framed.get_with_header().expect("framed is set");
+    assert_eq!((size, header), ([1, 2], framed.clone()));
+    assert_eq!(i.framed_keys.header(4), Some(meta(4.0, "key 4", &[])));
+    let renamed = meta(5.5, "key 5 renamed", &[]);
+    assert_eq!(i.framed_keys.header(5), Some(renamed.clone()));
+
+    drop(connection);
+    let (next, _connection) = connect(port);
+    let i = &next.image;
+    wait("stored image header for a new client", || {
+        (i.framed.header() == Some(framed.clone())).then_some(())
+    });
+    assert_eq!(i.framed_keys.header(5), Some(renamed));
 }
 
 /// Downloads in memory, with metadata, rejected, and as a folder of files;

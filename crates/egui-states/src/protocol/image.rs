@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::protocol::data::{HeaderBytes, HeaderUpdate};
+
 #[cfg(any(feature = "server", feature = "python"))]
 use crate::protocol::{FastVec, ServerHeader, serialize, serialize_heap};
 
@@ -182,22 +184,26 @@ pub(crate) fn to_rgba(
     }
 }
 
-#[derive(Serialize, Deserialize)]
+/// Chunk framing of a whole-image set. The message that completes it
+/// (`All` or `End`) carries the image's header update; its header bytes come
+/// first in the payload, before the pixels.
+#[derive(Serialize, Deserialize, Clone, Copy)]
 pub(crate) enum ImageSetHeader {
-    All([u32; 2]),        // [x, y]
-    Start([u32; 2], u32), // [x, y], pixels
-    Batch(u32),           // pixels
-    End(u32),             // pixels
+    All([u32; 2], HeaderUpdate), // [width, height], header
+    Start([u32; 2], u32),        // [width, height], pixels
+    Batch(u32),                  // pixels
+    End(u32, HeaderUpdate),      // pixels, header
 }
 
 /// Chunk framing of a rectangle update; it mirrors [`ImageSetHeader`]. The
-/// client applies the rectangle once, at `All` or `End`.
-#[derive(Serialize, Deserialize)]
+/// client applies the rectangle and its header update once, at `All` or
+/// `End`.
+#[derive(Serialize, Deserialize, Clone, Copy)]
 pub(crate) enum ImageUpdateHeader {
-    All([u32; 4]),        // [x, y, w, h]
-    Start([u32; 4], u32), // [x, y, w, h], pixels
-    Batch(u32),           // pixels
-    End(u32),             // pixels
+    All([u32; 4], HeaderUpdate), // [x, y, w, h], header
+    Start([u32; 4], u32),        // [x, y, w, h], pixels
+    Batch(u32),                  // pixels
+    End(u32, HeaderUpdate),      // pixels, header
 }
 
 #[derive(Serialize, Deserialize)]
@@ -248,11 +254,15 @@ impl ImageMultiHeader {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+/// An image message. The `u32` size next to it on the wire counts the
+/// pixel bytes only; header bytes come before them.
+#[derive(Serialize, Deserialize, Clone, Copy)]
 pub(crate) enum ImageHeader {
-    Set(ImageSetHeader, ImageType),       // header
-    Update(ImageUpdateHeader, ImageType), // header
-    Fill([u32; 2], [u8; 4]),              // [width, height], RGBA
+    Set(ImageSetHeader, ImageType),
+    Update(ImageUpdateHeader, ImageType),
+    Fill([u32; 2], [u8; 4], HeaderUpdate), // [width, height], RGBA, header
+    /// A new header alone, for an image that exists.
+    Header(HeaderBytes),
 }
 
 #[cfg(feature = "client")]
@@ -260,10 +270,25 @@ impl ImageHeader {
     /// Whether applying the message changes the image; the first and middle
     /// chunks of an image set or update only buffer pixels.
     pub(crate) fn changes_state(&self) -> bool {
-        self.requires_ack()
+        matches!(self, Self::Header(_)) || self.requires_ack()
     }
 
-    /// Whether the client acknowledges this message, also when it fails.
+    /// Bytes of the header that precede the pixels in the payload.
+    pub(crate) fn header_len(&self) -> u32 {
+        match self {
+            Self::Set(ImageSetHeader::All(_, header) | ImageSetHeader::End(_, header), _)
+            | Self::Update(
+                ImageUpdateHeader::All(_, header) | ImageUpdateHeader::End(_, header),
+                _,
+            )
+            | Self::Fill(_, _, header) => header.len(),
+            Self::Header(header) => header.size,
+            _ => 0,
+        }
+    }
+
+    /// Whether the client acknowledges this message, also when it fails. A
+    /// header alone is not acknowledged.
     pub(crate) fn requires_ack(&self) -> bool {
         matches!(
             self,

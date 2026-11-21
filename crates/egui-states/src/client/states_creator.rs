@@ -16,7 +16,7 @@ use crate::client::states::data_take::{
 };
 use crate::client::states::file_transfer::{Download, Upload};
 use crate::client::states::header::HeaderValue;
-use crate::client::states::image::{Image, ImageMulti};
+use crate::client::states::image::{Image, ImageMulti, UpdateImage, UpdateImageMulti};
 use crate::client::states::initial_value::InitialValue;
 use crate::client::states::map::{MapState, UpdateMap};
 use crate::client::states::values::{
@@ -44,6 +44,24 @@ pub(crate) fn hash_id(hasher: &mut StableHasher, id: u64) {
 pub(crate) fn hash_id_kind(hasher: &mut StableHasher, id: u64, hash_id: u8) {
     id.hash(hasher);
     hash_id.hash(hasher);
+}
+
+/// Hashes an `Image` with header `H` into the layout hash. An image without a
+/// header keeps the layout hash it had before images had headers.
+pub(crate) fn hash_image<H: HeaderValue>(hasher: &mut StableHasher, id: u64) {
+    match H::get_type() {
+        ObjectType::Empty => hash_id(hasher, id),
+        header => hash_id_type(hasher, id, header.get_hash(), IMAGE_HASH_ID),
+    }
+}
+
+/// Hashes an `ImageMulti` with header `H` into the layout hash, as
+/// [`hash_image`] does.
+pub(crate) fn hash_image_multi<H: HeaderValue>(hasher: &mut StableHasher, id: u64) {
+    match H::get_type() {
+        ObjectType::Empty => hash_id_kind(hasher, id, IMAGE_MULTI_HASH_ID),
+        header => hash_id_type(hasher, id, header.get_hash(), IMAGE_MULTI_HASH_ID),
+    }
 }
 
 /// Factory used by [`State::new`](crate::State::new) to register client states.
@@ -117,11 +135,13 @@ pub trait StatesCreator {
     where
         T: Serialize + Typed + Clone + Send + Sync + 'static;
 
-    /// Creates a server-controlled egui image texture.
-    fn image(&mut self, name: &'static str) -> Image;
+    /// Creates a server-controlled egui image texture with header type `H`;
+    /// `()` means no header.
+    fn image<H: HeaderValue>(&mut self, name: &'static str) -> Image<H>;
 
-    /// Creates server-controlled egui image textures indexed by `u32` keys.
-    fn image_multi(&mut self, name: &'static str) -> ImageMulti;
+    /// Creates server-controlled egui image textures indexed by `u32` keys,
+    /// each with a header of type `H`; `()` means no header.
+    fn image_multi<H: HeaderValue>(&mut self, name: &'static str) -> ImageMulti<H>;
 
     /// Creates a server-controlled key/value collection.
     fn map<K, V>(&mut self, name: &'static str) -> MapState<K, V>
@@ -229,8 +249,8 @@ pub(crate) enum ClientState {
     DataTake(Arc<dyn UpdateDataTake>),
     DataMulti(Arc<dyn UpdateMultiData>),
     DataMultiTake(Arc<dyn UpdateDataMultiTake>),
-    Image(Image),
-    ImageMulti(ImageMulti),
+    Image(Arc<dyn UpdateImage>),
+    ImageMulti(Arc<dyn UpdateImageMulti>),
     Map(Arc<dyn UpdateMap>),
     Vec(Arc<dyn UpdateList>),
 }
@@ -276,8 +296,8 @@ impl ValuesList {
         data_take: DataTake => Arc<dyn UpdateDataTake>,
         data_multi: DataMulti => Arc<dyn UpdateMultiData>,
         data_multi_take: DataMultiTake => Arc<dyn UpdateDataMultiTake>,
-        image: Image => Image,
-        image_multi: ImageMulti => ImageMulti,
+        image: Image => Arc<dyn UpdateImage>,
+        image_multi: ImageMulti => Arc<dyn UpdateImageMulti>,
         map: Map => Arc<dyn UpdateMap>,
         vec: Vec => Arc<dyn UpdateList>,
     }
@@ -340,6 +360,9 @@ pub(crate) const DATA_MULTI_TAKE_HASH_ID: u8 = 11;
 pub(crate) const IMAGE_MULTI_HASH_ID: u8 = 12;
 pub(crate) const DOWNLOAD_HASH_ID: u8 = 13;
 pub(crate) const UPLOAD_HASH_ID: u8 = 14;
+/// Only an `Image` with a header mixes it in; one without keeps hashing its
+/// id alone.
+pub(crate) const IMAGE_HASH_ID: u8 = 15;
 
 /// Runtime state factory used internally by [`crate::ClientBuilder`].
 pub struct StatesCreatorClient {
@@ -522,26 +545,26 @@ impl StatesCreator for StatesCreatorClient {
         value
     }
 
-    fn image(&mut self, name: &str) -> Image {
+    fn image<H: HeaderValue>(&mut self, name: &str) -> Image<H> {
         let (name, id) = state_path(&self.parent, name);
-        hash_id(&mut self.version_hasher, id);
+        hash_image::<H>(&mut self.version_hasher, id);
 
         let value = Image::new(name, id, self.sender.clone(), self.context.clone());
 
         self.val
             .states
-            .insert(id, ClientState::Image(value.clone()));
+            .insert(id, ClientState::Image(Arc::new(value.clone())));
         value
     }
 
-    fn image_multi(&mut self, name: &str) -> ImageMulti {
+    fn image_multi<H: HeaderValue>(&mut self, name: &str) -> ImageMulti<H> {
         let (name, id) = state_path(&self.parent, name);
-        hash_id_kind(&mut self.version_hasher, id, IMAGE_MULTI_HASH_ID);
+        hash_image_multi::<H>(&mut self.version_hasher, id);
 
         let value = ImageMulti::new(name, id, self.sender.clone(), self.context.clone());
         self.val
             .states
-            .insert(id, ClientState::ImageMulti(value.clone()));
+            .insert(id, ClientState::ImageMulti(Arc::new(value.clone())));
         value
     }
 

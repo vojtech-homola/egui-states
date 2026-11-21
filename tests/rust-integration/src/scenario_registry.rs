@@ -26,6 +26,7 @@ macro_rules! for_each_scenario {
             busy_client => "busy-client",
             connect_request => "connect-request",
             data_headers => "data-headers",
+            image_headers => "image-headers",
             file_transfers => "file-transfers",
             uploads => "uploads",
         }

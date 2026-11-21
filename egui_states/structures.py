@@ -324,6 +324,23 @@ class SignalEmpty(_SignalBase):
         self._signals_manager.clear_callbacks(self._value_id)
 
 
+class _Unset:
+    """Type of :data:`UNSET`, the absent-header default."""
+
+    def __repr__(self) -> str:
+        return "UNSET"
+
+
+#: Default of the ``header`` arguments: no header is given, so the current one
+#: is kept. ``None`` is not used for that, so an optional header type can still
+#: send ``None``.
+UNSET: Final = _Unset()
+
+
+def _header(header: object) -> tuple[object] | None:
+    return None if header is UNSET else (header,)
+
+
 def _is_index(index: object) -> bool:
     """Return whether ``index`` can be a key of a multi state: an ``int`` in the ``u32`` range."""
     return isinstance(index, int) and 0 <= index <= 0xFFFF_FFFF
@@ -364,11 +381,16 @@ class Image(_StaticBase):
             False.
     """
 
+    _header_id: int | None = None
+
     def __init__(self, low_priority: bool = False) -> None:
         self._low_priority = low_priority
 
+    def _header_type(self, types: list[PyObjectType]) -> PyObjectType | None:
+        return None if self._header_id is None else types[self._header_id]
+
     def _initialize(self, name: str, types: list[PyObjectType]) -> None:
-        self._value_id = self._server.add_image(name, self._low_priority)
+        self._value_id = self._server.add_image(name, self._header_type(types), self._low_priority)
 
     def set(self, image: Buffer, wait: bool = False) -> None:
         """Set the image in the UI image.
@@ -387,7 +409,7 @@ class Image(_StaticBase):
                 acknowledged this image, or the connection has ended.
                 Defaults to False.
         """
-        self._server.image_set(self._value_id, image, wait)
+        self._server.image_set(self._value_id, image, None, wait)
 
     def update(
         self,
@@ -427,7 +449,7 @@ class Image(_StaticBase):
             ValueError: If ``max_lines`` is less than 1, or the rectangle is
                 invalid.
         """
-        self._server.image_update(self._value_id, image, origin, force, max_lines, wait)
+        self._server.image_update(self._value_id, image, origin, None, force, max_lines, wait)
 
     def set_all(
         self,
@@ -450,7 +472,7 @@ class Image(_StaticBase):
                 acknowledged this image, or the connection has ended.
                 Defaults to False.
         """
-        self._server.image_set_all(self._value_id, shape, color, wait)
+        self._server.image_set_all(self._value_id, shape, color, None, wait)
 
     def is_idle(self) -> bool:
         """Return whether nothing is being sent and nothing waits.
@@ -486,6 +508,145 @@ class Image(_StaticBase):
             tuple[int, int]: Image shape as ``(height, width)``.
         """
         return self._server.image_size(self._value_id)
+
+
+class ImageWithHeader[H](Image):
+    """:class:`Image` with a typed header ``H`` published together with the image.
+
+    The image never exists without a header: the :meth:`set` or
+    :meth:`set_all` that creates it must pass one. After that, every change
+    can carry a new header, and a change without one keeps the current
+    header. The client stores the header with the pixels it belongs to. It
+    uploads a texture at the end of the frame being drawn, so for that one
+    frame the UI may still show the old pixels next to a new header.
+
+    Args:
+        header_id (int): Index of the header's protocol type in the generated
+            type list.
+        low_priority (bool, optional): Whether the server sends its transfers
+            in the low-priority lane, as for :class:`Image`. Defaults to
+            False.
+    """
+
+    def __init__(self, header_id: int, low_priority: bool = False) -> None:
+        super().__init__(low_priority)
+        self._header_id = header_id
+
+    def get_header(self) -> H | None:
+        """Return the current header.
+
+        Returns:
+            H | None: The header, or ``None`` until the image is set.
+        """
+        return self._server.image_get_header(self._value_id)
+
+    def get_with_header(self) -> tuple[npt.NDArray[np.uint8], H] | None:
+        """Return the image and its header, read together.
+
+        Separate :meth:`get` and :meth:`get_header` calls can each see a
+        different change made in between.
+
+        Returns:
+            tuple[npt.NDArray[np.uint8], H] | None: The image as :meth:`get`
+                returns it and the header, or ``None`` until the image is set.
+        """
+        entry = self._server.image_get_with_header(self._value_id)
+        if entry is None:
+            return None
+        (data, shape, channels), header = entry
+        return _image_array(data, shape, channels), header
+
+    def set(self, image: Buffer, wait: bool = False, header: H | _Unset = UNSET) -> None:
+        """Set the image and optionally the header.
+
+        It works as :meth:`Image.set`; the client shows the header with the
+        image.
+
+        Args:
+            image (Buffer): The image to set, as for :meth:`Image.set`.
+            wait (bool, optional): Whether to return only once the client has
+                acknowledged this image, or the connection has ended.
+                Defaults to False.
+            header (H | _Unset, optional): New header. Defaults to
+                :data:`UNSET`, which keeps the current one.
+
+        Raises:
+            ValueError: If the image is not set yet and no header is given.
+        """
+        self._server.image_set(self._value_id, image, _header(header), wait)
+
+    def update(
+        self,
+        image: Buffer,
+        origin: list[int] | tuple[int, int],
+        force: bool = False,
+        max_lines: int | None = None,
+        wait: bool = False,
+        header: H | _Unset = UNSET,
+    ) -> None:
+        """Update a rectangular part of the image and optionally the header.
+
+        It works as :meth:`Image.update`. With ``max_lines``, the header goes
+        with the first part, and the client shows it together with that
+        part; the later parts keep it.
+
+        Args:
+            image (Buffer): The image rectangle to write.
+            origin (list[int] | tuple[int, int]): Top-left origin as ``(y, x)``.
+            force (bool, optional): As for :meth:`Image.update`. Defaults to
+                False.
+            max_lines (int | None, optional): As for :meth:`Image.update`.
+                Defaults to None.
+            wait (bool, optional): As for :meth:`Image.update`. Defaults to
+                False.
+            header (H | _Unset, optional): New header. Defaults to
+                :data:`UNSET`, which keeps the current one.
+
+        Raises:
+            ValueError: If ``max_lines`` is less than 1, or the rectangle is
+                invalid.
+        """
+        self._server.image_update(self._value_id, image, origin, _header(header), force, max_lines, wait)
+
+    def set_all(
+        self,
+        shape: list[int] | tuple[int, int],
+        color: ImageColor,
+        wait: bool = False,
+        header: H | _Unset = UNSET,
+    ) -> None:
+        """Fill the complete image with one color and optionally set the header.
+
+        Args:
+            shape (list[int] | tuple[int, int]): Image shape as ``(height,
+                width)``.
+            color (ImageColor): As for :meth:`Image.set_all`.
+            wait (bool, optional): Whether to return only once the client has
+                acknowledged this image, or the connection has ended.
+                Defaults to False.
+            header (H | _Unset, optional): New header. Defaults to
+                :data:`UNSET`, which keeps the current one.
+
+        Raises:
+            ValueError: If the image is not set yet and no header is given.
+        """
+        self._server.image_set_all(self._value_id, shape, color, _header(header), wait)
+
+    def set_header(self, header: H) -> None:
+        """Replace the header alone.
+
+        The client does not acknowledge a header, so this does not wait for
+        the client itself. It is sent after the transfers of this image that
+        are already queued, including the parts of a split :meth:`update` not
+        sent yet, and waits until the client has acknowledged them.
+
+        Args:
+            header (H): New header.
+
+        Raises:
+            ValueError: If the image is not set.
+        """
+        self._server.image_set_header(self._value_id, header)
 
 
 class SingleImage:
@@ -529,7 +690,7 @@ class SingleImage:
                 acknowledged this image, or the connection has ended.
                 Defaults to False.
         """
-        self._server.image_multi_set(self._value_id, self._index, image, wait)
+        self._server.image_multi_set(self._value_id, self._index, image, None, wait)
 
     def update(
         self,
@@ -563,7 +724,7 @@ class SingleImage:
             ValueError: If ``max_lines`` is less than 1, or the rectangle is
                 invalid.
         """
-        self._server.image_multi_update(self._value_id, self._index, image, origin, force, max_lines, wait)
+        self._server.image_multi_update(self._value_id, self._index, image, origin, None, force, max_lines, wait)
 
     def set_all(
         self,
@@ -584,7 +745,7 @@ class SingleImage:
                 acknowledged this image, or the connection has ended.
                 Defaults to False.
         """
-        self._server.image_multi_set_all(self._value_id, self._index, shape, color, wait)
+        self._server.image_multi_set_all(self._value_id, self._index, shape, color, None, wait)
 
     def get(self) -> npt.NDArray[np.uint8]:
         """Return this indexed image in the format it is stored in.
@@ -606,6 +767,116 @@ class SingleImage:
         return self._server.image_multi_size(self._value_id, self._index)
 
 
+class SingleImageWithHeader[H](SingleImage):
+    """:class:`SingleImage` of an :class:`ImageMultiWithHeader`, with its header ``H``.
+
+    Creating this index needs a header, as for :class:`ImageWithHeader`.
+    """
+
+    def get_header(self) -> H:
+        """Return the header of this indexed image.
+
+        Returns:
+            H: The header.
+
+        Raises:
+            ValueError: If the index does not exist.
+        """
+        return self._server.image_multi_get_header(self._value_id, self._index)
+
+    def get_with_header(self) -> tuple[npt.NDArray[np.uint8], H]:
+        """Return this indexed image and its header, read together.
+
+        Returns:
+            tuple[npt.NDArray[np.uint8], H]: The image as :meth:`get` returns
+                it and the header.
+
+        Raises:
+            ValueError: If the index does not exist.
+        """
+        (data, shape, channels), header = self._server.image_multi_get_with_header(self._value_id, self._index)
+        return _image_array(data, shape, channels), header
+
+    def set(self, image: Buffer, wait: bool = False, header: H | _Unset = UNSET) -> None:
+        """Create or replace this indexed image, and optionally its header.
+
+        Args:
+            image (Buffer): Image data shaped as ``(height, width)`` or
+                ``(height, width, channels)``.
+            wait (bool, optional): Whether to return only once the client has
+                acknowledged this image, or the connection has ended.
+                Defaults to False.
+            header (H | _Unset, optional): New header. Defaults to
+                :data:`UNSET`, which keeps the current one.
+
+        Raises:
+            ValueError: If the index does not exist yet and no header is
+                given.
+        """
+        self._server.image_multi_set(self._value_id, self._index, image, _header(header), wait)
+
+    def update(
+        self,
+        image: Buffer,
+        origin: list[int] | tuple[int, int],
+        force: bool = False,
+        max_lines: int | None = None,
+        wait: bool = False,
+        header: H | _Unset = UNSET,
+    ) -> None:
+        """Update a rectangular part of this indexed image, and optionally its header.
+
+        It works as :meth:`ImageWithHeader.update`, for this index on its own.
+
+        Args:
+            image (Buffer): The image rectangle to write.
+            origin (list[int] | tuple[int, int]): Top-left origin as ``(y, x)``.
+            force (bool, optional): As for :meth:`SingleImage.update`.
+                Defaults to False.
+            max_lines (int | None, optional): As for :meth:`SingleImage.update`.
+                Defaults to None.
+            wait (bool, optional): As for :meth:`SingleImage.update`. Defaults
+                to False.
+            header (H | _Unset, optional): New header. Defaults to
+                :data:`UNSET`, which keeps the current one.
+        """
+        self._server.image_multi_update(
+            self._value_id, self._index, image, origin, _header(header), force, max_lines, wait
+        )
+
+    def set_all(
+        self,
+        shape: list[int] | tuple[int, int],
+        color: ImageColor,
+        wait: bool = False,
+        header: H | _Unset = UNSET,
+    ) -> None:
+        """Create or replace this indexed image with one color, and optionally its header.
+
+        Args:
+            shape (list[int] | tuple[int, int]): Image shape as ``(height,
+                width)``.
+            color (ImageColor): As for :meth:`Image.set_all`.
+            wait (bool, optional): Whether to return only once the client has
+                acknowledged this image, or the connection has ended.
+                Defaults to False.
+            header (H | _Unset, optional): New header. Defaults to
+                :data:`UNSET`, which keeps the current one.
+        """
+        self._server.image_multi_set_all(self._value_id, self._index, shape, color, _header(header), wait)
+
+    def set_header(self, header: H) -> None:
+        """Replace the header of this indexed image alone, as :meth:`ImageWithHeader.set_header` does.
+
+        Args:
+            header (H): New header.
+
+        Raises:
+            ValueError: If the index does not exist.
+        """
+        self._server.image_multi_set_header(self._value_id, self._index, header)
+
+
 class ImageMulti(_StaticBase):
     """Sparse collection of server-controlled images indexed by integers.
 
@@ -623,11 +894,16 @@ class ImageMulti(_StaticBase):
             False.
     """
 
+    _header_id: int | None = None
+
     def __init__(self, low_priority: bool = False) -> None:
         self._low_priority = low_priority
 
+    def _header_type(self, types: list[PyObjectType]) -> PyObjectType | None:
+        return None if self._header_id is None else types[self._header_id]
+
     def _initialize(self, name: str, types: list[PyObjectType]) -> None:
-        self._value_id = self._server.add_image_multi(name, self._low_priority)
+        self._value_id = self._server.add_image_multi(name, self._header_type(types), self._low_priority)
 
     def get(self, index: int) -> SingleImage:
         """Return a handle for one image index.
@@ -688,6 +964,39 @@ class ImageMulti(_StaticBase):
         return self._server.image_multi_contains(self._value_id, index)
 
     def __getitem__(self, index: int) -> SingleImage:
+        return self.get(index)
+
+
+class ImageMultiWithHeader[H](ImageMulti):
+    """:class:`ImageMulti` whose images each carry a typed header ``H``.
+
+    Args:
+        header_id (int): Index of the header's protocol type in the generated
+            type list.
+        low_priority (bool, optional): Whether the server sends its transfers
+            in the low-priority lane, as for :class:`ImageMulti`. Defaults to
+            False.
+    """
+
+    def __init__(self, header_id: int, low_priority: bool = False) -> None:
+        super().__init__(low_priority)
+        self._header_id = header_id
+
+    def get(self, index: int) -> SingleImageWithHeader[H]:
+        """Return a handle for one image index.
+
+        Args:
+            index (int): Non-negative image index.
+
+        Returns:
+            SingleImageWithHeader[H]: Handle that can create, or read
+                ``index``.
+        """
+        if not isinstance(index, int):
+            raise TypeError("index must be an integer")
+        return SingleImageWithHeader(self._server, self._value_id, index)
+
+    def __getitem__(self, index: int) -> SingleImageWithHeader[H]:
         return self.get(index)
 
 
@@ -914,23 +1223,6 @@ def _get_dtype_id(dtype: type[np.generic]) -> int:
     if t is None:
         raise ValueError(f"Unsupported dtype: {dtype}")
     return t
-
-
-class _Unset:
-    """Type of :data:`UNSET`, the absent-header default."""
-
-    def __repr__(self) -> str:
-        return "UNSET"
-
-
-#: Default of the ``header`` arguments: no header is given, so the current one
-#: is kept. ``None`` is not used for that, so an optional header type can still
-#: send ``None``.
-UNSET: Final = _Unset()
-
-
-def _header(header: object) -> tuple[object] | None:
-    return None if header is UNSET else (header,)
 
 
 class Data[T: np.generic](_StaticBase):

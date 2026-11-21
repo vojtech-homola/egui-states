@@ -1,5 +1,6 @@
 //! Server-controlled image storage and image-format helpers.
 
+use std::marker::PhantomData;
 use std::sync::Arc;
 
 use crate::protocol::image::{ImageType, checked_image_bytes};
@@ -7,7 +8,8 @@ use crate::server_core::states::image::common::{ImageFill, StoredImage, checked_
 use crate::server_core::states::image::multi::ImageMulti as CoreImageMulti;
 use crate::server_core::states::image::single::{Image as CoreImage, ImageData};
 
-use super::state_server::StateServer;
+use super::data::{HeaderValue, decode_header, header_type};
+use super::state_server::{StateServer, serialize_bytes};
 use super::{Result, ServerError};
 
 /// A uniform image color for [`Image::set_all`].
@@ -77,6 +79,10 @@ impl ImageFormat {
     }
 }
 
+/// A copy of a stored image and its header, as `get_with_header` returns it:
+/// pixels, `[height, width]` shape, format and header.
+type ImageWithHeader<H> = (Vec<u8>, [usize; 2], ImageFormat, H);
+
 /// A copy of a stored image: its pixels, `[height, width]` shape and format.
 fn copy_stored(image: &StoredImage) -> (Vec<u8>, [usize; 2], ImageFormat) {
     (
@@ -86,8 +92,8 @@ fn copy_stored(image: &StoredImage) -> (Vec<u8>, [usize; 2], ImageFormat) {
     )
 }
 
-#[derive(Clone)]
-/// Server-controlled image mirrored to the client.
+/// Server-controlled image mirrored to the client, with an optional typed
+/// header `H` that describes it, `()` (the default) for an image without one.
 ///
 /// The server keeps the image in the format of the last [`set`](Self::set)
 /// or [`set_all`](Self::set_all). An [`update`](Self::update) with channels
@@ -96,13 +102,29 @@ fn copy_stored(image: &StoredImage) -> (Vec<u8>, [usize; 2], ImageFormat) {
 /// which is what the client shows. Until it is first set, the image has no
 /// format and no pixels.
 ///
+/// With a header type, the image never exists without a header: the set that
+/// creates it must carry one ([`set_with_header`](Self::set_with_header) or
+/// [`set_all_with_header`](Self::set_all_with_header)). After that, every
+/// change can carry a new header, and a change without one keeps it. The
+/// client receives the header with the pixels it belongs to.
+///
 /// Each dimension is limited to 65,536 pixels, inclusive. Client renderer and
 /// memory limits may be smaller.
-pub struct Image {
+pub struct Image<H = ()> {
     inner: Arc<CoreImage>,
+    _header: PhantomData<fn() -> H>,
 }
 
-impl Image {
+impl<H> Clone for Image<H> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            _header: PhantomData,
+        }
+    }
+}
+
+impl<H: HeaderValue> Image<H> {
     /// Registers an empty image under `name`.
     ///
     /// With `low_priority`, its transfers use the low-priority lane: they are
@@ -111,8 +133,11 @@ impl Image {
     /// not wait behind its transfers, but a change of another state made
     /// after a change of this one can reach the client first.
     pub fn new(server: &StateServer, name: impl Into<String>, low_priority: bool) -> Result<Self> {
-        let (_, inner) = server.add_image(name.into(), low_priority)?;
-        Ok(Self { inner })
+        let (_, inner) = server.add_image(name.into(), header_type::<H>(), low_priority)?;
+        Ok(Self {
+            inner,
+            _header: PhantomData,
+        })
     }
 
     /// Returns the image shape as `[height, width]`, `[0, 0]` until the
@@ -133,6 +158,25 @@ impl Image {
         self.inner.get_image(|image| image.map(copy_stored))
     }
 
+    /// Returns the header, or `None` until the image is set.
+    pub fn header(&self) -> Result<Option<H>> {
+        self.inner
+            .get_image(|image| image.map(|image| decode_header(image.header())).transpose())
+    }
+
+    /// Returns a copy of the image, as [`Self::get`] does, and the header
+    /// that belongs to it, read together, or `None` until the image is set.
+    pub fn get_with_header(&self) -> Result<Option<ImageWithHeader<H>>> {
+        self.inner.get_image(|image| {
+            image
+                .map(|image| {
+                    let (data, shape, format) = copy_stored(image);
+                    Ok((data, shape, format, decode_header(image.header())?))
+                })
+                .transpose()
+        })
+    }
+
     /// Returns whether nothing is being sent and nothing waits, so the next
     /// [`set`](Self::set), [`set_all`](Self::set_all) or
     /// [`update`](Self::update) is sent without waiting.
@@ -144,7 +188,7 @@ impl Image {
         self.inner.is_idle()
     }
 
-    /// Replaces the complete image.
+    /// Replaces the complete image, keeping its header.
     ///
     /// `size` is `[height, width]`; `data` must contain exactly the number of
     /// bytes implied by `size` and `format`, which the server keeps it in.
@@ -162,7 +206,9 @@ impl Image {
     ///
     /// Returns an error if a dimension is zero or exceeds 65,536 pixels,
     /// dimensions overflow, the data length does not match `size` and `format`,
-    /// or the update cannot be queued.
+    /// the image is not set yet and the state has a header type (use
+    /// [`Self::set_with_header`] to create it), or the update cannot be
+    /// queued.
     pub fn set(
         &self,
         data: &[u8],
@@ -170,12 +216,43 @@ impl Image {
         format: ImageFormat,
         wait: bool,
     ) -> Result<()> {
-        self.check_image_data(data, size, format)?;
-        let image = ImageData::packed(data, size, format.image_type());
-        self.inner.set_image(image, wait).map_err(ServerError::new)
+        self.set_inner(data, size, format, None, wait)
     }
 
-    /// Fill an image with one color.
+    /// Like [`Self::set`], replacing the header as well.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::set`], and when the state has no header type or the header
+    /// is larger than a value may be.
+    pub fn set_with_header(
+        &self,
+        data: &[u8],
+        size: [usize; 2],
+        format: ImageFormat,
+        header: &H,
+        wait: bool,
+    ) -> Result<()> {
+        let header = serialize_bytes(header)?;
+        self.set_inner(data, size, format, Some(&header), wait)
+    }
+
+    fn set_inner(
+        &self,
+        data: &[u8],
+        size: [usize; 2],
+        format: ImageFormat,
+        header: Option<&[u8]>,
+        wait: bool,
+    ) -> Result<()> {
+        check_image_data(data, size, format)?;
+        let image = ImageData::packed(data, size, format.image_type());
+        self.inner
+            .set_image(image, header, wait)
+            .map_err(ServerError::new)
+    }
+
+    /// Fill an image with one color, keeping its header.
     ///
     /// `shape` is `[height, width]`. The server keeps the image in the format
     /// of `color`: [`ImageColor::Gray`] stores one channel, and so on. When a
@@ -187,14 +264,34 @@ impl Image {
     /// # Errors
     ///
     /// Returns an error for zero dimensions, dimensions exceeding 65,536 pixels,
-    /// overflowing dimensions, or when the update cannot be queued.
+    /// overflowing dimensions, an image that is not set yet in a state with a
+    /// header type, or when the update cannot be queued.
     pub fn set_all(&self, shape: [usize; 2], color: ImageColor, wait: bool) -> Result<()> {
         self.inner
-            .set_all_image(shape, color.fill(), wait)
+            .set_all_image(shape, color.fill(), None, wait)
             .map_err(ServerError::new)
     }
 
-    /// Replaces a rectangular image region.
+    /// Like [`Self::set_all`], replacing the header as well.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::set_all`], and as [`Self::set_with_header`] for the
+    /// header.
+    pub fn set_all_with_header(
+        &self,
+        shape: [usize; 2],
+        color: ImageColor,
+        header: &H,
+        wait: bool,
+    ) -> Result<()> {
+        let header = serialize_bytes(header)?;
+        self.inner
+            .set_all_image(shape, color.fill(), Some(&header), wait)
+            .map_err(ServerError::new)
+    }
+
+    /// Replaces a rectangular image region, keeping the header.
     ///
     /// `origin` and `size` are `[y, x]` and `[height, width]`. When `format`
     /// has channels the stored image lacks, the server first widens the whole
@@ -231,48 +328,125 @@ impl Image {
         max_lines: Option<usize>,
         wait: bool,
     ) -> Result<()> {
-        self.check_image_data(data, size, format)?;
+        self.update_inner(data, origin, size, format, None, force, max_lines, wait)
+    }
+
+    /// Like [`Self::update`], replacing the header as well. A split update
+    /// carries the header with its first part, and the client shows it
+    /// together with that part.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::update`], and as [`Self::set_with_header`] for the header.
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_with_header(
+        &self,
+        data: &[u8],
+        origin: [usize; 2],
+        size: [usize; 2],
+        format: ImageFormat,
+        header: &H,
+        force: bool,
+        max_lines: Option<usize>,
+        wait: bool,
+    ) -> Result<()> {
+        let header = serialize_bytes(header)?;
+        self.update_inner(
+            data,
+            origin,
+            size,
+            format,
+            Some(&header),
+            force,
+            max_lines,
+            wait,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn update_inner(
+        &self,
+        data: &[u8],
+        origin: [usize; 2],
+        size: [usize; 2],
+        format: ImageFormat,
+        header: Option<&[u8]>,
+        force: bool,
+        max_lines: Option<usize>,
+        wait: bool,
+    ) -> Result<()> {
+        check_image_data(data, size, format)?;
         let image = ImageData::packed(data, size, format.image_type());
         self.inner
-            .update_image(&origin, image, force, max_lines, wait)
+            .update_image(&origin, image, header, force, max_lines, wait)
             .map_err(ServerError::new)
     }
 
-    fn check_image_data(&self, data: &[u8], size: [usize; 2], format: ImageFormat) -> Result<()> {
-        checked_image_bytes(size, 4).map_err(ServerError::new)?;
-        let stride = size[1]
-            .checked_mul(format.bytes_per_pixel())
-            .ok_or_else(|| ServerError::new("image dimensions overflow"))?;
-        let expected = size[0]
-            .checked_mul(stride)
-            .ok_or_else(|| ServerError::new("image dimensions overflow"))?;
-        if data.len() != expected {
-            return Err(ServerError::new(format!(
-                "invalid image data size: expected {expected}, got {}",
-                data.len()
-            )));
-        }
-        Ok(())
+    /// Replaces the header alone.
+    ///
+    /// The client does not acknowledge a header, so this does not wait for
+    /// the client itself. It is sent after the transfers of this image that
+    /// are already queued, including the unsent parts of a split update, and
+    /// waits until the client has acknowledged them.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the image is not set, the state has no header
+    /// type, or the header is larger than a value may be.
+    pub fn set_header(&self, header: &H) -> Result<()> {
+        let header = serialize_bytes(header)?;
+        self.inner.set_header(&header).map_err(ServerError::new)
     }
 }
 
-#[derive(Clone)]
-/// Server-controlled images indexed by sparse `u32` keys. Each image keeps its
-/// own format, as described at [`Image`].
+fn check_image_data(data: &[u8], size: [usize; 2], format: ImageFormat) -> Result<()> {
+    checked_image_bytes(size, 4).map_err(ServerError::new)?;
+    let stride = size[1]
+        .checked_mul(format.bytes_per_pixel())
+        .ok_or_else(|| ServerError::new("image dimensions overflow"))?;
+    let expected = size[0]
+        .checked_mul(stride)
+        .ok_or_else(|| ServerError::new("image dimensions overflow"))?;
+    if data.len() != expected {
+        return Err(ServerError::new(format!(
+            "invalid image data size: expected {expected}, got {}",
+            data.len()
+        )));
+    }
+    Ok(())
+}
+
+/// Server-controlled images indexed by sparse `u32` keys, each with an
+/// optional typed header `H`, `()` (the default) for images without one.
+/// Each image keeps its own format and header, as described at [`Image`];
+/// creating an index of a state with a header type needs a header.
 ///
 /// Each image dimension is limited to 65,536 pixels, inclusive. Client renderer
 /// and memory limits may be smaller.
-pub struct ImageMulti {
+pub struct ImageMulti<H = ()> {
     inner: Arc<CoreImageMulti>,
+    _header: PhantomData<fn() -> H>,
 }
 
-impl ImageMulti {
+impl<H> Clone for ImageMulti<H> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            _header: PhantomData,
+        }
+    }
+}
+
+impl<H: HeaderValue> ImageMulti<H> {
     /// Registers an empty keyed image collection under `name`. With
     /// `low_priority`, its transfers use the low-priority lane, as described
     /// at [`Image::new`].
     pub fn new(server: &StateServer, name: impl Into<String>, low_priority: bool) -> Result<Self> {
-        let (_, inner) = server.add_image_multi(name.into(), low_priority)?;
-        Ok(Self { inner })
+        let (_, inner) = server.add_image_multi(name.into(), header_type::<H>(), low_priority)?;
+        Ok(Self {
+            inner,
+            _header: PhantomData,
+        })
     }
 
     /// Returns the image shape at `index` as `[height, width]`.
@@ -291,6 +465,27 @@ impl ImageMulti {
     /// format of the image at `index`.
     pub fn get(&self, index: u32) -> Option<(Vec<u8>, [usize; 2], ImageFormat)> {
         self.inner.get_image(index, |image| image.map(copy_stored))
+    }
+
+    /// Returns the header of the image at `index`, `None` for a missing
+    /// index.
+    pub fn header(&self, index: u32) -> Result<Option<H>> {
+        self.inner.get_image(index, |image| {
+            image.map(|image| decode_header(image.header())).transpose()
+        })
+    }
+
+    /// Returns a copy of the image at `index` and its header, read together,
+    /// as [`Image::get_with_header`] does.
+    pub fn get_with_header(&self, index: u32) -> Result<Option<ImageWithHeader<H>>> {
+        self.inner.get_image(index, |image| {
+            image
+                .map(|image| {
+                    let (data, shape, format) = copy_stored(image);
+                    Ok((data, shape, format, decode_header(image.header())?))
+                })
+                .transpose()
+        })
     }
 
     /// Returns the number of populated image keys.
@@ -325,13 +520,19 @@ impl ImageMulti {
         self.inner.is_index_idle(index)
     }
 
-    /// Creates or replaces the complete image at `index`.
+    /// Creates or replaces the complete image at `index`, keeping its
+    /// header.
     ///
     /// Each index has its own transfer: this waits for the previous transfer
     /// of `index` only, as [`Image::set`] does. Only unsent parts of a
     /// split update of the same `index` are dropped. With `wait`, the call
     /// returns only once the client has acknowledged this image, or the
     /// connection has ended.
+    ///
+    /// # Errors
+    ///
+    /// As [`Image::set`]; creating an index of a state with a header type
+    /// needs [`Self::set_with_header`].
     pub fn set(
         &self,
         index: u32,
@@ -340,19 +541,46 @@ impl ImageMulti {
         format: ImageFormat,
         wait: bool,
     ) -> Result<()> {
+        self.set_inner(index, data, size, format, None, wait)
+    }
+
+    /// Like [`Self::set`], replacing the header as well.
+    ///
+    /// # Errors
+    ///
+    /// As [`Image::set_with_header`].
+    pub fn set_with_header(
+        &self,
+        index: u32,
+        data: &[u8],
+        size: [usize; 2],
+        format: ImageFormat,
+        header: &H,
+        wait: bool,
+    ) -> Result<()> {
+        let header = serialize_bytes(header)?;
+        self.set_inner(index, data, size, format, Some(&header), wait)
+    }
+
+    fn set_inner(
+        &self,
+        index: u32,
+        data: &[u8],
+        size: [usize; 2],
+        format: ImageFormat,
+        header: Option<&[u8]>,
+        wait: bool,
+    ) -> Result<()> {
         check_image_multi_data(data, size, format)?;
+        let image = ImageData::packed(data, size, format.image_type());
         self.inner
-            .set_image(
-                index,
-                ImageData::packed(data, size, format.image_type()),
-                wait,
-            )
+            .set_image(index, image, header, wait)
             .map_err(ServerError::new)
     }
 
     /// Creates or replaces the image at `index` with one uniform color, stored
-    /// in the format of `color` as [`Image::set_all`] does. It is scheduled
-    /// like [`set`](Self::set), including `wait`.
+    /// in the format of `color` as [`Image::set_all`] does, keeping its
+    /// header. It is scheduled like [`set`](Self::set), including `wait`.
     pub fn set_all(
         &self,
         index: u32,
@@ -361,11 +589,27 @@ impl ImageMulti {
         wait: bool,
     ) -> Result<()> {
         self.inner
-            .set_all_image(index, shape, color.fill(), wait)
+            .set_all_image(index, shape, color.fill(), None, wait)
             .map_err(ServerError::new)
     }
 
-    /// Replaces a rectangular region of the existing image at `index`.
+    /// Like [`Self::set_all`], replacing the header as well.
+    pub fn set_all_with_header(
+        &self,
+        index: u32,
+        shape: [usize; 2],
+        color: ImageColor,
+        header: &H,
+        wait: bool,
+    ) -> Result<()> {
+        let header = serialize_bytes(header)?;
+        self.inner
+            .set_all_image(index, shape, color.fill(), Some(&header), wait)
+            .map_err(ServerError::new)
+    }
+
+    /// Replaces a rectangular region of the existing image at `index`,
+    /// keeping its header.
     ///
     /// `max_lines`, `force` and `wait` work as in [`Image::update`]. With
     /// `force`, waiting parts are dropped only when they belong to the same
@@ -383,16 +627,71 @@ impl ImageMulti {
         max_lines: Option<usize>,
         wait: bool,
     ) -> Result<()> {
+        self.update_inner(
+            index, data, origin, size, format, None, force, max_lines, wait,
+        )
+    }
+
+    /// Like [`Self::update`], replacing the header as well, as
+    /// [`Image::update_with_header`] does.
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_with_header(
+        &self,
+        index: u32,
+        data: &[u8],
+        origin: [usize; 2],
+        size: [usize; 2],
+        format: ImageFormat,
+        header: &H,
+        force: bool,
+        max_lines: Option<usize>,
+        wait: bool,
+    ) -> Result<()> {
+        let header = serialize_bytes(header)?;
+        self.update_inner(
+            index,
+            data,
+            origin,
+            size,
+            format,
+            Some(&header),
+            force,
+            max_lines,
+            wait,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn update_inner(
+        &self,
+        index: u32,
+        data: &[u8],
+        origin: [usize; 2],
+        size: [usize; 2],
+        format: ImageFormat,
+        header: Option<&[u8]>,
+        force: bool,
+        max_lines: Option<usize>,
+        wait: bool,
+    ) -> Result<()> {
         check_image_multi_data(data, size, format)?;
+        let image = ImageData::packed(data, size, format.image_type());
         self.inner
-            .update_image(
-                index,
-                &origin,
-                ImageData::packed(data, size, format.image_type()),
-                force,
-                max_lines,
-                wait,
-            )
+            .update_image(index, &origin, image, header, force, max_lines, wait)
+            .map_err(ServerError::new)
+    }
+
+    /// Replaces the header of the image at `index` alone, as
+    /// [`Image::set_header`] does; it waits only for transfers of `index`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `index` is missing, the state has no header
+    /// type, or the header is larger than a value may be.
+    pub fn set_header(&self, index: u32, header: &H) -> Result<()> {
+        let header = serialize_bytes(header)?;
+        self.inner
+            .set_header(index, &header)
             .map_err(ServerError::new)
     }
 
@@ -437,8 +736,8 @@ mod tests {
     #[test]
     fn public_images_enforce_the_inclusive_shape_limit() {
         let server = StateServer::new().unwrap();
-        let image = Image::new(&server, "root.image", false).unwrap();
-        let images = ImageMulti::new(&server, "root.images", false).unwrap();
+        let image = Image::<()>::new(&server, "root.image", false).unwrap();
+        let images = ImageMulti::<()>::new(&server, "root.images", false).unwrap();
         for shape in [[65_536, 1], [1, 65_536]] {
             let data = vec![7; 65_536];
             image.set(&data, shape, ImageFormat::Gray, false).unwrap();
@@ -538,7 +837,7 @@ mod tests {
     #[test]
     fn image_keeps_its_format_and_widens_for_an_update() {
         let server = StateServer::new().unwrap();
-        let image = Image::new(&server, "root.image", false).unwrap();
+        let image = Image::<()>::new(&server, "root.image", false).unwrap();
         assert_eq!(image.get(), None);
         assert_eq!(image.format(), None);
 
@@ -576,7 +875,7 @@ mod tests {
     #[test]
     fn image_rejects_invalid_and_overflowing_dimensions() {
         let server = StateServer::new().unwrap();
-        let image = Image::new(&server, "root.image", false).unwrap();
+        let image = Image::<()>::new(&server, "root.image", false).unwrap();
 
         assert!(
             image
@@ -595,7 +894,7 @@ mod tests {
     #[test]
     fn image_update_outside_the_image_is_rejected_without_changes() {
         let server = StateServer::new().unwrap();
-        let image = Image::new(&server, "root.image", false).unwrap();
+        let image = Image::<()>::new(&server, "root.image", false).unwrap();
 
         // Nothing has been set yet, so every rectangle is outside the image.
         assert!(
@@ -642,7 +941,7 @@ mod tests {
     #[test]
     fn image_set_all_stores_the_format_of_its_color() {
         let server = StateServer::new().unwrap();
-        let image = Image::new(&server, "root.image", false).unwrap();
+        let image = Image::<()>::new(&server, "root.image", false).unwrap();
 
         image
             .set_all([2, 3], ImageColor::GrayAlpha(7, 8), false)
@@ -659,7 +958,7 @@ mod tests {
     #[test]
     fn image_multi_sparse_operations_and_validation() {
         let server = StateServer::new().unwrap();
-        let images = ImageMulti::new(&server, "root.images", false).unwrap();
+        let images = ImageMulti::<()>::new(&server, "root.images", false).unwrap();
 
         assert!(images.is_empty());
         assert_eq!(images.get(7), None);
@@ -797,5 +1096,67 @@ mod tests {
         assert_eq!(images.indices(), vec![7]);
         images.reset().unwrap();
         assert!(images.is_empty());
+    }
+
+    #[test]
+    fn headers_are_stored_with_the_images() {
+        type Meta = (u32, String);
+        let meta = |n: u32| (n, format!("m{n}"));
+        let server = StateServer::new().unwrap();
+        let image = Image::<Meta>::new(&server, "root.image", false).unwrap();
+        let images = ImageMulti::<Meta>::new(&server, "root.images", false).unwrap();
+        let plain = Image::<()>::new(&server, "root.plain", false).unwrap();
+        let gray = ImageFormat::Gray;
+
+        assert_eq!(image.header().unwrap(), None);
+        assert_eq!(image.get_with_header().unwrap(), None);
+        // The set that creates the image needs a header.
+        let error = image.set(&[1, 2], [1, 2], gray, false).unwrap_err();
+        assert!(error.to_string().contains("needs a header"), "{error}");
+        assert!(image.set_header(&meta(0)).is_err());
+        image
+            .set_with_header(&[1, 2], [1, 2], gray, &meta(1), false)
+            .unwrap();
+        image.set(&[3, 4], [1, 2], gray, false).unwrap();
+        image
+            .update(&[5], [0, 0], [1, 1], gray, false, None, false)
+            .unwrap();
+        assert_eq!(
+            image.get_with_header().unwrap(),
+            Some((vec![5, 4], [1, 2], gray, meta(1)))
+        );
+        image
+            .update_with_header(&[6], [0, 1], [1, 1], gray, &meta(2), false, None, false)
+            .unwrap();
+        assert_eq!(image.header().unwrap(), Some(meta(2)));
+        image
+            .set_all_with_header([1, 1], ImageColor::Gray(7), &meta(3), false)
+            .unwrap();
+        image.set_header(&meta(4)).unwrap();
+        assert_eq!(
+            image.get_with_header().unwrap(),
+            Some((vec![7], [1, 1], gray, meta(4)))
+        );
+
+        assert!(images.set(1, &[1], [1, 1], gray, false).is_err());
+        assert!(images.set_header(1, &meta(1)).is_err());
+        images
+            .set_all_with_header(1, [1, 1], ImageColor::Gray(1), &meta(1), false)
+            .unwrap();
+        images
+            .set_with_header(2, &[2], [1, 1], gray, &meta(2), false)
+            .unwrap();
+        images.set_header(2, &meta(5)).unwrap();
+        assert_eq!(images.header(1).unwrap(), Some(meta(1)));
+        assert_eq!(
+            images.get_with_header(2).unwrap(),
+            Some((vec![2], [1, 1], gray, meta(5)))
+        );
+        assert_eq!(images.header(3).unwrap(), None);
+
+        // An image without a header type has `()` and takes none.
+        plain.set(&[1], [1, 1], gray, false).unwrap();
+        assert_eq!(plain.header().unwrap(), Some(()));
+        assert!(plain.set_header(&()).is_err());
     }
 }

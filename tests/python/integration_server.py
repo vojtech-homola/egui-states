@@ -213,6 +213,26 @@ def edit_numeric(states):
     m.nested.buffer[3].replace(np.array([6], dtype=np.uint16), 1)
 
 
+def edit_image_headers(states):
+    """Command 37: typed image headers.
+
+    The header alone waits for the split update before it, so the phase
+    follows everything.
+    """
+    from egui_states_test_bindings.structs import HeaderMeta  # ty: ignore[import-not-found]
+
+    image = states.image.framed
+    image.set(np.array([[1], [2]], dtype=np.uint8), header=HeaderMeta(1.0, "frame 1", [2]))
+    image.update(np.array([[3]], dtype=np.uint8), (0, 0))
+    image.update(np.array([[4], [5]], dtype=np.uint8), (0, 0), max_lines=1, header=HeaderMeta(2.0, "frame 2", [2]))
+    image.set_header(HeaderMeta(3.0, "frame 3", [2]))
+    assert image.get_header() == HeaderMeta(3.0, "frame 3", [2])
+    keys = states.image.framed_keys
+    keys[4].set(np.array([[1]], dtype=np.uint8), header=HeaderMeta(4.0, "key 4", []))
+    keys[5].set_all((1, 1), 5, header=HeaderMeta(5.0, "key 5", []))
+    keys[5].set_header(HeaderMeta(5.5, "key 5 renamed", []))
+
+
 def edit_images(states):
     """Command 34: a full image, partial updates, and sparse images.
 
@@ -341,6 +361,9 @@ def configure(states):  # noqa: PLR0915
         elif number in {35, 36}:
             edit_headers(states, number)
             st.phase.set(number)
+        elif number == 37:  # noqa: PLR2004
+            edit_image_headers(states)
+            st.phase.set(37)
         elif number in {40, 41, 42, 43}:
             transfers(states, number, finished)
             st.phase.set(number)

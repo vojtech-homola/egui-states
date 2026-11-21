@@ -357,6 +357,17 @@ impl Scheduler {
         self.sender.send(message);
     }
 
+    /// Queues `message`, which the client does not acknowledge, once the
+    /// locked key is idle: after its waiting parts, which it keeps.
+    pub(super) fn send_after(&self, lock: KeyLock<'_>, message: FastVec<32>, generation: u64) {
+        lock.slot.event.wait();
+        let state = self.state.lock();
+        if state.sync.generation() != generation || !self.is_connected() {
+            return;
+        }
+        self.sender.send(message);
+    }
+
     /// Drops the waiting parts of every key, then queues `message`, which the
     /// client does not acknowledge, once every key is idle. The keys are
     /// forgotten, as after a reset of the state.

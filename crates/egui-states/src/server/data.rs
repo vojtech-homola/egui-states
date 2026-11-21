@@ -17,20 +17,20 @@ use crate::typed::Typed;
 use super::state_server::{StateServer, deserialize_bytes, serialize_bytes};
 use super::{Result, ServerError};
 
-/// The header type of a Data state: any `Typed` value sent with the buffer,
-/// `()` (the default) for a state without one.
+/// The header type of a [`Data`] or image state: any `Typed` value sent with
+/// the buffer or image, `()` (the default) for a state without one.
 ///
 /// It must match the client's header type. A state with a header type never
-/// holds data without a header: the change that creates the data, the first
-/// set of a [`Data`] or of a [`DataMulti`] index, and every take must carry
-/// one. A custom [`Typed`] type whose [`Typed::get_type`] is
+/// holds content without a header: the change that creates it, the first set
+/// of a [`Data`], an [`Image`](super::Image) or an index of a [`DataMulti`]
+/// or [`ImageMulti`](super::ImageMulti), and every take must carry one. A custom [`Typed`] type whose [`Typed::get_type`] is
 /// [`crate::ObjectType::Empty`] also means no header; it must decode from no
 /// bytes.
 pub trait HeaderValue: Typed + Serialize + DeserializeOwned + Send + Sync + 'static {}
 
 impl<H> HeaderValue for H where H: Typed + Serialize + DeserializeOwned + Send + Sync + 'static {}
 
-fn header_type<H: HeaderValue>() -> Option<u32> {
+pub(super) fn header_type<H: HeaderValue>() -> Option<u32> {
     header_type_id(&H::get_type())
 }
 
@@ -42,7 +42,7 @@ fn with_header<'a, T: DataElement>(data: &'a [T], header: Option<&'a Bytes>) -> 
     }
 }
 
-fn decode_header<H: HeaderValue>(header: &[u8]) -> Result<H> {
+pub(super) fn decode_header<H: HeaderValue>(header: &[u8]) -> Result<H> {
     deserialize_bytes(header)
 }
 

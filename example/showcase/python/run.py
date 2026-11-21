@@ -9,7 +9,7 @@ import threading
 import numpy as np
 from showcase_bindings import ShowcaseState, StatesServer
 from showcase_bindings.enums import PrimaryChoice, SecondaryChoice
-from showcase_bindings.structs import Measurement, Point, SampleInfo, Summary
+from showcase_bindings.structs import ImageInfo, Measurement, Point, SampleInfo, Summary
 from egui_states import LogLevel, TransferError, TransferHandle, TransferOffer, TransferStatus
 
 PORT = 8091
@@ -212,11 +212,12 @@ def populate_initial_data(states: ShowcaseState) -> None:  # noqa: PLR0915
 
     y, x = np.indices((256, 256), dtype=np.uint16)
     image = np.stack((x, y, (x + y) // 2), axis=-1).astype(np.uint8)
-    states.image.image.set(image)
+    states.image.image.set(image, header=ImageInfo(1, 0.5))
     image_patch = np.zeros((64, 64, 4), dtype=np.uint8)
     image_patch[..., 1] = 220
     image_patch[..., 3] = 255
-    states.image.image.update(image_patch, origin=(96, 96))
+    # The patch is the next frame; its header comes with it.
+    states.image.image.update(image_patch, origin=(96, 96), header=ImageInfo(2, 0.5))
 
     states.image.images[2].set(image)
     states.image.images[7].set_all((256, 256), (25, 35, 75))

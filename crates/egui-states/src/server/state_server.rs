@@ -630,11 +630,12 @@ impl StateServer {
     pub(super) fn add_image(
         &self,
         name: String,
+        header_type: Option<u32>,
         low_priority: bool,
     ) -> Result<(u64, Arc<CoreImage>)> {
         let mut server = self.inner.server.write();
         let id = server
-            .add_image(&name, low_priority)
+            .add_image(&name, header_type, low_priority)
             .map_err(ServerError::new)?;
         let value = server.get_image(id).ok_or_else(|| {
             ServerError::new(format!("image not found after registration: {name}"))
@@ -645,11 +646,12 @@ impl StateServer {
     pub(super) fn add_image_multi(
         &self,
         name: String,
+        header_type: Option<u32>,
         low_priority: bool,
     ) -> Result<(u64, Arc<CoreImageMulti>)> {
         let mut server = self.inner.server.write();
         let id = server
-            .add_image_multi(&name, low_priority)
+            .add_image_multi(&name, header_type, low_priority)
             .map_err(ServerError::new)?;
         let value = server.get_image_multi(id).ok_or_else(|| {
             ServerError::new(format!("image_multi not found after registration: {name}"))
@@ -1622,9 +1624,9 @@ mod tests {
             ("MapState", |sv, n| {
                 s::MapState::<u8, i32>::new(sv, n).map(drop)
             }),
-            ("Image", |sv, n| s::Image::new(sv, n, false).map(drop)),
+            ("Image", |sv, n| s::Image::<()>::new(sv, n, false).map(drop)),
             ("ImageMulti", |sv, n| {
-                s::ImageMulti::new(sv, n, false).map(drop)
+                s::ImageMulti::<()>::new(sv, n, false).map(drop)
             }),
             ("Data", |sv, n| s::Data::<u8>::new(sv, n, false).map(drop)),
             ("DataMulti", |sv, n| {

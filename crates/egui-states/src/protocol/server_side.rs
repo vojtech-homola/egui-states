@@ -148,9 +148,11 @@ mod tests {
         MultiDataHeader, TransportType,
     };
     use crate::protocol::fastvec::serialize;
+    use crate::protocol::image::ImageUpdateHeader;
+    use crate::protocol::image::{ImageHeader, ImageMultiHeader, ImageSetHeader, ImageType};
 
     #[test]
-    fn every_data_header_fits_the_reserved_length() {
+    fn every_data_and_image_header_fits_the_reserved_length() {
         let header = HeaderBytes {
             type_id: u32::MAX,
             size: u32::MAX,
@@ -188,7 +190,31 @@ mod tests {
                 DataMultiTakeHeader::Modify(u32::MAX, header, true),
             )
         }));
-        assert_eq!(messages.len(), 22);
+        let max = [u32::MAX; 2];
+        let rect = [u32::MAX; 4];
+        let image = || {
+            [
+                ImageHeader::Set(ImageSetHeader::All(max, set), ImageType::GrayAlpha),
+                ImageHeader::Set(ImageSetHeader::Start(max, u32::MAX), ImageType::GrayAlpha),
+                ImageHeader::Set(ImageSetHeader::End(u32::MAX, set), ImageType::GrayAlpha),
+                ImageHeader::Update(ImageUpdateHeader::All(rect, set), ImageType::GrayAlpha),
+                ImageHeader::Update(
+                    ImageUpdateHeader::Start(rect, u32::MAX),
+                    ImageType::GrayAlpha,
+                ),
+                ImageHeader::Update(ImageUpdateHeader::End(u32::MAX, set), ImageType::GrayAlpha),
+                ImageHeader::Fill(max, [u8::MAX; 4], set),
+                ImageHeader::Header(header),
+            ]
+        };
+        messages.extend(image().map(|header| ServerHeader::Image(u64::MAX, header, u32::MAX)));
+        messages.extend(image().map(|header| {
+            ServerHeader::ImageMulti(
+                u64::MAX,
+                ImageMultiHeader::Modify(u32::MAX, header, u32::MAX),
+            )
+        }));
+        assert_eq!(messages.len(), 38);
         for message in &messages {
             let len = serialize::<_, 128>(message).unwrap().len();
             assert!(len <= MAX_SERVER_HEADER_LEN, "{len} bytes");

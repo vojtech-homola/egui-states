@@ -58,6 +58,7 @@ pub(crate) enum ClientHeader {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::data::HeaderUpdate;
     use crate::protocol::fastvec::{FastVec, contents, serialize};
 
     fn first_byte<const N: usize>(data: &FastVec<N>) -> u8 {
@@ -71,7 +72,7 @@ mod tests {
     fn image_multi_is_appended_to_the_server_header_protocol() {
         let image: FastVec<32> = serialize(&ServerHeader::Image(
             1,
-            ImageHeader::Fill([1, 1], [0; 4]),
+            ImageHeader::Fill([1, 1], [0; 4], HeaderUpdate::Keep),
             0,
         ))
         .unwrap();
@@ -98,7 +99,7 @@ mod tests {
             ServerHeader::Value(1, 2, 0),
             ServerHeader::ValueTake(1, 2, false, 0),
             ServerHeader::Static(1, 2, 0),
-            ServerHeader::Image(1, ImageHeader::Fill([1, 1], [0; 4]), 0),
+            ServerHeader::Image(1, ImageHeader::Fill([1, 1], [0; 4], HeaderUpdate::Keep), 0),
             ServerHeader::Data(1, DataHeader::Clear(HeaderUpdate::Keep)),
             ServerHeader::DataTake(1, DataTakeHeader::Batch(0), false),
             ServerHeader::MultiData(1, MultiDataHeader::Reset),
@@ -242,19 +243,19 @@ mod tests {
         assert_tags(
             "ImageSetHeader",
             &[
-                ImageSetHeader::All([0; 2]),
+                ImageSetHeader::All([0; 2], HeaderUpdate::Keep),
                 ImageSetHeader::Start([0; 2], 0),
                 ImageSetHeader::Batch(0),
-                ImageSetHeader::End(0),
+                ImageSetHeader::End(0, HeaderUpdate::Keep),
             ],
         );
         assert_tags(
             "ImageUpdateHeader",
             &[
-                ImageUpdateHeader::All([0; 4]),
+                ImageUpdateHeader::All([0; 4], HeaderUpdate::Keep),
                 ImageUpdateHeader::Start([0; 4], 0),
                 ImageUpdateHeader::Batch(0),
-                ImageUpdateHeader::End(0),
+                ImageUpdateHeader::End(0, HeaderUpdate::Keep),
             ],
         );
         assert_tags(
@@ -262,14 +263,22 @@ mod tests {
             &[
                 ImageHeader::Set(ImageSetHeader::Batch(0), ImageType::Color),
                 ImageHeader::Update(ImageUpdateHeader::Batch(0), ImageType::Color),
-                ImageHeader::Fill([0; 2], [0; 4]),
+                ImageHeader::Fill([0; 2], [0; 4], HeaderUpdate::Keep),
+                ImageHeader::Header(HeaderBytes {
+                    type_id: 0,
+                    size: 0,
+                }),
             ],
         );
         assert_tags(
             "ImageMultiHeader",
             &[
                 ImageMultiHeader::Remove(0),
-                ImageMultiHeader::Modify(0, ImageHeader::Fill([0; 2], [0; 4]), 0),
+                ImageMultiHeader::Modify(
+                    0,
+                    ImageHeader::Fill([0; 2], [0; 4], HeaderUpdate::Keep),
+                    0,
+                ),
                 ImageMultiHeader::Reset,
             ],
         );
@@ -395,10 +404,25 @@ mod tests {
         assert_eq!(
             bytes(&ServerHeader::Image(
                 5,
-                ImageHeader::Set(ImageSetHeader::All([2, 3]), ImageType::Gray),
+                ImageHeader::Set(
+                    ImageSetHeader::All([2, 3], HeaderUpdate::Keep),
+                    ImageType::Gray
+                ),
                 6
             )),
-            [3, 5, 0, 0, 2, 3, 2, 6]
+            [3, 5, 0, 0, 2, 3, 0, 2, 6]
+        );
+        assert_eq!(
+            bytes(&ServerHeader::Image(
+                5,
+                ImageHeader::Fill([2, 1], [1, 2, 3, 4], HeaderUpdate::Set(header)),
+                0
+            )),
+            [3, 5, 2, 2, 1, 1, 2, 3, 4, 1, 0xac, 0x02, 2, 0]
+        );
+        assert_eq!(
+            bytes(&ServerHeader::Image(5, ImageHeader::Header(header), 0)),
+            [3, 5, 3, 0xac, 0x02, 2, 0]
         );
         assert_eq!(
             bytes(&ServerHeader::ImageMulti(
@@ -406,13 +430,13 @@ mod tests {
                 ImageMultiHeader::Modify(
                     1,
                     ImageHeader::Update(
-                        ImageUpdateHeader::All([0, 1, 2, 3]),
+                        ImageUpdateHeader::All([0, 1, 2, 3], HeaderUpdate::Keep),
                         ImageType::ColorAlpha
                     ),
                     24
                 )
             )),
-            [11, 5, 1, 1, 1, 0, 0, 1, 2, 3, 1, 24]
+            [11, 5, 1, 1, 1, 0, 0, 1, 2, 3, 0, 1, 24]
         );
         assert_eq!(
             bytes(&ServerHeader::ValueVec(5, 7, VecHeader::Remove(2), 0)),

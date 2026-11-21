@@ -35,9 +35,12 @@ impl ServerHeader {
         }
     }
 
-    /// Bytes of a Data header that precede the payload's elements.
+    /// Bytes of a typed header that precede the payload's elements or
+    /// pixels.
     pub(crate) fn header_len(&self) -> u32 {
         match self {
+            Self::Image(_, header, _) => header.header_len(),
+            Self::ImageMulti(_, ImageMultiHeader::Modify(_, header, _)) => header.header_len(),
             Self::Data(_, header) => header.header_len(),
             Self::DataTake(_, header, _) => header.header_len(),
             Self::MultiData(_, MultiDataHeader::Modify(_, header)) => header.header_len(),

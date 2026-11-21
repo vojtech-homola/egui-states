@@ -9,6 +9,7 @@ from egui_states_test_bindings import (  # ty: ignore[import-not-found]
     State,
     StatesServer,
 )
+from egui_states_test_bindings.structs import HeaderMeta  # ty: ignore[import-not-found]
 
 
 @pytest.mark.parametrize("multi", [False, True], ids=["image", "image-multi"])
@@ -242,3 +243,48 @@ def test_image_wait_force_and_max_lines(local_bundle, multi):
         with pytest.raises(ValueError, match="max_lines"):
             image.update(np.zeros((1, 1), dtype=np.uint8), (0, 0), max_lines=max_lines)
     assert_array(image.get(), before)
+
+
+def test_image_headers_are_stored_with_their_image(local_bundle):
+    _, states, _ = local_bundle
+    framed = states.image.framed
+    assert framed.get_header() is None
+    assert framed.get_with_header() is None
+    # The set that creates the image needs a header, and a header needs an image.
+    pixels = np.array([[1], [2]], dtype=np.uint8)
+    with pytest.raises(ValueError, match="needs a header"):
+        framed.set(pixels)
+    with pytest.raises(ValueError, match="needs a header"):
+        framed.set_all((2, 1), 5)
+    with pytest.raises(ValueError, match="no image"):
+        framed.set_header(HeaderMeta(1.0, "z", []))
+    framed.set(pixels, header=HeaderMeta(1.0, "a", [2]))
+    framed.update(np.array([[3]], dtype=np.uint8), (0, 0))
+    assert framed.get_header() == HeaderMeta(1.0, "a", [2])
+    framed.update(np.array([[4], [5]], dtype=np.uint8), (0, 0), max_lines=1, header=HeaderMeta(2.0, "b", []))
+    image, header = framed.get_with_header()
+    assert_array(image, np.array([[4], [5]], dtype=np.uint8))
+    assert header == HeaderMeta(2.0, "b", [])
+    framed.set_all((1, 1), 7, header=HeaderMeta(3.0, "c", []))
+    framed.set(np.array([[8]], dtype=np.uint8))
+    framed.set_header(HeaderMeta(4.0, "d", [1]))
+    image, header = framed.get_with_header()
+    assert_array(image, np.array([[8]], dtype=np.uint8))
+    assert header == HeaderMeta(4.0, "d", [1])
+
+    keys = states.image.framed_keys
+    with pytest.raises(ValueError, match="needs a header"):
+        keys[1].set(pixels)
+    assert 1 not in keys
+    keys[1].set(pixels, header=HeaderMeta(5.0, "e", []))
+    keys[2].set_all((1, 1), 3, header=HeaderMeta(6.0, "f", []))
+    keys[1].update(np.array([[9]], dtype=np.uint8), (1, 0))
+    keys[2].set_header(HeaderMeta(6.5, "g", []))
+    assert keys[1].get_header() == HeaderMeta(5.0, "e", [])
+    image, header = keys[2].get_with_header()
+    assert_array(image, np.array([[3]], dtype=np.uint8))
+    assert header == HeaderMeta(6.5, "g", [])
+    with pytest.raises(ValueError, match="index not found"):
+        keys[3].get_header()
+    with pytest.raises(ValueError, match="index not found"):
+        keys[3].set_header(HeaderMeta(0.0, "h", []))

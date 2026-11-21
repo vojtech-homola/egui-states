@@ -3,7 +3,7 @@ use crate::{
     bindings::{
         ShowcaseState,
         enums::{PrimaryChoice, SecondaryChoice},
-        structs::{Measurement, Point, Summary},
+        structs::{ImageInfo, Measurement, Point, Summary},
     },
     default_map,
 };
@@ -166,21 +166,27 @@ pub fn populate_initial_data(states: &ShowcaseState) -> s::Result<()> {
             image[offset + 2] = ((x + y) / 2) as u8;
         }
     }
-    states
-        .image
-        .image
-        .set(&image, [256, 256], s::ImageFormat::Color, false)?;
+    let info = |frame| ImageInfo { frame, scale: 0.5 };
+    states.image.image.set_with_header(
+        &image,
+        [256, 256],
+        s::ImageFormat::Color,
+        &info(1),
+        false,
+    )?;
 
     let mut image_patch = vec![0u8; 64 * 64 * 4];
     for pixel in image_patch.chunks_exact_mut(4) {
         pixel[1] = 220;
         pixel[3] = 255;
     }
-    states.image.image.update(
+    // The patch is the next frame; its header comes with it.
+    states.image.image.update_with_header(
         &image_patch,
         [96, 96],
         [64, 64],
         s::ImageFormat::ColorAlpha,
+        &info(2),
         false,
         None,
         false,

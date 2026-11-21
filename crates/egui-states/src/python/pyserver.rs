@@ -50,9 +50,9 @@ enum PyState {
     Signal(Arc<SignalCore>, PyObjectType),
     Map(Arc<ValueMap>, PyObjectType),
     Vec(Arc<ValueList>, PyObjectType),
-    Image(Arc<Image>),
-    ImageMulti(Arc<ImageMulti>),
-    /// The Data kinds keep their header type, `None` without one.
+    /// The image and Data kinds keep their header type, `None` without one.
+    Image(Arc<Image>, Option<PyObjectType>),
+    ImageMulti(Arc<ImageMulti>, Option<PyObjectType>),
     Data(Arc<Data>, Option<PyObjectType>),
     DataTake(Arc<DataTake>, Option<PyObjectType>),
     DataMulti(Arc<DataMulti>, Option<PyObjectType>),
@@ -71,8 +71,8 @@ impl PyState {
             Self::Signal(state, _) => &state.name,
             Self::Map(state, _) => &state.name,
             Self::Vec(state, _) => &state.name,
-            Self::Image(state) => &state.name,
-            Self::ImageMulti(state) => &state.name,
+            Self::Image(state, _) => &state.name,
+            Self::ImageMulti(state, _) => &state.name,
             Self::Data(state, _) => &state.name,
             Self::DataTake(state, _) => &state.name,
             Self::DataMulti(state, _) => &state.name,
@@ -148,13 +148,16 @@ impl StateServerCore {
     }
 
     #[inline]
-    fn inner_image(&self, value_id: u64) -> PyResult<&Arc<Image>> {
-        lookup!(self, value_id, PyState::Image(image) => image, "Image with ID not found.")
+    fn inner_image(&self, value_id: u64) -> PyResult<(&Arc<Image>, &Option<PyObjectType>)> {
+        lookup!(self, value_id, PyState::Image(image, header) => (image, header), "Image with ID not found.")
     }
 
     #[inline]
-    fn inner_image_multi(&self, value_id: u64) -> PyResult<&Arc<ImageMulti>> {
-        lookup!(self, value_id, PyState::ImageMulti(images) => images, "ImageMulti with ID not found.")
+    fn inner_image_multi(
+        &self,
+        value_id: u64,
+    ) -> PyResult<(&Arc<ImageMulti>, &Option<PyObjectType>)> {
+        lookup!(self, value_id, PyState::ImageMulti(images, header) => (images, header), "ImageMulti with ID not found.")
     }
 
     /// Registers a `Download` (`download`) or `Upload` endpoint with the
@@ -200,7 +203,8 @@ impl StateServerCore {
         Ok((self.server.read().transfers().clone(), meta))
     }
 
-    /// Keeps a Data state's header type until the registry is finalized.
+    /// Keeps an image or Data state's header type until the registry is
+    /// finalized.
     fn keep_header_type(&self, value_id: u64, header: Option<PyObjectType>) {
         if let (Some(header), Some(types)) = (header, self.temps.write().as_mut()) {
             types.insert(value_id, header);
@@ -234,7 +238,7 @@ impl StateServerCore {
     }
 }
 
-/// The header type id of a Data state with header type `header`.
+/// The header type id of an image or Data state with header type `header`.
 fn header_type(py: Python, header: Option<&PyObjectType>) -> PyResult<Option<u32>> {
     match header {
         None => Ok(None),
@@ -437,8 +441,8 @@ impl StateServerCore {
                 StateRef::Vec(state) => {
                     PyState::Vec(state, types.remove(&id).ok_or_else(|| missing("list", id))?)
                 }
-                StateRef::Image(state) => PyState::Image(state),
-                StateRef::ImageMulti(state) => PyState::ImageMulti(state),
+                StateRef::Image(state) => PyState::Image(state, types.remove(&id)),
+                StateRef::ImageMulti(state) => PyState::ImageMulti(state, types.remove(&id)),
                 StateRef::Data(state) => PyState::Data(state, types.remove(&id)),
                 StateRef::DataTake(state) => PyState::DataTake(state, types.remove(&id)),
                 StateRef::DataMulti(state) => PyState::DataMulti(state, types.remove(&id)),
@@ -891,8 +895,10 @@ impl StateServerCore {
     }
 
     // images -----------------------------------------------------------
+    // An image method takes its new header as `(header,)`, or `None` to keep
+    // the current one, as a Data method does.
     fn image_size(&self, value_id: u64) -> PyResult<(usize, usize)> {
-        let size = self.inner_image(value_id)?.get_size();
+        let size = self.inner_image(value_id)?.0.get_size();
         Ok((size[0], size[1]))
     }
 
@@ -906,48 +912,91 @@ impl StateServerCore {
     ) -> PyResult<Option<(Bound<'py, PyByteArray>, (usize, usize), usize)>> {
         Ok(self
             .inner_image(value_id)?
+            .0
             .get_image(|image| image.map(|image| pyimage::stored_image(py, image))))
     }
 
-    fn image_is_idle(&self, value_id: u64) -> PyResult<bool> {
-        Ok(self.inner_image(value_id)?.is_idle())
+    fn image_get_header<'py>(
+        &self,
+        py: Python<'py>,
+        value_id: u64,
+    ) -> PyResult<Option<Bound<'py, PyAny>>> {
+        let (image, header_type) = self.inner_image(value_id)?;
+        match image.get_image(|image| image.map(|image| Bytes::copy_from_slice(image.header()))) {
+            Some(header) => decode_header(py, header, header_type),
+            None => Ok(None),
+        }
     }
 
-    #[pyo3(signature = (value_id, image, wait=false))]
+    /// The image as [`Self::image_get`] returns it and its header, under one
+    /// storage lock; the header is decoded after the lock is released.
+    #[allow(clippy::type_complexity)]
+    fn image_get_with_header<'py>(
+        &self,
+        py: Python<'py>,
+        value_id: u64,
+    ) -> PyResult<
+        Option<(
+            (Bound<'py, PyByteArray>, (usize, usize), usize),
+            Option<Bound<'py, PyAny>>,
+        )>,
+    > {
+        let (image, header_type) = self.inner_image(value_id)?;
+        let entry = image.get_image(|image| {
+            image.map(|image| {
+                let header = Bytes::copy_from_slice(image.header());
+                (pyimage::stored_image(py, image), header)
+            })
+        });
+        entry
+            .map(|(image, header)| Ok((image, decode_header(py, header, header_type)?)))
+            .transpose()
+    }
+
+    fn image_is_idle(&self, value_id: u64) -> PyResult<bool> {
+        Ok(self.inner_image(value_id)?.0.is_idle())
+    }
+
+    #[pyo3(signature = (value_id, image, header=None, wait=false))]
     fn image_set(
         &self,
         py: Python,
         value_id: u64,
         image: PyBuffer<u8>,
+        header: Option<(Bound<PyAny>,)>,
         wait: bool,
     ) -> PyResult<()> {
+        let (image_val, header_type) = self.inner_image(value_id)?;
+        let header = encode_header(header, header_type)?;
         py.detach(|| {
-            let image_val = self.inner_image(value_id)?;
             let image_data = pyimage::image_data(&image)?;
             image_val
-                .set_image(image_data, wait)
+                .set_image(image_data, header.as_deref(), wait)
                 .map_err(PyValueError::new_err)
         })
     }
 
-    #[pyo3(signature = (value_id, shape, color, wait=false))]
+    #[pyo3(signature = (value_id, shape, color, header=None, wait=false))]
     fn image_set_all(
         &self,
         py: Python,
         value_id: u64,
         shape: [usize; 2],
         color: &Bound<'_, PyAny>,
+        header: Option<(Bound<PyAny>,)>,
         wait: bool,
     ) -> PyResult<()> {
         let fill = pyimage::image_color(color)?;
+        let (image, header_type) = self.inner_image(value_id)?;
+        let header = encode_header(header, header_type)?;
         py.detach(|| {
-            self.inner_image(value_id)?
-                .set_all_image(shape, fill, wait)
+            image
+                .set_all_image(shape, fill, header.as_deref(), wait)
                 .map_err(PyValueError::new_err)
         })
     }
 
-    #[pyo3(signature = (value_id, image, origin, force=false, max_lines=None, wait=false))]
+    #[pyo3(signature = (value_id, image, origin, header=None, force=false, max_lines=None, wait=false))]
     #[allow(clippy::too_many_arguments)]
     fn image_update(
         &self,
@@ -955,18 +1004,21 @@ impl StateServerCore {
         value_id: u64,
         image: PyBuffer<u8>,
         origin: [u32; 2],
+        header: Option<(Bound<PyAny>,)>,
         force: bool,
         max_lines: Option<i64>,
         wait: bool,
     ) -> PyResult<()> {
         let max_lines = pyimage::max_lines(max_lines)?;
+        let (image_val, header_type) = self.inner_image(value_id)?;
+        let header = encode_header(header, header_type)?;
         py.detach(|| {
-            let image_val = self.inner_image(value_id)?;
             let image_data = pyimage::image_data(&image)?;
             image_val
                 .update_image(
                     &[origin[0] as usize, origin[1] as usize],
                     image_data,
+                    header.as_deref(),
                     force,
                     max_lines,
                     wait,
@@ -975,10 +1027,17 @@ impl StateServerCore {
         })
     }
 
+    fn image_set_header(&self, py: Python, value_id: u64, header: &Bound<PyAny>) -> PyResult<()> {
+        let (image, header_type) = self.inner_image(value_id)?;
+        let header = encode_single_header(header, header_type)?;
+        py.detach(|| image.set_header(&header).map_err(PyValueError::new_err))
+    }
+
     // image multi ------------------------------------------------------
     fn image_multi_size(&self, value_id: u64, index: u32) -> PyResult<(usize, usize)> {
         let size = self
             .inner_image_multi(value_id)?
+            .0
             .get_size(index)
             .ok_or_else(|| PyValueError::new_err("ImageMulti index not found."))?;
         Ok((size[0], size[1]))
@@ -990,41 +1049,84 @@ impl StateServerCore {
         value_id: u64,
         index: u32,
     ) -> PyResult<(Bound<'py, PyByteArray>, (usize, usize), usize)> {
-        self.inner_image_multi(value_id)?.get_image(index, |image| {
-            let image =
-                image.ok_or_else(|| PyValueError::new_err("ImageMulti index not found."))?;
-            Ok(pyimage::stored_image(py, image))
-        })
+        self.inner_image_multi(value_id)?
+            .0
+            .get_image(index, |image| {
+                let image =
+                    image.ok_or_else(|| PyValueError::new_err("ImageMulti index not found."))?;
+                Ok(pyimage::stored_image(py, image))
+            })
+    }
+
+    fn image_multi_get_header<'py>(
+        &self,
+        py: Python<'py>,
+        value_id: u64,
+        index: u32,
+    ) -> PyResult<Option<Bound<'py, PyAny>>> {
+        let (images, header_type) = self.inner_image_multi(value_id)?;
+        let header = images.get_image(index, |image| {
+            image
+                .map(|image| Bytes::copy_from_slice(image.header()))
+                .ok_or_else(|| PyValueError::new_err("ImageMulti index not found."))
+        })?;
+        decode_header(py, header, header_type)
+    }
+
+    /// The image of `index` as [`Self::image_multi_get`] returns it and its
+    /// header, read together.
+    #[allow(clippy::type_complexity)]
+    fn image_multi_get_with_header<'py>(
+        &self,
+        py: Python<'py>,
+        value_id: u64,
+        index: u32,
+    ) -> PyResult<(
+        (Bound<'py, PyByteArray>, (usize, usize), usize),
+        Option<Bound<'py, PyAny>>,
+    )> {
+        let (images, header_type) = self.inner_image_multi(value_id)?;
+        let (image, header) = images.get_image(index, |image| {
+            image
+                .map(|image| {
+                    let header = Bytes::copy_from_slice(image.header());
+                    (pyimage::stored_image(py, image), header)
+                })
+                .ok_or_else(|| PyValueError::new_err("ImageMulti index not found."))
+        })?;
+        Ok((image, decode_header(py, header, header_type)?))
     }
 
     #[pyo3(signature = (value_id, index=None))]
     fn image_multi_is_idle(&self, value_id: u64, index: Option<u32>) -> PyResult<bool> {
-        let images = self.inner_image_multi(value_id)?;
+        let images = self.inner_image_multi(value_id)?.0;
         Ok(match index {
             Some(index) => images.is_index_idle(index),
             None => images.is_idle(),
         })
     }
 
-    #[pyo3(signature = (value_id, index, image, wait=false))]
+    #[pyo3(signature = (value_id, index, image, header=None, wait=false))]
     fn image_multi_set(
         &self,
         py: Python,
         value_id: u64,
         index: u32,
         image: PyBuffer<u8>,
+        header: Option<(Bound<PyAny>,)>,
         wait: bool,
     ) -> PyResult<()> {
+        let (images, header_type) = self.inner_image_multi(value_id)?;
+        let header = encode_header(header, header_type)?;
         py.detach(|| {
-            let images = self.inner_image_multi(value_id)?;
             let image_data = pyimage::image_data(&image)?;
             images
-                .set_image(index, image_data, wait)
+                .set_image(index, image_data, header.as_deref(), wait)
                 .map_err(PyValueError::new_err)
         })
     }
 
-    #[pyo3(signature = (value_id, index, shape, color, wait=false))]
+    #[pyo3(signature = (value_id, index, shape, color, header=None, wait=false))]
     #[allow(clippy::too_many_arguments)]
     fn image_multi_set_all(
         &self,
@@ -1033,17 +1135,20 @@ impl StateServerCore {
         index: u32,
         shape: [usize; 2],
         color: &Bound<'_, PyAny>,
+        header: Option<(Bound<PyAny>,)>,
         wait: bool,
     ) -> PyResult<()> {
         let fill = pyimage::image_color(color)?;
+        let (images, header_type) = self.inner_image_multi(value_id)?;
+        let header = encode_header(header, header_type)?;
         py.detach(|| {
-            self.inner_image_multi(value_id)?
-                .set_all_image(index, shape, fill, wait)
+            images
+                .set_all_image(index, shape, fill, header.as_deref(), wait)
                 .map_err(PyValueError::new_err)
         })
     }
 
-    #[pyo3(signature = (value_id, index, image, origin, force=false, max_lines=None, wait=false))]
+    #[pyo3(signature = (value_id, index, image, origin, header=None, force=false, max_lines=None, wait=false))]
     #[allow(clippy::too_many_arguments)]
     fn image_multi_update(
         &self,
@@ -1052,19 +1157,22 @@ impl StateServerCore {
         index: u32,
         image: PyBuffer<u8>,
         origin: [u32; 2],
+        header: Option<(Bound<PyAny>,)>,
         force: bool,
         max_lines: Option<i64>,
         wait: bool,
     ) -> PyResult<()> {
         let max_lines = pyimage::max_lines(max_lines)?;
+        let (images, header_type) = self.inner_image_multi(value_id)?;
+        let header = encode_header(header, header_type)?;
         py.detach(|| {
-            let images = self.inner_image_multi(value_id)?;
             let image_data = pyimage::image_data(&image)?;
             images
                 .update_image(
                     index,
                     &[origin[0] as usize, origin[1] as usize],
                     image_data,
+                    header.as_deref(),
                     force,
                     max_lines,
                     wait,
@@ -1073,9 +1181,26 @@ impl StateServerCore {
         })
     }
 
+    fn image_multi_set_header(
+        &self,
+        py: Python,
+        value_id: u64,
+        index: u32,
+        header: &Bound<PyAny>,
+    ) -> PyResult<()> {
+        let (images, header_type) = self.inner_image_multi(value_id)?;
+        let header = encode_single_header(header, header_type)?;
+        py.detach(|| {
+            images
+                .set_header(index, &header)
+                .map_err(PyValueError::new_err)
+        })
+    }
+
     fn image_multi_remove_index(&self, py: Python, value_id: u64, index: u32) -> PyResult<()> {
         py.detach(|| {
             self.inner_image_multi(value_id)?
+                .0
                 .remove_index(index)
                 .map_err(PyValueError::new_err)
         })
@@ -1084,21 +1209,22 @@ impl StateServerCore {
     fn image_multi_reset(&self, py: Python, value_id: u64) -> PyResult<()> {
         py.detach(|| {
             self.inner_image_multi(value_id)?
+                .0
                 .reset_images()
                 .map_err(PyValueError::new_err)
         })
     }
 
     fn image_multi_len(&self, value_id: u64) -> PyResult<usize> {
-        Ok(self.inner_image_multi(value_id)?.len())
+        Ok(self.inner_image_multi(value_id)?.0.len())
     }
 
     fn image_multi_contains(&self, value_id: u64, index: u32) -> PyResult<bool> {
-        Ok(self.inner_image_multi(value_id)?.contains(index))
+        Ok(self.inner_image_multi(value_id)?.0.contains(index))
     }
 
     fn image_multi_indices(&self, value_id: u64) -> PyResult<Vec<u32>> {
-        Ok(self.inner_image_multi(value_id)?.indices())
+        Ok(self.inner_image_multi(value_id)?.0.indices())
     }
 
     // data -------------------------------------------------------------
@@ -1725,21 +1851,39 @@ impl StateServerCore {
         Ok(value_id)
     }
 
-    fn add_image(&self, name: String, low_priority: bool) -> PyResult<u64> {
+    fn add_image(
+        &self,
+        py: Python,
+        name: String,
+        header: Option<&Bound<PyObjectClass>>,
+        low_priority: bool,
+    ) -> PyResult<u64> {
+        let header = header.map(|header| header.borrow().object_type.clone_py(py));
+        let header_type = header_type(py, header.as_ref())?;
         let value_id = self
             .server
             .write()
-            .add_image(&name, low_priority)
-            .map_err(|e| PyValueError::new_err(format!("Failed to add ValueImage: {}", e)))?;
+            .add_image(&name, header_type, low_priority)
+            .map_err(|e| PyValueError::new_err(format!("Failed to add Image: {}", e)))?;
+        self.keep_header_type(value_id, header);
         Ok(value_id)
     }
 
-    fn add_image_multi(&self, name: String, low_priority: bool) -> PyResult<u64> {
+    fn add_image_multi(
+        &self,
+        py: Python,
+        name: String,
+        header: Option<&Bound<PyObjectClass>>,
+        low_priority: bool,
+    ) -> PyResult<u64> {
+        let header = header.map(|header| header.borrow().object_type.clone_py(py));
+        let header_type = header_type(py, header.as_ref())?;
         let value_id = self
             .server
             .write()
-            .add_image_multi(&name, low_priority)
+            .add_image_multi(&name, header_type, low_priority)
             .map_err(|e| PyValueError::new_err(format!("Failed to add ImageMulti: {}", e)))?;
+        self.keep_header_type(value_id, header);
         Ok(value_id)
     }
 

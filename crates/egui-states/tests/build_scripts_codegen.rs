@@ -523,6 +523,84 @@ fn bindings_carry_data_header_types() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Images with and without headers, one of them low priority.
+#[derive(State)]
+#[allow(dead_code)]
+struct WithImageHeaders {
+    image: Image<GeneratedOuter>,
+    #[state(low_priority)]
+    images: ImageMulti<(u32, String)>,
+    plain: Image,
+}
+
+#[test]
+fn bindings_carry_image_header_types() {
+    let dir = output_dir("with_image_headers", 0);
+    generate_rust::<WithImageHeaders>(&dir).unwrap();
+    generate_python::<WithImageHeaders>(dir.join("python")).unwrap();
+    let rust = std::fs::read_to_string(dir.join("mod.rs")).unwrap();
+    let structs = std::fs::read_to_string(dir.join("structs.rs")).unwrap();
+    for expected in [
+        "pub image: s::Image<structs::GeneratedOuter>,",
+        "pub images: s::ImageMulti<(u32, String)>,",
+        "pub plain: s::Image,",
+        "s::Image::<structs::GeneratedOuter>::new(server, format!(\"{parent}.image\"), false)?",
+        "s::ImageMulti::<(u32, String)>::new(server, format!(\"{parent}.images\"), true)?",
+        "s::Image::new(server, format!(\"{parent}.plain\"), false)?",
+    ] {
+        assert!(rust.contains(expected), "missing {expected} in\n{rust}");
+    }
+    assert!(structs.contains("pub struct GeneratedOuter"));
+
+    let python = std::fs::read_to_string(dir.join("python/__init__.py")).unwrap();
+    for expected in [
+        "self.image: s.ImageWithHeader[structs.GeneratedOuter] = s.ImageWithHeader(",
+        "self.images: s.ImageMultiWithHeader[tuple[int, str]] = s.ImageMultiWithHeader(",
+        ", low_priority=True)",
+        "self.plain: s.Image = s.Image()",
+    ] {
+        assert!(python.contains(expected), "missing {expected} in\n{python}");
+    }
+
+    // A header changes the layout hash; an image without one keeps it.
+    let client =
+        ClientBuilder::<WithImageHeaders>::new(egui::Context::default(), 0).get_version_hash();
+    assert_eq!(
+        generated_hash(&rust, "pub const VERSION_HASH: u64 = "),
+        client
+    );
+    assert_eq!(generated_hash(&python, "VERSION_HASH: int = "), client);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn only_an_image_header_changes_the_layout_hash() {
+    #[derive(State)]
+    #[allow(dead_code)]
+    struct Plain {
+        image: Image,
+        images: ImageMulti,
+    }
+    #[derive(State)]
+    #[allow(dead_code)]
+    struct Headers {
+        image: Image<u32>,
+        images: ImageMulti<u32>,
+    }
+    #[derive(State)]
+    #[allow(dead_code)]
+    struct Unit {
+        image: Image<()>,
+        images: ImageMulti<()>,
+    }
+    fn hash<S: State>() -> u64 {
+        ClientBuilder::<S>::new(egui::Context::default(), 0).get_version_hash()
+    }
+    let (plain, headers, unit) = (hash::<Plain>(), hash::<Headers>(), hash::<Unit>());
+    assert_ne!(plain, headers);
+    assert_eq!(plain, unit);
+}
+
 /// File transfer endpoints with and without metadata.
 #[derive(State)]
 #[allow(dead_code)]

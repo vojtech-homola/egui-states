@@ -5,7 +5,7 @@ use crate::client::client::ClientCore;
 use crate::client::states_creator::ValuesList;
 use crate::file_transfer::TransferLimits;
 use crate::protocol::data::{DataMultiTakeHeader, MultiDataHeader};
-use crate::protocol::image::{ImageHeader, ImageMultiHeader};
+use crate::protocol::image::ImageMultiHeader;
 use crate::protocol::{
     ClientHeader, FRAME_FLUSH_SIZE, FastVec, MAX_MSG_COUNT, MessageData, ServerHeader, serialize,
     serialize_to_data,
@@ -206,7 +206,7 @@ impl MessagesParser {
         let (header, size) = ServerHeader::deserialize(&self.data[self.pointer..])
             .map_err(|_| "Failed to deserialize message header")?;
         self.pointer += size;
-        // A Data header's bytes come first; each part is checked on its own,
+        // A typed header's bytes come first; each part is checked on its own,
         // so their sizes are never added.
         let start = self.pointer;
         self.skip(header.header_len(), header.incomplete())?;
@@ -322,13 +322,7 @@ pub(crate) async fn handle_message(
             }
         },
         ServerHeader::Image(id, header, _) => match vals.image(id) {
-            Some(image) => match header {
-                ImageHeader::Set(set, image_type) => image.set_image(set, image_type, &payload)?,
-                ImageHeader::Update(update, image_type) => {
-                    image.update_image(update, image_type, &payload)?
-                }
-                ImageHeader::Fill(size, rgba) => image.fill_image(size, rgba, &payload)?,
-            },
+            Some(image) => image.apply(header, &payload)?,
             None => {
                 if header.requires_ack() {
                     client.send_ack(id);
@@ -396,14 +390,8 @@ pub(crate) async fn handle_message(
             Some(images) => match header {
                 ImageMultiHeader::Remove(index) => images.remove(index),
                 ImageMultiHeader::Reset => images.reset(),
-                ImageMultiHeader::Modify(index, ImageHeader::Set(set, image_type), _) => {
-                    images.set_image(index, set, image_type, &payload)?
-                }
-                ImageMultiHeader::Modify(index, ImageHeader::Update(update, image_type), _) => {
-                    images.update_image(index, update, image_type, &payload)?
-                }
-                ImageMultiHeader::Modify(index, ImageHeader::Fill(size, rgba), _) => {
-                    images.fill_image(index, size, rgba, &payload)?
+                ImageMultiHeader::Modify(index, header, _) => {
+                    images.apply(index, header, &payload)?
                 }
             },
             None => {
@@ -424,10 +412,11 @@ mod tests {
     use crate::client::client::ClientCore;
     use crate::client::states_creator::StatesCreatorClient;
     use crate::protocol::collections::VecHeader;
+    use crate::protocol::data::HeaderUpdate;
     use crate::protocol::data::{DataHeader, DataTakeHeader};
     use crate::protocol::data::{DataType, TransportType};
     use crate::protocol::image::ImageType;
-    use crate::protocol::image::{ImageSetHeader, ImageUpdateHeader};
+    use crate::protocol::image::{ImageHeader, ImageSetHeader, ImageUpdateHeader};
     use tokio::sync::mpsc::{UnboundedReceiver, error::TryRecvError};
 
     /// Frames that were queued in advance.
@@ -508,7 +497,11 @@ mod tests {
         let headers = [
             ServerHeader::Value(1, 0, u32::MAX),
             ServerHeader::ValueVec(1, 0, VecHeader::Add, u32::MAX),
-            ServerHeader::Image(1, ImageHeader::Fill([1, 1], [0; 4]), u32::MAX),
+            ServerHeader::Image(
+                1,
+                ImageHeader::Fill([1, 1], [0; 4], HeaderUpdate::Keep),
+                u32::MAX,
+            ),
             ServerHeader::Data(
                 1,
                 DataHeader::All(
@@ -649,7 +642,7 @@ mod tests {
     fn missing_image_acks_only_ack_boundaries() {
         assert_ack(
             dispatch_missing((
-                ServerHeader::Image(74, ImageHeader::Fill([1, 1], [0; 4]), 0),
+                ServerHeader::Image(74, ImageHeader::Fill([1, 1], [0; 4], HeaderUpdate::Keep), 0),
                 Bytes::new(),
             )),
             74,
@@ -670,7 +663,11 @@ mod tests {
             dispatch_missing((
                 ServerHeader::ImageMulti(
                     83,
-                    ImageMultiHeader::Modify(7, ImageHeader::Fill([1, 1], [0; 4]), 0),
+                    ImageMultiHeader::Modify(
+                        7,
+                        ImageHeader::Fill([1, 1], [0; 4], HeaderUpdate::Keep),
+                        0,
+                    ),
                 ),
                 Bytes::new(),
             )),
@@ -707,7 +704,10 @@ mod tests {
                 90,
                 ImageMultiHeader::Modify(
                     7,
-                    ImageHeader::Set(ImageSetHeader::All([2, 1]), ImageType::ColorAlpha),
+                    ImageHeader::Set(
+                        ImageSetHeader::All([2, 1], HeaderUpdate::Keep),
+                        ImageType::ColorAlpha,
+                    ),
                     8,
                 ),
             ),
@@ -744,7 +744,10 @@ mod tests {
                 90,
                 ImageMultiHeader::Modify(
                     7,
-                    ImageHeader::Set(ImageSetHeader::All([2, 1]), ImageType::ColorAlpha),
+                    ImageHeader::Set(
+                        ImageSetHeader::All([2, 1], HeaderUpdate::Keep),
+                        ImageType::ColorAlpha,
+                    ),
                     8,
                 ),
             ) => assert_eq!(data.as_ref(), &[1, 2, 3, 4, 5, 6, 7, 8]),
@@ -785,7 +788,10 @@ mod tests {
             91,
             ImageMultiHeader::Modify(
                 3,
-                ImageHeader::Update(ImageUpdateHeader::All([0, 0, 1, 1]), ImageType::GrayAlpha),
+                ImageHeader::Update(
+                    ImageUpdateHeader::All([0, 0, 1, 1], HeaderUpdate::Keep),
+                    ImageType::GrayAlpha,
+                ),
                 2,
             ),
         );

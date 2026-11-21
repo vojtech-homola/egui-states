@@ -53,9 +53,10 @@ on the environment, the clock, or the target platform.
 
 Nest structs deriving `State` to organize larger state trees. Collections,
 numeric buffers, images, custom types, and one-shot transfers are covered in the
-[showcase](example/showcase/README.md). A numeric buffer can carry a typed
-header that describes it, `Data<f32, Meta>`, which the client publishes
-together with the buffer; see [Data headers](docs/architecture.md#data-headers).
+[showcase](example/showcase/README.md). A numeric buffer or an image can carry
+a typed header that describes it, `Data<f32, Meta>` or `Image<Meta>`, which the
+client publishes together with the buffer or pixels; see
+[Data and image headers](docs/architecture.md#data-and-image-headers).
 A `Data` reads as `None` until the server sets it, so an empty buffer differs
 from no data; see [numeric data](docs/architecture.md#numeric-and-image-data).
 

@@ -353,12 +353,16 @@ like any other download. A development server that serves the page must
 forward this path too; the showcase's `Trunk.toml` shows how. Browser uploads
 read `File` objects in slices and travel in the lane like native ones.
 
-## Data headers
+## Data and image headers
 
 A `Data`, `DataMulti`, `DataTake` or `DataMultiTake` can carry a typed header
 next to its buffer: any `Typed` value up to the size of a value (1 MB), for
 example the shape, the axis scale or the units of the numbers. The header type
-is part of the state type, `Data<f32, Meta>`; `Data<f32>` has no header.
+is part of the state type, `Data<f32, Meta>`; `Data<f32>` has no header. An
+`Image` or `ImageMulti` can carry one next to its pixels in the same way,
+`Image<Meta>`, for example a frame number or the pixel size; every key of an
+`ImageMulti` has its own. Images follow the rules for `Data` below, with the
+differences listed at the end.
 
 A state with a header type never holds data without a header. The set that
 creates the data of a `Data` or a `DataMulti` key must carry one, and so must
@@ -385,6 +389,29 @@ acknowledges it, reports the error and keeps its buffer and header. For an
 `Add` or `Replace`, the dropped change leaves the client behind until the next
 complete set or reconnect.
 
+For images:
+
+- The set or fill that creates an image, or a key of an `ImageMulti`, must
+  carry a header.
+- An update can carry a new header. When `max_lines` splits it into parts, the
+  header goes with the first part, and the client shows it together with that
+  part; the later parts keep it. A scan sent line by line, one update per
+  line, passes the header only with the first line of a new frame.
+- A set, a fill and a forced update always send the stored header again. They
+  can drop the waiting parts of an earlier update, and one of those may have
+  carried a new header.
+- A header sent alone waits until the transfers of its image or key are
+  acknowledged, including the waiting parts of a split update, so it never
+  overtakes the pixels sent before it.
+- The client stores the header with the texture, but egui uploads a texture
+  change at the end of the frame being drawn. For that one frame the UI can
+  show the old pixels next to a new header, or the new pixels next to a header
+  read before they arrived. Every change requests a repaint, so the next frame
+  shows them together.
+- A placeholder from `Image::initialize` has no header until the server sends
+  an image; `Image::initialize_with_header` gives it one. Neither replaces an
+  image or header from the server.
+
 ## Repaints and runtimes
 
 The client repaints after every change the server makes; server setters
@@ -408,7 +435,7 @@ WASM clients run their synchronization future on the browser executor.
 
 `Data` transports contiguous primitive numeric buffers (`u8` through `u64`,
 `i8` through `i64`, `f32`, and `f64`) in native-endian representation, with an
-optional typed header (see [Data headers](#data-headers)). This is
+optional typed header (see [Data and image headers](#data-and-image-headers)). This is
 an efficient same-architecture transport; callers should not treat its raw byte
 form as a portable file format.
 

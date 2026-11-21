@@ -16,9 +16,7 @@ use crate::client::messages::MessageSender;
 use crate::client::states::map::MapState;
 use crate::client::states::values::{Signal, Static, StaticAtomic, Value, ValueAtomic, ValueTake};
 use crate::client::states::vec::VecState;
-use crate::client::states_creator::{
-    self, StatesCreator, hash_id, hash_id_kind, hash_id_type, state_path,
-};
+use crate::client::states_creator::{self, StatesCreator, hash_id_type, state_path};
 use crate::file_transfer::engine::{Engine, Side};
 use crate::file_transfer::{TransferMeta, meta_type_id};
 use crate::hashing::StableHasher;
@@ -132,8 +130,10 @@ pub(crate) enum StateType {
     /// bulk states below. A state also has low priority when a substate it
     /// lies in is marked; that is not recorded here, so one substate type has
     /// one definition wherever it is used.
-    Image(String, bool),
-    ImageMulti(String, bool),
+    /// Name, header type (`None` for an image without one) and the low send
+    /// priority mark.
+    Image(String, Option<ObjectType>, bool),
+    ImageMulti(String, Option<ObjectType>, bool),
     ValueMap(String, ObjectType, ObjectType),
     ValueVec(String, ObjectType),
     Signal(String, ObjectType, bool),
@@ -172,8 +172,8 @@ impl StateType {
             Self::Value(name, ..)
             | Self::ValueTake(name, ..)
             | Self::Static(name, ..)
-            | Self::Image(name, _)
-            | Self::ImageMulti(name, _)
+            | Self::Image(name, ..)
+            | Self::ImageMulti(name, ..)
             | Self::ValueMap(name, ..)
             | Self::ValueVec(name, ..)
             | Self::Signal(name, ..)
@@ -404,30 +404,31 @@ impl StatesCreator for StatesCreatorBuild {
         value
     }
 
-    fn image(&mut self, name: &str) -> Image {
+    fn image<H: HeaderValue>(&mut self, name: &str) -> Image<H> {
         let (full_name, id) = state_path(&self.parent, name);
-        hash_id(&mut self.version_hasher, id);
+        states_creator::hash_image::<H>(&mut self.version_hasher, id);
 
         // Codegen only walks the layout, so the handle needs no real context.
         let value = Image::new(full_name, id, self.sender.clone(), egui::Context::default());
 
+        let header = self.header_type::<H>();
         self.states
-            .push(StateType::Image(name.to_owned(), self.low_priority));
+            .push(StateType::Image(name.to_owned(), header, self.low_priority));
 
         value
     }
 
-    fn image_multi(&mut self, name: &str) -> ImageMulti {
+    fn image_multi<H: HeaderValue>(&mut self, name: &str) -> ImageMulti<H> {
         let (full_name, id) = state_path(&self.parent, name);
-        hash_id_kind(
-            &mut self.version_hasher,
-            id,
-            states_creator::IMAGE_MULTI_HASH_ID,
-        );
+        states_creator::hash_image_multi::<H>(&mut self.version_hasher, id);
 
         let value = ImageMulti::new(full_name, id, self.sender.clone(), egui::Context::default());
-        self.states
-            .push(StateType::ImageMulti(name.to_owned(), self.low_priority));
+        let header = self.header_type::<H>();
+        self.states.push(StateType::ImageMulti(
+            name.to_owned(),
+            header,
+            self.low_priority,
+        ));
         value
     }
 

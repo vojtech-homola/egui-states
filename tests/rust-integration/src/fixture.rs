@@ -245,6 +245,36 @@ fn edit_numeric(all: &State) -> s::Result<()> {
 /// Command 34: a full image, partial updates, and sparse images. The first
 /// set returns once the client acknowledged it. The split update finishes
 /// before the remove, which waits for every acknowledgement.
+/// Command 37: typed image headers. The header alone waits for the split
+/// update before it, so the phase follows everything.
+fn edit_image_headers(all: &State) -> s::Result<()> {
+    let gray = s::ImageFormat::Gray;
+    let image = &all.image.framed;
+    image.set_with_header(&[1, 2], [2, 1], gray, &meta(1.0, "frame 1", &[2]), false)?;
+    image.update(&[3], [0, 0], [1, 1], gray, false, None, false)?;
+    image.update_with_header(
+        &[4, 5],
+        [0, 0],
+        [2, 1],
+        gray,
+        &meta(2.0, "frame 2", &[2]),
+        false,
+        Some(1),
+        false,
+    )?;
+    image.set_header(&meta(3.0, "frame 3", &[2]))?;
+    let keys = &all.image.framed_keys;
+    keys.set_with_header(4, &[1], [1, 1], gray, &meta(4.0, "key 4", &[]), false)?;
+    keys.set_all_with_header(
+        5,
+        [1, 1],
+        s::ImageColor::Gray(5),
+        &meta(5.0, "key 5", &[]),
+        false,
+    )?;
+    keys.set_header(5, &meta(5.5, "key 5 renamed", &[]))
+}
+
 fn edit_images(all: &State) -> s::Result<()> {
     let pixels: Vec<u8> = (0..18).collect();
     let image = &all.image.image;
@@ -495,6 +525,10 @@ impl Fixture {
                     35 | 36 => {
                         edit_headers(&all, command)?;
                         st.phase.set(command)?;
+                    }
+                    37 => {
+                        edit_image_headers(&all)?;
+                        st.phase.set(37)?;
                     }
                     40..=43 => {
                         transfers(&all, command, &finished)?;
