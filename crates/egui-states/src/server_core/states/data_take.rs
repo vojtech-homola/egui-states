@@ -9,7 +9,8 @@ use crate::protocol::{FastVec, TRANSFER_CHUNK_SIZE};
 use crate::server_core::error::CoreError;
 use crate::server_core::net::sender::MessageSender;
 use crate::server_core::server::{Acknowledge, SyncTrait};
-use crate::server_core::states::data::{DataSlice, HeaderType, check_data_type};
+use crate::server_core::states::data::{DataSlice, check_data_type};
+use crate::server_core::states::header::HeaderType;
 use crate::server_core::states::scheduler::Scheduler;
 use crate::server_core::transfer::{Chunk, chunk_transfer};
 
@@ -51,7 +52,7 @@ impl DataTake {
             name,
             data_type,
             item_size: data_type.item_size(),
-            header_type: HeaderType::new(header_type),
+            header_type: HeaderType::new("Data", header_type),
             cache: Mutex::new(None),
             scheduler: Scheduler::new(id, sender, connected),
         })
@@ -161,7 +162,7 @@ impl DataMultiTake {
             name,
             data_type,
             item_size: data_type.item_size(),
-            header_type: HeaderType::new(header_type),
+            header_type: HeaderType::new("Data", header_type),
             cache: Mutex::new(NoHashMap::default()),
             scheduler: Scheduler::new(id, sender, connected),
         })

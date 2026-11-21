@@ -127,9 +127,10 @@ pub use client::{
     client::{Client, CloseReason, ConnectionState, DEFAULT_CONNECT_TIMEOUT, Reconnect},
     states::{
         atomics::Atomic,
-        data::{Data, DataMulti, HeaderValue},
+        data::{Data, DataMulti},
         data_take::{DataMultiTake, DataTake},
         file_transfer::{Download, LocalFile, OfferedFile, TransferOffer, Upload},
+        header::HeaderValue,
         image::{Image, ImageMulti},
         initial_value::{InitValue, InitialValue},
         map::MapState,

@@ -6,9 +6,9 @@ use bytes::Bytes;
 use parking_lot::{Mutex, RwLock};
 
 use crate::client::messages::MessageSender;
-use crate::client::states::data::{
-    BatchBuffer, HeaderValue, created_header, decode_header_bytes, elements, header_type_id,
-    private, split_header,
+use crate::client::states::data::{BatchBuffer, elements, private};
+use crate::client::states::header::{
+    HeaderValue, created_header, decode_header_bytes, header_type_id, split_header,
 };
 use crate::hashing::NoHashMap;
 use crate::protocol::data::{DataTakeHeader, DataType, HeaderBytes};

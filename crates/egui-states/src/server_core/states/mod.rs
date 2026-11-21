@@ -2,6 +2,7 @@
 
 pub(crate) mod data;
 pub(crate) mod data_take;
+pub(crate) mod header;
 pub(crate) mod image;
 pub(crate) mod map;
 pub(crate) mod scheduler;

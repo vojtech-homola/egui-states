@@ -5,11 +5,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::State;
 use crate::client::states::atomics::Atomic;
-use crate::client::states::data::{
-    Data, DataMulti, HeaderValue, data_type_hash, private::GetDataType,
-};
+use crate::client::states::data::{Data, DataMulti, data_type_hash, private::GetDataType};
 use crate::client::states::data_take::{DataMultiTake, DataTake};
 use crate::client::states::file_transfer::{Download, Upload};
+use crate::client::states::header::HeaderValue;
 use crate::client::states::image::{Image, ImageMulti};
 use crate::client::states::initial_value::{InitValue, InitialValue};
 

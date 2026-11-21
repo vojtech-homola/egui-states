@@ -4,6 +4,7 @@ pub(crate) mod atomics;
 pub(crate) mod data;
 pub(crate) mod data_take;
 pub(crate) mod file_transfer;
+pub(crate) mod header;
 pub(crate) mod image;
 pub(crate) mod initial_value;
 pub(crate) mod map;

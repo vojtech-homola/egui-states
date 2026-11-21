@@ -9,12 +9,13 @@ use crate::State;
 use crate::client::messages::MessageSender;
 use crate::client::states::atomics::Atomic;
 use crate::client::states::data::{
-    Data, DataMulti, HeaderValue, UpdateData, UpdateMultiData, data_type_hash, private::GetDataType,
+    Data, DataMulti, UpdateData, UpdateMultiData, data_type_hash, private::GetDataType,
 };
 use crate::client::states::data_take::{
     DataMultiTake, DataTake, UpdateDataMultiTake, UpdateDataTake,
 };
 use crate::client::states::file_transfer::{Download, Upload};
+use crate::client::states::header::HeaderValue;
 use crate::client::states::image::{Image, ImageMulti};
 use crate::client::states::initial_value::InitialValue;
 use crate::client::states::map::{MapState, UpdateMap};

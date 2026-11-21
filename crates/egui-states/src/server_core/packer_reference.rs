@@ -214,8 +214,9 @@ mod tests {
     use super::*;
     use crate::protocol::data::{DataType, HeaderBytes, HeaderUpdate, TransportType};
     use crate::protocol::image::{ImageMultiHeader, ImageUpdateHeader};
-    use crate::server_core::states::data::{WireHeader, pack_data_chunked};
+    use crate::server_core::states::data::pack_data_chunked;
     use crate::server_core::states::data_take::pack_data_take_chunked;
+    use crate::server_core::states::header::WireHeader;
     use crate::server_core::states::image::multi as image_multi_core;
     use crate::server_core::states::image::single::{self as image_core, ImageData};
 

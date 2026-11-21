@@ -9,7 +9,8 @@ use crate::client::messages::MessageSender;
 use crate::client::states::data::{Data, UpdateData};
 use crate::protocol::data::{DataHeader, DataType, HeaderUpdate::Keep, TransportType};
 use crate::protocol::image::ImageType;
-use crate::server_core::states::data::{WireHeader, pack_data};
+use crate::server_core::states::data::pack_data;
+use crate::server_core::states::header::WireHeader;
 use crate::server_core::states::image::common::StoredImage;
 use crate::server_core::states::image::single::{ImageData, pack_set_data};
 

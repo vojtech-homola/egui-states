@@ -1,17 +1,15 @@
-use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use parking_lot::RwLock;
 
 use crate::hashing::NoHashMap;
-use crate::protocol::data::{
-    DataHeader, DataType, HeaderBytes, HeaderUpdate, MultiDataHeader, TransportType,
-};
-use crate::protocol::{FastVec, TRANSFER_CHUNK_SIZE, check_value_size};
+use crate::protocol::data::{DataHeader, DataType, MultiDataHeader, TransportType};
+use crate::protocol::{FastVec, TRANSFER_CHUNK_SIZE};
 use crate::server_core::error::CoreError;
 use crate::server_core::net::sender::MessageSender;
 use crate::server_core::server::{Acknowledge, SyncTrait};
+use crate::server_core::states::header::{HeaderType, WireHeader};
 use crate::server_core::states::scheduler::Scheduler;
 use crate::server_core::transfer::{Chunk, chunk_transfer};
 
@@ -23,105 +21,6 @@ pub(crate) struct DataSlice<'a> {
     pub bytes: &'a [u8],
     pub data_type: DataType,
     pub header: Option<&'a [u8]>,
-}
-
-/// The header type of a Data state, if it was registered with one, and the
-/// checks every header given to it passes.
-#[derive(Clone, Copy)]
-pub(crate) struct HeaderType(Option<u32>);
-
-impl HeaderType {
-    pub(crate) fn new(type_id: Option<u32>) -> Self {
-        Self(type_id)
-    }
-
-    /// Checks a header given to state `name`: the state must have a header
-    /// type and the header must fit the value size limit.
-    pub(crate) fn check<'a>(
-        &self,
-        name: &str,
-        header: Option<&'a [u8]>,
-    ) -> Result<Option<&'a [u8]>, String> {
-        let Some(header) = header else {
-            return Ok(None);
-        };
-        if self.0.is_none() {
-            return Err(format!("Data '{name}' was registered without a header"));
-        }
-        check_value_size(format_args!("{name} header"), header.len())?;
-        Ok(Some(header))
-    }
-
-    /// Checks that a change that creates data carries a header: a state with
-    /// a header type never holds data without one. `what` completes the
-    /// error message, such as "to create its data".
-    pub(crate) fn require(
-        &self,
-        name: &str,
-        header: Option<&[u8]>,
-        what: impl fmt::Display,
-    ) -> Result<(), CoreError> {
-        if self.0.is_some() && header.is_none() {
-            return Err(CoreError::invalid_argument(format!(
-                "Data '{name}' needs a header {what}"
-            )));
-        }
-        Ok(())
-    }
-
-    /// The wire form of a checked header, `Keep` without one. A
-    /// synchronization gives the stored header, so a state with a header
-    /// type always says what it is.
-    pub(crate) fn change<'a>(&self, header: Option<&'a [u8]>) -> WireHeader<'a> {
-        match (self.0, header) {
-            (Some(type_id), Some(bytes)) => WireHeader::set(type_id, bytes),
-            _ => WireHeader::KEEP,
-        }
-    }
-
-    /// The wire description of a checked header.
-    pub(crate) fn bytes(&self, header: &[u8]) -> Option<HeaderBytes> {
-        self.0.map(|type_id| HeaderBytes {
-            type_id,
-            size: header.len() as u32,
-        })
-    }
-}
-
-/// A header change as it goes on the wire: the update and the bytes it puts
-/// in front of the elements.
-#[derive(Clone, Copy)]
-pub(crate) struct WireHeader<'a> {
-    pub(crate) update: HeaderUpdate,
-    pub(crate) bytes: &'a [u8],
-}
-
-impl<'a> WireHeader<'a> {
-    pub(crate) const KEEP: Self = Self {
-        update: HeaderUpdate::Keep,
-        bytes: &[],
-    };
-
-    pub(crate) fn set(type_id: u32, bytes: &'a [u8]) -> Self {
-        Self {
-            update: HeaderUpdate::Set(HeaderBytes {
-                type_id,
-                size: bytes.len() as u32,
-            }),
-            bytes,
-        }
-    }
-
-    /// Serializes `header`, which carries this update, followed by the
-    /// header bytes.
-    fn message(
-        &self,
-        header: impl FnOnce() -> Result<FastVec<32>, ()>,
-    ) -> Result<FastVec<32>, String> {
-        let mut message = header().map_err(|_| "Failed to serialize header".to_string())?;
-        message.extend_from_slice(self.bytes);
-        Ok(message)
-    }
 }
 
 /// The data of a [`Data`] or of one [`DataMulti`] key: its elements and its
@@ -199,7 +98,7 @@ impl Data {
             name,
             data_type,
             item_size: data_type.item_size(),
-            header_type: HeaderType::new(header_type),
+            header_type: HeaderType::new("Data", header_type),
             storage: RwLock::new(DataStorage { value: None }),
             scheduler: Scheduler::new(id, sender, connected),
         })
@@ -565,7 +464,7 @@ impl DataMulti {
             name,
             data_type,
             item_size: data_type.item_size(),
-            header_type: HeaderType::new(header_type),
+            header_type: HeaderType::new("Data", header_type),
             storage: RwLock::new(MultiStorage {
                 values: NoHashMap::default(),
             }),

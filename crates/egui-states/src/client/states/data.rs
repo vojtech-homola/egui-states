@@ -6,14 +6,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use bytes::Bytes;
 use parking_lot::{Mutex, RwLock};
 
-use serde::de::DeserializeOwned;
-
 use super::ChangedFlag;
+use super::header::{
+    HeaderValue, Label, created_header, decode_header, decode_header_bytes, header_type_id,
+    split_header,
+};
 use crate::client::messages::{ChannelMessage, MessageSender};
 use crate::hashing::NoHashMap;
-use crate::protocol::data::{DataHeader, DataType, HeaderBytes, HeaderUpdate, TransportType};
-use crate::protocol::{self, VALUE_MAX_SIZE, deserialize};
-use crate::typed::{ObjectType, Typed};
+use crate::protocol::data::{DataHeader, DataType, HeaderUpdate, TransportType};
+use crate::typed::ObjectType;
 
 /// A Data message: its wire header and the payload that followed it.
 pub(crate) type DataMessage = (DataHeader, Bytes);
@@ -248,96 +249,12 @@ fn checked_range(start: u64, count: u64, len: usize) -> Option<std::ops::Range<u
     (end <= len).then_some(start..end)
 }
 
-// Headers -------------------------------------------------------------------
-/// The header type of a Data state: any `Typed` value the server sends with
-/// the buffer, published together with it.
-///
-/// `()` (the default) means the state has no header, and so does any custom
-/// [`Typed`] type whose [`Typed::get_type`] is [`ObjectType::Empty`]; such a
-/// type must decode from no bytes. A state with a header type never holds
-/// data without a header: the server sends one with the change that creates
-/// the data, so the type needs no default.
-pub trait HeaderValue: Typed + DeserializeOwned + Clone + Send + Sync + 'static {}
-
-impl<H> HeaderValue for H where H: Typed + DeserializeOwned + Clone + Send + Sync + 'static {}
-
-/// The type hash a header of `H` carries on the wire, `None` for a state
-/// without a header.
-pub(crate) fn header_type_id<H: HeaderValue>() -> Option<u32> {
-    protocol::data::header_type_id(&H::get_type())
-}
-
 /// The layout hash type id of a Data state of elements `T` with header `H`.
 /// A state without a header keeps the element type's id.
 pub(crate) fn data_type_hash<T: private::GetDataType, H: HeaderValue>() -> u32 {
     match H::get_type() {
         ObjectType::Empty => T::get_type_id(),
         object_type => object_type.get_hash_from(T::get_type_id()),
-    }
-}
-
-/// Splits a payload into its header bytes and its elements. The parser
-/// checked that both lie inside the frame; a shorter payload is an error.
-pub(crate) fn split_header<'a>(
-    payload: &'a [u8],
-    header: u32,
-    name: &str,
-) -> Result<(&'a [u8], &'a [u8]), String> {
-    usize::try_from(header)
-        .ok()
-        .and_then(|header| payload.split_at_checked(header))
-        .ok_or_else(|| format!("Header of Data {name} exceeds its payload"))
-}
-
-/// Decodes the header `bytes` described by `header` for state `name`, whose
-/// header type id is `type_id`.
-pub(crate) fn decode_header_bytes<H: HeaderValue>(
-    type_id: Option<u32>,
-    header: HeaderBytes,
-    bytes: &[u8],
-    name: &str,
-) -> Result<H, String> {
-    let Some(type_id) = type_id else {
-        return Err(format!("Data {name} has no header, but one was received"));
-    };
-    if header.size as usize > VALUE_MAX_SIZE {
-        return Err(format!(
-            "Header of Data {name} is too large: {} bytes, max {VALUE_MAX_SIZE} bytes",
-            header.size
-        ));
-    }
-    if header.type_id != type_id {
-        return Err(format!("Header type id mismatch for Data: {name}"));
-    }
-    deserialize(bytes).map_err(|e| format!("Header parse error: {e} for Data: {name}"))
-}
-
-/// The header of data that a change creates: the one the change carries, or
-/// for a state without a header type the value no bytes encode. A state with
-/// a header type cannot create data without one.
-pub(crate) fn created_header<H: HeaderValue>(
-    type_id: Option<u32>,
-    header: Option<H>,
-    name: &str,
-) -> Result<H, String> {
-    match (header, type_id) {
-        (Some(header), _) => Ok(header),
-        (None, None) => deserialize(&[])
-            .map_err(|e| format!("Header type of Data {name} without a header: {e}")),
-        (None, Some(_)) => Err(format!("Data {name} was created without a header")),
-    }
-}
-
-/// Decodes a header update; `None` keeps the current header.
-fn decode_header<H: HeaderValue>(
-    type_id: Option<u32>,
-    update: HeaderUpdate,
-    bytes: &[u8],
-    name: &str,
-) -> Result<Option<H>, String> {
-    match update {
-        HeaderUpdate::Keep => Ok(None),
-        HeaderUpdate::Set(header) => decode_header_bytes(type_id, header, bytes, name).map(Some),
     }
 }
 
@@ -495,7 +412,7 @@ where
     }
 
     fn decode_header(&self, update: HeaderUpdate, bytes: &[u8]) -> Result<Option<H>, String> {
-        decode_header(self.header_type, update, bytes, &self.name)
+        decode_header(self.header_type, update, bytes, Label("Data", &self.name))
     }
 
     fn not_set(&self, what: &str) -> String {
@@ -509,7 +426,7 @@ where
         header: HeaderUpdate,
     ) -> Result<(), String> {
         self.sender.send(ChannelMessage::Ack(self.id));
-        let (header_bytes, data) = split_header(payload, header.len(), &self.name)?;
+        let (header_bytes, data) = split_header(payload, header.len(), Label("Data", &self.name))?;
         element_count::<T>(data, "Data")?;
         let header = self.decode_header(header, header_bytes)?;
         self.save_data(Payload::Bytes(data), transport_type, header)
@@ -539,7 +456,7 @@ where
     ) -> Result<(), String> {
         self.sender.send(ChannelMessage::Ack(self.id));
 
-        let (header_bytes, data) = split_header(payload, header.len(), &self.name)?;
+        let (header_bytes, data) = split_header(payload, header.len(), Label("Data", &self.name))?;
         match self.buffer.lock().take() {
             Some(buffer) => {
                 let data = buffer.finish(data)?;
@@ -614,7 +531,8 @@ where
                         Some(std::mem::replace(&mut store.data, data))
                     }
                     None => {
-                        let header = created_header(self.header_type, header, &self.name)?;
+                        let header =
+                            created_header(self.header_type, header, Label("Data", &self.name))?;
                         *w = Some(Store { data, header });
                         None
                     }
@@ -702,7 +620,12 @@ where
             DataHeader::Drain(index, count, header) => self.drain(index, count, header, &data),
             DataHeader::Clear(header) => self.clear(header, &data),
             DataHeader::Header(header) => {
-                let header = decode_header_bytes(self.header_type, header, &data, &self.name)?;
+                let header = decode_header_bytes(
+                    self.header_type,
+                    header,
+                    &data,
+                    Label("Data", &self.name),
+                )?;
                 let mut w = self.inner.write();
                 let store = w.as_mut().ok_or_else(|| self.not_set("Header"))?;
                 store.header = header;
@@ -1005,7 +928,7 @@ where
     }
 
     fn decode_header(&self, update: HeaderUpdate, bytes: &[u8]) -> Result<Option<H>, String> {
-        decode_header(self.header_type, update, bytes, &self.name)
+        decode_header(self.header_type, update, bytes, Label("Data", &self.name))
     }
 
     fn set_all(
@@ -1016,7 +939,7 @@ where
         header: HeaderUpdate,
     ) -> Result<(), String> {
         self.sender.send_ack_key(self.id, key);
-        let (header_bytes, data) = split_header(payload, header.len(), &self.name)?;
+        let (header_bytes, data) = split_header(payload, header.len(), Label("Data", &self.name))?;
         element_count::<T>(data, "Data")?;
         let header = self.decode_header(header, header_bytes)?;
         self.save_data(key, Payload::Bytes(data), transport_type, header)
@@ -1047,7 +970,7 @@ where
     ) -> Result<(), String> {
         self.sender.send_ack_key(self.id, key);
 
-        let (header_bytes, data) = split_header(payload, header.len(), &self.name)?;
+        let (header_bytes, data) = split_header(payload, header.len(), Label("Data", &self.name))?;
         match self.buffers.lock().remove(&key) {
             Some(buffer) => {
                 let data = buffer.finish(data)?;
@@ -1106,9 +1029,11 @@ where
                 let data = data.into_vec();
                 let mut w = self.inner.write();
                 let header = match header {
-                    None if !w.headers.contains_key(&key) => {
-                        Some(created_header(self.header_type, None, &self.name)?)
-                    }
+                    None if !w.headers.contains_key(&key) => Some(created_header(
+                        self.header_type,
+                        None,
+                        Label("Data", &self.name),
+                    )?),
                     header => header,
                 };
                 let previous = w.data.insert(key, data);
@@ -1251,7 +1176,12 @@ where
                 }
             }
             DataHeader::Header(header) => {
-                let header = decode_header_bytes(self.header_type, header, &data, &self.name)?;
+                let header = decode_header_bytes(
+                    self.header_type,
+                    header,
+                    &data,
+                    Label("Data", &self.name),
+                )?;
                 let mut w = self.inner.write();
                 if !w.data.contains_key(&index) {
                     return Err(self.missing_key(index, "Header"));
@@ -1840,7 +1770,9 @@ mod malformed_tests {
 mod header_tests {
     use super::*;
     use crate::client::messages::{ChannelMessage, MessagesParser};
-    use crate::protocol::ServerHeader;
+    use crate::protocol::data::HeaderBytes;
+    use crate::protocol::{ServerHeader, VALUE_MAX_SIZE};
+    use crate::typed::Typed;
     use tokio::sync::mpsc::{UnboundedReceiver, error::TryRecvError};
 
     type Meta = (u32, String);
