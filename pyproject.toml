@@ -29,6 +29,7 @@ preview = true
 [tool.ruff.lint]
 select = ["E", "F", "W", "D", "N", "PL", "UP", "NPY"]
 pydocstyle.convention = "google"
+pylint.max-returns = 10
 
 unfixable = [
     "F401", # unused-imports
@@ -128,4 +129,4 @@ commit_preprocessors = [
 ]
 
 [tool.pytest]
-testpaths = ["tests/python"]
+testpaths = ["tests/python", "example/tests/python"]
