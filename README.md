@@ -62,10 +62,9 @@ from no data; see [numeric data](docs/architecture.md#numeric-and-image-data).
 
 Custom structs and enums are marked `#[egui_states::typed]`. An enum can carry
 data in its variants, such as commands with parameters sent in order through
-one `#[state(queue)] Signal<Command>`. In Python, its unit variants are
-constants, its variants with named fields frozen dataclasses and its tuple
-variants tuples, all read with `match`; see
-[enums with data](docs/architecture.md#enums-with-data).
+one `#[state(queue)] Signal<Command>`. In Python, each variant is a frozen
+dataclass, created as `Command.Stop()` or `Command.MoveTo(x=1.0, y=2.0)` and
+read with `match`; see [enums with data](docs/architecture.md#enums-with-data).
 
 A large image or buffer delays the states the server sends after it. Mark it
 `#[state(low_priority)]`, or a substate to mark every image and buffer inside

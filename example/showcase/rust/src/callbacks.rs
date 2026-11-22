@@ -54,6 +54,7 @@ pub fn register_callbacks(server: &StatesServer) -> Vec<s::CallbackHandle> {
     let handled = std::sync::atomic::AtomicU32::new(0);
     callbacks.push(states.commands.command.connect(move |command| {
         use crate::bindings::enums::{Command, Status};
+        use crate::bindings::structs::HandledCommand;
 
         let count = handled.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
         println!("command {count}: {command:?}");
@@ -64,12 +65,29 @@ pub fn register_callbacks(server: &StatesServer) -> Vec<s::CallbackHandle> {
                 Status::Failed(format!("gain {gain:.2} is above 2"))
             }
             Command::SetGain(_) | Command::Mark(..) | Command::Choose(_) => Status::Handled(count),
+            // A struct inside an `Option` inside the variant.
+            Command::Load {
+                path,
+                summary: None,
+            } => Status::Failed(format!("{path} has no summary")),
+            Command::Load {
+                path,
+                summary: Some(summary),
+            } => {
+                println!("load {path}: {}, level {}", summary.name, summary.level);
+                Status::Handled(count)
+            }
+            // An enum with data inside the variant.
+            Command::Report(status) => status.clone(),
         };
         let result = (|| -> s::Result<()> {
             if commands.history.len() >= 8 {
                 commands.history.remove_item(0)?;
             }
-            commands.history.add_item(command)?;
+            commands.history.add_item(HandledCommand {
+                command,
+                status: status.clone(),
+            })?;
             commands.status.set(status)
         })();
         if let Err(error) = result {

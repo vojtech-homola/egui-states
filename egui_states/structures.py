@@ -3,8 +3,6 @@
 
 from __future__ import annotations
 
-import dataclasses
-import operator
 import os
 from abc import ABC, abstractmethod
 from collections.abc import Buffer, Callable, Iterator, Sequence
@@ -56,96 +54,28 @@ class _CustomStruct:
 class _CustomEnum:
     """Base class of a generated enum with data.
 
-    Each variant is a subclass: a unit variant is one constant, a variant with
-    named fields a frozen dataclass, and a tuple variant a ``tuple`` whose
-    equality includes the variant. The generated ``enums.pyi`` describes the
-    variants to type checkers.
+    The class is only a namespace. Each variant is a frozen dataclass nested
+    in it, created as ``Command.Stop()``, ``Command.MoveTo(x=1.0, y=2.0)`` or
+    ``Command.SetGain(0.5)``, and ``Command.Type`` is the union of the
+    variants: the type of a value.
     """
 
     __slots__ = ()
 
+    def __init__(self) -> None:
+        name = type(self).__qualname__
+        raise TypeError(f"{name} is a namespace of variants, not a value; create one of its variants")
 
-def _variant_namespace(enum: type[_CustomEnum], name: str) -> dict[str, Any]:
-    return {"__slots__": (), "__module__": enum.__module__, "__qualname__": f"{enum.__qualname__}.{name}"}
 
+class _TupleVariant:
+    """Base class of a generated tuple variant, whose fields are ``_0``, ``_1``, ..."""
 
-class _UnitVariant:
     __slots__ = ()
+    __match_args__: tuple[str, ...]
 
     def __repr__(self) -> str:
-        return type(self).__qualname__
-
-    def __eq__(self, other: object) -> bool:
-        return type(other) is type(self)
-
-    def __hash__(self) -> int:
-        return hash(type(self))
-
-    def __copy__(self) -> Any:
-        return self
-
-    def __deepcopy__(self, memo: dict[int, Any]) -> Any:
-        return self
-
-    def __reduce__(self) -> str:
-        # Pickled by its qualified name, so unpickling returns the constant.
-        return type(self).__qualname__
-
-
-def _unit_variant(enum: type[_CustomEnum], name: str) -> Any:
-    """Creates the constant of a unit variant of a generated enum with data."""
-    variant = type(name, (_UnitVariant, enum), _variant_namespace(enum, name))
-    return variant()
-
-
-def _named_variant(
-    enum: type[_CustomEnum], name: str, fields: tuple[str, ...], wire_names: dict[str, str] | None = None
-) -> type:
-    """Creates the frozen dataclass of a variant with named fields."""
-    namespace = {"__egui_names__": wire_names} if wire_names else {}
-    variant = dataclasses.make_dataclass(
-        name, list(fields), bases=(enum,), namespace=namespace, frozen=True, slots=True, module=enum.__module__
-    )
-    variant.__qualname__ = f"{enum.__qualname__}.{name}"
-    return variant
-
-
-class _TupleVariant(tuple):
-    __slots__ = ()
-    _size: int
-
-    def __new__(cls, *values: Any) -> Any:
-        if len(values) != cls._size:
-            msg = f"{cls.__qualname__}() takes {cls._size} positional arguments but {len(values)} were given"
-            raise TypeError(msg)
-        return super().__new__(cls, values)
-
-    def __getnewargs__(self) -> tuple[Any, ...]:
-        return tuple(self)
-
-    def __eq__(self, other: object) -> bool:
-        return type(other) is type(self) and tuple.__eq__(self, other)
-
-    def __ne__(self, other: object) -> bool:
-        return not self == other
-
-    def __hash__(self) -> int:
-        return hash((type(self), tuple(self)))
-
-    def __repr__(self) -> str:
-        # `map` is the protocol type descriptor here, not the builtin.
-        return f"{type(self).__qualname__}({', '.join(repr(value) for value in self)})"
-
-
-def _tuple_variant(enum: type[_CustomEnum], name: str, size: int) -> type:
-    """Creates the ``tuple`` subclass of a tuple variant with ``size`` fields."""
-    names = tuple(f"_{index}" for index in range(size))
-    namespace = _variant_namespace(enum, name)
-    namespace["_size"] = size
-    namespace["__match_args__"] = names
-    for index, field in enumerate(names):
-        namespace[field] = property(operator.itemgetter(index))
-    return type(name, (_TupleVariant, enum), namespace)
+        fields = ", ".join(repr(getattr(self, field)) for field in self.__match_args__)
+        return f"{type(self).__qualname__}({fields})"
 
 
 class ISubStates(ABC):
@@ -2700,6 +2630,7 @@ __all__ = [
     "ImageColor",
     "_CustomStruct",
     "_CustomEnum",
+    "_TupleVariant",
     "PyObjectType",
     "UNSET",
 ]

@@ -85,14 +85,14 @@ def all_commands():
     from egui_states_test_bindings.structs import TestStruct2  # ty: ignore[import-not-found]
 
     return [
-        TestCommand.Stop,
+        TestCommand.Stop(),
         TestCommand.MoveTo(1.5, -2.5),
         TestCommand.SetGain(0.25),
         TestCommand.Pair(-3, "pair"),
         TestCommand.Choose(TestEnum.C),
         TestCommand.Load("a.tif", TestStruct2(True, 7, "seven")),
         TestCommand.Report(TestStatus.Busy(0.5)),
-        TestCommand.None_,
+        TestCommand.None_(),
         TestCommand.Keyword(255),
     ]
 
@@ -105,16 +105,16 @@ def set_data_enums(states):
     e = states.data_enums
     e.command.set(TestCommand.Pair(-1, "server"))
     e.fixed.set(TestCommand.Report(TestStatus.Failed("fixed")))
-    e.job.set(TestJob("server", TestStatus.Idle))
+    e.job.set(TestJob("server", TestStatus.Idle()))
     e.optional.set(None)
     e.list.set(all_commands())
     e.table.set({1: TestStatus.Busy(0.75)})
     e.data.set(np.array([1, 2], dtype=np.uint8), header=TestCommand.Load("data.bin", None))
     e.data_multi[3].set(np.array([4], dtype=np.uint8), header=TestCommand.Choose(TestEnum.B))
     e.image.set(np.array([[1], [2]], dtype=np.uint8), header=TestCommand.MoveTo(0.5, 1.5))
-    e.images[2].set(np.array([[3]], dtype=np.uint8), header=TestCommand.None_)
+    e.images[2].set(np.array([[3]], dtype=np.uint8), header=TestCommand.None_())
     e.take.set(TestCommand.Keyword(9))
-    e.data_take.set(np.array([5], dtype=np.uint8), header=TestCommand.Stop)
+    e.data_take.set(np.array([5], dtype=np.uint8), header=TestCommand.Stop())
     e.data_multi_take[6].set(np.array([6], dtype=np.uint8), header=TestCommand.SetGain(6.0))
     meta = TestCommand.Report(TestStatus.Busy(1.0))
     sent = e.download.send_bytes(b"enum", "enum.bin", meta=meta)
@@ -131,7 +131,7 @@ def check_data_enums(states, commands, uploads):
     assert e.optional.get() == TestStatus.Busy(0.125)
     wait_until(lambda: len(commands) == len(all_commands()) and len(uploads) == 1)
     assert commands == all_commands()
-    assert commands[0] is TestCommand.Stop
+    assert commands[0] == TestCommand.Stop()
     assert uploads == [TestCommand.Pair(2, "up")]
 
 

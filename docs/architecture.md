@@ -447,26 +447,45 @@ pub enum Command {
   can start a `Value` or `Static` from any variant, which both generators
   emit.
 
-In Python, a fieldless enum stays an `IntEnum`. An enum with data is a class,
-and each variant a subclass of it, so `isinstance(c, Command)` holds for every
-variant:
+In Python, a fieldless enum stays an `IntEnum`. An enum with data is a class
+that only holds its variants: each variant is a frozen dataclass nested in it,
+and `Command.Type` is the union of them, the type of a value.
 
-- A unit variant is one constant, `Command.Stop`, matched as
-  `case Command.Stop:`. A received value is that same object, so
-  `c is Command.Stop` works too.
-- A variant with named fields is a frozen dataclass:
-  `Command.MoveTo(x=1.0, y=2.0)`, `c.x`, `case Command.MoveTo(x=x, y=y):`.
-- A tuple variant is a `tuple`: `Command.Mark(1, "a")`, `c[0]`,
-  `number, text = c`, `case Command.Mark(number, text):`. Its equality and
-  hash include the variant, so it never equals a plain tuple or another
-  variant with the same fields.
+```python
+def on_command(command: Command.Type) -> None:
+    match command:
+        case Command.Stop():
+            ...
+        case Command.MoveTo(x=x, y=y):
+            ...
+        case Command.SetGain(gain) if gain > 2:
+            ...
+        case Command.SetGain() | Command.Mark():
+            ...
+        case _:
+            assert_never(command)
+```
 
-Every value can be a dict key. A variant or field name that is a Python keyword
-gets an underscore (`Command.None_`, `from_`). The generated `enums.py` builds
-the variant classes at runtime, which a module cannot write as classes nested
-in their own base; the generated `enums.pyi` stub describes them as nested
-classes, so type checkers see `Command.MoveTo` with typed fields and
-constructor arguments.
+- All three kinds of variant are created by a call: `Command.Stop()`,
+  `Command.MoveTo(x=1.0, y=2.0)`, `Command.Mark(1, "a")`. Two values are equal
+  when they are the same variant with equal fields, so a unit variant is
+  compared with `==`, not `is`.
+- A unit variant needs its parentheses in a `case` too. `case Command.Stop:`
+  compares the value with the class and never matches. Passing the class as a
+  value, `set(Command.Stop)`, raises a `TypeError` that names the fix.
+- A variant with named fields has them as attributes, `c.x`. A tuple variant
+  is read by position in a `case`; it is not a `tuple`, so it has no length
+  and no index.
+- Because the type is a union, a type checker knows every variant: with
+  `typing.assert_never` in the last `case`, it reports a `match` that misses
+  one, as the Rust compiler does. `Command` itself is not the type of a value
+  and has no values, so `isinstance(c, Command)` does not hold; test a variant,
+  `isinstance(c, Command.MoveTo)`.
+
+A value can be a dict key when its fields are hashable, which a struct is not.
+A variant or field name that is a Python keyword gets an underscore
+(`Command.None_`, `from_`), and so does a variant called `Type`, which makes
+way for the union.
 
 ## Repaints and runtimes
 

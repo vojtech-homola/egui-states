@@ -263,7 +263,6 @@ fn all_files(dir: &std::path::Path) -> Vec<Vec<u8>> {
         "python/__init__.py",
         "python/structs.py",
         "python/enums.py",
-        "python/enums.pyi",
     ]
     .into_iter()
     .map(|file| std::fs::read(dir.join(file)).unwrap())
@@ -271,7 +270,7 @@ fn all_files(dir: &std::path::Path) -> Vec<Vec<u8>> {
 }
 
 #[test]
-fn unchanged_generation_preserves_old_timestamps_for_all_seven_files() {
+fn unchanged_generation_preserves_old_timestamps_for_all_six_files() {
     let dir = output_dir("mtime", 0);
     generate(&dir);
     let before = all_files(&dir);
@@ -282,7 +281,6 @@ fn unchanged_generation_preserves_old_timestamps_for_all_seven_files() {
         "python/__init__.py",
         "python/structs.py",
         "python/enums.py",
-        "python/enums.pyi",
     ]
     .into_iter()
     .map(|file| dir.join(file))
@@ -575,8 +573,9 @@ fn bindings_carry_image_header_types() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// An enum with data: a unit variant, named fields with a struct, and
-/// tuple variants with a fieldless enum and with two fields.
+/// An enum with data: a unit variant, named fields with a struct, tuple
+/// variants with a fieldless enum and with two fields, and a variant whose
+/// name Python uses for the union of the variants.
 #[egui_states::typed(rust_derive(Debug, PartialEq))]
 #[derive(Clone, Default, PartialEq, egui_states::InitialValue)]
 enum GeneratedCommand {
@@ -588,6 +587,7 @@ enum GeneratedCommand {
     },
     Wrap(GeneratedEnum),
     Pair(u8, String),
+    Type,
 }
 
 #[derive(State)]
@@ -623,46 +623,42 @@ fn bindings_carry_enums_with_data() {
         "    MoveTo {\n        /// Generated `x` field.\n        x: f32,\n        /// Generated `inner` field.\n        inner: super::structs::GeneratedInner,\n    },",
         "    Wrap(GeneratedEnum),",
         "    Pair(u8, String),",
+        "    Type,\n",
         "pub enum GeneratedEnum {",
     ] {
         assert!(enums.contains(expected), "missing {expected} in\n{enums}");
     }
 
-    let (python, module, stub) = (
-        read("python/__init__.py"),
-        read("python/enums.py"),
-        read("python/enums.pyi"),
-    );
+    let (python, module) = (read("python/__init__.py"), read("python/enums.py"));
+    assert!(!dir.join("python/enums.pyi").exists());
+    // A value is annotated with the union of the variants, and a unit variant
+    // is created like the others.
     for expected in [
-        "s.Value[enums.GeneratedCommand](0, enums.GeneratedCommand.MoveTo(0.5, structs.GeneratedInner(True)))",
-        "s.Static[enums.GeneratedCommand](0, enums.GeneratedCommand.Pair(3, \"three\"))",
-        "self.commands: s.Signal[enums.GeneratedCommand] = s.Signal[enums.GeneratedCommand](0, True)",
-        "s.DataWithHeader[np.uint8, enums.GeneratedCommand]",
-        "s.denu(enums.GeneratedCommand, [s.vunit(\"Stop\", enums.GeneratedCommand.Stop), s.vnamed(\"MoveTo\", [s.f32, s.cl([s.bo], structs.GeneratedInner)], enums.GeneratedCommand.MoveTo), s.vtuple(\"Wrap\", [s.enu(enums.GeneratedEnum)], enums.GeneratedCommand.Wrap), s.vtuple(\"Pair\", [s.u8, s.st], enums.GeneratedCommand.Pair)])",
+        "s.Value[enums.GeneratedCommand.Type](0, enums.GeneratedCommand.MoveTo(0.5, structs.GeneratedInner(True)))",
+        "s.Static[enums.GeneratedCommand.Type](0, enums.GeneratedCommand.Pair(3, \"three\"))",
+        "self.commands: s.Signal[enums.GeneratedCommand.Type] = s.Signal[enums.GeneratedCommand.Type](0, True)",
+        "s.DataWithHeader[np.uint8, enums.GeneratedCommand.Type]",
+        "s.denu(enums.GeneratedCommand, [s.vunit(\"Stop\", enums.GeneratedCommand.Stop), s.vnamed(\"MoveTo\", [s.f32, s.cl([s.bo], structs.GeneratedInner)], enums.GeneratedCommand.MoveTo), s.vtuple(\"Wrap\", [s.enu(enums.GeneratedEnum)], enums.GeneratedCommand.Wrap), s.vtuple(\"Pair\", [s.u8, s.st], enums.GeneratedCommand.Pair), s.vunit(\"Type\", enums.GeneratedCommand.Type_)])",
     ] {
         assert!(python.contains(expected), "missing {expected} in\n{python}");
     }
+    // Every variant is a frozen dataclass nested in the enum; the variant
+    // `Type` makes way for the union of the variants.
     for expected in [
+        "from __future__ import annotations\n",
         "class GeneratedEnum(IntEnum):",
         "class GeneratedCommand(s._CustomEnum):",
-        "GeneratedCommand.Stop = s._unit_variant(GeneratedCommand, \"Stop\")",
-        "GeneratedCommand.MoveTo = s._named_variant(GeneratedCommand, \"MoveTo\", (\"x\", \"inner\"))",
-        "GeneratedCommand.Wrap = s._tuple_variant(GeneratedCommand, \"Wrap\", 1)",
-        "GeneratedCommand.Pair = s._tuple_variant(GeneratedCommand, \"Pair\", 2)",
+        "    @final\n    @dataclass(frozen=True, slots=True)\n    class Stop:\n        \"\"\"Protocol variant ``GeneratedCommand.Stop``.\"\"\"\n\n    @final",
+        "    @dataclass(frozen=True, slots=True)\n    class MoveTo:\n",
+        "        x: float\n        inner: structs.GeneratedInner\n",
+        "    @dataclass(frozen=True, slots=True, repr=False)\n    class Wrap(s._TupleVariant):\n",
+        "        _0: GeneratedEnum\n",
+        "    class Pair(s._TupleVariant):\n",
+        "        _0: int\n        _1: str\n",
+        "    class Type_:\n",
+        "    type Type = Stop | MoveTo | Wrap | Pair | Type_\n",
     ] {
         assert!(module.contains(expected), "missing {expected} in\n{module}");
-    }
-    for expected in [
-        "class GeneratedEnum(IntEnum):",
-        "    class _Stop(GeneratedCommand):",
-        "    Stop: ClassVar[_Stop]",
-        "    @dataclass(frozen=True)\n    class MoveTo(GeneratedCommand):",
-        "        x: float\n        inner: structs.GeneratedInner",
-        "    class Wrap(GeneratedCommand, tuple[GeneratedEnum]):",
-        "        def __new__(cls, _0: int, _1: str, /) -> Self: ...",
-        "        def _1(self) -> str: ...",
-    ] {
-        assert!(stub.contains(expected), "missing {expected} in\n{stub}");
     }
 
     let client =
@@ -952,4 +948,27 @@ impl State for EscapedNameCollision {
 )]
 fn an_escaped_name_that_collides_is_rejected() {
     let _ = generate_python::<EscapedNameCollision>(output_dir("escaped_collision", 0));
+}
+
+/// `Type` is spelled `Type_` in Python, which this enum already uses.
+#[egui_states::typed]
+#[derive(Clone, Default, PartialEq, egui_states::InitialValue)]
+#[allow(non_camel_case_types)]
+enum CollidingVariants {
+    #[default]
+    Type,
+    Type_,
+    Data(u8),
+}
+
+#[derive(State)]
+#[allow(dead_code)]
+struct WithCollidingVariants {
+    value: Value<CollidingVariants>,
+}
+
+#[test]
+#[should_panic(expected = "CollidingVariants: two variants have the Python name `Type_`")]
+fn a_variant_that_collides_with_an_escaped_one_is_rejected() {
+    let _ = generate_python::<WithCollidingVariants>(output_dir("variant_collision", 0));
 }

@@ -5,11 +5,12 @@ from collections.abc import Callable
 from pathlib import Path
 import signal
 import threading
+from typing import assert_never
 
 import numpy as np
 from showcase_bindings import ShowcaseState, StatesServer
 from showcase_bindings.enums import Command, PrimaryChoice, SecondaryChoice, Status
-from showcase_bindings.structs import ImageInfo, Measurement, Point, SampleInfo, Summary
+from showcase_bindings.structs import HandledCommand, ImageInfo, Measurement, Point, SampleInfo, Summary
 from egui_states import LogLevel, TransferError, TransferHandle, TransferOffer, TransferStatus
 
 PORT = 8091
@@ -124,28 +125,47 @@ def register_callbacks(server: StatesServer) -> None:  # noqa: PLR0915
 
     handled = 0
 
-    def on_command(command: Command) -> None:
-        # One queued signal keeps the commands in order; `match` reads each
-        # variant's fields.
+    def on_command(command: Command.Type) -> None:
+        # One queued signal keeps the commands in order. `match` reads each
+        # variant's fields, and with `assert_never` a type checker reports a
+        # variant that has no `case`.
         nonlocal handled
         handled += 1
         print(f"command {handled}: {command}")
+        status: Status.Type
         match command:
-            case Command.Stop:
-                status = Status.Idle
+            case Command.Stop():
+                status = Status.Idle()
             case Command.MoveTo(x=x, y=y):
                 status = Status.At(x, y)
             case Command.SetGain(gain) if gain > 2:
                 status = Status.Failed(f"gain {gain:.2f} is above 2")
+            case Command.SetGain():
+                status = Status.Handled(handled)
             case Command.Mark(number, text):
                 print(f"mark {number}: {text}")
                 status = Status.Handled(handled)
-            case _:
+            case Command.Choose(choice):
+                print(f"chosen {choice.name}")
                 status = Status.Handled(handled)
+            # A struct inside an `Option` inside the variant. A type checker
+            # counts a variant as handled only by a `case` that takes any
+            # value of its fields, so the `None` is tested inside.
+            case Command.Load(path=path, summary=summary):
+                if summary is None:
+                    status = Status.Failed(f"{path} has no summary")
+                else:
+                    print(f"load {path}: {summary.name}, level {summary.level}")
+                    status = Status.Handled(handled)
+            # An enum with data inside the variant.
+            case Command.Report(reported):
+                status = reported
+            case _:
+                assert_never(command)
         history = states.commands.history
         if len(history) >= 8:
             del history[0]
-        history.add_item(command)
+        history.add_item(HandledCommand(command, status))
         states.commands.status.set(status)
 
     states.commands.command.connect(on_command)

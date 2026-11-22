@@ -1,5 +1,5 @@
 use crate::state::commands::{Command, Status};
-use crate::state::sections::PrimaryChoice;
+use crate::state::sections::{PrimaryChoice, Summary};
 
 use super::{ViewState, helpers::primary_choice_label};
 
@@ -11,6 +11,9 @@ pub(super) struct CommandInputs {
     mark: u32,
     text: String,
     choice: PrimaryChoice,
+    path: String,
+    with_summary: bool,
+    level: u16,
 }
 
 impl Default for CommandInputs {
@@ -22,6 +25,9 @@ impl Default for CommandInputs {
             mark: 0,
             text: "note".to_string(),
             choice: PrimaryChoice::B,
+            path: "sample.tif".to_string(),
+            with_summary: true,
+            level: 3,
         }
     }
 }
@@ -75,13 +81,53 @@ pub(super) fn show_commands(ui: &mut egui::Ui, state: &mut ViewState) {
                 send.push(Command::Choose(inputs.choice));
             }
         });
-        if ui.button("send all five at once").clicked() {
+        ui.horizontal(|ui| {
+            ui.add(egui::TextEdit::singleline(&mut inputs.path).desired_width(120.0));
+            ui.checkbox(&mut inputs.with_summary, "summary");
+            ui.add_enabled(
+                inputs.with_summary,
+                egui::DragValue::new(&mut inputs.level).prefix("level "),
+            );
+            if ui.button("Load { path, summary }").clicked() {
+                send.push(Command::Load {
+                    path: inputs.path.clone(),
+                    summary: inputs.with_summary.then(|| Summary {
+                        enabled: true,
+                        level: inputs.level,
+                        name: inputs.text.clone(),
+                    }),
+                });
+            }
+        });
+        ui.label("The server fails a load without a summary.");
+        ui.horizontal(|ui| {
+            ui.label("Report(status):");
+            if ui.button("Idle").clicked() {
+                send.push(Command::Report(Status::Idle));
+            }
+            if ui.button("At { x, y }").clicked() {
+                send.push(Command::Report(Status::At {
+                    x: inputs.x,
+                    y: inputs.y,
+                }));
+            }
+            if ui.button("Failed(text)").clicked() {
+                send.push(Command::Report(Status::Failed(inputs.text.clone())));
+            }
+        });
+        ui.label("The server answers a report with the status it carries.");
+        if ui.button("send all seven at once").clicked() {
             inputs.mark += 1;
             send.extend([
                 Command::MoveTo { x: 5.0, y: 5.0 },
                 Command::SetGain(0.5),
                 Command::Mark(inputs.mark, "burst".to_string()),
                 Command::Choose(PrimaryChoice::C),
+                Command::Load {
+                    path: "burst.tif".to_string(),
+                    summary: None,
+                },
+                Command::Report(Status::Failed("burst".to_string())),
                 Command::Stop,
             ]);
         }
@@ -94,13 +140,17 @@ pub(super) fn show_commands(ui: &mut egui::Ui, state: &mut ViewState) {
             "Static<Status>: root.commands.status = {}",
             describe_status(&c.status.get())
         ));
-        ui.label("VecState<Command>: root.commands.history, newest last");
+        ui.label("VecState<HandledCommand>: root.commands.history, newest last");
         c.history.read(|history| {
             if history.is_empty() {
                 ui.label("no command yet");
             }
-            for command in history {
-                ui.label(describe_command(command));
+            for handled in history {
+                ui.label(format!(
+                    "{} -> {}",
+                    describe_command(&handled.command),
+                    describe_status(&handled.status)
+                ));
             }
         });
 
@@ -123,6 +173,14 @@ fn describe_command(command: &Command) -> String {
         Command::SetGain(gain) => format!("SetGain({gain:.2})"),
         Command::Mark(number, text) => format!("Mark({number}, {text:?})"),
         Command::Choose(choice) => format!("Choose({})", primary_choice_label(*choice)),
+        Command::Load { path, summary } => match summary {
+            Some(summary) => format!(
+                "Load {{ path: {path:?}, summary: Some({}, level {}) }}",
+                summary.name, summary.level
+            ),
+            None => format!("Load {{ path: {path:?}, summary: None }}"),
+        },
+        Command::Report(status) => format!("Report({})", describe_status(status)),
     }
 }
 
