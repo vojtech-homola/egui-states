@@ -228,6 +228,8 @@ def edit_collections(states):
     items.set_item(1, 60)
     items.add_item(8)
     items.remove_item(0)
+    items.insert_item(1, 61)
+    items.insert_item(0, 59)
     mapping = states.value_map.items
     mapping.set({1: 10, 2: 20})
     mapping.set_item(3, 30)

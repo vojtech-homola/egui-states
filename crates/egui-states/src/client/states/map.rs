@@ -58,6 +58,16 @@ where
         self.changed.take()
     }
 
+    /// Returns the number of entries, without copying them.
+    pub fn len(&self) -> usize {
+        self.dict.read().len()
+    }
+
+    /// Returns whether the map holds no entries.
+    pub fn is_empty(&self) -> bool {
+        self.dict.read().is_empty()
+    }
+
     /// Returns a copy of the complete map.
     #[inline]
     pub fn get(&self) -> HashMap<K, V> {

@@ -302,6 +302,7 @@ mod tests {
                 VecHeader::Begin(0),
                 VecHeader::Chunk(0),
                 VecHeader::End(0),
+                VecHeader::Insert(0),
             ],
         );
         assert_tags(

@@ -758,6 +758,15 @@ impl StateServerCore {
         Ok(py_value)
     }
 
+    fn list_insert_item(&self, value_id: u64, index: isize, item: &Bound<PyAny>) -> PyResult<()> {
+        let (list, value_type) = self.inner_vec(value_id)?;
+        let index = insert_index(index, list.len())?;
+        let mut creator = ValueCreator::new();
+        pyparsing::serialize_py(item, value_type, &mut creator)?;
+        let data = creator.finalize();
+        list.insert_item(index, data).map_err(list_error)
+    }
+
     fn list_append_item(&self, value_id: u64, item: &Bound<PyAny>) -> PyResult<()> {
         let (list, value_type) = self.inner_vec(value_id)?;
         let mut creator = ValueCreator::new();
@@ -2125,6 +2134,21 @@ fn list_index(index: isize, len: usize) -> PyResult<usize> {
         .ok_or_else(|| PyIndexError::new_err("list index out of range"))
 }
 
+/// Resolves the position of an insert into a list of `len` items, which may
+/// be `len` itself; a negative index counts from the end, as for
+/// `list.insert`, but an index out of range is an `IndexError` instead of
+/// being clamped, as for the other `Vec` operations.
+fn insert_index(index: isize, len: usize) -> PyResult<usize> {
+    let resolved = if index < 0 {
+        len.checked_sub(index.unsigned_abs())
+    } else {
+        Some(index.unsigned_abs())
+    };
+    resolved
+        .filter(|&index| index <= len)
+        .ok_or_else(|| PyIndexError::new_err("list index out of range"))
+}
+
 #[cfg(test)]
 mod tests {
     use std::net::{Ipv4Addr, TcpListener, TcpStream};
@@ -2153,6 +2177,22 @@ mod tests {
             (isize::MAX, 3, None),
         ] {
             assert_eq!(list_index(index, len).ok(), expected, "{index} of {len}");
+        }
+    }
+
+    #[test]
+    fn insert_positions_include_the_end() {
+        for (index, len, expected) in [
+            (0, 0, Some(0)),
+            (1, 0, None),
+            (3, 3, Some(3)),
+            (4, 3, None),
+            (-1, 3, Some(2)),
+            (-3, 3, Some(0)),
+            (-4, 3, None),
+            (isize::MIN, 3, None),
+        ] {
+            assert_eq!(insert_index(index, len).ok(), expected, "{index} of {len}");
         }
     }
 

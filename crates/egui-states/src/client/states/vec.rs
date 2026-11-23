@@ -61,6 +61,16 @@ impl<T: Typed + Clone> VecState<T> {
         self.changed.take()
     }
 
+    /// Returns the number of items, without copying them.
+    pub fn len(&self) -> usize {
+        self.list.read().len()
+    }
+
+    /// Returns whether the vector holds no items.
+    pub fn is_empty(&self) -> bool {
+        self.list.read().is_empty()
+    }
+
     /// Returns a copy of the complete vector.
     pub fn get(&self) -> Vec<T> {
         self.list.read().clone()
@@ -163,6 +173,16 @@ impl<T: for<'a> Deserialize<'a> + Send + Sync> UpdateList for VecState<T> {
                     list.remove(idx);
                 }
             }
+            VecHeader::Insert(idx) => {
+                let value: T = deserialize(data).map_err(|e| {
+                    format!("Error deserializing list item for {}: {}", self.name, e)
+                })?;
+                let mut list = self.list.write();
+                let idx = idx as usize;
+                if idx <= list.len() {
+                    list.insert(idx, value);
+                }
+            }
         }
         if changes {
             self.changed.mark();
@@ -222,6 +242,22 @@ mod tests {
         assert_eq!(list.get_item(3), None);
         list.update_list(TYPE_ID, VecHeader::All(0), &[]).unwrap();
         assert!(list.get().is_empty());
+    }
+
+    #[test]
+    fn insert_shifts_the_later_items_and_counts_without_copying() {
+        let list = list(&[1, 2, 3]);
+        list.update_list(TYPE_ID, VecHeader::Insert(1), &items(&[9]))
+            .unwrap();
+        list.update_list(TYPE_ID, VecHeader::Insert(4), &items(&[7]))
+            .unwrap();
+        // An index the client does not have changes nothing.
+        list.update_list(TYPE_ID, VecHeader::Insert(9), &items(&[0]))
+            .unwrap();
+        assert_eq!(list.get(), [1, 9, 2, 3, 7]);
+        assert_eq!((list.len(), list.is_empty()), (5, false));
+        list.update_list(TYPE_ID, VecHeader::All(0), &[]).unwrap();
+        assert_eq!((list.len(), list.is_empty()), (0, true));
     }
 
     /// Every change readers can see is reported once, a chunk only with its

@@ -26,6 +26,8 @@ pub(crate) enum VecHeader {
     Begin(u64),
     Chunk(u64),
     End(u64),
+    /// Inserts the item at the index, shifting the later items.
+    Insert(u64),
 }
 
 /// Position of one message in a whole-collection replacement.

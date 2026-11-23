@@ -678,7 +678,8 @@ fn collections_wire(state: &State) {
     let s = &state.integration;
     s.command.set(32u32);
     phase(s, 32);
-    assert_eq!(state.value_vec.items.get(), [60, 7, 8]);
+    assert_eq!(state.value_vec.items.get(), [59, 60, 61, 7, 8]);
+    assert_eq!(state.value_vec.items.len(), 5);
     assert_eq!(
         state.value_map.items.get(),
         std::collections::HashMap::from([(1, 11), (3, 30)])

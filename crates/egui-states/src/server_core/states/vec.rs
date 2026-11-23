@@ -128,6 +128,29 @@ impl ValueList {
         Ok(value)
     }
 
+    /// Inserts `value` at `idx`, which may be the length to append.
+    pub(crate) fn insert_item(&self, idx: usize, value: Bytes) -> Result<(), String> {
+        check_value_size(&self.name, value.len())?;
+
+        let mut w = self.list.write();
+        if idx > w.len() {
+            return Err("Index out of bounds".to_string());
+        }
+        if self.connected.load(Ordering::Acquire) {
+            let header = ServerHeader::ValueVec(
+                self.id,
+                self.type_id,
+                VecHeader::Insert(idx as u64),
+                value.len() as u32,
+            );
+            let mut message = serialize(&header).map_err(|_| "Serialization error")?;
+            message.extend_from_slice(&value);
+            self.sender.send(message);
+        }
+        w.insert(idx, value);
+        Ok(())
+    }
+
     pub(crate) fn append_item(&self, value: Bytes) -> Result<(), String> {
         check_value_size(&self.name, value.len())?;
 
@@ -179,6 +202,37 @@ mod tests {
             messages.push((kind, count, message.len()));
         }
         messages
+    }
+
+    #[test]
+    fn insert_sends_only_the_new_item() {
+        let (sender, mut receiver) = MessageSender::new();
+        let list = ValueList::new(
+            "root.list".into(),
+            7,
+            3,
+            sender,
+            Arc::new(AtomicBool::new(true)),
+        );
+        let item = |byte: u8| Bytes::from(vec![byte]);
+        list.set(vec![item(1), item(3)]).unwrap();
+        let _ = sent(&mut receiver);
+
+        list.insert_item(1, item(2)).unwrap();
+        list.insert_item(3, item(4)).unwrap();
+        assert!(list.insert_item(5, item(9)).is_err());
+        assert_eq!(list.get(), [item(1), item(2), item(3), item(4)]);
+
+        let mut inserts = Vec::new();
+        while let Ok(Some((message, _))) = receiver.try_recv() {
+            let message = message.into_bytes();
+            let (header, used) = deserialize_value::<ServerHeader>(&message).unwrap();
+            let ServerHeader::ValueVec(7, 3, VecHeader::Insert(index), 1) = header else {
+                panic!("not an insert of one byte");
+            };
+            inserts.push((index, message[used]));
+        }
+        assert_eq!(inserts, [(1, 2), (3, 4)]);
     }
 
     #[test]

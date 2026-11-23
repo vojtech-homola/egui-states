@@ -1206,6 +1206,23 @@ class Vec[T](_StaticBase):
         """
         return self._server.list_del_item(self._value_id, idx)
 
+    def insert_item(self, idx: int, value: T) -> None:
+        """Insert the item into the UI list before the item at ``idx``.
+
+        Only the new item is sent to the client.
+
+        Args:
+            idx (int): The position of the new item, up to the length to
+                append; a negative index counts from the end, as for
+                ``list.insert``.
+            value (T): The value of the item.
+
+        Raises:
+            IndexError: If the index is out of range. Unlike
+                ``list.insert``, an index past either end is not clamped.
+        """
+        self._server.list_insert_item(self._value_id, idx, value)
+
     def add_item(self, value: T) -> None:
         """Add the item to the UI list.
 

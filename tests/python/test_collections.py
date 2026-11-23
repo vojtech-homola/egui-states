@@ -152,3 +152,21 @@ def test_map_behaves_like_a_dict(local_bundle):
         del mapping[3]
     del mapping[1]
     assert mapping.get() == {2: 200}
+
+
+def test_vector_insert_matches_list_insert_within_range(local_bundle):
+    """Insert like ``list.insert`` and reject a position past either end."""
+    _, states, _ = local_bundle
+    values = states.value_vec.items
+    for before in ([], [10], [10, 20, 30]):
+        for index in range(-len(before), len(before) + 1):
+            values.set(before)
+            expected = list(before)
+            expected.insert(index, 99)
+            values.insert_item(index, 99)
+            assert values.get() == expected, (before, index)
+        for bad in (-len(before) - 1, len(before) + 1):
+            values.set(before)
+            with pytest.raises(IndexError):
+                values.insert_item(bad, 99)
+            assert values.get() == before

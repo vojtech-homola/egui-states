@@ -182,7 +182,10 @@ connection is dropped on both sides.
 
 A whole-collection replacement of a `VecState` or `MapState` larger than one
 message is split at item boundaries and applied on the client only after its
-last part arrives. These parts need no acknowledgement.
+last part arrives. These parts need no acknowledgement. Every other change of
+a collection sends one item: a `VecState` sets, appends, inserts or removes
+the item at an index, which the client applies in the same order, and a
+`MapState` sets or removes one key.
 
 An image update is applied on the client once, like a set, unless `max_lines`
 splits its rectangle into parts of at most that many rows from the top. Each

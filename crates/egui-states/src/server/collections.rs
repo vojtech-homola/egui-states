@@ -60,6 +60,20 @@ where
             .map_err(ServerError::new)
     }
 
+    /// Inserts an item at `index`, shifting the later items; `index` may be
+    /// the length, which appends. Only the item is sent to the client.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `index` is greater than the length or
+    /// serialization fails.
+    pub fn insert_item(&self, index: usize, value: T) -> Result<()> {
+        let data = serialize_bytes(&value)?;
+        self.inner
+            .insert_item(index, data)
+            .map_err(ServerError::new)
+    }
+
     /// Appends an item.
     pub fn add_item(&self, value: T) -> Result<()> {
         let data = serialize_bytes(&value)?;
