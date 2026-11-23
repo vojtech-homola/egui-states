@@ -66,7 +66,7 @@ where
     }
 
     /// Replaces the value, emitting callbacks when `set_signal` is true.
-    pub fn set_with_signal(&self, value: T, set_signal: bool) -> Result<()> {
+    fn set_with_signal(&self, value: T, set_signal: bool) -> Result<()> {
         let data = serialize_bytes(&value)?;
         self.inner.set(data, set_signal).map_err(ServerError::new)
     }
