@@ -59,6 +59,10 @@ client publishes together with the buffer or pixels; see
 [Data and image headers](docs/architecture.md#data-and-image-headers).
 A `Data` reads as `None` until the server sets it, so an empty buffer differs
 from no data; see [numeric data](docs/architecture.md#numeric-and-image-data).
+The client draws an image with nearest-neighbor filtering, which keeps
+zoomed-in pixels sharp; `set_texture_options` on an `Image` or `ImageMulti`
+changes that, for example to `egui::TextureOptions::LINEAR`, from the next
+image the server sends.
 
 Custom structs and enums are marked `#[egui_states::typed]`. An enum can carry
 data in its variants, such as commands with parameters sent in order through

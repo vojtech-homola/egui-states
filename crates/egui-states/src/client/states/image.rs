@@ -25,12 +25,8 @@ type Texture = (TextureHandle, [usize; 2]);
 /// placeholder without one.
 type Shown<H> = (Texture, Option<H>);
 
-const TEXTURE_OPTIONS: egui::TextureOptions = egui::TextureOptions {
-    magnification: egui::TextureFilter::Nearest,
-    minification: egui::TextureFilter::Nearest,
-    wrap_mode: egui::TextureWrapMode::ClampToEdge,
-    mipmap_mode: None,
-};
+/// How a texture is sampled until `set_texture_options` changes it.
+const DEFAULT_TEXTURE_OPTIONS: egui::TextureOptions = egui::TextureOptions::NEAREST;
 
 /// The receive task's side of an [`Image`] of any header type.
 pub(crate) trait UpdateImage: Send + Sync {
@@ -60,8 +56,9 @@ pub(crate) trait UpdateImageMulti: Send + Sync {
 ///
 /// The texture is created in the client's egui context when the first complete
 /// image arrives from the server, or earlier with a placeholder from
-/// [`Self::initialize`]; until then the getters return `None`. It uses
-/// nearest-neighbor filtering and clamps sampling at its edges.
+/// [`Self::initialize`]; until then the getters return `None`. By default it
+/// uses nearest-neighbor filtering and clamps sampling at its edges; see
+/// [`Self::set_texture_options`].
 ///
 /// A header that arrives with an image or an update is stored together with
 /// the pixels it describes, so a reader never sees the new header with the
@@ -77,6 +74,7 @@ pub struct Image<H = ()> {
     sender: MessageSender,
     texture: Arc<RwLock<Option<Shown<H>>>>,
     buffer: Arc<Mutex<Option<PartialImage>>>,
+    options: Arc<Mutex<egui::TextureOptions>>,
 }
 
 impl<H: HeaderValue> Image<H> {
@@ -94,7 +92,35 @@ impl<H: HeaderValue> Image<H> {
             sender,
             texture: Arc::new(RwLock::new(None)),
             buffer: Arc::new(Mutex::new(None)),
+            options: Arc::new(Mutex::new(DEFAULT_TEXTURE_OPTIONS)),
         }
+    }
+
+    /// Sets how the texture is sampled when it is drawn larger or smaller
+    /// than its pixels, and at its edges. The default is
+    /// [`egui::TextureOptions::NEAREST`]: every screen pixel shows the
+    /// nearest image pixel, so zoomed-in pixels stay sharp, but a large image
+    /// drawn much smaller skips pixels. [`egui::TextureOptions::LINEAR`]
+    /// blends neighboring pixels instead.
+    ///
+    /// The options apply from the next image the server sends, a complete
+    /// one or an update, and to a placeholder created afterwards; until
+    /// then an existing texture keeps its options, since the client keeps
+    /// no copy of the pixels to upload again. Call it before connecting to
+    /// cover the first image. The options are shared by every clone of this
+    /// handle.
+    ///
+    /// egui's `wgpu` renderer, eframe's default, ignores
+    /// [`egui::TextureOptions::mipmap_mode`]; the `glow` renderer generates
+    /// the mipmaps.
+    pub fn set_texture_options(&mut self, options: egui::TextureOptions) {
+        *self.options.lock() = options;
+    }
+
+    /// Returns the options the next texture upload uses; see
+    /// [`Self::set_texture_options`].
+    pub fn texture_options(&self) -> egui::TextureOptions {
+        *self.options.lock()
     }
 
     /// Returns the texture identifier and `[width, height]`, if the texture
@@ -216,7 +242,7 @@ impl<H: HeaderValue> Image<H> {
         match texture.as_mut() {
             Some(((texture_handle, saved_size), current)) => {
                 *saved_size = image.size;
-                texture_handle.set(image, TEXTURE_OPTIONS);
+                texture_handle.set(image, self.texture_options());
                 if header.is_some() {
                     *current = header;
                 }
@@ -229,7 +255,8 @@ impl<H: HeaderValue> Image<H> {
     fn create_texture(&self, image: ColorImage) -> Texture {
         let size = image.size;
         let name = format!("image_{}", self.id);
-        (load_texture(&self.context, name, image), size)
+        let options = self.texture_options();
+        (load_texture(&self.context, name, image, options), size)
     }
 
     pub(crate) fn set_image(
@@ -350,7 +377,13 @@ impl<H: HeaderValue> Image<H> {
         let ((texture_handle, saved_size), current) =
             texture.as_mut().ok_or_else(|| self.no_texture())?;
         check_update(*saved_size, &self.name, origin, image.size)?;
-        put_update(texture_handle, *saved_size, origin, image);
+        put_update(
+            texture_handle,
+            *saved_size,
+            origin,
+            image,
+            self.texture_options(),
+        );
         if header.is_some() {
             *current = header;
         }
@@ -426,6 +459,7 @@ impl<H> Clone for Image<H> {
             sender: self.sender.clone(),
             texture: self.texture.clone(),
             buffer: self.buffer.clone(),
+            options: self.options.clone(),
         }
     }
 }
@@ -438,8 +472,8 @@ impl<H> Clone for Image<H> {
 /// memory limits may be smaller.
 ///
 /// A complete image received for an absent key creates its texture in the
-/// client's egui context. Textures use nearest-neighbor filtering and clamp
-/// sampling at their edges. A key's header is stored together with its
+/// client's egui context. By default textures use nearest-neighbor filtering
+/// and clamp sampling at their edges; see [`Self::set_texture_options`]. A key's header is stored together with its
 /// pixels, as for [`Image`], including the one frame egui may show the old
 /// pixels with a new header.
 pub struct ImageMulti<H = ()> {
@@ -450,6 +484,7 @@ pub struct ImageMulti<H = ()> {
     images: Arc<RwLock<NoHashMap<u32, (Texture, H)>>>,
     buffers: Arc<Mutex<NoHashMap<u32, PartialImage>>>,
     sender: MessageSender,
+    options: Arc<Mutex<egui::TextureOptions>>,
 }
 
 impl<H: HeaderValue> ImageMulti<H> {
@@ -467,7 +502,25 @@ impl<H: HeaderValue> ImageMulti<H> {
             images: Arc::new(RwLock::new(NoHashMap::default())),
             buffers: Arc::new(Mutex::new(NoHashMap::default())),
             sender,
+            options: Arc::new(Mutex::new(DEFAULT_TEXTURE_OPTIONS)),
         }
+    }
+
+    /// Sets how the textures of every key are sampled, as
+    /// [`Image::set_texture_options`] does for one image.
+    ///
+    /// The options apply to each key from the next image the server sends
+    /// for it, a complete one or an update, and to every key created
+    /// afterwards; until then a key keeps its options. Call it before
+    /// connecting to cover the first images.
+    pub fn set_texture_options(&mut self, options: egui::TextureOptions) {
+        *self.options.lock() = options;
+    }
+
+    /// Returns the options the next texture upload uses; see
+    /// [`Self::set_texture_options`].
+    pub fn texture_options(&self) -> egui::TextureOptions {
+        *self.options.lock()
     }
 
     /// Returns the texture identifier and `[width, height]` for `index`, if
@@ -672,7 +725,7 @@ impl<H: HeaderValue> ImageMulti<H> {
             .get_mut(&index)
             .ok_or_else(|| self.not_found(index))?;
         check_update(*saved_size, &self.label(index), origin, image.size)?;
-        put_update(texture, *saved_size, origin, image);
+        put_update(texture, *saved_size, origin, image, self.texture_options());
         if let Some(header) = header {
             *current = header;
         }
@@ -727,8 +780,9 @@ impl<H: HeaderValue> ImageMulti<H> {
         checked_image_bytes(image.size, 4)?;
         let mut images = self.images.write();
         let size = image.size;
+        let options = self.texture_options();
         if let Some(((texture, saved_size), current)) = images.get_mut(&index) {
-            texture.set(image, TEXTURE_OPTIONS);
+            texture.set(image, options);
             *saved_size = size;
             if let Some(header) = header {
                 *current = header;
@@ -738,7 +792,7 @@ impl<H: HeaderValue> ImageMulti<H> {
 
         let header = created_header(self.header_type, header, self.label(index))?;
         let name = format!("image_multi_{}_{}", self.id, index);
-        let texture = load_texture(&self.context, name, image);
+        let texture = load_texture(&self.context, name, image, options);
         images.insert(index, ((texture, size), header));
         Ok(())
     }
@@ -794,6 +848,7 @@ impl<H> Clone for ImageMulti<H> {
             images: self.images.clone(),
             buffers: self.buffers.clone(),
             sender: self.sender.clone(),
+            options: self.options.clone(),
         }
     }
 }
@@ -805,11 +860,16 @@ impl<H> Clone for ImageMulti<H> {
 /// first frame has reported the renderer's limit (egui assumes 2048 until
 /// then), so the assertion could reject images the renderer accepts. Replacing
 /// the image of an existing texture has no such assertion either.
-fn load_texture(context: &egui::Context, name: String, image: ColorImage) -> TextureHandle {
+fn load_texture(
+    context: &egui::Context,
+    name: String,
+    image: ColorImage,
+    options: egui::TextureOptions,
+) -> TextureHandle {
     let manager = context.tex_manager();
     let id = manager
         .write()
-        .alloc(name, ImageData::Color(Arc::new(image)), TEXTURE_OPTIONS);
+        .alloc(name, ImageData::Color(Arc::new(image)), options);
     TextureHandle::new(manager, id)
 }
 
@@ -917,11 +977,12 @@ fn put_update(
     texture_size: [usize; 2],
     origin: [usize; 2],
     image: ColorImage,
+    options: egui::TextureOptions,
 ) {
     if texture_size == image.size && origin == [0, 0] {
-        texture.set(image, TEXTURE_OPTIONS);
+        texture.set(image, options);
     } else {
-        texture.set_partial(origin, image, TEXTURE_OPTIONS);
+        texture.set_partial(origin, image, options);
     }
 }
 
@@ -1119,6 +1180,71 @@ mod tests {
             assert_eq!(images.get(7), multi_before);
             assert!(crate::test_support::texture_updates(&context).is_empty());
         }
+    }
+
+    /// The options each upload of an image texture used since the last
+    /// call; egui's own font texture is left out.
+    fn uploaded_options(context: &egui::Context) -> Vec<egui::TextureOptions> {
+        let mut uploads: Vec<_> = crate::test_support::texture_updates(context)
+            .into_iter()
+            .filter(|(id, _)| *id != egui::TextureId::default())
+            .flat_map(|(_, deltas)| deltas)
+            .map(|delta| delta.options)
+            .collect();
+        uploads.dedup();
+        uploads
+    }
+
+    /// Options start as nearest, apply from the next upload of an existing
+    /// texture, a complete image or an update, and to textures created
+    /// afterwards, and are shared by clones.
+    #[test]
+    fn texture_options_apply_from_the_next_upload() {
+        let linear = egui::TextureOptions::LINEAR;
+        let context = egui::Context::default();
+        let (sender, _receiver) = MessageSender::new();
+        let mut image = Image::<()>::new("image".into(), 1, sender, context.clone());
+        let (sender, _receiver) = MessageSender::new();
+        let mut images = ImageMulti::<()>::new("images".into(), 2, sender, context.clone());
+        let gray = |pixels: &[u8]| pixels.to_vec();
+        let set = ImageSetHeader::All([1, 1], HeaderUpdate::Keep);
+        let update = ImageUpdateHeader::All([0, 0, 1, 1], HeaderUpdate::Keep);
+
+        assert_eq!(image.texture_options(), egui::TextureOptions::NEAREST);
+        image.set_image(set, ImageType::Gray, &gray(&[1])).unwrap();
+        images
+            .set_image(7, set, ImageType::Gray, &gray(&[1]))
+            .unwrap();
+        assert_eq!(uploaded_options(&context), [egui::TextureOptions::NEAREST]);
+
+        // Changing them leaves the textures alone until their next upload.
+        image.set_texture_options(linear);
+        images.set_texture_options(linear);
+        assert!(uploaded_options(&context).is_empty());
+        assert_eq!(image.clone().texture_options(), linear);
+
+        image
+            .update_image(update, ImageType::Gray, &gray(&[2]))
+            .unwrap();
+        assert_eq!(uploaded_options(&context), [linear]);
+        images
+            .update_image(7, update, ImageType::Gray, &gray(&[2]))
+            .unwrap();
+        assert_eq!(uploaded_options(&context), [linear]);
+        images
+            .set_image(8, set, ImageType::Gray, &gray(&[3]))
+            .unwrap();
+        image.set_image(set, ImageType::Gray, &gray(&[3])).unwrap();
+        assert_eq!(uploaded_options(&context), [linear]);
+
+        // A placeholder made after the change uses it too.
+        let (sender, _receiver) = MessageSender::new();
+        let mut placeholder = Image::<()>::new("placeholder".into(), 3, sender, context.clone());
+        placeholder.set_texture_options(linear);
+        placeholder
+            .initialize(ColorImage::filled([1, 1], egui::Color32::BLACK))
+            .unwrap();
+        assert_eq!(uploaded_options(&context), [linear]);
     }
 
     #[test]
