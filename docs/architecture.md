@@ -130,7 +130,11 @@ Signals and signaled `Value` changes use one of two server-side modes:
   hand-written `State`, preserves every change and delivers them in order.
 
 The mode is set in the state definition and passed to the server by the
-generated bindings; the client type is the same in both modes.
+generated bindings; the client type is the same in both modes. Server code can
+switch it at runtime with `signal_set_to_queue` and `signal_set_to_single`,
+which override the definition until the next switch. Switching to single mode
+keeps only the newest of the queued changes. Server events (logging, connect,
+disconnect, client messages) and transfer endpoints always stay in queue mode.
 
 Callbacks for different states may run concurrently when the server has more
 than one signal worker. A callback handle owns its registration; dropping the

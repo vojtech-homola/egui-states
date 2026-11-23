@@ -111,13 +111,17 @@ class _SignalBase(_CallbackBase):
 
         Changes for one state are delivered in order. Callbacks for different
         states may still run concurrently when multiple workers are configured.
+        The state definition sets the starting mode (``#[state(queue)]``); this
+        overrides it until the next switch. Changes already pending are kept.
         """
         self._server.signal_set_to_queue(self._value_id)
 
     def signal_set_to_single(self) -> None:
         """Coalesce pending signaled changes to the latest value.
 
-        This is the default mode.
+        The state definition sets the starting mode, single unless the field
+        is marked ``#[state(queue)]``; this overrides it until the next switch.
+        Of the changes already queued, only the newest is delivered.
         """
         self._server.signal_set_to_single(self._value_id)
 

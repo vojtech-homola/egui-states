@@ -73,12 +73,21 @@ where
 }
 
 impl<T> Value<T> {
-    /// Switches callback delivery to queue mode.
+    /// Switches callback delivery to queue mode: every change is kept and
+    /// delivered in order.
+    ///
+    /// The state definition sets the starting mode (`#[state(queue)]`); this
+    /// overrides it until the next switch. Changes already pending are kept.
     pub fn signal_set_to_queue(&self) {
         self.server.set_signal_to_queue(self.id);
     }
 
-    /// Switches callback delivery to coalescing single mode.
+    /// Switches callback delivery to single mode: pending changes coalesce to
+    /// the latest one.
+    ///
+    /// The state definition sets the starting mode (`#[state(queue)]`); this
+    /// overrides it until the next switch. Of the changes already queued, only
+    /// the newest is delivered.
     pub fn signal_set_to_single(&self) {
         self.server.set_signal_to_single(self.id);
     }
@@ -234,12 +243,21 @@ where
 }
 
 impl<T> Signal<T> {
-    /// Switches callback delivery to queue mode.
+    /// Switches callback delivery to queue mode: every change is kept and
+    /// delivered in order.
+    ///
+    /// The state definition sets the starting mode (`#[state(queue)]`); this
+    /// overrides it until the next switch. Changes already pending are kept.
     pub fn signal_set_to_queue(&self) {
         self.server.set_signal_to_queue(self.id);
     }
 
-    /// Switches callback delivery to coalescing single mode.
+    /// Switches callback delivery to single mode: pending changes coalesce to
+    /// the latest one.
+    ///
+    /// The state definition sets the starting mode (`#[state(queue)]`); this
+    /// overrides it until the next switch. Of the changes already queued, only
+    /// the newest is delivered.
     pub fn signal_set_to_single(&self) {
         self.server.set_signal_to_single(self.id);
     }

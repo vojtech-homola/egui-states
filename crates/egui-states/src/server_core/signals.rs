@@ -139,6 +139,19 @@ impl ChangedInner {
         }
     }
 
+    /// Drops the pending changes of `id` and keeps its mode: an empty queue
+    /// is what records queue mode, so a queue is emptied, not removed.
+    fn drop_pending(&mut self, id: u64) {
+        if let Entry::Occupied(mut e) = self.values.entry(id) {
+            match e.get_mut() {
+                Signal::Queue(queue) => queue.clear(),
+                Signal::Single(_) => {
+                    e.remove();
+                }
+            }
+        }
+    }
+
     /// Ends the delivery `id` was blocked for.
     fn release(&mut self, id: u64) {
         self.blocked_list.remove(&id);
@@ -177,7 +190,7 @@ impl ChangedInner {
             self.indexes.remove(pos);
 
             let Some(&wants_previous) = self.registered.get(&id) else {
-                self.values.remove(&id);
+                self.drop_pending(id);
                 continue;
             };
 
@@ -214,6 +227,10 @@ impl ChangedInner {
     }
 
     fn set_to_single(&mut self, id: u64) {
+        // Server events and transfer endpoints report every event, in order.
+        if id <= MAX_RESERVED_ID || self.persistent.contains(&id) {
+            return;
+        }
         if let Some(signal) = self.values.remove(&id) {
             let res = match signal {
                 Signal::Single(v) => Some(v),
@@ -436,10 +453,7 @@ impl SignalsManager {
         } else {
             let mut w = self.values.lock();
             w.registered.remove(&id);
-            if let Some(Signal::Queue(mut q)) = w.values.remove(&id) {
-                q.clear();
-                w.values.insert(id, Signal::Queue(q));
-            }
+            w.drop_pending(id);
             w.indexes.retain(|queued_id| *queued_id != id);
         }
     }
@@ -747,6 +761,74 @@ mod tests {
         let (id, value, _) = next(&manager, Some(24));
         assert_eq!((id, value), (24, b("second")));
         assert!(manager.values.lock().get(Some(24)).is_none());
+    }
+
+    #[test]
+    fn unregistering_keeps_queue_mode() {
+        let manager = SignalsManager::new();
+        manager.set_register(25, true, false);
+        manager.set_to_queue(25);
+        manager.set(25, b("dropped"));
+        manager.set_register(25, false, false);
+        manager.set_register(25, true, false);
+
+        manager.set(25, b("first"));
+        manager.set(25, b("second"));
+        let (id, value, _) = next(&manager, None);
+        assert_eq!((id, value), (25, b("first")));
+        let (id, value, _) = next(&manager, Some(25));
+        assert_eq!((id, value), (25, b("second")));
+    }
+
+    /// `get` meets a scheduled id that is no longer registered only if the
+    /// schedule and the registrations drift apart; it then drops the pending
+    /// changes and still keeps queue mode.
+    #[test]
+    fn a_scheduled_id_without_registration_keeps_queue_mode() {
+        let manager = SignalsManager::new();
+        manager.set_register(27, true, false);
+        manager.set_to_queue(27);
+        manager.set(27, b("dropped"));
+        manager.values.lock().registered.remove(&27);
+        assert!(manager.try_claim(None).is_none());
+
+        manager.set_register(27, true, false);
+        manager.set(27, b("first"));
+        manager.set(27, b("second"));
+        let (id, value, _) = next(&manager, None);
+        assert_eq!((id, value), (27, b("first")));
+        let (id, value, _) = next(&manager, Some(27));
+        assert_eq!((id, value), (27, b("second")));
+    }
+
+    #[test]
+    fn server_events_and_persistent_ids_stay_queued() {
+        let manager = SignalsManager::new();
+        manager.set_register(LOGGING_ID, true, false);
+        manager.set_register(30, true, false);
+        manager.set_persistent(30);
+        manager.set(LOGGING_ID, b("log 1"));
+        manager.set(LOGGING_ID, b("log 2"));
+        manager.set(30, b("event 1"));
+        manager.set(30, b("event 2"));
+        manager.set_to_single(LOGGING_ID);
+        manager.set_to_single(30);
+
+        let mut delivered = Vec::new();
+        let mut last = None;
+        while let Some((id, value, _)) = manager.try_claim(last) {
+            delivered.push((id, value));
+            last = Some(id);
+        }
+        assert_eq!(
+            delivered,
+            [
+                (LOGGING_ID, b("log 1")),
+                (LOGGING_ID, b("log 2")),
+                (30, b("event 1")),
+                (30, b("event 2")),
+            ]
+        );
     }
 
     /// A client streaming changes to a value whose callback is still running (a
