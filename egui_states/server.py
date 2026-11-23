@@ -111,15 +111,6 @@ class StatesBase(ABC):
     def __init__(self, server: "StateServerBase") -> None:
         self._server = server
 
-    def update_ui(self, dt: float | None = None) -> None:
-        """Request the UI to update.
-
-        Args:
-            dt (float | None, optional): Repaint delay in seconds, or ``None``
-                for an immediate repaint.
-        """
-        self._server.update(dt)
-
     def get_server(self) -> "StateServerBase":
         """Return the state server that owns this tree.
 
