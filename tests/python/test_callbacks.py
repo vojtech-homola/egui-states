@@ -465,3 +465,70 @@ def test_worker_does_not_pass_back_a_released_claim_after_a_failed_get():
     assert server.calls == [None, 5, None]
     assert manager.dispatched == [5]
     assert [str(error) for error in manager.errors] == ["Error while getting signal from server: decode failed"]
+
+
+def test_registration_methods_work_as_decorators(
+    server_bundle: tuple[StatesServer, State, list[Exception]],
+) -> None:
+    """Each registration returns its callback, so it decorates a function."""
+    server, states, _errors = server_bundle
+    received: list[str] = []
+    event = threading.Event()
+
+    @states.values.title.connect
+    def on_title(value: str) -> None:
+        received.append(value)
+        event.set()
+
+    states.values.title.set("decorated", set_signal=True)
+    wait_event(event)
+    assert received == ["decorated"]
+    # The name still refers to the function, so it can be disconnected.
+    states.values.title.disconnect(on_title)
+    states.values.title.set("disconnected", set_signal=True)
+    drain_callbacks(states)
+    assert received == ["decorated"]
+
+    @states.values.title.connect_previous
+    def on_title_previous(value: str, previous: str) -> None:
+        pass
+
+    @states.signals.number_signal.connect
+    def on_number(value: float) -> None:
+        pass
+
+    @states.signals.empty_signal.connect
+    def on_empty() -> None:
+        pass
+
+    @server.on_connect
+    def connected(address: str) -> None:
+        pass
+
+    @server.on_disconnect
+    def disconnected() -> None:
+        pass
+
+    @server.on_client_message
+    def client_message(message: str) -> None:
+        pass
+
+    @server.on_connect_request
+    def decide(request) -> bool:
+        return True
+
+    decorated = [on_title_previous, on_number, on_empty, connected, disconnected, client_message, decide]
+    assert [f.__name__ for f in decorated] == [
+        "on_title_previous",
+        "on_number",
+        "on_empty",
+        "connected",
+        "disconnected",
+        "client_message",
+        "decide",
+    ]
+    assert server.on_connect(None) is None
+    assert server.on_connect_request(None) is None
+    states.values.title.disconnect_all()
+    states.signals.number_signal.disconnect_all()
+    states.signals.empty_signal.disconnect_all()

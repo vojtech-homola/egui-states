@@ -80,3 +80,21 @@ def test_callbacks_connect_and_disconnect(
     files.disconnect(calls.append)
     files.disconnect_all()
     assert not files._dispatching
+
+
+def test_transfer_registrations_work_as_decorators(
+    local_bundle: tuple[StatesServer, State, list[Exception]],
+) -> None:
+    _server, states, _errors = local_bundle
+
+    @states.transfers.files.connect
+    def on_finished(handle) -> None:
+        pass
+
+    @states.transfers.inputs.on_offer
+    def on_offer(offer) -> None:
+        offer.reject("not in this test")
+
+    assert (on_finished.__name__, on_offer.__name__) == ("on_finished", "on_offer")
+    states.transfers.files.disconnect(on_finished)
+    assert states.transfers.inputs.on_offer(None) is None

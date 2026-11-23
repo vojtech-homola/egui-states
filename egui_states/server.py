@@ -445,31 +445,41 @@ class StateServerBase[T: StatesBase]:
         """
         self._signals_manager.set_error_handler(error_handler)
 
-    def on_connect(self, func: Callable[[str], Any] | None) -> None:
+    def on_connect[F: Callable[[str], Any] | None](self, func: F) -> F:
         """Replace the callback invoked when a client connects.
 
         Args:
             func (Callable[[str], Any] | None): Callback receiving the client
                 address, or ``None`` to unregister the current callback.
+
+        Returns:
+            Callable[[str], Any] | None: ``func``, so the method also works as a
+                decorator.
         """
         self._on_connect = func
         self._signals_manager.clear_callbacks(_ON_CONNECT_ID)
         if func is not None:
             self._signals_manager.add_callback(_ON_CONNECT_ID, func)
+        return func
 
-    def on_disconnect(self, func: Callable[[], Any] | None) -> None:
+    def on_disconnect[F: Callable[[], Any] | None](self, func: F) -> F:
         """Replace the callback invoked when a client disconnects.
 
         Args:
             func (Callable[[], Any] | None): Callback to invoke, or ``None`` to
                 unregister the current callback.
+
+        Returns:
+            Callable[[], Any] | None: ``func``, so the method also works as a
+                decorator.
         """
         self._on_disconnect = func
         self._signals_manager.clear_callbacks(_ON_DISCONNECT_ID)
         if func is not None:
             self._signals_manager.add_callback(_ON_DISCONNECT_ID, func)
+        return func
 
-    def on_connect_request(self, func: Callable[[ConnectRequest], bool] | None) -> None:
+    def on_connect_request[F: Callable[[ConnectRequest], bool] | None](self, func: F) -> F:
         """Replace the callback that decides whether a client may connect.
 
         The server asks it for every client that passed the handshake, whether
@@ -494,6 +504,10 @@ class StateServerBase[T: StatesBase]:
                 the request and returning whether to accept the client, or
                 ``None`` to unregister it and return the decision to
                 ``client_policy``.
+
+        Returns:
+            Callable[[ConnectRequest], bool] | None: ``func``, so the
+                method also works as a decorator.
         """
         # The dispatcher stays registered while a callback is swapped: without
         # it, a client connecting in between would be decided by the policy.
@@ -503,6 +517,7 @@ class StateServerBase[T: StatesBase]:
             self._signals_manager.clear_callbacks(_ON_CONNECT_REQUEST_ID)
         elif not registered:
             self._signals_manager.add_callback(_ON_CONNECT_REQUEST_ID, self._decide_connect_request)
+        return func
 
     def _decide_connect_request(self) -> None:
         """Ask the connect-request callback about the pending request."""
@@ -519,15 +534,20 @@ class StateServerBase[T: StatesBase]:
             # An exception refuses the client; the worker then reports it.
             request.answer(accept)
 
-    def on_client_message(self, func: Callable[[str], Any] | None) -> None:
+    def on_client_message[F: Callable[[str], Any] | None](self, func: F) -> F:
         """Replace the callback for diagnostic messages from the client.
 
         Args:
             func (Callable[[str], Any] | None): Callback receiving the
                 diagnostic message, or ``None`` to unregister the current
                 callback.
+
+        Returns:
+            Callable[[str], Any] | None: ``func``, so the method also works as a
+                decorator.
         """
         self._on_client_message = func
         self._signals_manager.clear_callbacks(_CLIENT_MESSAGE_ID)
         if func is not None:
             self._signals_manager.add_callback(_CLIENT_MESSAGE_ID, func)
+        return func

@@ -165,15 +165,20 @@ class Value[T](_SignalBase):
         """
         return self._server.value_get(self._value_id)
 
-    def connect(self, callback: Callable[[T], Any]) -> None:
+    def connect(self, callback: Callable[[T], Any]) -> Callable[[T], Any]:
         """Connect a callback to the value.
 
         Args:
             callback (Callable[[T], Any]): The callback to connect.
+
+        Returns:
+            Callable[[T], Any]: ``callback``, so the method also works as
+                a decorator.
         """
         self._signals_manager.add_callback(self._value_id, callback)
+        return callback
 
-    def connect_previous(self, callback: Callable[[T, T], Any]) -> None:
+    def connect_previous(self, callback: Callable[[T, T], Any]) -> Callable[[T, T], Any]:
         """Connect a callback which also receives the previous value.
 
         The previous value is the one the callback was last notified about, not
@@ -184,8 +189,13 @@ class Value[T](_SignalBase):
         Args:
             callback (Callable[[T, T], Any]): The callback to connect. It is
                 called with the new value followed by the previous one.
+
+        Returns:
+            Callable[[T, T], Any]: ``callback``, so the method also works as
+                a decorator.
         """
         self._signals_manager.add_callback_previous(self._value_id, callback)
+        return callback
 
     def disconnect(self, callback: Callable[[T], Any] | Callable[[T, T], Any]) -> None:
         """Disconnect a callback from the value.
@@ -301,13 +311,18 @@ class Signal[T](_SignalBase):
         """
         self._server.signal_set(self._value_id, value)
 
-    def connect(self, callback: Callable[[T], Any]) -> None:
+    def connect(self, callback: Callable[[T], Any]) -> Callable[[T], Any]:
         """Connect a callback to the signal.
 
         Args:
             callback (Callable[[T], Any]): Callback receiving the signal value.
+
+        Returns:
+            Callable[[T], Any]: ``callback``, so the method also works as
+                a decorator.
         """
         self._signals_manager.add_callback(self._value_id, callback)
+        return callback
 
     def disconnect(self, callback: Callable[[T], Any]) -> None:
         """Disconnect a callback from the value.
@@ -339,13 +354,18 @@ class SignalEmpty(_SignalBase):
         """
         self._server.signal_set(self._value_id, ())
 
-    def connect(self, callback: Callable[[], Any]) -> None:
+    def connect[F: Callable[[], Any]](self, callback: F) -> F:
         """Connect a callback to the signal.
 
         Args:
             callback (Callable[[], Any]): The callback to connect.
+
+        Returns:
+            Callable[[], Any]: ``callback``, so the method also works as
+                a decorator.
         """
         self._signals_manager.add_callback(self._value_id, callback)
+        return callback
 
     def disconnect(self, callback: Callable[[], Any]) -> None:
         """Disconnect a callback from the value.
@@ -2261,7 +2281,7 @@ class _TransferEndpoint(_CallbackBase):
         handle = self._server.transfer_last(self._value_id, self._download)
         return None if handle is None else TransferHandle(handle)
 
-    def connect(self, callback: Callable[[TransferHandle], Any]) -> None:
+    def connect[F: Callable[[TransferHandle], Any]](self, callback: F) -> F:
         """Call ``callback`` once for every transfer when it is done or failed.
 
         The callback runs on a callback worker; exceptions go to the server's
@@ -2270,9 +2290,14 @@ class _TransferEndpoint(_CallbackBase):
         Args:
             callback (Callable[[TransferHandle], Any]): Receives the finished
                 transfer.
+
+        Returns:
+            Callable[[TransferHandle], Any]: ``callback``, so the method also works as
+                a decorator.
         """
         self._finished.append(callback)
         self._update_dispatch()
+        return callback
 
     def disconnect(self, callback: Callable[[TransferHandle], Any]) -> None:
         """Remove a callback added with :meth:`connect`.
@@ -2587,7 +2612,7 @@ class Upload(_TransferEndpoint):
         finally:
             offer.close("the offer was not answered")
 
-    def on_offer(self, func: Callable[[TransferOffer], Any] | None) -> None:
+    def on_offer[F: Callable[[TransferOffer], Any] | None](self, func: F) -> F:
         """Set the function that answers the client's offers.
 
         It runs on a callback worker and must accept or reject the offer
@@ -2597,6 +2622,10 @@ class Upload(_TransferEndpoint):
         Args:
             func (Callable[[TransferOffer], Any] | None): The receiver, or
                 ``None`` to reject offers again.
+
+        Returns:
+            Callable[[TransferOffer], Any] | None: ``func``, so the method
+                also works as a decorator.
         """
         had_receiver = self._receiver is not None
         self._receiver = func
@@ -2605,6 +2634,7 @@ class Upload(_TransferEndpoint):
             self._server.transfer_set_receiver(self._value_id, True)
         elif func is None and had_receiver:
             self._server.transfer_set_receiver(self._value_id, False)
+        return func
 
     def _initialize(self, name: str, types: list[PyObjectType]) -> None:
         meta = None if self._meta_id is None else types[self._meta_id]

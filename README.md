@@ -87,6 +87,20 @@ of it to a closure and send it only when the closure changed it:
 state.count.edit_signal(|count| ui.add(egui::DragValue::new(count)));
 ```
 
+On a Python server, `connect` registers a callback for a value's signaled
+changes or a signal's events. It returns the callback, so it also works as a
+decorator, as do the server's `on_connect`, `on_disconnect`,
+`on_connect_request` and `on_client_message`:
+
+```python
+@server.states.count.connect
+def on_count(count: int) -> None:
+    print("count is now", count)
+
+
+server.states.count.disconnect(on_count)  # when it is no longer needed
+```
+
 The client repaints the UI after the server changes a state, once per
 received batch of changes; see
 [repaints](docs/architecture.md#repaints-and-runtimes).
@@ -142,12 +156,10 @@ pub struct FilesState {
 A Python server answers the client's request by sending the file:
 
 ```python
+@server.states.request.connect
 def send(name: str) -> None:
     # The client only names a file; the server decides what it may send.
     server.states.files.send_file(DATA / safe_name(name))
-
-
-server.states.request.connect(send)
 ```
 
 and the client takes the offer in `update`, asking for a path without stopping
