@@ -259,7 +259,7 @@ impl Image {
         let lock = self.scheduler.lock(KEY);
         let mut w = self.image.write();
         let stored = w.as_mut().ok_or_else(|| {
-            CoreError::invalid_argument(format!(
+            CoreError::from(format!(
                 "Image '{}' has no image to set a header for",
                 self.name
             ))

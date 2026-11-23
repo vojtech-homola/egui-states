@@ -370,7 +370,7 @@ differences listed at the end.
 
 A state with a header type never holds data without a header. The set that
 creates the data of a `Data` or a `DataMulti` key must carry one, and so must
-every take; without it the call fails (`InvalidArgument` in C). The header
+every take; without it the call fails. The header
 type therefore needs no default, and the client never invents a header.
 
 A change can carry a new header, which the client publishes together with the
@@ -526,7 +526,7 @@ an efficient same-architecture transport; callers should not treat its raw byte
 form as a portable file format.
 
 A `Data` starts "not set", like a missing `DataMulti` key: its getters return
-`None` on both sides (`NOT_FOUND` in C) until a set creates the data, so an
+`None` on both sides until a set creates the data, so an
 empty buffer differs from no data. Only a set creates the data; every other
 change of data that is not set fails, and a reset returns the data to "not
 set". A client keeps its last data across a disconnect, and the

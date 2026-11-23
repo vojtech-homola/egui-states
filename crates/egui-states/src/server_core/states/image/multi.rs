@@ -222,7 +222,7 @@ impl ImageMulti {
         let stored = inner
             .images
             .get_mut(&index)
-            .ok_or_else(|| CoreError::not_found("ImageMulti index not found."))?;
+            .ok_or_else(|| CoreError::from("ImageMulti index not found."))?;
         if !stored.contains(origin, image.size) {
             return Err(format!("ImageMulti index {} update exceeds bounds", index).into());
         }
@@ -266,7 +266,7 @@ impl ImageMulti {
         let stored = inner
             .images
             .get_mut(&index)
-            .ok_or_else(|| CoreError::not_found("ImageMulti index not found."))?;
+            .ok_or_else(|| CoreError::from("ImageMulti index not found."))?;
         stored.store_header(Some(header));
         let Some(generation) = self.transfer.sendable() else {
             return Ok(());

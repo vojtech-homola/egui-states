@@ -105,7 +105,7 @@ impl Data {
     }
 
     fn not_set(&self) -> CoreError {
-        CoreError::not_found(format!("Data '{}' is not set", self.name))
+        CoreError::from(format!("Data '{}' is not set", self.name))
     }
 
     /// Replaces the buffer, creating the data when it is not set; creating
@@ -432,7 +432,7 @@ struct MultiStorage {
 }
 
 fn missing_key(index: u32) -> CoreError {
-    CoreError::not_found(format!("DataMulti index {} does not exist", index))
+    CoreError::from(format!("DataMulti index {} does not exist", index))
 }
 
 /// Server storage of numeric buffers indexed by key, each with its header.
@@ -1888,7 +1888,6 @@ mod header_tests {
     };
     use crate::client::states::data_take::{DataTake as ClientTake, UpdateDataTake};
     use crate::protocol::{ServerHeader, VALUE_MAX_SIZE};
-    use crate::server_core::error::ErrorKind;
     use crate::server_core::net::sender::MessageReceiver;
     use crate::server_core::states::data_take::{DataMultiTake, DataTake};
     use crate::typed::Typed;
@@ -2074,7 +2073,7 @@ mod header_tests {
 
         // The set that creates the data again needs a header.
         let error = data.set(with(&[2], None), false).unwrap_err();
-        assert_eq!(error.kind, ErrorKind::InvalidArgument);
+        assert!(error.message.contains("needs a header"), "{error}");
         data.set(with(&[2], Some(&encoded(2))), false).unwrap();
         assert_eq!(deliver(&mut receiver, &mut acks, Some(&client), None), 1);
         data.acknowledge();
@@ -2105,7 +2104,6 @@ mod header_tests {
         );
         let header = encoded(1);
         let error = data.set(with(&[1], None), false).unwrap_err();
-        assert_eq!(error.kind, ErrorKind::InvalidArgument);
         assert!(error.message.contains("needs a header"), "{error}");
         for error in [
             data.add(with(&[1], Some(&header)), false).unwrap_err(),
@@ -2114,7 +2112,6 @@ mod header_tests {
             data.clear(Some(&header)).unwrap_err(),
             data.set_header(&header).unwrap_err(),
         ] {
-            assert_eq!(error.kind, ErrorKind::NotFound, "{error}");
             assert!(error.message.contains("is not set"), "{error}");
         }
         data.get_with_header(|entry| assert_eq!(entry, None));
@@ -2204,7 +2201,7 @@ mod header_tests {
 
         // A new key needs a header.
         let error = data.set(1, with(&[1], None), false).unwrap_err();
-        assert_eq!(error.kind, ErrorKind::InvalidArgument);
+        assert!(error.message.contains("needs a header"), "{error}");
         assert!(error.message.contains("index 1"), "{error}");
         data.header(1, |header| assert_eq!(header, None));
         data.set(1, with(&[1], Some(&encoded(0))), false).unwrap();
@@ -2242,7 +2239,7 @@ mod header_tests {
         });
 
         let error = data.set_header(9, &encoded(9)).unwrap_err();
-        assert_eq!(error.kind, ErrorKind::NotFound);
+        assert!(error.message.contains("does not exist"), "{error}");
 
         // Removing a key drops its header on both sides.
         data.remove_index(1).unwrap();
@@ -2301,7 +2298,7 @@ mod header_tests {
 
         // Every take needs a header.
         let error = take.set(with(&[3], None), false, true, false).unwrap_err();
-        assert_eq!(error.kind, ErrorKind::InvalidArgument);
+        assert!(error.message.contains("needs a header"), "{error}");
         deliver();
         assert_eq!(client.take_with_header(), None);
 
@@ -2326,6 +2323,6 @@ mod header_tests {
         let error = multi
             .set(1, with(&[1], None), false, true, false)
             .unwrap_err();
-        assert_eq!(error.kind, ErrorKind::InvalidArgument);
+        assert!(error.message.contains("needs a header"), "{error}");
     }
 }

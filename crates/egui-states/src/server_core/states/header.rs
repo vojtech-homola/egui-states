@@ -54,7 +54,7 @@ impl HeaderType {
     ) -> Result<(), CoreError> {
         if self.type_id.is_some() && header.is_none() {
             let kind = self.kind;
-            return Err(CoreError::invalid_argument(format!(
+            return Err(CoreError::from(format!(
                 "{kind} '{name}' needs a header {what}"
             )));
         }
