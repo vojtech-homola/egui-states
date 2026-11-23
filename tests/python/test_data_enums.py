@@ -239,6 +239,73 @@ def test_invalid_values_keep_the_previous_value(local_bundle, invalid):
     assert handle.get() == before
 
 
+@pytest.mark.parametrize(
+    ("invalid", "error", "message"),
+    [
+        (Command.SetGain("text"), TypeError, "TestCommand.SetGain._0: must be real number, not str"),
+        (Command.Pair(1, 2), TypeError, "TestCommand.Pair._1: "),
+        (Command.Keyword(300), OverflowError, "TestCommand.Keyword.from_: "),
+        (Command.Choose(1), TypeError, "TestCommand.Choose._0: Expected a member of TestEnum, got 1"),
+        (Command.Load("a", "x"), TypeError, "TestCommand.Load.summary: Expected an instance of TestStruct2, got 'x'"),
+        (Command.Load("a", Summary(True, "high", "n")), TypeError, "TestCommand.Load.summary.level: "),
+        (
+            Command.Report(Command.Stop()),
+            TypeError,
+            "TestCommand.Report._0: Expected a variant of TestStatus, got TestCommand.Stop()",
+        ),
+        (Command.Report(Status.Busy("half")), TypeError, "TestCommand.Report._0.Busy.progress: must be real number"),
+    ],
+    ids=repr,
+)
+def test_an_invalid_field_is_named_in_the_error(local_bundle, invalid, error, message):
+    """The error for a wrong field starts with the path to that field."""
+    _, states, _ = local_bundle
+    with pytest.raises(error) as raised:
+        states.data_enums.command.set(invalid)
+    assert str(raised.value).startswith(message)
+
+
+def test_an_invalid_field_is_named_inside_structs_and_collections(local_bundle):
+    """The path covers struct fields, list items and map keys and values."""
+    _, states, _ = local_bundle
+    e = states.data_enums
+    with pytest.raises(TypeError, match=r"^TestJob\.status\.Busy\.progress: must be real number"):
+        e.job.set(Job("job", Status.Busy("half")))
+    with pytest.raises(TypeError, match=r"^TestJob\.status: Expected a variant of TestStatus, got 3$"):
+        e.job.set(Job("job", 3))
+
+    with pytest.raises(TypeError, match=r"^\[1\]\.SetGain\._0: must be real number"):
+        e.list.set([Command.Stop(), Command.SetGain("text")])
+    assert e.list.get() == []
+    with pytest.raises(TypeError, match=r"^TestCommand\.SetGain\._0: must be real number"):
+        e.list.add_item(Command.SetGain("text"))
+
+    with pytest.raises(TypeError, match=r"^\[2\]\.Busy\.progress: must be real number"):
+        e.table.set({1: Status.Idle(), 2: Status.Busy("half")})
+    with pytest.raises(TypeError, match=r"^\[key 1\.5\]: "):
+        e.table.set({1.5: Status.Idle()})
+    with pytest.raises(TypeError, match=r"^\[key 'one'\]: "):
+        e.table["one"] = Status.Idle()
+    assert e.table.get() == {}
+
+
+def test_an_error_that_is_not_one_message_gets_the_path_as_a_note(local_bundle):
+    """An exception with several arguments keeps them; the path is a note."""
+    _, states, _ = local_bundle
+    with pytest.raises(UnicodeEncodeError) as raised:
+        states.data_enums.command.set(Command.Load("\ud800", None))
+    assert raised.value.__notes__ == ["In TestCommand.Load.path"]
+
+
+def test_a_wrong_value_itself_has_no_path(local_bundle):
+    """A value of the wrong type at the top is reported as before."""
+    _, states, _ = local_bundle
+    with pytest.raises(TypeError, match=r"^Expected an instance of TestJob, got 'job'$"):
+        states.data_enums.job.set("job")
+    with pytest.raises(TypeError, match=r"^Expected a variant of TestCommand, got 1\.5$"):
+        states.data_enums.command.set(1.5)
+
+
 def test_enums_with_data_as_headers(local_bundle):
     """Enums with data as Data and image headers."""
     _, states, _ = local_bundle

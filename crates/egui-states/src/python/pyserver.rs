@@ -24,7 +24,8 @@ use crate::python::pyadmission::PyConnectRequest;
 use crate::python::value_parsing::{ValueCreator, ValueParser};
 use crate::python::{
     pydata::{contiguous_bytes, data_buffer, data_slice},
-    pyimage, pyparsing,
+    pyimage,
+    pyparsing::{self, Place},
     pytransfer::{self, Offer, PyTransferHandle, PyTransferOffer, SendTarget},
     pytypes::{PyObjectClass, PyObjectType},
 };
@@ -702,9 +703,9 @@ impl StateServerCore {
     fn list_set(&self, value_id: u64, py_list: &Bound<PyList>) -> PyResult<()> {
         let (list, value_type) = self.inner_vec(value_id)?;
         let mut vec = Vec::with_capacity(py_list.len());
-        for item in py_list.iter() {
+        for (index, item) in py_list.iter().enumerate() {
             let mut creator = ValueCreator::new();
-            pyparsing::serialize_py(&item, value_type, &mut creator)?;
+            pyparsing::serialize_py_in(&item, value_type, &mut creator, Place::Index(index))?;
             let data = creator.finalize();
             vec.push(data);
         }
@@ -783,11 +784,12 @@ impl StateServerCore {
         let mut new_map = HashMap::with_capacity(py_dict.len());
         for (key, value) in py_dict.iter() {
             let mut key_creator = ValueCreator::new();
-            pyparsing::serialize_py(&key, key_type, &mut key_creator)?;
+            pyparsing::serialize_py_in(&key, key_type, &mut key_creator, Place::Key)?;
             let key_data = key_creator.finalize();
 
             let mut value_creator = ValueCreator::new();
-            pyparsing::serialize_py(&value, value_type, &mut value_creator)?;
+            let place = Place::Value(&key);
+            pyparsing::serialize_py_in(&value, value_type, &mut value_creator, place)?;
             let value_data = value_creator.finalize();
 
             new_map.insert(key_data, value_data);
@@ -819,7 +821,7 @@ impl StateServerCore {
     ) -> PyResult<()> {
         let (map, key_type, value_type) = self.inner_map(value_id)?;
         let mut key_creator = ValueCreator::new();
-        pyparsing::serialize_py(key, key_type, &mut key_creator)?;
+        pyparsing::serialize_py_in(key, key_type, &mut key_creator, Place::Key)?;
         let key_data = key_creator.finalize();
 
         let mut value_creator = ValueCreator::new();

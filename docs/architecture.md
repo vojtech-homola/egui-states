@@ -481,6 +481,13 @@ def on_command(command: Command.Type) -> None:
   one, as the Rust compiler does. `Command` itself is not the type of a value
   and has no values, so `isinstance(c, Command)` does not hold; test a variant,
   `isinstance(c, Command.MoveTo)`.
+- A variant does not check the types of its fields when it is created, as a
+  generated struct does not. A type checker reports `Command.SetGain("text")`;
+  at run time the server rejects it when the value is set and keeps the old
+  value. The error names the field:
+  `Command.SetGain._0: must be real number, not str`. Inside other values the
+  path continues, as in `HandledCommand.command.Load.summary.level` or
+  `[1].SetGain._0` for an item of a list.
 
 A value can be a dict key when its fields are hashable, which a struct is not.
 A variant or field name that is a Python keyword gets an underscore
