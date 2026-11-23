@@ -79,7 +79,8 @@ Rebuild bindings after changing the state definition; generated files should
 not be edited.
 
 On the client, `set` changes a value and `set_signal` also invokes server
-callbacks. To bind a widget to a value, `edit` and `edit_signal` pass a copy
+callbacks. A `Signal` stores nothing: `emit` sends an event that only runs the
+server's callbacks, such as a button press. To bind a widget to a value, `edit` and `edit_signal` pass a copy
 of it to a closure and send it only when the closure changed it:
 
 ```rust

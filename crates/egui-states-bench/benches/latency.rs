@@ -194,7 +194,7 @@ impl Peer {
     }
 
     fn command(&self, command: u32) {
-        self.states.command.set(command);
+        self.states.command.emit(command);
     }
 
     /// Waits for the server's download offer.

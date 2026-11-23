@@ -278,7 +278,8 @@ class Static[T](_StaticBase):
 class Signal[T](_SignalBase):
     """Client-to-server event that does not retain a client-side value.
 
-    Calling :meth:`set` on the server emits the event to local callbacks.
+    Calling :meth:`emit` on the server runs the local callbacks, as if the
+    client had emitted the event.
     """
 
     def __init__(self, obj_id: int, queue: bool = False) -> None:
@@ -290,13 +291,13 @@ class Signal[T](_SignalBase):
         del self._obj_id
         del self._queue
 
-    def set(self, value: T) -> None:
-        """Set the signal value.
+    def emit(self, value: T) -> None:
+        """Emit the event to the connected callbacks.
 
-        Signal is emitted to all connected callbacks.
+        Nothing is stored and nothing is sent to the client.
 
         Args:
-            value (T): The value to set.
+            value (T): The event's value.
         """
         self._server.signal_set(self._value_id, value)
 
@@ -331,10 +332,10 @@ class SignalEmpty(_SignalBase):
         self._value_id = self._server.add_signal(name, _core.emp, self._queue)
         del self._queue
 
-    def set(self) -> None:
-        """Set the signal value.
+    def emit(self) -> None:
+        """Emit the event to the connected callbacks.
 
-        Signal is emitted to all connected callbacks.
+        Nothing is sent to the client.
         """
         self._server.signal_set(self._value_id, ())
 

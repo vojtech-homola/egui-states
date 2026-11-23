@@ -132,7 +132,7 @@ pub(super) fn show_commands(ui: &mut egui::Ui, state: &mut ViewState) {
             ]);
         }
         for command in send {
-            c.command.set(command);
+            c.command.emit(command);
         }
 
         ui.separator();
@@ -160,7 +160,7 @@ pub(super) fn show_commands(ui: &mut egui::Ui, state: &mut ViewState) {
         ui.horizontal(|ui| {
             ui.label(describe_command(&preset));
             if ui.button("send preset").clicked() {
-                c.command.set(preset.clone());
+                c.command.emit(preset.clone());
             }
         });
     });

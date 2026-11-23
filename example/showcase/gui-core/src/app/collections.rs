@@ -19,13 +19,13 @@ pub(super) fn show_value_vec(ui: &mut egui::Ui, state: &mut ViewState) {
 
         ui.horizontal(|ui| {
             if ui.button("append item").clicked() {
-                state.schema.value_vec.actions.append_item.set(());
+                state.schema.value_vec.actions.append_item.emit(());
             }
             if ui.button("remove last").clicked() {
-                state.schema.value_vec.actions.remove_last.set(());
+                state.schema.value_vec.actions.remove_last.emit(());
             }
             if ui.button("reset demo").clicked() {
-                state.schema.value_vec.actions.reset_demo.set(());
+                state.schema.value_vec.actions.reset_demo.emit(());
             }
         });
     });
@@ -50,13 +50,13 @@ pub(super) fn show_value_map(ui: &mut egui::Ui, state: &mut ViewState) {
 
         ui.horizontal(|ui| {
             if ui.button("insert next").clicked() {
-                state.schema.value_map.actions.insert_next.set(());
+                state.schema.value_map.actions.insert_next.emit(());
             }
             if ui.button("remove lowest").clicked() {
-                state.schema.value_map.actions.remove_lowest.set(());
+                state.schema.value_map.actions.remove_lowest.emit(());
             }
             if ui.button("reset demo").clicked() {
-                state.schema.value_map.actions.reset_demo.set(());
+                state.schema.value_map.actions.reset_demo.emit(());
             }
         });
     });

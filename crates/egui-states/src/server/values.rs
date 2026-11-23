@@ -232,10 +232,11 @@ impl<T> Signal<T>
 where
     T: Serialize,
 {
-    /// Emits an event from the server to local callbacks.
+    /// Emits an event from the server to local callbacks, as if the client
+    /// had emitted it.
     ///
     /// This does not send the event to the client.
-    pub fn set(&self, value: T) -> Result<()> {
+    pub fn emit(&self, value: T) -> Result<()> {
         let data = serialize_bytes(&value)?;
         self.inner.set(data);
         Ok(())

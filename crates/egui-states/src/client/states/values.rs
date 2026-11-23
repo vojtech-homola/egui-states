@@ -666,7 +666,7 @@ impl<T: Serialize + Clone> Signal<T> {
     ///
     /// The `Into<T>` parameter accepts values that can be converted to the
     /// signal's payload type, such as `&str` for a `Signal<String>`.
-    pub fn set(&self, value: impl Into<T>) {
+    pub fn emit(&self, value: impl Into<T>) {
         let message = to_message(value.into());
 
         if let Err(e) = check_value_size(&self.shared.name, message.len()) {

@@ -98,7 +98,7 @@ pub(super) fn show_signals(ui: &mut egui::Ui, state: &mut ViewState) {
     ui.collapsing("signals", |ui| {
         ui.label("Signal<()>, #[state(queue)]: root.signals.empty_signal");
         if ui.button("emit empty signal").clicked() {
-            state.schema.signals.empty_signal.set(());
+            state.schema.signals.empty_signal.emit(());
         }
 
         ui.separator();
@@ -117,7 +117,7 @@ pub(super) fn show_signals(ui: &mut egui::Ui, state: &mut ViewState) {
                 .schema
                 .signals
                 .number_signal
-                .set(state.number_signal_value);
+                .emit(state.number_signal_value);
         }
         ui.separator();
 
@@ -141,7 +141,7 @@ pub(super) fn show_signals(ui: &mut egui::Ui, state: &mut ViewState) {
                 .schema
                 .signals
                 .enum_signal
-                .set(state.enum_signal_value);
+                .emit(state.enum_signal_value);
         }
     });
 }

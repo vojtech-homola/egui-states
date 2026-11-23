@@ -1042,13 +1042,13 @@ mod tests {
             signal.connect({
                 let signal = signal.clone();
                 move |value| {
-                    let _ = signal.set(value);
+                    let _ = signal.emit(value);
                 }
             }),
             empty.connect_empty({
                 let empty = empty.clone();
                 move || {
-                    let _ = empty.set(());
+                    let _ = empty.emit(());
                 }
             }),
         ];
@@ -1115,12 +1115,12 @@ mod tests {
 
         // Left pending: workers are never started.
         value.set_signal(1).unwrap();
-        signal.set(1).unwrap();
+        signal.emit(1).unwrap();
         drop(server);
 
         for index in 0..3 {
             value.set_signal(index).unwrap();
-            signal.set(index).unwrap();
+            signal.emit(index).unwrap();
         }
         assert!(
             signals.try_claim(None).is_none(),

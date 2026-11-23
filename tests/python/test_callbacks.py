@@ -263,9 +263,9 @@ def test_signal_callbacks_and_disconnect_all(
     states.signals.enum_signal.connect(on_enum)
 
     states.signals.empty_signal.signal_set_to_queue()
-    states.signals.empty_signal.set()
-    states.signals.number_signal.set(1.25)
-    states.signals.enum_signal.set(ExampleTestEnum.B)
+    states.signals.empty_signal.emit()
+    states.signals.number_signal.emit(1.25)
+    states.signals.enum_signal.emit(ExampleTestEnum.B)
 
     wait_event(empty_event)
     wait_event(number_event)
@@ -275,7 +275,7 @@ def test_signal_callbacks_and_disconnect_all(
 
     states.signals.enum_signal.disconnect_all()
     enum_event.clear()
-    states.signals.enum_signal.set(ExampleTestEnum.C)
+    states.signals.enum_signal.emit(ExampleTestEnum.C)
     drain_callbacks(states)
     assert not enum_event.is_set()
 
@@ -421,11 +421,11 @@ def test_single_mode_signal_coalesces_while_its_callback_runs(server_bundle):
     signal = states.signals.number_signal
     signal.signal_set_to_single()
     signal.connect(on_number)
-    signal.set(1.0)
+    signal.emit(1.0)
     try:
         wait_event(entered)
-        signal.set(2.0)
-        signal.set(3.0)
+        signal.emit(2.0)
+        signal.emit(3.0)
     finally:
         release.set()
     wait_until(lambda: len(received) >= 2)

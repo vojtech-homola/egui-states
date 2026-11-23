@@ -89,9 +89,9 @@ fn transfer_phase(s: &IntegrationState, n: u32) {
 /// It takes two commands: after a reconnect the phase can still hold 99 from
 /// an earlier barrier, so waiting for 99 alone would not wait for anything.
 fn barrier(s: &IntegrationState) {
-    s.command.set(98u32);
+    s.command.emit(98u32);
     phase(s, 98);
-    s.command.set(99u32);
+    s.command.emit(99u32);
     phase(s, 99);
 }
 
@@ -111,13 +111,13 @@ pub fn run(port: u16, scenario: &str) {
             wait("initial collection", || {
                 s.items.read(|v| (v == &[1, 2]).then_some(()))
             });
-            s.command.set(1u32);
+            s.command.emit(1u32);
             wait("server update", || (s.value.get() == 21).then_some(()));
             s.value.set_signal(42);
             wait("value callback", || {
                 (s.callback_value.get() == 42).then_some(())
             });
-            s.command.set(2u32);
+            s.command.emit(2u32);
             wait("collection callback", || {
                 s.items.read(|v| (v == &[1, 2, 42]).then_some(()))
             });
@@ -126,7 +126,7 @@ pub fn run(port: u16, scenario: &str) {
             });
         }
         "takes" => {
-            s.command.set(3u32);
+            s.command.emit(3u32);
             once("float take", vec![-1.25, 0.0, 2.5], || {
                 state.data_take.take_samples.take()
             });
@@ -144,7 +144,7 @@ pub fn run(port: u16, scenario: &str) {
                 s.multi.take(42)
             });
             assert!(s.multi.take(0).is_none());
-            s.command.set(4u32);
+            s.command.emit(4u32);
             once("empty string", String::new(), || s.take.take());
             once("empty data", Vec::<u8>::new(), || s.data.take());
             barrier(s);
@@ -170,7 +170,7 @@ pub fn run(port: u16, scenario: &str) {
                 "blocking-data" => 12,
                 _ => 13,
             };
-            s.command.set(command);
+            s.command.emit(command);
             phase(s, 1);
             // A negative assertion over a bounded interval proves the subsequent
             // send remains pending while the first payload is unconsumed.
@@ -252,7 +252,7 @@ pub fn run(port: u16, scenario: &str) {
             }
         }
         "take-controls" => {
-            s.command.set(22u32);
+            s.command.emit(22u32);
             phase(s, 22);
             assert!(
                 s.multi.take(7).is_none(),
@@ -261,20 +261,20 @@ pub fn run(port: u16, scenario: &str) {
             once("unrelated sparse key survives removal", vec![9], || {
                 s.multi.take(900)
             });
-            s.command.set(22u32);
+            s.command.emit(22u32);
             barrier(s);
-            s.command.set(23u32);
+            s.command.emit(23u32);
             phase(s, 23);
             assert!(
                 s.multi.take(900).is_none(),
                 "reset payload remains consumable"
             );
-            s.command.set(22u32);
+            s.command.emit(22u32);
             phase(s, 22);
             once("progress after reset", vec![9], || s.multi.take(900));
         }
         "cache-replacement" => {
-            s.command.set(20u32);
+            s.command.emit(20u32);
             phase(s, 20);
             drop(connection);
             let (next, next_connection) = connect(port);
@@ -285,7 +285,7 @@ pub fn run(port: u16, scenario: &str) {
                 s.cached_multi.take(513)
             });
             assert!(s.cached_multi.take(91).is_none());
-            s.command.set(21u32);
+            s.command.emit(21u32);
             phase(s, 21);
             once("uncached payload", vec![41], || s.cached.take());
             drop(next_connection);
@@ -298,7 +298,7 @@ pub fn run(port: u16, scenario: &str) {
             assert!(last.integration.cached_multi.take(513).is_none());
         }
         "blocking-remove" | "blocking-reset" => {
-            s.command.set(if scenario == "blocking-remove" {
+            s.command.emit(if scenario == "blocking-remove" {
                 24u32
             } else {
                 25u32
@@ -315,7 +315,7 @@ pub fn run(port: u16, scenario: &str) {
             once("next key", vec![9], || s.multi.take(513));
         }
         "disconnect-pending" => {
-            s.command.set(12u32);
+            s.command.emit(12u32);
             phase(s, 1);
             drop(connection);
             // The second blocking send must release on disconnect without replay.
@@ -341,7 +341,7 @@ fn image_headers(port: u16, state: &State, connection: Connection) {
     let s = &state.integration;
     let i = &state.image;
     assert_eq!(i.framed.header(), None);
-    s.command.set(37u32);
+    s.command.emit(37u32);
     phase(s, 37);
     let framed = meta(3.0, "frame 3", &[2]);
     let (_, size, header) = i.framed.get_with_header().expect("framed is set");
@@ -405,7 +405,7 @@ fn data_enums(state: &State) {
     );
     assert_eq!(e.optional.get(), Some(TestStatus::Failed("init".into())));
 
-    s.command.set(38u32);
+    s.command.emit(38u32);
     let offer = wait("download with an enum as metadata", || {
         e.download.take_offer()
     });
@@ -466,14 +466,14 @@ fn data_enums(state: &State) {
     });
     e.optional.set(Some(TestStatus::Busy { progress: 0.125 }));
     for command in all_commands() {
-        e.commands.set(command);
+        e.commands.emit(command);
     }
     let sent = e
         .upload
         .send_bytes(b"up".to_vec(), "up.bin", TestCommand::Pair(2, "up".into()));
     let status = wait("upload", || sent.is_finished().then(|| sent.status()));
     assert_eq!(status, TransferStatus::Done);
-    s.command.set(39u32);
+    s.command.emit(39u32);
     phase(s, 39);
 }
 
@@ -485,7 +485,7 @@ fn file_transfers(state: &State) {
 
     let s = &state.integration;
     let t = &state.transfers;
-    s.command.set(40u32);
+    s.command.emit(40u32);
     let plain = wait("plain offer", || t.files.take_offer());
     assert_eq!(plain.name(), "hello.txt");
     assert_eq!(plain.total_size(), Some(5));
@@ -503,11 +503,11 @@ fn file_transfers(state: &State) {
     assert_eq!(plain.take_data().unwrap(), b"hello");
     assert_eq!(typed.take_data().unwrap(), b"meta");
 
-    s.command.set(41u32);
+    s.command.emit(41u32);
     wait("offer to reject", || t.files.take_offer()).reject("nope");
     transfer_phase(s, 41);
 
-    s.command.set(42u32);
+    s.command.emit(42u32);
     let offer = wait("folder offer", || t.files.take_offer());
     let mut names: Vec<_> = offer.files().iter().map(|f| f.name().to_string()).collect();
     names.sort();
@@ -523,7 +523,7 @@ fn file_transfers(state: &State) {
     assert_eq!(std::fs::read(dir.join("run/empty")).unwrap(), b"");
     let _ = std::fs::remove_dir_all(&dir);
 
-    s.command.set(43u32);
+    s.command.emit(43u32);
     transfer_phase(s, 43);
 }
 
@@ -550,7 +550,7 @@ fn uploads(state: &State) {
         status,
         TransferStatus::Failed(TransferError::Rejected("no receiver".into()))
     );
-    s.command.set(44u32);
+    s.command.emit(44u32);
     phase(s, 44);
 }
 
@@ -567,7 +567,7 @@ fn values_wire(state: &State) {
         &state.statics,
         &state.wire_types,
     );
-    s.command.set(30u32);
+    s.command.emit(30u32);
     phase(s, 30);
     assert!(v.bool_value.get());
     assert_eq!(v.count.get(), -123_456);
@@ -665,18 +665,18 @@ fn values_wire(state: &State) {
     w.table.set(HashMap::new());
     w.keyed_enum.set(HashMap::from([(TestEnum::B, 2)]));
     w.optional_enum.set(None);
-    state.signals.empty_signal.set(());
-    state.signals.number_signal.set(-2.5);
-    state.signals.enum_signal.set(TestEnum::C);
-    w.pair_signal.set((1.5, TestEnum::B));
+    state.signals.empty_signal.emit(());
+    state.signals.number_signal.emit(-2.5);
+    state.signals.enum_signal.emit(TestEnum::C);
+    w.pair_signal.emit((1.5, TestEnum::B));
     // The servers record a mismatch as an error, which fails the test harness.
-    s.command.set(31u32);
+    s.command.emit(31u32);
     phase(s, 31);
 }
 
 fn collections_wire(state: &State) {
     let s = &state.integration;
-    s.command.set(32u32);
+    s.command.emit(32u32);
     phase(s, 32);
     assert_eq!(state.value_vec.items.get(), [59, 60, 61, 7, 8]);
     assert_eq!(state.value_vec.items.len(), 5);
@@ -688,7 +688,7 @@ fn collections_wire(state: &State) {
 
 fn numeric_wire(state: &State) {
     let s = &state.integration;
-    s.command.set(33u32);
+    s.command.emit(33u32);
     phase(s, 33);
     let (d, n, m) = (&state.data, &state.numeric, &state.multi_data);
     assert_eq!(d.bytes.get(), Some(vec![20, 30, 4, 5, 6]));
@@ -726,7 +726,7 @@ fn data_headers(port: u16, state: &State, connection: Connection) {
     // Data is not set until the server sets it, with its header.
     assert_eq!(h.series.get_with_header(), None);
     assert_eq!(h.transient.get_with_header(), None);
-    s.command.set(35u32);
+    s.command.emit(35u32);
     phase(s, 35);
     h.series.read_with_header(|entry| {
         let (values, header) = entry.expect("series is set");
@@ -752,7 +752,7 @@ fn data_headers(port: u16, state: &State, connection: Connection) {
         || h.keyed_take.take_with_header(4),
     );
 
-    s.command.set(36u32);
+    s.command.emit(36u32);
     phase(s, 36);
     // A clear keeps the data set, with an empty buffer; a reset does not.
     assert_eq!(
@@ -825,7 +825,7 @@ fn images_wire(port: u16) {
     let context = egui::Context::default();
     let (state, _connection) = connect_client(ClientBuilder::<State>::new(context.clone(), port));
     let s = &state.integration;
-    s.command.set(34u32);
+    s.command.emit(34u32);
     phase(s, 34);
 
     assert_eq!(state.image.image.get_size(), Some([3, 2]));

@@ -24,7 +24,7 @@ impl eframe::App for CounterApp {
                 .count
                 .edit_signal(|count| ui.add(egui::DragValue::new(count)));
             if ui.button("Reset").clicked() {
-                self.state.reset.set(());
+                self.state.reset.emit(());
             }
         });
     }
