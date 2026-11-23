@@ -140,7 +140,7 @@ pub(crate) fn tls_connect(
 ///
 /// The logger is shared by every test in the process, so a test that checks
 /// what is logged runs [`isolated`].
-#[cfg(any(feature = "server", feature = "python"))]
+#[cfg(all(feature = "client", any(feature = "server", feature = "python")))]
 pub(crate) fn server_logs(level: log::Level) -> std::sync::mpsc::Receiver<String> {
     use std::sync::Mutex;
     use std::sync::mpsc::{Sender, channel};
