@@ -5,8 +5,17 @@ use std::time::{Duration, Instant};
 
 pub use crate::scenario_registry::SCENARIOS;
 
-pub fn wait<T>(label: &str, mut condition: impl FnMut() -> Option<T>) -> T {
-    let deadline = Instant::now() + Duration::from_secs(5);
+pub fn wait<T>(label: &str, condition: impl FnMut() -> Option<T>) -> T {
+    wait_within(label, Duration::from_secs(5), condition)
+}
+
+/// Like [`wait`], with its own `timeout`.
+pub fn wait_within<T>(
+    label: &str,
+    timeout: Duration,
+    mut condition: impl FnMut() -> Option<T>,
+) -> T {
+    let deadline = Instant::now() + timeout;
     loop {
         if let Some(value) = condition() {
             return value;
@@ -56,7 +65,22 @@ fn once<T: PartialEq + std::fmt::Debug>(
 }
 
 fn phase(s: &IntegrationState, n: u32) {
-    wait("server phase", || (s.phase.get() == n).then_some(()));
+    wait(&format!("server phase {n}"), || {
+        (s.phase.get() == n).then_some(())
+    });
+}
+
+/// How long the client waits for a server command that runs file transfers:
+/// longer than the servers wait for their transfers (10 s), so a stalled
+/// transfer fails on the server, with the server's error.
+const TRANSFER_PHASE_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Like [`phase`], for a command that runs file transfers.
+fn transfer_phase(s: &IntegrationState, n: u32) {
+    let label = format!("server phase {n}");
+    wait_within(&label, TRANSFER_PHASE_TIMEOUT, || {
+        (s.phase.get() == n).then_some(())
+    });
 }
 
 /// Waits until the server has handled every earlier command and the client
@@ -280,7 +304,7 @@ pub fn run(port: u16, scenario: &str) {
                 25u32
             });
             // The discard acknowledges key 7, so the server may already be past 24.
-            wait("server phase", || {
+            wait("server phase 24 or 25", || {
                 matches!(s.phase.get(), 24 | 25).then_some(())
             });
             assert!(s.multi.take(7).is_none());
@@ -475,13 +499,13 @@ fn file_transfers(state: &State) {
         }
     );
     let typed = typed.accept_memory(1024);
-    phase(s, 40);
+    transfer_phase(s, 40);
     assert_eq!(plain.take_data().unwrap(), b"hello");
     assert_eq!(typed.take_data().unwrap(), b"meta");
 
     s.command.set(41u32);
     wait("offer to reject", || t.files.take_offer()).reject("nope");
-    phase(s, 41);
+    transfer_phase(s, 41);
 
     s.command.set(42u32);
     let offer = wait("folder offer", || t.files.take_offer());
@@ -491,7 +515,7 @@ fn file_transfers(state: &State) {
     let dir = std::env::temp_dir().join(format!("egui_states_probe_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let handle = offer.accept_dir(&dir);
-    phase(s, 42);
+    transfer_phase(s, 42);
     wait("saved", || handle.is_finished().then_some(()));
     assert_eq!(handle.status(), egui_states::TransferStatus::Done);
     assert_eq!(std::fs::read(dir.join("run/a.txt")).unwrap(), b"alpha");
@@ -500,7 +524,7 @@ fn file_transfers(state: &State) {
     let _ = std::fs::remove_dir_all(&dir);
 
     s.command.set(43u32);
-    phase(s, 43);
+    transfer_phase(s, 43);
 }
 
 /// Uploads: the servers accept the typed endpoint's offers into memory and
