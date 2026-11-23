@@ -1,8 +1,8 @@
 use super::ViewState;
 
 pub(super) fn show_value_vec(ui: &mut egui::Ui, state: &mut ViewState) {
-    ui.collapsing("value vec", |ui| {
-        ui.label("ValueVec<i32>: root.value_vec.items");
+    ui.collapsing("vec state", |ui| {
+        ui.label("VecState<i32>: root.value_vec.items");
         ui.label(
             "Collection is display-only here. Buttons emit signals and the server mutates the data.",
         );
@@ -32,8 +32,8 @@ pub(super) fn show_value_vec(ui: &mut egui::Ui, state: &mut ViewState) {
 }
 
 pub(super) fn show_value_map(ui: &mut egui::Ui, state: &mut ViewState) {
-    ui.collapsing("value map", |ui| {
-        ui.label("ValueMap<u16, u32>: root.value_map.items");
+    ui.collapsing("map state", |ui| {
+        ui.label("MapState<u16, u32>: root.value_map.items");
         ui.label(
             "Collection is display-only here. Buttons emit signals and the server mutates the data.",
         );
