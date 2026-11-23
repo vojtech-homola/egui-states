@@ -3,7 +3,7 @@
 use std::any::Any;
 use std::fmt;
 use std::future::Future;
-use std::net::{Ipv4Addr, Ipv6Addr};
+use std::net::Ipv6Addr;
 use std::panic::AssertUnwindSafe;
 use std::pin::pin;
 use std::sync::Arc;
@@ -1131,10 +1131,10 @@ where
 {
     /// Creates the state tree and a builder targeting the server on `port`.
     ///
-    /// Without [`Self::host`] or [`Self::addr`], a native client connects to
-    /// `127.0.0.1:port`. A WASM client connects back to the host and port its
-    /// page was loaded from, so a page served by the state server reaches it
-    /// through any address, tunnel, or forwarded port; `port` is then used
+    /// Without [`Self::host`], a native client connects to `127.0.0.1:port`.
+    /// A WASM client connects back to the host and port its page was loaded
+    /// from, so a page served by the state server reaches it through any
+    /// address, tunnel, or forwarded port; `port` is then used
     /// only when the page has no host, such as a page opened from a file.
     /// WASM clients use `wss` when the page was loaded over HTTPS.
     ///
@@ -1166,13 +1166,6 @@ where
             #[cfg(all(feature = "tls", not(target_arch = "wasm32")))]
             tls: None,
         }
-    }
-
-    /// Sets the server IPv4 address.
-    ///
-    /// Equivalent to [`Self::host`] with the address.
-    pub fn addr(self, addr: Ipv4Addr) -> Self {
-        self.host(addr.to_string())
     }
 
     /// Sets the server host: a host name such as `myserver.local`, or an IPv4
@@ -1673,7 +1666,7 @@ mod tests {
             return;
         }
 
-        let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
         let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();

@@ -205,8 +205,8 @@ again after a rebuild serves the new page.
 
 A WASM client connects back to the host and port its page was loaded from (using
 `wss` for HTTPS pages), so a page served this way reaches the server through any
-address, tunnel, or forwarded port. Set the client builder's `host` or `addr` to
-connect elsewhere. When a separate development server such as `trunk serve`
+address, tunnel, or forwarded port. Set the client builder's `host` to connect
+elsewhere. When a separate development server such as `trunk serve`
 serves the page, let it forward the WebSocket to the state server; the showcase's
 `Trunk.toml` shows how.
 
