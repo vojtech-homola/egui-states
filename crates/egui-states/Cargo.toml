@@ -49,6 +49,8 @@ bytes = "1.11"
 sha2 = "0.11"
 serde = { version = "1", features = ["derive"] }
 event-listener = "5.4"
+# The server's diagnostics, and the web client's console output.
+log = { version = "0.4" }
 
 egui_states_macros = { workspace = true }
 
@@ -95,4 +97,3 @@ web-sys = { workspace = true, features = [
     "HtmlElement",
     "Node",
 ] }
-log = { version = "0.4" }

@@ -2,11 +2,10 @@
 
 State classes are normally imported by generated server bindings. The public
 types exported here represent values, signals, collections, numeric buffers,
-images, and logging levels that can be controlled from Python.
+and images that can be controlled from Python.
 """
 
 from egui_states import version
-from egui_states.logging import LogLevel
 from egui_states.server import ClientPolicy, ConnectRequest
 from egui_states.structures import (
     UNSET,
@@ -73,7 +72,6 @@ __all__ = [
     "Upload",
     "UploadWithMeta",
     "UNSET",
-    "LogLevel",
     "ClientPolicy",
     "ConnectRequest",
     "OfferedFile",

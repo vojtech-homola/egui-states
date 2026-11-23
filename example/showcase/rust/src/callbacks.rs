@@ -4,18 +4,6 @@ use egui_states::server as s;
 pub fn register_callbacks(server: &StatesServer) -> Vec<s::CallbackHandle> {
     let states = &server.states;
     let mut callbacks = Vec::new();
-    callbacks.push(server.logging.add_logger(s::LogLevel::Debug, |message| {
-        println!("Debug: {message}");
-    }));
-    callbacks.push(server.logging.add_logger(s::LogLevel::Info, |message| {
-        println!("Info: {message}");
-    }));
-    callbacks.push(server.logging.add_logger(s::LogLevel::Warning, |message| {
-        println!("Warning: {message}");
-    }));
-    callbacks.push(server.logging.add_logger(s::LogLevel::Error, |message| {
-        println!("Error: {message}");
-    }));
 
     let download = states.transfers.download.clone();
     callbacks.push(states.transfers.request_download.connect(move |mebibytes| {

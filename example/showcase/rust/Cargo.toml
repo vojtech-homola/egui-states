@@ -14,6 +14,7 @@ egui_states = { path = "../../../crates/egui-states", default-features = false, 
     "tls",
 ] }
 tokio = { workspace = true, features = ["rt", "signal"] }
+log = { workspace = true }
 
 [build-dependencies]
 egui_states = { workspace = true, features = ["build_scripts"] }

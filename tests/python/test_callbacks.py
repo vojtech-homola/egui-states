@@ -6,7 +6,6 @@ import time
 import weakref
 
 import pytest
-from egui_states.logging import LogLevel
 from egui_states import signals
 
 from egui_states_test_bindings import (  # ty: ignore[import-not-found]
@@ -19,6 +18,7 @@ from egui_states_test_bindings.enums import (  # ty: ignore[import-not-found]
 
 
 from tests.python_test_helpers.network import free_port
+from tests.python_test_helpers.logs import server_logs
 from tests.python_test_helpers.waiting import wait_until, wait_event
 from .callback_helpers import drain_callbacks
 
@@ -307,10 +307,17 @@ def test_callback_exception_does_not_stop_dispatch_or_later_events(server_bundle
         server.set_error_handler(unexpected.append)
 
 
-def test_two_workers_process_independent_states_while_one_is_blocked():
-    errors, received = [], []
+@pytest.fixture
+def logged_errors():
+    """Collect the errors the server logs, with the callback errors."""
+    errors = []
+    with server_logs(errors):
+        yield errors
+
+
+def test_two_workers_process_independent_states_while_one_is_blocked(logged_errors):
+    errors, received = logged_errors, []
     server = StatesServer(signals_workers=2, error_handler=errors.append)
-    server.logging.add_logger(LogLevel.Error, lambda message: errors.append(RuntimeError(message)))
     entered, release, other_done, finished = (threading.Event() for _ in range(4))
 
     def blocked(value):
@@ -343,11 +350,10 @@ def test_two_workers_process_independent_states_while_one_is_blocked():
     assert errors == []
 
 
-def test_one_state_never_runs_callbacks_concurrently():
+def test_one_state_never_runs_callbacks_concurrently(logged_errors):
     """Several workers may serve different states, but one state's callbacks stay serial and ordered."""
-    errors, received = [], []
+    errors, received = logged_errors, []
     server = StatesServer(signals_workers=3, error_handler=errors.append)
-    server.logging.add_logger(LogLevel.Error, lambda message: errors.append(RuntimeError(message)))
     running = threading.Lock()
     overlapped = threading.Event()
 

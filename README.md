@@ -387,6 +387,29 @@ An attempt the server does not answer fails after the client builder's
 `connect_timeout` (10 s by default). The server sends its reasons in the
 WebSocket close frame, so browser clients receive them too.
 
+## Server logging
+
+The server reports what happens to connections, such as a rejected client, a
+handshake that timed out or a failed send, through each language's standard
+logging:
+
+- Python: the `egui_states` logger of the `logging` module. Without any
+  logging configuration, Python prints warnings and errors to stderr; set the
+  logger's level or add handlers as for any library:
+
+  ```python
+  import logging
+
+  logging.getLogger("egui_states").setLevel(logging.ERROR)
+  ```
+
+- Rust: the [`log`](https://docs.rs/log) crate, target `egui_states`. The
+  messages go to the logger the application installs, such as `env_logger`
+  (`RUST_LOG=egui_states=warn`), `fern` or `tracing-subscriber`, and nowhere
+  without one.
+
+Errors from the client's side arrive separately, through `on_client_message`.
+
 ## Examples
 
 Start with the counter, then explore individual features in the showcase.

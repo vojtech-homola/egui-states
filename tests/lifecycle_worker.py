@@ -3,14 +3,24 @@
 import gc
 import threading
 import time
+import logging
 from egui_states_test_bindings import StatesServer  # ty: ignore[import-not-found]
-from egui_states.logging import LogLevel
+
+
+class _Errors(logging.Handler):
+    def __init__(self, errors: list) -> None:
+        super().__init__(logging.ERROR)
+        self.errors = errors
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.errors.append(RuntimeError(record.getMessage()))
+
 
 errors = []
+logging.getLogger("egui_states").addHandler(_Errors(errors))
 before = set(threading.enumerate())
 for _ in range(3):
     server = StatesServer(signals_workers=2, error_handler=errors.append)
-    server.logging.add_logger(LogLevel.Error, lambda message: errors.append(RuntimeError(message)))
     server.start(0, (127, 0, 0, 1))
     server.stop()
     # stop is restartable; disposal, not stop alone, is the contract under test.

@@ -454,14 +454,16 @@ def configure(states):  # noqa: PLR0915
 def run_scenario(probe, scenario):
     """Run the server and its potentially blocking callbacks in a disposable process."""
     from egui_states import ClientPolicy
-    from egui_states.logging import LogLevel
+    from tests.python_test_helpers.logs import server_logs
 
     errors, warnings = [], []
-    policy = ClientPolicy.Reject if scenario == "busy-client" else ClientPolicy.Replace
-    server = StatesServer(error_handler=errors.append, version=StatesServer.VERSION_HASH, client_policy=policy)
+    with server_logs(errors, warnings):
+        _run_scenario(probe, scenario, errors, warnings, ClientPolicy)
 
-    server.logging.add_logger(LogLevel.Error, lambda message: errors.append(RuntimeError(message)))
-    server.logging.add_logger(LogLevel.Warning, warnings.append)
+
+def _run_scenario(probe, scenario, errors, warnings, client_policy):
+    policy = client_policy.Reject if scenario == "busy-client" else client_policy.Replace
+    server = StatesServer(error_handler=errors.append, version=StatesServer.VERSION_HASH, client_policy=policy)
     configure(server.states)
     if scenario == "connect-request":
         asked = []

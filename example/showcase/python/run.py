@@ -2,6 +2,7 @@
 
 import argparse
 from collections.abc import Callable
+import logging
 from pathlib import Path
 import signal
 import threading
@@ -11,7 +12,7 @@ import numpy as np
 from showcase_bindings import ShowcaseState, StatesServer
 from showcase_bindings.enums import Command, PrimaryChoice, SecondaryChoice, Status
 from showcase_bindings.structs import HandledCommand, ImageInfo, Measurement, Point, SampleInfo, Summary
-from egui_states import LogLevel, TransferError, TransferHandle, TransferOffer, TransferStatus
+from egui_states import TransferError, TransferHandle, TransferOffer, TransferStatus
 
 PORT = 8091
 WEB_PATH = Path(__file__).resolve().parents[1] / "gui" / "web"
@@ -21,24 +22,12 @@ DEFAULT_MAP = {1: 100, 2: 200, 5: 500}
 
 # Keep the showcase's callbacks together so the example is easy to follow.
 def register_callbacks(server: StatesServer) -> None:  # noqa: PLR0915
-    """Connect logging and interactive actions to a server instance.
+    """Connect interactive actions to a server instance.
 
     Args:
         server (StatesServer): Server whose state handles receive callbacks.
     """
     states = server.states
-
-    def _print_debug(message: str) -> None:
-        print("Debug:", message)
-
-    def _print_info(message: str) -> None:
-        print("Info:", message)
-
-    def _print_warning(message: str) -> None:
-        print("Warning:", message)
-
-    def _print_error(message: str) -> None:
-        print("Error:", message)
 
     def on_ratio(value: float) -> None:
         print(f"ratio changed: {value:.3f}")
@@ -97,11 +86,6 @@ def register_callbacks(server: StatesServer) -> None:  # noqa: PLR0915
             lowest_key = min(current)
             states.value_map.items.remove_item(lowest_key)
             print(f"value_map removed key: {lowest_key}")
-
-    server.logging.add_logger(LogLevel.Debug, _print_debug)
-    server.logging.add_logger(LogLevel.Info, _print_info)
-    server.logging.add_logger(LogLevel.Warning, _print_warning)
-    server.logging.add_logger(LogLevel.Error, _print_error)
 
     def send_sample(mebibytes: int) -> None:
         # Bytes in memory keep the example self-contained; send_file sends a
@@ -298,6 +282,8 @@ def main() -> StatesServer:
     Returns:
         StatesServer: The server, still running when ``--interactive`` is used.
     """
+    # The server's diagnostics go to the "egui_states" logger.
+    logging.basicConfig(level=logging.DEBUG, format="%(levelname)s: %(message)s")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=PORT)
     parser.add_argument("--web", action="store_true", help="serve the built browser GUI on the server port")

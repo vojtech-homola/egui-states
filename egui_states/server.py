@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from egui_states._core import PyObjectType, StateServerCore, _ConnectRequest
-from egui_states.logging import LoggingSignal
+from egui_states._log import forward_logs
 from egui_states.signals import SignalsManager
 from egui_states.structures import ISubStates, _CallbackBase, _StaticBase
 from egui_states.transfer import TransferProfile
@@ -261,7 +261,7 @@ class StateServerBase[T: StatesBase]:
 
         _initialize(self._states, "root", self._server, self._signals_manager, self._states._get_obj_types())
         self._server.finalize()
-        self.logging = LoggingSignal(self._signals_manager)
+        forward_logs(self._signals_manager)
         self._on_connect: Callable[[str], Any] | None = None
         self._on_disconnect: Callable[[], Any] | None = None
         self._on_client_message: Callable[[str], Any] | None = None

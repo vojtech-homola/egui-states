@@ -1,4 +1,22 @@
+/// Prints the server's diagnostics. An application would usually install a
+/// logger crate such as `env_logger` instead.
+struct PrintLogger;
+
+impl log::Log for PrintLogger {
+    fn enabled(&self, _metadata: &log::Metadata) -> bool {
+        true
+    }
+
+    fn log(&self, record: &log::Record) {
+        println!("{}: {}", record.level(), record.args());
+    }
+
+    fn flush(&self) {}
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    log::set_logger(&PrintLogger)?;
+    log::set_max_level(log::LevelFilter::Debug);
     let mut args = std::env::args().skip(1);
     let mut port = 8091;
     let mut web = None;

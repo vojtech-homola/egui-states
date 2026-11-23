@@ -11,7 +11,41 @@ pub struct Fixture {
     pub server: StatesServer,
     callbacks: Vec<CallbackHandle>,
     errors: Arc<Mutex<Vec<String>>>,
-    warnings: Arc<Mutex<Vec<String>>>,
+    /// How many server messages were logged before this fixture.
+    logged_before: usize,
+}
+
+/// The warnings and errors the servers of this process log.
+///
+/// A logger is global, so tests running at the same time see each other's
+/// messages; CI runs the tests one at a time.
+struct ServerLogs(Mutex<Vec<(log::Level, String)>>);
+
+impl log::Log for ServerLogs {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        metadata.target() == "egui_states" && metadata.level() <= log::Level::Warn
+    }
+
+    fn log(&self, record: &log::Record) {
+        if self.enabled(record.metadata()) {
+            let message = record.args().to_string();
+            self.0.lock().unwrap().push((record.level(), message));
+        }
+    }
+
+    fn flush(&self) {}
+}
+
+static SERVER_LOGS: ServerLogs = ServerLogs(Mutex::new(Vec::new()));
+
+/// The messages logged at `level` since the first `skip` messages.
+fn logged(level: log::Level, skip: usize) -> Vec<String> {
+    let logs = SERVER_LOGS.0.lock().unwrap();
+    logs.iter()
+        .skip(skip)
+        .filter(|(logged, _)| *logged == level)
+        .map(|(_, message)| message.clone())
+        .collect()
 }
 
 type Signals = Arc<Mutex<Vec<String>>>;
@@ -416,6 +450,10 @@ fn edit_images(all: &State) -> s::Result<()> {
 impl Fixture {
     /// The server for `scenario`, which some scenarios configure.
     pub fn new(port: u16, scenario: &str) -> s::Result<Self> {
+        if log::set_logger(&SERVER_LOGS).is_ok() {
+            log::set_max_level(log::LevelFilter::Warn);
+        }
+        let logged_before = SERVER_LOGS.0.lock().unwrap().len();
         let errors = Arc::new(Mutex::new(Vec::new()));
         let on_error = errors.clone();
         let client_policy = match scenario {
@@ -450,19 +488,7 @@ impl Fixture {
             },
             choice: crate::bindings::enums::TestEnum2::Z,
         })?;
-        let on_error = errors.clone();
-        let mut callbacks = vec![server.logging.add_logger(s::LogLevel::Error, move |error| {
-            on_error.lock().unwrap().push(error.to_string())
-        })];
-        let warnings = Arc::new(Mutex::new(Vec::new()));
-        let on_warning = warnings.clone();
-        callbacks.push(
-            server
-                .logging
-                .add_logger(s::LogLevel::Warning, move |warning| {
-                    on_warning.lock().unwrap().push(warning)
-                }),
-        );
+        let mut callbacks = Vec::new();
         let signals: Signals = Arc::new(Mutex::new(Vec::new()));
         let record = signals.clone();
         callbacks.push(
@@ -692,28 +718,27 @@ impl Fixture {
             server,
             callbacks,
             errors,
-            warnings,
+            logged_before,
         })
     }
 
     pub fn assert_no_errors(&self) {
         assert!(self.errors.lock().unwrap().is_empty(), "{:?}", self.errors);
+        let logged = logged(log::Level::Error, self.logged_before);
+        assert!(logged.is_empty(), "{logged:?}");
     }
 
     /// Waits for a logged warning containing `text`.
     pub fn assert_warning(&self, text: &str) {
         let deadline = Instant::now() + Duration::from_secs(5);
-        while !self
-            .warnings
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|w| w.contains(text))
-        {
+        loop {
+            let warnings = logged(log::Level::Warn, self.logged_before);
+            if warnings.iter().any(|w| w.contains(text)) {
+                break;
+            }
             assert!(
                 Instant::now() < deadline,
-                "no warning containing {text:?}: {:?}",
-                self.warnings
+                "no warning containing {text:?}: {warnings:?}"
             );
             std::thread::sleep(Duration::from_millis(5));
         }

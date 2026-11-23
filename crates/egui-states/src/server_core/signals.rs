@@ -324,41 +324,48 @@ impl SignalsManager {
         self.values.lock().clear();
     }
 
-    fn serialize_message(level: u8, text: impl ToString) -> Result<Bytes, ()> {
-        let data = text.to_string();
-        let mut message = FastVec::<64>::new();
-        serialize_to_data(&level, &mut message)?;
-        serialize_to_data(&data, &mut message)?;
-        Ok(message.into_bytes())
+    /// Logs one of the server's diagnostics with the `log` crate, target
+    /// `egui_states`, and passes it to a registered consumer: the Python
+    /// server forwards it to Python's `logging`.
+    fn log(&self, level: log::Level, message: impl ToString) {
+        let text = message.to_string();
+        log::log!(target: "egui_states", level, "{text}");
+        if !self.is_registered(LOGGING_ID) {
+            return;
+        }
+        // The level ids the Python server maps to its own levels.
+        let id: u8 = match level {
+            log::Level::Trace | log::Level::Debug => 0,
+            log::Level::Info => 1,
+            log::Level::Warn => 2,
+            log::Level::Error => 3,
+        };
+        let mut data = FastVec::<64>::new();
+        if serialize_to_data(&id, &mut data).is_ok() && serialize_to_data(&text, &mut data).is_ok()
+        {
+            self.set(LOGGING_ID, data.into_bytes());
+        }
     }
 
     #[allow(dead_code)]
     #[inline]
     pub(crate) fn debug(&self, message: impl ToString) {
-        if let Ok(data) = Self::serialize_message(0u8, message) {
-            self.set(LOGGING_ID, data);
-        }
+        self.log(log::Level::Debug, message);
     }
 
     #[inline]
     pub(crate) fn info(&self, message: impl ToString) {
-        if let Ok(data) = Self::serialize_message(1u8, message) {
-            self.set(LOGGING_ID, data);
-        }
+        self.log(log::Level::Info, message);
     }
 
     #[inline]
     pub(crate) fn warning(&self, message: impl ToString) {
-        if let Ok(data) = Self::serialize_message(2u8, message) {
-            self.set(LOGGING_ID, data);
-        }
+        self.log(log::Level::Warn, message);
     }
 
     #[inline]
     pub(crate) fn error(&self, message: impl ToString) {
-        if let Ok(data) = Self::serialize_message(3u8, message) {
-            self.set(LOGGING_ID, data);
-        }
+        self.log(log::Level::Error, message);
     }
 
     #[inline]

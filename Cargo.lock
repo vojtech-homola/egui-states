@@ -1338,6 +1338,7 @@ dependencies = [
  "egui_states",
  "egui_states_test_process",
  "egui_states_test_schema",
+ "log",
 ]
 
 [[package]]
@@ -4011,6 +4012,7 @@ name = "showcase_server"
 version = "0.16.0"
 dependencies = [
  "egui_states",
+ "log",
  "showcase_gui_core",
  "tokio",
 ]

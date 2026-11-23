@@ -1018,14 +1018,13 @@ mod tests {
     /// server listening forever.
     #[test]
     fn callbacks_capturing_state_handles_do_not_keep_server_alive() {
-        use crate::server::{LogLevel, LoggingSignal, Signal, Value};
+        use crate::server::{Signal, Value};
 
         let server = StateServer::new().unwrap();
         let source = Value::new(&server, "root.source", 0_i32, false).unwrap();
         let target = Value::new(&server, "root.target", 0_i32, false).unwrap();
         let signal = Signal::<i32>::new(&server, "root.signal", false).unwrap();
         let empty = Signal::<()>::new(&server, "root.empty", false).unwrap();
-        let logging = LoggingSignal::new(&server);
 
         let handles = vec![
             source.connect({
@@ -1052,16 +1051,10 @@ mod tests {
                     let _ = empty.set(());
                 }
             }),
-            logging.add_logger(LogLevel::Info, {
-                let logging = logging.clone();
-                move |_| {
-                    let _ = &logging;
-                }
-            }),
         ];
         let inner = Arc::downgrade(&server.inner);
 
-        drop((server, source, target, signal, empty, logging));
+        drop((server, source, target, signal, empty));
         std::mem::forget(handles);
 
         assert!(
@@ -1074,13 +1067,12 @@ mod tests {
     /// stops it, and connecting afterwards yields an inert handle.
     #[test]
     fn state_handles_outliving_the_server_do_not_keep_it_alive() {
-        use crate::server::{LogLevel, LoggingSignal, Signal, Value};
+        use crate::server::{Signal, Value};
 
         let server = StateServer::new().unwrap();
         let value = Value::new(&server, "root.value", 1_i32, false).unwrap();
         let signal = Signal::<i32>::new(&server, "root.signal", false).unwrap();
         let empty = Signal::<()>::new(&server, "root.empty", false).unwrap();
-        let logging = LoggingSignal::new(&server);
         let inner = Arc::downgrade(&server.inner);
 
         drop(server);
@@ -1094,7 +1086,6 @@ mod tests {
             value.connect_previous(|_, _| {}),
             signal.connect(|_| {}),
             empty.connect_empty(|| {}),
-            logging.add_logger(LogLevel::Info, |_| {}),
         ];
         for handle in &handles {
             handle.disconnect();
@@ -2274,15 +2265,8 @@ mod connection_tests {
         let port = free_port();
         let server = StateServer::new().unwrap();
         server.finalize().unwrap();
-        let logging = crate::server::LoggingSignal::new(&server);
-        let (warnings, warning) = mpsc::channel();
-        let (errors, error) = mpsc::channel();
-        let _warnings = logging.add_logger(crate::server::LogLevel::Warning, move |message| {
-            let _ = warnings.send(message);
-        });
-        let _errors = logging.add_logger(crate::server::LogLevel::Error, move |message| {
-            let _ = errors.send(message);
-        });
+        let warning = crate::test_support::server_logs(log::Level::Warn);
+        let error = crate::test_support::server_logs(log::Level::Error);
         server
             .start(port, Some(Ipv4Addr::LOCALHOST), Some("secret".into()))
             .unwrap();
@@ -3854,11 +3838,7 @@ mod connection_tests {
             let port = free_port();
             let server = StateServer::with_options(options).unwrap();
             server.finalize().unwrap();
-            let logging = crate::server::LoggingSignal::new(&server);
-            let (errors, error) = mpsc::channel();
-            let _errors = logging.add_logger(crate::server::LogLevel::Error, move |message| {
-                let _ = errors.send(message);
-            });
+            let error = crate::test_support::server_logs(log::Level::Error);
             server.start_web().unwrap();
             server.start(port, Some(Ipv4Addr::LOCALHOST), None).unwrap();
 

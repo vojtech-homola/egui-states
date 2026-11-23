@@ -135,7 +135,7 @@ def test_server_restarts_on_a_different_port():
     import socket
     import pytest
     from egui_states_test_bindings import StatesServer  # ty: ignore[import-not-found]
-    from egui_states.logging import LogLevel
+    from tests.python_test_helpers.logs import server_logs
 
     # Hold both reservations together so the ports are guaranteed distinct.
     with socket.socket() as first, socket.socket() as second:
@@ -144,20 +144,20 @@ def test_server_restarts_on_a_different_port():
         first_port, second_port = first.getsockname()[1], second.getsockname()[1]
     errors = []
     server = StatesServer(signals_workers=1, error_handler=errors.append)
-    server.logging.add_logger(LogLevel.Error, lambda message: errors.append(RuntimeError(message)))
-    try:
-        server.start(first_port, (127, 0, 0, 1), "first-token")
-        assert server.is_running()
-        server.stop()
-        server.start(second_port, (127, 0, 0, 1), "second-token")
-        assert server.is_running()
-        with socket.socket() as probe:
-            with pytest.raises(OSError):
-                probe.bind(("127.0.0.1", second_port))
-        with socket.socket() as probe:
-            probe.bind(("127.0.0.1", first_port))
-    finally:
-        server.stop()
+    with server_logs(errors):
+        try:
+            server.start(first_port, (127, 0, 0, 1), "first-token")
+            assert server.is_running()
+            server.stop()
+            server.start(second_port, (127, 0, 0, 1), "second-token")
+            assert server.is_running()
+            with socket.socket() as probe:
+                with pytest.raises(OSError):
+                    probe.bind(("127.0.0.1", second_port))
+            with socket.socket() as probe:
+                probe.bind(("127.0.0.1", first_port))
+        finally:
+            server.stop()
     assert not errors, errors
 
 
