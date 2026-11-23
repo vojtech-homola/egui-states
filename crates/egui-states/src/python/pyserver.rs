@@ -308,7 +308,6 @@ impl StateServerCore {
     #[new]
     #[pyo3(signature = (
         version=None,
-        heartbeat_interval=heartbeat::DEFAULT_INTERVAL.as_secs_f64(),
         heartbeat_timeout=Some(heartbeat::DEFAULT_TIMEOUT.as_secs_f64()),
         web_path=None,
         allowed_origins=Vec::new(),
@@ -323,7 +322,6 @@ impl StateServerCore {
     #[allow(clippy::too_many_arguments)]
     fn new(
         version: Option<u64>,
-        heartbeat_interval: f64,
         heartbeat_timeout: Option<f64>,
         web_path: Option<PathBuf>,
         allowed_origins: Vec<String>,
@@ -334,8 +332,7 @@ impl StateServerCore {
         tls_cert: Option<PathBuf>,
         tls_key: Option<PathBuf>,
     ) -> PyResult<Self> {
-        let heartbeat = Heartbeat::from_secs(heartbeat_interval, heartbeat_timeout)
-            .map_err(PyValueError::new_err)?;
+        let heartbeat = Heartbeat::from_secs(heartbeat_timeout).map_err(PyValueError::new_err)?;
         let transfer_profile = TransferProfile::from_code(transfer_profile).ok_or_else(|| {
             PyValueError::new_err(format!("unknown transfer profile {transfer_profile}"))
         })?;
@@ -2178,20 +2175,9 @@ mod tests {
     ) {
         Python::initialize();
         let core = Python::attach(|py| {
-            let core = StateServerCore::new(
-                None,
-                60.0,
-                None,
-                None,
-                Vec::new(),
-                1,
-                0,
-                5.0,
-                false,
-                None,
-                None,
-            )
-            .unwrap();
+            let core =
+                StateServerCore::new(None, None, None, Vec::new(), 1, 0, 5.0, false, None, None)
+                    .unwrap();
             Py::new(py, core).unwrap()
         });
         let port = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))

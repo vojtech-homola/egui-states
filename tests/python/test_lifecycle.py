@@ -18,19 +18,11 @@ def test_heartbeat_settings_are_validated():
     import pytest
     from egui_states_test_bindings import StatesServer  # ty: ignore[import-not-found]
 
-    StatesServer(signals_workers=1, heartbeat_interval=0.5, heartbeat_timeout=2.0)
-    # A disabled heartbeat ignores its interval.
-    StatesServer(signals_workers=1, heartbeat_interval=0.0, heartbeat_timeout=None)
-    for interval, timeout in [
-        (0.0, 1.0),
-        (-1.0, 1.0),
-        (2.0, 2.0),
-        (2.0, 0.5),
-        (float("nan"), 1.0),
-        (1.0, float("inf")),
-    ]:
+    StatesServer(signals_workers=1, heartbeat_timeout=2.0)
+    StatesServer(signals_workers=1, heartbeat_timeout=None)
+    for timeout in [0.0, -1.0, float("nan"), float("inf")]:
         with pytest.raises(ValueError, match="heartbeat"):
-            StatesServer(signals_workers=1, heartbeat_interval=interval, heartbeat_timeout=timeout)
+            StatesServer(signals_workers=1, heartbeat_timeout=timeout)
 
 
 def test_transfer_profiles_are_validated():

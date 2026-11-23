@@ -68,7 +68,8 @@ as a `CloseReason`.
 The server also closes with 4006 when it disconnects the client or fails to
 synchronize a new client, and with 4007 when it stops. A client that stops
 answering is dropped by the heartbeat without a close frame, as it no longer
-reads; the client then reports `ConnectionLost`. A client attempt that gets no
+reads; the client then reports `ConnectionLost`, as it does when the server
+goes silent for the heartbeat timeout. A client attempt that gets no
 answer at all fails with `Timeout` after the client's connect timeout.
 
 A client built with reconnecting starts a new attempt by itself only after
@@ -213,14 +214,24 @@ synchronized image; keys the synchronization did not send are free at once.
 
 Waiting for acknowledgements slows the server down to the client's pace. A
 client that disappears without closing the connection would make it wait
-forever, so the server pings the client every heartbeat interval and treats a
-client that sent no frame (an acknowledgement, a value, or the automatic pong)
-for the heartbeat timeout as disconnected. The connection is then closed, also
-when a send is waiting for socket buffer space, and pending work is released as
-for any disconnect. Native clients answer pings on their network task and
-browsers answer them outside the page, so a busy UI does not count as silence.
-A client receiving a large message sends nothing until it arrives, so the
-timeout must exceed the longest transfer over the slowest expected network.
+forever, so the server pings the client every quarter of the heartbeat timeout
+and treats a client that sent no frame (an acknowledgement, a value, or the
+automatic pong) for the timeout as disconnected. The connection is then closed,
+also when a send is waiting for socket buffer space, and pending work is
+released as for any disconnect. Native clients answer pings on their network
+task and browsers answer them outside the page, so a busy UI does not count as
+silence. A client receiving a large message sends nothing until it arrives, so
+the timeout must exceed the longest transfer over the slowest expected network.
+
+The client watches the server the same way. Right after the transfer limits,
+the server sends its timeout (`Heartbeat`); at every ping it also sends a
+`KeepAlive` message if it sent the client nothing else since the previous ping.
+A ping is not enough, because a browser answers it without showing it to the
+page. A client that waits longer than the timeout for its next frame ends the
+connection as `ConnectionLost`, and its send task gets one second to finish
+before it is dropped, so a write to a dead connection cannot hold up the next
+attempt. Without the heartbeat the server sends neither message and the client
+waits indefinitely.
 
 A numeric take (`DataTake`, `DataMultiTake`) is acknowledged when it arrives,
 so a fast producer on a slow link waits for the client instead of queuing
@@ -281,7 +292,8 @@ stops them.
 `Download<M>` and `Upload<M>` move files and buffers that are not state. They
 share the WebSocket with the state messages but not its queue.
 
-**Lanes.** Each peer's writer sends a heartbeat ping first, then any queued
+**Lanes.** The server's writer sends a heartbeat ping (with its keep-alive
+message, when due) first; each peer's writer then sends any queued
 state message, and a chunk of file data only when no state message waits. On
 the server, the low-priority lane of [send priority](#send-priority) goes
 between the two, and the starvation guard described there also lets file data

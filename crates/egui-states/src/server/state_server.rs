@@ -131,17 +131,15 @@ impl StateServer {
     ///
     /// # Errors
     ///
-    /// Returns an error if the heartbeat interval is zero, the heartbeat
-    /// timeout is not greater than the interval, the web page path cannot be
-    /// made absolute (for example because it is empty), an allowed origin
+    /// Returns an error if the heartbeat timeout is zero, the web page path
+    /// cannot be made absolute (for example because it is empty), an allowed origin
     /// is malformed, or the connect request timeout is zero. With TLS, it also
     /// fails if only one of the certificate and key is given, either is given
     /// without [`ServerOptions::tls`], a file cannot be read or holds no valid
     /// PEM certificate or unencrypted key, the key does not belong to the
     /// certificate, or the `tls` feature is off.
     pub fn with_options(options: ServerOptions) -> Result<Self> {
-        let heartbeat = Heartbeat::new(options.heartbeat_interval, options.heartbeat_timeout)
-            .map_err(ServerError::new)?;
+        let heartbeat = Heartbeat::new(options.heartbeat_timeout).map_err(ServerError::new)?;
         let tls = TlsSettings {
             enabled: options.tls,
             cert: options.tls_cert.as_deref(),
@@ -984,24 +982,14 @@ mod tests {
 
     #[test]
     fn invalid_heartbeat_options_are_rejected() {
-        let second = Duration::from_secs(1);
-        for (interval, timeout) in [
-            (Duration::ZERO, Some(second)),
-            (second, Some(second)),
-            (2 * second, Some(second)),
-        ] {
-            let mut options = ServerOptions::new();
-            options.heartbeat_interval = interval;
-            options.heartbeat_timeout = timeout;
-            let Err(error) = StateServer::with_options(options) else {
-                panic!("heartbeat {interval:?}/{timeout:?} was accepted");
-            };
-            assert!(error.message().contains("heartbeat"), "{error}");
-        }
-
-        // A disabled heartbeat ignores its interval.
         let mut options = ServerOptions::new();
-        options.heartbeat_interval = Duration::ZERO;
+        options.heartbeat_timeout = Some(Duration::ZERO);
+        let Err(error) = StateServer::with_options(options) else {
+            panic!("a zero heartbeat timeout was accepted");
+        };
+        assert!(error.message().contains("heartbeat"), "{error}");
+
+        let mut options = ServerOptions::new();
         options.heartbeat_timeout = None;
         assert!(StateServer::with_options(options).is_ok());
     }
@@ -1803,27 +1791,33 @@ mod wire_tests {
             let Some(Ok(Message::Binary(mut bytes))) = response else {
                 panic!("valid handshake did not synchronize");
             };
-            // The transfer limits come first, in the same frame or alone.
-            let (limits, mut offset) = ServerHeader::deserialize(&bytes).unwrap();
-            assert!(matches!(limits, ServerHeader::TransferLimits(..)));
-            if offset == bytes.len() {
-                let Some(Ok(Message::Binary(next))) = ws.next().await else {
-                    panic!("valid handshake did not synchronize");
-                };
-                (bytes, offset) = (next, 0);
-            }
-            let (header, length) = ServerHeader::deserialize(&bytes[offset..]).unwrap();
-            offset += length;
-            match header {
-                ServerHeader::Value(_, _, length) => {
-                    assert_eq!(
-                        postcard::from_bytes::<i32>(&bytes[offset..offset + length as usize])
-                            .unwrap(),
-                        731
-                    );
+            let mut offset = 0;
+            let mut before = Vec::new();
+            let value = loop {
+                if offset == bytes.len() {
+                    let Some(Ok(Message::Binary(next))) = ws.next().await else {
+                        panic!("valid handshake did not synchronize");
+                    };
+                    (bytes, offset) = (next, 0);
                 }
-                _ => panic!("non-default state missing from sync"),
-            }
+                let (header, length) = ServerHeader::deserialize(&bytes[offset..]).unwrap();
+                offset += length;
+                if let ServerHeader::Value(_, _, length) = header {
+                    let payload = &bytes[offset..offset + length as usize];
+                    break postcard::from_bytes::<i32>(payload).unwrap();
+                }
+                before.push(header);
+            };
+            // The transfer limits and the heartbeat timeout come first, in
+            // the same frame or alone, and the state follows.
+            assert!(
+                matches!(
+                    before[..],
+                    [ServerHeader::TransferLimits(..), ServerHeader::Heartbeat(_)]
+                ),
+                "non-default state missing from sync"
+            );
+            assert_eq!(value, 731);
             ws.close(None).await.unwrap();
         } else {
             assert!(
@@ -2080,7 +2074,10 @@ mod connection_tests {
                     *length as usize
                 }
                 ServerHeader::ValueVec(.., length) => *length as usize,
-                ServerHeader::Update(_) | ServerHeader::TransferLimits(..) => 0,
+                ServerHeader::Update(_)
+                | ServerHeader::TransferLimits(..)
+                | ServerHeader::Heartbeat(_)
+                | ServerHeader::KeepAlive => 0,
                 _ => panic!("unexpected message kind in a connection test"),
             };
             messages.push((header, rest[size..size + payload].to_vec()));

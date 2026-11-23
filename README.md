@@ -306,13 +306,23 @@ Rust needs the crate's `tls` feature.
 
 ## Lost connections
 
-The server pings the connected client every 5 s and disconnects it after 20 s
-without any response, for example when the client's computer sleeps or its
-network drops without closing the connection. Server operations waiting for
-that client's acknowledgements are then released. Clients answer pings
-automatically. Change either time, or disable the heartbeat, with
-`heartbeat_interval` and `heartbeat_timeout` in the Rust `ServerOptions` or the
-Python server's constructor.
+A connection can break without either side being told, for example when the
+client's computer sleeps or the network drops. Each side then treats 20 s
+without hearing from the other as a lost connection:
+
+- The server pings the client every 5 s, which clients answer automatically,
+  and disconnects a client that stays silent. Server operations waiting for
+  that client's acknowledgements are then released.
+- The client learns the timeout when it connects. The server sends a small
+  keep-alive message every 5 s in which it sent nothing else, so a client that
+  hears nothing for 20 s ends the connection with `ConnectionLost`, also in
+  the browser, and reconnects if it was built to.
+
+Change the time with `heartbeat_timeout` in the Rust `ServerOptions` or the
+Python server's constructor; the pings follow at a quarter of it. Keep it above
+the time the largest message takes over the slowest expected network. `None`
+disables the heartbeat on both sides, for example while a debugger holds the
+client or the Rust server at a breakpoint.
 
 By default a client connects only when `client.connect()` is called, also
 after a connection ended. Build it with `.reconnect(Reconnect::default())` to

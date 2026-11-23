@@ -290,6 +290,8 @@ pub(crate) async fn handle_message(
         }
         // The connection task reads it before the server accepts the client.
         ServerHeader::ConnectPending(_) => return Ok(()),
+        // The receive loop takes the timeout; a keep-alive only has to arrive.
+        ServerHeader::Heartbeat(_) | ServerHeader::KeepAlive => return Ok(()),
         // Every transfer frame of the connection comes after it.
         ServerHeader::TransferLimits(window, chunk) => {
             let limits = TransferLimits::new(u64::from(window), chunk as usize)?;

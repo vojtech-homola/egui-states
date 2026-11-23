@@ -32,20 +32,23 @@ pub struct ServerOptions {
     pub shutdown_timeout: Duration,
     /// Handler for asynchronous errors, or `None` to print them to stderr.
     pub error_handler: Option<ErrorHandler>,
-    /// How often the server pings the connected client. Default 5 s.
+    /// How long either side of the connection may hear nothing from the
+    /// other before it treats the connection as lost. Default 20 s.
     ///
-    /// Must be greater than zero. Ignored when the heartbeat is disabled.
-    pub heartbeat_interval: Duration,
-    /// How long the connected client may send nothing before the server
-    /// treats the connection as lost and disconnects it. Default 20 s.
+    /// The server pings the client every quarter of the timeout, and clients
+    /// answer pings automatically, so this detects a client that disappeared
+    /// without closing the connection (sleeping laptop, lost network), which
+    /// would otherwise leave blocking operations waiting for its
+    /// acknowledgements. The client learns the timeout when it connects and
+    /// ends the connection with `ConnectionLost` when the server goes silent
+    /// for that long; in every quarter in which the server sent it nothing
+    /// else, the server sends a keep-alive message.
     ///
-    /// Clients answer pings automatically, so this detects clients that
-    /// disappeared without closing the connection (sleeping laptop, lost
-    /// network), which would otherwise leave blocking operations waiting for
-    /// their acknowledgements. A client stays silent while it receives a large
-    /// transfer, so keep the timeout above the time the largest message takes
-    /// over the slowest expected network. Must be greater than
-    /// [`Self::heartbeat_interval`]. `None` disables the heartbeat.
+    /// Nothing else arrives while a large message is in flight, so keep the
+    /// timeout above the time the largest message takes over the slowest
+    /// expected network. Must be greater than zero. `None` disables the
+    /// heartbeat on both sides, for example while debugging with
+    /// breakpoints.
     pub heartbeat_timeout: Option<Duration>,
     /// Directory of a static web page, such as a built WASM client, that
     /// [`StateServer::start_web`](super::StateServer::start_web) serves on the
@@ -145,7 +148,6 @@ impl Default for ServerOptions {
             signal_workers: 3,
             shutdown_timeout: Duration::from_secs(2),
             error_handler: None,
-            heartbeat_interval: heartbeat::DEFAULT_INTERVAL,
             heartbeat_timeout: Some(heartbeat::DEFAULT_TIMEOUT),
             web_path: None,
             allowed_origins: Vec::new(),

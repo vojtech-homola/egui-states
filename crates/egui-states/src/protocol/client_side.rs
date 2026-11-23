@@ -31,7 +31,9 @@ impl ServerHeader {
             Self::Update(_)
             | Self::TransferLimits(..)
             | Self::LaneMark
-            | Self::ConnectPending(_) => 0,
+            | Self::ConnectPending(_)
+            | Self::Heartbeat(_)
+            | Self::KeepAlive => 0,
         }
     }
 
@@ -79,7 +81,9 @@ impl ServerHeader {
             | Self::Transfer(..)
             | Self::TransferLimits(..)
             | Self::LaneMark
-            | Self::ConnectPending(_) => false,
+            | Self::ConnectPending(_)
+            | Self::Heartbeat(_)
+            | Self::KeepAlive => false,
         }
     }
 
@@ -99,6 +103,8 @@ impl ServerHeader {
             Self::TransferLimits(..) => "Incomplete TransferLimits message",
             Self::LaneMark => "Incomplete LaneMark message",
             Self::ConnectPending(_) => "Incomplete ConnectPending message",
+            Self::Heartbeat(_) => "Incomplete Heartbeat message",
+            Self::KeepAlive => "Incomplete KeepAlive message",
         }
     }
 

@@ -38,6 +38,14 @@ pub(crate) enum ServerHeader {
     /// client and answers within this many milliseconds. Sent before any
     /// other message; it does not mean the client is accepted.
     ConnectPending(u32),
+    /// The server's heartbeat timeout in milliseconds: a client that receives
+    /// nothing for this long treats the connection as lost. Follows
+    /// [`ServerHeader::TransferLimits`] when the heartbeat is on; without it
+    /// the client waits for the server indefinitely.
+    Heartbeat(u32),
+    /// Sent when the server had nothing else to send for a heartbeat
+    /// interval, so that the client keeps hearing from it.
+    KeepAlive,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -112,6 +120,8 @@ mod tests {
             ServerHeader::TransferLimits(1, 1),
             ServerHeader::LaneMark,
             ServerHeader::ConnectPending(1),
+            ServerHeader::Heartbeat(1),
+            ServerHeader::KeepAlive,
         ];
         for (index, header) in server.iter().enumerate() {
             let data: FastVec<32> = serialize(header).unwrap();

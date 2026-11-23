@@ -940,7 +940,6 @@ class StatesServer(StateServerBase[{root_name}]):
         signals_workers: int = 3,
         error_handler: Callable[[Exception], None] | None = None,
         version: int | None = None,
-        heartbeat_interval: float = 5.0,
         heartbeat_timeout: float | None = 20.0,
         web_path: str | PathLike[str] | None = None,
         allowed_origins: Sequence[str] = (),
@@ -961,11 +960,10 @@ class StatesServer(StateServerBase[{root_name}]):
                 the traceback-printing handler.
             version (int | None, optional): Application version required from
                 the client.
-            heartbeat_interval (float, optional): Seconds between the pings the
-                server sends to the connected client. Defaults to 5.
-            heartbeat_timeout (float | None, optional): Seconds the client may
-                send nothing before it is disconnected. ``None`` disables the
-                heartbeat. Defaults to 20.
+            heartbeat_timeout (float | None, optional): Seconds either side
+                may hear nothing from the other before it treats the
+                connection as lost. ``None`` disables the heartbeat on both
+                sides. Defaults to 20.
             web_path (str | PathLike[str] | None, optional): Directory of a
                 static web page, such as a built WASM client, that
                 ``start_web`` serves on the server port. Defaults to no page.
@@ -996,9 +994,8 @@ class StatesServer(StateServerBase[{root_name}]):
                 unencrypted private key of ``tls_cert``.
 
         Raises:
-            ValueError: If ``heartbeat_interval`` is not positive,
-                ``heartbeat_timeout`` is not greater than it, ``web_path``
-                cannot be made absolute, an allowed origin is malformed,
+            ValueError: If ``heartbeat_timeout`` is not positive,
+                ``web_path`` cannot be made absolute, an allowed origin is malformed,
                 ``transfer_profile`` is not a ``TransferProfile``,
                 ``client_policy`` is not a ``ClientPolicy``,
                 ``connect_request_timeout`` is not positive, or the TLS
@@ -1010,7 +1007,6 @@ class StatesServer(StateServerBase[{root_name}]):
             signals_workers,
             error_handler,
             version,
-            heartbeat_interval,
             heartbeat_timeout,
             web_path,
             allowed_origins,

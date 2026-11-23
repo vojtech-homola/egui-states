@@ -1,10 +1,16 @@
-//! Detection of clients that disappeared without closing the connection.
+//! Detection of a peer that disappeared without closing the connection.
 //!
-//! The server pings the client every `interval` and records when it last
-//! received any frame from it. A client that stays silent for `timeout` is
-//! disconnected. WebSocket endpoints answer pings automatically (tungstenite
-//! on native clients, the browser itself on web clients), so only a client
-//! that is gone, or whose network task is stalled, goes silent.
+//! The server pings the client every [`Heartbeat::interval`] and records when
+//! it last received any frame from it. A client that stays silent for the
+//! timeout is disconnected. WebSocket endpoints answer pings automatically
+//! (tungstenite on native clients, the browser itself on web clients), so only
+//! a client that is gone, or whose network task is stalled, goes silent.
+//!
+//! The other direction works the same way: the server tells the client its
+//! timeout when the connection starts, and in every interval in which it sent
+//! the client nothing else it sends a `KeepAlive` message, which the page of a
+//! web client sees, unlike a ping. A client that hears nothing from the server
+//! for the timeout treats the connection as lost.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -12,62 +18,62 @@ use std::time::Duration;
 
 use tokio::time::Instant;
 
-/// Default time between two pings.
-pub(crate) const DEFAULT_INTERVAL: Duration = Duration::from_secs(5);
-
-/// Default time a client may stay silent before it is disconnected.
+/// Default time a peer may stay silent before the connection counts as lost.
 pub(crate) const DEFAULT_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// The shortest and the longest time between two pings; the longest keeps
+/// the timer of a huge timeout within the clock's range.
+const MIN_INTERVAL: Duration = Duration::from_millis(1);
+const MAX_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// Validated heartbeat settings.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Heartbeat {
-    pub(crate) interval: Duration,
     pub(crate) timeout: Duration,
 }
 
 impl Heartbeat {
-    /// Validates heartbeat settings. A `None` timeout disables the heartbeat,
-    /// and the interval is then ignored.
-    pub(crate) fn new(
-        interval: Duration,
-        timeout: Option<Duration>,
-    ) -> Result<Option<Self>, String> {
-        let Some(timeout) = timeout else {
-            return Ok(None);
-        };
-        if interval.is_zero() {
-            return Err("heartbeat interval must be greater than zero".to_string());
+    /// Validates the heartbeat timeout. `None` disables the heartbeat.
+    pub(crate) fn new(timeout: Option<Duration>) -> Result<Option<Self>, String> {
+        match timeout {
+            None => Ok(None),
+            Some(timeout) if timeout.is_zero() => {
+                Err("heartbeat timeout must be greater than zero".to_string())
+            }
+            Some(timeout) => Ok(Some(Self { timeout })),
         }
-        if timeout <= interval {
-            return Err(format!(
-                "heartbeat timeout ({timeout:?}) must be greater than the interval ({interval:?})"
-            ));
-        }
-        Ok(Some(Self { interval, timeout }))
     }
 
-    /// Validates heartbeat settings given in seconds, as the Python binding
-    /// passes them.
+    /// Validates a heartbeat timeout given in seconds, as the Python binding
+    /// passes it.
     #[cfg(feature = "python")]
-    pub(crate) fn from_secs(interval: f64, timeout: Option<f64>) -> Result<Option<Self>, String> {
-        let duration = |name: &str, seconds: f64| {
-            Duration::try_from_secs_f64(seconds)
-                .map_err(|_| format!("heartbeat {name} must be a finite number of seconds >= 0"))
-        };
+    pub(crate) fn from_secs(timeout: Option<f64>) -> Result<Option<Self>, String> {
         let Some(timeout) = timeout else {
             return Ok(None);
         };
-        Self::new(
-            duration("interval", interval)?,
-            Some(duration("timeout", timeout)?),
-        )
+        let timeout = Duration::try_from_secs_f64(timeout)
+            .map_err(|_| "heartbeat timeout must be a finite number of seconds > 0".to_string())?;
+        Self::new(Some(timeout))
+    }
+
+    /// Time between two pings, and between two checks whether the client
+    /// needs a `KeepAlive`: a quarter of the timeout, so a late or lost
+    /// message does not end the connection.
+    pub(crate) fn interval(&self) -> Duration {
+        (self.timeout / 4).clamp(MIN_INTERVAL, MAX_INTERVAL)
+    }
+
+    /// The timeout in milliseconds as the client receives it, at least 1.
+    pub(crate) fn timeout_millis(&self) -> u32 {
+        u32::try_from(self.timeout.as_millis())
+            .unwrap_or(u32::MAX)
+            .max(1)
     }
 }
 
 impl Default for Heartbeat {
     fn default() -> Self {
         Self {
-            interval: DEFAULT_INTERVAL,
             timeout: DEFAULT_TIMEOUT,
         }
     }
@@ -118,57 +124,45 @@ mod tests {
     use super::*;
 
     #[test]
-    fn settings_require_a_timeout_longer_than_a_nonzero_interval() {
+    fn settings_require_a_nonzero_timeout() {
         let second = Duration::from_secs(1);
         assert_eq!(
-            Heartbeat::new(second, Some(3 * second)),
-            Ok(Some(Heartbeat {
-                interval: second,
-                timeout: 3 * second
-            }))
+            Heartbeat::new(Some(second)),
+            Ok(Some(Heartbeat { timeout: second }))
         );
-        assert_eq!(Heartbeat::new(Duration::ZERO, None), Ok(None));
-        assert!(Heartbeat::new(Duration::ZERO, Some(second)).is_err());
-        assert!(Heartbeat::new(second, Some(second)).is_err());
-        assert!(Heartbeat::new(3 * second, Some(second)).is_err());
+        assert_eq!(Heartbeat::new(None), Ok(None));
+        assert!(Heartbeat::new(Some(Duration::ZERO)).is_err());
     }
 
     #[test]
-    fn default_settings_are_valid() {
-        let heartbeat = Heartbeat::default();
-        assert_eq!(
-            Heartbeat::new(heartbeat.interval, Some(heartbeat.timeout)),
-            Ok(Some(heartbeat))
-        );
+    fn the_interval_is_a_quarter_of_the_timeout() {
+        let interval = |timeout| Heartbeat { timeout }.interval();
+        assert_eq!(Heartbeat::default().interval(), Duration::from_secs(5));
+        assert_eq!(interval(Duration::from_secs(2)), Duration::from_millis(500));
+        assert_eq!(interval(Duration::from_nanos(3)), MIN_INTERVAL);
+        assert_eq!(interval(Duration::MAX), MAX_INTERVAL);
+    }
+
+    #[test]
+    fn the_client_receives_the_timeout_in_milliseconds() {
+        let millis = |timeout| Heartbeat { timeout }.timeout_millis();
+        assert_eq!(Heartbeat::default().timeout_millis(), 20_000);
+        assert_eq!(millis(Duration::from_micros(10)), 1);
+        assert_eq!(millis(Duration::MAX), u32::MAX);
     }
 
     #[cfg(feature = "python")]
     #[test]
-    fn settings_in_seconds_reject_negative_and_non_finite_values() {
+    fn settings_in_seconds_reject_negative_zero_and_non_finite_values() {
         assert_eq!(
-            Heartbeat::from_secs(0.5, Some(2.0)),
+            Heartbeat::from_secs(Some(2.0)),
             Ok(Some(Heartbeat {
-                interval: Duration::from_millis(500),
                 timeout: Duration::from_secs(2)
             }))
         );
-        assert_eq!(Heartbeat::from_secs(f64::NAN, None), Ok(None));
-        for (interval, timeout) in [(-1.0, 2.0), (1.0, f64::INFINITY), (f64::NAN, 2.0)] {
-            assert!(Heartbeat::from_secs(interval, Some(timeout)).is_err());
+        assert_eq!(Heartbeat::from_secs(None), Ok(None));
+        for timeout in [-1.0, 0.0, f64::INFINITY, f64::NAN] {
+            assert!(Heartbeat::from_secs(Some(timeout)).is_err(), "{timeout}");
         }
-    }
-
-    #[tokio::test]
-    async fn activity_expires_only_after_a_full_silent_timeout() {
-        let activity = Activity::new();
-        let timeout = Duration::from_millis(200);
-
-        // A frame received part way through restarts the silent period.
-        tokio::time::sleep(Duration::from_millis(120)).await;
-        activity.touch();
-        let touched = Instant::now();
-        activity.expired(timeout).await;
-        assert!(touched.elapsed() >= timeout);
-        assert!(activity.silent_for() >= timeout);
     }
 }

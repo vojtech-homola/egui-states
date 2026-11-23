@@ -134,7 +134,6 @@ class StateServerBase[T: StatesBase]:
         signals_workers: int = 3,
         error_handler: Callable[[Exception], None] | None = None,
         version: int | None = None,
-        heartbeat_interval: float = 5.0,
         heartbeat_timeout: float | None = 20.0,
         web_path: str | PathLike[str] | None = None,
         allowed_origins: Sequence[str] = (),
@@ -155,16 +154,15 @@ class StateServerBase[T: StatesBase]:
                 Handler for exceptions raised while processing callbacks.
             version (int | None, optional): Application version required from
                 the client.
-            heartbeat_interval (float, optional): Seconds between the pings the
-                server sends to the connected client. Ignored when the
-                heartbeat is disabled.
-            heartbeat_timeout (float | None, optional): Seconds the client may
-                send nothing before the server treats the connection as lost
-                and disconnects it. Clients answer pings automatically, so
-                this detects clients that disappeared without closing the
-                connection. Keep it above the time the largest transfer takes
-                over the slowest expected network. ``None`` disables the
-                heartbeat.
+            heartbeat_timeout (float | None, optional): Seconds either side
+                may hear nothing from the other before it treats the
+                connection as lost. The server pings the client every quarter
+                of it and sends a keep-alive message when it has nothing else
+                to send, so this detects a peer that disappeared without
+                closing the connection. Keep it above the time the largest
+                transfer takes over the slowest expected network. ``None``
+                disables the heartbeat on both sides, for example while
+                debugging with breakpoints.
             web_path (str | PathLike[str] | None, optional): Directory of a
                 static web page, such as a built WASM client, that
                 :meth:`start_web` serves on the server port. A relative path
@@ -232,22 +230,21 @@ class StateServerBase[T: StatesBase]:
                 unencrypted private key of ``tls_cert``.
 
         Raises:
-            ValueError: If ``heartbeat_interval`` is not positive,
-                ``heartbeat_timeout`` is not greater than it, ``web_path``
-                cannot be made absolute (for example because it is empty), an
-                allowed origin is malformed, ``transfer_profile`` is not a
-                :class:`TransferProfile`, ``client_policy`` is not a
-                :class:`ClientPolicy`, ``connect_request_timeout`` is not
-                positive, only one of ``tls_cert`` and ``tls_key`` is given or
-                either without ``tls``, a TLS file holds no valid PEM
-                certificate or unencrypted key, or the key does not belong to
-                the certificate.
+            ValueError: If ``heartbeat_timeout`` is not positive,
+                ``web_path`` cannot be made absolute (for example because it
+                is empty), an allowed origin is malformed,
+                ``transfer_profile`` is not a :class:`TransferProfile`,
+                ``client_policy`` is not a :class:`ClientPolicy`,
+                ``connect_request_timeout`` is not positive, only one of
+                ``tls_cert`` and ``tls_key`` is given or either without
+                ``tls``, a TLS file holds no valid PEM certificate or
+                unencrypted key, or the key does not belong to the
+                certificate.
             OSError: If ``tls_cert`` or ``tls_key`` cannot be read, such as
                 ``FileNotFoundError`` for a missing file.
         """
         self._server = StateServerCore(
             version,
-            heartbeat_interval,
             heartbeat_timeout,
             web_path,
             list(allowed_origins),

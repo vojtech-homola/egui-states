@@ -486,6 +486,10 @@ async fn run_session(
     // A panicking send task stops the receive task; reading alone would keep
     // the connection open while nothing can be sent.
     let (abort_receive, abort_registration) = AbortHandle::new_pair();
+    // Set when the receive task ends, which bounds how long the send task
+    // may still take: on a connection the network dropped, a write can wait
+    // for buffer space forever.
+    let received = Event::new();
 
     // File transfers run for this connection only. Their control frames share
     // the message queue, so they keep their order with the state messages;
@@ -512,6 +516,7 @@ async fn run_session(
     let recv_future = {
         let (vals, client, sender) = (vals.clone(), client.clone(), sender.clone());
         let transfers = transfers.clone();
+        let received = received.clone();
         async move {
             // A shutdown stops reading at once; the send task still writes the
             // messages queued so far and closes the socket.
@@ -528,6 +533,7 @@ async fn run_session(
             transfers.detach(generation);
             // Closing the queue ends the send task.
             sender.close();
+            received.set();
             // The read is aborted only after the send task panicked, which is
             // reported instead.
             end.ok()
@@ -545,7 +551,12 @@ async fn run_session(
             // After a shutdown the queued messages get a bounded time to go
             // out; a server that stops reading cannot keep the task alive.
             let write = catch_panic(send(&mut serializer, socket_send, chunks));
-            let end = client.until_flush_deadline(write).await.unwrap_or(Ok(()));
+            let write = until(write, flush_after(&received));
+            let end = client
+                .until_flush_deadline(write)
+                .await
+                .flatten()
+                .unwrap_or(Ok(()));
             if end.is_err() {
                 abort_receive.abort();
             }
@@ -593,6 +604,11 @@ async fn run_session(
 /// The UI is repainted once per frame of messages that changed a state, after
 /// all of the frame's messages are applied, so states the server sets one
 /// after another reach the UI in one repaint.
+///
+/// Once the server has sent its heartbeat timeout, a wait for the next frame
+/// that lasts longer ends the connection as lost: the server sends a
+/// keep-alive message whenever it has nothing else to send, so only a server
+/// that is gone, or a network that dropped the connection, stays silent.
 async fn receive(
     mut socket_read: ServerReader<impl ServerFrames>,
     vals: &ValuesList,
@@ -601,7 +617,11 @@ async fn receive(
     mut message: ServerMessage,
 ) -> SessionEnd {
     let mut repaint = false;
+    let mut heartbeat = None;
     let error = loop {
+        if let ServerHeader::Heartbeat(millis) = message.0 {
+            heartbeat = Some(Duration::from_millis(millis.into()));
+        }
         repaint |= message.0.changes_state();
         if let Err(e) = handle_message(message, vals, client).await {
             let error = format!("handling message from server failed: {:?}", e);
@@ -613,7 +633,22 @@ async fn receive(
             client.update(0.);
             repaint = false;
         }
-        match socket_read.read().await {
+        // Messages left in the current frame are ready; only waiting for a
+        // new frame can take long.
+        let read = match heartbeat {
+            Some(timeout) if socket_read.frame_done() => {
+                match until(socket_read.read(), timer::sleep(timeout)).await {
+                    Some(read) => read,
+                    None => {
+                        let error = format!("The server sent nothing for {timeout:?}");
+                        print_error(&error);
+                        return SessionEnd::Closed(Some(CloseReason::ConnectionLost), Some(error));
+                    }
+                }
+            }
+            _ => socket_read.read().await,
+        };
+        match read {
             Ok(next) => message = next,
             Err(e) => break e,
         }
@@ -793,7 +828,8 @@ pub enum CloseReason {
     ClosedByServer,
     /// The server stopped.
     ServerStopped,
-    /// The connection broke, or the server closed it without a reason.
+    /// The connection broke, the server closed it without a reason, or the
+    /// server sent nothing for its heartbeat timeout.
     ConnectionLost,
 }
 
@@ -859,10 +895,20 @@ struct ClientInner {
     sender: MessageSender,
 }
 
-/// How long a shut-down client keeps writing queued messages before it drops
-/// the connection.
+/// How long a shut-down client, or one whose connection ended, keeps writing
+/// queued messages before it drops the connection.
 #[cfg(not(target_arch = "wasm32"))]
 const SHUTDOWN_FLUSH_GRACE: Duration = Duration::from_secs(1);
+
+/// Completes [`SHUTDOWN_FLUSH_GRACE`] after `event` is set. On WASM the
+/// browser buffers socket writes, so it never completes there.
+async fn flush_after(event: &Event) {
+    event.wait_async().await;
+    #[cfg(not(target_arch = "wasm32"))]
+    tokio::time::sleep(SHUTDOWN_FLUSH_GRACE).await;
+    #[cfg(target_arch = "wasm32")]
+    std::future::pending::<()>().await;
+}
 
 /// Runs `future` until it completes or `stop` does; `None` if `stop` won.
 async fn until<F: Future>(future: F, stop: impl Future) -> Option<F::Output> {
@@ -1581,6 +1627,92 @@ mod tests {
         });
         assert_eq!(*seen.lock(), [2, 3]);
         assert_eq!(status.get(), 3);
+    }
+
+    /// Frames that each arrive after a wait; `None` closes the connection.
+    /// After the last one the server stays silent.
+    struct TimedFrames(std::collections::VecDeque<(Duration, Option<ServerHeader>)>);
+
+    impl ServerFrames for TimedFrames {
+        async fn next_frame(&mut self) -> Result<bytes::Bytes, ReadError> {
+            let Some((wait, header)) = self.0.pop_front() else {
+                return std::future::pending().await;
+            };
+            tokio::time::sleep(wait).await;
+            let header = header.ok_or(ReadError::Closed(None))?;
+            let frame = crate::protocol::serialize::<_, 32>(&header).unwrap();
+            Ok(frame.into_bytes())
+        }
+    }
+
+    /// Runs `receive` on `frames` and returns how the connection ended and
+    /// after how long.
+    fn receive_timed(
+        frames: impl IntoIterator<Item = (u64, Option<ServerHeader>)>,
+    ) -> (Option<CloseReason>, String, Duration) {
+        let frames = frames
+            .into_iter()
+            .map(|(millis, header)| (Duration::from_millis(millis), header))
+            .collect();
+        let context = egui::Context::default();
+        let (sender, _receiver) = MessageSender::new();
+        let creator = StatesCreatorClient::new(sender.clone(), context.clone(), "root".into());
+        let values = creator.get_values();
+        let client = ClientCore::new(context, sender.clone());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let start = tokio::time::Instant::now();
+            let mut reader = ServerReader::new(TimedFrames(frames));
+            let first = reader.read().await.unwrap();
+            let end = receive(reader, &values, &client, &sender, first).await;
+            let SessionEnd::Closed(reason, error) = end else {
+                panic!("the receive task panicked");
+            };
+            (reason, error.unwrap_or_default(), start.elapsed())
+        })
+    }
+
+    /// A server that sent its heartbeat timeout and then nothing for that
+    /// long counts as lost.
+    #[test]
+    fn a_silent_server_is_lost_after_its_heartbeat_timeout() {
+        let (reason, error, elapsed) = receive_timed([(0, Some(ServerHeader::Heartbeat(100)))]);
+        assert_eq!(reason, Some(CloseReason::ConnectionLost));
+        assert!(error.contains("sent nothing"), "{error}");
+        assert!(
+            elapsed >= Duration::from_millis(100),
+            "lost after {elapsed:?}"
+        );
+    }
+
+    /// Keep-alive messages hold the connection open past the timeout.
+    #[test]
+    fn keep_alive_messages_keep_the_connection() {
+        let mut frames = vec![(0, Some(ServerHeader::Heartbeat(100)))];
+        frames.extend((0..6).map(|_| (50, Some(ServerHeader::KeepAlive))));
+        frames.push((0, None));
+        let (_, error, elapsed) = receive_timed(frames);
+        assert!(!error.contains("sent nothing"), "{error}");
+        assert!(
+            elapsed >= Duration::from_millis(300),
+            "ended after {elapsed:?}"
+        );
+    }
+
+    /// Without the server's heartbeat timeout the client waits as long as
+    /// the server stays silent.
+    #[test]
+    fn without_a_heartbeat_the_client_waits_for_a_silent_server() {
+        let frames = [(0, Some(ServerHeader::Update(0.0))), (300, None)];
+        let (_, error, elapsed) = receive_timed(frames);
+        assert!(!error.contains("sent nothing"), "{error}");
+        assert!(
+            elapsed >= Duration::from_millis(300),
+            "ended after {elapsed:?}"
+        );
     }
 
     /// Unreachable servers and lost connections are retried with waits that
