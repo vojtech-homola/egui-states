@@ -247,20 +247,20 @@ def edit_numeric(states):
     d.samples.set(np.array([-1.5, 0.25], dtype=np.float32))
     d.nested.buffer.set(np.array([1, 2, 3], dtype=np.uint16))
     d.nested.buffer.clear()
-    for name, dtype in [
-        ("u8", np.uint8),
-        ("i8", np.int8),
-        ("u16", np.uint16),
-        ("i16", np.int16),
-        ("u32", np.uint32),
-        ("i32", np.int32),
-        ("u64", np.uint64),
-        ("i64", np.int64),
-        ("f32", np.float32),
-        ("f64", np.float64),
+    for name, info in [
+        ("u8", np.iinfo(np.uint8)),
+        ("i8", np.iinfo(np.int8)),
+        ("u16", np.iinfo(np.uint16)),
+        ("i16", np.iinfo(np.int16)),
+        ("u32", np.iinfo(np.uint32)),
+        ("i32", np.iinfo(np.int32)),
+        ("u64", np.iinfo(np.uint64)),
+        ("i64", np.iinfo(np.int64)),
+        ("f32", np.finfo(np.float32)),
+        ("f64", np.finfo(np.float64)),
     ]:
-        info = np.iinfo(dtype) if np.issubdtype(dtype, np.integer) else np.finfo(dtype)
-        getattr(states.numeric, f"{name}_data").set(np.array([info.min, 0, info.max], dtype=dtype))
+        limits = np.array([info.min, 0, info.max], dtype=info.dtype)
+        getattr(states.numeric, f"{name}_data").set(limits)
     m = states.multi_data
     m.bytes[1].set(np.array([1, 2], dtype=np.uint8))
     m.bytes[1].add(np.array([3], dtype=np.uint8))
