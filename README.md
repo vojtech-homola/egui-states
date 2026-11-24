@@ -120,8 +120,9 @@ if state.samples.take_changed() {
 }
 ```
 
-`DataMulti` has a flag per key, `take_changed(key)`, which also reports a
-removed key, and `take_any_changed()` for the whole collection.
+`DataMulti` has a flag per key, `take_changed(key)`, which returns `None`
+while the key holds no buffer, and `take_any_changed()` for the whole
+collection, which also reports a removed key.
 
 A `ValueTake<T>` delivers a one-shot value from the server, which the UI
 consumes with `take()`. By default a new value replaces one the UI has not

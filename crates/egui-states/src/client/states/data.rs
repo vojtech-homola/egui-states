@@ -671,8 +671,9 @@ pub(crate) trait UpdateMultiData: Sync + Send {
 struct MultiStore<T, H> {
     data: NoHashMap<u32, Vec<T>>,
     headers: NoHashMap<u32, H>,
-    /// Whether the server changed a key since the UI took its flag. A key
-    /// keeps its flag after it is removed, so the removal is reported.
+    /// Whether the server changed a key since the UI took its flag. Only a
+    /// key that holds a buffer has a flag, so the keys a state had leave
+    /// nothing behind.
     changed: NoHashMap<u32, AtomicBool>,
 }
 
@@ -727,34 +728,40 @@ where
         }
     }
 
-    /// Tells whether the server changed, created or removed the buffer at
-    /// `key`, or its header, since the last call for `key`, and clears the
-    /// flag of `key`.
+    /// Tells whether the server changed or created the buffer at `key`, or
+    /// its header, since the last call for `key`, and clears the flag of
+    /// `key`. Returns `None` while `key` holds no buffer, as reading it does.
     ///
-    /// Only this call clears it; reading does not, and the flags of the other
-    /// keys and of [`Self::take_any_changed`] are separate. Call it once per
-    /// frame and key, before reading, and use the result wherever the UI
-    /// rebuilds something from that buffer: a second call in the same frame
-    /// returns `false`. After a removal it returns `true` once, and reading
-    /// the key returns `None`. The synchronization after a connection also
-    /// counts as a change.
+    /// Only this call clears the flag; reading does not, and the flags of
+    /// the other keys and of [`Self::take_any_changed`] are separate. Call it
+    /// once per frame and key, before reading, and use the result wherever
+    /// the UI rebuilds something from that buffer: a second call in the same
+    /// frame returns `Some(false)`. A removed key returns `None` for as long
+    /// as it is absent, like a key that never existed, so drop what was
+    /// built from it. A key the server creates again returns `Some(true)`,
+    /// and so does every key after the synchronization of a connection.
     ///
     /// ```no_run
     /// # fn downsample(samples: &[f32]) -> Vec<f32> { samples.to_vec() }
     /// # fn example(channels: egui_states::DataMulti<f32>, plots: &mut [Vec<f32>; 4]) {
     /// for (key, plot) in (0..).zip(plots.iter_mut()) {
-    ///     if channels.take_changed(key) {
-    ///         *plot = channels.read(key, |samples| samples.map(downsample).unwrap_or_default());
+    ///     match channels.take_changed(key) {
+    ///         Some(true) => {
+    ///             *plot = channels.read(key, |samples| samples.map(downsample).unwrap_or_default());
+    ///         }
+    ///         Some(false) => {}
+    ///         None => plot.clear(),
     ///     }
     /// }
     /// # }
     /// ```
-    pub fn take_changed(&self, key: u32) -> bool {
+    pub fn take_changed(&self, key: u32) -> Option<bool> {
         let inner = self.inner.read();
-        inner
-            .changed
-            .get(&key)
-            .is_some_and(|flag| flag.swap(false, Ordering::AcqRel))
+        if !inner.data.contains_key(&key) {
+            return None;
+        }
+        let flag = inner.changed.get(&key);
+        Some(flag.is_some_and(|flag| flag.swap(false, Ordering::AcqRel)))
     }
 
     /// Tells whether the server changed, created or removed any buffer or
@@ -773,8 +780,11 @@ where
             Some(flag) => flag.store(true, Ordering::Release),
             None => {
                 drop(inner);
-                let flag = AtomicBool::new(true);
-                self.inner.write().changed.insert(key, flag);
+                let mut inner = self.inner.write();
+                // Only a key that holds a buffer has a flag.
+                if inner.data.contains_key(&key) {
+                    inner.changed.insert(key, AtomicBool::new(true));
+                }
             }
         }
         self.any_changed.mark();
@@ -1107,19 +1117,17 @@ where
         let mut w = self.inner.write();
         w.data.remove(&index);
         w.headers.remove(&index);
+        w.changed.remove(&index);
         drop(w);
         self.buffers.lock().remove(&index);
-        self.mark(index);
+        self.any_changed.mark();
     }
 
     fn reset(&self) {
         let mut w = self.inner.write();
         w.data.clear();
         w.headers.clear();
-        // Every key is removed; the flags stay to report it.
-        for flag in w.changed.values() {
-            flag.store(true, Ordering::Release);
-        }
+        w.changed.clear();
         drop(w);
         self.buffers.lock().clear();
         self.any_changed.mark();
@@ -1544,25 +1552,26 @@ mod malformed_tests {
         assert_eq!(data.get(), None);
     }
 
-    /// Every key has its own flag, which also reports a removal, and one more
-    /// flag reports a change of any key.
+    /// Every key that holds a buffer has its own flag, and one more flag
+    /// reports a change of any key, a removal included. A key without a
+    /// buffer has none, whether it was removed or never existed.
     #[test]
     fn data_multi_flags_changes_per_key_and_for_any_key() {
         let (sender, _receiver) = MessageSender::new();
         let data = DataMulti::<u8>::new("data".to_string(), 2, sender);
-        assert!(!data.take_changed(1));
+        assert_eq!(data.take_changed(1), None);
         assert!(!data.take_any_changed());
 
         set_key(&data, 1, &[1]);
-        assert!(!data.take_changed(2));
-        assert!(data.take_changed(1));
-        assert!(!data.take_changed(1));
+        assert_eq!(data.take_changed(2), None);
+        assert_eq!(data.take_changed(1), Some(true));
+        assert_eq!(data.take_changed(1), Some(false));
         assert!(data.take_any_changed());
         assert!(!data.take_any_changed());
 
         set_key(&data, 2, &[2]);
-        assert!(!data.take_changed(1));
-        assert!(data.take_changed(2));
+        assert_eq!(data.take_changed(1), Some(false));
+        assert_eq!(data.take_changed(2), Some(true));
         assert!(data.take_any_changed());
 
         // Reading leaves the flags alone; a batch counts at its end.
@@ -1571,22 +1580,47 @@ mod malformed_tests {
         data.read_all(|_| ());
         data.update(1, (DataHeader::StartBatch(2, 0), Bytes::from_static(&[4])))
             .unwrap();
-        assert!(data.clone().take_changed(1));
+        assert_eq!(data.clone().take_changed(1), Some(true));
         data.update(1, (DataHeader::Batch(0), Bytes::new()))
             .unwrap();
-        assert!(!data.take_changed(1));
+        assert_eq!(data.take_changed(1), Some(false));
 
+        // A removed key is like one that never existed, until it is created
+        // again.
         data.remove(1);
-        assert!(data.take_changed(1));
+        assert_eq!(data.take_changed(1), None);
         assert_eq!(data.get(1), None);
-        assert!(!data.take_changed(1));
         assert!(data.take_any_changed());
+        set_key(&data, 1, &[5]);
+        assert_eq!(data.take_changed(1), Some(true));
 
+        // A reset removes every key, also for the flags.
+        data.take_any_changed();
         data.reset();
-        assert!(data.take_changed(1));
-        assert!(data.take_changed(2));
+        assert_eq!(data.take_changed(1), None);
+        assert_eq!(data.take_changed(2), None);
         assert!(data.take_any_changed());
-        assert!(!data.take_changed(3));
+        set_key(&data, 2, &[6]);
+        assert_eq!(data.take_changed(2), Some(true));
+        assert_eq!(data.take_changed(1), None);
+    }
+
+    /// Keys that come and go leave no flag behind, also when the UI never
+    /// asked about them.
+    #[test]
+    fn data_multi_keeps_flags_only_for_its_keys() {
+        let (sender, _receiver) = MessageSender::new();
+        let data = DataMulti::<u8>::new("data".to_string(), 2, sender);
+        for key in 0..100 {
+            set_key(&data, key, &[1]);
+            data.remove(key);
+        }
+        // A removal of a key that is not there creates no flag either.
+        data.remove(500);
+        assert!(data.inner.read().changed.is_empty());
+
+        set_key(&data, 7, &[1]);
+        assert_eq!(data.inner.read().changed.len(), 1);
     }
 
     #[test]
