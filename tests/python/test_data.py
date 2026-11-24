@@ -358,16 +358,26 @@ def test_multi_data_iterates_over_its_indices(local_bundle: tuple[StatesServer, 
     data[1].set(np.array([], dtype=np.uint8))
     assert list(data) == [1, 9]
     assert [data[index].get().size for index in data] == [0, 1]
+    # The handles of the same indices, alone and with their index, as a dict has.
+    assert [handle.get().size for handle in data.values()] == [0, 1]
+    assert [(index, handle.get().size) for index, handle in data.items()] == [(1, 0), (9, 1)]
+    assert len(data.values()) == len(data.items()) == len(data)
     # Iteration walks a copy, so the state can change under it.
-    for index in data:
+    for index, handle in data.items():
         data.remove_index(index)
-    assert list(data) == []
+        with pytest.raises(ValueError, match="index not found"):
+            handle.get()
+    assert list(data) == [] and list(data.values()) == [] and list(data.items()) == []
 
     # The header variant inherits the iteration.
     keyed = states.headers.keyed
     keyed[3].set(np.array([7], dtype=np.uint16), header=HeaderMeta(0.5, "y", []))
     assert list(keyed) == [3]
     assert dict.fromkeys(keyed) == {3: None}
+    # Its handles are the ones with a header.
+    header = HeaderMeta(0.5, "y", [])
+    assert [handle.get_header() for handle in keyed.values()] == [header]
+    assert [(index, handle.get_header()) for index, handle in keyed.items()] == [(3, header)]
 
 
 def test_multi_take_data_is_not_iterable(local_bundle: tuple[StatesServer, State, list[Exception]]) -> None:

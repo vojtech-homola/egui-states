@@ -968,6 +968,8 @@ class ImageMulti(_StaticBase):
     ``images[index]`` returns the handle of an index, whether it is populated
     or not. ``index in images``, ``len(images)`` and iteration cover the
     populated indices only; iteration walks a copy taken when it starts.
+    :meth:`values` and :meth:`items` return the handles of those indices, as
+    for a dict.
 
     Each image dimension is limited to 65,536 pixels, inclusive. Client renderer
     and memory limits may be smaller.
@@ -1060,6 +1062,24 @@ class ImageMulti(_StaticBase):
         """Iterate over a copy of the populated indices."""
         return iter(self.indices())
 
+    def values(self) -> Sequence[SingleImage]:
+        """Return the handles of the populated indices.
+
+        Returns:
+            Sequence[SingleImage]: The handles, in ascending order of their
+                indices.
+        """
+        return [self.get(index) for index in self.indices()]
+
+    def items(self) -> Sequence[tuple[int, SingleImage]]:
+        """Return the populated indices with their handles.
+
+        Returns:
+            Sequence[tuple[int, SingleImage]]: Pairs of an index and its handle,
+                in ascending order of the indices.
+        """
+        return [(index, self.get(index)) for index in self.indices()]
+
 
 class ImageMultiWithHeader[H](ImageMulti):
     """:class:`ImageMulti` whose images each carry a typed header ``H``.
@@ -1093,6 +1113,24 @@ class ImageMultiWithHeader[H](ImageMulti):
 
     def __getitem__(self, index: int) -> SingleImageWithHeader[H]:
         return self.get(index)
+
+    def values(self) -> Sequence[SingleImageWithHeader[H]]:
+        """Return the handles of the populated indices.
+
+        Returns:
+            Sequence[SingleImageWithHeader[H]]: The handles, in ascending order
+                of their indices.
+        """
+        return [self.get(index) for index in self.indices()]
+
+    def items(self) -> Sequence[tuple[int, SingleImageWithHeader[H]]]:
+        """Return the populated indices with their handles.
+
+        Returns:
+            Sequence[tuple[int, SingleImageWithHeader[H]]]: Pairs of an index and
+                its handle, in ascending order of the indices.
+        """
+        return [(index, self.get(index)) for index in self.indices()]
 
 
 class Map[K, V](_StaticBase):
@@ -1949,6 +1987,8 @@ class DataMulti[T: np.generic](_StaticBase):
     ``data[index]`` returns the handle of an index, whether it holds data or
     not. ``index in data``, ``len(data)`` and iteration cover the indices that
     hold data only; iteration walks a copy taken when it starts.
+    :meth:`values` and :meth:`items` return the handles of those indices, as
+    for a dict.
 
     Args:
         dtype (type[T]): One of the integer or floating-point NumPy scalar
@@ -2036,6 +2076,24 @@ class DataMulti[T: np.generic](_StaticBase):
         """Iterate over a copy of the indices that hold data."""
         return iter(self.indices())
 
+    def values(self) -> Sequence[SingleData[T]]:
+        """Return the handles of the indices that hold data.
+
+        Returns:
+            Sequence[SingleData[T]]: The handles, in ascending order of their
+                indices.
+        """
+        return [self.get(index) for index in self.indices()]
+
+    def items(self) -> Sequence[tuple[int, SingleData[T]]]:
+        """Return the indices that hold data with their handles.
+
+        Returns:
+            Sequence[tuple[int, SingleData[T]]]: Pairs of an index and its
+                handle, in ascending order of the indices.
+        """
+        return [(index, self.get(index)) for index in self.indices()]
+
 
 class DataMultiWithHeader[T: np.generic, H](DataMulti[T]):
     """:class:`DataMulti` whose buffers each carry a typed header ``H``.
@@ -2073,6 +2131,24 @@ class DataMultiWithHeader[T: np.generic, H](DataMulti[T]):
 
     def __getitem__(self, index: int) -> SingleDataWithHeader[T, H]:
         return self.get(index)
+
+    def values(self) -> Sequence[SingleDataWithHeader[T, H]]:
+        """Return the handles of the indices that hold data.
+
+        Returns:
+            Sequence[SingleDataWithHeader[T, H]]: The handles, in ascending order
+                of their indices.
+        """
+        return [self.get(index) for index in self.indices()]
+
+    def items(self) -> Sequence[tuple[int, SingleDataWithHeader[T, H]]]:
+        """Return the indices that hold data with their handles.
+
+        Returns:
+            Sequence[tuple[int, SingleDataWithHeader[T, H]]]: Pairs of an index
+                and its handle, in ascending order of the indices.
+        """
+        return [(index, self.get(index)) for index in self.indices()]
 
 
 class SingleDataTake[T: np.generic]:

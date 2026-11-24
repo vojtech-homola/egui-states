@@ -298,15 +298,23 @@ def test_image_multi_iterates_over_its_indices(local_bundle: tuple[StatesServer,
     images[2].set_all((1, 2), 0)
     assert list(images) == [2, 7]
     assert [images[index].shape() for index in images] == [(1, 2), (1, 1)]
+    # The handles of the same indices, alone and with their index, as a dict has.
+    assert [handle.shape() for handle in images.values()] == [(1, 2), (1, 1)]
+    assert [(index, handle.shape()) for index, handle in images.items()] == [(2, (1, 2)), (7, (1, 1))]
+    assert len(images.values()) == len(images.items()) == len(images)
     # Iteration walks a copy, so the state can change under it.
-    for index in images:
+    for index, _handle in images.items():
         images.remove_index(index)
-    assert list(images) == []
+    assert list(images) == [] and list(images.values()) == [] and list(images.items()) == []
 
     # The header variant inherits the iteration.
     keys = states.image.framed_keys
     keys[4].set_all((1, 1), 3, header=HeaderMeta(6.0, "f", []))
     assert list(keys) == [4]
+    # Its handles are the ones with a header.
+    header = HeaderMeta(6.0, "f", [])
+    assert [handle.get_header() for handle in keys.values()] == [header]
+    assert [(index, handle.get_header()) for index, handle in keys.items()] == [(4, header)]
 
 
 @pytest.mark.parametrize("name", ["images", "framed_keys"])
