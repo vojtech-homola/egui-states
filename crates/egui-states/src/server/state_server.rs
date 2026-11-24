@@ -2846,10 +2846,11 @@ mod connection_tests {
     }
 
     /// Waits short enough for the tests to see several attempts.
+    /// The shortest waits the client makes.
     const QUICK_RECONNECT: crate::Reconnect = crate::Reconnect {
-        delay: Duration::from_millis(20),
-        max_delay: Duration::from_millis(50),
-        busy_delay: Duration::from_millis(50),
+        delay: Duration::from_millis(100),
+        max_delay: Duration::from_millis(100),
+        busy_delay: Duration::from_millis(100),
     };
 
     /// A client that reconnects by itself, not connected yet.
@@ -2863,7 +2864,7 @@ mod connection_tests {
     /// Tells that `client` stays in `state` while it would have made several
     /// attempts.
     fn stays(client: &crate::Client, state: ConnectionState) -> bool {
-        thread::sleep(Duration::from_millis(200));
+        thread::sleep(Duration::from_millis(350));
         client.get_state() == state
     }
 

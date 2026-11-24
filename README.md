@@ -363,7 +363,8 @@ long after each failed attempt up to 5 s. A client refused as `Busy` tries
 every 5 s. Other causes, such as a version mismatch, a refusal, or another
 client taking over, wait for `connect()` as before. Between attempts
 `get_state()` reports `Reconnecting`; `connect()` tries at once and
-`disconnect()` stops. Each connection synchronizes every state from the
+`disconnect()` stops. The waits can be set in `Reconnect`; each is at least
+100 ms. Each connection synchronizes every state from the
 server, so what the UI changed while disconnected is replaced.
 
 ## One client at a time

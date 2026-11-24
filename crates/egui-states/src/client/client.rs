@@ -70,6 +70,9 @@ struct Settings {
 ///   after its heartbeat timeout, so a connection the network left half-open
 ///   frees the server in time.
 ///
+/// Every wait is at least 100 ms; a shorter one in any field counts as
+/// 100 ms.
+///
 /// Every other reason waits for [`Client::connect`], as without reconnecting:
 /// a version, token or protocol mismatch would fail again, a refusal was the
 /// server's decision, and retrying after [`CloseReason::Replaced`] would take
@@ -77,8 +80,7 @@ struct Settings {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Reconnect {
     /// How long the client waits before the first new attempt. Default
-    /// 500 ms. With a zero delay the first attempt follows at once and the
-    /// later waits grow from 50 ms.
+    /// 500 ms.
     pub delay: Duration,
     /// The longest wait between attempts. Default 5 s.
     pub max_delay: Duration,
@@ -97,9 +99,10 @@ impl Default for Reconnect {
     }
 }
 
-/// The shortest wait a failed attempt grows the next one to; see
-/// [`Reconnect::delay`].
-const MIN_RETRY_GROWTH: Duration = Duration::from_millis(50);
+/// The shortest wait before an automatic attempt, whatever the policy says:
+/// without one, a server that refuses at once would be retried in a busy
+/// loop.
+const MIN_RETRY_DELAY: Duration = Duration::from_millis(100);
 
 /// The waits of the client's automatic reconnecting.
 struct Retry {
@@ -125,19 +128,14 @@ impl Retry {
     fn after(&mut self, reason: Option<CloseReason>) -> Option<Duration> {
         let policy = self.policy?;
         match reason? {
-            CloseReason::Busy => Some(policy.busy_delay),
+            CloseReason::Busy => Some(policy.busy_delay.max(MIN_RETRY_DELAY)),
             CloseReason::Unreachable
             | CloseReason::Timeout
             | CloseReason::ConnectionLost
             | CloseReason::ServerStopped => {
-                let delay = self.delay.min(policy.max_delay);
-                // A zero delay doubled stays zero, so the waits grow from a
-                // floor: otherwise an unreachable server is retried in a
-                // busy loop.
-                self.delay = delay
-                    .saturating_mul(2)
-                    .max(MIN_RETRY_GROWTH)
-                    .min(policy.max_delay);
+                let max_delay = policy.max_delay.max(MIN_RETRY_DELAY);
+                let delay = self.delay.clamp(MIN_RETRY_DELAY, max_delay);
+                self.delay = delay.saturating_mul(2).min(max_delay);
                 Some(delay)
             }
             _ => None,
@@ -1842,25 +1840,34 @@ mod tests {
         assert_eq!(never.after(Some(CloseReason::Unreachable)), None);
     }
 
-    /// A zero delay doubled stays zero; the waits grow from a floor instead,
-    /// so an unreachable server is not retried in a busy loop.
+    /// No policy makes the client retry in a busy loop: every wait is at
+    /// least the minimum, also the first one and the one after `Busy`.
     #[test]
-    fn a_zero_reconnect_delay_still_backs_off() {
-        let policy = Reconnect {
+    fn every_reconnect_wait_has_a_minimum() {
+        let millis = |retry: &mut Retry, reason| retry.after(Some(reason)).map(|d| d.as_millis());
+        let mut never_waits = Retry::new(Some(Reconnect {
             delay: Duration::ZERO,
-            max_delay: Duration::from_millis(120),
+            max_delay: Duration::ZERO,
             busy_delay: Duration::ZERO,
-        };
-        let mut retry = Retry::new(Some(policy));
-        let mut waits = Vec::new();
-        for _ in 0..4 {
-            waits.push(retry.after(Some(CloseReason::Unreachable)).unwrap());
+        }));
+        for reason in [
+            CloseReason::Unreachable,
+            CloseReason::ConnectionLost,
+            CloseReason::Busy,
+            CloseReason::Unreachable,
+        ] {
+            assert_eq!(millis(&mut never_waits, reason), Some(100), "{reason:?}");
         }
-        assert_eq!(
-            waits,
-            [0, 50, 100, 120].map(Duration::from_millis),
-            "the first attempt is immediate, as asked"
-        );
+
+        // A short first delay still grows to the policy's longest wait.
+        let mut grows = Retry::new(Some(Reconnect {
+            delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(350),
+            busy_delay: Duration::from_secs(2),
+        }));
+        for expected in [100, 200, 350, 350] {
+            assert_eq!(millis(&mut grows, CloseReason::Unreachable), Some(expected));
+        }
     }
 
     /// A listener that accepts connections and never answers them, so a
