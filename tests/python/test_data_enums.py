@@ -306,6 +306,18 @@ def test_a_wrong_value_itself_has_no_path(local_bundle):
         states.data_enums.command.set(1.5)
 
 
+def test_a_wrong_value_whose_repr_raises_is_still_a_type_error(local_bundle):
+    """The error of ``__repr__`` does not replace the one about the value."""
+    _, states, _ = local_bundle
+
+    class Unprintable:
+        def __repr__(self):
+            raise RuntimeError("no repr")
+
+    with pytest.raises(TypeError, match=r"^Expected a variant of TestCommand, got <object>$"):
+        states.data_enums.command.set(Unprintable())
+
+
 def test_enums_with_data_as_headers(local_bundle):
     """Enums with data as Data and image headers."""
     _, states, _ = local_bundle

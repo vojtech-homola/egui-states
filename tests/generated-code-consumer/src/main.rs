@@ -86,6 +86,38 @@ mod tests {
         let reserved = keywords.reserved.get().unwrap();
         assert_eq!((reserved.from, reserved.lambda), (3, true));
         assert_eq!(keywords.global.get().unwrap(), 1);
+        let raw = keywords.r#type.get().unwrap();
+        assert_eq!((raw.r#type, raw.r#in), (5, true));
+        assert_eq!(
+            keywords.raw_command.get().unwrap(),
+            awkward_bindings::enums::RawCommand::r#match {
+                r#type: 1,
+                r#if: true
+            }
+        );
+        // The generated `Option` and `String` enums leave the standard types
+        // of their neighbours alone.
+        use awkward_bindings::enums as generated;
+        assert!(keywords.option.get().unwrap() > generated::Option::Off);
+        assert!(matches!(
+            keywords.short.get().unwrap(),
+            generated::s::Second
+        ));
+        match keywords.shadowed.get().unwrap() {
+            generated::String::r#final {
+                text,
+                maybe: Some(generated::s::Second),
+                choices,
+            } => {
+                assert_eq!(text, "text");
+                assert!(matches!(choices[..], [generated::Option::On]));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        assert_eq!(
+            keywords.shadowed_map.get().unwrap(),
+            generated::String::IntEnum([(1, "one".to_string())].into())
+        );
         assert_eq!(literals.escaped.get().unwrap(), awkward::ESCAPED);
         assert!(literals.not_a_number.get().unwrap().is_nan());
         assert_eq!(literals.positive_infinity.get().unwrap(), f64::INFINITY);

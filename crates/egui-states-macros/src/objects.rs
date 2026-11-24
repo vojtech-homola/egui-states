@@ -35,6 +35,7 @@ fn impl_struct_typed(input: TokenStream, rust_derives: &[Path]) -> TokenStream {
         unsafe impl egui_states::Typed for #ident {
             #[inline]
             fn get_type() -> egui_states::ObjectType {
+                let _guard = egui_states::TypedGuard::enter::<Self>(stringify!(#ident));
                 egui_states::ObjectType::Struct(
                     stringify!(#ident).to_string(),
                     vec![
@@ -45,6 +46,7 @@ fn impl_struct_typed(input: TokenStream, rust_derives: &[Path]) -> TokenStream {
 
             #[doc(hidden)]
             fn rust_derives() -> Vec<egui_states::RustDerive> {
+                let _guard = egui_states::TypedGuard::enter::<Self>(stringify!(#ident));
                 let mut derives = vec![egui_states::RustDerive::Struct(
                     stringify!(#ident),
                     &[#(stringify!(#rust_derives)),*],
@@ -137,6 +139,7 @@ fn impl_data_enum_typed(info: &EnumInfo, rust_derives: &[Path]) -> TokenStream {
         unsafe impl egui_states::Typed for #ident {
             #[inline]
             fn get_type() -> egui_states::ObjectType {
+                let _guard = egui_states::TypedGuard::enter::<Self>(stringify!(#ident));
                 egui_states::ObjectType::DataEnum(
                     stringify!(#ident).to_string(),
                     vec![#(#variants),*]
@@ -145,6 +148,7 @@ fn impl_data_enum_typed(info: &EnumInfo, rust_derives: &[Path]) -> TokenStream {
 
             #[doc(hidden)]
             fn rust_derives() -> Vec<egui_states::RustDerive> {
+                let _guard = egui_states::TypedGuard::enter::<Self>(stringify!(#ident));
                 let mut derives = vec![egui_states::RustDerive::Enum(
                     stringify!(#ident),
                     &[#(stringify!(#rust_derives)),*],
@@ -299,6 +303,7 @@ fn parse_struct(input: TokenStream) -> StructInfo {
             panic!("Struct fields must be named");
         }
     }
+    check_recursion("Struct", &ident, types.iter()).unwrap_or_else(|error| panic!("{error}"));
 
     StructInfo {
         ident,
@@ -370,6 +375,11 @@ fn parse_enum(input: syn::ItemEnum) -> Result<EnumInfo, String> {
     if generics.lt_token.is_some() {
         return Err("Enums with generics are not supported".to_string());
     }
+    if variants.is_empty() {
+        return Err(format!(
+            "Enum {ident} has no variants; an enum needs at least one variant to have a value"
+        ));
+    }
 
     let has_data = variants
         .iter()
@@ -404,9 +414,9 @@ fn parse_enum(input: syn::ItemEnum) -> Result<EnumInfo, String> {
         };
 
         if let VariantShape::Named(fields) = &shape {
-            check_recursion(&ident, fields.iter().map(|(_, ty)| ty))?;
+            check_recursion("Enum", &ident, fields.iter().map(|(_, ty)| ty))?;
         } else if let VariantShape::Tuple(types) = &shape {
-            check_recursion(&ident, types.iter())?;
+            check_recursion("Enum", &ident, types.iter())?;
         }
 
         let value = match &variant.discriminant {
@@ -434,32 +444,61 @@ fn parse_enum(input: syn::ItemEnum) -> Result<EnumInfo, String> {
     })
 }
 
-/// A variant field that contains the enum itself would make its type
-/// description endless.
+/// A field that contains the type itself would make its type description
+/// endless. `kind` is `Struct` or `Enum`, for the message.
+///
+/// This sees only what the item spells out. A type that reaches itself
+/// through another type or a type alias is stopped by
+/// `egui_states::TypedGuard` when it is described.
 fn check_recursion<'a>(
+    kind: &str,
     ident: &syn::Ident,
     types: impl Iterator<Item = &'a syn::Type>,
 ) -> Result<(), String> {
-    fn mentions(tokens: proc_macro2::TokenStream, ident: &syn::Ident) -> bool {
-        tokens.into_iter().any(|token| match token {
-            proc_macro2::TokenTree::Ident(name) => name == *ident || name == "Self",
-            proc_macro2::TokenTree::Group(group) => mentions(group.stream(), ident),
-            _ => false,
-        })
-    }
-
     for ty in types {
-        if mentions(quote!(#ty), ident) {
+        if names_itself(ty, ident) {
             return Err(format!(
-                "Enum {ident} cannot contain itself; recursive types are not supported"
+                "{kind} {ident} cannot contain itself; recursive types are not supported"
             ));
         }
     }
     Ok(())
 }
 
+/// Whether `ty` is the type `ident` or holds it as a type argument, an
+/// element or a tuple member. Only the bare name and `Self` count: a longer
+/// path such as `mouse::Event` is another type, and an expression such as an
+/// array length names no type.
+fn names_itself(ty: &syn::Type, ident: &syn::Ident) -> bool {
+    match ty {
+        syn::Type::Path(syn::TypePath { qself, path, .. }) => {
+            let bare = qself.is_none()
+                && path.leading_colon.is_none()
+                && path.segments.len() == 1
+                && (path.segments[0].ident == *ident || path.segments[0].ident == "Self");
+            bare || path
+                .segments
+                .iter()
+                .any(|segment| match &segment.arguments {
+                    syn::PathArguments::AngleBracketed(arguments) => {
+                        arguments.args.iter().any(|argument| match argument {
+                            syn::GenericArgument::Type(ty) => names_itself(ty, ident),
+                            _ => false,
+                        })
+                    }
+                    _ => false,
+                })
+        }
+        syn::Type::Array(array) => names_itself(&array.elem, ident),
+        syn::Type::Tuple(tuple) => tuple.elems.iter().any(|elem| names_itself(elem, ident)),
+        syn::Type::Paren(paren) => names_itself(&paren.elem, ident),
+        syn::Type::Group(group) => names_itself(&group.elem, ident),
+        _ => false,
+    }
+}
+
 fn parse_discriminant(expr: &syn::Expr) -> i32 {
-    let (negative, lit) = match expr {
+    let (negative, lit) = match crate::ungroup(expr) {
         syn::Expr::Lit(syn::ExprLit {
             lit: Lit::Int(lit), ..
         }) => (false, lit),
@@ -467,7 +506,7 @@ fn parse_discriminant(expr: &syn::Expr) -> i32 {
             op: syn::UnOp::Neg(_),
             expr,
             ..
-        }) => match expr.as_ref() {
+        }) => match crate::ungroup(expr) {
             syn::Expr::Lit(syn::ExprLit {
                 lit: Lit::Int(lit), ..
             }) => (true, lit),
@@ -486,9 +525,11 @@ fn parse_discriminant(expr: &syn::Expr) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{VariantShape, discriminant_expressions, parse_enum};
-    use proc_macro2::TokenTree;
-    use quote::ToTokens;
+    use super::{
+        VariantShape, check_recursion, discriminant_expressions, parse_discriminant, parse_enum,
+    };
+    use proc_macro2::{Delimiter, Group, TokenTree};
+    use quote::{ToTokens, quote};
 
     fn parse_error(item: syn::ItemEnum) -> String {
         match parse_enum(item) {
@@ -536,6 +577,73 @@ mod tests {
 
         let error = parse_error(syn::parse_quote! { enum Command<T> { Go(T) } });
         assert!(error.contains("generics"), "{error}");
+
+        let error = parse_error(syn::parse_quote! { enum Never {} });
+        assert!(error.contains("Enum Never has no variants"), "{error}");
+    }
+
+    fn recursion(kind: &str, name: &str, ty: syn::Type) -> Result<(), String> {
+        check_recursion(kind, &quote::format_ident!("{name}"), [ty].iter())
+    }
+
+    #[test]
+    fn a_type_that_names_itself_is_rejected() {
+        for ty in [
+            syn::parse_quote!(Node),
+            syn::parse_quote!(Self),
+            syn::parse_quote!(Vec<Node>),
+            syn::parse_quote!(Option<Vec<Self>>),
+            syn::parse_quote!(std::collections::HashMap<u8, Node>),
+            syn::parse_quote!((u8, [Node; 2])),
+            syn::parse_quote!((Node)),
+        ] {
+            let error = recursion("Struct", "Node", ty).unwrap_err();
+            assert_eq!(
+                error,
+                "Struct Node cannot contain itself; recursive types are not supported"
+            );
+        }
+        let error = parse_error(syn::parse_quote! { enum Tree { Leaf, Fork([Tree; 2]) } });
+        assert!(error.contains("Enum Tree cannot contain itself"), "{error}");
+    }
+
+    /// Only the bare name is the type itself: a path names another type, and
+    /// an array length names a constant.
+    #[test]
+    fn a_type_that_shares_its_name_is_accepted() {
+        for ty in [
+            syn::parse_quote!(mouse::Event),
+            syn::parse_quote!(Vec<mouse::Event>),
+            syn::parse_quote!(::Event),
+            syn::parse_quote!([u8; Event]),
+            syn::parse_quote!([u8; Event::LEN]),
+            syn::parse_quote!(Events),
+        ] {
+            recursion("Enum", "Event", ty).unwrap();
+        }
+        parse_enum(syn::parse_quote! { enum Event { Mouse(mouse::Event), Key { code: u32 } } })
+            .unwrap();
+        parse_enum(syn::parse_quote! { enum Data { Bytes([u8; Data]) } }).unwrap();
+    }
+
+    /// A fragment forwarded through `macro_rules!` arrives in an invisible
+    /// group, around the literal or around the whole negative number.
+    #[test]
+    fn discriminants_are_read_through_invisible_groups() {
+        let group = |tokens| TokenTree::Group(Group::new(Delimiter::None, tokens));
+        let parse = |tokens| parse_discriminant(&syn::parse2(tokens).unwrap());
+
+        let five = group(quote!(5));
+        assert_eq!(parse(quote!(#five)), 5);
+        assert_eq!(parse(quote!(-#five)), -5);
+        let minus_five = group(quote!(-5));
+        assert_eq!(parse(quote!(#minus_five)), -5);
+        let nested = group(quote!(#five));
+        assert_eq!(parse(quote!(#nested)), 5);
+
+        let info =
+            parse_enum(syn::parse_quote! { enum Mode { A = #minus_five, B, C = #five } }).unwrap();
+        assert_eq!(info.fieldless().unwrap().1, [-5, -4, 5]);
     }
 
     #[test]

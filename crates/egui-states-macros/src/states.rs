@@ -159,7 +159,19 @@ fn field_options(field: &syn::Field) -> syn::Result<FieldOptions> {
                     if options.queue.is_some() {
                         return Err(duplicate(&meta.path));
                     }
-                    let capacity = match &meta.value {
+                    let capacity = match crate::ungroup(&meta.value) {
+                        syn::Expr::Lit(syn::ExprLit {
+                            lit: syn::Lit::Int(capacity),
+                            ..
+                        }) if !matches!(capacity.suffix(), "" | "usize") => {
+                            return Err(syn::Error::new_spanned(
+                                capacity,
+                                format!(
+                                    "`queue = N` takes a `usize`; write the capacity without the `{}` suffix",
+                                    capacity.suffix()
+                                ),
+                            ));
+                        }
                         syn::Expr::Lit(syn::ExprLit {
                             lit: syn::Lit::Int(capacity),
                             ..
@@ -214,13 +226,7 @@ fn field_options(field: &syn::Field) -> syn::Result<FieldOptions> {
 /// The initial value expression; a string literal is converted with `Into`
 /// so that `init = "text"` works for `String` fields.
 fn init_expression(expr: &syn::Expr) -> proc_macro2::TokenStream {
-    // A literal forwarded through `macro_rules!` arrives in an invisible group.
-    let mut inner = expr;
-    while let syn::Expr::Group(group) = inner {
-        inner = &group.expr;
-    }
-
-    match inner {
+    match crate::ungroup(expr) {
         syn::Expr::Lit(syn::ExprLit {
             lit: syn::Lit::Str(_),
             ..
@@ -326,4 +332,100 @@ fn last_path_segment(ty: &syn::Type) -> syn::Result<&syn::PathSegment> {
     path.segments
         .last()
         .ok_or_else(|| syn::Error::new_spanned(ty, "State derive could not resolve the field type"))
+}
+
+#[cfg(test)]
+mod tests {
+    use proc_macro2::{Delimiter, Group, TokenStream, TokenTree};
+    use quote::quote;
+    use syn::parse::Parser;
+
+    use super::field_options;
+
+    /// The capacity of the `queue = N` option of a field with `attributes`,
+    /// or the message that rejects them.
+    fn queue_capacity(attributes: TokenStream) -> Result<String, String> {
+        let field = syn::Field::parse_named
+            .parse2(quote!(#attributes events: ValueTake<u8>))
+            .unwrap();
+        match field_options(&field) {
+            Ok(options) => {
+                let (_, capacity) = options.queue.expect("a queue option");
+                Ok(capacity.expect("a capacity").to_string())
+            }
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
+    #[test]
+    fn queue_capacity_is_a_usize_of_at_least_one() {
+        assert_eq!(queue_capacity(quote!(#[state(queue = 4)])).unwrap(), "4");
+        assert_eq!(
+            queue_capacity(quote!(#[state(queue = 4usize)])).unwrap(),
+            "4usize"
+        );
+
+        for (attributes, suffix) in [
+            (quote!(#[state(queue = 10u8)]), "u8"),
+            (quote!(#[state(queue = 10i32)]), "i32"),
+            // The suffix is reported first, whatever the number.
+            (quote!(#[state(queue = 0u64)]), "u64"),
+        ] {
+            assert_eq!(
+                queue_capacity(attributes).unwrap_err(),
+                format!(
+                    "`queue = N` takes a `usize`; write the capacity without the `{suffix}` suffix"
+                )
+            );
+        }
+
+        for attributes in [
+            quote!(#[state(queue = 0)]),
+            quote!(#[state(queue = 0usize)]),
+            quote!(#[state(queue = -1)]),
+            quote!(#[state(queue = 1.5)]),
+            quote!(#[state(queue = "4")]),
+            quote!(#[state(queue = N)]),
+            quote!(#[state(queue = 99999999999999999999999999)]),
+        ] {
+            assert_eq!(
+                queue_capacity(attributes).unwrap_err(),
+                "`queue = N` takes a capacity of at least 1"
+            );
+        }
+    }
+
+    /// A capacity forwarded through `macro_rules!` arrives in an invisible
+    /// group, which Syn reads through only when nothing follows the value.
+    #[test]
+    fn queue_capacity_is_read_through_an_invisible_group() {
+        let four = TokenTree::Group(Group::new(Delimiter::None, quote!(4)));
+        for attributes in [
+            quote!(#[state(queue = #four)]),
+            quote!(#[state(queue = #four,)]),
+            quote!(#[state(queue = #four, low_priority)]),
+        ] {
+            assert_eq!(queue_capacity(attributes).unwrap(), "4");
+        }
+
+        let zero = TokenTree::Group(Group::new(Delimiter::None, quote!(0)));
+        assert_eq!(
+            queue_capacity(quote!(#[state(queue = #zero,)])).unwrap_err(),
+            "`queue = N` takes a capacity of at least 1"
+        );
+    }
+
+    #[test]
+    fn a_second_queue_option_is_rejected() {
+        for attributes in [
+            quote!(#[state(queue, queue)]),
+            quote!(#[state(queue, queue = 4)]),
+            quote!(#[state(queue = 4)] #[state(queue = 4)]),
+        ] {
+            assert_eq!(
+                queue_capacity(attributes).unwrap_err(),
+                "duplicate `state` option"
+            );
+        }
+    }
 }

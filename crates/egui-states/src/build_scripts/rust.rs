@@ -31,6 +31,9 @@ enum RustTypeContext {
     Enums,
 }
 
+/// Spells `object_type` in a generated module. The standard types are named
+/// by their full paths, so that a generated enum or struct called `Option` or
+/// `String`, which shadows the prelude in its module, does not replace them.
 fn type_to_rust_type(object_type: &ObjectType, context: RustTypeContext) -> String {
     match object_type {
         ObjectType::U8 => "u8".to_string(),
@@ -44,7 +47,7 @@ fn type_to_rust_type(object_type: &ObjectType, context: RustTypeContext) -> Stri
         ObjectType::F32 => "f32".to_string(),
         ObjectType::F64 => "f64".to_string(),
         ObjectType::Bool => "bool".to_string(),
-        ObjectType::String => "String".to_string(),
+        ObjectType::String => "::std::string::String".to_string(),
         ObjectType::Empty => "()".to_string(),
         ObjectType::Enum(name, _) | ObjectType::DataEnum(name, _) => match context {
             RustTypeContext::States => format!("enums::{name}"),
@@ -71,14 +74,19 @@ fn type_to_rust_type(object_type: &ObjectType, context: RustTypeContext) -> Stri
         ObjectType::List(size, element) => {
             format!("[{}; {size}]", type_to_rust_type(element, context))
         }
-        ObjectType::Vec(element) => format!("Vec<{}>", type_to_rust_type(element, context)),
+        ObjectType::Vec(element) => {
+            format!("::std::vec::Vec<{}>", type_to_rust_type(element, context))
+        }
         ObjectType::Map(key, value) => format!(
-            "std::collections::HashMap<{}, {}>",
+            "::std::collections::HashMap<{}, {}>",
             type_to_rust_type(key, context),
             type_to_rust_type(value, context)
         ),
         ObjectType::Option(element) => {
-            format!("Option<{}>", type_to_rust_type(element, context))
+            format!(
+                "::std::option::Option<{}>",
+                type_to_rust_type(element, context)
+            )
         }
     }
 }
@@ -108,7 +116,9 @@ fn init_to_rust_value(init: &InitValue, object_type: &ObjectType) -> String {
         (InitValue::F32(value), ObjectType::F32) => float_value(*value as f64, "f32"),
         (InitValue::F64(value), ObjectType::F64) => float_value(*value, "f64"),
         (InitValue::Bool(value), ObjectType::Bool) => value.to_string(),
-        (InitValue::String(value), ObjectType::String) => format!("String::from({value:?})"),
+        (InitValue::String(value), ObjectType::String) => {
+            format!("::std::string::String::from({value:?})")
+        }
         (InitValue::Enum(variant), ObjectType::Enum(name, _)) => {
             format!("enums::{name}::{variant}")
         }
@@ -143,11 +153,14 @@ fn init_to_rust_value(init: &InitValue, object_type: &ObjectType) -> String {
             }
         }
         (InitValue::Option(None), ObjectType::Option(element)) => format!(
-            "None::<{}>",
+            "::std::option::Option::<{}>::None",
             type_to_rust_type(element, RustTypeContext::States)
         ),
         (InitValue::Option(Some(value)), ObjectType::Option(element)) => {
-            format!("Some({})", init_to_rust_value(value, element))
+            format!(
+                "::std::option::Option::Some({})",
+                init_to_rust_value(value, element)
+            )
         }
         (InitValue::Tuple(values), ObjectType::Tuple(types)) => match values.len() {
             0 => "()".to_string(),
@@ -173,7 +186,7 @@ fn init_to_rust_value(init: &InitValue, object_type: &ObjectType) -> String {
         (InitValue::Vec(values), ObjectType::Vec(element)) => {
             if values.is_empty() {
                 format!(
-                    "Vec::<{}>::new()",
+                    "::std::vec::Vec::<{}>::new()",
                     type_to_rust_type(element, RustTypeContext::States)
                 )
             } else {
@@ -182,7 +195,7 @@ fn init_to_rust_value(init: &InitValue, object_type: &ObjectType) -> String {
                     .map(|value| init_to_rust_value(value, element))
                     .collect::<Vec<_>>()
                     .join(", ");
-                format!("vec![{values}]")
+                format!("::std::vec![{values}]")
             }
         }
         (InitValue::Map(values), ObjectType::Map(key_type, value_type)) => {
@@ -199,7 +212,7 @@ fn init_to_rust_value(init: &InitValue, object_type: &ObjectType) -> String {
                 .collect::<Vec<_>>()
                 .join(", ");
             format!(
-                "std::collections::HashMap::<{}, {}>::from([{values}])",
+                "::std::collections::HashMap::<{}, {}>::from([{values}])",
                 type_to_rust_type(key_type, RustTypeContext::States),
                 type_to_rust_type(value_type, RustTypeContext::States)
             )
@@ -769,9 +782,15 @@ fn render_rust<S: State>() -> Result<(String, Option<String>, Option<String>), S
 ///
 /// # Panics
 ///
-/// Panics if a state type is defined inconsistently in different locations or
-/// conflicts with a generated symbol such as `StatesServer`, `enums`,
-/// `structs`, or `s`.
+/// Panics, before it writes a file, if the state tree cannot be generated:
+///
+/// - a state group, struct or enum is defined inconsistently in different
+///   locations, or conflicts with a generated symbol such as `StatesServer`,
+///   `enums`, `structs`, or `s`;
+/// - a state group, struct or enum has a name that the Python bindings of the
+///   same state tree could not use: a Python keyword or a raw identifier;
+/// - the unit type `()` is used anywhere but as the whole type of a `Signal`
+///   or a `ValueTake`.
 pub fn generate_rust<S: State>(directory: impl AsRef<Path>) -> Result<(), String> {
     let (states, enums, structs) = render_rust::<S>()?;
     scripts::write_generated_files(

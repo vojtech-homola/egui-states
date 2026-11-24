@@ -113,7 +113,7 @@ impl<H: HeaderValue> Image<H> {
     /// egui's `wgpu` renderer, eframe's default, ignores
     /// [`egui::TextureOptions::mipmap_mode`]; the `glow` renderer generates
     /// the mipmaps.
-    pub fn set_texture_options(&mut self, options: egui::TextureOptions) {
+    pub fn set_texture_options(&self, options: egui::TextureOptions) {
         *self.options.lock() = options;
     }
 
@@ -513,7 +513,7 @@ impl<H: HeaderValue> ImageMulti<H> {
     /// for it, a complete one or an update, and to every key created
     /// afterwards; until then a key keeps its options. Call it before
     /// connecting to cover the first images.
-    pub fn set_texture_options(&mut self, options: egui::TextureOptions) {
+    pub fn set_texture_options(&self, options: egui::TextureOptions) {
         *self.options.lock() = options;
     }
 
@@ -1203,9 +1203,9 @@ mod tests {
         let linear = egui::TextureOptions::LINEAR;
         let context = egui::Context::default();
         let (sender, _receiver) = MessageSender::new();
-        let mut image = Image::<()>::new("image".into(), 1, sender, context.clone());
+        let image = Image::<()>::new("image".into(), 1, sender, context.clone());
         let (sender, _receiver) = MessageSender::new();
-        let mut images = ImageMulti::<()>::new("images".into(), 2, sender, context.clone());
+        let images = ImageMulti::<()>::new("images".into(), 2, sender, context.clone());
         let gray = |pixels: &[u8]| pixels.to_vec();
         let set = ImageSetHeader::All([1, 1], HeaderUpdate::Keep);
         let update = ImageUpdateHeader::All([0, 0, 1, 1], HeaderUpdate::Keep);
@@ -1239,7 +1239,7 @@ mod tests {
 
         // A placeholder made after the change uses it too.
         let (sender, _receiver) = MessageSender::new();
-        let mut placeholder = Image::<()>::new("placeholder".into(), 3, sender, context.clone());
+        let placeholder = Image::<()>::new("placeholder".into(), 3, sender, context.clone());
         placeholder.set_texture_options(linear);
         placeholder
             .initialize(ColorImage::filled([1, 1], egui::Color32::BLACK))

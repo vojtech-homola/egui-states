@@ -126,12 +126,11 @@ pub(crate) enum StateType {
     Value(String, ObjectType, InitValue, bool),
     ValueTake(String, ObjectType),
     Static(String, ObjectType, InitValue),
-    /// Name and whether the field is marked for low send priority, as for the
-    /// bulk states below. A state also has low priority when a substate it
-    /// lies in is marked; that is not recorded here, so one substate type has
-    /// one definition wherever it is used.
-    /// Name, header type (`None` for an image without one) and the low send
-    /// priority mark.
+    /// Name, header type (`None` for an image without one) and whether the
+    /// field is marked for low send priority, as for the bulk states below. A
+    /// state also has low priority when a substate it lies in is marked; that
+    /// is not recorded here, so one substate type has one definition wherever
+    /// it is used.
     Image(String, Option<ObjectType>, bool),
     ImageMulti(String, Option<ObjectType>, bool),
     ValueMap(String, ObjectType, ObjectType),

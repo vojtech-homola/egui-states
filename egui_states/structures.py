@@ -3,10 +3,11 @@
 
 from __future__ import annotations
 
+import operator
 import os
 from abc import ABC, abstractmethod
 from collections.abc import Buffer, Callable, Iterator, Sequence
-from typing import Any, Final, TypeGuard
+from typing import Any, Final, SupportsIndex
 
 import numpy as np
 import numpy.typing as npt
@@ -397,9 +398,33 @@ def _header(header: object) -> tuple[object] | None:
     return None if header is UNSET else (header,)
 
 
-def _is_index(index: object) -> TypeGuard[int]:
-    """Return whether ``index`` can be a key of a multi state: an ``int`` in the ``u32`` range."""
-    return isinstance(index, int) and 0 <= index <= 0xFFFF_FFFF
+#: Largest index of a multi state, which the protocol sends as a ``u32``.
+_MAX_INDEX: Final = 0xFFFF_FFFF
+
+
+def _index(index: object) -> int:
+    """Return the index of a multi state as an ``int``.
+
+    An index is whatever :func:`operator.index` accepts: an ``int``, a
+    ``bool`` or a NumPy integer, but not a ``float`` or a ``str``.
+
+    Args:
+        index (object): The index to convert.
+
+    Returns:
+        int: The index, not checked against the ``u32`` range.
+
+    Raises:
+        TypeError: If ``index`` is not an integer.
+    """
+    if isinstance(index, SupportsIndex):
+        try:
+            return operator.index(index)
+        except TypeError:
+            # ``__index__`` alone does not make an index: an array of floats
+            # has the method, and it raises.
+            pass
+    raise TypeError("index must be an integer")
 
 
 def _image_array(data: bytearray, shape: tuple[int, int], channels: int) -> npt.NDArray[np.uint8]:
@@ -922,7 +947,9 @@ class SingleImageWithHeader[H](SingleImage):
         self._server.image_multi_set_all(self._value_id, self._index, shape, color, _header(header), wait)
 
     def set_header(self, header: H) -> None:
-        """Replace the header of this indexed image alone, as :meth:`ImageWithHeader.set_header` does.
+        """Replace the header of this indexed image alone.
+
+        It is sent and waits as :meth:`ImageWithHeader.set_header` does.
 
         Args:
             header (H): New header.
@@ -937,6 +964,10 @@ class ImageMulti(_StaticBase):
     """Sparse collection of server-controlled images indexed by integers.
 
     Each image keeps its own format, as described at :class:`Image`.
+
+    ``images[index]`` returns the handle of an index, whether it is populated
+    or not. ``index in images``, ``len(images)`` and iteration cover the
+    populated indices only; iteration walks a copy taken when it starts.
 
     Each image dimension is limited to 65,536 pixels, inclusive. Client renderer
     and memory limits may be smaller.
@@ -969,10 +1000,11 @@ class ImageMulti(_StaticBase):
 
         Returns:
             SingleImage: Handle that can create, or read ``index``.
+
+        Raises:
+            TypeError: If ``index`` is not an integer.
         """
-        if not isinstance(index, int):
-            raise TypeError("index must be an integer")
-        return SingleImage(self._server, self._value_id, index)
+        return SingleImage(self._server, self._value_id, _index(index))
 
     def is_idle(self, index: int | None = None) -> bool:
         """Return whether nothing is being sent and nothing waits.
@@ -1015,12 +1047,18 @@ class ImageMulti(_StaticBase):
         return self._server.image_multi_len(self._value_id)
 
     def __contains__(self, index: object) -> bool:
-        if not _is_index(index):
+        try:
+            index = _index(index)
+        except TypeError:
             return False
-        return self._server.image_multi_contains(self._value_id, index)
+        return 0 <= index <= _MAX_INDEX and self._server.image_multi_contains(self._value_id, index)
 
     def __getitem__(self, index: int) -> SingleImage:
         return self.get(index)
+
+    def __iter__(self) -> Iterator[int]:
+        """Iterate over a copy of the populated indices."""
+        return iter(self.indices())
 
 
 class ImageMultiWithHeader[H](ImageMulti):
@@ -1047,10 +1085,11 @@ class ImageMultiWithHeader[H](ImageMulti):
         Returns:
             SingleImageWithHeader[H]: Handle that can create, or read
                 ``index``.
+
+        Raises:
+            TypeError: If ``index`` is not an integer.
         """
-        if not isinstance(index, int):
-            raise TypeError("index must be an integer")
-        return SingleImageWithHeader(self._server, self._value_id, index)
+        return SingleImageWithHeader(self._server, self._value_id, _index(index))
 
     def __getitem__(self, index: int) -> SingleImageWithHeader[H]:
         return self.get(index)
@@ -1907,6 +1946,10 @@ class DataMulti[T: np.generic](_StaticBase):
     changes of different indices can reach the client in another order than
     they were made.
 
+    ``data[index]`` returns the handle of an index, whether it holds data or
+    not. ``index in data``, ``len(data)`` and iteration cover the indices that
+    hold data only; iteration walks a copy taken when it starts.
+
     Args:
         dtype (type[T]): One of the integer or floating-point NumPy scalar
             types supported by :class:`Data`.
@@ -1936,8 +1979,11 @@ class DataMulti[T: np.generic](_StaticBase):
 
         Returns:
             SingleData[T]: The ``SingleData`` object for the given index.
+
+        Raises:
+            TypeError: If ``index`` is not an integer.
         """
-        return SingleData(self._dtype, self._server, self._value_id, index)
+        return SingleData(self._dtype, self._server, self._value_id, _index(index))
 
     def is_idle(self, index: int | None = None) -> bool:
         """Return whether no change waits for the client.
@@ -1977,14 +2023,18 @@ class DataMulti[T: np.generic](_StaticBase):
         return self._server.data_multi_len(self._value_id)
 
     def __contains__(self, index: object) -> bool:
-        if not _is_index(index):
+        try:
+            index = _index(index)
+        except TypeError:
             return False
-        return self._server.data_multi_contains(self._value_id, index)
+        return 0 <= index <= _MAX_INDEX and self._server.data_multi_contains(self._value_id, index)
 
     def __getitem__(self, index: int) -> SingleData[T]:
-        if isinstance(index, int):
-            return self.get(index)
-        raise TypeError("index must be an integer")
+        return self.get(index)
+
+    def __iter__(self) -> Iterator[int]:
+        """Iterate over a copy of the indices that hold data."""
+        return iter(self.indices())
 
 
 class DataMultiWithHeader[T: np.generic, H](DataMulti[T]):
@@ -2015,13 +2065,14 @@ class DataMultiWithHeader[T: np.generic, H](DataMulti[T]):
 
         Returns:
             SingleDataWithHeader[T, H]: The handle for the given index.
+
+        Raises:
+            TypeError: If ``index`` is not an integer.
         """
-        return SingleDataWithHeader(self._dtype, self._server, self._value_id, index)
+        return SingleDataWithHeader(self._dtype, self._server, self._value_id, _index(index))
 
     def __getitem__(self, index: int) -> SingleDataWithHeader[T, H]:
-        if isinstance(index, int):
-            return self.get(index)
-        raise TypeError("index must be an integer")
+        return self.get(index)
 
 
 class SingleDataTake[T: np.generic]:
@@ -2126,6 +2177,10 @@ class SingleDataTakeWithHeader[T: np.generic, H](SingleDataTake[T]):
 class DataMultiTake[T: np.generic](_StaticBase):
     """Keyed one-shot numeric buffers sent to and consumed by the client.
 
+    ``data[index]`` returns the handle of an index. The server keeps no list
+    of the indices, so the state is not iterable and does not support ``in``;
+    both raise :class:`TypeError`.
+
     Args:
         dtype (type[T]): One of the integer or floating-point NumPy scalar
             types supported by :class:`Data`.
@@ -2161,8 +2216,11 @@ class DataMultiTake[T: np.generic](_StaticBase):
         Returns:
             SingleDataTake[T]: The ``SingleDataTake`` object for the given
                 index.
+
+        Raises:
+            TypeError: If ``index`` is not an integer.
         """
-        return SingleDataTake(self._dtype, self._server, self._value_id, index)
+        return SingleDataTake(self._dtype, self._server, self._value_id, _index(index))
 
     def remove_index(self, index: int) -> None:
         """Remove the given index from the DataMultiTake.
@@ -2191,9 +2249,12 @@ class DataMultiTake[T: np.generic](_StaticBase):
         self._server.data_multi_take_reset(self._value_id)
 
     def __getitem__(self, index: int) -> SingleDataTake[T]:
-        if isinstance(index, int):
-            return self.get(index)
-        raise TypeError("index must be an integer")
+        return self.get(index)
+
+    # The server keeps no list of the indices, so there is nothing to iterate
+    # over. Without this, ``iter`` and ``in`` would fall back to
+    # ``__getitem__``, which accepts every index, and never end.
+    __iter__: None = None
 
 
 class DataMultiTakeWithHeader[T: np.generic, H](DataMultiTake[T]):
@@ -2224,13 +2285,14 @@ class DataMultiTakeWithHeader[T: np.generic, H](DataMultiTake[T]):
 
         Returns:
             SingleDataTakeWithHeader[T, H]: The handle for the given index.
+
+        Raises:
+            TypeError: If ``index`` is not an integer.
         """
-        return SingleDataTakeWithHeader(self._dtype, self._server, self._value_id, index)
+        return SingleDataTakeWithHeader(self._dtype, self._server, self._value_id, _index(index))
 
     def __getitem__(self, index: int) -> SingleDataTakeWithHeader[T, H]:
-        if isinstance(index, int):
-            return self.get(index)
-        raise TypeError("index must be an integer")
+        return self.get(index)
 
 
 _TRANSFER_OFFER = 0

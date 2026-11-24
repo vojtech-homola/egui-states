@@ -157,3 +157,53 @@ required-features = ["invalid"]
 name = "typed-discriminant-overflow"
 path = "src/bin/typed-discriminant-overflow.rs"
 required-features = ["invalid"]
+
+[[bin]]
+name = "typed-recursive-struct"
+path = "src/bin/typed-recursive-struct.rs"
+required-features = ["invalid"]
+
+[[bin]]
+name = "typed-empty-enum"
+path = "src/bin/typed-empty-enum.rs"
+required-features = ["invalid"]
+
+[[bin]]
+name = "atomic-empty-enum"
+path = "src/bin/atomic-empty-enum.rs"
+required-features = ["invalid"]
+
+[[bin]]
+name = "initial-empty-enum"
+path = "src/bin/initial-empty-enum.rs"
+required-features = ["invalid"]
+
+[[bin]]
+name = "typed-serde-cfg-attr"
+path = "src/bin/typed-serde-cfg-attr.rs"
+required-features = ["invalid"]
+
+[[bin]]
+name = "typed-serde-cfg-attr-nested"
+path = "src/bin/typed-serde-cfg-attr-nested.rs"
+required-features = ["invalid"]
+
+[[bin]]
+name = "state-queue-zero"
+path = "src/bin/state-queue-zero.rs"
+required-features = ["invalid"]
+
+[[bin]]
+name = "state-queue-capacity-value"
+path = "src/bin/state-queue-capacity-value.rs"
+required-features = ["invalid"]
+
+[[bin]]
+name = "state-duplicate-queue"
+path = "src/bin/state-duplicate-queue.rs"
+required-features = ["invalid"]
+
+[[bin]]
+name = "state-queue-suffix"
+path = "src/bin/state-queue-suffix.rs"
+required-features = ["invalid"]

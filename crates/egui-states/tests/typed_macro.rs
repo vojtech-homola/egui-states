@@ -352,3 +352,202 @@ fn initial_values_of_enums_with_data_carry_their_fields() {
         InitValue::DataEnum("MoveTo", vec![InitValue::F32(0.5), InitValue::Option(None)])
     );
 }
+
+mod mouse {
+    #[egui_states::typed]
+    #[derive(Debug, PartialEq)]
+    pub enum Event {
+        Down(u8),
+        Up,
+    }
+
+    #[egui_states::typed]
+    #[derive(Debug, PartialEq)]
+    pub struct Position {
+        pub x: i32,
+    }
+}
+
+/// Shares its name with a type of another module, which it contains.
+#[egui_states::typed]
+#[derive(Debug, PartialEq)]
+enum Event {
+    Mouse(mouse::Event),
+    Key { code: u32 },
+}
+
+#[egui_states::typed]
+#[derive(Debug, PartialEq)]
+struct Position {
+    mouse: mouse::Position,
+    history: Vec<mouse::Position>,
+}
+
+/// A constant in the value namespace, named like the enum below.
+#[allow(non_upper_case_globals)]
+const Data: usize = 4;
+
+#[egui_states::typed]
+#[derive(Debug, PartialEq)]
+enum Data {
+    Bytes([u8; Data]),
+    Empty,
+}
+
+/// A type that only shares its name with one of its fields does not contain
+/// itself, for the macro and for the guard of `get_type`.
+#[test]
+fn a_type_may_contain_another_type_of_the_same_name() {
+    use egui_states::VariantFields;
+
+    assert_eq!(
+        Event::get_type(),
+        ObjectType::DataEnum(
+            "Event".to_string(),
+            vec![
+                (
+                    "Mouse".to_string(),
+                    VariantFields::Tuple(vec![mouse::Event::get_type()])
+                ),
+                (
+                    "Key".to_string(),
+                    VariantFields::Named(vec![("code".to_string(), ObjectType::U32)])
+                ),
+            ],
+        )
+    );
+    assert_eq!(
+        Event::rust_derives(),
+        [
+            RustDerive::Enum("Event", &[]),
+            RustDerive::Enum("Event", &[])
+        ]
+    );
+    assert_round_trip(Event::Mouse(mouse::Event::Down(2)));
+
+    let position = ObjectType::Struct(
+        "Position".to_string(),
+        vec![("x".to_string(), ObjectType::I32)],
+    );
+    assert_eq!(
+        Position::get_type(),
+        ObjectType::Struct(
+            "Position".to_string(),
+            vec![
+                ("mouse".to_string(), position.clone()),
+                ("history".to_string(), ObjectType::Vec(Box::new(position))),
+            ],
+        )
+    );
+    assert_eq!(Position::rust_derives().len(), 3);
+
+    assert_eq!(
+        Data::get_type(),
+        ObjectType::DataEnum(
+            "Data".to_string(),
+            vec![
+                (
+                    "Bytes".to_string(),
+                    VariantFields::Tuple(vec![ObjectType::List(4, Box::new(ObjectType::U8))])
+                ),
+                ("Empty".to_string(), VariantFields::Unit),
+            ],
+        )
+    );
+}
+
+/// Forwards discriminants the way a `macro_rules!` generated enum does.
+macro_rules! forwarded_enum {
+    ($name:ident, $first:expr, $second:expr) => {
+        #[egui_states::typed]
+        #[derive(Debug, PartialEq)]
+        enum $name {
+            First = $first,
+            Second = $second,
+            Third,
+        }
+    };
+}
+
+forwarded_enum!(ForwardedEnum, 3, -7);
+
+#[test]
+fn typed_attribute_reads_discriminants_forwarded_by_a_macro() {
+    assert_eq!(
+        ForwardedEnum::get_type(),
+        ObjectType::Enum(
+            "ForwardedEnum".to_string(),
+            vec![
+                ("First".to_string(), 3),
+                ("Second".to_string(), -7),
+                ("Third".to_string(), -6),
+            ],
+        )
+    );
+    assert_eq!(ForwardedEnum::Third as i32, -6);
+}
+
+/// Two types that contain each other; neither names itself.
+#[egui_states::typed]
+struct Ping {
+    pongs: Vec<Pong>,
+}
+
+#[egui_states::typed]
+enum Pong {
+    Last,
+    Back(Option<Ping>),
+}
+
+/// Hides the type from the macro, which sees only the alias.
+type Itself = Looped;
+
+#[egui_states::typed]
+struct Looped {
+    again: Vec<Itself>,
+}
+
+/// The message of the panic of `describe`.
+fn description_panic<R>(describe: fn() -> R) -> String {
+    let panic = std::panic::catch_unwind(describe)
+        .err()
+        .expect("the type was described");
+    *panic.downcast::<String>().expect("a formatted message")
+}
+
+/// A type the macro cannot see containing itself is stopped when it is
+/// described, with its name instead of a stack overflow.
+#[test]
+fn describing_an_indirectly_recursive_type_panics() {
+    const UNSUPPORTED: &str = "contains itself; recursive types are not supported by `#[typed]`";
+
+    assert_eq!(
+        description_panic(Ping::get_type),
+        format!("Type Ping {UNSUPPORTED}")
+    );
+    assert_eq!(
+        description_panic(Pong::get_type),
+        format!("Type Pong {UNSUPPORTED}")
+    );
+    assert_eq!(
+        description_panic(Ping::rust_derives),
+        format!("Type Ping {UNSUPPORTED}")
+    );
+    assert_eq!(
+        description_panic(Looped::get_type),
+        format!("Type Looped {UNSUPPORTED}")
+    );
+    assert_eq!(
+        description_panic(Looped::rust_derives),
+        format!("Type Looped {UNSUPPORTED}")
+    );
+
+    // The panics left nothing behind: the same type is rejected again, and
+    // others are described as before.
+    assert_eq!(
+        description_panic(Ping::get_type),
+        format!("Type Ping {UNSUPPORTED}")
+    );
+    assert_eq!(DerivedOuter::rust_derives().len(), 3);
+    assert!(matches!(MacroCommand::get_type(), ObjectType::DataEnum(..)));
+}

@@ -492,8 +492,8 @@ fn bindings_carry_data_header_types() {
     for expected in [
         "s::Data<f32, structs::GeneratedOuter>",
         "s::DataMulti<u8, enums::GeneratedEnum>",
-        "s::DataTake<u16, (u32, String)>",
-        "s::DataMultiTake<i64, Vec<u8>>",
+        "s::DataTake<u16, (u32, ::std::string::String)>",
+        "s::DataMultiTake<i64, ::std::vec::Vec<u8>>",
         "s::Data<u8>",
         "s::Data::<f32, structs::GeneratedOuter>::new(",
     ] {
@@ -542,10 +542,10 @@ fn bindings_carry_image_header_types() {
     let structs = std::fs::read_to_string(dir.join("structs.rs")).unwrap();
     for expected in [
         "pub image: s::Image<structs::GeneratedOuter>,",
-        "pub images: s::ImageMulti<(u32, String)>,",
+        "pub images: s::ImageMulti<(u32, ::std::string::String)>,",
         "pub plain: s::Image,",
         "s::Image::<structs::GeneratedOuter>::new(server, format!(\"{parent}.image\"), false)?",
-        "s::ImageMulti::<(u32, String)>::new(server, format!(\"{parent}.images\"), true)?",
+        "s::ImageMulti::<(u32, ::std::string::String)>::new(server, format!(\"{parent}.images\"), true)?",
         "s::Image::new(server, format!(\"{parent}.plain\"), false)?",
     ] {
         assert!(rust.contains(expected), "missing {expected} in\n{rust}");
@@ -612,7 +612,7 @@ fn bindings_carry_enums_with_data() {
     let (rust, enums) = (read("mod.rs"), read("enums.rs"));
     for expected in [
         "s::Value::new(server, format!(\"{parent}.command\"), enums::GeneratedCommand::MoveTo { x: 0.5f32, inner: structs::GeneratedInner { enabled: true } }, false)?",
-        "s::Static::new(server, format!(\"{parent}.fixed\"), enums::GeneratedCommand::Pair(3u8, String::from(\"three\")))?",
+        "s::Static::new(server, format!(\"{parent}.fixed\"), enums::GeneratedCommand::Pair(3u8, ::std::string::String::from(\"three\")))?",
         "pub data: s::Data<u8, enums::GeneratedCommand>,",
     ] {
         assert!(rust.contains(expected), "missing {expected} in\n{rust}");
@@ -622,7 +622,7 @@ fn bindings_carry_enums_with_data() {
         "    Stop,\n",
         "    MoveTo {\n        /// Generated `x` field.\n        x: f32,\n        /// Generated `inner` field.\n        inner: super::structs::GeneratedInner,\n    },",
         "    Wrap(GeneratedEnum),",
-        "    Pair(u8, String),",
+        "    Pair(u8, ::std::string::String),",
         "    Type,\n",
         "pub enum GeneratedEnum {",
     ] {
@@ -646,14 +646,17 @@ fn bindings_carry_enums_with_data() {
     // `Type` makes way for the union of the variants.
     for expected in [
         "from __future__ import annotations\n",
-        "class GeneratedEnum(IntEnum):",
-        "class GeneratedCommand(s._CustomEnum):",
-        "    @final\n    @dataclass(frozen=True, slots=True)\n    class Stop:\n        \"\"\"Protocol variant ``GeneratedCommand.Stop``.\"\"\"\n\n    @final",
-        "    @dataclass(frozen=True, slots=True)\n    class MoveTo:\n",
+        // The module's own imports have private names, which no enum or
+        // variant can take.
+        "from dataclasses import dataclass as _dataclass\nfrom enum import IntEnum as _IntEnum\nfrom typing import final as _final\n\nimport egui_states.structures as _s\n\nfrom . import structs\n",
+        "class GeneratedEnum(_IntEnum):",
+        "class GeneratedCommand(_s._CustomEnum):",
+        "    @_final\n    @_dataclass(frozen=True, slots=True)\n    class Stop:\n        \"\"\"Protocol variant ``GeneratedCommand.Stop``.\"\"\"\n\n    @_final",
+        "    @_dataclass(frozen=True, slots=True)\n    class MoveTo:\n",
         "        x: float\n        inner: structs.GeneratedInner\n",
-        "    @dataclass(frozen=True, slots=True, repr=False)\n    class Wrap(s._TupleVariant):\n",
+        "    @_dataclass(frozen=True, slots=True, repr=False)\n    class Wrap(_s._TupleVariant):\n",
         "        _0: GeneratedEnum\n",
-        "    class Pair(s._TupleVariant):\n",
+        "    class Pair(_s._TupleVariant):\n",
         "        _0: int\n        _1: str\n",
         "    class Type_:\n",
         "    type Type = Stop | MoveTo | Wrap | Pair | Type_\n",
@@ -1032,6 +1035,7 @@ fn a_state_with_only_enums_or_only_structs_imports_just_that_module() {
     generate_python::<OnlyEnums>(dir.join("python")).unwrap();
     let read = |file: &str| std::fs::read_to_string(dir.join(file)).unwrap();
     assert!(read("python/__init__.py").contains("\nfrom . import enums\n"));
+    assert!(read("python/enums.py").contains("\nfrom enum import IntEnum as _IntEnum\n"));
     assert!(
         read("mod.rs").contains("pub mod enums;") && !read("mod.rs").contains("pub mod structs;")
     );
@@ -1051,4 +1055,608 @@ fn a_state_with_only_enums_or_only_structs_imports_just_that_module() {
     assert!(dir.join("structs.rs").exists() && !dir.join("enums.rs").exists());
     assert!(dir.join("python/structs.py").exists() && !dir.join("python/enums.py").exists());
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The message of the panic with which `generate` rejects a state tree, after
+/// checking that it wrote nothing into `dir`.
+fn rejection(dir: PathBuf, generate: impl FnOnce(&PathBuf) -> Result<(), String>) -> String {
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| generate(&dir)))
+        .expect_err("the state tree was generated");
+    assert!(!dir.exists(), "{} was written", dir.display());
+    match panic.downcast::<String>() {
+        Ok(message) => *message,
+        Err(panic) => panic
+            .downcast::<&str>()
+            .map(|message| message.to_string())
+            .expect("a panic message"),
+    }
+}
+
+/// The messages of both generators rejecting the state tree `S`.
+fn rejections<S: State>(name: &str) -> [String; 2] {
+    [
+        rejection(output_dir(name, 0), |dir| generate_python::<S>(dir)),
+        rejection(output_dir(name, 1), |dir| generate_rust::<S>(dir)),
+    ]
+}
+
+/// A unit in a variant, as in `Cmd::A(())`.
+#[egui_states::typed]
+#[derive(Clone, Default, PartialEq, egui_states::InitialValue)]
+enum UnitInVariant {
+    #[default]
+    Stop,
+    Empty(()),
+}
+
+#[egui_states::typed]
+#[derive(Clone, Default, PartialEq, egui_states::InitialValue)]
+enum UnitInNamedVariant {
+    #[default]
+    Stop,
+    Empty {
+        nothing: (),
+    },
+}
+
+#[egui_states::typed]
+#[derive(Clone, Default, PartialEq, egui_states::InitialValue)]
+struct UnitInStruct {
+    nothing: (),
+}
+
+/// A state tree with the one state `state`, of the handle type `H`.
+struct OneState<H>(std::marker::PhantomData<H>);
+
+macro_rules! one_state {
+    ($($handle:ty => |$c:ident| $create:expr),* $(,)?) => {$(
+        impl State for OneState<$handle> {
+            const NAME: &'static str = "OneState";
+
+            fn new($c: &mut impl StatesCreator) -> Self {
+                let _: $handle = $create;
+                Self(std::marker::PhantomData)
+            }
+        }
+    )*};
+}
+
+one_state! {
+    Value<UnitInVariant> => |c| c.value("state", Default::default()),
+    Static<UnitInNamedVariant> => |c| c.add_static("state", Default::default()),
+    Signal<UnitInStruct> => |c| c.signal("state"),
+    ValueTake<Option<()>> => |c| c.value_take("state"),
+    VecState<(u8, ())> => |c| c.vec("state"),
+    MapState<u8, Vec<()>> => |c| c.map("state"),
+    Data<u8, [(); 2]> => |c| c.data("state"),
+    Image<HashMap<u8, ()>> => |c| c.image("state"),
+    Download<Option<()>> => |c| c.download("state"),
+    Value<()> => |c| c.value("state", ()),
+    Static<()> => |c| c.add_static("state", ()),
+    VecState<()> => |c| c.vec("state"),
+    MapState<(), u8> => |c| c.map("state"),
+    MapState<u8, ()> => |c| c.map("state"),
+}
+
+/// A unit has no Python spelling as a field or an element (`_0: ` is a
+/// syntax error), so both generators reject it before they write a file.
+#[test]
+fn a_unit_inside_another_type_is_rejected() {
+    let nested = [
+        rejections::<OneState<Value<UnitInVariant>>>("unit_in_variant"),
+        rejections::<OneState<Static<UnitInNamedVariant>>>("unit_in_named_variant"),
+        rejections::<OneState<Signal<UnitInStruct>>>("unit_in_struct"),
+        rejections::<OneState<ValueTake<Option<()>>>>("unit_in_option"),
+        rejections::<OneState<VecState<(u8, ())>>>("unit_in_tuple"),
+        rejections::<OneState<MapState<u8, Vec<()>>>>("unit_in_vec"),
+        rejections::<OneState<Data<u8, [(); 2]>>>("unit_in_array"),
+        rejections::<OneState<Image<HashMap<u8, ()>>>>("unit_in_map"),
+        rejections::<OneState<Download<Option<()>>>>("unit_in_meta"),
+    ];
+    for message in nested.as_flattened() {
+        assert_eq!(
+            message,
+            "State state: the unit type `()` is not supported inside another type; only a Signal or a ValueTake takes it, as its whole type"
+        );
+    }
+}
+
+/// A stored value and a collection item need a content; their unit used to
+/// panic on the initial value or to generate `s.Vec[]`.
+#[test]
+fn a_unit_as_a_stored_value_or_an_item_is_rejected() {
+    let whole = [
+        rejections::<OneState<Value<()>>>("unit_value"),
+        rejections::<OneState<Static<()>>>("unit_static"),
+        rejections::<OneState<VecState<()>>>("unit_vec"),
+        rejections::<OneState<MapState<(), u8>>>("unit_map_key"),
+        rejections::<OneState<MapState<u8, ()>>>("unit_map_value"),
+    ];
+    for message in whole.as_flattened() {
+        assert_eq!(
+            message,
+            "State state: the unit type `()` is supported only as the type of a Signal or a ValueTake"
+        );
+    }
+}
+
+/// The unit stays the payload-free signal and take value, and no header or
+/// metadata.
+#[test]
+fn a_unit_is_the_whole_type_of_a_signal_or_a_take_value() {
+    #[derive(State)]
+    #[allow(dead_code)]
+    struct Units {
+        signal: Signal<()>,
+        take: ValueTake<()>,
+        data: Data<u8, ()>,
+        image: Image<()>,
+        upload: Upload<()>,
+    }
+
+    let dir = output_dir("units", 0);
+    generate_rust::<Units>(&dir).unwrap();
+    generate_python::<Units>(dir.join("python")).unwrap();
+    let rust = std::fs::read_to_string(dir.join("mod.rs")).unwrap();
+    for expected in ["pub signal: s::Signal<()>,", "pub take: s::ValueTake<()>,"] {
+        assert!(rust.contains(expected), "missing {expected} in\n{rust}");
+    }
+    let python = std::fs::read_to_string(dir.join("python/__init__.py")).unwrap();
+    for expected in [
+        "self.signal: s.SignalEmpty = s.SignalEmpty()\n",
+        "self.take: s.ValueTakeEmpty = s.ValueTakeEmpty()\n",
+        "self.data: s.Data[np.uint8] = s.Data(np.uint8)\n",
+        "self.image: s.Image = s.Image()\n",
+        "self.upload: s.Upload = s.Upload()\n",
+    ] {
+        assert!(python.contains(expected), "missing {expected} in\n{python}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Raw identifiers as struct fields.
+#[egui_states::typed]
+#[derive(Clone, Default, PartialEq, egui_states::InitialValue)]
+struct RawStruct {
+    r#type: u8,
+    r#for: bool,
+}
+
+/// Raw identifiers as the variants of a fieldless enum.
+#[egui_states::typed]
+#[derive(Clone, Copy, Default, PartialEq, egui_states::InitialValue)]
+#[allow(non_camel_case_types)]
+enum RawEnum {
+    #[default]
+    r#type,
+    r#in,
+}
+
+/// Raw identifiers as the variants of an enum with data and as their fields.
+#[egui_states::typed]
+#[derive(Clone, Default, PartialEq, egui_states::InitialValue)]
+#[allow(non_camel_case_types)]
+enum RawCommand {
+    #[default]
+    Stop,
+    r#match {
+        r#type: u8,
+        r#if: bool,
+    },
+    r#try(u8),
+}
+
+/// Raw identifiers as state names, of a value and of a nested group.
+#[derive(State)]
+#[allow(dead_code)]
+struct WithRawNames {
+    #[state(init = RawStruct { r#type: 4, r#for: true })]
+    r#type: Value<RawStruct>,
+    #[state(init = RawEnum::r#in)]
+    r#while: Static<RawEnum>,
+    #[state(init = RawCommand::r#match { r#type: 1, r#if: true })]
+    command: Value<RawCommand>,
+    r#loop: ModesLeaf,
+}
+
+/// Python gets the name without `r#`, escaped when it is a Python keyword;
+/// Rust and the wire keep the raw identifier.
+#[test]
+fn raw_identifiers_lose_their_prefix_only_in_python() {
+    let dir = output_dir("raw_names", 0);
+    generate_rust::<WithRawNames>(&dir).unwrap();
+    generate_python::<WithRawNames>(dir.join("python")).unwrap();
+    let read = |file: &str| std::fs::read_to_string(dir.join(file)).unwrap();
+
+    let python = read("python/__init__.py");
+    for expected in [
+        "    __egui_names__ = {\"type\": \"r#type\", \"while_\": \"r#while\", \"loop\": \"r#loop\"}\n",
+        "self.type: s.Value[structs.RawStruct] = s.Value[structs.RawStruct](0, structs.RawStruct(4, True))\n",
+        "self.while_: s.Static[enums.RawEnum] = s.Static[enums.RawEnum](1, enums.RawEnum.in_)\n",
+        "(2, enums.RawCommand.match(1, True))\n",
+        "self.loop: ModesLeaf = ModesLeaf(parent + \".r#loop\")\n",
+        // The variants keep their wire names, which the type hash covers.
+        "s.denu(enums.RawCommand, [s.vunit(\"Stop\", enums.RawCommand.Stop), s.vnamed(\"r#match\", [s.u8, s.bo], enums.RawCommand.match), s.vtuple(\"r#try\", [s.u8], enums.RawCommand.try_)])",
+    ] {
+        assert!(python.contains(expected), "missing {expected} in\n{python}");
+    }
+    let structs = read("python/structs.py");
+    let expected = "    type: int\n    for_: bool\n    __egui_names__ = {\"type\": \"r#type\", \"for_\": \"r#for\"}\n";
+    assert!(structs.contains(expected), "{structs}");
+    let enums = read("python/enums.py");
+    for expected in [
+        "class RawEnum(_IntEnum):\n    \"\"\"A generated protocol enumeration.\"\"\"\n    type = 0\n    in_ = 1\n    __egui_names__ = {\"type\": \"r#type\", \"in_\": \"r#in\"}\n",
+        "    class match:\n        \"\"\"Protocol variant ``RawCommand.match``.\"\"\"\n\n        type: int\n        if_: bool\n        __egui_names__ = {\"type\": \"r#type\", \"if_\": \"r#if\"}\n",
+        "    class try_(_s._TupleVariant):\n",
+        "    type Type = Stop | match | try_\n",
+    ] {
+        assert!(enums.contains(expected), "missing {expected} in\n{enums}");
+    }
+    // Outside of the wire names, which are text, no `r#` is left.
+    for generated in [&python, &structs, &enums] {
+        let code = generated.replace("\"r#", "").replace(".r#", "");
+        assert!(!code.contains("r#"), "{generated}");
+    }
+
+    let rust = read("mod.rs");
+    for expected in [
+        "pub r#type: s::Value<structs::RawStruct>,",
+        "r#type: s::Value::new(server, format!(\"{parent}.r#type\"), structs::RawStruct { r#type: 4u8, r#for: true }, false)?",
+        "s::Static::new(server, format!(\"{parent}.r#while\"), enums::RawEnum::r#in)?",
+        "enums::RawCommand::r#match { r#type: 1u8, r#if: true }",
+        "r#loop: ModesLeaf::new(server, &format!(\"{parent}.r#loop\"))?",
+    ] {
+        assert!(rust.contains(expected), "missing {expected} in\n{rust}");
+    }
+
+    let client = ClientBuilder::<WithRawNames>::new(egui::Context::default(), 0).get_version_hash();
+    assert_eq!(
+        generated_hash(&rust, "pub const VERSION_HASH: u64 = "),
+        client
+    );
+    assert_eq!(generated_hash(&python, "VERSION_HASH: int = "), client);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// State names given as text, the way a handwritten `State` does.
+struct Named<const CASE: usize>;
+
+const NAME_CASES: [[&str; 2]; 3] = [["r#from", "from_"], ["r#type", "type"], ["r#in", "in"]];
+
+impl<const CASE: usize> State for Named<CASE> {
+    const NAME: &'static str = "Named";
+
+    fn new(c: &mut impl StatesCreator) -> Self {
+        for name in NAME_CASES[CASE] {
+            let _: Value<u8> = c.value(name, 0);
+        }
+        Self
+    }
+}
+
+/// The names stay distinct on the wire, but not in Python.
+#[test]
+fn a_raw_identifier_that_collides_in_python_is_rejected() {
+    let python = |name: &str, generate: fn(&PathBuf) -> Result<(), String>| {
+        rejection(output_dir(name, 0), generate)
+    };
+    assert_eq!(
+        python("raw_escaped", |dir| generate_python::<Named<0>>(dir)),
+        "Named: the Python name `from_` of `r#from` conflicts with another name"
+    );
+    assert_eq!(
+        python("raw_plain", |dir| generate_python::<Named<1>>(dir)),
+        "Named: the Python name `type` of `r#type` conflicts with another name"
+    );
+    assert_eq!(
+        python("raw_keyword", |dir| generate_python::<Named<2>>(dir)),
+        "Named: the Python name `in_` of `r#in` conflicts with another name"
+    );
+}
+
+/// Fixed-size arrays at every depth of a field type.
+#[egui_states::typed]
+#[derive(Clone, Default, PartialEq, egui_states::InitialValue)]
+struct FixedSizes {
+    plain: [u8; 3],
+    nested: [[u8; 3]; 2],
+    listed: Vec<[u8; 3]>,
+    optional: Option<[u8; 3]>,
+    pair: ([u8; 2], Vec<[f32; 4]>),
+    table: HashMap<u8, [u16; 5]>,
+    free: Vec<u8>,
+}
+
+/// The length of a fixed-size array is a comment, which belongs after the
+/// whole annotation: inside the brackets it would swallow the rest of it.
+#[test]
+fn fixed_size_comments_end_the_line_of_a_struct_field() {
+    #[derive(State)]
+    #[allow(dead_code)]
+    struct WithFixedSizes {
+        sizes: Value<FixedSizes>,
+    }
+
+    let dir = output_dir("fixed_sizes", 0);
+    generate_python::<WithFixedSizes>(&dir).unwrap();
+    let structs = std::fs::read_to_string(dir.join("structs.py")).unwrap();
+    let expected = "    plain: list[int]  # fixed size 3
+    nested: list[list[int]]  # fixed sizes 2, 3
+    listed: list[list[int]]  # fixed size 3
+    optional: list[int] | None  # fixed size 3
+    pair: tuple[list[int], list[list[float]]]  # fixed sizes 2, 4
+    table: dict[int, list[int]]  # fixed size 5
+    free: list[int]
+";
+    assert!(structs.contains(expected), "{structs}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Types named like what the generated modules use themselves.
+mod shadowing {
+    #[egui_states::typed]
+    #[derive(Clone, Copy)]
+    pub(super) enum Option {
+        Off,
+        On,
+    }
+
+    #[egui_states::typed]
+    #[derive(Clone, Copy)]
+    #[allow(non_camel_case_types)]
+    pub(super) enum s {
+        First,
+    }
+
+    #[egui_states::typed]
+    #[derive(Clone)]
+    #[allow(non_camel_case_types)]
+    pub(super) enum String {
+        s,
+        dataclass(u8),
+        r#final {
+            text: ::std::string::String,
+            maybe: ::std::option::Option<s>,
+            choices: ::std::vec::Vec<Option>,
+        },
+        IntEnum(::std::collections::HashMap<u8, ::std::string::String>),
+    }
+
+    #[egui_states::typed]
+    #[derive(Clone)]
+    pub(super) struct Vector {
+        pub(super) option: ::std::option::Option<Option>,
+        pub(super) string: ::std::string::String,
+    }
+}
+
+/// An enum called `Option` or `String` shadows the prelude of the generated
+/// Rust module, and `s`, `dataclass`, `final` and `IntEnum` are what the
+/// generated `enums.py` imports. Neither may change what the generated code
+/// refers to.
+#[test]
+fn generated_names_do_not_shadow_what_the_generated_code_uses() {
+    #[derive(State)]
+    #[allow(dead_code)]
+    struct WithShadowing {
+        option: Signal<shadowing::Option>,
+        short: Signal<shadowing::s>,
+        string: Signal<shadowing::String>,
+        vector: Signal<shadowing::Vector>,
+    }
+
+    let dir = output_dir("shadowing", 0);
+    generate_rust::<WithShadowing>(&dir).unwrap();
+    generate_python::<WithShadowing>(dir.join("python")).unwrap();
+    let read = |file: &str| std::fs::read_to_string(dir.join(file)).unwrap();
+
+    let enums = read("enums.rs");
+    for expected in [
+        "pub enum Option {",
+        "pub enum String {",
+        "        text: ::std::string::String,\n",
+        "        maybe: ::std::option::Option<s>,\n",
+        "        choices: ::std::vec::Vec<Option>,\n",
+        "    IntEnum(::std::collections::HashMap<u8, ::std::string::String>),\n",
+    ] {
+        assert!(enums.contains(expected), "missing {expected} in\n{enums}");
+    }
+    let structs = read("structs.rs");
+    for expected in [
+        "    pub option: ::std::option::Option<super::enums::Option>,\n",
+        "    pub string: ::std::string::String,\n",
+    ] {
+        assert!(
+            structs.contains(expected),
+            "missing {expected} in\n{structs}"
+        );
+    }
+
+    let module = read("python/enums.py");
+    for expected in [
+        "class Option(_IntEnum):",
+        "class s(_IntEnum):",
+        "class String(_s._CustomEnum):",
+        "    @_final\n    @_dataclass(frozen=True, slots=True)\n    class s:\n",
+        "    @_final\n    @_dataclass(frozen=True, slots=True, repr=False)\n    class dataclass(_s._TupleVariant):\n",
+        "    @_final\n    @_dataclass(frozen=True, slots=True)\n    class final:\n",
+        "    @_final\n    @_dataclass(frozen=True, slots=True, repr=False)\n    class IntEnum(_s._TupleVariant):\n",
+        "    type Type = s | dataclass | final | IntEnum\n",
+    ] {
+        assert!(module.contains(expected), "missing {expected} in\n{module}");
+    }
+    // Nothing is left of the unaliased imports.
+    for import in [
+        "import dataclass\n",
+        "import IntEnum\n",
+        "import final\n",
+        " as s\n",
+    ] {
+        assert!(!module.contains(import), "{import:?} in\n{module}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Types whose names Python cannot define, or which the generated modules
+/// still bind themselves.
+mod unusable_names {
+    #[egui_states::typed]
+    #[derive(Clone)]
+    pub(super) enum None {
+        A,
+    }
+
+    #[egui_states::typed]
+    #[derive(Clone)]
+    pub(super) enum True {
+        A(u8),
+    }
+
+    #[egui_states::typed]
+    #[derive(Clone)]
+    #[allow(non_camel_case_types)]
+    pub(super) struct lambda {
+        pub(super) value: u8,
+    }
+
+    #[egui_states::typed]
+    #[derive(Clone)]
+    #[allow(non_camel_case_types)]
+    pub(super) enum r#type {
+        A,
+    }
+
+    #[egui_states::typed]
+    #[derive(Clone)]
+    #[allow(non_camel_case_types)]
+    pub(super) enum structs {
+        A,
+    }
+
+    #[egui_states::typed]
+    #[derive(Clone)]
+    #[allow(non_camel_case_types)]
+    pub(super) enum _s {
+        A(u8),
+    }
+
+    #[egui_states::typed]
+    #[derive(Clone)]
+    #[allow(non_camel_case_types)]
+    pub(super) struct dataclass {
+        pub(super) value: u8,
+    }
+
+    #[egui_states::typed]
+    #[derive(Clone)]
+    #[allow(non_camel_case_types)]
+    pub(super) struct s {
+        pub(super) value: u8,
+    }
+
+    #[egui_states::typed]
+    #[derive(Clone)]
+    #[allow(non_camel_case_types)]
+    pub(super) struct enums {
+        pub(super) value: u8,
+    }
+
+    /// A variant named like an alias `enums.py` imports under.
+    #[egui_states::typed]
+    #[derive(Clone)]
+    #[allow(non_camel_case_types)]
+    pub(super) enum Variants {
+        A(u8),
+        _final,
+    }
+}
+
+one_state! {
+    Signal<unusable_names::None> => |c| c.signal("state"),
+    Signal<unusable_names::True> => |c| c.signal("state"),
+    Signal<Vec<unusable_names::lambda>> => |c| c.signal("state"),
+    Signal<unusable_names::r#type> => |c| c.signal("state"),
+    Signal<unusable_names::structs> => |c| c.signal("state"),
+    Signal<unusable_names::_s> => |c| c.signal("state"),
+    Signal<unusable_names::dataclass> => |c| c.signal("state"),
+    Signal<unusable_names::s> => |c| c.signal("state"),
+    Signal<unusable_names::enums> => |c| c.signal("state"),
+    Signal<unusable_names::Variants> => |c| c.signal("state"),
+}
+
+/// A class name is not on the wire, so it has no escaped spelling: a type
+/// named like a Python keyword is rejected, and so is one that would replace
+/// a name its generated module binds.
+#[test]
+fn type_names_that_python_cannot_use_are_rejected() {
+    use unusable_names as names;
+    for (messages, expected) in [
+        (
+            rejections::<OneState<Signal<names::None>>>("keyword_enum"),
+            "Enum None is named like a Python keyword",
+        ),
+        (
+            rejections::<OneState<Signal<names::True>>>("keyword_data_enum"),
+            "Enum True is named like a Python keyword",
+        ),
+        (
+            rejections::<OneState<Signal<Vec<names::lambda>>>>("keyword_struct"),
+            "Struct lambda is named like a Python keyword",
+        ),
+        (
+            rejections::<OneState<Signal<names::r#type>>>("raw_enum"),
+            "Enum r#type is named with a raw identifier, which has no Python spelling",
+        ),
+        (
+            rejections::<OneState<Signal<names::structs>>>("module_enum"),
+            "Enum structs conflicts with a generated symbol",
+        ),
+        (
+            rejections::<OneState<Signal<names::_s>>>("alias_enum"),
+            "Enum _s conflicts with a generated symbol",
+        ),
+        (
+            rejections::<OneState<Signal<names::dataclass>>>("import_struct"),
+            "Struct dataclass conflicts with a generated symbol",
+        ),
+        (
+            rejections::<OneState<Signal<names::s>>>("alias_struct"),
+            "Struct s conflicts with a generated symbol",
+        ),
+        (
+            rejections::<OneState<Signal<names::enums>>>("module_struct"),
+            "Struct enums conflicts with a generated symbol",
+        ),
+    ] {
+        for message in messages {
+            assert_eq!(message, expected);
+        }
+    }
+
+    // Only the Python module has the alias a variant could replace.
+    let message = rejection(output_dir("alias_variant", 0), |dir| {
+        generate_python::<OneState<Signal<names::Variants>>>(dir)
+    });
+    assert_eq!(
+        message,
+        "Variants: the variant `_final` conflicts with a generated symbol"
+    );
+}
+
+struct NamedLikeKeyword;
+
+impl State for NamedLikeKeyword {
+    const NAME: &'static str = "None";
+
+    fn new(c: &mut impl StatesCreator) -> Self {
+        let _: Value<i32> = c.value("value", 0);
+        Self
+    }
+}
+
+#[test]
+fn a_state_named_like_a_python_keyword_is_rejected() {
+    for message in rejections::<NamedLikeKeyword>("keyword_state") {
+        assert_eq!(message, "State None is named like a Python keyword");
+    }
 }

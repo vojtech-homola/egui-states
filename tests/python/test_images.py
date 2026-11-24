@@ -288,3 +288,42 @@ def test_image_headers_are_stored_with_their_image(local_bundle):
         keys[3].get_header()
     with pytest.raises(ValueError, match="index not found"):
         keys[3].set_header(HeaderMeta(0.0, "h", []))
+
+
+def test_image_multi_iterates_over_its_indices(local_bundle: tuple[StatesServer, State, list[Exception]]) -> None:
+    _server, states, _errors = local_bundle
+    images = states.image.images
+    assert list(images) == []
+    images[7].set_all((1, 1), 0)
+    images[2].set_all((1, 2), 0)
+    assert list(images) == [2, 7]
+    assert [images[index].shape() for index in images] == [(1, 2), (1, 1)]
+    # Iteration walks a copy, so the state can change under it.
+    for index in images:
+        images.remove_index(index)
+    assert list(images) == []
+
+    # The header variant inherits the iteration.
+    keys = states.image.framed_keys
+    keys[4].set_all((1, 1), 3, header=HeaderMeta(6.0, "f", []))
+    assert list(keys) == [4]
+
+
+@pytest.mark.parametrize("name", ["images", "framed_keys"])
+def test_image_multi_indices_are_integers(local_bundle: tuple[StatesServer, State, list[Exception]], name: str) -> None:
+    _server, states, _errors = local_bundle
+    images = getattr(states.image, name)
+    images[1].set_all((1, 1), 0, **({"header": HeaderMeta(1.0, "a", [])} if name == "framed_keys" else {}))
+    for index in (1, True, np.uint8(1), np.uint32(1), np.int64(1)):
+        assert index in images
+        assert images.get(index).shape() == (1, 1)
+        assert images[index].shape() == (1, 1)
+        assert type(images[index]._index) is int
+    for index in (2, np.uint32(2), np.int64(-1), np.uint64(2**32)):
+        assert index not in images
+    for wrong in ("1", 1.0, None, np.float32(1), [1], np.array([1.0])):
+        assert wrong not in images
+        with pytest.raises(TypeError, match="^index must be an integer$"):
+            images.get(wrong)
+        with pytest.raises(TypeError, match="^index must be an integer$"):
+            images[wrong]

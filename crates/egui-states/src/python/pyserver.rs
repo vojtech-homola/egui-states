@@ -8,7 +8,9 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use pyo3::buffer::PyBuffer;
-use pyo3::exceptions::{PyIndexError, PyKeyError, PyRuntimeError, PyValueError};
+use pyo3::exceptions::{
+    PyIndexError, PyKeyError, PyOverflowError, PyRuntimeError, PyTypeError, PyValueError,
+};
 use pyo3::prelude::*;
 use pyo3::types::{PyByteArray, PyDict, PyList};
 
@@ -721,9 +723,17 @@ impl StateServerCore {
         Ok(py_list)
     }
 
-    fn list_set_item(&self, value_id: u64, index: isize, item: &Bound<PyAny>) -> PyResult<()> {
+    // An item index may be negative to count from the end. The list resolves
+    // it under its own lock, so another thread cannot change the length in
+    // between; the item is converted before that lock is taken.
+    fn list_set_item(
+        &self,
+        value_id: u64,
+        index: &Bound<PyAny>,
+        item: &Bound<PyAny>,
+    ) -> PyResult<()> {
+        let index = item_index(index)?;
         let (list, value_type) = self.inner_vec(value_id)?;
-        let index = list_index(index, list.len())?;
         let mut creator = ValueCreator::new();
         pyparsing::serialize_py(item, value_type, &mut creator)?;
         let data = creator.finalize();
@@ -734,10 +744,10 @@ impl StateServerCore {
         &self,
         py: Python<'py>,
         value_id: u64,
-        index: isize,
+        index: &Bound<PyAny>,
     ) -> PyResult<Bound<'py, PyAny>> {
+        let index = item_index(index)?;
         let (list, value_type) = self.inner_vec(value_id)?;
-        let index = list_index(index, list.len())?;
         let data = list.get_item(index).map_err(list_error)?;
         let mut parser = ValueParser::new(data);
         let py_value = pyparsing::deserialize_py(py, &mut parser, value_type)?;
@@ -748,19 +758,20 @@ impl StateServerCore {
         &self,
         py: Python<'py>,
         value_id: u64,
-        index: isize,
+        index: &Bound<PyAny>,
     ) -> PyResult<Bound<'py, PyAny>> {
+        let index = item_index(index)?;
         let (list, value_type) = self.inner_vec(value_id)?;
-        let index = list_index(index, list.len())?;
         let data = list.remove_item(index).map_err(list_error)?;
         let mut parser = ValueParser::new(data);
         let py_value = pyparsing::deserialize_py(py, &mut parser, value_type)?;
         Ok(py_value)
     }
 
+    /// Unlike the item methods, an index too large for `isize` is an
+    /// `OverflowError`, as for `list.insert`.
     fn list_insert_item(&self, value_id: u64, index: isize, item: &Bound<PyAny>) -> PyResult<()> {
         let (list, value_type) = self.inner_vec(value_id)?;
-        let index = insert_index(index, list.len())?;
         let mut creator = ValueCreator::new();
         pyparsing::serialize_py(item, value_type, &mut creator)?;
         let data = creator.finalize();
@@ -854,17 +865,23 @@ impl StateServerCore {
                 let py_value = pyparsing::deserialize_py(py, &mut value_parser, value_type)?;
                 Ok(py_value)
             }
-            None => Err(PyKeyError::new_err(key.clone().unbind())),
+            None => Err(missing_key(key)),
         }
     }
 
     /// Whether the map holds `key`. A key that is not of the map's key type
-    /// is not in it, as for a dict.
+    /// is not in it, as for a dict: converting it fails with a `TypeError`,
+    /// a `ValueError` or an `OverflowError`. Any other error is raised, as it
+    /// comes from the code of the key and not from its type.
     fn map_contains(&self, value_id: u64, key: &Bound<PyAny>) -> PyResult<bool> {
         let (map, key_type, _) = self.inner_map(value_id)?;
         let mut key_creator = ValueCreator::new();
-        if pyparsing::serialize_py(key, key_type, &mut key_creator).is_err() {
-            return Ok(false);
+        if let Err(error) = pyparsing::serialize_py(key, key_type, &mut key_creator) {
+            let py = key.py();
+            let not_a_key = error.is_instance_of::<PyTypeError>(py)
+                || error.is_instance_of::<PyValueError>(py)
+                || error.is_instance_of::<PyOverflowError>(py);
+            return if not_a_key { Ok(false) } else { Err(error) };
         }
         Ok(map.get_item(&key_creator.finalize()).is_some())
     }
@@ -889,7 +906,7 @@ impl StateServerCore {
                 let py_value = pyparsing::deserialize_py(py, &mut value_parser, value_type)?;
                 Ok(py_value)
             }
-            None => Err(PyKeyError::new_err(key.clone().unbind())),
+            None => Err(missing_key(key)),
         }
     }
 
@@ -2121,32 +2138,24 @@ fn list_error(error: impl Into<String>) -> PyErr {
     }
 }
 
-/// Resolves a Python list index, where a negative index counts from the end,
-/// to a position in a list of `len` items.
-fn list_index(index: isize, len: usize) -> PyResult<usize> {
-    let resolved = if index < 0 {
-        len.checked_sub(index.unsigned_abs())
-    } else {
-        Some(index.unsigned_abs())
-    };
-    resolved
-        .filter(|&index| index < len)
-        .ok_or_else(|| PyIndexError::new_err("list index out of range"))
+/// The index of a Vec item as Python passed it. One too large for `isize` is
+/// an `IndexError` with the message of a Python list, not the
+/// `OverflowError` of the conversion.
+fn item_index(index: &Bound<PyAny>) -> PyResult<isize> {
+    index.extract::<isize>().map_err(|error| {
+        if error.is_instance_of::<PyOverflowError>(index.py()) {
+            PyIndexError::new_err("cannot fit 'int' into an index-sized integer")
+        } else {
+            error
+        }
+    })
 }
 
-/// Resolves the position of an insert into a list of `len` items, which may
-/// be `len` itself; a negative index counts from the end, as for
-/// `list.insert`, but an index out of range is an `IndexError` instead of
-/// being clamped, as for the other `Vec` operations.
-fn insert_index(index: isize, len: usize) -> PyResult<usize> {
-    let resolved = if index < 0 {
-        len.checked_sub(index.unsigned_abs())
-    } else {
-        Some(index.unsigned_abs())
-    };
-    resolved
-        .filter(|&index| index <= len)
-        .ok_or_else(|| PyIndexError::new_err("list index out of range"))
+/// The `KeyError` for a key that a Map does not hold. The key is wrapped in a
+/// tuple, or Python would take a tuple key for the arguments of the error and
+/// a `None` key for no argument at all.
+fn missing_key(key: &Bound<PyAny>) -> PyErr {
+    PyKeyError::new_err((key.clone().unbind(),))
 }
 
 #[cfg(test)]
@@ -2156,44 +2165,55 @@ mod tests {
     use std::thread;
     use std::time::{Duration, Instant};
 
+    use pyo3::IntoPyObjectExt;
     use pyo3::types::PyBytes;
     use tokio_tungstenite::tungstenite::{self, Message};
 
     use super::*;
     use crate::protocol::ClientHeader;
+    use crate::python::pytypes::{STR, U8, U16, U32, opt, tu};
 
+    /// A missing key is the only argument of its `KeyError`, also when it is
+    /// a tuple or `None`, which Python would otherwise unpack.
     #[test]
-    fn list_indices_resolve_like_python_lists() {
-        for (index, len, expected) in [
-            (0, 3, Some(0)),
-            (2, 3, Some(2)),
-            (3, 3, None),
-            (-1, 3, Some(2)),
-            (-3, 3, Some(0)),
-            (-4, 3, None),
-            (0, 0, None),
-            (-1, 0, None),
-            (isize::MIN, 3, None),
-            (isize::MAX, 3, None),
-        ] {
-            assert_eq!(list_index(index, len).ok(), expected, "{index} of {len}");
-        }
-    }
+    fn a_missing_map_key_is_the_argument_of_its_key_error() {
+        Python::initialize();
+        Python::attach(|py| {
+            let core =
+                StateServerCore::new(None, None, None, Vec::new(), 1, 0, 5.0, false, None, None)
+                    .unwrap();
+            let class = |object_type: PyObjectClass| Bound::new(py, object_type).unwrap();
+            let pair = class(tu(py, vec![class(U8), class(STR)]).unwrap());
+            let optional = class(opt(py, &class(U16)));
+            let pairs = core
+                .add_map(py, "root.pairs".to_string(), &pair, &class(U32))
+                .unwrap();
+            let optionals = core
+                .add_map(py, "root.optionals".to_string(), &optional, &class(U32))
+                .unwrap();
+            core.finalize(py).unwrap();
 
-    #[test]
-    fn insert_positions_include_the_end() {
-        for (index, len, expected) in [
-            (0, 0, Some(0)),
-            (1, 0, None),
-            (3, 3, Some(3)),
-            (4, 3, None),
-            (-1, 3, Some(2)),
-            (-3, 3, Some(0)),
-            (-4, 3, None),
-            (isize::MIN, 3, None),
-        ] {
-            assert_eq!(insert_index(index, len).ok(), expected, "{index} of {len}");
-        }
+            let tuple_key = (1u8, "a").into_bound_py_any(py).unwrap();
+            let none_key = py.None().into_bound(py);
+            for (id, key) in [(pairs, tuple_key), (optionals, none_key)] {
+                assert!(!core.map_contains(id, &key).unwrap());
+                for error in [
+                    core.map_get_item(py, id, &key).unwrap_err(),
+                    core.map_del_item(py, id, &key).unwrap_err(),
+                ] {
+                    assert!(error.is_instance_of::<PyKeyError>(py), "{error}");
+                    let args = error.value(py).getattr("args").unwrap();
+                    assert!(args.eq((key.clone(),)).unwrap(), "{args}");
+                }
+
+                // A key the map holds is found and returned as before.
+                let value = 7u32.into_bound_py_any(py).unwrap();
+                core.map_set_item(id, &key, &value).unwrap();
+                assert!(core.map_contains(id, &key).unwrap());
+                assert!(core.map_get_item(py, id, &key).unwrap().eq(&value).unwrap());
+                assert!(core.map_del_item(py, id, &key).unwrap().eq(&value).unwrap());
+            }
+        });
     }
 
     /// A raw client that completes the handshake and never acknowledges.

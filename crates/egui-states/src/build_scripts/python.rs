@@ -10,19 +10,12 @@ use crate::build_scripts::states_creator_build::StateType;
 use crate::protocol::data::DataType;
 use crate::typed::{ObjectType, VariantFields};
 
-/// Python's hard keywords. Soft keywords (`match`, `case`, `type`, `_`) are valid
-/// identifiers and need no escaping.
-const PYTHON_KEYWORDS: [&str; 35] = [
-    "False", "None", "True", "and", "as", "assert", "async", "await", "break", "class", "continue",
-    "def", "del", "elif", "else", "except", "finally", "for", "from", "global", "if", "import",
-    "in", "is", "lambda", "nonlocal", "not", "or", "pass", "raise", "return", "try", "while",
-    "with", "yield",
-];
-
-/// Spells a Rust name as a Python identifier, escaping keywords with a trailing
-/// underscore (PEP 8).
+/// Spells a Rust name as a Python identifier: without the `r#` of a raw
+/// identifier, which only Rust needs, and with a trailing underscore after a
+/// keyword (PEP 8).
 fn python_name(name: &str) -> Cow<'_, str> {
-    if PYTHON_KEYWORDS.contains(&name) {
+    let name = name.strip_prefix("r#").unwrap_or(name);
+    if scripts::PYTHON_KEYWORDS.contains(&name) {
         Cow::Owned(format!("{name}_"))
     } else {
         Cow::Borrowed(name)
@@ -44,24 +37,29 @@ fn variant_name(name: &str) -> Cow<'_, str> {
     }
 }
 
-/// Returns the `__egui_names__` class attribute that maps escaped Python names
-/// back to the names used on the wire (state paths and type hashes), or an empty
-/// string when no name of `owner` was escaped.
+/// Returns the `__egui_names__` class attribute that maps the Python names
+/// that differ from the names used on the wire (state paths and type hashes)
+/// back to them, or an empty string when `owner` has no such name.
 ///
 /// # Panics
 ///
-/// Panics if an escaped name collides with another name of `owner`.
-fn wire_names_line<'a>(owner: &str, names: impl IntoIterator<Item = &'a str> + Clone) -> String {
+/// Panics if a changed name collides with another name of `owner`.
+fn wire_names_line<'a>(owner: &str, names: impl IntoIterator<Item = &'a str>) -> String {
+    let names: Vec<&str> = names.into_iter().collect();
     let mut escaped = Vec::new();
-    for name in names.clone() {
-        if let Cow::Owned(python) = python_name(name) {
-            if names.clone().into_iter().any(|other| other == python) {
-                panic!(
-                    "{owner}: the Python name `{python}` of `{name}` conflicts with another name"
-                );
-            }
-            escaped.push(format!("\"{python}\": \"{name}\""));
+    for (index, name) in names.iter().enumerate() {
+        let python = python_name(name);
+        if python == *name {
+            continue;
         }
+        let taken = names
+            .iter()
+            .enumerate()
+            .any(|(other, other_name)| other != index && python_name(other_name) == python);
+        if taken {
+            panic!("{owner}: the Python name `{python}` of `{name}` conflicts with another name");
+        }
+        escaped.push(format!("\"{python}\": \"{name}\""));
     }
     if escaped.is_empty() {
         String::new()
@@ -160,7 +158,7 @@ fn data_state(
         ),
         Some(header) => {
             let index = object_type_index(object_types, header);
-            let py_type = type_info_to_python_type(header, false, PythonTypeContext::States);
+            let py_type = type_info_to_python_type(header, PythonTypeContext::States);
             format!(
                 "        self.{attr}: s.{kind}WithHeader[{data_type}, {py_type}] = s.{kind}WithHeader({data_type}, {index}{priority})\n"
             )
@@ -184,7 +182,7 @@ fn image_state(
         ),
         Some(header) => {
             let index = object_type_index(object_types, header);
-            let py_type = type_info_to_python_type(header, false, PythonTypeContext::States);
+            let py_type = type_info_to_python_type(header, PythonTypeContext::States);
             let priority = priority.argument(", ");
             format!(
                 "        self.{attr}: s.{kind}WithHeader[{py_type}] = s.{kind}WithHeader({index}{priority})\n"
@@ -238,7 +236,7 @@ fn transfer_state(
         None => format!("        self.{attr}: s.{kind} = s.{kind}()\n"),
         Some(meta) => {
             let index = object_type_index(object_types, meta);
-            let py_type = type_info_to_python_type(meta, false, PythonTypeContext::States);
+            let py_type = type_info_to_python_type(meta, PythonTypeContext::States);
             format!(
                 "        self.{attr}: s.{kind}WithMeta[{py_type}] = s.{kind}WithMeta({index})\n"
             )
@@ -306,11 +304,7 @@ enum PythonTypeContext {
     Enums,
 }
 
-fn type_info_to_python_type(
-    info: &ObjectType,
-    list_comment: bool,
-    context: PythonTypeContext,
-) -> String {
+fn type_info_to_python_type(info: &ObjectType, context: PythonTypeContext) -> String {
     match info {
         ObjectType::U8
         | ObjectType::U16
@@ -343,32 +337,58 @@ fn type_info_to_python_type(
         ObjectType::Tuple(elements) => {
             let elements = elements
                 .iter()
-                .map(|element| type_info_to_python_type(element, list_comment, context))
+                .map(|element| type_info_to_python_type(element, context))
                 .collect::<Vec<_>>()
                 .join(", ");
             format!("tuple[{elements}]")
         }
-        ObjectType::List(size, element) => {
-            let element = type_info_to_python_type(element, list_comment, context);
-            if list_comment {
-                format!("list[{element}]  # fixed size {size}")
-            } else {
-                format!("list[{element}]")
-            }
-        }
-        ObjectType::Vec(element) => {
-            let element = type_info_to_python_type(element, list_comment, context);
+        ObjectType::List(_, element) | ObjectType::Vec(element) => {
+            let element = type_info_to_python_type(element, context);
             format!("list[{element}]")
         }
         ObjectType::Map(key, value) => {
-            let key = type_info_to_python_type(key, list_comment, context);
-            let value = type_info_to_python_type(value, list_comment, context);
+            let key = type_info_to_python_type(key, context);
+            let value = type_info_to_python_type(value, context);
             format!("dict[{key}, {value}]")
         }
         ObjectType::Option(element) => {
-            let element = type_info_to_python_type(element, list_comment, context);
+            let element = type_info_to_python_type(element, context);
             format!("{element} | None")
         }
+    }
+}
+
+/// The comment that ends the line of a field whose annotation holds
+/// fixed-size arrays, which Python spells as plain lists: their lengths in
+/// the order the lists appear in the annotation. Empty without such an array.
+fn fixed_size_comment(info: &ObjectType) -> String {
+    fn sizes(info: &ObjectType, found: &mut Vec<String>) {
+        match info {
+            ObjectType::List(size, element) => {
+                found.push(size.to_string());
+                sizes(element, found);
+            }
+            ObjectType::Vec(element) | ObjectType::Option(element) => sizes(element, found),
+            ObjectType::Tuple(elements) => {
+                for element in elements {
+                    sizes(element, found);
+                }
+            }
+            ObjectType::Map(key, value) => {
+                sizes(key, found);
+                sizes(value, found);
+            }
+            // A named type has its own definition; the rest has no length.
+            _ => {}
+        }
+    }
+
+    let mut found = Vec::new();
+    sizes(info, &mut found);
+    match found.len() {
+        0 => String::new(),
+        1 => format!("  # fixed size {}", found[0]),
+        _ => format!("  # fixed sizes {}", found.join(", ")),
     }
 }
 
@@ -521,7 +541,7 @@ fn state_to_line(state: &StateType, object_types: &[ObjectType], inherits: bool)
     let attr = python_name(state.name());
     match state {
         StateType::Value(_, state_type, init, queue) => {
-            let py_type = type_info_to_python_type(state_type, false, PythonTypeContext::States);
+            let py_type = type_info_to_python_type(state_type, PythonTypeContext::States);
             let init_value = init_to_python_value(init, state_type);
             let index = object_type_index(object_types, state_type);
             let queue = if *queue { ", True" } else { "" };
@@ -530,7 +550,7 @@ fn state_to_line(state: &StateType, object_types: &[ObjectType], inherits: bool)
             )
         }
         StateType::ValueTake(_, state_type) => {
-            let py_type = type_info_to_python_type(state_type, false, PythonTypeContext::States);
+            let py_type = type_info_to_python_type(state_type, PythonTypeContext::States);
             if matches!(state_type, ObjectType::Empty) {
                 format!("        self.{attr}: s.ValueTakeEmpty = s.ValueTakeEmpty()\n")
             } else {
@@ -541,7 +561,7 @@ fn state_to_line(state: &StateType, object_types: &[ObjectType], inherits: bool)
             }
         }
         StateType::Static(_, state_type, init) => {
-            let py_type = type_info_to_python_type(state_type, false, PythonTypeContext::States);
+            let py_type = type_info_to_python_type(state_type, PythonTypeContext::States);
             let init_value = init_to_python_value(init, state_type);
             let index = object_type_index(object_types, state_type);
             format!(
@@ -549,7 +569,7 @@ fn state_to_line(state: &StateType, object_types: &[ObjectType], inherits: bool)
             )
         }
         StateType::Signal(_, state_type, queue) => {
-            let py_type = type_info_to_python_type(state_type, false, PythonTypeContext::States);
+            let py_type = type_info_to_python_type(state_type, PythonTypeContext::States);
             if matches!(state_type, ObjectType::Empty) {
                 let queue = if *queue { "True" } else { "" };
                 format!("        self.{attr}: s.SignalEmpty = s.SignalEmpty({queue})\n")
@@ -562,15 +582,15 @@ fn state_to_line(state: &StateType, object_types: &[ObjectType], inherits: bool)
             }
         }
         StateType::ValueVec(_, state_type) => {
-            let py_type = type_info_to_python_type(state_type, false, PythonTypeContext::States);
+            let py_type = type_info_to_python_type(state_type, PythonTypeContext::States);
             let index = object_type_index(object_types, state_type);
             format!("        self.{attr}: s.Vec[{py_type}] = s.Vec[{py_type}]({index})\n")
         }
         StateType::ValueMap(_, key_type, value_type) => {
             let key = object_type_index(object_types, key_type);
             let value = object_type_index(object_types, value_type);
-            let key_type = type_info_to_python_type(key_type, false, PythonTypeContext::States);
-            let value_type = type_info_to_python_type(value_type, false, PythonTypeContext::States);
+            let key_type = type_info_to_python_type(key_type, PythonTypeContext::States);
+            let value_type = type_info_to_python_type(value_type, PythonTypeContext::States);
             format!(
                 "        self.{attr}: s.Map[{key_type}, {value_type}] = s.Map[{key_type}, {value_type}]({key}, {value})\n"
             )
@@ -697,7 +717,7 @@ fn order_structs(items: &[(String, ObjectType)], order: &mut VecDeque<String>) {
 /// The fields of a variant as `(Python name, Python type)`, with the
 /// positional names `_0`, `_1`, ... of a tuple variant.
 fn variant_fields(fields: &VariantFields) -> Vec<(String, String)> {
-    let python_type = |typ| type_info_to_python_type(typ, false, PythonTypeContext::Enums);
+    let python_type = |typ| type_info_to_python_type(typ, PythonTypeContext::Enums);
     match fields {
         VariantFields::Unit => Vec::new(),
         VariantFields::Named(fields) => fields
@@ -717,10 +737,15 @@ fn variant_fields(fields: &VariantFields) -> Vec<(String, String)> {
 /// its `Type` alias is the union of them, the type of a value. `has_structs`
 /// tells whether a `structs` module exists to import.
 ///
+/// The module imports what it needs under private aliases (`_dataclass`,
+/// `_s`, ...), so that an enum or a variant called `dataclass` or `s` does not
+/// replace it for the classes that follow.
+///
 /// # Panics
 ///
 /// Panics if two variants of an enum, or two fields of a variant, get the
-/// same Python name.
+/// same Python name, or if a variant is named like one of the names the
+/// module binds itself.
 fn render_enums(
     enums: &scripts::Enums,
     data_enums: &scripts::DataEnums,
@@ -729,7 +754,7 @@ fn render_enums(
     let header = "# Generated by build.rs, do not edit\n";
     let docstring = "\"\"\"Custom enum types used by the generated state server.\"\"\"\n";
     let mut module = if data_enums.is_empty() {
-        format!("{header}{docstring}\nfrom enum import IntEnum\n")
+        format!("{header}{docstring}\nfrom enum import IntEnum as _IntEnum\n")
     } else {
         // Annotations stay unevaluated, so a variant can name an enum defined
         // below it and `structs`, which imports this module.
@@ -738,14 +763,14 @@ fn render_enums(
             false => "",
         };
         format!(
-            "{header}# ruff: noqa: E501 F401\n{docstring}\nfrom __future__ import annotations\n\nfrom dataclasses import dataclass\nfrom enum import IntEnum\nfrom typing import final\n\nimport egui_states.structures as s\n{structs}"
+            "{header}# ruff: noqa: E501 F401\n{docstring}\nfrom __future__ import annotations\n\nfrom dataclasses import dataclass as _dataclass\nfrom enum import IntEnum as _IntEnum\nfrom typing import final as _final\n\nimport egui_states.structures as _s\n{structs}"
         )
     };
 
     for (enum_name, variants) in enums {
         writeln!(
             module,
-            "\n\nclass {enum_name}(IntEnum):\n    \"\"\"A generated protocol enumeration.\"\"\""
+            "\n\nclass {enum_name}(_IntEnum):\n    \"\"\"A generated protocol enumeration.\"\"\""
         )
         .unwrap();
         for (variant, value) in variants {
@@ -768,22 +793,25 @@ fn render_enums(
             if names[..index].contains(name) {
                 panic!("{enum_name}: two variants have the Python name `{name}`");
             }
+            if scripts::ENUMS_MODULE_NAMES.contains(&name.as_ref()) {
+                panic!("{enum_name}: the variant `{name}` conflicts with a generated symbol");
+            }
         }
         writeln!(
             module,
-            "\n\nclass {enum_name}(s._CustomEnum):\n    \"\"\"A generated protocol enum with data; a value is a ``{enum_name}.{VARIANTS_ALIAS}``.\"\"\""
+            "\n\nclass {enum_name}(_s._CustomEnum):\n    \"\"\"A generated protocol enum with data; a value is a ``{enum_name}.{VARIANTS_ALIAS}``.\"\"\""
         )
         .unwrap();
 
         for ((variant, fields), attr) in variants.iter().zip(&names) {
             // A tuple variant prints its fields without their `_0` names.
             let (options, base) = match fields {
-                VariantFields::Tuple(_) => (", repr=False", "(s._TupleVariant)"),
+                VariantFields::Tuple(_) => (", repr=False", "(_s._TupleVariant)"),
                 VariantFields::Unit | VariantFields::Named(_) => ("", ""),
             };
             writeln!(
                 module,
-                "\n    @final\n    @dataclass(frozen=True, slots=True{options})\n    class {attr}{base}:\n        \"\"\"Protocol variant ``{enum_name}.{attr}``.\"\"\""
+                "\n    @_final\n    @_dataclass(frozen=True, slots=True{options})\n    class {attr}{base}:\n        \"\"\"Protocol variant ``{enum_name}.{attr}``.\"\"\""
             )
             .unwrap();
             let python_fields = variant_fields(fields);
@@ -860,8 +888,14 @@ fn render_python<S: State>() -> (String, Option<String>, Option<String>) {
             structs_output.push_str("    pass\n");
         } else {
             for (field, typ) in fields {
-                let typ = type_info_to_python_type(typ, true, PythonTypeContext::Structs);
-                writeln!(structs_output, "    {}: {typ}", python_name(field)).unwrap();
+                let annotation = type_info_to_python_type(typ, PythonTypeContext::Structs);
+                let comment = fixed_size_comment(typ);
+                writeln!(
+                    structs_output,
+                    "    {}: {annotation}{comment}",
+                    python_name(field)
+                )
+                .unwrap();
             }
             structs_output.push_str(&wire_names_line(
                 struct_name,
@@ -962,8 +996,8 @@ class StatesServer(StateServerBase[{root_name}]):
                 the client.
             heartbeat_timeout (float | None, optional): Seconds either side
                 may hear nothing from the other before it treats the
-                connection as lost. ``None`` disables the heartbeat on both
-                sides. Defaults to 20.
+                connection as lost, at least 4 ms. ``None`` disables the
+                heartbeat on both sides. Defaults to 20.
             web_path (str | PathLike[str] | None, optional): Directory of a
                 static web page, such as a built WASM client, that
                 ``start_web`` serves on the server port. Defaults to no page.
@@ -994,7 +1028,7 @@ class StatesServer(StateServerBase[{root_name}]):
                 unencrypted private key of ``tls_cert``.
 
         Raises:
-            ValueError: If ``heartbeat_timeout`` is not positive,
+            ValueError: If ``heartbeat_timeout`` is below 4 ms,
                 ``web_path`` cannot be made absolute, an allowed origin is malformed,
                 ``transfer_profile`` is not a ``TransferProfile``,
                 ``client_policy`` is not a ``ClientPolicy``,
@@ -1044,9 +1078,12 @@ class StatesServer(StateServerBase[{root_name}]):
 ///
 /// State, enum variant, and struct field names that are Python keywords get a
 /// trailing underscore (`from` becomes `from_`), and so does a variant called
-/// `Type` of an enum with data, whose `Type` is the union of its variants. The
-/// original names are kept on the wire, so the bindings stay compatible with
-/// the Rust client.
+/// `Type` of an enum with data, whose `Type` is the union of its variants. A
+/// raw identifier loses its `r#` (`r#type` becomes `type`). The original names
+/// are kept on the wire, so the bindings stay compatible with the Rust client.
+///
+/// A field of a fixed-size array type is a `list`; a comment at the end of its
+/// line in `structs.py` gives the length.
 ///
 /// # Errors
 ///
@@ -1055,9 +1092,15 @@ class StatesServer(StateServerBase[{root_name}]):
 ///
 /// # Panics
 ///
-/// Panics if a state type is defined inconsistently in different locations or
-/// conflicts with a generated symbol such as `StatesServer`, `enums`,
-/// `structs`, or `s`.
+/// Panics, before it writes a file, if the state tree cannot be generated:
+///
+/// - a state group, struct or enum is defined inconsistently in different
+///   locations, is named like a Python keyword or with a raw identifier, or
+///   conflicts with a generated symbol such as `StatesServer`, `enums`,
+///   `structs`, or `s`;
+/// - two names of one group, struct, enum or variant get the same Python name;
+/// - the unit type `()` is used anywhere but as the whole type of a `Signal`
+///   or a `ValueTake`.
 pub fn generate_python<S: State>(directory: impl AsRef<Path>) -> Result<(), String> {
     let (states, enums, structs) = render_python::<S>();
     scripts::write_generated_files(

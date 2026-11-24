@@ -459,9 +459,9 @@ pub enum Command {
   field types, not the field names, as for structs.
 - **Not supported**, as compile errors: explicit discriminants (the wire never
   carries them), empty `Variant {}` or `Variant()` variants (write `Variant`),
-  generics, and a field that contains the enum itself. `#[derive(Atomic)]`
-  supports only fieldless enums; an enum with data that fits in 64 bits can
-  implement `Atomic` by hand.
+  generics, an enum without variants, and a field that contains the enum
+  itself. `#[derive(Atomic)]` supports only fieldless enums; an enum with data
+  that fits in 64 bits can implement `Atomic` by hand.
 - **Initial values.** With `#[derive(InitialValue)]`, `#[state(init = ...)]`
   can start a `Value` or `Static` from any variant, which both generators
   emit.
@@ -511,7 +511,8 @@ def on_command(command: Command.Type) -> None:
 A value can be a dict key when its fields are hashable, which a struct is not.
 A variant or field name that is a Python keyword gets an underscore
 (`Command.None_`, `from_`), and so does a variant called `Type`, which makes
-way for the union.
+way for the union. A raw identifier loses its `r#` in Python (`r#type` is
+`type`).
 
 ## Repaints and runtimes
 

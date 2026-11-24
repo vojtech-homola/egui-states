@@ -22,19 +22,93 @@ pub(crate) fn sleep(duration: Duration) -> Sleep {
 ///
 /// It uses the window's `setTimeout`, so it never completes where there is no
 /// window, such as in a worker. Durations beyond what `setTimeout` takes are
-/// shortened to its maximum, about 24 days.
+/// shortened to its maximum, about 24 days. The timer runs from this call,
+/// and dropping it cancels the timeout.
 #[cfg(target_arch = "wasm32")]
 pub(crate) fn sleep(duration: Duration) -> Sleep {
-    let millis = i32::try_from(duration.as_millis()).unwrap_or(i32::MAX);
-    Box::pin(async move {
-        let promise = js_sys::Promise::new(&mut |resolve, _reject| {
-            if let Some(window) = web_sys::window() {
-                let _ =
-                    window.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, millis);
+    Box::pin(Timeout::new(duration))
+}
+
+/// A `setTimeout` of the window that is cleared when dropped.
+///
+/// The connection task drops most of its timers before they are due: one per
+/// received frame while a heartbeat is watched. Left alone, each would stay
+/// in the browser until its full duration had passed. A promise is not used
+/// for the same reason: one that never resolves keeps its callbacks forever.
+#[cfg(target_arch = "wasm32")]
+struct Timeout {
+    /// The handle `setTimeout` returned; `None` where there is no window.
+    handle: Option<i32>,
+    fired: std::rc::Rc<Fired>,
+    /// What the timeout calls; it must live until the timeout ran or is
+    /// cleared.
+    _callback: web_sys::wasm_bindgen::closure::Closure<dyn FnMut()>,
+}
+
+/// Whether a [`Timeout`] ran, and who waits for it.
+#[cfg(target_arch = "wasm32")]
+#[derive(Default)]
+struct Fired {
+    done: std::cell::Cell<bool>,
+    waker: std::cell::RefCell<Option<std::task::Waker>>,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl Timeout {
+    fn new(duration: Duration) -> Self {
+        use web_sys::wasm_bindgen::JsCast;
+        use web_sys::wasm_bindgen::closure::Closure;
+
+        let millis = i32::try_from(duration.as_millis()).unwrap_or(i32::MAX);
+        let fired = std::rc::Rc::new(Fired::default());
+        let callback = Closure::<dyn FnMut()>::new({
+            let fired = fired.clone();
+            move || {
+                fired.done.set(true);
+                let waker = fired.waker.borrow_mut().take();
+                if let Some(waker) = waker {
+                    waker.wake();
+                }
             }
         });
-        let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
-    })
+        let handle = web_sys::window().and_then(|window| {
+            window
+                .set_timeout_with_callback_and_timeout_and_arguments_0(
+                    callback.as_ref().unchecked_ref(),
+                    millis,
+                )
+                .ok()
+        });
+        Self {
+            handle,
+            fired,
+            _callback: callback,
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl std::future::Future for Timeout {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<()> {
+        if self.fired.done.get() {
+            return std::task::Poll::Ready(());
+        }
+        *self.fired.waker.borrow_mut() = Some(cx.waker().clone());
+        std::task::Poll::Pending
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl Drop for Timeout {
+    fn drop(&mut self) {
+        // The callback is dropped with this timer, so the timeout must not
+        // call it anymore. Clearing one that already ran does nothing.
+        if let (Some(handle), Some(window)) = (self.handle, web_sys::window()) {
+            window.clear_timeout_with_handle(handle);
+        }
+    }
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]

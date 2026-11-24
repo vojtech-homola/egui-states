@@ -108,8 +108,22 @@ impl Slot {
 pub(super) struct KeyLock<'a> {
     key: u32,
     slot: Arc<Slot>,
+    scheduler: &'a Scheduler,
     _producer: ArcMutexGuard<RawMutex, ()>,
     _gate: RwLockReadGuard<'a, ()>,
+}
+
+impl Drop for KeyLock<'_> {
+    /// Forgets the slot of a key this producer left idle, so a state whose
+    /// keys change keeps slots only for the keys in use.
+    fn drop(&mut self) {
+        let mut slots = self.scheduler.slots.lock();
+        // Only the map and this lock hold the slot: no other producer waits
+        // for the key.
+        if Arc::strong_count(&self.slot) == 2 && self.slot.event.is_set() {
+            slots.remove(&self.key);
+        }
+    }
 }
 
 /// A hold on every key: no producer runs until it is dropped.
@@ -144,6 +158,10 @@ impl Held for AllLock<'_> {
 /// the one before. A set of the same key drops those waiting parts, because it
 /// overwrites all of them, and so does a forced update whose rectangle covers
 /// theirs.
+///
+/// A key has a slot only while a producer holds it or something of it is in
+/// flight; an idle key is forgotten, so the keys of a state can come and go
+/// without the scheduler growing.
 ///
 /// Producers of a key are serialized by its [`KeyLock`], which they hold while
 /// they wait, so the changes of one key reach the client in the order they
@@ -206,6 +224,12 @@ impl Scheduler {
         !self.state.lock().waiting.is_empty()
     }
 
+    /// How many keys have a slot: the keys locked or in flight.
+    #[cfg(test)]
+    pub(super) fn slot_count(&self) -> usize {
+        self.slots.lock().len()
+    }
+
     /// Whether a producer of `key` holds its lock.
     #[cfg(test)]
     pub(super) fn is_locked(&self, key: u32) -> bool {
@@ -229,6 +253,7 @@ impl Scheduler {
         KeyLock {
             key,
             slot,
+            scheduler: self,
             _producer: producer,
             _gate: gate,
         }
@@ -279,6 +304,43 @@ impl Scheduler {
         self.send(lock, [0; 4], VecDeque::from([messages]), wait, generation);
     }
 
+    /// Sends a set of the locked key once the key is idle, as
+    /// [`send_set`](Self::send_set), for a state whose stored value changes
+    /// in step with the wire.
+    ///
+    /// `store` always runs, when the key became idle, and what it returns,
+    /// the state's storage lock, is held until the set is queued. An
+    /// operation that takes no key lock but queues under the storage lock
+    /// ([`send_now`](Self::send_now)) is then ordered with this set the same
+    /// way in the storage and on the wire.
+    pub(super) fn send_set_stored<G>(
+        &self,
+        lock: KeyLock<'_>,
+        messages: Messages,
+        wait: bool,
+        generation: u64,
+        store: impl FnOnce() -> G,
+    ) {
+        {
+            let mut state = self.state.lock();
+            if state.sync.generation() != generation {
+                drop(state);
+                // Stale work is only stored, for the next synchronization.
+                drop(store());
+                return;
+            }
+            state.waiting.remove(&lock.key);
+        }
+        self.send_with(
+            lock,
+            [0; 4],
+            VecDeque::from([messages]),
+            wait,
+            generation,
+            store,
+        );
+    }
+
     /// Sends the parts of an update of the locked key once the key is idle.
     /// With `force`, its waiting parts are dropped first when `rect` covers
     /// their rectangle.
@@ -315,11 +377,27 @@ impl Scheduler {
         &self,
         lock: KeyLock<'_>,
         rect: [usize; 4],
-        mut parts: VecDeque<Messages>,
+        parts: VecDeque<Messages>,
         wait: bool,
         generation: u64,
     ) {
+        self.send_with(lock, rect, parts, wait, generation, || ());
+    }
+
+    /// [`send`](Self::send) with a `store` step, which runs once the key is
+    /// idle; its result is held until the first part is queued.
+    fn send_with<G>(
+        &self,
+        lock: KeyLock<'_>,
+        rect: [usize; 4],
+        mut parts: VecDeque<Messages>,
+        wait: bool,
+        generation: u64,
+        store: impl FnOnce() -> G,
+    ) {
         lock.slot.event.wait_clear();
+        // Taken before the state lock, as every producer does.
+        let stored = store();
         // Keep reset from changing the generation between this check and the
         // enqueue, which could otherwise leak stale work into a new
         // connection. Stale work leaves the event clear: the next
@@ -337,6 +415,7 @@ impl Scheduler {
         }
         self.send_all(first);
         drop(state);
+        drop(stored);
 
         // The key's lock is still held, so only this transfer's
         // acknowledgements or a disconnect set the event.
@@ -443,10 +522,9 @@ impl Scheduler {
         state.sync.synchronized();
         state.waiting.clear();
         state.syncing.clear();
-        // No producer runs: the events stale work left clear are set again.
-        for slot in self.slots.lock().values() {
-            slot.event.set();
-        }
+        // No producer runs: the events stale work left clear are set again,
+        // and every key is idle, so its slot is forgotten.
+        self.forget_all_idle();
         for &key in keys {
             state.syncing.insert(key, ());
             self.slot(key).event.clear();
@@ -483,8 +561,13 @@ impl Scheduler {
             // An acknowledgement of a key without a slot belongs to a key
             // that was forgotten; nothing waits for it.
             None => {
-                if let Some(slot) = self.slots.lock().get(&key) {
+                let mut slots = self.slots.lock();
+                if let Some(slot) = slots.get(&key) {
                     slot.event.set();
+                    // No producer holds the key, which is idle now.
+                    if Arc::strong_count(slot) == 1 {
+                        slots.remove(&key);
+                    }
                 }
             }
         }
@@ -499,9 +582,17 @@ impl Scheduler {
             state.syncing.clear();
             state.sync.reset();
         }
-        for slot in self.slots.lock().values() {
+        self.forget_all_idle();
+    }
+
+    /// Sets the event of every key, which releases the producers waiting for
+    /// one, and forgets the keys no producer holds.
+    fn forget_all_idle(&self) {
+        let mut slots = self.slots.lock();
+        for slot in slots.values() {
             slot.event.set();
         }
+        slots.retain(|_, slot| Arc::strong_count(slot) > 1);
     }
 
     fn send_all(&self, messages: Messages) {
@@ -858,22 +949,47 @@ mod tests {
         assert_marker(&mut receiver, 4);
     }
 
+    /// A key has a slot only while it is locked or in flight, so the keys a
+    /// state had do not accumulate.
     #[test]
-    fn a_control_of_every_key_forgets_the_idle_keys() {
+    fn an_idle_key_is_forgotten() {
         let (scheduler, _, mut receiver) = scheduler();
         set(&scheduler, 7, 1, false);
         set(&scheduler, 9, 2, false);
+        assert_eq!(scheduler.slots.lock().len(), 2, "both are in flight");
         scheduler.acknowledge(7);
+        assert_eq!(scheduler.slots.lock().len(), 1);
         scheduler.acknowledge(9);
-        assert_eq!(scheduler.slots.lock().len(), 2);
-        control(&scheduler, None, 3);
         assert!(scheduler.slots.lock().is_empty());
-        for value in [1, 2, 3] {
+
+        // A producer that sends nothing leaves no slot, and neither does a
+        // control.
+        drop(scheduler.lock(11));
+        control(&scheduler, Some(12), 3);
+        assert!(scheduler.slots.lock().is_empty());
+
+        control(&scheduler, None, 4);
+        assert!(scheduler.slots.lock().is_empty());
+        for value in [1, 2, 3, 4] {
             assert_marker(&mut receiver, value);
         }
         // An acknowledgement of a forgotten key is ignored.
         scheduler.acknowledge(7);
         assert!(scheduler.is_idle());
+    }
+
+    /// A key that a producer still waits for is kept through a reset and a
+    /// synchronization of the other keys.
+    #[test]
+    fn a_reset_forgets_only_the_keys_no_producer_holds() {
+        let (scheduler, _, _receiver) = scheduler();
+        set(&scheduler, 7, 1, false);
+        set(&scheduler, 9, 2, false);
+        let held = scheduler.lock(7);
+        scheduler.reset();
+        assert_eq!(scheduler.slots.lock().len(), 1);
+        drop(held);
+        assert!(scheduler.slots.lock().is_empty());
     }
 
     #[test]

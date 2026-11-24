@@ -43,6 +43,16 @@ impl<const N: usize> FastVec<N> {
         }
     }
 
+    /// The bytes written so far.
+    #[cfg(feature = "client")]
+    #[inline]
+    pub fn as_slice(&self) -> &[u8] {
+        match self {
+            Self::Heap(vec) => vec,
+            Self::Stack(stack_vec) => stack_vec.as_ref(),
+        }
+    }
+
     #[inline]
     pub fn len(&self) -> usize {
         match self {

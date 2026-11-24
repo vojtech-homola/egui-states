@@ -30,6 +30,22 @@ macro_rules! forwarded {
 
 forwarded!(Forwarded, "forwarded");
 
+/// Forwards `$capacity` before a comma, where Syn does not read the literal
+/// through the invisible group around it.
+macro_rules! forwarded_queue {
+    ($name:ident, $capacity:expr) => {
+        #[derive(State)]
+        struct $name {
+            #[state(queue = $capacity,)]
+            events: ValueTake<u8>,
+            #[state(queue = 2usize)]
+            sized: ValueTake<u8>,
+        }
+    };
+}
+
+forwarded_queue!(ForwardedQueue, 5);
+
 #[derive(State)]
 #[allow(dead_code)]
 struct Initials {
@@ -56,6 +72,7 @@ struct Initials {
     plain: Value<i32>,
     reset: Signal<()>,
     forwarded: Forwarded,
+    forwarded_queue: ForwardedQueue,
 }
 
 #[test]
@@ -64,6 +81,8 @@ fn init_options_set_the_client_values() {
 
     assert_eq!(state.gain.get(), 0.5);
     assert!(state.events.is_empty() && state.few_events.is_empty());
+    let queues = &state.forwarded_queue;
+    assert!(queues.events.is_empty() && queues.sized.is_empty());
     assert_eq!(state.from_item.get(), 0.25);
     assert_eq!(state.status.get(), "ready");
     assert_eq!(state.mode.get(), Mode::Auto);

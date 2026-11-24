@@ -18,6 +18,21 @@ fn report_error(sender: &MessageSender, error: String) {
     sender.send_message(&error);
 }
 
+/// Whether an edited copy differs from the value it was copied from.
+///
+/// `T`'s [`PartialEq`] decides, except for a value that is not equal to
+/// itself, such as a float holding NaN: comparing it says "changed" although
+/// nothing was edited, so its serialized form is compared instead. A widget
+/// bound to such a value would otherwise send it on every frame.
+fn differs<T: Serialize + PartialEq>(value: &T, original: &T) -> bool {
+    if value == original {
+        return false;
+    }
+    #[allow(clippy::eq_op)]
+    let reflexive = original == original;
+    reflexive || to_message(value).as_slice() != to_message(original).as_slice()
+}
+
 /// The result of a [`Value::write`] closure, reporting whether it changed the
 /// value.
 ///
@@ -82,20 +97,22 @@ impl<'a, T: Serialize + Clone + PartialEq> Diff<'a, T> {
 
     /// Sends the edited value if it differs from the captured value.
     ///
-    /// The comparison uses `T`'s [`PartialEq`] implementation.
+    /// The comparison uses `T`'s [`PartialEq`] implementation; a value that
+    /// is not equal to itself, such as a float holding NaN, is compared by
+    /// its serialized form.
     #[inline]
     pub fn set(self) {
-        if self.v != self.original {
+        if differs(&self.v, &self.original) {
             self.value.set(self.v);
         }
     }
 
     /// Sends and signals the edited value if it differs from the captured value.
     ///
-    /// The comparison uses `T`'s [`PartialEq`] implementation.
+    /// The comparison is the one of [`Self::set`].
     #[inline]
     pub fn set_signal(self) {
-        if self.v != self.original {
+        if differs(&self.v, &self.original) {
             self.value.set_signal(self.v);
         }
     }
@@ -124,20 +141,22 @@ impl<'a, T: Serialize + Clone + PartialEq + Atomic> DiffAtomic<'a, T> {
 
     /// Sends the edited value if it differs from the captured value.
     ///
-    /// The comparison uses `T`'s [`PartialEq`] implementation.
+    /// The comparison uses `T`'s [`PartialEq`] implementation; a value that
+    /// is not equal to itself, such as a float holding NaN, is compared by
+    /// its serialized form.
     #[inline]
     pub fn set(self) {
-        if self.v != self.original {
+        if differs(&self.v, &self.original) {
             self.value.set(self.v);
         }
     }
 
     /// Sends and signals the edited value if it differs from the captured value.
     ///
-    /// The comparison uses `T`'s [`PartialEq`] implementation.
+    /// The comparison is the one of [`Self::set`].
     #[inline]
     pub fn set_signal(self) {
-        if self.v != self.original {
+        if differs(&self.v, &self.original) {
             self.value.set_signal(self.v);
         }
     }
@@ -351,7 +370,7 @@ where
         let original = self.get();
         let mut value = original.clone();
         let result = f(&mut value);
-        if value != original {
+        if differs(&value, &original) {
             self.set_inner(value, signal);
         }
         result
@@ -370,7 +389,9 @@ where
     /// ```
     ///
     /// The copy is compared with the value read before `f` ran, using `T`'s
-    /// [`PartialEq`]; when they are equal nothing is sent. No lock is held
+    /// [`PartialEq`]; when they are equal nothing is sent. A value that is
+    /// not equal to itself, such as a float holding NaN, is compared by its
+    /// serialized form, so an untouched NaN is not sent. No lock is held
     /// while `f` runs, so `f` may read this handle. A change is applied like
     /// [`Self::set`]: an oversized value is reported and not stored.
     pub fn edit<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
@@ -482,7 +503,7 @@ where
         let original = self.get();
         let mut value = original;
         let result = f(&mut value);
-        if value != original {
+        if differs(&value, &original) {
             self.set_inner(value, signal);
         }
         result
@@ -1000,6 +1021,33 @@ mod tests {
             _ => panic!("expected unsignaled list second"),
         }
         assert!(rx.try_recv().is_err());
+    }
+
+    /// NaN is not equal to itself, so a comparison alone would send an
+    /// untouched NaN with every edit, which a bound widget makes each frame.
+    #[test]
+    fn an_untouched_nan_is_not_sent() {
+        let (sender, mut rx) = MessageSender::new();
+        let value: Value<(f32, u8)> =
+            Value::new("value".into(), 41, 5, (f32::NAN, 1), sender.clone());
+        let atomic = ValueAtomic::new("atomic".into(), 42, 6, f64::NAN, sender);
+
+        value.edit(|_| ());
+        atomic.edit_signal(|_| ());
+        Diff::new(&value).set();
+        DiffAtomic::new(&atomic).set_signal();
+        assert!(rx.try_recv().is_err());
+
+        // A change next to the NaN, away from it, and to another NaN is sent.
+        value.edit(|v| v.1 = 2);
+        atomic.edit(|v| *v = 1.0);
+        atomic.edit(|v| *v = f64::NAN);
+        atomic.edit(|v| *v = -f64::NAN);
+        for _ in 0..4 {
+            assert!(matches!(rx.try_recv(), Ok(Some(ChannelMessage::Value(..)))));
+        }
+        assert!(rx.try_recv().is_err());
+        assert_eq!(value.get().1, 2);
     }
 
     #[test]

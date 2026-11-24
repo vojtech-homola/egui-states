@@ -26,6 +26,10 @@ pub(crate) const DEFAULT_TIMEOUT: Duration = Duration::from_secs(20);
 const MIN_INTERVAL: Duration = Duration::from_millis(1);
 const MAX_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 
+/// The shortest timeout: below four intervals a ping would not come in time
+/// to keep the connection.
+const MIN_TIMEOUT: Duration = Duration::from_millis(4);
+
 /// Validated heartbeat settings.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Heartbeat {
@@ -37,8 +41,8 @@ impl Heartbeat {
     pub(crate) fn new(timeout: Option<Duration>) -> Result<Option<Self>, String> {
         match timeout {
             None => Ok(None),
-            Some(timeout) if timeout.is_zero() => {
-                Err("heartbeat timeout must be greater than zero".to_string())
+            Some(timeout) if timeout < MIN_TIMEOUT => {
+                Err("heartbeat timeout must be at least 4 ms".to_string())
             }
             Some(timeout) => Ok(Some(Self { timeout })),
         }
@@ -52,7 +56,7 @@ impl Heartbeat {
             return Ok(None);
         };
         let timeout = Duration::try_from_secs_f64(timeout)
-            .map_err(|_| "heartbeat timeout must be a finite number of seconds > 0".to_string())?;
+            .map_err(|_| "heartbeat timeout must be a finite number of seconds".to_string())?;
         Self::new(Some(timeout))
     }
 
@@ -124,7 +128,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn settings_require_a_nonzero_timeout() {
+    fn settings_require_a_timeout_of_four_intervals() {
         let second = Duration::from_secs(1);
         assert_eq!(
             Heartbeat::new(Some(second)),
@@ -132,6 +136,10 @@ mod tests {
         );
         assert_eq!(Heartbeat::new(None), Ok(None));
         assert!(Heartbeat::new(Some(Duration::ZERO)).is_err());
+        // A shorter timeout would pass before the first ping.
+        assert!(Heartbeat::new(Some(Duration::from_micros(3999))).is_err());
+        let shortest = Heartbeat::new(Some(MIN_TIMEOUT)).unwrap().unwrap();
+        assert!(shortest.interval() * 4 <= shortest.timeout);
     }
 
     #[test]
@@ -161,7 +169,7 @@ mod tests {
             }))
         );
         assert_eq!(Heartbeat::from_secs(None), Ok(None));
-        for timeout in [-1.0, 0.0, f64::INFINITY, f64::NAN] {
+        for timeout in [-1.0, 0.0, 0.003, f64::INFINITY, f64::NAN] {
             assert!(Heartbeat::from_secs(Some(timeout)).is_err(), "{timeout}");
         }
     }

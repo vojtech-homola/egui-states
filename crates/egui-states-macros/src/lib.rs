@@ -1,7 +1,7 @@
 //! Procedural macros for the `egui_states` crate.
 
 use proc_macro::TokenStream;
-use proc_macro2::TokenStream as TokenStream2;
+use proc_macro2::{TokenStream as TokenStream2, TokenTree};
 use quote::quote;
 use syn::{
     Attribute, DeriveInput, Meta, Path, Token, parse::Parser, parse_macro_input,
@@ -10,6 +10,15 @@ use syn::{
 
 mod objects;
 mod states;
+
+/// The expression inside any invisible groups. A fragment forwarded through
+/// `macro_rules!`, such as `$value:expr`, arrives wrapped in one.
+fn ungroup(mut expr: &syn::Expr) -> &syn::Expr {
+    while let syn::Expr::Group(group) = expr {
+        expr = &group.expr;
+    }
+    expr
+}
 
 /// Implements `egui_states::Typed` and derives Serde serialization through
 /// the `egui_states` Serde re-export.
@@ -20,12 +29,21 @@ mod states;
 /// type, and prerequisite derives are not inferred.
 ///
 /// The attribute supports non-generic unit structs or structs with named
-/// fields, and non-generic enums. A fieldless enum may have discriminants that
-/// fit in `i32`. An enum with data may mix unit variants, variants with named
-/// fields and tuple variants, but has no explicit discriminants, no empty
-/// `Variant {}` or `Variant()` variants, and no field that contains the enum
-/// itself. Unions, tuple structs and generic items are not supported. Every
-/// field type must implement `egui_states::Typed`.
+/// fields, and non-generic enums with at least one variant. A fieldless enum
+/// may have discriminants that fit in `i32`. An enum with data may mix unit
+/// variants, variants with named fields and tuple variants, but has no
+/// explicit discriminants and no empty `Variant {}` or `Variant()` variants.
+/// Unions, tuple structs and generic items are not supported. Every field type
+/// must implement `egui_states::Typed`.
+///
+/// A type cannot contain itself. A field that names its own type, such as
+/// `children: Vec<Node>` in `Node`, is a compile error. A type that reaches
+/// itself through another type or a type alias compiles, and describing it
+/// panics with the name of the type.
+///
+/// Serde attributes that change the encoding, such as `skip` or `flatten`, are
+/// compile errors, and so is any `serde` attribute inside `cfg_attr`: the type
+/// description does not follow the condition.
 #[proc_macro_attribute]
 pub fn typed(args: TokenStream, input: TokenStream) -> TokenStream {
     let args = TokenStream2::from(args);
@@ -132,6 +150,7 @@ pub fn atomic(input: TokenStream) -> TokenStream {
 ///   `ValueTake`, the client keeps up to `VALUE_TAKE_QUEUE` (100) untaken
 ///   values in arrival order instead of only the latest.
 /// - `queue = N`: a `ValueTake` keeps up to `N` untaken values, at least 1.
+///   `N` is an integer literal, plain or with the `usize` suffix.
 /// - `init = <expr>`: the field starts from this value instead of
 ///   `Default::default()`, on the client and in the generated server bindings.
 ///   It applies to `Value`, `ValueAtomic`, `Static` and `StaticAtomic`. The
@@ -182,8 +201,48 @@ const WIRE_NEUTRAL_SERDE_ATTRIBUTES: &[&str] = &[
     "expecting",
 ];
 
+/// Rejects a `serde` attribute in the body of a `cfg_attr`, also in a
+/// `cfg_attr` nested in it. Such an attribute would change the encoding only
+/// when the condition holds, while `Typed` describes one encoding.
+fn check_cfg_attr(tokens: TokenStream2) -> syn::Result<()> {
+    // `condition, attribute, attribute, ...`: the items are split by the
+    // commas outside of any brackets, and an attribute starts with its name.
+    let mut item = 0;
+    let mut item_start = true;
+    let mut tokens = tokens.into_iter().peekable();
+    while let Some(token) = tokens.next() {
+        match &token {
+            TokenTree::Punct(punct) if punct.as_char() == ',' => {
+                item += 1;
+                item_start = true;
+                continue;
+            }
+            TokenTree::Ident(name) if item_start && item > 0 => {
+                if name == "serde" {
+                    return Err(syn::Error::new_spanned(
+                        name,
+                        "a `serde` attribute inside `cfg_attr` is not supported by `#[typed]`: `Typed` describes one wire encoding, whatever the condition",
+                    ));
+                }
+                if name == "cfg_attr"
+                    && let Some(TokenTree::Group(group)) = tokens.peek()
+                {
+                    check_cfg_attr(group.stream())?;
+                }
+            }
+            _ => {}
+        }
+        item_start = false;
+    }
+    Ok(())
+}
+
 fn check_serde_attributes(attrs: &[Attribute]) -> syn::Result<()> {
     let parser = Punctuated::<Meta, Token![,]>::parse_terminated;
+
+    for attr in attrs.iter().filter(|attr| attr.path().is_ident("cfg_attr")) {
+        check_cfg_attr(attr.meta.require_list()?.tokens.clone())?;
+    }
 
     for attr in attrs.iter().filter(|attr| attr.path().is_ident("serde")) {
         for meta in parser.parse2(attr.meta.require_list()?.tokens.clone())? {
@@ -293,7 +352,7 @@ fn has_serde_crate_override(attrs: &[Attribute]) -> syn::Result<bool> {
 mod tests {
     use quote::{ToTokens, quote};
 
-    use super::parse_typed_args;
+    use super::{add_serde_attributes, check_serde_attributes, parse_typed_args};
 
     #[test]
     fn parses_rust_derive_paths() {
@@ -312,5 +371,109 @@ mod tests {
         assert!(parse_typed_args(quote!(unknown(Debug))).is_err());
         assert!(parse_typed_args(quote!(rust_derive(Debug), rust_derive(Hash))).is_err());
         assert!(parse_typed_args(quote!(derive = (Debug, Hash))).is_err());
+    }
+
+    fn attributes(item: syn::ItemStruct) -> syn::Result<()> {
+        check_serde_attributes(&item.attrs)
+    }
+
+    #[test]
+    fn a_serde_attribute_inside_cfg_attr_is_rejected() {
+        for item in [
+            syn::parse_quote!(
+                #[cfg_attr(all(), serde(skip))]
+                struct S;
+            ),
+            // Wire-neutral where it is unconditional, but not behind a condition.
+            syn::parse_quote!(
+                #[cfg_attr(feature = "x", serde(rename = "s"))]
+                struct S;
+            ),
+            syn::parse_quote!(
+                #[cfg_attr(all(), allow(dead_code), serde(skip))]
+                struct S;
+            ),
+            syn::parse_quote!(
+                #[cfg_attr(all(), serde(skip), allow(dead_code))]
+                struct S;
+            ),
+            syn::parse_quote!(
+                #[cfg_attr(any(a, b), cfg_attr(all(), serde(flatten)))]
+                struct S;
+            ),
+            syn::parse_quote!(
+                #[cfg_attr(a, doc = "x", cfg_attr(b, derive(Debug), cfg_attr(c, serde(skip))))]
+                struct S;
+            ),
+        ] {
+            let error = attributes(item).unwrap_err().to_string();
+            assert!(
+                error.contains("a `serde` attribute inside `cfg_attr`"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn other_attributes_inside_cfg_attr_are_accepted() {
+        for item in [
+            syn::parse_quote!(
+                #[cfg_attr(feature = "client", derive(egui_states::Atomic))]
+                struct S;
+            ),
+            // `serde` as the condition, a value, or part of another attribute.
+            syn::parse_quote!(
+                #[cfg_attr(serde, derive(Debug))]
+                struct S;
+            ),
+            syn::parse_quote!(
+                #[cfg_attr(feature = "serde", derive(serde::Serialize))]
+                struct S;
+            ),
+            syn::parse_quote!(
+                #[cfg_attr(all(), doc = "serde(skip)", allow(serde))]
+                struct S;
+            ),
+            syn::parse_quote!(
+                #[cfg_attr(any(serde, b), cfg_attr(serde, repr(C)))]
+                struct S;
+            ),
+        ] {
+            attributes(item).unwrap();
+        }
+    }
+
+    #[test]
+    fn cfg_attr_is_checked_on_fields_and_variants() {
+        for mut item in [
+            syn::parse_quote!(
+                struct S {
+                    #[cfg_attr(all(), serde(skip))]
+                    hidden: u8,
+                }
+            ),
+            syn::parse_quote!(
+                enum E {
+                    #[cfg_attr(all(), serde(skip))]
+                    Hidden,
+                }
+            ),
+            syn::parse_quote!(
+                enum E {
+                    Go {
+                        #[cfg_attr(all(), serde(skip))]
+                        hidden: u8,
+                    },
+                }
+            ),
+            syn::parse_quote!(
+                enum E {
+                    Go(#[cfg_attr(all(), serde(skip))] u8),
+                }
+            ),
+        ] {
+            let error = add_serde_attributes(&mut item).unwrap_err().to_string();
+            assert!(error.contains("inside `cfg_attr`"), "{error}");
+        }
     }
 }

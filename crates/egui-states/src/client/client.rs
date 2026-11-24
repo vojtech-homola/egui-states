@@ -77,7 +77,8 @@ struct Settings {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Reconnect {
     /// How long the client waits before the first new attempt. Default
-    /// 500 ms.
+    /// 500 ms. With a zero delay the first attempt follows at once and the
+    /// later waits grow from 50 ms.
     pub delay: Duration,
     /// The longest wait between attempts. Default 5 s.
     pub max_delay: Duration,
@@ -95,6 +96,10 @@ impl Default for Reconnect {
         }
     }
 }
+
+/// The shortest wait a failed attempt grows the next one to; see
+/// [`Reconnect::delay`].
+const MIN_RETRY_GROWTH: Duration = Duration::from_millis(50);
 
 /// The waits of the client's automatic reconnecting.
 struct Retry {
@@ -126,7 +131,13 @@ impl Retry {
             | CloseReason::ConnectionLost
             | CloseReason::ServerStopped => {
                 let delay = self.delay.min(policy.max_delay);
-                self.delay = delay.saturating_mul(2).min(policy.max_delay);
+                // A zero delay doubled stays zero, so the waits grow from a
+                // floor: otherwise an unreachable server is retried in a
+                // busy loop.
+                self.delay = delay
+                    .saturating_mul(2)
+                    .max(MIN_RETRY_GROWTH)
+                    .min(policy.max_delay);
                 Some(delay)
             }
             _ => None,
@@ -147,6 +158,28 @@ impl Retry {
             None => client.fail(reason, error),
         }
         next
+    }
+
+    /// Ends an attempt that failed for `reason` like [`Self::failed`], unless
+    /// the user disconnected meanwhile: then nothing is reported and the
+    /// client waits for `Client::connect` in `NotConnected`.
+    ///
+    /// A `Client::connect` made during the attempt asked for this attempt, so
+    /// it starts no other one.
+    fn attempt_failed(
+        &mut self,
+        rx: &mut MessageReceiver,
+        client: &ClientCore,
+        reason: CloseReason,
+        error: String,
+    ) -> Option<Duration> {
+        client.end_attempt();
+        if client.disconnect_requested() {
+            drain_queue(rx, client);
+            client.set_state(ConnectionState::NotConnected);
+            return None;
+        }
+        self.failed(client, Some(reason), error)
     }
 
     /// Ends an established connection that ended for `reason`, in
@@ -273,12 +306,12 @@ async fn start_gui_client(
         let (socket_read, mut socket_send) = match opened {
             Some(Some(Ok(socket))) => socket,
             Some(Some(Err(error))) => {
-                next = retry.failed(&client, Some(CloseReason::Unreachable), error);
+                next = retry.attempt_failed(&mut rx, &client, CloseReason::Unreachable, error);
                 continue;
             }
             Some(None) => {
                 let error = no_answer(settings.connect_timeout);
-                next = retry.failed(&client, Some(CloseReason::Timeout), error);
+                next = retry.attempt_failed(&mut rx, &client, CloseReason::Timeout, error);
                 continue;
             }
             None => {
@@ -308,7 +341,7 @@ async fn start_gui_client(
         };
         if let Err(error) = sent {
             let error = format!("Sending handshake failed: {error}");
-            next = retry.failed(&client, Some(CloseReason::ConnectionLost), error);
+            next = retry.attempt_failed(&mut rx, &client, CloseReason::ConnectionLost, error);
             continue;
         }
 
@@ -324,8 +357,7 @@ async fn start_gui_client(
         let first = match answer {
             Ok(Answer::Accepted(first)) => first,
             Ok(Answer::NotAccepted(reason, error)) => {
-                client.end_attempt();
-                next = retry.failed(&client, Some(reason), error);
+                next = retry.attempt_failed(&mut rx, &client, reason, error);
                 continue;
             }
             Ok(Answer::Cancelled) => {
@@ -1115,8 +1147,12 @@ impl Client {
     /// disconnect while the connection is being opened takes effect once it
     /// is open or has failed.
     pub fn disconnect(&self) {
-        self.core().0.closed_by_user.store(true, Ordering::Release);
-        self.core().0.sender.close();
+        let inner = &self.core().0;
+        inner.closed_by_user.store(true, Ordering::Release);
+        // An earlier `connect` that no attempt has taken yet is withdrawn:
+        // left set, it would connect again right after this disconnect.
+        inner.connect_signal.clear();
+        inner.sender.close();
     }
 
     /// Returns the current connection status.
@@ -1749,6 +1785,102 @@ mod tests {
 
         let mut never = Retry::new(None);
         assert_eq!(never.after(Some(CloseReason::Unreachable)), None);
+    }
+
+    /// A zero delay doubled stays zero; the waits grow from a floor instead,
+    /// so an unreachable server is not retried in a busy loop.
+    #[test]
+    fn a_zero_reconnect_delay_still_backs_off() {
+        let policy = Reconnect {
+            delay: Duration::ZERO,
+            max_delay: Duration::from_millis(120),
+            busy_delay: Duration::ZERO,
+        };
+        let mut retry = Retry::new(Some(policy));
+        let mut waits = Vec::new();
+        for _ in 0..4 {
+            waits.push(retry.after(Some(CloseReason::Unreachable)).unwrap());
+        }
+        assert_eq!(
+            waits,
+            [0, 50, 100, 120].map(Duration::from_millis),
+            "the first attempt is immediate, as asked"
+        );
+    }
+
+    /// A listener that accepts connections and never answers them, so a
+    /// client's attempt stays in its opening. Returns its port and the count
+    /// of connections it accepted.
+    fn silent_listener() -> (u16, Arc<std::sync::atomic::AtomicUsize>) {
+        let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let accepted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = accepted.clone();
+        std::thread::spawn(move || {
+            let mut open = Vec::new();
+            for stream in listener.incoming() {
+                open.push(stream);
+                count.fetch_add(1, Ordering::Release);
+            }
+        });
+        (port, accepted)
+    }
+
+    fn wait_until(what: &str, condition: impl Fn() -> bool) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !condition() {
+            assert!(std::time::Instant::now() < deadline, "timed out: {what}");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// A `connect` repeated while an attempt opens asked for that attempt.
+    /// The `disconnect` after it cancels the attempt, and nothing connects
+    /// again until the next `connect`.
+    #[test]
+    fn disconnect_withdraws_a_connect_made_during_the_attempt() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let (port, accepted) = silent_listener();
+        let (_state, client) = ClientBuilder::<Empty>::new(egui::Context::default(), port).build();
+        client.connect();
+        wait_until("the attempt", || accepted.load(Ordering::Acquire) == 1);
+
+        client.connect();
+        client.disconnect();
+        wait_until("the cancelled attempt", || {
+            client.get_state() == ConnectionState::NotConnected
+        });
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(accepted.load(Ordering::Acquire), 1, "connected again");
+        assert_eq!(client.get_state(), ConnectionState::NotConnected);
+
+        client.connect();
+        wait_until("the next attempt", || accepted.load(Ordering::Acquire) == 2);
+    }
+
+    /// A `connect` repeated while an attempt opens does not start another
+    /// attempt when this one fails: the client stays in `Failed`.
+    #[test]
+    fn a_connect_made_during_a_failing_attempt_does_not_retry() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let (port, accepted) = silent_listener();
+        let (_state, client) = ClientBuilder::<Empty>::new(egui::Context::default(), port)
+            .connect_timeout(Duration::from_millis(200))
+            .build();
+        client.connect();
+        wait_until("the attempt", || accepted.load(Ordering::Acquire) == 1);
+        client.connect();
+        wait_until("the timeout", || {
+            client.get_state() == ConnectionState::Failed
+        });
+        assert_eq!(client.last_reason(), Some(CloseReason::Timeout));
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(accepted.load(Ordering::Acquire), 1, "retried at once");
+        assert_eq!(client.get_state(), ConnectionState::Failed);
     }
 
     #[test]

@@ -182,8 +182,11 @@ impl DataMultiTake {
             .require(&self.name, header, "with every take")?;
         let slice = data.bytes;
 
-        let lock = self.scheduler.lock(index);
-        let generation = {
+        // The cache changes when the value is queued, not before the wait
+        // for the key: a removal or a reset in between must not leave the
+        // cache and the client with different values. The storage lock is
+        // returned to the scheduler, which holds it until the set is queued.
+        let store = || {
             let mut stored = self.cache.lock();
             if cache {
                 let cached = (slice.to_vec(), elements, header.map(<[u8]>::to_vec));
@@ -191,9 +194,14 @@ impl DataMultiTake {
             } else {
                 stored.remove(&index);
             }
-            self.scheduler.sendable()
+            stored
         };
-        let Some(generation) = generation else {
+
+        let lock = self.scheduler.lock(index);
+        // A synchronization waits for the key's lock, so it sends what is
+        // stored here.
+        let Some(generation) = self.scheduler.sendable() else {
+            drop(store());
             return Ok(());
         };
         let messages = pack_data_multi_take(
@@ -205,7 +213,8 @@ impl DataMultiTake {
             blocking,
             take_header(&self.header_type, header),
         )?;
-        self.scheduler.send_set(lock, messages, wait, generation);
+        self.scheduler
+            .send_set_stored(lock, messages, wait, generation, store);
         Ok(())
     }
 
@@ -218,12 +227,11 @@ impl DataMultiTake {
         let message = DataMultiTakeHeader::Remove(index)
             .serialize(self.scheduler.id)
             .map_err(|_| "Failed to serialize remove index header".to_string())?;
-        let generation = {
-            let mut stored = self.cache.lock();
-            stored.remove(&index);
-            self.scheduler.sendable()
-        };
-        if let Some(generation) = generation {
+        // Queued under the storage lock, so the cache and the wire see this
+        // removal and the sets of `index` in the same order.
+        let mut stored = self.cache.lock();
+        stored.remove(&index);
+        if let Some(generation) = self.scheduler.sendable() {
             self.scheduler.send_now(message, generation);
         }
         Ok(())
@@ -234,12 +242,10 @@ impl DataMultiTake {
         let message = DataMultiTakeHeader::Reset
             .serialize(self.scheduler.id)
             .map_err(|_| "Failed to serialize reset header".to_string())?;
-        let generation = {
-            let mut stored = self.cache.lock();
-            stored.clear();
-            self.scheduler.sendable()
-        };
-        if let Some(generation) = generation {
+        // See `remove_index` for the storage lock.
+        let mut stored = self.cache.lock();
+        stored.clear();
+        if let Some(generation) = self.scheduler.sendable() {
             self.scheduler.send_now(message, generation);
         }
         Ok(())
@@ -721,6 +727,59 @@ mod tests {
         take.acknowledge_key(1);
         finished(&done).unwrap();
         assert_eq!(count(&mut receiver), 1);
+    }
+
+    /// A cached set that waited for its key through a removal or a reset is
+    /// sent after it, and stays cached: the cache changes with the wire, not
+    /// before the wait.
+    #[test]
+    fn a_multi_take_that_waited_through_a_removal_stays_cached() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let cached = |take: &DataMultiTake| {
+            let cache = take.cache.lock();
+            cache.get(&1).map(|(data, ..)| data.clone())
+        };
+        for reset in [false, true] {
+            let (take, _, mut receiver) = multi(true);
+            take.sync().unwrap();
+            count(&mut receiver);
+            take.set(1, holder(&[1]), true, true, false).unwrap();
+            assert_eq!(cached(&take), Some(vec![1]));
+
+            let producer = take.clone();
+            let done = blocked(move || producer.set(1, holder(&[2]), true, true, false));
+            assert_eq!(
+                cached(&take),
+                Some(vec![1]),
+                "the waiting set is not stored"
+            );
+            match reset {
+                false => take.remove_index(1).unwrap(),
+                true => take.reset().unwrap(),
+            }
+            assert_eq!(cached(&take), None);
+            // The client acknowledges the removed blocking value.
+            take.acknowledge_key(1);
+            finished(&done).unwrap();
+            assert_eq!(count(&mut receiver), 3, "both takes and the removal");
+            assert_eq!(cached(&take), Some(vec![2]));
+        }
+    }
+
+    /// Keys that come and go leave nothing behind in the scheduler.
+    #[test]
+    fn a_multi_take_keeps_its_slots_only_for_keys_in_flight() {
+        let (take, _, mut receiver) = multi(true);
+        take.sync().unwrap();
+        for key in 0..100 {
+            take.set(key, holder(&[1]), false, false, false).unwrap();
+            take.acknowledge_key(key);
+            take.remove_index(key).unwrap();
+        }
+        count(&mut receiver);
+        assert_eq!(take.scheduler.slot_count(), 0);
     }
 }
 

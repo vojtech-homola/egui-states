@@ -1386,7 +1386,7 @@ mod tests {
         connected.store(true, Ordering::Release);
         data.sync().unwrap();
         // Only one of the three sync acknowledgements arrives before the disconnect.
-        data.acknowledge();
+        data.acknowledge_key(2);
 
         let waiting = data.clone();
         let (done_sender, done_receiver) = std::sync::mpsc::channel();

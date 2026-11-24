@@ -26,7 +26,7 @@ fn not_a_variant(
     }
     Ok(PyTypeError::new_err(format!(
         "Expected a variant of {enum_name}, got {}",
-        obj.repr()?
+        short_repr(obj)
     )))
 }
 

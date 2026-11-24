@@ -115,8 +115,8 @@ impl SyncTrait for ValueCore {
         let mut w = self.value.write();
         w.1 = 1;
         let data = ServerHeader::serialize_value(self.id, self.type_id, &w.0).map_err(|_| ())?;
-        drop(w);
-
+        // Sent under the lock, as `set` does: a set made meanwhile follows
+        // this value on the wire instead of being overtaken by it.
         self.sender.send(data);
         Ok(())
     }
@@ -246,8 +246,7 @@ impl SyncTrait for ValueStaticCore {
     fn sync(&self) -> Result<(), ()> {
         let w = self.value.read();
         let data = ServerHeader::serialize_static(self.id, self.type_id, &w).map_err(|_| ())?;
-        drop(w);
-
+        // Sent under the lock; see `ValueCore::sync`.
         self.sender.send(data);
         Ok(())
     }
