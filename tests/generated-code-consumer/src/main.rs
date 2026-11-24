@@ -124,5 +124,18 @@ mod tests {
         assert_eq!(literals.negative_infinity.get().unwrap(), f64::NEG_INFINITY);
         assert!(literals.single_not_a_number.get().unwrap().is_nan());
         server.states.unit.marker.get().unwrap();
+
+        // Names that are keywords only in Python are plain names here.
+        let types = &server.states.keyword_types;
+        assert_eq!(types.nothing.get().unwrap(), generated::None::Something);
+        assert_eq!(
+            types.truth.get().unwrap(),
+            generated::True::Maybe(Some(generated::None::Something))
+        );
+        let function = types.function.get().unwrap();
+        assert_eq!(
+            (function.value, function.choice, function.maybe),
+            (2, generated::None::Something, Option::None)
+        );
     }
 }

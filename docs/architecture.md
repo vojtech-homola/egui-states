@@ -521,7 +521,10 @@ A value can be a dict key when its fields are hashable, which a struct is not.
 A variant or field name that is a Python keyword gets an underscore
 (`Command.None_`, `from_`), and so does a variant called `Type`, which makes
 way for the union. A raw identifier loses its `r#` in Python (`r#type` is
-`type`).
+`type`). A struct, an enum or a state group has no such spelling, because its
+name is not on the wire: one named like a Python keyword (`None`, `lambda`)
+is an error when the Python bindings are generated, and a plain name in the
+Rust bindings.
 
 ## Repaints and runtimes
 

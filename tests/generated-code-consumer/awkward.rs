@@ -81,6 +81,35 @@ pub mod shadowing {
     }
 }
 
+/// Types named like Python keywords. Python cannot define them, so only the
+/// Rust generator takes them.
+pub mod keyword_types {
+    #[egui_states::typed(rust_derive(Clone, Copy, Debug, PartialEq))]
+    #[derive(Clone, Copy, Default, egui_states::InitialValue)]
+    pub enum None {
+        #[default]
+        Nothing,
+        Something,
+    }
+
+    #[egui_states::typed(rust_derive(Debug, PartialEq))]
+    #[derive(Clone, Default, egui_states::InitialValue)]
+    pub enum True {
+        #[default]
+        Yes,
+        Maybe(::std::option::Option<None>),
+    }
+
+    #[egui_states::typed(rust_derive(Clone, Debug, PartialEq))]
+    #[derive(Clone, Default, egui_states::InitialValue)]
+    #[allow(non_camel_case_types)]
+    pub struct lambda {
+        pub value: u8,
+        pub choice: None,
+        pub maybe: ::std::option::Option<u8>,
+    }
+}
+
 pub const ESCAPED: &str = "quote \" backslash \\ tab \t newline \n control \u{1} delete \u{7f}";
 
 /// Python keywords and raw identifiers as enum variants, struct fields, and
@@ -160,6 +189,30 @@ impl State for UnitStruct {
     }
 }
 
+/// A state group and types named like Python keywords, for the Rust
+/// generator alone.
+pub struct KeywordTypes;
+
+impl State for KeywordTypes {
+    const NAME: &'static str = "None";
+
+    fn new(c: &mut impl StatesCreator) -> Self {
+        use keyword_types as types;
+        let _: Value<types::None> = c.value("nothing", types::None::Something);
+        let _: Value<types::True> =
+            c.value("truth", types::True::Maybe(Some(types::None::Something)));
+        let _: Value<types::lambda> = c.value(
+            "function",
+            types::lambda {
+                value: 2,
+                choice: types::None::Something,
+                maybe: Option::None,
+            },
+        );
+        Self
+    }
+}
+
 /// All awkward inputs, for the Rust generator.
 pub struct Awkward;
 
@@ -170,6 +223,7 @@ impl State for Awkward {
         let _: KeywordNames = c.substate("keywords");
         let _: SpecialLiterals = c.substate("literals");
         let _: UnitStruct = c.substate("unit");
+        let _: KeywordTypes = c.substate("keyword_types");
         Self
     }
 }

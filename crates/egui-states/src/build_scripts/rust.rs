@@ -568,7 +568,7 @@ fn merged_derives(automatic: &[&str], requested: Option<&[String]>) -> String {
 fn render_rust<S: State>() -> Result<(String, Option<String>, Option<String>), String> {
     let (states, version_hash, rust_derives) = scripts::parse_states::<S>();
     rust_derives.validate();
-    scripts::validate_states(&states);
+    scripts::validate_states(&states, scripts::Target::Rust);
 
     let mut values_list = Vec::new();
     scripts::states_into_values_list(&states, &mut values_list);
@@ -576,7 +576,7 @@ fn render_rust<S: State>() -> Result<(String, Option<String>, Option<String>), S
         enums,
         data_enums,
         structs,
-    } = scripts::get_custom_types(&values_list);
+    } = scripts::get_custom_types(&values_list, scripts::Target::Rust);
 
     let mut struct_order = VecDeque::new();
     for (struct_name, items) in &structs {
@@ -787,8 +787,10 @@ fn render_rust<S: State>() -> Result<(String, Option<String>, Option<String>), S
 /// - a state group, struct or enum is defined inconsistently in different
 ///   locations, or conflicts with a generated symbol such as `StatesServer`,
 ///   `enums`, `structs`, or `s`;
-/// - a state group, struct or enum has a name that the Python bindings of the
-///   same state tree could not use: a Python keyword or a raw identifier;
+/// - a state group, struct or enum is named with a raw identifier, which the
+///   Python bindings of the same state tree could not use. A name that is
+///   only a Python keyword, such as `None`, is accepted here and rejected by
+///   [`generate_python`](super::generate_python);
 /// - the unit type `()` is used anywhere but as the whole type of a `Signal`
 ///   or a `ValueTake`.
 pub fn generate_rust<S: State>(directory: impl AsRef<Path>) -> Result<(), String> {

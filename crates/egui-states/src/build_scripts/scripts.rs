@@ -43,17 +43,26 @@ pub(crate) const ENUMS_MODULE_NAMES: [&str; 5] =
 /// The names the generated `structs.py` binds besides the structs.
 const STRUCTS_MODULE_NAMES: [&str; 3] = ["enums", "dataclass", "s"];
 
+/// The language the bindings are generated for.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Target {
+    Python,
+    Rust,
+}
+
 /// Rejects the name of a generated class that Python cannot define, or that
 /// would replace one of the `reserved` names of its module. `kind` is
 /// `State`, `Enum` or `Struct`, for the message.
 ///
 /// Fields, variants and state names are escaped instead, because the wire
-/// keeps their original names; a class name exists only in the bindings.
-fn check_class_name(kind: &str, name: &str, reserved: &[&str]) {
+/// keeps their original names; a class name exists only in the bindings. A
+/// name that is only a Python keyword, such as `None`, is a valid Rust name,
+/// so the Rust bindings keep it.
+fn check_class_name(kind: &str, name: &str, reserved: &[&str], target: Target) {
     if name.starts_with("r#") {
         panic!("{kind} {name} is named with a raw identifier, which has no Python spelling");
     }
-    if PYTHON_KEYWORDS.contains(&name) {
+    if target == Target::Python && PYTHON_KEYWORDS.contains(&name) {
         panic!("{kind} {name} is named like a Python keyword");
     }
     if reserved.contains(&name) {
@@ -66,11 +75,13 @@ fn collect_state_definitions<'a>(
     states: &'a [StateType],
     root: bool,
     definitions: &mut HashMap<&'static str, (bool, &'a [StateType])>,
+    target: Target,
 ) {
     check_class_name(
         "State",
         state_class,
         &["StatesServer", "enums", "structs", "s"],
+        target,
     );
 
     let definition = (root, states);
@@ -84,18 +95,18 @@ fn collect_state_definitions<'a>(
 
     for state in states {
         if let StateType::SubState(_, class, children, _) = state {
-            collect_state_definitions(class, children, false, definitions);
+            collect_state_definitions(class, children, false, definitions, target);
         }
     }
 }
 
-pub(crate) fn validate_states(states: &StateType) {
+pub(crate) fn validate_states(states: &StateType, target: Target) {
     let StateType::SubState(_, root_name, children, _) = states else {
         panic!("Root state must be a SubState");
     };
 
     let mut definitions = HashMap::new();
-    collect_state_definitions(root_name, children, true, &mut definitions);
+    collect_state_definitions(root_name, children, true, &mut definitions, target);
 }
 
 /// The line every generated file carries near its top.
@@ -160,7 +171,7 @@ impl CustomTypes {
     ///
     /// Panics if a type name is defined twice with different contents or
     /// cannot be generated, or if `type_info` holds the unit type.
-    fn collect(&mut self, state: &str, type_info: &ObjectType, nested: bool) {
+    fn collect(&mut self, state: &str, type_info: &ObjectType, nested: bool, target: Target) {
         match type_info {
             // A value without content has no Python spelling as a field or
             // an element, and no stored value.
@@ -171,7 +182,7 @@ impl CustomTypes {
                 "State {state}: the unit type `()` is supported only as the type of a Signal or a ValueTake"
             ),
             ObjectType::Enum(name, variants) => {
-                check_class_name("Enum", name, &ENUMS_MODULE_NAMES);
+                check_class_name("Enum", name, &ENUMS_MODULE_NAMES, target);
                 if self.enums.get(name).is_some_and(|known| known != variants)
                     || self.data_enums.contains_key(name)
                 {
@@ -180,7 +191,7 @@ impl CustomTypes {
                 self.enums.insert(name.clone(), variants.clone());
             }
             ObjectType::DataEnum(name, variants) => {
-                check_class_name("Enum", name, &ENUMS_MODULE_NAMES);
+                check_class_name("Enum", name, &ENUMS_MODULE_NAMES, target);
                 if self
                     .data_enums
                     .get(name)
@@ -195,38 +206,38 @@ impl CustomTypes {
                         VariantFields::Unit => {}
                         VariantFields::Named(fields) => {
                             for (_, field_type) in fields {
-                                self.collect(state, field_type, true);
+                                self.collect(state, field_type, true, target);
                             }
                         }
                         VariantFields::Tuple(fields) => {
                             for field_type in fields {
-                                self.collect(state, field_type, true);
+                                self.collect(state, field_type, true, target);
                             }
                         }
                     }
                 }
             }
             ObjectType::Struct(name, fields) => {
-                check_class_name("Struct", name, &STRUCTS_MODULE_NAMES);
+                check_class_name("Struct", name, &STRUCTS_MODULE_NAMES, target);
                 if self.structs.get(name).is_some_and(|known| known != fields) {
                     panic!("Struct {name} defined multiple times with different fields");
                 }
                 self.structs.insert(name.clone(), fields.clone());
                 for (_, field_type) in fields {
-                    self.collect(state, field_type, true);
+                    self.collect(state, field_type, true, target);
                 }
             }
             ObjectType::Tuple(elements) => {
                 for element in elements {
-                    self.collect(state, element, true);
+                    self.collect(state, element, true, target);
                 }
             }
             ObjectType::List(_, element)
             | ObjectType::Option(element)
-            | ObjectType::Vec(element) => self.collect(state, element, true),
+            | ObjectType::Vec(element) => self.collect(state, element, true, target),
             ObjectType::Map(key_type, value_type) => {
-                self.collect(state, key_type, true);
-                self.collect(state, value_type, true);
+                self.collect(state, key_type, true, target);
+                self.collect(state, value_type, true, target);
             }
             _ => { /* ignore basic types */ }
         }
@@ -235,7 +246,7 @@ impl CustomTypes {
 
 /// Collects the custom types of the states `values`, checking every type on
 /// the way; see [`CustomTypes::collect`] for what it rejects.
-pub(crate) fn get_custom_types(values: &[StateType]) -> CustomTypes {
+pub(crate) fn get_custom_types(values: &[StateType], target: Target) -> CustomTypes {
     let mut types = CustomTypes::default();
 
     for value in values {
@@ -256,10 +267,10 @@ pub(crate) fn get_custom_types(values: &[StateType]) -> CustomTypes {
             | StateType::Download(_, Some(info))
             | StateType::Upload(_, Some(info))
             | StateType::Image(_, Some(info), _)
-            | StateType::ImageMulti(_, Some(info), _) => types.collect(state, info, false),
+            | StateType::ImageMulti(_, Some(info), _) => types.collect(state, info, false, target),
             StateType::ValueMap(_, key_info, value_info) => {
-                types.collect(state, key_info, false);
-                types.collect(state, value_info, false);
+                types.collect(state, key_info, false, target);
+                types.collect(state, value_info, false, target);
             }
             _ => { /* ignore other types */ }
         }

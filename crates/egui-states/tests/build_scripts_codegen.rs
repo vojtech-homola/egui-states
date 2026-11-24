@@ -1584,25 +1584,47 @@ one_state! {
     Signal<unusable_names::Variants> => |c| c.signal("state"),
 }
 
+/// The message of the Python generator rejecting the state tree `S`, which
+/// the Rust generator accepts.
+fn python_rejection<S: State>(name: &str) -> String {
+    let dir = output_dir(name, 1);
+    generate_rust::<S>(&dir).unwrap();
+    assert!(dir.join("mod.rs").exists());
+    let _ = std::fs::remove_dir_all(&dir);
+    rejection(output_dir(name, 0), |dir| generate_python::<S>(dir))
+}
+
 /// A class name is not on the wire, so it has no escaped spelling: a type
-/// named like a Python keyword is rejected, and so is one that would replace
-/// a name its generated module binds.
+/// named like a Python keyword is rejected for Python, where it cannot be
+/// defined, and kept for Rust, where it is a plain name.
+#[test]
+fn type_names_that_are_python_keywords_are_rejected_for_python_only() {
+    use unusable_names as names;
+    for (message, expected) in [
+        (
+            python_rejection::<OneState<Signal<names::None>>>("keyword_enum"),
+            "Enum None is named like a Python keyword",
+        ),
+        (
+            python_rejection::<OneState<Signal<names::True>>>("keyword_data_enum"),
+            "Enum True is named like a Python keyword",
+        ),
+        (
+            python_rejection::<OneState<Signal<Vec<names::lambda>>>>("keyword_struct"),
+            "Struct lambda is named like a Python keyword",
+        ),
+    ] {
+        assert_eq!(message, expected);
+    }
+}
+
+/// A type whose name would replace one its generated module binds, or that
+/// has no spelling there, is rejected by both generators: the state
+/// definition stays usable from both server languages.
 #[test]
 fn type_names_that_python_cannot_use_are_rejected() {
     use unusable_names as names;
     for (messages, expected) in [
-        (
-            rejections::<OneState<Signal<names::None>>>("keyword_enum"),
-            "Enum None is named like a Python keyword",
-        ),
-        (
-            rejections::<OneState<Signal<names::True>>>("keyword_data_enum"),
-            "Enum True is named like a Python keyword",
-        ),
-        (
-            rejections::<OneState<Signal<Vec<names::lambda>>>>("keyword_struct"),
-            "Struct lambda is named like a Python keyword",
-        ),
         (
             rejections::<OneState<Signal<names::r#type>>>("raw_enum"),
             "Enum r#type is named with a raw identifier, which has no Python spelling",
@@ -1655,8 +1677,9 @@ impl State for NamedLikeKeyword {
 }
 
 #[test]
-fn a_state_named_like_a_python_keyword_is_rejected() {
-    for message in rejections::<NamedLikeKeyword>("keyword_state") {
-        assert_eq!(message, "State None is named like a Python keyword");
-    }
+fn a_state_named_like_a_python_keyword_is_rejected_for_python_only() {
+    assert_eq!(
+        python_rejection::<NamedLikeKeyword>("keyword_state"),
+        "State None is named like a Python keyword"
+    );
 }

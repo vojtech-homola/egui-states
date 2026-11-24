@@ -845,7 +845,7 @@ fn render_enums(
 
 fn render_python<S: State>() -> (String, Option<String>, Option<String>) {
     let (states, version_hash, _) = scripts::parse_states::<S>();
-    scripts::validate_states(&states);
+    scripts::validate_states(&states, scripts::Target::Python);
 
     let mut values_list = Vec::new();
     scripts::states_into_values_list(&states, &mut values_list);
@@ -854,7 +854,7 @@ fn render_python<S: State>() -> (String, Option<String>, Option<String>) {
         enums,
         data_enums,
         structs,
-    } = scripts::get_custom_types(&values_list);
+    } = scripts::get_custom_types(&values_list, scripts::Target::Python);
     let types_list = collect_object_types(&values_list);
 
     // Ordering structs for Python generation, so that dependencies are defined before they are used.
