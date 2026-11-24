@@ -399,17 +399,22 @@ async fn start_gui_client(
         };
 
         vals.disconnected();
-        client.end_attempt();
         match end {
+            // The user's own disconnect has no reason to report. A `connect`
+            // made after it is not withdrawn: `disconnect` cleared the
+            // earlier ones, so it asks for the next connection.
+            SessionEnd::ClosedByUser => client.disconnected(None, None),
             // A panic is reported even if the user disconnected meanwhile.
             SessionEnd::Panicked(task, message) => {
+                client.end_attempt();
                 client.fail(None, format!("Client {} task panicked: {}", task, message))
             }
-            // The user's own disconnect has no reason to report.
             SessionEnd::Closed(..) if client.disconnect_requested() => {
+                client.end_attempt();
                 client.disconnected(None, None)
             }
             SessionEnd::Closed(reason, error) => {
+                client.end_attempt();
                 next = retry.disconnected(&client, reason, error);
             }
         }
@@ -495,6 +500,9 @@ enum SessionEnd {
     /// An established connection ended, with its reason and a description
     /// when known.
     Closed(Option<CloseReason>, Option<String>),
+    /// The user's `Client::disconnect` ended the connection. A
+    /// `Client::connect` made after it is still pending.
+    ClosedByUser,
     /// A connection task panicked; holds the task name and the panic message.
     Panicked(&'static str, String),
 }
@@ -550,27 +558,28 @@ async fn run_session(
         let transfers = transfers.clone();
         let received = received.clone();
         async move {
-            // A shutdown stops reading at once; the send task still writes the
-            // messages queued so far and closes the socket.
-            let read = client.until_shutdown(catch_panic(receive(
-                socket_read,
-                &vals,
-                &client,
-                &sender,
-                first,
-            )));
-            let end = Abortable::new(read, abort_registration).await;
+            // A shutdown and the user's disconnect stop reading at once; the
+            // send task still writes the messages queued so far and closes
+            // the socket. A server that does not answer anymore cannot keep
+            // the connection open this way.
+            let read = catch_panic(receive(socket_read, &vals, &client, &sender, first));
+            let read = until(read, client.user_disconnect());
+            let end = Abortable::new(client.until_shutdown(read), abort_registration).await;
             // The connection is over: unfinished transfers fail, which also
             // ends the pump.
             transfers.detach(generation);
+            // Set before the queue is closed: the send task takes a queue
+            // closed earlier for the user's disconnect.
+            received.set();
             // Closing the queue ends the send task.
             sender.close();
-            received.set();
-            // The read is aborted only after the send task panicked, which is
-            // reported instead.
-            end.ok()
-                .flatten()
-                .unwrap_or(Ok(SessionEnd::Closed(None, None)))
+            match end {
+                Ok(Some(Some(end))) => end,
+                Ok(Some(None)) => Ok(SessionEnd::ClosedByUser),
+                // A shutdown, or the read was aborted: after the user's
+                // disconnect or a panic of the send task, which report it.
+                Ok(None) | Err(_) => Ok(SessionEnd::Closed(None, None)),
+            }
         }
     };
 
@@ -582,13 +591,19 @@ async fn run_session(
             let mut serializer = MessagesSerializer::new(rx);
             // After a shutdown the queued messages get a bounded time to go
             // out; a server that stops reading cannot keep the task alive.
-            let write = catch_panic(send(&mut serializer, socket_send, chunks));
+            let write = catch_panic(send(
+                &mut serializer,
+                socket_send,
+                chunks,
+                &received,
+                &abort_receive,
+            ));
             let write = until(write, flush_after(&received));
             let end = client
                 .until_flush_deadline(write)
                 .await
                 .flatten()
-                .unwrap_or(Ok(()));
+                .unwrap_or(Ok(false));
             if end.is_err() {
                 abort_receive.abort();
             }
@@ -625,7 +640,8 @@ async fn run_session(
     let end = match (recv_end, send_end) {
         (Err(message), _) => SessionEnd::Panicked("receive", message),
         (Ok(_), Err(message)) => SessionEnd::Panicked("send", message),
-        (Ok(end), Ok(())) => end,
+        (Ok(_), Ok(true)) => SessionEnd::ClosedByUser,
+        (Ok(end), Ok(false)) => end,
     };
     Ok((rx, end))
 }
@@ -716,11 +732,19 @@ fn close_cause(error: ReadError) -> (CloseReason, String) {
 
 /// Writes queued messages until the queue closes or the socket fails, and
 /// file data chunks whenever no message waits.
+///
+/// Returns whether the user's `Client::disconnect` closed the queue: it was
+/// closed while the receive task, which closes it when the connection ends
+/// and sets `received` before, still ran. The receive task is then stopped,
+/// so the connection ends without waiting for the server.
 async fn send(
     serializer: &mut MessagesSerializer,
     mut socket_send: WsClientSend,
     mut chunks: mpsc::Receiver<Vec<u8>>,
-) {
+    received: &Event,
+    receive: &AbortHandle,
+) -> bool {
+    let mut by_user = false;
     let mut chunks_open = true;
     loop {
         // `select` polls the message queue first, so messages win over file
@@ -739,6 +763,10 @@ async fn send(
             serializer.next().await
         };
         let Some(message) = message else {
+            if !received.is_set() {
+                by_user = true;
+                receive.abort();
+            }
             break;
         };
         if socket_send.send(message).await.is_err() {
@@ -746,6 +774,7 @@ async fn send(
         }
     }
     socket_send.close().await;
+    by_user
 }
 
 /// Runs `future`, turning a panic into its message.
@@ -924,6 +953,9 @@ struct ClientInner {
     /// has no reason to report and no reconnecting follows; cleared by
     /// `Client::connect`.
     closed_by_user: AtomicBool,
+    /// Set by `Client::disconnect`, after `closed_by_user`: it wakes the
+    /// receive task of the connection, which then stops reading.
+    disconnect_signal: Event,
     sender: MessageSender,
 }
 
@@ -969,6 +1001,7 @@ impl ClientCore {
                 error: None,
             }),
             closed_by_user: AtomicBool::new(false),
+            disconnect_signal: Event::new(),
             sender,
         };
 
@@ -1058,6 +1091,18 @@ impl ClientCore {
         self.0.closed_by_user.load(Ordering::Acquire)
     }
 
+    /// Completes once the user called `Client::disconnect` with no
+    /// `Client::connect` after it. A disconnect that a `connect` followed is
+    /// seen by the send task instead, in the queue.
+    async fn user_disconnect(&self) {
+        loop {
+            self.0.disconnect_signal.wait_clear_async().await;
+            if self.disconnect_requested() {
+                return;
+            }
+        }
+    }
+
     /// Ends an established connection in `Disconnected`.
     fn disconnected(&self, reason: Option<CloseReason>, error: Option<String>) {
         self.set_status(Status {
@@ -1131,6 +1176,10 @@ impl Client {
     /// another call to `connect`, unless the client was built with
     /// [`ClientBuilder::reconnect`]; then a call during
     /// [`ConnectionState::Reconnecting`] starts the next attempt at once.
+    ///
+    /// A call while connected, or while an attempt runs, does nothing. After
+    /// [`Self::disconnect`] it connects again as soon as the closed
+    /// connection has ended, so the two calls in a row reconnect.
     pub fn connect(&self) {
         let inner = &self.core().0;
         inner.closed_by_user.store(false, Ordering::Release);
@@ -1146,12 +1195,18 @@ impl Client {
     /// connects again only after [`Self::connect`]. In the browser, a
     /// disconnect while the connection is being opened takes effect once it
     /// is open or has failed.
+    ///
+    /// A connection is closed without waiting for the server: the client
+    /// stops reading at once, so what the server sent last is dropped, and
+    /// what the UI changed before this call is still sent, for up to a
+    /// second on native targets.
     pub fn disconnect(&self) {
         let inner = &self.core().0;
         inner.closed_by_user.store(true, Ordering::Release);
         // An earlier `connect` that no attempt has taken yet is withdrawn:
         // left set, it would connect again right after this disconnect.
         inner.connect_signal.clear();
+        inner.disconnect_signal.set();
         inner.sender.close();
     }
 

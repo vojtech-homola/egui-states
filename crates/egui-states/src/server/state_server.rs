@@ -2993,6 +2993,143 @@ mod connection_tests {
         drop(listener);
     }
 
+    /// `disconnect` followed by `connect` reconnects: the connection the user
+    /// closed ends without a reason, and the `connect` made after it is kept.
+    #[test]
+    fn disconnect_then_connect_reconnects() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let (server, _value, port) = server(ServerOptions::new(), None);
+        let connects = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = connects.clone();
+        let _on_connect = server.on_connect(move |_| {
+            count.fetch_add(1, Ordering::SeqCst);
+        });
+
+        // Without a reconnect policy only the `connect` brings the client back.
+        let (_state, client) =
+            ClientBuilder::<ClientTestState>::new(egui::Context::default(), port).build();
+        client.connect();
+        wait("connected", || {
+            client.get_state() == ConnectionState::Connected
+        });
+
+        for connection in 2..=3 {
+            client.disconnect();
+            client.connect();
+            wait("the next connection", || {
+                connects.load(Ordering::SeqCst) == connection
+                    && client.get_state() == ConnectionState::Connected
+            });
+            assert_eq!(client.last_reason(), None);
+            assert_eq!(client.last_error(), None);
+        }
+
+        // A `connect` while connected asks for nothing, also after the
+        // disconnect that follows it.
+        client.connect();
+        client.disconnect();
+        wait("disconnected", || {
+            client.get_state() == ConnectionState::Disconnected
+        });
+        assert!(stays(&client, ConnectionState::Disconnected));
+        assert_eq!(client.last_reason(), None);
+        assert_eq!(connects.load(Ordering::SeqCst), 3);
+        server.stop();
+    }
+
+    const FORWARD: u8 = 0;
+    const HOLD: u8 = 1;
+    const CLOSE: u8 = 2;
+
+    /// Forwards one connection to `target` while `link` is [`FORWARD`]. With
+    /// [`HOLD`] it keeps both sockets open and moves nothing, like a network
+    /// that silently dropped the connection; [`CLOSE`] ends it.
+    fn link_to(target: u16) -> (u16, Arc<std::sync::atomic::AtomicU8>) {
+        use std::io::{ErrorKind, Read, Write};
+        use std::sync::atomic::AtomicU8;
+
+        fn forward(mut from: TcpStream, mut to: TcpStream, link: Arc<AtomicU8>) {
+            from.set_read_timeout(Some(Duration::from_millis(10)))
+                .unwrap();
+            let mut buffer = [0; 4096];
+            loop {
+                match link.load(Ordering::Acquire) {
+                    FORWARD => {}
+                    HOLD => {
+                        thread::sleep(Duration::from_millis(10));
+                        continue;
+                    }
+                    _ => return,
+                }
+                match from.read(&mut buffer) {
+                    Ok(0) => return,
+                    Ok(read) => {
+                        if to.write_all(&buffer[..read]).is_err() {
+                            return;
+                        }
+                    }
+                    Err(error)
+                        if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
+                    Err(_) => return,
+                }
+            }
+        }
+
+        let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let link = Arc::new(AtomicU8::new(FORWARD));
+        let state = link.clone();
+        thread::spawn(move || {
+            let (client, _) = listener.accept().unwrap();
+            let server = TcpStream::connect((Ipv4Addr::LOCALHOST, target)).unwrap();
+            let (from_server, to_client) =
+                (server.try_clone().unwrap(), client.try_clone().unwrap());
+            let back = state.clone();
+            thread::spawn(move || forward(from_server, to_client, back));
+            forward(client, server, state);
+        });
+        (port, link)
+    }
+
+    /// `disconnect` does not wait for the server: on a connection the network
+    /// dropped silently the client is disconnected at once, not when a
+    /// heartbeat or the operating system gives the connection up.
+    #[test]
+    fn disconnect_does_not_wait_for_a_silent_server() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        // Without a heartbeat nothing but the disconnect ends the connection.
+        let mut options = ServerOptions::new();
+        options.heartbeat_timeout = None;
+        let (server, _value, server_port) = server(options, None);
+        let (port, link) = link_to(server_port);
+        let (_state, client) =
+            ClientBuilder::<ClientTestState>::new(egui::Context::default(), port).build();
+        client.connect();
+        wait("connected", || {
+            client.get_state() == ConnectionState::Connected
+        });
+
+        link.store(HOLD, Ordering::Release);
+        let start = Instant::now();
+        client.disconnect();
+        wait("disconnected", || {
+            client.get_state() == ConnectionState::Disconnected
+        });
+        assert!(
+            start.elapsed() < Duration::from_secs(3),
+            "{:?}",
+            start.elapsed()
+        );
+        assert_eq!(client.last_reason(), None);
+
+        link.store(CLOSE, Ordering::Release);
+        server.stop();
+    }
+
     const PANIC_VALUE: i32 = -13;
 
     /// An `i32` whose client-side decoding panics on [`PANIC_VALUE`], standing
