@@ -1,5 +1,6 @@
 """Import and exercise Python bindings emitted by the Rust generator."""
 
+from collections.abc import Callable, Sequence
 import dataclasses
 import importlib
 import importlib.util
@@ -7,12 +8,18 @@ from importlib.abc import Loader
 from importlib.machinery import ModuleSpec
 import json
 import math
+from os import PathLike
 from pathlib import Path
 import sys
+import typing
 from typing import cast
 
 import pytest
 from tests.preparation import ROOT, run
+
+from egui_states import ClientPolicy, TransferProfile
+from egui_states.server import StatesBase, StateServerBase
+from egui_states.structures import ISubStates
 
 MANIFEST = ROOT / "tests/generated-code-consumer/Cargo.toml"
 
@@ -152,4 +159,26 @@ def test_unit_struct_values(awkward_bindings):
     assert dataclasses.astuple(marker) == ()
     state("marker").set(marker)
     assert state("marker").get() == marker
+    server.stop()
+
+
+def test_state_groups_named_like_the_imports_of_the_bindings(awkward_bindings):
+    """Keep the imports of the bindings apart from state groups of their names."""
+    module, server, state = awkward_server(awkward_bindings, "shadows")
+    names = ["Sequence", "Callable", "PathLike", "ClientPolicy", "StatesBase"]
+    names += ["StateServerBase", "TransferProfile", "ISubStates"]
+    for index, name in enumerate(names):
+        group = state(f"group_{index}")
+        assert type(group) is getattr(module, name)
+        assert isinstance(group, ISubStates)
+        assert group.value.get() == index
+    # The annotations of the server still name the imported types.
+    hints = typing.get_type_hints(module.StatesServer.__init__)
+    assert hints["allowed_origins"] == Sequence[str]
+    assert hints["transfer_profile"] is TransferProfile
+    assert hints["client_policy"] is ClientPolicy
+    assert hints["error_handler"] == Callable[[Exception], None] | None
+    assert hints["web_path"] == str | PathLike[str] | None
+    assert isinstance(server, StateServerBase)
+    assert isinstance(server.states, StatesBase)
     server.stop()

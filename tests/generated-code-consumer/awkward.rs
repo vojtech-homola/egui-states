@@ -213,6 +213,55 @@ impl State for KeywordTypes {
     }
 }
 
+/// The names the generated state modules import, or take from the prelude,
+/// besides the ones they reject.
+pub const SHADOWED: [&str; 15] = [
+    "Sequence",
+    "Callable",
+    "PathLike",
+    "ClientPolicy",
+    "StatesBase",
+    "StateServerBase",
+    "TransferProfile",
+    "ISubStates",
+    "Option",
+    "String",
+    "Send",
+    "Sync",
+    "Fn",
+    "Ok",
+    "Clone",
+];
+
+/// A state group named like the `N`th of [`SHADOWED`].
+pub struct Shadow<const N: usize>;
+
+impl<const N: usize> State for Shadow<N> {
+    const NAME: &'static str = SHADOWED[N];
+
+    fn new(c: &mut impl StatesCreator) -> Self {
+        let _: Value<u32> = c.value("value", N as u32);
+        Self
+    }
+}
+
+/// One state group per name of [`SHADOWED`], in the fields `group_0` on.
+pub struct ShadowedNames;
+
+impl State for ShadowedNames {
+    const NAME: &'static str = "ShadowedNames";
+
+    fn new(c: &mut impl StatesCreator) -> Self {
+        macro_rules! groups {
+            ($($index:literal)*) => {
+                $(let _: Shadow<$index> = c.substate(concat!("group_", $index));)*
+            };
+        }
+        groups!(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14);
+        Self
+    }
+}
+
 /// All awkward inputs, for the Rust generator.
 pub struct Awkward;
 
@@ -224,6 +273,7 @@ impl State for Awkward {
         let _: SpecialLiterals = c.substate("literals");
         let _: UnitStruct = c.substate("unit");
         let _: KeywordTypes = c.substate("keyword_types");
+        let _: ShadowedNames = c.substate("shadows");
         Self
     }
 }

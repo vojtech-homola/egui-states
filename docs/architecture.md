@@ -526,6 +526,13 @@ name is not on the wire: one named like a Python keyword (`None`, `lambda`)
 is an error when the Python bindings are generated, and a plain name in the
 Rust bindings.
 
+The generated modules refer to what they import through private aliases and
+full paths, so a state group may share a name with it: `Sequence` or
+`ClientPolicy` in Python, `Option` or `Send` in Rust. A state group cannot be
+named `StatesServer`, `enums`, `structs` or `s`, and in Python also not `np`,
+`Exception` or one of the aliases, which start with an underscore
+(`_Sequence`).
+
 ## Repaints and runtimes
 
 The client repaints after every change the server makes; server setters

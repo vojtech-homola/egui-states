@@ -43,6 +43,26 @@ pub(crate) const ENUMS_MODULE_NAMES: [&str; 5] =
 /// The names the generated `structs.py` binds besides the structs.
 const STRUCTS_MODULE_NAMES: [&str; 3] = ["enums", "dataclass", "s"];
 
+/// The names the generated state module binds besides the state groups, in
+/// either language: the server and the modules it refers to.
+const STATES_MODULE_NAMES: [&str; 4] = ["StatesServer", "enums", "structs", "s"];
+
+/// The further names the generated `__init__.py` binds or uses bare: NumPy,
+/// the one builtin class it names, and the private aliases of what it
+/// imports. Its imports are aliased so that a state group may be called
+/// `Sequence` or `ClientPolicy`.
+const PYTHON_STATES_MODULE_NAMES: [&str; 9] = [
+    "np",
+    "Exception",
+    "_Callable",
+    "_Sequence",
+    "_PathLike",
+    "_ClientPolicy",
+    "_StatesBase",
+    "_StateServerBase",
+    "_TransferProfile",
+];
+
 /// The language the bindings are generated for.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Target {
@@ -77,12 +97,10 @@ fn collect_state_definitions<'a>(
     definitions: &mut HashMap<&'static str, (bool, &'a [StateType])>,
     target: Target,
 ) {
-    check_class_name(
-        "State",
-        state_class,
-        &["StatesServer", "enums", "structs", "s"],
-        target,
-    );
+    check_class_name("State", state_class, &STATES_MODULE_NAMES, target);
+    if target == Target::Python {
+        check_class_name("State", state_class, &PYTHON_STATES_MODULE_NAMES, target);
+    }
 
     let definition = (root, states);
     if let Some(previous) = definitions.get(state_class) {

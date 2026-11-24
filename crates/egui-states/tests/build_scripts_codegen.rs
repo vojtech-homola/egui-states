@@ -1683,3 +1683,37 @@ fn a_state_named_like_a_python_keyword_is_rejected_for_python_only() {
         "State None is named like a Python keyword"
     );
 }
+
+struct NamedLike<const N: usize>;
+
+/// Names the generated `__init__.py` binds or uses bare, which the Rust
+/// bindings do not.
+const PYTHON_MODULE_NAMES: [&str; 3] = ["np", "Exception", "_Sequence"];
+
+impl<const N: usize> State for NamedLike<N> {
+    const NAME: &'static str = PYTHON_MODULE_NAMES[N];
+
+    fn new(c: &mut impl StatesCreator) -> Self {
+        let _: Value<i32> = c.value("value", 0);
+        Self
+    }
+}
+
+/// The imports of the generated `__init__.py` are aliased, so a state group
+/// may be called `Sequence`. What stays reserved are the names it cannot
+/// alias: NumPy, a builtin it names, and the aliases themselves.
+#[test]
+fn a_state_named_like_a_name_of_the_python_module_is_rejected_for_python_only() {
+    assert_eq!(
+        python_rejection::<NamedLike<0>>("numpy_state"),
+        "State np conflicts with a generated symbol"
+    );
+    assert_eq!(
+        python_rejection::<NamedLike<1>>("builtin_state"),
+        "State Exception conflicts with a generated symbol"
+    );
+    assert_eq!(
+        python_rejection::<NamedLike<2>>("alias_state"),
+        "State _Sequence conflicts with a generated symbol"
+    );
+}

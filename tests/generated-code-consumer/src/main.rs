@@ -16,6 +16,7 @@ fn main() {
         generate_python::<awkward::KeywordNames>(directory.join("keywords")).unwrap();
         generate_python::<awkward::SpecialLiterals>(directory.join("literals")).unwrap();
         generate_python::<awkward::UnitStruct>(directory.join("unit")).unwrap();
+        generate_python::<awkward::ShadowedNames>(directory.join("shadows")).unwrap();
     } else {
         egui_states::build_scripts::generate_rust::<schema::Root>(directory.join("rust")).unwrap();
         egui_states::build_scripts::generate_python::<schema::Root>(directory.join("python"))
@@ -137,5 +138,17 @@ mod tests {
             (function.value, function.choice, function.maybe),
             (2, generated::None::Something, Option::None)
         );
+
+        // State groups named like the prelude and the Python imports leave
+        // the server methods their types.
+        let shadows = &server.states.shadows;
+        assert_eq!(shadows.group_0.value.get().unwrap(), 0);
+        assert_eq!(shadows.group_8.value.get().unwrap(), 8);
+        assert_eq!(shadows.group_14.value.get().unwrap(), 14);
+        let _: awkward_bindings::Option = shadows.group_8.clone();
+        let _: awkward_bindings::String = shadows.group_9.clone();
+        let _: Option<String> = server.tls_fingerprint();
+        let _: Option<std::net::SocketAddrV4> = server.address();
+        let _handle = server.on_connect(|_address: String| ());
     }
 }
