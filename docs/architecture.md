@@ -121,6 +121,9 @@ reports anything. The client then receives the pending server value and
 replaces its local copy, so both peers end with the server's value and the
 user's edit is lost. Because the synchronization on connect is pending as well,
 edits made before the client received the server's state cannot overwrite it.
+A server write made while a client is connecting, before that value is
+synchronized, is not sent on its own: the synchronization carries it, so one
+pending message stands for it.
 
 A client write is therefore discarded when it arrives within about one network
 round trip after a server write. A server that sets a `Value` continuously, for
