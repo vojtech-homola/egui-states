@@ -1057,6 +1057,44 @@ fn a_state_with_only_enums_or_only_structs_imports_just_that_module() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// An enum with data and no fieldless enum inside.
+#[egui_states::typed]
+#[derive(Clone, Default, PartialEq, egui_states::InitialValue)]
+enum OnlyDataEnum {
+    #[default]
+    Stop,
+    Go(u8),
+}
+
+#[test]
+fn the_enums_module_imports_int_enum_only_for_a_fieldless_enum() {
+    #[derive(State)]
+    #[allow(dead_code)]
+    struct OnlyDataEnums {
+        command: Value<OnlyDataEnum>,
+    }
+
+    let dir = output_dir("only_data_enums", 0);
+    generate_python::<OnlyDataEnums>(&dir).unwrap();
+    let enums = std::fs::read_to_string(dir.join("enums.py")).unwrap();
+    assert!(
+        enums.contains("class OnlyDataEnum(_s._CustomEnum):"),
+        "{enums}"
+    );
+    assert!(!enums.contains("IntEnum"), "{enums}");
+    let _ = std::fs::remove_dir_all(&dir);
+
+    // With a fieldless enum besides, the import is there.
+    let dir = output_dir("both_enum_kinds", 0);
+    generate_python::<WithDataEnums>(&dir).unwrap();
+    let enums = std::fs::read_to_string(dir.join("enums.py")).unwrap();
+    assert!(
+        enums.contains("\nfrom enum import IntEnum as _IntEnum\n"),
+        "{enums}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The message of the panic with which `generate` rejects a state tree, after
 /// checking that it wrote nothing into `dir`.
 fn rejection(dir: PathBuf, generate: impl FnOnce(&PathBuf) -> Result<(), String>) -> String {

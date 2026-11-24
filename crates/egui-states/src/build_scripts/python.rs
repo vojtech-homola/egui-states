@@ -762,8 +762,13 @@ fn render_enums(
             true => "\nfrom . import structs\n",
             false => "",
         };
+        // Only a schema that also has fieldless enums needs `IntEnum`.
+        let int_enum = match enums.is_empty() {
+            true => "",
+            false => "from enum import IntEnum as _IntEnum\n",
+        };
         format!(
-            "{header}# ruff: noqa: E501 F401\n{docstring}\nfrom __future__ import annotations\n\nfrom dataclasses import dataclass as _dataclass\nfrom enum import IntEnum as _IntEnum\nfrom typing import final as _final\n\nimport egui_states.structures as _s\n{structs}"
+            "{header}# ruff: noqa: E501 F401\n{docstring}\nfrom __future__ import annotations\n\nfrom dataclasses import dataclass as _dataclass\n{int_enum}from typing import final as _final\n\nimport egui_states.structures as _s\n{structs}"
         )
     };
 
