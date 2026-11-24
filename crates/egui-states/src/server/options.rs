@@ -46,7 +46,7 @@ pub struct ServerOptions {
     ///
     /// Nothing else arrives while a large message is in flight, so keep the
     /// timeout above the time the largest message takes over the slowest
-    /// expected network. Must be at least 4 ms. `None` disables the
+    /// expected network. Must be at least 1 second. `None` disables the
     /// heartbeat on both sides, for example while debugging with
     /// breakpoints.
     pub heartbeat_timeout: Option<Duration>,

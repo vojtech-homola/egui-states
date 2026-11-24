@@ -161,8 +161,8 @@ class StateServerBase[T: StatesBase]:
                 to send, so this detects a peer that disappeared without
                 closing the connection. Keep it above the time the largest
                 transfer takes over the slowest expected network; it must be
-                at least 4 ms. ``None`` disables the heartbeat on both sides,
-                for example while debugging with breakpoints.
+                at least 1 second. ``None`` disables the heartbeat on both
+                sides, for example while debugging with breakpoints.
             web_path (str | PathLike[str] | None, optional): Directory of a
                 static web page, such as a built WASM client, that
                 :meth:`start_web` serves on the server port. A relative path
@@ -230,7 +230,7 @@ class StateServerBase[T: StatesBase]:
                 unencrypted private key of ``tls_cert``.
 
         Raises:
-            ValueError: If ``heartbeat_timeout`` is below 4 ms,
+            ValueError: If ``heartbeat_timeout`` is below 1 second,
                 ``web_path`` cannot be made absolute (for example because it
                 is empty), an allowed origin is malformed,
                 ``transfer_profile`` is not a :class:`TransferProfile`,

@@ -339,8 +339,9 @@ without hearing from the other as a lost connection:
   the browser, and reconnects if it was built to.
 
 Change the time with `heartbeat_timeout` in the Rust `ServerOptions` or the
-Python server's constructor; the pings follow at a quarter of it. Keep it above
-the time the largest message takes over the slowest expected network. `None`
+Python server's constructor; the pings follow at a quarter of it. It must be at
+least 1 s; keep it above the time the largest message takes over the slowest
+expected network. `None`
 disables the heartbeat on both sides, for example while a debugger holds the
 client or the Rust server at a breakpoint.
 

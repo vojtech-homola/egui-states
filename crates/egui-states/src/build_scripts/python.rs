@@ -996,7 +996,7 @@ class StatesServer(StateServerBase[{root_name}]):
                 the client.
             heartbeat_timeout (float | None, optional): Seconds either side
                 may hear nothing from the other before it treats the
-                connection as lost, at least 4 ms. ``None`` disables the
+                connection as lost, at least 1. ``None`` disables the
                 heartbeat on both sides. Defaults to 20.
             web_path (str | PathLike[str] | None, optional): Directory of a
                 static web page, such as a built WASM client, that
@@ -1028,7 +1028,7 @@ class StatesServer(StateServerBase[{root_name}]):
                 unencrypted private key of ``tls_cert``.
 
         Raises:
-            ValueError: If ``heartbeat_timeout`` is below 4 ms,
+            ValueError: If ``heartbeat_timeout`` is below 1 second,
                 ``web_path`` cannot be made absolute, an allowed origin is malformed,
                 ``transfer_profile`` is not a ``TransferProfile``,
                 ``client_policy`` is not a ``ClientPolicy``,
