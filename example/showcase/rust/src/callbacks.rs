@@ -4,18 +4,6 @@ use egui_states::server as s;
 pub fn register_callbacks(server: &StatesServer) -> Vec<s::CallbackHandle> {
     let states = &server.states;
     let mut callbacks = Vec::new();
-    callbacks.push(server.logging.add_logger(s::LogLevel::Debug, |message| {
-        println!("Debug: {message}");
-    }));
-    callbacks.push(server.logging.add_logger(s::LogLevel::Info, |message| {
-        println!("Info: {message}");
-    }));
-    callbacks.push(server.logging.add_logger(s::LogLevel::Warning, |message| {
-        println!("Warning: {message}");
-    }));
-    callbacks.push(server.logging.add_logger(s::LogLevel::Error, |message| {
-        println!("Error: {message}");
-    }));
 
     let download = states.transfers.download.clone();
     callbacks.push(states.transfers.request_download.connect(move |mebibytes| {
@@ -45,7 +33,54 @@ pub fn register_callbacks(server: &StatesServer) -> Vec<s::CallbackHandle> {
             }
             _ => format!("upload failed: {:?}", handle.error()),
         };
-        let _ = result.set(text, true);
+        let _ = result.set(text);
+    }));
+
+    // One queued signal keeps the commands in order; `match` reads each
+    // variant's fields.
+    let commands = states.commands.clone();
+    let handled = std::sync::atomic::AtomicU32::new(0);
+    callbacks.push(states.commands.command.connect(move |command| {
+        use crate::bindings::enums::{Command, Status};
+        use crate::bindings::structs::HandledCommand;
+
+        let count = handled.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        println!("command {count}: {command:?}");
+        let status = match &command {
+            Command::Stop => Status::Idle,
+            Command::MoveTo { x, y } => Status::At { x: *x, y: *y },
+            Command::SetGain(gain) if *gain > 2.0 => {
+                Status::Failed(format!("gain {gain:.2} is above 2"))
+            }
+            Command::SetGain(_) | Command::Mark(..) | Command::Choose(_) => Status::Handled(count),
+            // A struct inside an `Option` inside the variant.
+            Command::Load {
+                path,
+                summary: None,
+            } => Status::Failed(format!("{path} has no summary")),
+            Command::Load {
+                path,
+                summary: Some(summary),
+            } => {
+                println!("load {path}: {}, level {}", summary.name, summary.level);
+                Status::Handled(count)
+            }
+            // An enum with data inside the variant.
+            Command::Report(status) => status.clone(),
+        };
+        let result = (|| -> s::Result<()> {
+            if commands.history.len() >= 8 {
+                commands.history.remove_item(0)?;
+            }
+            commands.history.add_item(HandledCommand {
+                command,
+                status: status.clone(),
+            })?;
+            commands.status.set(status)
+        })();
+        if let Err(error) = result {
+            eprintln!("failed to handle a command: {error}");
+        }
     }));
 
     callbacks.push(states.values.ratio.connect(|value| {
@@ -60,8 +95,17 @@ pub fn register_callbacks(server: &StatesServer) -> Vec<s::CallbackHandle> {
     callbacks.push(states.values.primary_choice.connect(|value| {
         println!("enum changed: {value:?}");
     }));
-    callbacks.push(states.signals.empty_signal.connect_empty(|| {
+    let take_log = states.value_take.take_log.clone();
+    let emitted = std::sync::atomic::AtomicU32::new(0);
+    callbacks.push(states.signals.empty_signal.connect_empty(move || {
         println!("empty signal emitted");
+        let emitted = emitted.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        // A burst the queued take keeps in full.
+        for line in ["received", "working", "done"] {
+            if let Err(error) = take_log.set(format!("empty signal {emitted}: {line}"), false) {
+                eprintln!("failed to send the take log: {error}");
+            }
+        }
     }));
     callbacks.push(states.signals.number_signal.connect(|value| {
         println!("number signal emitted: {value:.3}");
@@ -72,7 +116,7 @@ pub fn register_callbacks(server: &StatesServer) -> Vec<s::CallbackHandle> {
 
     let value_vec = states.value_vec.items.clone();
     callbacks.push(states.value_vec.actions.reset_demo.connect_empty(move || {
-        if let Err(error) = value_vec.set(DEFAULT_VEC.to_vec(), true) {
+        if let Err(error) = value_vec.set(DEFAULT_VEC.to_vec()) {
             eprintln!("failed to reset value_vec: {error}");
         }
     }));
@@ -82,7 +126,7 @@ pub fn register_callbacks(server: &StatesServer) -> Vec<s::CallbackHandle> {
         move || match value_vec.get() {
             Ok(current) => {
                 let next_value = current.last().map_or(DEFAULT_VEC[0], |value| value + 5);
-                if let Err(error) = value_vec.add_item(next_value, true) {
+                if let Err(error) = value_vec.add_item(next_value) {
                     eprintln!("failed to append value_vec item: {error}");
                 } else {
                     println!("value_vec appended: {next_value}");
@@ -96,7 +140,7 @@ pub fn register_callbacks(server: &StatesServer) -> Vec<s::CallbackHandle> {
     callbacks.push(states.value_vec.actions.remove_last.connect_empty(move || {
         match value_vec.len().checked_sub(1) {
             Some(index) => {
-                if let Err(error) = value_vec.remove_item(index, true) {
+                if let Err(error) = value_vec.remove_item(index) {
                     eprintln!("failed to remove value_vec item: {error}");
                 } else {
                     println!("value_vec removed last item");
@@ -108,7 +152,7 @@ pub fn register_callbacks(server: &StatesServer) -> Vec<s::CallbackHandle> {
 
     let value_map = states.value_map.items.clone();
     callbacks.push(states.value_map.actions.reset_demo.connect_empty(move || {
-        if let Err(error) = value_map.set(default_map(), true) {
+        if let Err(error) = value_map.set(default_map()) {
             eprintln!("failed to reset value_map: {error}");
         }
     }));
@@ -119,7 +163,7 @@ pub fn register_callbacks(server: &StatesServer) -> Vec<s::CallbackHandle> {
             Ok(current) => {
                 let next_key = current.keys().copied().max().unwrap_or(0) + 1;
                 let next_value = u32::from(next_key) * 100;
-                if let Err(error) = value_map.set_item(next_key, next_value, true) {
+                if let Err(error) = value_map.set_item(next_key, next_value) {
                     eprintln!("failed to insert value_map item: {error}");
                 } else {
                     println!("value_map inserted: {next_key} -> {next_value}");
@@ -138,7 +182,7 @@ pub fn register_callbacks(server: &StatesServer) -> Vec<s::CallbackHandle> {
             .connect_empty(move || match value_map.get() {
                 Ok(current) => {
                     if let Some(lowest_key) = current.keys().copied().min() {
-                        if let Err(error) = value_map.remove_item(&lowest_key, true) {
+                        if let Err(error) = value_map.remove_item(&lowest_key) {
                             eprintln!("failed to remove value_map item: {error}");
                         } else {
                             println!("value_map removed key: {lowest_key}");

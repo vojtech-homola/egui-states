@@ -21,7 +21,6 @@ mod data;
 mod error;
 mod file_transfer;
 mod image;
-mod logging;
 mod options;
 mod state_server;
 mod values;
@@ -37,7 +36,6 @@ pub use data::{Data, DataElement, DataMulti, DataMultiTake, DataTake, HeaderValu
 pub use error::{Result, ServerError};
 pub use file_transfer::{Download, OfferedFile, TransferOffer, Upload};
 pub use image::{Image, ImageColor, ImageFormat, ImageMulti};
-pub use logging::{LogLevel, LoggingSignal};
 pub use options::{ErrorHandler, ServerOptions};
 pub use state_server::StateServer;
 pub use values::{Signal, Static, Value, ValueTake};

@@ -12,6 +12,17 @@ pub(super) fn show_value_take(ui: &mut egui::Ui, state: &mut ViewState) {
 
         ui.label("ValueTake<()>: root.value_take.take_empty");
         ui.label(format!("empty take count: {}", state.empty_take_count));
+
+        ui.separator();
+
+        ui.label("ValueTake<String>, queued: root.value_take.take_log");
+        ui.label("Emit the empty signal: the server answers with three lines at once.");
+        if state.take_log.is_empty() {
+            ui.label("  (no lines yet)");
+        }
+        for line in &state.take_log {
+            ui.label(format!("  {line}"));
+        }
     });
 }
 
@@ -37,6 +48,19 @@ pub(super) fn show_data_take(ui: &mut egui::Ui, state: &mut ViewState) {
     });
 }
 
+/// A preview of `values` with their range.
+fn summarize_f32(values: &[f32]) -> String {
+    if values.is_empty() {
+        return preview_f32_slice(values);
+    }
+    let min = values.iter().copied().fold(f32::INFINITY, f32::min);
+    let max = values.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    format!(
+        "{}, min = {min:.2}, max = {max:.2}",
+        preview_f32_slice(values)
+    )
+}
+
 /// Describes a Data buffer, which is `None` until the server sets it.
 fn describe<T>(data: Option<&[T]>, preview: impl Fn(&[T]) -> String) -> String {
     match data {
@@ -57,13 +81,14 @@ pub(super) fn show_data(ui: &mut egui::Ui, state: &mut ViewState) {
 
         ui.separator();
 
-        let samples = state
-            .schema
-            .data
-            .samples
-            .read(|data| describe(data, preview_f32_slice));
+        // The summary of these 20,480 samples is computed only after the
+        // server changed them, not on every frame.
+        let samples = &state.schema.data.samples;
+        if samples.take_changed() {
+            state.samples_summary = samples.read(|data| describe(data, summarize_f32));
+        }
         ui.label("Data<f32>: root.data.samples");
-        ui.label(samples);
+        ui.label(&state.samples_summary);
 
         ui.separator();
 
@@ -141,10 +166,8 @@ pub(super) fn show_multi_data(ui: &mut egui::Ui, state: &mut ViewState) {
 pub(super) fn show_multi_data_take(ui: &mut egui::Ui, state: &mut ViewState) {
     ui.collapsing("multi_data_take", |ui| {
         ui.label("DataMultiTake<u8>: root.data_multi_take.bytes");
-        let mut bytes_items = state.last_multi_take_bytes.clone();
-        bytes_items.sort_by_key(|(index, _)| *index);
-        for (index, values) in bytes_items {
-            let preview = preview_slice(&values);
+        for (index, values) in &state.last_multi_take_bytes {
+            let preview = preview_slice(values);
             ui.label(format!(
                 "  key {}: len = {}, preview = {}",
                 index,
@@ -159,10 +182,8 @@ pub(super) fn show_multi_data_take(ui: &mut egui::Ui, state: &mut ViewState) {
         ui.separator();
 
         ui.label("DataMultiTake<f32>: root.data_multi_take.samples");
-        let mut samples_items = state.last_multi_take_samples.clone();
-        samples_items.sort_by_key(|(index, _)| *index);
-        for (index, values) in samples_items {
-            let preview = preview_f32_slice(&values);
+        for (index, values) in &state.last_multi_take_samples {
+            let preview = preview_f32_slice(values);
             ui.label(format!(
                 "  key {}: len = {}, preview = {}",
                 index,
@@ -177,10 +198,8 @@ pub(super) fn show_multi_data_take(ui: &mut egui::Ui, state: &mut ViewState) {
         ui.separator();
 
         ui.label("Nested DataMultiTake<u16>: root.data_multi_take.nested.buffer");
-        let mut buffer_items = state.last_multi_take_nested.clone();
-        buffer_items.sort_by_key(|(index, _)| *index);
-        for (index, values) in buffer_items {
-            let preview = preview_slice(&values);
+        for (index, values) in &state.last_multi_take_nested {
+            let preview = preview_slice(values);
             ui.label(format!(
                 "  key {}: len = {}, preview = {}",
                 index,

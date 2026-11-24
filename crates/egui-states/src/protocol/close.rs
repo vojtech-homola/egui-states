@@ -16,9 +16,11 @@ pub(crate) const BUSY: u16 = 4003;
 pub(crate) const REFUSED: u16 = 4004;
 /// A new client took over the connection.
 pub(crate) const REPLACED: u16 = 4005;
-/// The server ended the connection: it disconnected the client, stopped, or
-/// failed to synchronize it.
+/// The server ended the connection: it disconnected the client or failed to
+/// synchronize it.
 pub(crate) const CLOSED_BY_SERVER: u16 = 4006;
+/// The server stopped.
+pub(crate) const SERVER_STOPPED: u16 = 4007;
 
 #[cfg(any(feature = "server", feature = "python"))]
 /// Longest close reason a WebSocket close frame can carry, in bytes.

@@ -1,6 +1,6 @@
 use counter_gui::CounterState;
 use eframe::egui;
-use egui_states::{Client, ClientBuilder, ConnectionState};
+use egui_states::{Client, ClientBuilder, ConnectionState, Reconnect};
 
 struct CounterApp {
     state: CounterState,
@@ -20,12 +20,11 @@ impl eframe::App for CounterApp {
             if !connected && ui.button("Connect").clicked() {
                 self.client.connect();
             }
-            let mut count = self.state.count.get();
-            if ui.add(egui::DragValue::new(&mut count)).changed() {
-                self.state.count.set_signal(count);
-            }
+            self.state
+                .count
+                .edit_signal(|count| ui.add(egui::DragValue::new(count)));
             if ui.button("Reset").clicked() {
-                self.state.reset.set(());
+                self.state.reset.emit(());
             }
         });
     }
@@ -39,8 +38,11 @@ fn main() -> eframe::Result {
             ..Default::default()
         },
         Box::new(|cc| {
-            let (state, client) =
-                ClientBuilder::<CounterState>::new(cc.egui_ctx.clone(), 8092).build();
+            // Once connected, the client reconnects by itself when the
+            // server restarts.
+            let (state, client) = ClientBuilder::<CounterState>::new(cc.egui_ctx.clone(), 8092)
+                .reconnect(Reconnect::default())
+                .build();
             Ok(Box::new(CounterApp { state, client }))
         }),
     )

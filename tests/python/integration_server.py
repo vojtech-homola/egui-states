@@ -79,6 +79,62 @@ def transfers(states, number, finished):
         ], reported
 
 
+def all_commands():
+    """Every variant shape of the enum with data, in the order the client sends them."""
+    from egui_states_test_bindings.enums import TestCommand, TestEnum, TestStatus  # ty: ignore[import-not-found]
+    from egui_states_test_bindings.structs import TestStruct2  # ty: ignore[import-not-found]
+
+    return [
+        TestCommand.Stop(),
+        TestCommand.MoveTo(1.5, -2.5),
+        TestCommand.SetGain(0.25),
+        TestCommand.Pair(-3, "pair"),
+        TestCommand.Choose(TestEnum.C),
+        TestCommand.Load("a.tif", TestStruct2(True, 7, "seven")),
+        TestCommand.Report(TestStatus.Busy(0.5)),
+        TestCommand.None_(),
+        TestCommand.Keyword(255),
+    ]
+
+
+def set_data_enums(states):
+    """Command 38: enums with data in every state kind, header and download."""
+    from egui_states_test_bindings.enums import TestCommand, TestEnum, TestStatus  # ty: ignore[import-not-found]
+    from egui_states_test_bindings.structs import TestJob  # ty: ignore[import-not-found]
+
+    e = states.data_enums
+    e.command.set(TestCommand.Pair(-1, "server"))
+    e.fixed.set(TestCommand.Report(TestStatus.Failed("fixed")))
+    e.job.set(TestJob("server", TestStatus.Idle()))
+    e.optional.set(None)
+    e.list.set(all_commands())
+    e.table.set({1: TestStatus.Busy(0.75)})
+    e.data.set(np.array([1, 2], dtype=np.uint8), header=TestCommand.Load("data.bin", None))
+    e.data_multi[3].set(np.array([4], dtype=np.uint8), header=TestCommand.Choose(TestEnum.B))
+    e.image.set(np.array([[1], [2]], dtype=np.uint8), header=TestCommand.MoveTo(0.5, 1.5))
+    e.images[2].set(np.array([[3]], dtype=np.uint8), header=TestCommand.None_())
+    e.take.set(TestCommand.Keyword(9))
+    e.data_take.set(np.array([5], dtype=np.uint8), header=TestCommand.Stop())
+    e.data_multi_take[6].set(np.array([6], dtype=np.uint8), header=TestCommand.SetGain(6.0))
+    meta = TestCommand.Report(TestStatus.Busy(1.0))
+    sent = e.download.send_bytes(b"enum", "enum.bin", meta=meta)
+    sent.wait(10)
+    assert sent.meta() == meta
+
+
+def check_data_enums(states, commands, uploads):
+    """Command 39: the values, the queued commands in order, and the upload metadata."""
+    from egui_states_test_bindings.enums import TestCommand, TestStatus  # ty: ignore[import-not-found]
+
+    e = states.data_enums
+    assert e.command.get() == TestCommand.Load("client", None)
+    assert e.optional.get() == TestStatus.Busy(0.125)
+    wait_until(lambda: len(commands) == len(all_commands()) and len(uploads) == 1)
+    assert commands == all_commands()
+    assert commands[0] == TestCommand.Stop()
+    assert uploads == [TestCommand.Pair(2, "up")]
+
+
 def check_uploads(uploaded):
     """Command 44: the upload the client sent arrived with its metadata."""
     from egui_states import TransferStatus
@@ -168,15 +224,17 @@ def check_client_values(states, signals):
 def edit_collections(states):
     """Command 32: server edits of both collections."""
     items = states.value_vec.items
-    items.set([5, 6, 7], update=True)
-    items.set_item(1, 60, update=True)
-    items.add_item(8, update=True)
-    items.remove_item(0, update=True)
+    items.set([5, 6, 7])
+    items.set_item(1, 60)
+    items.add_item(8)
+    items.remove_item(0)
+    items.insert_item(1, 61)
+    items.insert_item(0, 59)
     mapping = states.value_map.items
-    mapping.set({1: 10, 2: 20}, update=True)
-    mapping.set_item(3, 30, update=True)
-    mapping.set_item(1, 11, update=True)
-    mapping.remove_item(2, update=True)
+    mapping.set({1: 10, 2: 20})
+    mapping.set_item(3, 30)
+    mapping.set_item(1, 11)
+    mapping.remove_item(2)
 
 
 def edit_numeric(states):
@@ -189,20 +247,20 @@ def edit_numeric(states):
     d.samples.set(np.array([-1.5, 0.25], dtype=np.float32))
     d.nested.buffer.set(np.array([1, 2, 3], dtype=np.uint16))
     d.nested.buffer.clear()
-    for name, dtype in [
-        ("u8", np.uint8),
-        ("i8", np.int8),
-        ("u16", np.uint16),
-        ("i16", np.int16),
-        ("u32", np.uint32),
-        ("i32", np.int32),
-        ("u64", np.uint64),
-        ("i64", np.int64),
-        ("f32", np.float32),
-        ("f64", np.float64),
+    for name, info in [
+        ("u8", np.iinfo(np.uint8)),
+        ("i8", np.iinfo(np.int8)),
+        ("u16", np.iinfo(np.uint16)),
+        ("i16", np.iinfo(np.int16)),
+        ("u32", np.iinfo(np.uint32)),
+        ("i32", np.iinfo(np.int32)),
+        ("u64", np.iinfo(np.uint64)),
+        ("i64", np.iinfo(np.int64)),
+        ("f32", np.finfo(np.float32)),
+        ("f64", np.finfo(np.float64)),
     ]:
-        info = np.iinfo(dtype) if np.issubdtype(dtype, np.integer) else np.finfo(dtype)
-        getattr(states.numeric, f"{name}_data").set(np.array([info.min, 0, info.max], dtype=dtype))
+        limits = np.array([info.min, 0, info.max], dtype=info.dtype)
+        getattr(states.numeric, f"{name}_data").set(limits)
     m = states.multi_data
     m.bytes[1].set(np.array([1, 2], dtype=np.uint8))
     m.bytes[1].add(np.array([3], dtype=np.uint8))
@@ -213,13 +271,34 @@ def edit_numeric(states):
     m.nested.buffer[3].replace(np.array([6], dtype=np.uint16), 1)
 
 
+def edit_image_headers(states):
+    """Command 37: typed image headers.
+
+    The header alone waits for the split update before it, so the phase
+    follows everything.
+    """
+    from egui_states_test_bindings.structs import HeaderMeta  # ty: ignore[import-not-found]
+
+    image = states.image.framed
+    image.set(np.array([[1], [2]], dtype=np.uint8), header=HeaderMeta(1.0, "frame 1", [2]))
+    image.update(np.array([[3]], dtype=np.uint8), (0, 0))
+    image.update(np.array([[4], [5]], dtype=np.uint8), (0, 0), max_lines=1, header=HeaderMeta(2.0, "frame 2", [2]))
+    image.set_header(HeaderMeta(3.0, "frame 3", [2]))
+    assert image.get_header() == HeaderMeta(3.0, "frame 3", [2])
+    keys = states.image.framed_keys
+    keys[4].set(np.array([[1]], dtype=np.uint8), header=HeaderMeta(4.0, "key 4", []))
+    keys[5].set_all((1, 1), 5, header=HeaderMeta(5.0, "key 5", []))
+    keys[5].set_header(HeaderMeta(5.5, "key 5 renamed", []))
+
+
 def edit_images(states):
     """Command 34: a full image, partial updates, and sparse images.
 
-    The first set returns once the client acknowledged it. The split update
-    finishes before the remove, which waits for every acknowledgement. The
-    sparse images use the low-priority lane, so the phase can reach the client
-    before the remove.
+    The first set returns once the client acknowledged it. The keys of the
+    sparse images do not wait for each other, so the split update of key 7
+    waits for its last part: the remove of key 2 follows it. The sparse images
+    use the low-priority lane, so the phase can reach the client before the
+    remove.
     """
     image = states.image.image
     image.set(np.arange(18, dtype=np.uint8).reshape(2, 3, 3), wait=True)
@@ -227,7 +306,7 @@ def edit_images(states):
     images = states.image.images
     images[2].set(np.array([[9]], dtype=np.uint8))
     images[7].set_all((2, 2), (1, 2, 3))
-    images[7].update(np.full((2, 2, 3), (4, 5, 6), dtype=np.uint8), (0, 0), max_lines=1)
+    images[7].update(np.full((2, 2, 3), (4, 5, 6), dtype=np.uint8), (0, 0), max_lines=1, wait=True)
     images.remove_index(2)
 
 
@@ -243,6 +322,15 @@ def configure(states):  # noqa: PLR0915
     states.transfers.files.connect(finished.append)
     states.transfers.inputs.on_offer(lambda offer: offer.accept_memory(1024))
     states.transfers.inputs.connect(uploaded.append)
+    enum_commands = []
+    enum_uploads = []
+    states.data_enums.commands.connect(enum_commands.append)
+
+    def accept_enum_upload(offer):
+        enum_uploads.append(offer.meta())
+        offer.accept_memory(1024)
+
+    states.data_enums.upload.on_offer(accept_enum_upload)
     states.signals.empty_signal.connect(lambda: signals.append("empty"))
     states.signals.number_signal.connect(lambda value: signals.append(f"number:{value}"))
     states.signals.enum_signal.connect(lambda value: signals.append(f"enum:{value.name}"))
@@ -259,97 +347,106 @@ def configure(states):  # noqa: PLR0915
             TestEnum2.Z,
         )
     )
-    st.wire.connect(lambda packet: st.wire_echo.set(packet, update=True))
+    st.wire.connect(st.wire_echo.set)
     st.value.set(7)
     st.items.set([1, 2])
     st.cached.set(np.array([8, 9], dtype=np.uint8), cache=True)
     st.cached_multi[91].set(np.array([500, 600], dtype=np.uint16), cache=True)
-    st.value.connect(lambda value: st.callback_value.set(value, update=True))
+    st.value.connect(st.callback_value.set)
 
     def command(number):  # noqa: PLR0915
         if number == 1:
-            st.value.set(21, update=True)
+            st.value.set(21)
         elif number == 2:
-            st.items.add_item(st.value.get(), update=True)
-            st.map.set_item(9, 900, update=True)
+            st.items.add_item(st.value.get())
+            st.map.set_item(9, 900)
         elif number == 3:
-            states.data_take.take_samples.set(np.array([-1.25, 0, 2.5], dtype=np.float32), update=True)
-            states.data_multi_take.samples[513].set(np.array([9.5, -2.25], dtype=np.float32), update=True)
-            states.data_multi_take.nested.buffer[24].set(np.array([0, 65535], dtype=np.uint16), update=True)
-            st.take.set("payload", update=True)
-            st.empty.set(update=True)
-            st.data.set(np.array([0, 1, 255], dtype=np.uint8), update=True)
-            st.multi[7].set(np.array([100, 200], dtype=np.uint16), update=True)
-            st.multi[42].set(np.array([], dtype=np.uint16), update=True)
+            states.data_take.take_samples.set(np.array([-1.25, 0, 2.5], dtype=np.float32))
+            states.data_multi_take.samples[513].set(np.array([9.5, -2.25], dtype=np.float32))
+            states.data_multi_take.nested.buffer[24].set(np.array([0, 65535], dtype=np.uint16))
+            st.take.set("payload")
+            st.empty.set()
+            st.data.set(np.array([0, 1, 255], dtype=np.uint8))
+            st.multi[7].set(np.array([100, 200], dtype=np.uint16))
+            st.multi[42].set(np.array([], dtype=np.uint16))
         elif number == 4:
-            st.take.set("", update=True)
-            st.data.set(np.array([], dtype=np.uint8), update=True)
+            st.take.set("")
+            st.data.set(np.array([], dtype=np.uint8))
         elif number in {10, 11, 12, 13}:
 
             def send(second):
                 if number == 10:
-                    st.take.set("" if second else "first", blocking=True, update=True)
+                    st.take.set("" if second else "first", blocking=True)
                 elif number == 11:
-                    st.empty.set(blocking=True, update=True)
+                    st.empty.set(blocking=True)
                 elif number == 12:
-                    st.data.set(np.array([] if second else [1, 2], dtype=np.uint8), blocking=True, update=True)
+                    st.data.set(np.array([] if second else [1, 2], dtype=np.uint8), blocking=True)
                 else:
-                    st.multi[73].set(
-                        np.array([] if second else [100, 200], dtype=np.uint16), blocking=True, update=True
-                    )
+                    st.multi[73].set(np.array([] if second else [100, 200], dtype=np.uint16), blocking=True)
 
             send(False)
-            st.phase.set(1, update=True)
+            st.phase.set(1)
             send(True)
-            st.phase.set(2, update=True)
+            st.phase.set(2)
         elif number == 20:
-            st.cached.set(np.array([31, 32], dtype=np.uint8), cache=True, update=True)
-            st.cached_multi.remove_index(91, update=True)
-            st.cached_multi[513].set(np.array([17], dtype=np.uint16), cache=True, update=True)
-            st.phase.set(20, update=True)
+            st.cached.set(np.array([31, 32], dtype=np.uint8), cache=True)
+            st.cached_multi.remove_index(91)
+            st.cached_multi[513].set(np.array([17], dtype=np.uint16), cache=True)
+            st.phase.set(20)
         elif number == 21:
-            st.cached.set(np.array([41], dtype=np.uint8), cache=False, update=True)
-            st.cached_multi.reset(update=True)
-            st.phase.set(21, update=True)
+            st.cached.set(np.array([41], dtype=np.uint8), cache=False)
+            st.cached_multi.reset()
+            st.phase.set(21)
         elif number == 22:
-            st.multi[7].set(np.array([7], dtype=np.uint16), update=True)
-            st.multi[900].set(np.array([9], dtype=np.uint16), update=True)
-            st.multi.remove_index(7, update=True)
-            st.phase.set(22, update=True)
+            st.multi[7].set(np.array([7], dtype=np.uint16))
+            st.multi[900].set(np.array([9], dtype=np.uint16))
+            st.multi.remove_index(7)
+            st.phase.set(22)
         elif number == 23:
-            st.multi.reset(update=True)
-            st.phase.set(23, update=True)
+            st.multi.reset()
+            st.phase.set(23)
         elif number in (24, 25):  # noqa: PLR6201
-            st.multi[7].set(np.array([7], dtype=np.uint16), blocking=True, update=True)
+            st.multi[7].set(np.array([7], dtype=np.uint16), blocking=True)
             if number == 24:
-                st.multi.remove_index(7, update=True)
+                st.multi.remove_index(7)
             else:
-                st.multi.reset(update=True)
-            st.phase.set(24, update=True)
-            st.multi[513].set(np.array([9], dtype=np.uint16), blocking=True, update=True)
-            st.phase.set(25, update=True)
+                st.multi.reset()
+            st.phase.set(24)
+            st.multi[513].set(np.array([9], dtype=np.uint16), blocking=True)
+            st.phase.set(25)
         elif number == 30:
             set_wire_values(states)
-            st.phase.set(30, update=True)
+            st.phase.set(30)
         elif number == 31:
             try:
                 check_client_values(states, signals)
             finally:
-                st.phase.set(31, update=True)
+                st.phase.set(31)
         elif number in {32, 33, 34}:
             {32: edit_collections, 33: edit_numeric, 34: edit_images}[number](states)
-            st.phase.set(number, update=True)
+            st.phase.set(number)
         elif number in {35, 36}:
             edit_headers(states, number)
-            st.phase.set(number, update=True)
+            st.phase.set(number)
+        elif number == 37:  # noqa: PLR2004
+            edit_image_headers(states)
+            st.phase.set(37)
+        elif number == 38:  # noqa: PLR2004
+            set_data_enums(states)
+            st.phase.set(38)
+        elif number == 39:  # noqa: PLR2004
+            try:
+                check_data_enums(states, enum_commands, enum_uploads)
+            finally:
+                st.phase.set(39)
         elif number in {40, 41, 42, 43}:
             transfers(states, number, finished)
-            st.phase.set(number, update=True)
+            st.phase.set(number)
         elif number == 44:
             check_uploads(uploaded)
-            st.phase.set(44, update=True)
+            st.phase.set(44)
         elif number in {98, 99}:
-            st.phase.set(number, update=True)
+            st.phase.set(number)
         else:
             raise AssertionError(f"unknown command: {number}")
 
@@ -359,14 +456,16 @@ def configure(states):  # noqa: PLR0915
 def run_scenario(probe, scenario):
     """Run the server and its potentially blocking callbacks in a disposable process."""
     from egui_states import ClientPolicy
-    from egui_states.logging import LogLevel
+    from tests.python_test_helpers.logs import server_logs
 
     errors, warnings = [], []
-    policy = ClientPolicy.Reject if scenario == "busy-client" else ClientPolicy.Replace
-    server = StatesServer(error_handler=errors.append, version=StatesServer.VERSION_HASH, client_policy=policy)
+    with server_logs(errors, warnings):
+        _run_scenario(probe, scenario, errors, warnings, ClientPolicy)
 
-    server.logging.add_logger(LogLevel.Error, lambda message: errors.append(RuntimeError(message)))
-    server.logging.add_logger(LogLevel.Warning, warnings.append)
+
+def _run_scenario(probe, scenario, errors, warnings, client_policy):
+    policy = client_policy.Reject if scenario == "busy-client" else client_policy.Replace
+    server = StatesServer(error_handler=errors.append, version=StatesServer.VERSION_HASH, client_policy=policy)
     configure(server.states)
     if scenario == "connect-request":
         asked = []

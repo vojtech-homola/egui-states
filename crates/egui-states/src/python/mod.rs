@@ -37,6 +37,11 @@ pub fn init_module(m: &Bound<PyModule>) -> PyResult<()> {
     m.add_function(pyo3::wrap_pyfunction!(pytypes::opt, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(pytypes::tu, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(pytypes::cl, m)?)?;
+    m.add_class::<pytypes::PyVariantClass>()?;
+    m.add_function(pyo3::wrap_pyfunction!(pytypes::vunit, m)?)?;
+    m.add_function(pyo3::wrap_pyfunction!(pytypes::vnamed, m)?)?;
+    m.add_function(pyo3::wrap_pyfunction!(pytypes::vtuple, m)?)?;
+    m.add_function(pyo3::wrap_pyfunction!(pytypes::denu, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(pytypes::li, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(pytypes::vec, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(pytypes::map, m)?)?;

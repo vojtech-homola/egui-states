@@ -45,6 +45,13 @@ pub(crate) trait SyncTrait: Sync + Send {
 pub(crate) trait Acknowledge: Sync + Send {
     fn acknowledge(&self);
 
+    /// Acknowledges a transfer of one key of a keyed state, which the client
+    /// acknowledges per key.
+    fn acknowledge_key(&self, key: u32) {
+        let _ = key;
+        self.acknowledge();
+    }
+
     fn reset(&self) {
         self.acknowledge();
     }
@@ -592,7 +599,7 @@ impl Server {
                 *state = RunnerState::Stopped(rx);
             }
             RunnerState::Running(handle, _) => {
-                self.close_with(close::CLOSED_BY_SERVER, "server stopped");
+                self.close_with(close::SERVER_STOPPED, "server stopped");
                 self.connected.store(false, Ordering::Release);
                 self.stop_event.set();
                 self.sender.close();
@@ -842,25 +849,34 @@ impl Server {
         })
     }
 
-    /// Registers an image; with `low_priority`, it uses the low-priority
-    /// lane.
-    pub(crate) fn add_image(&mut self, name: &str, low_priority: bool) -> Result<u64, String> {
+    /// Registers an image; `header_type` is the type id of its header,
+    /// `None` for an image without one. With `low_priority`, it uses the
+    /// low-priority lane.
+    pub(crate) fn add_image(
+        &mut self,
+        name: &str,
+        header_type: Option<u32>,
+        low_priority: bool,
+    ) -> Result<u64, String> {
         let (sender, connected) = self.bulk_channels(low_priority);
         self.register(name, "Image", |id| {
             Ok(StateRef::Image(Image::new(
                 name.to_string(),
                 id,
+                header_type,
                 sender,
                 connected,
             )))
         })
     }
 
-    /// Registers an image collection; with `low_priority`, it uses the
-    /// low-priority lane.
+    /// Registers an image collection; `header_type` is the type id of the
+    /// header of each image, `None` for images without one. With
+    /// `low_priority`, it uses the low-priority lane.
     pub(crate) fn add_image_multi(
         &mut self,
         name: &str,
+        header_type: Option<u32>,
         low_priority: bool,
     ) -> Result<u64, String> {
         let (sender, connected) = self.bulk_channels(low_priority);
@@ -868,6 +884,7 @@ impl Server {
             Ok(StateRef::ImageMulti(ImageMulti::new(
                 name.to_string(),
                 id,
+                header_type,
                 sender,
                 connected,
             )))
@@ -1072,7 +1089,7 @@ mod tests {
     fn a_repaint_request_is_queued_in_every_lane_in_use() {
         let repaint = |low_priority: bool| {
             let mut server = Server::new(ServerConfig::with_version(None));
-            server.add_image("root.image", low_priority).unwrap();
+            server.add_image("root.image", None, low_priority).unwrap();
             server.connected.store(true, Ordering::Release);
             server.update(None).unwrap();
             let mut lanes = lanes(&server);

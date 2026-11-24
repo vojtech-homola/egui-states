@@ -2,42 +2,10 @@
 
 use std::fmt;
 
-/// What went wrong, for front-ends that report categories, such as the C
-/// ABI's status codes. The text is the same whatever the kind.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ErrorKind {
-    /// The state has no entry at the requested key or index, or its data
-    /// is not set.
-    NotFound,
-    /// The call is missing something the state requires, such as the header
-    /// that creates the data of a state with a header type.
-    InvalidArgument,
-    /// Any other failure; front-ends report it as they always have.
-    Other,
-}
-
-/// An error of a server core: a category and the message every front-end
-/// shows unchanged.
+/// An error of a server core: the message every front-end shows unchanged.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct CoreError {
-    pub(crate) kind: ErrorKind,
     pub(crate) message: String,
-}
-
-impl CoreError {
-    pub(crate) fn not_found(message: impl Into<String>) -> Self {
-        Self {
-            kind: ErrorKind::NotFound,
-            message: message.into(),
-        }
-    }
-
-    pub(crate) fn invalid_argument(message: impl Into<String>) -> Self {
-        Self {
-            kind: ErrorKind::InvalidArgument,
-            message: message.into(),
-        }
-    }
 }
 
 impl fmt::Display for CoreError {
@@ -48,10 +16,7 @@ impl fmt::Display for CoreError {
 
 impl From<String> for CoreError {
     fn from(message: String) -> Self {
-        Self {
-            kind: ErrorKind::Other,
-            message,
-        }
+        Self { message }
     }
 }
 

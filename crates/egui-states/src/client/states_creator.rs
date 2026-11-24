@@ -7,15 +7,16 @@ use serde::{Deserialize, Serialize};
 
 use crate::State;
 use crate::client::messages::MessageSender;
-use crate::client::states::atomics::{Atomic, AtomicStatic};
+use crate::client::states::atomics::Atomic;
 use crate::client::states::data::{
-    Data, DataMulti, HeaderValue, UpdateData, UpdateMultiData, data_type_hash, private::GetDataType,
+    Data, DataMulti, UpdateData, UpdateMultiData, data_type_hash, private::GetDataType,
 };
 use crate::client::states::data_take::{
     DataMultiTake, DataTake, UpdateDataMultiTake, UpdateDataTake,
 };
 use crate::client::states::file_transfer::{Download, Upload};
-use crate::client::states::image::{Image, ImageMulti};
+use crate::client::states::header::HeaderValue;
+use crate::client::states::image::{Image, ImageMulti, UpdateImage, UpdateImageMulti};
 use crate::client::states::initial_value::InitialValue;
 use crate::client::states::map::{MapState, UpdateMap};
 use crate::client::states::values::{
@@ -43,6 +44,24 @@ pub(crate) fn hash_id(hasher: &mut StableHasher, id: u64) {
 pub(crate) fn hash_id_kind(hasher: &mut StableHasher, id: u64, hash_id: u8) {
     id.hash(hasher);
     hash_id.hash(hasher);
+}
+
+/// Hashes an `Image` with header `H` into the layout hash. An image without a
+/// header keeps the layout hash it had before images had headers.
+pub(crate) fn hash_image<H: HeaderValue>(hasher: &mut StableHasher, id: u64) {
+    match H::get_type() {
+        ObjectType::Empty => hash_id(hasher, id),
+        header => hash_id_type(hasher, id, header.get_hash(), IMAGE_HASH_ID),
+    }
+}
+
+/// Hashes an `ImageMulti` with header `H` into the layout hash, as
+/// [`hash_image`] does.
+pub(crate) fn hash_image_multi<H: HeaderValue>(hasher: &mut StableHasher, id: u64) {
+    match H::get_type() {
+        ObjectType::Empty => hash_id_kind(hasher, id, IMAGE_MULTI_HASH_ID),
+        header => hash_id_type(hasher, id, header.get_hash(), IMAGE_MULTI_HASH_ID),
+    }
 }
 
 /// Factory used by [`State::new`](crate::State::new) to register client states.
@@ -108,7 +127,7 @@ pub trait StatesCreator {
             + Clone
             + Send
             + Sync
-            + AtomicStatic
+            + Atomic
             + 'static;
 
     /// Creates a client-to-server event carrying values of type `T`.
@@ -116,11 +135,13 @@ pub trait StatesCreator {
     where
         T: Serialize + Typed + Clone + Send + Sync + 'static;
 
-    /// Creates a server-controlled egui image texture.
-    fn image(&mut self, name: &'static str) -> Image;
+    /// Creates a server-controlled egui image texture with header type `H`;
+    /// `()` means no header.
+    fn image<H: HeaderValue>(&mut self, name: &'static str) -> Image<H>;
 
-    /// Creates server-controlled egui image textures indexed by `u32` keys.
-    fn image_multi(&mut self, name: &'static str) -> ImageMulti;
+    /// Creates server-controlled egui image textures indexed by `u32` keys,
+    /// each with a header of type `H`; `()` means no header.
+    fn image_multi<H: HeaderValue>(&mut self, name: &'static str) -> ImageMulti<H>;
 
     /// Creates a server-controlled key/value collection.
     fn map<K, V>(&mut self, name: &'static str) -> MapState<K, V>
@@ -186,18 +207,34 @@ pub trait StatesCreator {
         f(self)
     }
 
-    /// Creates the values and signals that `f` makes in queue mode.
+    /// Creates the values, signals and one-shot values that `f` makes in
+    /// queue mode.
     ///
     /// Server callbacks then receive every change a client makes with
     /// `set_signal`, and every event of a signal, in arrival order. By
     /// default they receive only the latest change made while they are busy.
-    /// It applies to the values, atomic values and signals `f` creates
-    /// itself, not to those of substates. The derive spells it
+    /// A [`ValueTake`] keeps up to [`VALUE_TAKE_QUEUE`] untaken values in
+    /// arrival order instead of only the latest. It applies to the states
+    /// `f` creates itself, not to those of substates. The derive spells it
     /// `#[state(queue)]`.
+    ///
+    /// [`VALUE_TAKE_QUEUE`]: crate::VALUE_TAKE_QUEUE
     fn queue<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R
     where
         Self: Sized,
     {
+        f(self)
+    }
+
+    /// Creates the one-shot values that `f` makes with a queue of up to
+    /// `capacity` untaken values, at least one, as
+    /// [`queue`](Self::queue) does with its default capacity. Other states
+    /// are not affected. The derive spells it `#[state(queue = N)]`.
+    fn queue_capacity<R>(&mut self, capacity: usize, f: impl FnOnce(&mut Self) -> R) -> R
+    where
+        Self: Sized,
+    {
+        let _ = capacity;
         f(self)
     }
 }
@@ -212,8 +249,8 @@ pub(crate) enum ClientState {
     DataTake(Arc<dyn UpdateDataTake>),
     DataMulti(Arc<dyn UpdateMultiData>),
     DataMultiTake(Arc<dyn UpdateDataMultiTake>),
-    Image(Image),
-    ImageMulti(ImageMulti),
+    Image(Arc<dyn UpdateImage>),
+    ImageMulti(Arc<dyn UpdateImageMulti>),
     Map(Arc<dyn UpdateMap>),
     Vec(Arc<dyn UpdateList>),
 }
@@ -259,8 +296,8 @@ impl ValuesList {
         data_take: DataTake => Arc<dyn UpdateDataTake>,
         data_multi: DataMulti => Arc<dyn UpdateMultiData>,
         data_multi_take: DataMultiTake => Arc<dyn UpdateDataMultiTake>,
-        image: Image => Image,
-        image_multi: ImageMulti => ImageMulti,
+        image: Image => Arc<dyn UpdateImage>,
+        image_multi: ImageMulti => Arc<dyn UpdateImageMulti>,
         map: Map => Arc<dyn UpdateMap>,
         vec: Vec => Arc<dyn UpdateList>,
     }
@@ -280,6 +317,19 @@ impl ValuesList {
                 ClientState::Map(state) => state.disconnected(),
                 ClientState::Vec(state) => state.disconnected(),
                 ClientState::Value(_) | ClientState::Static(_) => {}
+            }
+        }
+    }
+
+    /// Drops the take values a closed connection left untaken, once a new
+    /// connection is accepted and before any of its messages is handled.
+    pub(crate) fn connected(&self) {
+        for state in self.states.values() {
+            match state {
+                ClientState::ValueTake(state) => state.connected(),
+                ClientState::DataTake(state) => state.connected(),
+                ClientState::DataMultiTake(state) => state.connected(),
+                _ => {}
             }
         }
     }
@@ -310,6 +360,9 @@ pub(crate) const DATA_MULTI_TAKE_HASH_ID: u8 = 11;
 pub(crate) const IMAGE_MULTI_HASH_ID: u8 = 12;
 pub(crate) const DOWNLOAD_HASH_ID: u8 = 13;
 pub(crate) const UPLOAD_HASH_ID: u8 = 14;
+/// Only an `Image` with a header mixes it in; one without keeps hashing its
+/// id alone.
+pub(crate) const IMAGE_HASH_ID: u8 = 15;
 
 /// Runtime state factory used internally by [`crate::ClientBuilder`].
 pub struct StatesCreatorClient {
@@ -318,6 +371,9 @@ pub struct StatesCreatorClient {
     context: egui::Context,
     parent: String,
     version_hasher: StableHasher,
+    /// The queue capacity of the one-shot values created now, `None` for
+    /// none.
+    take_queue: Option<usize>,
 }
 
 impl StatesCreatorClient {
@@ -343,6 +399,7 @@ impl StatesCreatorClient {
             context,
             parent,
             version_hasher: StableHasher::new(),
+            take_queue: None,
         }
     }
 
@@ -409,7 +466,7 @@ impl StatesCreator for StatesCreatorClient {
         let type_id = T::get_type().get_hash();
         hash_id_type(&mut self.version_hasher, id, type_id, VALUE_TAKE_HASH_ID);
 
-        let value = ValueTake::new(name, id, type_id, self.sender.clone());
+        let value = ValueTake::new(name, id, type_id, self.take_queue, self.sender.clone());
 
         self.val
             .states
@@ -473,7 +530,7 @@ impl StatesCreator for StatesCreatorClient {
             + Clone
             + Send
             + Sync
-            + AtomicStatic
+            + Atomic
             + 'static,
     {
         let (name, id) = state_path(&self.parent, name);
@@ -488,26 +545,26 @@ impl StatesCreator for StatesCreatorClient {
         value
     }
 
-    fn image(&mut self, name: &str) -> Image {
+    fn image<H: HeaderValue>(&mut self, name: &str) -> Image<H> {
         let (name, id) = state_path(&self.parent, name);
-        hash_id(&mut self.version_hasher, id);
+        hash_image::<H>(&mut self.version_hasher, id);
 
         let value = Image::new(name, id, self.sender.clone(), self.context.clone());
 
         self.val
             .states
-            .insert(id, ClientState::Image(value.clone()));
+            .insert(id, ClientState::Image(Arc::new(value.clone())));
         value
     }
 
-    fn image_multi(&mut self, name: &str) -> ImageMulti {
+    fn image_multi<H: HeaderValue>(&mut self, name: &str) -> ImageMulti<H> {
         let (name, id) = state_path(&self.parent, name);
-        hash_id_kind(&mut self.version_hasher, id, IMAGE_MULTI_HASH_ID);
+        hash_image_multi::<H>(&mut self.version_hasher, id);
 
         let value = ImageMulti::new(name, id, self.sender.clone(), self.context.clone());
         self.val
             .states
-            .insert(id, ClientState::ImageMulti(value.clone()));
+            .insert(id, ClientState::ImageMulti(Arc::new(value.clone())));
         value
     }
 
@@ -653,6 +710,17 @@ impl StatesCreator for StatesCreatorClient {
         Download::new(id, self.val.transfers.clone())
     }
 
+    fn queue<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        self.queue_capacity(crate::VALUE_TAKE_QUEUE, f)
+    }
+
+    fn queue_capacity<R>(&mut self, capacity: usize, f: impl FnOnce(&mut Self) -> R) -> R {
+        let outer = self.take_queue.replace(capacity);
+        let result = f(self);
+        self.take_queue = outer;
+        result
+    }
+
     fn upload<M: TransferMeta>(&mut self, name: &str) -> Upload<M> {
         let (_, id) = state_path(&self.parent, name);
         hash_id_type(
@@ -665,5 +733,42 @@ impl StatesCreator for StatesCreatorClient {
             .transfers
             .register(id, Role::Send, meta_type_id::<M>());
         Upload::new(id, self.val.transfers.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::client::states::values::UpdateValueTake;
+
+    /// Fills `value` with `count` values and tells whether the last one
+    /// overflowed the queue.
+    fn overflows(value: &ValueTake<u8>, count: usize) -> bool {
+        let mut overflowed = false;
+        for _ in 0..count {
+            let data = postcard::to_stdvec(&1_u8).unwrap();
+            overflowed = value
+                .update_take(<u8 as crate::Typed>::get_type().get_hash(), &data, false)
+                .is_err();
+        }
+        overflowed
+    }
+
+    #[test]
+    fn queue_scopes_set_the_capacity_of_value_takes() {
+        let (sender, _receiver) = MessageSender::new();
+        let mut creator = StatesCreatorClient::new(sender, egui::Context::default(), "root".into());
+        let plain = creator.value_take::<u8>("plain");
+        let queued = creator.queue(|c| c.value_take::<u8>("queued"));
+        let few = creator.queue_capacity(2, |c| c.value_take::<u8>("few"));
+        let after = creator.value_take::<u8>("after");
+
+        assert!(!overflows(&plain, 3));
+        assert_eq!(plain.len(), 1);
+        assert!(!overflows(&queued, crate::VALUE_TAKE_QUEUE));
+        assert!(overflows(&queued, 1));
+        assert!(!overflows(&few, 2));
+        assert!(overflows(&few, 1));
+        assert!(!overflows(&after, 3), "the scope leaked");
     }
 }

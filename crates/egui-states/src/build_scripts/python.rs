@@ -8,45 +8,58 @@ use crate::State;
 use crate::build_scripts::scripts;
 use crate::build_scripts::states_creator_build::StateType;
 use crate::protocol::data::DataType;
-use crate::typed::ObjectType;
+use crate::typed::{ObjectType, VariantFields};
 
-/// Python's hard keywords. Soft keywords (`match`, `case`, `type`, `_`) are valid
-/// identifiers and need no escaping.
-const PYTHON_KEYWORDS: [&str; 35] = [
-    "False", "None", "True", "and", "as", "assert", "async", "await", "break", "class", "continue",
-    "def", "del", "elif", "else", "except", "finally", "for", "from", "global", "if", "import",
-    "in", "is", "lambda", "nonlocal", "not", "or", "pass", "raise", "return", "try", "while",
-    "with", "yield",
-];
-
-/// Spells a Rust name as a Python identifier, escaping keywords with a trailing
-/// underscore (PEP 8).
+/// Spells a Rust name as a Python identifier: without the `r#` of a raw
+/// identifier, which only Rust needs, and with a trailing underscore after a
+/// keyword (PEP 8).
 fn python_name(name: &str) -> Cow<'_, str> {
-    if PYTHON_KEYWORDS.contains(&name) {
+    let name = name.strip_prefix("r#").unwrap_or(name);
+    if scripts::PYTHON_KEYWORDS.contains(&name) {
         Cow::Owned(format!("{name}_"))
     } else {
         Cow::Borrowed(name)
     }
 }
 
-/// Returns the `__egui_names__` class attribute that maps escaped Python names
-/// back to the names used on the wire (state paths and type hashes), or an empty
-/// string when no name of `owner` was escaped.
+/// The name every enum with data gives the union of its variants, as in
+/// `Command.Type`.
+const VARIANTS_ALIAS: &str = "Type";
+
+/// Spells a variant of an enum with data as a Python class name. Besides the
+/// keywords of [`python_name`], a variant called `Type` gets an underscore,
+/// because the enum uses that name for the union of its variants.
+fn variant_name(name: &str) -> Cow<'_, str> {
+    if name == VARIANTS_ALIAS {
+        Cow::Owned(format!("{name}_"))
+    } else {
+        python_name(name)
+    }
+}
+
+/// Returns the `__egui_names__` class attribute that maps the Python names
+/// that differ from the names used on the wire (state paths and type hashes)
+/// back to them, or an empty string when `owner` has no such name.
 ///
 /// # Panics
 ///
-/// Panics if an escaped name collides with another name of `owner`.
-fn wire_names_line<'a>(owner: &str, names: impl IntoIterator<Item = &'a str> + Clone) -> String {
+/// Panics if a changed name collides with another name of `owner`.
+fn wire_names_line<'a>(owner: &str, names: impl IntoIterator<Item = &'a str>) -> String {
+    let names: Vec<&str> = names.into_iter().collect();
     let mut escaped = Vec::new();
-    for name in names.clone() {
-        if let Cow::Owned(python) = python_name(name) {
-            if names.clone().into_iter().any(|other| other == python) {
-                panic!(
-                    "{owner}: the Python name `{python}` of `{name}` conflicts with another name"
-                );
-            }
-            escaped.push(format!("\"{python}\": \"{name}\""));
+    for (index, name) in names.iter().enumerate() {
+        let python = python_name(name);
+        if python == *name {
+            continue;
         }
+        let taken = names
+            .iter()
+            .enumerate()
+            .any(|(other, other_name)| other != index && python_name(other_name) == python);
+        if taken {
+            panic!("{owner}: the Python name `{python}` of `{name}` conflicts with another name");
+        }
+        escaped.push(format!("\"{python}\": \"{name}\""));
     }
     if escaped.is_empty() {
         String::new()
@@ -71,6 +84,35 @@ fn type_to_pytype(type_info: &ObjectType) -> String {
         ObjectType::String => "s.st".to_string(),
         ObjectType::Empty => "s.emp".to_string(),
         ObjectType::Enum(name, _) => format!("s.enu(enums.{name})"),
+        ObjectType::DataEnum(name, variants) => {
+            let variants = variants
+                .iter()
+                .map(|(variant, fields)| {
+                    let attr = format!("enums.{name}.{}", variant_name(variant));
+                    match fields {
+                        VariantFields::Unit => format!("s.vunit(\"{variant}\", {attr})"),
+                        VariantFields::Named(fields) => {
+                            let fields = fields
+                                .iter()
+                                .map(|(_, object)| type_to_pytype(object))
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            format!("s.vnamed(\"{variant}\", [{fields}], {attr})")
+                        }
+                        VariantFields::Tuple(types) => {
+                            let types = types
+                                .iter()
+                                .map(type_to_pytype)
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            format!("s.vtuple(\"{variant}\", [{types}], {attr})")
+                        }
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("s.denu(enums.{name}, [{variants}])")
+        }
         ObjectType::Struct(name, elements) => {
             let fields = elements
                 .iter()
@@ -116,9 +158,34 @@ fn data_state(
         ),
         Some(header) => {
             let index = object_type_index(object_types, header);
-            let py_type = type_info_to_python_type(header, false, PythonTypeContext::States);
+            let py_type = type_info_to_python_type(header, PythonTypeContext::States);
             format!(
                 "        self.{attr}: s.{kind}WithHeader[{data_type}, {py_type}] = s.{kind}WithHeader({data_type}, {index}{priority})\n"
+            )
+        }
+    }
+}
+
+/// The attribute of an image state of kind `kind`; with a header, the
+/// `WithHeader` class of the kind.
+fn image_state(
+    attr: &str,
+    kind: &str,
+    header: Option<&ObjectType>,
+    priority: Priority,
+    object_types: &[ObjectType],
+) -> String {
+    match header {
+        None => format!(
+            "        self.{attr}: s.{kind} = s.{kind}({})\n",
+            priority.argument("")
+        ),
+        Some(header) => {
+            let index = object_type_index(object_types, header);
+            let py_type = type_info_to_python_type(header, PythonTypeContext::States);
+            let priority = priority.argument(", ");
+            format!(
+                "        self.{attr}: s.{kind}WithHeader[{py_type}] = s.{kind}WithHeader({index}{priority})\n"
             )
         }
     }
@@ -169,7 +236,7 @@ fn transfer_state(
         None => format!("        self.{attr}: s.{kind} = s.{kind}()\n"),
         Some(meta) => {
             let index = object_type_index(object_types, meta);
-            let py_type = type_info_to_python_type(meta, false, PythonTypeContext::States);
+            let py_type = type_info_to_python_type(meta, PythonTypeContext::States);
             format!(
                 "        self.{attr}: s.{kind}WithMeta[{py_type}] = s.{kind}WithMeta({index})\n"
             )
@@ -204,7 +271,9 @@ fn collect_object_types(values: &[StateType]) -> Vec<ObjectType> {
             | StateType::DataMulti(_, _, Some(header), _)
             | StateType::DataMultiTake(_, _, Some(header), _)
             | StateType::Download(_, Some(header))
-            | StateType::Upload(_, Some(header)) => push_type(header),
+            | StateType::Upload(_, Some(header))
+            | StateType::Image(_, Some(header), _)
+            | StateType::ImageMulti(_, Some(header), _) => push_type(header),
             StateType::SubState(..)
             | StateType::Image(..)
             | StateType::ImageMulti(..)
@@ -231,13 +300,11 @@ fn object_type_index(types: &[ObjectType], object_type: &ObjectType) -> usize {
 enum PythonTypeContext {
     States,
     Structs,
+    /// The `enums.py` module itself, next to the enums.
+    Enums,
 }
 
-fn type_info_to_python_type(
-    info: &ObjectType,
-    list_comment: bool,
-    context: PythonTypeContext,
-) -> String {
+fn type_info_to_python_type(info: &ObjectType, context: PythonTypeContext) -> String {
     match info {
         ObjectType::U8
         | ObjectType::U16
@@ -251,40 +318,77 @@ fn type_info_to_python_type(
         ObjectType::Bool => "bool".to_string(),
         ObjectType::String => "str".to_string(),
         ObjectType::Empty => String::new(),
-        ObjectType::Enum(name, _) => format!("enums.{name}"),
+        ObjectType::Enum(name, _) => match context {
+            PythonTypeContext::States | PythonTypeContext::Structs => format!("enums.{name}"),
+            PythonTypeContext::Enums => name.clone(),
+        },
+        // The class of an enum with data is a namespace; a value is one of
+        // its variants.
+        ObjectType::DataEnum(name, _) => match context {
+            PythonTypeContext::States | PythonTypeContext::Structs => {
+                format!("enums.{name}.{VARIANTS_ALIAS}")
+            }
+            PythonTypeContext::Enums => format!("{name}.{VARIANTS_ALIAS}"),
+        },
         ObjectType::Struct(name, _) => match context {
-            PythonTypeContext::States => format!("structs.{name}"),
+            PythonTypeContext::States | PythonTypeContext::Enums => format!("structs.{name}"),
             PythonTypeContext::Structs => name.clone(),
         },
         ObjectType::Tuple(elements) => {
             let elements = elements
                 .iter()
-                .map(|element| type_info_to_python_type(element, list_comment, context))
+                .map(|element| type_info_to_python_type(element, context))
                 .collect::<Vec<_>>()
                 .join(", ");
             format!("tuple[{elements}]")
         }
-        ObjectType::List(size, element) => {
-            let element = type_info_to_python_type(element, list_comment, context);
-            if list_comment {
-                format!("list[{element}]  # fixed size {size}")
-            } else {
-                format!("list[{element}]")
-            }
-        }
-        ObjectType::Vec(element) => {
-            let element = type_info_to_python_type(element, list_comment, context);
+        ObjectType::List(_, element) | ObjectType::Vec(element) => {
+            let element = type_info_to_python_type(element, context);
             format!("list[{element}]")
         }
         ObjectType::Map(key, value) => {
-            let key = type_info_to_python_type(key, list_comment, context);
-            let value = type_info_to_python_type(value, list_comment, context);
+            let key = type_info_to_python_type(key, context);
+            let value = type_info_to_python_type(value, context);
             format!("dict[{key}, {value}]")
         }
         ObjectType::Option(element) => {
-            let element = type_info_to_python_type(element, list_comment, context);
+            let element = type_info_to_python_type(element, context);
             format!("{element} | None")
         }
+    }
+}
+
+/// The comment that ends the line of a field whose annotation holds
+/// fixed-size arrays, which Python spells as plain lists: their lengths in
+/// the order the lists appear in the annotation. Empty without such an array.
+fn fixed_size_comment(info: &ObjectType) -> String {
+    fn sizes(info: &ObjectType, found: &mut Vec<String>) {
+        match info {
+            ObjectType::List(size, element) => {
+                found.push(size.to_string());
+                sizes(element, found);
+            }
+            ObjectType::Vec(element) | ObjectType::Option(element) => sizes(element, found),
+            ObjectType::Tuple(elements) => {
+                for element in elements {
+                    sizes(element, found);
+                }
+            }
+            ObjectType::Map(key, value) => {
+                sizes(key, found);
+                sizes(value, found);
+            }
+            // A named type has its own definition; the rest has no length.
+            _ => {}
+        }
+    }
+
+    let mut found = Vec::new();
+    sizes(info, &mut found);
+    match found.len() {
+        0 => String::new(),
+        1 => format!("  # fixed size {}", found[0]),
+        _ => format!("  # fixed sizes {}", found.join(", ")),
     }
 }
 
@@ -340,6 +444,26 @@ fn init_to_python_value(init: &InitValue, object_type: &ObjectType) -> String {
         },
         (InitValue::Enum(variant), ObjectType::Enum(name, _)) => {
             format!("enums.{name}.{}", python_name(variant))
+        }
+        (InitValue::DataEnum(variant, values), ObjectType::DataEnum(name, variants)) => {
+            let fields = variants
+                .iter()
+                .find(|(known, _)| known == variant)
+                .map(|(_, fields)| fields)
+                .expect("Mismatched InitValue and ObjectType");
+            let attr = format!("enums.{name}.{}", variant_name(variant));
+            let types: Vec<&ObjectType> = match fields {
+                VariantFields::Unit => return format!("{attr}()"),
+                VariantFields::Named(fields) => fields.iter().map(|(_, typ)| typ).collect(),
+                VariantFields::Tuple(types) => types.iter().collect(),
+            };
+            let values = values
+                .iter()
+                .zip(types)
+                .map(|(value, typ)| init_to_python_value(value, typ))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{attr}({values})")
         }
         (InitValue::Option(value), ObjectType::Option(inner)) => match value {
             Some(value) => init_to_python_value(value, inner),
@@ -417,7 +541,7 @@ fn state_to_line(state: &StateType, object_types: &[ObjectType], inherits: bool)
     let attr = python_name(state.name());
     match state {
         StateType::Value(_, state_type, init, queue) => {
-            let py_type = type_info_to_python_type(state_type, false, PythonTypeContext::States);
+            let py_type = type_info_to_python_type(state_type, PythonTypeContext::States);
             let init_value = init_to_python_value(init, state_type);
             let index = object_type_index(object_types, state_type);
             let queue = if *queue { ", True" } else { "" };
@@ -426,7 +550,7 @@ fn state_to_line(state: &StateType, object_types: &[ObjectType], inherits: bool)
             )
         }
         StateType::ValueTake(_, state_type) => {
-            let py_type = type_info_to_python_type(state_type, false, PythonTypeContext::States);
+            let py_type = type_info_to_python_type(state_type, PythonTypeContext::States);
             if matches!(state_type, ObjectType::Empty) {
                 format!("        self.{attr}: s.ValueTakeEmpty = s.ValueTakeEmpty()\n")
             } else {
@@ -437,7 +561,7 @@ fn state_to_line(state: &StateType, object_types: &[ObjectType], inherits: bool)
             }
         }
         StateType::Static(_, state_type, init) => {
-            let py_type = type_info_to_python_type(state_type, false, PythonTypeContext::States);
+            let py_type = type_info_to_python_type(state_type, PythonTypeContext::States);
             let init_value = init_to_python_value(init, state_type);
             let index = object_type_index(object_types, state_type);
             format!(
@@ -445,7 +569,7 @@ fn state_to_line(state: &StateType, object_types: &[ObjectType], inherits: bool)
             )
         }
         StateType::Signal(_, state_type, queue) => {
-            let py_type = type_info_to_python_type(state_type, false, PythonTypeContext::States);
+            let py_type = type_info_to_python_type(state_type, PythonTypeContext::States);
             if matches!(state_type, ObjectType::Empty) {
                 let queue = if *queue { "True" } else { "" };
                 format!("        self.{attr}: s.SignalEmpty = s.SignalEmpty({queue})\n")
@@ -458,15 +582,15 @@ fn state_to_line(state: &StateType, object_types: &[ObjectType], inherits: bool)
             }
         }
         StateType::ValueVec(_, state_type) => {
-            let py_type = type_info_to_python_type(state_type, false, PythonTypeContext::States);
+            let py_type = type_info_to_python_type(state_type, PythonTypeContext::States);
             let index = object_type_index(object_types, state_type);
             format!("        self.{attr}: s.Vec[{py_type}] = s.Vec[{py_type}]({index})\n")
         }
         StateType::ValueMap(_, key_type, value_type) => {
             let key = object_type_index(object_types, key_type);
             let value = object_type_index(object_types, value_type);
-            let key_type = type_info_to_python_type(key_type, false, PythonTypeContext::States);
-            let value_type = type_info_to_python_type(value_type, false, PythonTypeContext::States);
+            let key_type = type_info_to_python_type(key_type, PythonTypeContext::States);
+            let value_type = type_info_to_python_type(value_type, PythonTypeContext::States);
             format!(
                 "        self.{attr}: s.Map[{key_type}, {value_type}] = s.Map[{key_type}, {value_type}]({key}, {value})\n"
             )
@@ -507,13 +631,19 @@ fn state_to_line(state: &StateType, object_types: &[ObjectType], inherits: bool)
             transfer_state(&attr, "Download", meta.as_ref(), object_types)
         }
         StateType::Upload(_, meta) => transfer_state(&attr, "Upload", meta.as_ref(), object_types),
-        StateType::Image(_, low) => format!(
-            "        self.{attr}: s.Image = s.Image({})\n",
-            Priority::new(*low, inherits).argument("")
+        StateType::Image(_, header, low) => image_state(
+            &attr,
+            "Image",
+            header.as_ref(),
+            Priority::new(*low, inherits),
+            object_types,
         ),
-        StateType::ImageMulti(_, low) => format!(
-            "        self.{attr}: s.ImageMulti = s.ImageMulti({})\n",
-            Priority::new(*low, inherits).argument("")
+        StateType::ImageMulti(_, header, low) => image_state(
+            &attr,
+            "ImageMulti",
+            header.as_ref(),
+            Priority::new(*low, inherits),
+            object_types,
         ),
         StateType::SubState(name, state_class, _, low) => {
             // Only a class with bulk states takes the priority.
@@ -561,7 +691,7 @@ fn write_states(
     };
     writeln!(
         output,
-        "\n\nclass {state_class}(ISubStates):\n    \"\"\"Generated handles for a nested state group.\"\"\"\n\n{wire_names}    def __init__(self, parent: str{parameter}) -> None:\n        \"\"\"Initialize handles below a generated state path.\n\n        Args:\n            parent (str): Fully qualified parent state path.\n{argument}        \"\"\""
+        "\n\nclass {state_class}(s.ISubStates):\n    \"\"\"Generated handles for a nested state group.\"\"\"\n\n{wire_names}    def __init__(self, parent: str{parameter}) -> None:\n        \"\"\"Initialize handles below a generated state path.\n\n        Args:\n            parent (str): Fully qualified parent state path.\n{argument}        \"\"\""
     )
     .unwrap();
     if states.is_empty() {
@@ -584,14 +714,152 @@ fn order_structs(items: &[(String, ObjectType)], order: &mut VecDeque<String>) {
     }
 }
 
-fn render_python<S: State>() -> (String, String, String) {
+/// The fields of a variant as `(Python name, Python type)`, with the
+/// positional names `_0`, `_1`, ... of a tuple variant.
+fn variant_fields(fields: &VariantFields) -> Vec<(String, String)> {
+    let python_type = |typ| type_info_to_python_type(typ, PythonTypeContext::Enums);
+    match fields {
+        VariantFields::Unit => Vec::new(),
+        VariantFields::Named(fields) => fields
+            .iter()
+            .map(|(field, typ)| (python_name(field).into_owned(), python_type(typ)))
+            .collect(),
+        VariantFields::Tuple(types) => types
+            .iter()
+            .enumerate()
+            .map(|(index, typ)| (format!("_{index}"), python_type(typ)))
+            .collect(),
+    }
+}
+
+/// Renders `enums.py`. A fieldless enum is an `IntEnum`. An enum with data is
+/// a namespace class: each variant is a frozen dataclass nested in it, and
+/// its `Type` alias is the union of them, the type of a value. `has_structs`
+/// tells whether a `structs` module exists to import.
+///
+/// The module imports what it needs under private aliases (`_dataclass`,
+/// `_s`, ...), so that an enum or a variant called `dataclass` or `s` does not
+/// replace it for the classes that follow.
+///
+/// # Panics
+///
+/// Panics if two variants of an enum, or two fields of a variant, get the
+/// same Python name, or if a variant is named like one of the names the
+/// module binds itself.
+fn render_enums(
+    enums: &scripts::Enums,
+    data_enums: &scripts::DataEnums,
+    has_structs: bool,
+) -> String {
+    let header = "# Generated by build.rs, do not edit\n";
+    let docstring = "\"\"\"Custom enum types used by the generated state server.\"\"\"\n";
+    let mut module = if data_enums.is_empty() {
+        format!("{header}{docstring}\nfrom enum import IntEnum as _IntEnum\n")
+    } else {
+        // Annotations stay unevaluated, so a variant can name an enum defined
+        // below it and `structs`, which imports this module.
+        let structs = match has_structs {
+            true => "\nfrom . import structs\n",
+            false => "",
+        };
+        // Only a schema that also has fieldless enums needs `IntEnum`.
+        let int_enum = match enums.is_empty() {
+            true => "",
+            false => "from enum import IntEnum as _IntEnum\n",
+        };
+        format!(
+            "{header}# ruff: noqa: E501 F401\n{docstring}\nfrom __future__ import annotations\n\nfrom dataclasses import dataclass as _dataclass\n{int_enum}from typing import final as _final\n\nimport egui_states.structures as _s\n{structs}"
+        )
+    };
+
+    for (enum_name, variants) in enums {
+        writeln!(
+            module,
+            "\n\nclass {enum_name}(_IntEnum):\n    \"\"\"A generated protocol enumeration.\"\"\""
+        )
+        .unwrap();
+        for (variant, value) in variants {
+            writeln!(module, "    {} = {value}", python_name(variant)).unwrap();
+        }
+        module.push_str(&wire_names_line(
+            enum_name,
+            variants.iter().map(|(variant, _)| variant.as_str()),
+        ));
+    }
+
+    for (enum_name, variants) in data_enums {
+        // The wire names of the variants go to `s.denu` explicitly, so the
+        // enum needs no `__egui_names__`.
+        let names: Vec<_> = variants
+            .iter()
+            .map(|(variant, _)| variant_name(variant))
+            .collect();
+        for (index, name) in names.iter().enumerate() {
+            if names[..index].contains(name) {
+                panic!("{enum_name}: two variants have the Python name `{name}`");
+            }
+            if scripts::ENUMS_MODULE_NAMES.contains(&name.as_ref()) {
+                panic!("{enum_name}: the variant `{name}` conflicts with a generated symbol");
+            }
+        }
+        writeln!(
+            module,
+            "\n\nclass {enum_name}(_s._CustomEnum):\n    \"\"\"A generated protocol enum with data; a value is a ``{enum_name}.{VARIANTS_ALIAS}``.\"\"\""
+        )
+        .unwrap();
+
+        for ((variant, fields), attr) in variants.iter().zip(&names) {
+            // A tuple variant prints its fields without their `_0` names.
+            let (options, base) = match fields {
+                VariantFields::Tuple(_) => (", repr=False", "(_s._TupleVariant)"),
+                VariantFields::Unit | VariantFields::Named(_) => ("", ""),
+            };
+            writeln!(
+                module,
+                "\n    @_final\n    @_dataclass(frozen=True, slots=True{options})\n    class {attr}{base}:\n        \"\"\"Protocol variant ``{enum_name}.{attr}``.\"\"\""
+            )
+            .unwrap();
+            let python_fields = variant_fields(fields);
+            if !python_fields.is_empty() {
+                module.push('\n');
+            }
+            for (field, typ) in &python_fields {
+                writeln!(module, "        {field}: {typ}").unwrap();
+            }
+            if let VariantFields::Named(named) = fields {
+                let wire_names = wire_names_line(
+                    &format!("{enum_name}.{variant}"),
+                    named.iter().map(|(field, _)| field.as_str()),
+                );
+                if !wire_names.is_empty() {
+                    write!(module, "    {wire_names}").unwrap();
+                }
+            }
+        }
+
+        writeln!(
+            module,
+            "\n    type {VARIANTS_ALIAS} = {}",
+            names.join(" | ")
+        )
+        .unwrap();
+    }
+
+    module
+}
+
+fn render_python<S: State>() -> (String, Option<String>, Option<String>) {
     let (states, version_hash, _) = scripts::parse_states::<S>();
-    scripts::validate_states(&states);
+    scripts::validate_states(&states, scripts::Target::Python);
 
     let mut values_list = Vec::new();
     scripts::states_into_values_list(&states, &mut values_list);
 
-    let (enums, structs) = scripts::get_all_enums_struct(&values_list);
+    let scripts::CustomTypes {
+        enums,
+        data_enums,
+        structs,
+    } = scripts::get_custom_types(&values_list, scripts::Target::Python);
     let types_list = collect_object_types(&values_list);
 
     // Ordering structs for Python generation, so that dependencies are defined before they are used.
@@ -603,27 +871,17 @@ fn render_python<S: State>() -> (String, String, String) {
         }
     }
 
-    let mut enums_output = String::from(
-        "# Generated by build.rs, do not edit\n\"\"\"Custom enum types used by the generated state server.\"\"\"\n\nfrom enum import IntEnum\n",
-    );
-    for (enum_name, variants) in &enums {
-        writeln!(
-            enums_output,
-            "\n\nclass {enum_name}(IntEnum):\n    \"\"\"A generated protocol enumeration.\"\"\""
-        )
-        .unwrap();
-        for (variant, value) in variants {
-            writeln!(enums_output, "    {} = {value}", python_name(variant)).unwrap();
-        }
-        enums_output.push_str(&wire_names_line(
-            enum_name,
-            variants.iter().map(|(variant, _)| variant.as_str()),
-        ));
-    }
+    // A module exists only when the state tree has such types.
+    let has_enums = !enums.is_empty() || !data_enums.is_empty();
+    let has_structs = !structs.is_empty();
+    let enums_output = render_enums(&enums, &data_enums, has_structs);
 
     let mut structs_output = String::from(
-        "# Generated by build.rs, do not edit\n# ruff: noqa: E501 F401\n\"\"\"Custom dataclasses used by the generated state server.\"\"\"\n\nfrom __future__ import annotations\n\nfrom dataclasses import dataclass\n\nimport egui_states.structures as s\n\nfrom . import enums\n",
+        "# Generated by build.rs, do not edit\n# ruff: noqa: E501 F401\n\"\"\"Custom dataclasses used by the generated state server.\"\"\"\n\nfrom __future__ import annotations\n\nfrom dataclasses import dataclass\n\nimport egui_states.structures as s\n",
     );
+    if has_enums {
+        structs_output.push_str("\nfrom . import enums\n");
+    }
     for struct_name in &struct_order {
         let fields = &structs[struct_name];
         writeln!(
@@ -635,8 +893,14 @@ fn render_python<S: State>() -> (String, String, String) {
             structs_output.push_str("    pass\n");
         } else {
             for (field, typ) in fields {
-                let typ = type_info_to_python_type(typ, true, PythonTypeContext::Structs);
-                writeln!(structs_output, "    {}: {typ}", python_name(field)).unwrap();
+                let annotation = type_info_to_python_type(typ, PythonTypeContext::Structs);
+                let comment = fixed_size_comment(typ);
+                writeln!(
+                    structs_output,
+                    "    {}: {annotation}{comment}",
+                    python_name(field)
+                )
+                .unwrap();
             }
             structs_output.push_str(&wire_names_line(
                 struct_name,
@@ -646,8 +910,14 @@ fn render_python<S: State>() -> (String, String, String) {
     }
 
     let mut states_output = String::from(
-        "# Generated by build.rs, do not edit\n# ruff: noqa: E501\n\"\"\"Typed Python server bindings generated from the egui client state tree.\"\"\"\n\nfrom __future__ import annotations\n\nfrom collections.abc import Callable, Sequence\nfrom os import PathLike\n\nimport numpy as np\n\nimport egui_states.structures as s\nfrom egui_states.server import ClientPolicy, StatesBase, StateServerBase\nfrom egui_states.transfer import TransferProfile\nfrom egui_states.structures import ISubStates\n\nfrom . import enums, structs\n",
+        "# Generated by build.rs, do not edit\n# ruff: noqa: E501\n\"\"\"Typed Python server bindings generated from the egui client state tree.\"\"\"\n\nfrom __future__ import annotations\n\nfrom collections.abc import Callable as _Callable\nfrom collections.abc import Sequence as _Sequence\nfrom os import PathLike as _PathLike\n\nimport numpy as np\n\nimport egui_states.structures as s\nfrom egui_states.server import ClientPolicy as _ClientPolicy\nfrom egui_states.server import StatesBase as _StatesBase\nfrom egui_states.server import StateServerBase as _StateServerBase\nfrom egui_states.transfer import TransferProfile as _TransferProfile\n",
     );
+    match (has_enums, has_structs) {
+        (true, true) => states_output.push_str("\nfrom . import enums, structs\n"),
+        (true, false) => states_output.push_str("\nfrom . import enums\n"),
+        (false, true) => states_output.push_str("\nfrom . import structs\n"),
+        (false, false) => {}
+    }
 
     let StateType::SubState(_, root_name, substates, _) = &states else {
         panic!("Root state must be a SubState");
@@ -676,7 +946,7 @@ fn render_python<S: State>() -> (String, String, String) {
     }
     writeln!(
         states_output,
-        "\n\nclass {root_name}(StatesBase):\n    \"\"\"The generated root state tree.\"\"\"\n\n{wire_names}    @staticmethod\n    def _get_obj_types() -> list[s.PyObjectType]:\n        return ["
+        "\n\nclass {root_name}(_StatesBase):\n    \"\"\"The generated root state tree.\"\"\"\n\n{wire_names}    @staticmethod\n    def _get_obj_types() -> list[s.PyObjectType]:\n        return ["
     )
     .unwrap();
     for object_type in &types_list {
@@ -688,7 +958,7 @@ fn render_python<S: State>() -> (String, String, String) {
         .unwrap();
     }
     states_output.push_str(
-        "        ]\n\n    def __init__(self, server: StateServerBase) -> None:\n        \"\"\"Initialize the generated root state handles.\n\n        Args:\n            server (StateServerBase): State server that owns this tree.\n        \"\"\"\n        super().__init__(server)\n        parent = \"root\"\n",
+        "        ]\n\n    def __init__(self, server: _StateServerBase) -> None:\n        \"\"\"Initialize the generated root state handles.\n\n        Args:\n            server (StateServerBase): State server that owns this tree.\n        \"\"\"\n        super().__init__(server)\n        parent = \"root\"\n",
     );
     for state in substates {
         states_output.push_str(&state_to_line(state, &types_list, false));
@@ -698,7 +968,7 @@ fn render_python<S: State>() -> (String, String, String) {
         states_output,
         r#"
 
-class StatesServer(StateServerBase[{root_name}]):
+class StatesServer(_StateServerBase[{root_name}]):
     """Ready-to-use server with the generated state tree."""
 
     #: Stable hash of the generated state layout.
@@ -707,18 +977,17 @@ class StatesServer(StateServerBase[{root_name}]):
     def __init__(
         self,
         signals_workers: int = 3,
-        error_handler: Callable[[Exception], None] | None = None,
+        error_handler: _Callable[[Exception], None] | None = None,
         version: int | None = None,
-        heartbeat_interval: float = 5.0,
         heartbeat_timeout: float | None = 20.0,
-        web_path: str | PathLike[str] | None = None,
-        allowed_origins: Sequence[str] = (),
-        transfer_profile: TransferProfile = TransferProfile.Balanced,
-        client_policy: ClientPolicy = ClientPolicy.Replace,
+        web_path: str | _PathLike[str] | None = None,
+        allowed_origins: _Sequence[str] = (),
+        transfer_profile: _TransferProfile = _TransferProfile.Balanced,
+        client_policy: _ClientPolicy = _ClientPolicy.Replace,
         connect_request_timeout: float = 5.0,
         tls: bool = False,
-        tls_cert: str | PathLike[str] | None = None,
-        tls_key: str | PathLike[str] | None = None,
+        tls_cert: str | _PathLike[str] | None = None,
+        tls_key: str | _PathLike[str] | None = None,
     ) -> None:
         """Initialize and finalize the generated state server.
 
@@ -730,11 +999,10 @@ class StatesServer(StateServerBase[{root_name}]):
                 the traceback-printing handler.
             version (int | None, optional): Application version required from
                 the client.
-            heartbeat_interval (float, optional): Seconds between the pings the
-                server sends to the connected client. Defaults to 5.
-            heartbeat_timeout (float | None, optional): Seconds the client may
-                send nothing before it is disconnected. ``None`` disables the
-                heartbeat. Defaults to 20.
+            heartbeat_timeout (float | None, optional): Seconds either side
+                may hear nothing from the other before it treats the
+                connection as lost, at least 1. ``None`` disables the
+                heartbeat on both sides. Defaults to 20.
             web_path (str | PathLike[str] | None, optional): Directory of a
                 static web page, such as a built WASM client, that
                 ``start_web`` serves on the server port. Defaults to no page.
@@ -765,9 +1033,8 @@ class StatesServer(StateServerBase[{root_name}]):
                 unencrypted private key of ``tls_cert``.
 
         Raises:
-            ValueError: If ``heartbeat_interval`` is not positive,
-                ``heartbeat_timeout`` is not greater than it, ``web_path``
-                cannot be made absolute, an allowed origin is malformed,
+            ValueError: If ``heartbeat_timeout`` is below 1 second,
+                ``web_path`` cannot be made absolute, an allowed origin is malformed,
                 ``transfer_profile`` is not a ``TransferProfile``,
                 ``client_policy`` is not a ``ClientPolicy``,
                 ``connect_request_timeout`` is not positive, or the TLS
@@ -779,7 +1046,6 @@ class StatesServer(StateServerBase[{root_name}]):
             signals_workers,
             error_handler,
             version,
-            heartbeat_interval,
             heartbeat_timeout,
             web_path,
             allowed_origins,
@@ -794,14 +1060,21 @@ class StatesServer(StateServerBase[{root_name}]):
     )
     .unwrap();
 
-    (states_output, enums_output, structs_output)
+    (
+        states_output,
+        has_enums.then_some(enums_output),
+        has_structs.then_some(structs_output),
+    )
 }
 
-/// Generates typed Python server bindings as a three-file package.
+/// Generates typed Python server bindings as a package.
 ///
 /// The output directory is created when necessary and receives `__init__.py`,
-/// `enums.py`, and `structs.py`. Files whose contents did not change are left
-/// untouched so the generator does not trigger unnecessary downstream work.
+/// plus `enums.py` when the state tree uses a `#[typed]` enum and `structs.py`
+/// when it uses a `#[typed]` struct. Files whose contents did not change are
+/// left untouched so the generator does not trigger unnecessary downstream
+/// work, and a generated `enums.py` or `structs.py` that is no longer needed
+/// is removed.
 /// Add the output directory's parent to Python's import path and import the
 /// generated `StatesServer` from the package.
 ///
@@ -809,8 +1082,13 @@ class StatesServer(StateServerBase[{root_name}]):
 /// Rust [`State`] definition instead.
 ///
 /// State, enum variant, and struct field names that are Python keywords get a
-/// trailing underscore (`from` becomes `from_`). The original names are kept on
-/// the wire, so the bindings stay compatible with the Rust client.
+/// trailing underscore (`from` becomes `from_`), and so does a variant called
+/// `Type` of an enum with data, whose `Type` is the union of its variants. A
+/// raw identifier loses its `r#` (`r#type` becomes `type`). The original names
+/// are kept on the wire, so the bindings stay compatible with the Rust client.
+///
+/// A field of a fixed-size array type is a `list`; a comment at the end of its
+/// line in `structs.py` gives the length.
 ///
 /// # Errors
 ///
@@ -819,17 +1097,26 @@ class StatesServer(StateServerBase[{root_name}]):
 ///
 /// # Panics
 ///
-/// Panics if a state type is defined inconsistently in different locations or
-/// conflicts with a generated symbol such as `StatesServer`, `enums`,
-/// `structs`, or `s`.
+/// Panics, before it writes a file, if the state tree cannot be generated:
+///
+/// - a state group, struct or enum is defined inconsistently in different
+///   locations, is named like a Python keyword or with a raw identifier, or
+///   conflicts with a generated symbol such as `StatesServer`, `enums`,
+///   `structs`, or `s`;
+/// - two names of one group, struct, enum or variant get the same Python name;
+/// - the unit type `()` is used anywhere but as the whole type of a `Signal`
+///   or a `ValueTake`.
 pub fn generate_python<S: State>(directory: impl AsRef<Path>) -> Result<(), String> {
     let (states, enums, structs) = render_python::<S>();
     scripts::write_generated_files(
         directory.as_ref(),
         [
-            ("__init__.py", states.as_str()),
-            ("enums.py", enums.as_str()),
-            ("structs.py", structs.as_str()),
+            ("__init__.py", Some(states.as_str())),
+            ("enums.py", enums.as_deref()),
+            ("structs.py", structs.as_deref()),
+            // A stub an earlier generator wrote next to `enums.py`; left
+            // behind, it would hide the module from type checkers.
+            ("enums.pyi", None),
         ],
     )
 }

@@ -2,155 +2,315 @@ use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::types::{PyDict, PyList, PyNone, PySequence, PySequenceMethods, PyTuple};
 use pyo3::{IntoPyObjectExt, prelude::*};
 
-use crate::python::pytypes::PyObjectType;
+use crate::python::pytypes::{PyObjectType, PyVariant};
 use crate::python::value_parsing::{ValueCreator, ValueParser};
 
+/// The error for `obj` not being a value of the enum `class`. Passing a
+/// variant class instead of a value, as in `Command.Stop` for `Command.Stop()`,
+/// gets its own message.
+fn not_a_variant(
+    class: &Bound<PyAny>,
+    variants: &[PyVariant],
+    obj: &Bound<PyAny>,
+) -> PyResult<PyErr> {
+    let enum_name = class.getattr("__qualname__")?;
+    if let Some(variant) = variants.iter().find(|v| obj.is(v.class.bind(obj.py()))) {
+        let name = obj.getattr("__qualname__")?;
+        let call = match variant.fields.len() {
+            0 => format!("{name}()"),
+            _ => format!("{name}(...)"),
+        };
+        return Ok(PyTypeError::new_err(format!(
+            "Expected a value of {enum_name}, got the class {name}; create a value with {call}"
+        )));
+    }
+    Ok(PyTypeError::new_err(format!(
+        "Expected a variant of {enum_name}, got {}",
+        short_repr(obj)
+    )))
+}
+
+/// One step from a value to the part of it that failed to convert.
+enum Step {
+    /// The class of a struct or an enum with data; shown only first.
+    Type(String),
+    /// A struct field, a variant or a variant field.
+    Attribute(String),
+    /// An item of a tuple, a fixed list or a list.
+    Index(usize),
+    /// The value of a map under the key with this `repr`.
+    Value(String),
+    /// The map key with this `repr`.
+    Key(String),
+}
+
+/// Where a value passed to [`serialize_py_in`] sits in its collection.
+pub(crate) enum Place<'a, 'py> {
+    /// An item of a list.
+    Index(usize),
+    /// The value of a map under this key.
+    Value(&'a Bound<'py, PyAny>),
+    /// A key of a map.
+    Key,
+}
+
+/// A conversion error and the steps to the part that caused it, innermost
+/// first. The steps are collected only while the error returns, so a value
+/// that converts pays nothing for them.
+struct Failure {
+    error: PyErr,
+    steps: Vec<Step>,
+}
+
+impl<E: Into<PyErr>> From<E> for Failure {
+    fn from(error: E) -> Self {
+        Self {
+            error: error.into(),
+            steps: Vec::new(),
+        }
+    }
+}
+
+impl Failure {
+    fn inside(mut self, steps: impl IntoIterator<Item = Step>) -> Self {
+        self.steps.extend(steps);
+        self
+    }
+
+    /// The error with the path in front of its message, as in
+    /// `Command.SetGain._0: must be real number, not str`.
+    fn into_error(self, py: Python) -> PyErr {
+        if self.steps.is_empty() {
+            return self.error;
+        }
+        let mut path = String::new();
+        for step in self.steps.iter().rev() {
+            match step {
+                Step::Type(name) if path.is_empty() => path.push_str(name),
+                Step::Type(_) => {}
+                Step::Attribute(name) if path.is_empty() => path.push_str(name),
+                Step::Attribute(name) => {
+                    path.push('.');
+                    path.push_str(name);
+                }
+                Step::Index(index) => path.push_str(&format!("[{index}]")),
+                Step::Value(key) => path.push_str(&format!("[{key}]")),
+                Step::Key(key) => path.push_str(&format!("[key {key}]")),
+            }
+        }
+
+        // The exception keeps its type. One whose arguments are not a single
+        // message, as `UnicodeEncodeError`, gets the path as a note instead.
+        let value = self.error.value(py);
+        let message = value
+            .getattr("args")
+            .and_then(|args| args.extract::<(String,)>());
+        let _ = match message {
+            Ok((message,)) => value.setattr("args", (format!("{path}: {message}"),)),
+            Err(_) => value
+                .call_method1("add_note", (format!("In {path}"),))
+                .map(drop),
+        };
+        self.error
+    }
+}
+
+/// A `repr` short enough for an error message.
+fn short_repr(obj: &Bound<PyAny>) -> String {
+    const LIMIT: usize = 60;
+    let repr = match obj.repr() {
+        Ok(repr) => repr.to_string(),
+        Err(_) => return "<object>".to_string(),
+    };
+    match repr.char_indices().nth(LIMIT) {
+        Some((end, _)) => format!("{}...", &repr[..end]),
+        None => repr,
+    }
+}
+
+/// The name of a class in an error message.
+fn class_name(class: &Bound<PyAny>, attribute: &str) -> String {
+    match class.getattr(attribute) {
+        Ok(name) => name.to_string(),
+        Err(_) => class.to_string(),
+    }
+}
+
+fn add<T: serde::Serialize>(creator: &mut ValueCreator, value: &T) -> PyResult<()> {
+    creator
+        .add(value)
+        .map_err(|_| PyRuntimeError::new_err("Failed to serialize value."))
+}
+
+/// Converts `obj` to the wire form of `object_type`. An error inside a
+/// struct, an enum with data or a collection names the part that caused it.
 pub(crate) fn serialize_py(
     obj: &Bound<PyAny>,
     object_type: &PyObjectType,
     creator: &mut ValueCreator,
 ) -> PyResult<()> {
+    serialize(obj, object_type, creator).map_err(|failure| failure.into_error(obj.py()))
+}
+
+/// As [`serialize_py`], for one key, value or item of a collection that is
+/// converted piece by piece; an error names the piece too.
+pub(crate) fn serialize_py_in(
+    obj: &Bound<PyAny>,
+    object_type: &PyObjectType,
+    creator: &mut ValueCreator,
+    place: Place,
+) -> PyResult<()> {
+    serialize(obj, object_type, creator).map_err(|failure| {
+        let step = match place {
+            Place::Index(index) => Step::Index(index),
+            Place::Value(key) => Step::Value(short_repr(key)),
+            Place::Key => Step::Key(short_repr(obj)),
+        };
+        failure.inside([step]).into_error(obj.py())
+    })
+}
+
+fn serialize(
+    obj: &Bound<PyAny>,
+    object_type: &PyObjectType,
+    creator: &mut ValueCreator,
+) -> Result<(), Failure> {
     match object_type {
-        PyObjectType::U8 => {
-            let value: u8 = obj.extract()?;
-            creator.add(&value)
-        }
-        PyObjectType::U16 => {
-            let value: u16 = obj.extract()?;
-            creator.add(&value)
-        }
-        PyObjectType::U32 => {
-            let value: u32 = obj.extract()?;
-            creator.add(&value)
-        }
-        PyObjectType::U64 => {
-            let value: u64 = obj.extract()?;
-            creator.add(&value)
-        }
-        PyObjectType::I8 => {
-            let value: i8 = obj.extract()?;
-            creator.add(&value)
-        }
-        PyObjectType::I16 => {
-            let value: i16 = obj.extract()?;
-            creator.add(&value)
-        }
-        PyObjectType::I32 => {
-            let value: i32 = obj.extract()?;
-            creator.add(&value)
-        }
-        PyObjectType::I64 => {
-            let value: i64 = obj.extract()?;
-            creator.add(&value)
-        }
-        PyObjectType::F32 => {
-            let value: f32 = obj.extract()?;
-            creator.add(&value)
-        }
-        PyObjectType::F64 => {
-            let value: f64 = obj.extract()?;
-            creator.add(&value)
-        }
-        PyObjectType::Bool => {
-            let value: bool = obj.extract()?;
-            creator.add(&value)
-        }
-        PyObjectType::String => {
-            let value: String = obj.extract()?;
-            creator.add(&value)
-        }
+        PyObjectType::U8 => add(creator, &obj.extract::<u8>()?)?,
+        PyObjectType::U16 => add(creator, &obj.extract::<u16>()?)?,
+        PyObjectType::U32 => add(creator, &obj.extract::<u32>()?)?,
+        PyObjectType::U64 => add(creator, &obj.extract::<u64>()?)?,
+        PyObjectType::I8 => add(creator, &obj.extract::<i8>()?)?,
+        PyObjectType::I16 => add(creator, &obj.extract::<i16>()?)?,
+        PyObjectType::I32 => add(creator, &obj.extract::<i32>()?)?,
+        PyObjectType::I64 => add(creator, &obj.extract::<i64>()?)?,
+        PyObjectType::F32 => add(creator, &obj.extract::<f32>()?)?,
+        PyObjectType::F64 => add(creator, &obj.extract::<f64>()?)?,
+        PyObjectType::Bool => add(creator, &obj.extract::<bool>()?)?,
+        PyObjectType::String => add(creator, &obj.extract::<String>()?)?,
         PyObjectType::Enum(py_enum) => {
             let py_enum = py_enum.bind(obj.py());
             if !obj.is_instance(py_enum)? {
                 return Err(PyTypeError::new_err(format!(
-                    "Expected a member of {py_enum}"
-                )));
+                    "Expected a member of {}, got {}",
+                    class_name(py_enum, "__qualname__"),
+                    short_repr(obj)
+                ))
+                .into());
             }
             let member_names = py_enum.getattr("_member_names_")?;
             let name = obj.getattr("name")?;
             let value = member_names.cast::<PyList>()?.index(name)? as u32;
 
-            creator.add(&value)
+            add(creator, &value)?
         }
         PyObjectType::Tuple(vec) => {
             let sequence = obj.cast::<PySequence>()?;
-            if sequence.len()? != vec.len() {
-                return Err(PyValueError::new_err(
-                    "Tuple length does not match the expected length",
-                ));
+            let len = sequence.len()?;
+            if len != vec.len() {
+                return Err(PyValueError::new_err(format!(
+                    "Expected a tuple of {} items, got {len}",
+                    vec.len()
+                ))
+                .into());
             }
 
             for (i, item_type) in vec.iter().enumerate() {
                 let item = sequence.get_item(i)?;
-                serialize_py(&item, item_type, creator)?;
+                serialize(&item, item_type, creator)
+                    .map_err(|failure| failure.inside([Step::Index(i)]))?;
             }
-            Ok(())
         }
         PyObjectType::Class(fields, class) => {
             let class = class.bind(obj.py());
             if !obj.is_instance(class)? {
                 return Err(PyTypeError::new_err(format!(
-                    "Expected an instance of {class}"
-                )));
+                    "Expected an instance of {}, got {}",
+                    class_name(class, "__qualname__"),
+                    short_repr(obj)
+                ))
+                .into());
             }
             for (name, field_type) in fields {
-                let item = obj.getattr(name.bind(obj.py()))?;
-                serialize_py(&item, field_type, creator)?;
+                let field = obj
+                    .getattr(name.bind(obj.py()))
+                    .map_err(Failure::from)
+                    .and_then(|item| serialize(&item, field_type, creator));
+                field.map_err(|failure| {
+                    failure.inside([
+                        Step::Attribute(name.bind(obj.py()).to_string()),
+                        Step::Type(class_name(class, "__qualname__")),
+                    ])
+                })?;
             }
-            Ok(())
         }
         PyObjectType::List(size, items_type) => {
-            let sequence = obj.cast::<pyo3::types::PySequence>()?;
-            if sequence.len()? != *size as usize {
-                return Err(PyValueError::new_err(
-                    "List length does not match the expected length",
-                ));
+            let sequence = obj.cast::<PySequence>()?;
+            let len = sequence.len()?;
+            if len != *size as usize {
+                return Err(PyValueError::new_err(format!(
+                    "Expected a list of {size} items, got {len}"
+                ))
+                .into());
             }
 
-            for item in sequence.try_iter()? {
-                serialize_py(&item?, items_type, creator)?;
+            for (i, item) in sequence.try_iter()?.enumerate() {
+                serialize(&item?, items_type, creator)
+                    .map_err(|failure| failure.inside([Step::Index(i)]))?;
             }
-            Ok(())
         }
         PyObjectType::Vec(items_type) => {
-            let list = obj.cast::<pyo3::types::PyList>()?;
-            creator
-                .add::<u64>(&(list.len() as u64))
-                .map_err(|_| PyRuntimeError::new_err("Failed to serialize value."))?;
+            let list = obj.cast::<PyList>()?;
+            add(creator, &(list.len() as u64))?;
 
-            for item in list.iter() {
-                serialize_py(&item, items_type, creator)?;
+            for (i, item) in list.iter().enumerate() {
+                serialize(&item, items_type, creator)
+                    .map_err(|failure| failure.inside([Step::Index(i)]))?;
             }
-            Ok(())
         }
         PyObjectType::Map(key_type, value_type) => {
-            let dict = obj.cast::<pyo3::types::PyDict>()?;
-            creator
-                .add(&(dict.len() as u64))
-                .map_err(|_| PyRuntimeError::new_err("Failed to serialize value."))?;
+            let dict = obj.cast::<PyDict>()?;
+            add(creator, &(dict.len() as u64))?;
 
             for (key, value) in dict.iter() {
-                serialize_py(&key, key_type, creator)?;
-                serialize_py(&value, value_type, creator)?;
+                serialize(&key, key_type, creator)
+                    .map_err(|failure| failure.inside([Step::Key(short_repr(&key))]))?;
+                serialize(&value, value_type, creator)
+                    .map_err(|failure| failure.inside([Step::Value(short_repr(&key))]))?;
             }
-            Ok(())
         }
         PyObjectType::Option(object_type) => {
             if obj.is_none() {
-                creator
-                    .add(&0u8)
-                    .map_err(|_| PyRuntimeError::new_err("Failed to serialize value."))?;
+                add(creator, &0u8)?;
             } else {
-                creator
-                    .add(&1u8)
-                    .map_err(|_| PyRuntimeError::new_err("Failed to serialize value."))?;
-                serialize_py(obj, object_type, creator)?;
+                add(creator, &1u8)?;
+                serialize(obj, object_type, creator)?;
             }
-            Ok(())
         }
-        PyObjectType::Empty => Ok(()),
+        PyObjectType::Empty => {}
+        PyObjectType::DataEnum(class, variants) => {
+            let class = class.bind(obj.py());
+            let Some((index, variant)) = variants.iter().enumerate().find(|(_, v)| v.matches(obj))
+            else {
+                return Err(not_a_variant(class, variants, obj)?.into());
+            };
+            add(creator, &(index as u32))?;
+            for (name, field_type) in &variant.fields {
+                let field = obj
+                    .getattr(name.bind(obj.py()))
+                    .map_err(Failure::from)
+                    .and_then(|item| serialize(&item, field_type, creator));
+                field.map_err(|failure| {
+                    failure.inside([
+                        Step::Attribute(name.bind(obj.py()).to_string()),
+                        Step::Attribute(class_name(variant.class.bind(obj.py()), "__name__")),
+                        Step::Type(class_name(class, "__qualname__")),
+                    ])
+                })?;
+            }
+        }
     }
-    .map_err(|_| PyRuntimeError::new_err("Failed to serialize value."))
+    Ok(())
 }
 
 pub(crate) fn deserialize_py<'py, 'a>(
@@ -331,6 +491,20 @@ pub(crate) fn deserialize_py<'py, 'a>(
             }
         }
         PyObjectType::Empty => Ok(PyTuple::empty(py).into_any()),
+        PyObjectType::DataEnum(class, variants) => {
+            let mut index = 0u32;
+            parser
+                .get(&mut index)
+                .map_err(|_| PyValueError::new_err("Failed to parse enum variant"))?;
+            let variant = variants.get(index as usize).ok_or_else(|| {
+                PyValueError::new_err(format!("Unknown variant {index} of {}", class.bind(py)))
+            })?;
+            let mut items = Vec::with_capacity(variant.fields.len());
+            for (_, item_type) in &variant.fields {
+                items.push(deserialize_py(py, parser, item_type)?);
+            }
+            variant.class.bind(py).call1(PyTuple::new(py, items)?)
+        }
     }
 }
 
@@ -408,6 +582,49 @@ def reordered():
             let empty = class_type(&module, "Empty", vec![]);
             let instance = module.getattr("Empty").unwrap().call0().unwrap();
             assert!(roundtrip(&instance, &empty).eq(&instance).unwrap());
+        });
+    }
+
+    /// An error names the field that caused it, through nested values, and
+    /// keeps its exception type.
+    #[test]
+    fn an_error_names_the_field_that_caused_it() {
+        Python::initialize();
+        Python::attach(|py| {
+            let module = PyModule::from_code(py, STRUCTS, c"structs.py", c"structs").unwrap();
+            let point = class_type(&module, "Point", vec![U32, U32]);
+            let wrong = module.getattr("Point").unwrap().call1((1, "two")).unwrap();
+
+            let error = serialize_py(&wrong, &point, &mut ValueCreator::new()).unwrap_err();
+            assert!(error.is_instance_of::<PyTypeError>(py), "{error}");
+            let message = error.value(py).to_string();
+            assert!(message.starts_with("Point.y: "), "{message}");
+
+            let points = PyObjectType::Vec(Box::new(point.clone_py(py)));
+            let list = PyList::new(
+                py,
+                [
+                    module.getattr("Point").unwrap().call1((1, 2)).unwrap(),
+                    wrong.clone(),
+                ],
+            )
+            .unwrap();
+            let error = serialize_py(&list, &points, &mut ValueCreator::new()).unwrap_err();
+            let message = error.value(py).to_string();
+            assert!(message.starts_with("[1].y: "), "{message}");
+
+            let error = serialize_py_in(&wrong, &point, &mut ValueCreator::new(), Place::Index(3))
+                .unwrap_err();
+            let message = error.value(py).to_string();
+            assert!(message.starts_with("[3].y: "), "{message}");
+
+            // A value that is wrong as a whole has no path.
+            let error = serialize_py(&list, &point, &mut ValueCreator::new()).unwrap_err();
+            let message = error.value(py).to_string();
+            assert!(
+                message.starts_with("Expected an instance of Point, got ["),
+                "{message}"
+            );
         });
     }
 

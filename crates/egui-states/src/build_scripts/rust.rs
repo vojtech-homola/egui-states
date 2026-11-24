@@ -7,7 +7,7 @@ use crate::State;
 use crate::build_scripts::scripts;
 use crate::build_scripts::states_creator_build::StateType;
 use crate::protocol::data::DataType;
-use crate::typed::ObjectType;
+use crate::typed::{ObjectType, VariantFields};
 
 fn data_type_to_rust_type(data_type: &DataType) -> &'static str {
     match data_type {
@@ -28,8 +28,12 @@ fn data_type_to_rust_type(data_type: &DataType) -> &'static str {
 enum RustTypeContext {
     States,
     Structs,
+    Enums,
 }
 
+/// Spells `object_type` in a generated module. The standard types are named
+/// by their full paths, so that a generated enum or struct called `Option` or
+/// `String`, which shadows the prelude in its module, does not replace them.
 fn type_to_rust_type(object_type: &ObjectType, context: RustTypeContext) -> String {
     match object_type {
         ObjectType::U8 => "u8".to_string(),
@@ -43,15 +47,17 @@ fn type_to_rust_type(object_type: &ObjectType, context: RustTypeContext) -> Stri
         ObjectType::F32 => "f32".to_string(),
         ObjectType::F64 => "f64".to_string(),
         ObjectType::Bool => "bool".to_string(),
-        ObjectType::String => "String".to_string(),
+        ObjectType::String => "::std::string::String".to_string(),
         ObjectType::Empty => "()".to_string(),
-        ObjectType::Enum(name, _) => match context {
+        ObjectType::Enum(name, _) | ObjectType::DataEnum(name, _) => match context {
             RustTypeContext::States => format!("enums::{name}"),
             RustTypeContext::Structs => format!("super::enums::{name}"),
+            RustTypeContext::Enums => name.clone(),
         },
         ObjectType::Struct(name, _) => match context {
             RustTypeContext::States => format!("structs::{name}"),
             RustTypeContext::Structs => name.clone(),
+            RustTypeContext::Enums => format!("super::structs::{name}"),
         },
         ObjectType::Tuple(elements) => match elements.len() {
             0 => "()".to_string(),
@@ -68,14 +74,19 @@ fn type_to_rust_type(object_type: &ObjectType, context: RustTypeContext) -> Stri
         ObjectType::List(size, element) => {
             format!("[{}; {size}]", type_to_rust_type(element, context))
         }
-        ObjectType::Vec(element) => format!("Vec<{}>", type_to_rust_type(element, context)),
+        ObjectType::Vec(element) => {
+            format!("::std::vec::Vec<{}>", type_to_rust_type(element, context))
+        }
         ObjectType::Map(key, value) => format!(
-            "std::collections::HashMap<{}, {}>",
+            "::std::collections::HashMap<{}, {}>",
             type_to_rust_type(key, context),
             type_to_rust_type(value, context)
         ),
         ObjectType::Option(element) => {
-            format!("Option<{}>", type_to_rust_type(element, context))
+            format!(
+                "::std::option::Option<{}>",
+                type_to_rust_type(element, context)
+            )
         }
     }
 }
@@ -105,16 +116,51 @@ fn init_to_rust_value(init: &InitValue, object_type: &ObjectType) -> String {
         (InitValue::F32(value), ObjectType::F32) => float_value(*value as f64, "f32"),
         (InitValue::F64(value), ObjectType::F64) => float_value(*value, "f64"),
         (InitValue::Bool(value), ObjectType::Bool) => value.to_string(),
-        (InitValue::String(value), ObjectType::String) => format!("String::from({value:?})"),
+        (InitValue::String(value), ObjectType::String) => {
+            format!("::std::string::String::from({value:?})")
+        }
         (InitValue::Enum(variant), ObjectType::Enum(name, _)) => {
             format!("enums::{name}::{variant}")
         }
+        (InitValue::DataEnum(variant, values), ObjectType::DataEnum(name, variants)) => {
+            let fields = variants
+                .iter()
+                .find(|(known, _)| known == variant)
+                .map(|(_, fields)| fields)
+                .expect("Mismatched InitValue and ObjectType");
+            match fields {
+                VariantFields::Unit => format!("enums::{name}::{variant}"),
+                VariantFields::Named(fields) => {
+                    let values = values
+                        .iter()
+                        .zip(fields.iter())
+                        .map(|(value, (field, typ))| {
+                            format!("{field}: {}", init_to_rust_value(value, typ))
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!("enums::{name}::{variant} {{ {values} }}")
+                }
+                VariantFields::Tuple(types) => {
+                    let values = values
+                        .iter()
+                        .zip(types.iter())
+                        .map(|(value, typ)| init_to_rust_value(value, typ))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!("enums::{name}::{variant}({values})")
+                }
+            }
+        }
         (InitValue::Option(None), ObjectType::Option(element)) => format!(
-            "None::<{}>",
+            "::std::option::Option::<{}>::None",
             type_to_rust_type(element, RustTypeContext::States)
         ),
         (InitValue::Option(Some(value)), ObjectType::Option(element)) => {
-            format!("Some({})", init_to_rust_value(value, element))
+            format!(
+                "::std::option::Option::Some({})",
+                init_to_rust_value(value, element)
+            )
         }
         (InitValue::Tuple(values), ObjectType::Tuple(types)) => match values.len() {
             0 => "()".to_string(),
@@ -140,7 +186,7 @@ fn init_to_rust_value(init: &InitValue, object_type: &ObjectType) -> String {
         (InitValue::Vec(values), ObjectType::Vec(element)) => {
             if values.is_empty() {
                 format!(
-                    "Vec::<{}>::new()",
+                    "::std::vec::Vec::<{}>::new()",
                     type_to_rust_type(element, RustTypeContext::States)
                 )
             } else {
@@ -149,7 +195,7 @@ fn init_to_rust_value(init: &InitValue, object_type: &ObjectType) -> String {
                     .map(|value| init_to_rust_value(value, element))
                     .collect::<Vec<_>>()
                     .join(", ");
-                format!("vec![{values}]")
+                format!("::std::vec![{values}]")
             }
         }
         (InitValue::Map(values), ObjectType::Map(key_type, value_type)) => {
@@ -166,7 +212,7 @@ fn init_to_rust_value(init: &InitValue, object_type: &ObjectType) -> String {
                 .collect::<Vec<_>>()
                 .join(", ");
             format!(
-                "std::collections::HashMap::<{}, {}>::from([{values}])",
+                "::std::collections::HashMap::<{}, {}>::from([{values}])",
                 type_to_rust_type(key_type, RustTypeContext::States),
                 type_to_rust_type(value_type, RustTypeContext::States)
             )
@@ -227,13 +273,16 @@ fn state_field_type(state: &StateType) -> String {
         }
         StateType::Download(_, meta) => format!("s::Download{}", meta_parameter(meta)),
         StateType::Upload(_, meta) => format!("s::Upload{}", meta_parameter(meta)),
-        StateType::Image(..) => "s::Image".to_string(),
-        StateType::ImageMulti(..) => "s::ImageMulti".to_string(),
+        StateType::Image(_, header, _) => format!("s::Image{}", meta_parameter(header)),
+        StateType::ImageMulti(_, header, _) => {
+            format!("s::ImageMulti{}", meta_parameter(header))
+        }
         StateType::SubState(_, state_class, ..) => state_class.to_string(),
     }
 }
 
-/// The type parameter of a transfer endpoint: empty without metadata.
+/// The type parameter of a transfer endpoint or image: empty without
+/// metadata or a header.
 fn meta_parameter(meta: &Option<ObjectType>) -> String {
     match meta {
         None => String::new(),
@@ -251,6 +300,15 @@ fn data_parameters(data_type: &DataType, header: &Option<ObjectType>) -> String 
             "{element}, {}",
             type_to_rust_type(header, RustTypeContext::States)
         ),
+    }
+}
+
+/// The turbofish of an image constructor: none without a header, whose type
+/// the field infers.
+fn image_turbofish(header: &Option<ObjectType>) -> String {
+    match header {
+        None => String::new(),
+        Some(header) => format!("<{}>::", type_to_rust_type(header, RustTypeContext::States)),
     }
 }
 
@@ -365,13 +423,15 @@ fn state_initializer(state: &StateType, inherits: bool) -> String {
             turbofish(meta),
             name
         ),
-        StateType::Image(name, low) => format!(
-            "s::Image::new(server, format!(\"{{parent}}.{}\"), {})?",
+        StateType::Image(name, header, low) => format!(
+            "s::Image::{}new(server, format!(\"{{parent}}.{}\"), {})?",
+            image_turbofish(header),
             name,
             priority(*low, inherits)
         ),
-        StateType::ImageMulti(name, low) => format!(
-            "s::ImageMulti::new(server, format!(\"{{parent}}.{}\"), {})?",
+        StateType::ImageMulti(name, header, low) => format!(
+            "s::ImageMulti::{}new(server, format!(\"{{parent}}.{}\"), {})?",
+            image_turbofish(header),
             name,
             priority(*low, inherits)
         ),
@@ -463,6 +523,7 @@ fn order_structs(items: &[(String, ObjectType)], order: &mut VecDeque<String>) {
 
 const ENUM_DERIVES: &[&str] = &["Clone", "Copy", "Debug", "PartialEq", "Eq", "Hash"];
 const STRUCT_DERIVES: &[&str] = &["Clone"];
+const DATA_ENUM_DERIVES: &[&str] = &["Clone"];
 const TYPED_DERIVES: &[&str] = &[
     "Serialize",
     "Deserialize",
@@ -504,14 +565,18 @@ fn merged_derives(automatic: &[&str], requested: Option<&[String]>) -> String {
     derives.join(", ")
 }
 
-fn render_rust<S: State>() -> Result<(String, String, String), String> {
+fn render_rust<S: State>() -> Result<(String, Option<String>, Option<String>), String> {
     let (states, version_hash, rust_derives) = scripts::parse_states::<S>();
     rust_derives.validate();
-    scripts::validate_states(&states);
+    scripts::validate_states(&states, scripts::Target::Rust);
 
     let mut values_list = Vec::new();
     scripts::states_into_values_list(&states, &mut values_list);
-    let (enums, structs) = scripts::get_all_enums_struct(&values_list);
+    let scripts::CustomTypes {
+        enums,
+        data_enums,
+        structs,
+    } = scripts::get_custom_types(&values_list, scripts::Target::Rust);
 
     let mut struct_order = VecDeque::new();
     for (struct_name, items) in &structs {
@@ -540,6 +605,54 @@ fn render_rust<S: State>() -> Result<(String, String, String), String> {
         }
         enums_output.push_str("}\n");
     }
+    for (enum_name, variants) in &data_enums {
+        let derives = merged_derives(DATA_ENUM_DERIVES, rust_derives.enum_derives(enum_name));
+        writeln!(
+            enums_output,
+            "\n/// Generated protocol enum `{enum_name}`.\n#[egui_states::typed]\n#[derive({derives})]\npub enum {enum_name} {{"
+        )
+        .unwrap();
+        for (variant, fields) in variants {
+            match fields {
+                VariantFields::Unit => {
+                    writeln!(
+                        enums_output,
+                        "    /// Protocol variant `{variant}`.\n    {variant},"
+                    )
+                    .unwrap();
+                }
+                VariantFields::Named(fields) => {
+                    writeln!(
+                        enums_output,
+                        "    /// Protocol variant `{variant}`.\n    {variant} {{"
+                    )
+                    .unwrap();
+                    for (field, typ) in fields {
+                        writeln!(
+                            enums_output,
+                            "        /// Generated `{field}` field.\n        {field}: {},",
+                            type_to_rust_type(typ, RustTypeContext::Enums)
+                        )
+                        .unwrap();
+                    }
+                    enums_output.push_str("    },\n");
+                }
+                VariantFields::Tuple(types) => {
+                    let types = types
+                        .iter()
+                        .map(|typ| type_to_rust_type(typ, RustTypeContext::Enums))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    writeln!(
+                        enums_output,
+                        "    /// Protocol variant `{variant}`.\n    {variant}({types}),"
+                    )
+                    .unwrap();
+                }
+            }
+        }
+        enums_output.push_str("}\n");
+    }
 
     let mut structs_output = String::from(
         "//! Custom struct types used by the generated state server.\n\n// Generated by build.rs, do not edit\n",
@@ -564,8 +677,19 @@ fn render_rust<S: State>() -> Result<(String, String, String), String> {
     }
 
     let mut states_output = String::from(
-        "//! Typed server bindings generated from the egui client state tree.\n\n// Generated by build.rs, do not edit\n/// Custom enum types used by the state tree.\npub mod enums;\n/// Custom struct types used by the state tree.\npub mod structs;\n\nuse egui_states::server as s;\n",
+        "//! Typed server bindings generated from the egui client state tree.\n\n// Generated by build.rs, do not edit\n",
     );
+    // A module exists only when the state tree has such types.
+    let has_enums = !enums.is_empty() || !data_enums.is_empty();
+    let has_structs = !structs.is_empty();
+    if has_enums {
+        states_output.push_str("/// Custom enum types used by the state tree.\npub mod enums;\n");
+    }
+    if has_structs {
+        states_output
+            .push_str("/// Custom struct types used by the state tree.\npub mod structs;\n");
+    }
+    states_output.push_str("\nuse egui_states::server as s;\n");
 
     let StateType::SubState(_, root_name, substates, _) = &states else {
         return Err("Root state must be a SubState".to_string());
@@ -622,23 +746,33 @@ fn render_rust<S: State>() -> Result<(String, String, String), String> {
 
     writeln!(
         states_output,
-        "/// Ready-to-use server with the generated state tree.\npub struct StatesServer {{\n    server: s::StateServer,\n    /// Typed handles for every synchronized state.\n    pub states: {root_name},\n    /// Dispatcher for log messages emitted by the client.\n    pub logging: s::LoggingSignal,\n}}\n"
+        "/// Ready-to-use server with the generated state tree.\npub struct StatesServer {{\n    server: s::StateServer,\n    /// Typed handles for every synchronized state.\n    pub states: {root_name},\n}}\n"
     )
     .unwrap();
+    // The prelude types and traits are named by their full paths, so that a
+    // state group called `Option` or `Send` does not replace them. `Ok` and
+    // the `Clone` derive stay bare: a struct with named fields takes neither
+    // a value nor a macro name.
     writeln!(
         states_output,
-        "impl StatesServer {{\n    /// Stable hash of the generated state layout.\n    pub const VERSION_HASH: u64 = {version_hash};\n\n    /// Creates a server with default options.\n    pub fn new() -> s::Result<Self> {{\n        Self::with_options(s::ServerOptions::new())\n    }}\n\n    /// Creates and finalizes a server with explicit options.\n    pub fn with_options(options: s::ServerOptions) -> s::Result<Self> {{\n        let server = s::StateServer::with_options(options)?;\n        let states = {root_name}::new(&server)?;\n        server.finalize()?;\n        let logging = s::LoggingSignal::new(&server);\n        Ok(Self {{ server, states, logging }})\n    }}\n\n    /// Returns the underlying native server.\n    pub fn state_server(&self) -> &s::StateServer {{\n        &self.server\n    }}\n\n    /// Starts listening on `port` for a client.\n    ///\n    /// `ip_addr` selects the IPv4 interface; `None` binds only the loopback\n    /// address `127.0.0.1`. `token` optionally requires client authentication. A call\n    /// made while the server is running with the same settings succeeds\n    /// without effect; to change the address or token, call [`Self::stop`]\n    /// first. See [`s::StateServer::start`].\n    pub fn start(&self, port: u16, ip_addr: Option<std::net::Ipv4Addr>, token: Option<String>) -> s::Result<()> {{\n        self.server.start(port, ip_addr, token)\n    }}\n\n    /// Stops the server.\n    pub fn stop(&self) {{\n        self.server.stop();\n    }}\n\n    /// Requests an immediate or delayed client repaint.\n    pub fn update(&self, duration: Option<f32>) -> s::Result<()> {{\n        self.server.update(duration)\n    }}\n\n    /// Disconnects the current client.\n    pub fn disconnect_client(&self) {{\n        self.server.disconnect_client();\n    }}\n\n    /// Returns whether the server is listening.\n    pub fn is_running(&self) -> bool {{\n        self.server.is_running()\n    }}\n\n    /// Returns whether a client is connected.\n    pub fn is_connected(&self) -> bool {{\n        self.server.is_connected()\n    }}\n\n    /// Returns the address the server listens on, or `None` when stopped.\n    pub fn address(&self) -> Option<std::net::SocketAddrV4> {{\n        self.server.address()\n    }}\n\n    /// Returns the SHA-256 fingerprint of the TLS certificate, or `None` when\n    /// TLS is off. See [`s::StateServer::tls_fingerprint`].\n    pub fn tls_fingerprint(&self) -> Option<String> {{\n        self.server.tls_fingerprint()\n    }}\n\n    /// Starts serving the static web page from [`s::ServerOptions::web_path`].\n    ///\n    /// See [`s::StateServer::start_web`].\n    pub fn start_web(&self) -> s::Result<()> {{\n        self.server.start_web()\n    }}\n\n    /// Stops serving the static web page.\n    pub fn stop_web(&self) {{\n        self.server.stop_web();\n    }}\n\n    /// Returns whether the static web page is being served.\n    pub fn is_web_running(&self) -> bool {{\n        self.server.is_web_running()\n    }}\n\n    /// Returns the directory of the configured web page, if any.\n    pub fn web_path(&self) -> Option<std::path::PathBuf> {{\n        self.server.web_path()\n    }}\n\n    /// Registers a callback for client connections.\n    pub fn on_connect(&self, callback: impl Fn(String) + Send + Sync + 'static) -> s::CallbackHandle {{\n        self.server.on_connect(callback)\n    }}\n\n    /// Registers a callback for client disconnections.\n    pub fn on_disconnect(&self, callback: impl Fn() + Send + Sync + 'static) -> s::CallbackHandle {{\n        self.server.on_disconnect(callback)\n    }}\n\n    /// Registers the callback that decides whether a client may connect.\n    ///\n    /// See [`s::StateServer::on_connect_request`].\n    pub fn on_connect_request(&self, callback: impl Fn(&s::ConnectRequest) -> bool + Send + Sync + 'static) -> s::CallbackHandle {{\n        self.server.on_connect_request(callback)\n    }}\n\n    /// Registers a callback for diagnostic client messages.\n    pub fn on_client_message(&self, callback: impl Fn(String) + Send + Sync + 'static) -> s::CallbackHandle {{\n        self.server.on_client_message(callback)\n    }}\n}}"
+        "impl StatesServer {{\n    /// Stable hash of the generated state layout.\n    pub const VERSION_HASH: u64 = {version_hash};\n\n    /// Creates a server with default options.\n    pub fn new() -> s::Result<Self> {{\n        Self::with_options(s::ServerOptions::new())\n    }}\n\n    /// Creates and finalizes a server with explicit options.\n    pub fn with_options(options: s::ServerOptions) -> s::Result<Self> {{\n        let server = s::StateServer::with_options(options)?;\n        let states = {root_name}::new(&server)?;\n        server.finalize()?;\n        Ok(Self {{ server, states }})\n    }}\n\n    /// Returns the underlying native server.\n    pub fn state_server(&self) -> &s::StateServer {{\n        &self.server\n    }}\n\n    /// Starts listening on `port` for a client.\n    ///\n    /// `ip_addr` selects the IPv4 interface; `None` binds only the loopback\n    /// address `127.0.0.1`. `token` optionally requires client authentication. A call\n    /// made while the server is running with the same settings succeeds\n    /// without effect; to change the address or token, call [`Self::stop`]\n    /// first. See [`s::StateServer::start`].\n    pub fn start(&self, port: u16, ip_addr: ::std::option::Option<::std::net::Ipv4Addr>, token: ::std::option::Option<::std::string::String>) -> s::Result<()> {{\n        self.server.start(port, ip_addr, token)\n    }}\n\n    /// Stops the server.\n    pub fn stop(&self) {{\n        self.server.stop();\n    }}\n\n    /// Requests an immediate or delayed client repaint.\n    pub fn update(&self, duration: ::std::option::Option<f32>) -> s::Result<()> {{\n        self.server.update(duration)\n    }}\n\n    /// Disconnects the current client.\n    pub fn disconnect_client(&self) {{\n        self.server.disconnect_client();\n    }}\n\n    /// Returns whether the server is listening.\n    pub fn is_running(&self) -> bool {{\n        self.server.is_running()\n    }}\n\n    /// Returns whether a client is connected.\n    pub fn is_connected(&self) -> bool {{\n        self.server.is_connected()\n    }}\n\n    /// Returns the address the server listens on, or `None` when stopped.\n    pub fn address(&self) -> ::std::option::Option<::std::net::SocketAddrV4> {{\n        self.server.address()\n    }}\n\n    /// Returns the SHA-256 fingerprint of the TLS certificate, or `None` when\n    /// TLS is off. See [`s::StateServer::tls_fingerprint`].\n    pub fn tls_fingerprint(&self) -> ::std::option::Option<::std::string::String> {{\n        self.server.tls_fingerprint()\n    }}\n\n    /// Starts serving the static web page from [`s::ServerOptions::web_path`].\n    ///\n    /// See [`s::StateServer::start_web`].\n    pub fn start_web(&self) -> s::Result<()> {{\n        self.server.start_web()\n    }}\n\n    /// Stops serving the static web page.\n    pub fn stop_web(&self) {{\n        self.server.stop_web();\n    }}\n\n    /// Returns whether the static web page is being served.\n    pub fn is_web_running(&self) -> bool {{\n        self.server.is_web_running()\n    }}\n\n    /// Returns the directory of the configured web page, if any.\n    pub fn web_path(&self) -> ::std::option::Option<::std::path::PathBuf> {{\n        self.server.web_path()\n    }}\n\n    /// Registers a callback for client connections.\n    pub fn on_connect(&self, callback: impl ::std::ops::Fn(::std::string::String) + ::std::marker::Send + ::std::marker::Sync + 'static) -> s::CallbackHandle {{\n        self.server.on_connect(callback)\n    }}\n\n    /// Registers a callback for client disconnections.\n    pub fn on_disconnect(&self, callback: impl ::std::ops::Fn() + ::std::marker::Send + ::std::marker::Sync + 'static) -> s::CallbackHandle {{\n        self.server.on_disconnect(callback)\n    }}\n\n    /// Registers the callback that decides whether a client may connect.\n    ///\n    /// See [`s::StateServer::on_connect_request`].\n    pub fn on_connect_request(&self, callback: impl ::std::ops::Fn(&s::ConnectRequest) -> bool + ::std::marker::Send + ::std::marker::Sync + 'static) -> s::CallbackHandle {{\n        self.server.on_connect_request(callback)\n    }}\n\n    /// Registers a callback for diagnostic client messages.\n    pub fn on_client_message(&self, callback: impl ::std::ops::Fn(::std::string::String) + ::std::marker::Send + ::std::marker::Sync + 'static) -> s::CallbackHandle {{\n        self.server.on_client_message(callback)\n    }}\n}}"
     )
     .unwrap();
 
-    Ok((states_output, enums_output, structs_output))
+    Ok((
+        states_output,
+        has_enums.then_some(enums_output),
+        has_structs.then_some(structs_output),
+    ))
 }
 
-/// Generates typed Rust server bindings as a three-file module.
+/// Generates typed Rust server bindings as a module.
 ///
-/// The output directory is created when necessary and receives `mod.rs`,
-/// `enums.rs`, and `structs.rs`. Files whose contents did not change are left
-/// untouched so the generator does not trigger unnecessary recompilation.
+/// The output directory is created when necessary and receives `mod.rs`, plus
+/// `enums.rs` when the state tree uses a `#[typed]` enum and `structs.rs` when
+/// it uses a `#[typed]` struct. Files whose contents did not change are left
+/// untouched so the generator does not trigger unnecessary recompilation, and
+/// a generated `enums.rs` or `structs.rs` that is no longer needed is removed.
 /// Declare the generated directory as a module in the server crate and enable
 /// the `egui_states` `server` feature.
 ///
@@ -652,17 +786,25 @@ fn render_rust<S: State>() -> Result<(String, String, String), String> {
 ///
 /// # Panics
 ///
-/// Panics if a state type is defined inconsistently in different locations or
-/// conflicts with a generated symbol such as `StatesServer`, `enums`,
-/// `structs`, or `s`.
+/// Panics, before it writes a file, if the state tree cannot be generated:
+///
+/// - a state group, struct or enum is defined inconsistently in different
+///   locations, or conflicts with a generated symbol such as `StatesServer`,
+///   `enums`, `structs`, or `s`;
+/// - a state group, struct or enum is named with a raw identifier, which the
+///   Python bindings of the same state tree could not use. A name that is
+///   only a Python keyword, such as `None`, is accepted here and rejected by
+///   [`generate_python`](super::generate_python);
+/// - the unit type `()` is used anywhere but as the whole type of a `Signal`
+///   or a `ValueTake`.
 pub fn generate_rust<S: State>(directory: impl AsRef<Path>) -> Result<(), String> {
     let (states, enums, structs) = render_rust::<S>()?;
     scripts::write_generated_files(
         directory.as_ref(),
         [
-            ("mod.rs", states.as_str()),
-            ("enums.rs", enums.as_str()),
-            ("structs.rs", structs.as_str()),
+            ("mod.rs", Some(states.as_str())),
+            ("enums.rs", enums.as_deref()),
+            ("structs.rs", structs.as_deref()),
         ],
     )
 }

@@ -30,6 +30,15 @@ default; applications can pass `ClientBuilder::get_version_hash()` as the
 client application version and the generated `StatesServer::VERSION_HASH` as
 the server version to reject mismatched state trees during the handshake.
 
+A value type marked `#[egui_states::typed]` is described once, and the
+description does not depend on the build: the generated bindings and the
+type's hash come from it, while Serde encodes the type as the build compiled
+it. So the two must not differ by build. A `#[cfg(...)]` on a field or a
+variant of a typed type is a compile error, as are Serde attributes that
+change the encoding (`skip`, `flatten`, ...) and any Serde attribute inside
+`cfg_attr`. A `#[cfg(...)]` on the whole type is fine; a member that only some
+builds need stays in every build, as an `Option` for example.
+
 The state definition can be imported from a library crate or compiled from the
 same source module into both the GUI and build-script crates. See the
 [counter build script](../example/counter/gui/build.rs) for a shared source
@@ -65,11 +74,19 @@ as a `CloseReason`.
 5. The connected client, if any, is closed with 4005, and the new one is
    synchronized.
 
-The server also closes with 4006 when it disconnects the client, stops, or fails
-to synchronize a new client. A client that stops answering is dropped by the
-heartbeat without a close frame, as it no longer reads; the client then reports
-`ConnectionLost`. A client attempt that gets no answer at all fails with
-`Timeout` after the client's connect timeout.
+The server also closes with 4006 when it disconnects the client or fails to
+synchronize a new client, and with 4007 when it stops. A client that stops
+answering is dropped by the heartbeat without a close frame, as it no longer
+reads; the client then reports `ConnectionLost`, as it does when the server
+goes silent for the heartbeat timeout. A client attempt that gets no
+answer at all fails with `Timeout` after the client's connect timeout.
+
+A client built with reconnecting starts a new attempt by itself only after
+causes that can pass: an unreachable server, a timeout, a lost connection or a
+stopped server (4007), with a wait that doubles up to a maximum, and a busy
+server (4003), with a wait of its own. A busy server frees its place once the
+heartbeat drops a client that vanished. The client does not retry 4006: the
+server disconnecting it would otherwise be undone at once.
 
 ## State directions
 
@@ -104,6 +121,9 @@ reports anything. The client then receives the pending server value and
 replaces its local copy, so both peers end with the server's value and the
 user's edit is lost. Because the synchronization on connect is pending as well,
 edits made before the client received the server's state cannot overwrite it.
+A server write made while a client is connecting, before that value is
+synchronized, is not sent on its own: the synchronization carries it, so one
+pending message stands for it.
 
 A client write is therefore discarded when it arrives within about one network
 round trip after a server write. A server that sets a `Value` continuously, for
@@ -123,7 +143,11 @@ Signals and signaled `Value` changes use one of two server-side modes:
   hand-written `State`, preserves every change and delivers them in order.
 
 The mode is set in the state definition and passed to the server by the
-generated bindings; the client type is the same in both modes.
+generated bindings; the client type is the same in both modes. Server code can
+switch it at runtime with `signal_set_to_queue` and `signal_set_to_single`,
+which override the definition until the next switch. Switching to single mode
+keeps only the newest of the queued changes. Server events (logging, connect,
+disconnect, client messages) and transfer endpoints always stay in queue mode.
 
 Callbacks for different states may run concurrently when the server has more
 than one signal worker. A callback handle owns its registration; dropping the
@@ -147,11 +171,14 @@ of its own: the WebSocket library moves the unsent rest of a message after
 every partial socket write, so large frames cost time quadratic in their size.
 Acknowledgements provide backpressure and release pending server work.
 
-`Data`, `DataMulti`, `Image` and `ImageMulti` send one acknowledged transfer
-at a time. A change waits until the client has acknowledged the previous one,
-then queues its transfer and returns, so the changes one thread makes to these
-states and to any other state reach the client in the order they were made,
-unless the state has [low send priority](#send-priority).
+`Data`, `DataMulti`, `Image`, `ImageMulti`, `DataTake` and `DataMultiTake`
+send one acknowledged transfer at a time, and the multi states one per key: the client
+acknowledges each key on its own (`AckKey`), and the keys do not wait for each
+other. A change waits until the client has acknowledged the previous one of
+its key, then queues its transfer and returns, so the changes one thread makes
+to these states and to any other state reach the client in the order they
+were made, unless the state has [low send priority](#send-priority). Changes
+that different threads make to different keys can overtake each other.
 With `wait`, a change returns only once the client has acknowledged it, or
 the connection has ended; the call does not tell the two apart.
 `is_idle` tells whether nothing is in flight, so a producer can skip a frame
@@ -167,12 +194,15 @@ connection is dropped on both sides.
 
 A whole-collection replacement of a `VecState` or `MapState` larger than one
 message is split at item boundaries and applied on the client only after its
-last part arrives. These parts need no acknowledgement.
+last part arrives. These parts need no acknowledgement. Every other change of
+a collection sends one item: a `VecState` sets, appends, inserts or removes
+the item at an index, which the client applies in the same order, and a
+`MapState` sets or removes one key.
 
 An image update is applied on the client once, like a set, unless `max_lines`
 splits its rectangle into parts of at most that many rows from the top. Each
 part is a complete update, chunked like any other, applied and acknowledged on
-its own, and `update` requests a repaint after every part. The call queues the
+its own, and the client repaints after every part. The call queues the
 first part and returns; each further part is sent once the client has
 acknowledged the one before. A split update is therefore the one exception to
 the order above: later changes of other states can reach the client before its
@@ -186,32 +216,50 @@ otherwise it waits like any other. Either way the call still waits for the part
 in flight, and the client ends with the server's pixels, because what is
 dropped is overwritten.
 
-All keys in an `ImageMulti` share one ordered transfer stream, and a set or a
-forced update drops only waiting parts of its own key. A remove drops the
-waiting parts of its key, and a reset those of every key; both are queued once
-nothing is in flight and need no acknowledgement. A disconnect invalidates
-pending work with a transfer generation, and reconnect synchronization resets
-the client collection before sending the server's current keys. Each
-synchronized image must be acknowledged before subsequently queued work is
-released.
+Each key of an `ImageMulti` has its own transfer, and a set or a forced update
+drops only waiting parts of its own key. A remove drops the waiting parts of
+its key and is queued once nothing of that key is in flight. A reset drops the
+waiting parts of every key and is queued once nothing of any key is in flight;
+it first waits for the producers of every key, so none sends an image the
+reset would leave on the client only. Neither needs an acknowledgement. A
+disconnect invalidates pending work with a transfer generation, and reconnect
+synchronization resets the client collection before sending the server's
+current keys. A key's next change waits until the client has acknowledged its
+synchronized image; keys the synchronization did not send are free at once.
 
 Waiting for acknowledgements slows the server down to the client's pace. A
 client that disappears without closing the connection would make it wait
-forever, so the server pings the client every heartbeat interval and treats a
-client that sent no frame (an acknowledgement, a value, or the automatic pong)
-for the heartbeat timeout as disconnected. The connection is then closed, also
-when a send is waiting for socket buffer space, and pending work is released as
-for any disconnect. Native clients answer pings on their network task and
-browsers answer them outside the page, so a busy UI does not count as silence.
-A client receiving a large message sends nothing until it arrives, so the
-timeout must exceed the longest transfer over the slowest expected network.
+forever, so the server pings the client every quarter of the heartbeat timeout
+and treats a client that sent no frame (an acknowledgement, a value, or the
+automatic pong) for the timeout as disconnected. The connection is then closed,
+also when a send is waiting for socket buffer space, and pending work is
+released as for any disconnect. Native clients answer pings on their network
+task and browsers answer them outside the page, so a busy UI does not count as
+silence. A client receiving a large message sends nothing until it arrives, so
+the timeout must exceed the longest transfer over the slowest expected network.
 
-For one-shot transfers, `blocking = true` prevents a later send from overtaking
-the pending transfer. Calling the client handle's `take` method consumes the
-value and sends the acknowledgement. For numeric takes, `cache = true` also
-retains the last transfer for synchronization with a newly connected client.
-A reconnected `DataMultiTake` holds only the cached keys: values the client
-had not taken before the disconnect are dropped.
+The client watches the server the same way. Right after the transfer limits,
+the server sends its timeout (`Heartbeat`); at every ping it also sends a
+`KeepAlive` message if it sent the client nothing else since the previous ping.
+A ping is not enough, because a browser answers it without showing it to the
+page. A client that waits longer than the timeout for its next frame ends the
+connection as `ConnectionLost`, and its send task gets one second to finish
+before it is dropped, so a write to a dead connection cannot hold up the next
+attempt. Without the heartbeat the server sends neither message and the client
+waits indefinitely.
+
+A numeric take (`DataTake`, `DataMultiTake`) is acknowledged when it arrives,
+so a fast producer on a slow link waits for the client instead of queuing
+transfers the UI never sees; a new one replaces a buffer the UI has not taken.
+With `blocking = true` the client acknowledges the transfer only when the UI
+calls `take`, so the next send waits until then. A remove or reset of a
+`DataMultiTake` key does not wait: the client acknowledges the blocking value
+it drops. A `ValueTake` is not acknowledged unless it is blocking, which works
+the same way. For numeric takes, `cache = true` also retains the last transfer
+for synchronization with a newly connected client. Values the client had not
+taken stay takeable while it is disconnected, and are dropped once a new
+connection is accepted, before the synchronization: a reconnected client holds
+only the cached values.
 
 ## Send priority
 
@@ -231,8 +279,9 @@ the new frame. Where that order matters, `wait` on the bulk change keeps it.
 The same holds for everything else the server sends in the normal lane, such
 as a file transfer offer: it can arrive before a low-priority change made
 earlier, also before the first value of a low-priority state on a new
-connection. A repaint request is the exception: the server sends one in each
-lane, so the client repaints again when the low-priority changes have arrived.
+connection. The client repaints when the low-priority changes arrive, like
+after any other change, and an explicit repaint request (`server.update`) is
+sent in each lane, so it also follows the low-priority changes made before it.
 
 The lane has a window, the file transfer window of the server's profile. The
 server follows every frame of the lane with a small mark, which the client
@@ -258,7 +307,8 @@ stops them.
 `Download<M>` and `Upload<M>` move files and buffers that are not state. They
 share the WebSocket with the state messages but not its queue.
 
-**Lanes.** Each peer's writer sends a heartbeat ping first, then any queued
+**Lanes.** The server's writer sends a heartbeat ping (with its keep-alive
+message, when due) first; each peer's writer then sends any queued
 state message, and a chunk of file data only when no state message waits. On
 the server, the low-priority lane of [send priority](#send-priority) goes
 between the two, and the starvation guard described there also lets file data
@@ -334,16 +384,20 @@ like any other download. A development server that serves the page must
 forward this path too; the showcase's `Trunk.toml` shows how. Browser uploads
 read `File` objects in slices and travel in the lane like native ones.
 
-## Data headers
+## Data and image headers
 
 A `Data`, `DataMulti`, `DataTake` or `DataMultiTake` can carry a typed header
 next to its buffer: any `Typed` value up to the size of a value (1 MB), for
 example the shape, the axis scale or the units of the numbers. The header type
-is part of the state type, `Data<f32, Meta>`; `Data<f32>` has no header.
+is part of the state type, `Data<f32, Meta>`; `Data<f32>` has no header. An
+`Image` or `ImageMulti` can carry one next to its pixels in the same way,
+`Image<Meta>`, for example a frame number or the pixel size; every key of an
+`ImageMulti` has its own. Images follow the rules for `Data` below, with the
+differences listed at the end.
 
 A state with a header type never holds data without a header. The set that
 creates the data of a `Data` or a `DataMulti` key must carry one, and so must
-every take; without it the call fails (`InvalidArgument` in C). The header
+every take; without it the call fails. The header
 type therefore needs no default, and the client never invents a header.
 
 A change can carry a new header, which the client publishes together with the
@@ -357,7 +411,7 @@ headers with the data. A header can also be sent alone, for data that is set.
 Unlike a buffer change, the client does not acknowledge it, so a header sent
 alone does not wait for the client itself, as with values. It keeps its place
 after the buffer changes of its state, though: while another thread's change
-to the state, or to any key of a `DataMulti`, waits for the client's
+to the state, or to the same key of a `DataMulti`, waits for the client's
 acknowledgement, the header waits behind it.
 
 A header that the client cannot accept, because it has the wrong type, is too
@@ -366,12 +420,137 @@ acknowledges it, reports the error and keeps its buffer and header. For an
 `Add` or `Replace`, the dropped change leaves the client behind until the next
 complete set or reconnect.
 
+For images:
+
+- The set or fill that creates an image, or a key of an `ImageMulti`, must
+  carry a header.
+- An update can carry a new header. When `max_lines` splits it into parts, the
+  header goes with the first part, and the client shows it together with that
+  part; the later parts keep it. A scan sent line by line, one update per
+  line, passes the header only with the first line of a new frame.
+- A set, a fill and a forced update always send the stored header again. They
+  can drop the waiting parts of an earlier update, and one of those may have
+  carried a new header.
+- A header sent alone waits until the transfers of its image or key are
+  acknowledged, including the waiting parts of a split update, so it never
+  overtakes the pixels sent before it.
+- The client stores the header with the texture, but egui uploads a texture
+  change at the end of the frame being drawn. For that one frame the UI can
+  show the old pixels next to a new header, or the new pixels next to a header
+  read before they arrived. Every change requests a repaint, so the next frame
+  shows them together.
+- A placeholder from `Image::initialize` has no header until the server sends
+  an image; `Image::initialize_with_header` gives it one. Neither replaces an
+  image or header from the server.
+
+## Enums with data
+
+`#[egui_states::typed]` accepts an enum whose variants carry data, alongside
+fieldless enums. A typical use is commands with parameters: one
+`#[state(queue)] Signal<Command>` delivers every command, in order, to one
+callback, whereas separate signals can run their callbacks at the same time on
+different workers. An enum with data can be used wherever a typed value can:
+in values, statics, signals, takes, collections, data and image headers and
+transfer metadata, and inside structs and other enums.
+
+```rust
+#[egui_states::typed]
+#[derive(Clone, egui_states::InitialValue)]
+pub enum Command {
+    Stop,                      // unit variant
+    MoveTo { x: f32, y: f32 }, // named fields
+    SetGain(f32),              // tuple variant
+    Mark(u32, String),
+}
+```
+
+- **Wire.** Postcard sends the variant's position, then its fields in order,
+  so the protocol is unchanged. Fieldless enums keep their encoding and type
+  hash: the macro describes an enum as `ObjectType::DataEnum` only when a
+  variant has fields. The type hash covers the variant names and kinds and the
+  field types, not the field names, as for structs.
+- **Not supported**, as compile errors: explicit discriminants (the wire never
+  carries them), empty `Variant {}` or `Variant()` variants (write `Variant`),
+  generics, an enum without variants, and a field that contains the enum
+  itself. `#[derive(Atomic)]` supports only fieldless enums; an enum with data
+  that fits in 64 bits can implement `Atomic` by hand.
+- **Initial values.** With `#[derive(InitialValue)]`, `#[state(init = ...)]`
+  can start a `Value` or `Static` from any variant, which both generators
+  emit.
+
+In Python, a fieldless enum stays an `IntEnum`. An enum with data is a class
+that only holds its variants: each variant is a frozen dataclass nested in it,
+and `Command.Type` is the union of them, the type of a value.
+
+```python
+def on_command(command: Command.Type) -> None:
+    match command:
+        case Command.Stop():
+            ...
+        case Command.MoveTo(x=x, y=y):
+            ...
+        case Command.SetGain(gain) if gain > 2:
+            ...
+        case Command.SetGain() | Command.Mark():
+            ...
+        case _:
+            assert_never(command)
+```
+
+- All three kinds of variant are created by a call: `Command.Stop()`,
+  `Command.MoveTo(x=1.0, y=2.0)`, `Command.Mark(1, "a")`. Two values are equal
+  when they are the same variant with equal fields, so a unit variant is
+  compared with `==`, not `is`.
+- A unit variant needs its parentheses in a `case` too. `case Command.Stop:`
+  compares the value with the class and never matches. Passing the class as a
+  value, `set(Command.Stop)`, raises a `TypeError` that names the fix.
+- A variant with named fields has them as attributes, `c.x`. A tuple variant
+  is read by position in a `case`; it is not a `tuple`, so it has no length
+  and no index.
+- Because the type is a union, a type checker knows every variant: with
+  `typing.assert_never` in the last `case`, it reports a `match` that misses
+  one, as the Rust compiler does. `Command` itself is not the type of a value
+  and has no values, so `isinstance(c, Command)` does not hold; test a variant,
+  `isinstance(c, Command.MoveTo)`.
+- A variant does not check the types of its fields when it is created, as a
+  generated struct does not. A type checker reports `Command.SetGain("text")`;
+  at run time the server rejects it when the value is set and keeps the old
+  value. The error names the field:
+  `Command.SetGain._0: must be real number, not str`. Inside other values the
+  path continues, as in `HandledCommand.command.Load.summary.level` or
+  `[1].SetGain._0` for an item of a list.
+
+A value can be a dict key when its fields are hashable, which a struct is not.
+A variant or field name that is a Python keyword gets an underscore
+(`Command.None_`, `from_`), and so does a variant called `Type`, which makes
+way for the union. A raw identifier loses its `r#` in Python (`r#type` is
+`type`). A struct, an enum or a state group has no such spelling, because its
+name is not on the wire: one named like a Python keyword (`None`, `lambda`)
+is an error when the Python bindings are generated, and a plain name in the
+Rust bindings.
+
+The generated modules refer to what they import through private aliases and
+full paths, so a state group may share a name with it: `Sequence` or
+`ClientPolicy` in Python, `Option` or `Send` in Rust. A state group cannot be
+named `StatesServer`, `enums`, `structs` or `s`, and in Python also not `np`,
+`Exception` or one of the aliases, which start with an underscore
+(`_Sequence`).
+
 ## Repaints and runtimes
 
-Synchronization and repainting are separate. Server methods with an `update`
-argument change state regardless of that flag; `update = true` additionally
-asks the connected egui client to repaint. A delayed repaint is expressed in
-seconds.
+The client repaints after every change the server makes; server setters
+have no repaint argument. The server merges its messages into WebSocket
+frames, and the client repaints once per frame that changed a state, after
+applying all of the frame's messages, so changes made one after another
+usually reach the UI in one repaint. Only the first and middle parts of a
+split transfer, which the client buffers, do not repaint. A change made after
+slow work, such as reading hardware between two sets, travels in a frame of
+its own and repaints again; the client also repaints for its own reasons,
+such as user input, so a sequence of changes is never guaranteed to appear in
+one repaint. Changes that must appear together belong in one state.
+
+`server.update` asks the client to repaint without changing a state, at once or
+after a delay expressed in seconds.
 
 Native clients and servers each own a background thread and Tokio runtime.
 WASM clients run their synchronization future on the browser executor.
@@ -380,12 +559,12 @@ WASM clients run their synchronization future on the browser executor.
 
 `Data` transports contiguous primitive numeric buffers (`u8` through `u64`,
 `i8` through `i64`, `f32`, and `f64`) in native-endian representation, with an
-optional typed header (see [Data headers](#data-headers)). This is
+optional typed header (see [Data and image headers](#data-and-image-headers)). This is
 an efficient same-architecture transport; callers should not treat its raw byte
 form as a portable file format.
 
 A `Data` starts "not set", like a missing `DataMulti` key: its getters return
-`None` on both sides (`NOT_FOUND` in C) until a set creates the data, so an
+`None` on both sides until a set creates the data, so an
 empty buffer differs from no data. Only a set creates the data; every other
 change of data that is not set fails, and a reset returns the data to "not
 set". A client keeps its last data across a disconnect, and the
@@ -412,6 +591,13 @@ The client creates each texture in the egui context passed to
 sent right after connecting is never lost. Until then the client handles
 report no texture, unless `Image::initialize` set a placeholder. A placeholder
 is only created while no texture exists, so it never replaces a server image.
+
+A client keeps an `Image` across a disconnect, and the synchronization of the
+next connection replaces it with the server's image. A server that has none,
+such as one that was restarted and has not set the image yet, says so in the
+synchronization, and the client returns to no texture, or to the placeholder
+it showed, in the same texture. The keys of an `ImageMulti` are reset by
+every synchronization.
 
 Every image dimension is limited to **65,536 pixels, inclusive**, for both `Image`
 and each entry in `ImageMulti`. Rust and Python inputs, server storage and

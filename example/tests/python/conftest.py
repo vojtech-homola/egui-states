@@ -38,14 +38,14 @@ def example_server(request):
         cast(Loader, spec.loader).exec_module(module)
         errors = []
         server = module.setup_server(error_handler=errors.append)
-        from egui_states.logging import LogLevel  # noqa: PLC0415
+        from tests.python_test_helpers.logs import server_logs  # noqa: PLC0415
 
-        server.logging.add_logger(LogLevel.Error, lambda message: errors.append(RuntimeError(message)))
         assert not server.is_running(), "Import/setup must not start a server"
-        try:
-            yield name, module, server
-        finally:
-            server.stop()
-            assert not errors, f"Unexpected example callback errors: {errors!r}"
+        with server_logs(errors):
+            try:
+                yield name, module, server
+            finally:
+                server.stop()
+        assert not errors, f"Unexpected example callback errors: {errors!r}"
     finally:
         sys.path.remove(str(directory))

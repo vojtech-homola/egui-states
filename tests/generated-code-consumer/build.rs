@@ -17,8 +17,9 @@ fn main() {
     egui_states::build_scripts::generate_rust::<awkward::Awkward>(out.join("awkward")).unwrap();
     let mut module = format!("#[path = {:?}] mod bindings;", out.join("bindings/mod.rs"));
     if cfg!(feature = "awkward") {
+        // Generated types keep the awkward names of the schema.
         module.push_str(&format!(
-            "\n#[path = {:?}] mod awkward_bindings;",
+            "\n#[allow(non_camel_case_types)]\n#[path = {:?}] mod awkward_bindings;",
             out.join("awkward/mod.rs")
         ));
     }

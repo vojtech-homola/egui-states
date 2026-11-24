@@ -2,15 +2,17 @@
 
 import argparse
 from collections.abc import Callable
+import logging
 from pathlib import Path
 import signal
 import threading
+from typing import assert_never
 
 import numpy as np
 from showcase_bindings import ShowcaseState, StatesServer
-from showcase_bindings.enums import PrimaryChoice, SecondaryChoice
-from showcase_bindings.structs import Measurement, Point, SampleInfo, Summary
-from egui_states import LogLevel, TransferError, TransferHandle, TransferOffer, TransferStatus
+from showcase_bindings.enums import Command, PrimaryChoice, SecondaryChoice, Status
+from showcase_bindings.structs import HandledCommand, ImageInfo, Measurement, Point, SampleInfo, Summary
+from egui_states import TransferError, TransferHandle, TransferOffer, TransferStatus
 
 PORT = 8091
 WEB_PATH = Path(__file__).resolve().parents[1] / "gui" / "web"
@@ -20,24 +22,12 @@ DEFAULT_MAP = {1: 100, 2: 200, 5: 500}
 
 # Keep the showcase's callbacks together so the example is easy to follow.
 def register_callbacks(server: StatesServer) -> None:  # noqa: PLR0915
-    """Connect logging and interactive actions to a server instance.
+    """Connect interactive actions to a server instance.
 
     Args:
         server (StatesServer): Server whose state handles receive callbacks.
     """
     states = server.states
-
-    def _print_debug(message: str) -> None:
-        print("Debug:", message)
-
-    def _print_info(message: str) -> None:
-        print("Info:", message)
-
-    def _print_warning(message: str) -> None:
-        print("Warning:", message)
-
-    def _print_error(message: str) -> None:
-        print("Error:", message)
 
     def on_ratio(value: float) -> None:
         print(f"ratio changed: {value:.3f}")
@@ -51,8 +41,15 @@ def register_callbacks(server: StatesServer) -> None:  # noqa: PLR0915
     def on_enum(value: PrimaryChoice) -> None:
         print(f"enum changed: {value.name}")
 
+    emitted = 0
+
     def on_empty_signal() -> None:
+        nonlocal emitted
+        emitted += 1
         print("empty signal emitted")
+        # A burst the queued take keeps in full.
+        for line in ("received", "working", "done"):
+            states.value_take.take_log.set(f"empty signal {emitted}: {line}")
 
     def on_number_signal(value: float) -> None:
         print(f"number signal emitted: {value:.3f}")
@@ -61,40 +58,34 @@ def register_callbacks(server: StatesServer) -> None:  # noqa: PLR0915
         print(f"enum signal emitted: {value.name}")
 
     def _reset_value_vec() -> None:
-        states.value_vec.items.set(list(DEFAULT_VEC), update=True)
+        states.value_vec.items.set(list(DEFAULT_VEC))
 
     def _append_value_vec() -> None:
-        current = states.value_vec.items.get()
-        next_value = current[-1] + 5 if current else DEFAULT_VEC[0]
-        states.value_vec.items.add_item(next_value, update=True)
+        items = states.value_vec.items
+        next_value = items[-1] + 5 if len(items) else DEFAULT_VEC[0]
+        items.add_item(next_value)
         print(f"value_vec appended: {next_value}")
 
     def _remove_last_value_vec() -> None:
-        current = states.value_vec.items.get()
-        if current:
-            states.value_vec.items.remove_item(len(current) - 1, update=True)
+        items = states.value_vec.items
+        if len(items):
+            del items[-1]
             print("value_vec removed last item")
 
     def _reset_value_map() -> None:
-        states.value_map.items.set(dict(DEFAULT_MAP), update=True)
+        states.value_map.items.set(dict(DEFAULT_MAP))
 
     def _insert_next_value_map() -> None:
-        current = states.value_map.items.get()
-        next_key = max(current, default=0) + 1
-        states.value_map.items.set_item(next_key, next_key * 100, update=True)
+        next_key = max(states.value_map.items, default=0) + 1
+        states.value_map.items.set_item(next_key, next_key * 100)
         print(f"value_map inserted: {next_key} -> {next_key * 100}")
 
     def _remove_lowest_value_map() -> None:
         current = states.value_map.items.get()
         if current:
             lowest_key = min(current)
-            states.value_map.items.remove_item(lowest_key, update=True)
+            states.value_map.items.remove_item(lowest_key)
             print(f"value_map removed key: {lowest_key}")
-
-    server.logging.add_logger(LogLevel.Debug, _print_debug)
-    server.logging.add_logger(LogLevel.Info, _print_info)
-    server.logging.add_logger(LogLevel.Warning, _print_warning)
-    server.logging.add_logger(LogLevel.Error, _print_error)
 
     def send_sample(mebibytes: int) -> None:
         # Bytes in memory keep the example self-contained; send_file sends a
@@ -112,10 +103,56 @@ def register_callbacks(server: StatesServer) -> None:  # noqa: PLR0915
     def upload_finished(handle: TransferHandle) -> None:
         if handle.status() is TransferStatus.Done:
             data = handle.take_data() or b""
-            states.transfers.upload_result.set(f"received {len(data)} bytes in {handle.name()}", update=True)
+            states.transfers.upload_result.set(f"received {len(data)} bytes in {handle.name()}")
         else:
-            states.transfers.upload_result.set(f"upload failed: {handle.error()}", update=True)
+            states.transfers.upload_result.set(f"upload failed: {handle.error()}")
 
+    handled = 0
+
+    def on_command(command: Command.Type) -> None:
+        # One queued signal keeps the commands in order. `match` reads each
+        # variant's fields, and with `assert_never` a type checker reports a
+        # variant that has no `case`.
+        nonlocal handled
+        handled += 1
+        print(f"command {handled}: {command}")
+        status: Status.Type
+        match command:
+            case Command.Stop():
+                status = Status.Idle()
+            case Command.MoveTo(x=x, y=y):
+                status = Status.At(x, y)
+            case Command.SetGain(gain) if gain > 2:
+                status = Status.Failed(f"gain {gain:.2f} is above 2")
+            case Command.SetGain():
+                status = Status.Handled(handled)
+            case Command.Mark(number, text):
+                print(f"mark {number}: {text}")
+                status = Status.Handled(handled)
+            case Command.Choose(choice):
+                print(f"chosen {choice.name}")
+                status = Status.Handled(handled)
+            # A struct inside an `Option` inside the variant. A type checker
+            # counts a variant as handled only by a `case` that takes any
+            # value of its fields, so the `None` is tested inside.
+            case Command.Load(path=path, summary=summary):
+                if summary is None:
+                    status = Status.Failed(f"{path} has no summary")
+                else:
+                    print(f"load {path}: {summary.name}, level {summary.level}")
+                    status = Status.Handled(handled)
+            # An enum with data inside the variant.
+            case Command.Report(reported):
+                status = reported
+            case _:
+                assert_never(command)
+        history = states.commands.history
+        if len(history) >= 8:
+            del history[0]
+        history.add_item(HandledCommand(command, status))
+        states.commands.status.set(status)
+
+    states.commands.command.connect(on_command)
     states.transfers.request_download.connect(send_sample)
     states.transfers.upload.on_offer(receive_upload)
     states.transfers.upload.connect(upload_finished)
@@ -164,58 +201,58 @@ def populate_initial_data(states: ShowcaseState) -> None:  # noqa: PLR0915
     states.custom_values.point.set(Point(1.5, -0.75, "editable point"))
     states.custom_values.optional_struct.set(Summary(True, 9, "optional payload"))
 
-    states.value_vec.items.set(list(DEFAULT_VEC), update=True)
-    states.value_map.items.set(dict(DEFAULT_MAP), update=True)
+    states.value_vec.items.set(list(DEFAULT_VEC))
+    states.value_map.items.set(dict(DEFAULT_MAP))
 
-    states.data.bytes.set(np.arange(32, dtype=np.uint8), update=True)
-    states.data.samples.set(np.linspace(0.0, 1.0, 1024 * 20, dtype=np.float32), update=True)
+    states.data.bytes.set(np.arange(32, dtype=np.uint8))
+    states.data.samples.set(np.linspace(0.0, 1.0, 1024 * 20, dtype=np.float32))
     temperatures = 20.0 + np.sin(np.arange(50, dtype=np.float32) / 8.0)
     states.data.measurement.set(
         temperatures.astype(np.float32),
-        update=True,
         header=Measurement("temperature", "°C", 10.0),
     )
-    states.data.nested.buffer.set(np.arange(8, dtype=np.uint16), update=True)
+    states.data.nested.buffer.set(np.arange(8, dtype=np.uint16))
 
-    states.multi_data.bytes[0].set(np.arange(12, dtype=np.uint8), update=True)
-    states.multi_data.bytes[0].replace(np.array([200, 201], dtype=np.uint8), 4, update=True)
-    states.multi_data.bytes[1].set(np.array([10, 20, 30], dtype=np.uint8), update=True)
-    states.multi_data.bytes[1].add(np.array([40, 50], dtype=np.uint8), update=True)
+    states.multi_data.bytes[0].set(np.arange(12, dtype=np.uint8))
+    states.multi_data.bytes[0].replace(np.array([200, 201], dtype=np.uint8), 4)
+    states.multi_data.bytes[1].set(np.array([10, 20, 30], dtype=np.uint8))
+    states.multi_data.bytes[1].add(np.array([40, 50], dtype=np.uint8))
 
-    states.multi_data.samples[0].set(np.linspace(0.0, 1.0, 8, dtype=np.float32), update=True)
-    states.multi_data.samples[2].set(np.linspace(-1.0, 1.0, 5, dtype=np.float32), update=True)
-    states.multi_data.samples[2].add(np.array([1.5, 2.0], dtype=np.float32), update=True)
+    states.multi_data.samples[0].set(np.linspace(0.0, 1.0, 8, dtype=np.float32))
+    states.multi_data.samples[2].set(np.linspace(-1.0, 1.0, 5, dtype=np.float32))
+    states.multi_data.samples[2].add(np.array([1.5, 2.0], dtype=np.float32))
 
-    states.multi_data.nested.buffer[0].set(np.arange(4, dtype=np.uint16), update=True)
-    states.multi_data.nested.buffer[0].add(np.array([10, 11], dtype=np.uint16), update=True)
-    states.multi_data.nested.buffer[3].set(np.array([100, 110, 120], dtype=np.uint16), update=True)
+    states.multi_data.nested.buffer[0].set(np.arange(4, dtype=np.uint16))
+    states.multi_data.nested.buffer[0].add(np.array([10, 11], dtype=np.uint16))
+    states.multi_data.nested.buffer[3].set(np.array([100, 110, 120], dtype=np.uint16))
 
-    states.value_take.take_text.set("ValueTake payload from server", update=True)
-    states.value_take.take_empty.set(update=True)
+    states.value_take.take_text.set("ValueTake payload from server")
+    states.value_take.take_empty.set()
 
-    states.data_take.take_buffer.set(np.arange(16, dtype=np.uint8), update=True, cache=True)
-    states.data_take.take_samples.set(np.linspace(0.0, 1.0, 8, dtype=np.float32), update=True, cache=True)
+    states.data_take.take_buffer.set(np.arange(16, dtype=np.uint8), cache=True)
+    states.data_take.take_samples.set(np.linspace(0.0, 1.0, 8, dtype=np.float32), cache=True)
 
-    states.data_multi_take.bytes[0].set(np.arange(6, dtype=np.uint8), update=True, cache=True)
-    states.data_multi_take.bytes[1].set(np.array([10, 20, 30], dtype=np.uint8), update=True, cache=True)
+    states.data_multi_take.bytes[0].set(np.arange(6, dtype=np.uint8), cache=True)
+    states.data_multi_take.bytes[1].set(np.array([10, 20, 30], dtype=np.uint8), cache=True)
 
-    states.data_multi_take.samples[0].set(np.linspace(0.0, 1.0, 4, dtype=np.float32), update=True, cache=True)
-    states.data_multi_take.samples[2].set(np.linspace(-1.0, 1.0, 3, dtype=np.float32), update=True, cache=True)
+    states.data_multi_take.samples[0].set(np.linspace(0.0, 1.0, 4, dtype=np.float32), cache=True)
+    states.data_multi_take.samples[2].set(np.linspace(-1.0, 1.0, 3, dtype=np.float32), cache=True)
 
-    states.data_multi_take.nested.buffer[0].set(np.arange(4, dtype=np.uint16), update=True, cache=True)
-    states.data_multi_take.nested.buffer[3].set(np.array([100, 110], dtype=np.uint16), update=True, cache=True)
+    states.data_multi_take.nested.buffer[0].set(np.arange(4, dtype=np.uint16), cache=True)
+    states.data_multi_take.nested.buffer[3].set(np.array([100, 110], dtype=np.uint16), cache=True)
 
     y, x = np.indices((256, 256), dtype=np.uint16)
     image = np.stack((x, y, (x + y) // 2), axis=-1).astype(np.uint8)
-    states.image.image.set(image, update=True)
+    states.image.image.set(image, header=ImageInfo(1, 0.5))
     image_patch = np.zeros((64, 64, 4), dtype=np.uint8)
     image_patch[..., 1] = 220
     image_patch[..., 3] = 255
-    states.image.image.update(image_patch, origin=(96, 96), update=True)
+    # The patch is the next frame; its header comes with it.
+    states.image.image.update(image_patch, origin=(96, 96), header=ImageInfo(2, 0.5))
 
-    states.image.images[2].set(image, update=True)
-    states.image.images[7].set_all((256, 256), (25, 35, 75), update=True)
-    states.image.images[7].update(image_patch, origin=(96, 96), update=True)
+    states.image.images[2].set(image)
+    states.image.images[7].set_all((256, 256), (25, 35, 75))
+    states.image.images[7].update(image_patch, origin=(96, 96))
 
 
 def setup_server(*, error_handler: Callable[[Exception], None] | None = None, tls: bool = False) -> StatesServer:
@@ -245,6 +282,8 @@ def main() -> StatesServer:
     Returns:
         StatesServer: The server, still running when ``--interactive`` is used.
     """
+    # The server's diagnostics go to the "egui_states" logger.
+    logging.basicConfig(level=logging.DEBUG, format="%(levelname)s: %(message)s")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=PORT)
     parser.add_argument("--web", action="store_true", help="serve the built browser GUI on the server port")

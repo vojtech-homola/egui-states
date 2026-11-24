@@ -21,7 +21,7 @@ pub(super) fn show_transfers(ui: &mut egui::Ui, state: &mut ViewState) {
         ui.horizontal(|ui| {
             for mebibytes in [1_u32, 100, 1000] {
                 if ui.button(format!("download {mebibytes} MiB")).clicked() {
-                    t.request_download.set(mebibytes);
+                    t.request_download.emit(mebibytes);
                 }
             }
         });

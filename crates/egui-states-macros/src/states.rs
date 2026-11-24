@@ -93,7 +93,7 @@ const BULK_HANDLES: [&str; 6] = [
 ];
 
 /// State handles that `#[state(queue)]` applies to.
-const QUEUE_HANDLES: [&str; 3] = ["Value", "ValueAtomic", "Signal"];
+const QUEUE_HANDLES: [&str; 4] = ["Value", "ValueAtomic", "Signal", "ValueTake"];
 
 /// State handles that `#[state(init = ...)]` applies to.
 const INIT_HANDLES: [&str; 4] = ["Value", "ValueAtomic", "Static", "StaticAtomic"];
@@ -116,12 +116,13 @@ const HANDLES: [&str; 10] = [
 #[derive(Default)]
 struct FieldOptions {
     low_priority: Option<syn::Path>,
-    queue: Option<syn::Path>,
+    /// The `queue` path, and the capacity of `queue = N`.
+    queue: Option<(syn::Path, Option<syn::LitInt>)>,
     /// The `init` path and its initial value expression.
     init: Option<(syn::Path, syn::Expr)>,
 }
 
-const EXPECTED_OPTIONS: &str = "`init = <expr>`, `low_priority`, or `queue`";
+const EXPECTED_OPTIONS: &str = "`init = <expr>`, `low_priority`, `queue`, or `queue = N`";
 
 fn field_options(field: &syn::Field) -> syn::Result<FieldOptions> {
     let parser = Punctuated::<Meta, Token![,]>::parse_terminated;
@@ -148,11 +149,47 @@ fn field_options(field: &syn::Field) -> syn::Result<FieldOptions> {
             let duplicate =
                 |path: &syn::Path| syn::Error::new_spanned(path, "duplicate `state` option");
             match meta {
+                Meta::Path(path) if path.is_ident("queue") => {
+                    if options.queue.is_some() {
+                        return Err(duplicate(&path));
+                    }
+                    options.queue = Some((path, None));
+                }
+                Meta::NameValue(meta) if meta.path.is_ident("queue") => {
+                    if options.queue.is_some() {
+                        return Err(duplicate(&meta.path));
+                    }
+                    let capacity = match crate::ungroup(&meta.value) {
+                        syn::Expr::Lit(syn::ExprLit {
+                            lit: syn::Lit::Int(capacity),
+                            ..
+                        }) if !matches!(capacity.suffix(), "" | "usize") => {
+                            return Err(syn::Error::new_spanned(
+                                capacity,
+                                format!(
+                                    "`queue = N` takes a `usize`; write the capacity without the `{}` suffix",
+                                    capacity.suffix()
+                                ),
+                            ));
+                        }
+                        syn::Expr::Lit(syn::ExprLit {
+                            lit: syn::Lit::Int(capacity),
+                            ..
+                        }) if capacity.base10_parse::<usize>().is_ok_and(|n| n >= 1) => {
+                            capacity.clone()
+                        }
+                        value => {
+                            return Err(syn::Error::new_spanned(
+                                value,
+                                "`queue = N` takes a capacity of at least 1",
+                            ));
+                        }
+                    };
+                    options.queue = Some((meta.path, Some(capacity)));
+                }
                 Meta::Path(path) => {
                     let option = if path.is_ident("low_priority") {
                         &mut options.low_priority
-                    } else if path.is_ident("queue") {
-                        &mut options.queue
                     } else if path.is_ident("init") {
                         return Err(syn::Error::new_spanned(
                             path,
@@ -172,12 +209,10 @@ fn field_options(field: &syn::Field) -> syn::Result<FieldOptions> {
                     }
                     options.init = Some((meta.path, meta.value));
                 }
-                Meta::NameValue(meta)
-                    if meta.path.is_ident("low_priority") || meta.path.is_ident("queue") =>
-                {
+                Meta::NameValue(meta) if meta.path.is_ident("low_priority") => {
                     return Err(syn::Error::new_spanned(
                         meta,
-                        "`low_priority` and `queue` take no value",
+                        "`low_priority` takes no value",
                     ));
                 }
                 Meta::NameValue(syn::MetaNameValue { path, .. })
@@ -191,13 +226,7 @@ fn field_options(field: &syn::Field) -> syn::Result<FieldOptions> {
 /// The initial value expression; a string literal is converted with `Into`
 /// so that `init = "text"` works for `String` fields.
 fn init_expression(expr: &syn::Expr) -> proc_macro2::TokenStream {
-    // A literal forwarded through `macro_rules!` arrives in an invisible group.
-    let mut inner = expr;
-    while let syn::Expr::Group(group) = inner {
-        inner = &group.expr;
-    }
-
-    match inner {
+    match crate::ungroup(expr) {
         syn::Expr::Lit(syn::ExprLit {
             lit: syn::Lit::Str(_),
             ..
@@ -264,7 +293,7 @@ fn field_initializer(field: &syn::Field, c: &syn::Ident) -> syn::Result<proc_mac
         None => initializer,
     };
     let initializer = match options.queue {
-        Some(option) if !QUEUE_HANDLES.contains(&type_name.as_str()) => {
+        Some((option, _)) if !QUEUE_HANDLES.contains(&type_name.as_str()) => {
             return Err(syn::Error::new_spanned(
                 option,
                 format!(
@@ -273,7 +302,16 @@ fn field_initializer(field: &syn::Field, c: &syn::Ident) -> syn::Result<proc_mac
                 ),
             ));
         }
-        Some(_) => quote!(#c.queue(|#c| #initializer)),
+        Some((_, Some(capacity))) if type_name != "ValueTake" => {
+            return Err(syn::Error::new_spanned(
+                capacity,
+                format!(
+                    "`queue = N` applies to ValueTake, whose queue is on the client; `{type_name}` takes `queue`"
+                ),
+            ));
+        }
+        Some((_, Some(capacity))) => quote!(#c.queue_capacity(#capacity, |#c| #initializer)),
+        Some((_, None)) => quote!(#c.queue(|#c| #initializer)),
         None => initializer,
     };
 
@@ -294,4 +332,100 @@ fn last_path_segment(ty: &syn::Type) -> syn::Result<&syn::PathSegment> {
     path.segments
         .last()
         .ok_or_else(|| syn::Error::new_spanned(ty, "State derive could not resolve the field type"))
+}
+
+#[cfg(test)]
+mod tests {
+    use proc_macro2::{Delimiter, Group, TokenStream, TokenTree};
+    use quote::quote;
+    use syn::parse::Parser;
+
+    use super::field_options;
+
+    /// The capacity of the `queue = N` option of a field with `attributes`,
+    /// or the message that rejects them.
+    fn queue_capacity(attributes: TokenStream) -> Result<String, String> {
+        let field = syn::Field::parse_named
+            .parse2(quote!(#attributes events: ValueTake<u8>))
+            .unwrap();
+        match field_options(&field) {
+            Ok(options) => {
+                let (_, capacity) = options.queue.expect("a queue option");
+                Ok(capacity.expect("a capacity").to_string())
+            }
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
+    #[test]
+    fn queue_capacity_is_a_usize_of_at_least_one() {
+        assert_eq!(queue_capacity(quote!(#[state(queue = 4)])).unwrap(), "4");
+        assert_eq!(
+            queue_capacity(quote!(#[state(queue = 4usize)])).unwrap(),
+            "4usize"
+        );
+
+        for (attributes, suffix) in [
+            (quote!(#[state(queue = 10u8)]), "u8"),
+            (quote!(#[state(queue = 10i32)]), "i32"),
+            // The suffix is reported first, whatever the number.
+            (quote!(#[state(queue = 0u64)]), "u64"),
+        ] {
+            assert_eq!(
+                queue_capacity(attributes).unwrap_err(),
+                format!(
+                    "`queue = N` takes a `usize`; write the capacity without the `{suffix}` suffix"
+                )
+            );
+        }
+
+        for attributes in [
+            quote!(#[state(queue = 0)]),
+            quote!(#[state(queue = 0usize)]),
+            quote!(#[state(queue = -1)]),
+            quote!(#[state(queue = 1.5)]),
+            quote!(#[state(queue = "4")]),
+            quote!(#[state(queue = N)]),
+            quote!(#[state(queue = 99999999999999999999999999)]),
+        ] {
+            assert_eq!(
+                queue_capacity(attributes).unwrap_err(),
+                "`queue = N` takes a capacity of at least 1"
+            );
+        }
+    }
+
+    /// A capacity forwarded through `macro_rules!` arrives in an invisible
+    /// group, which Syn reads through only when nothing follows the value.
+    #[test]
+    fn queue_capacity_is_read_through_an_invisible_group() {
+        let four = TokenTree::Group(Group::new(Delimiter::None, quote!(4)));
+        for attributes in [
+            quote!(#[state(queue = #four)]),
+            quote!(#[state(queue = #four,)]),
+            quote!(#[state(queue = #four, low_priority)]),
+        ] {
+            assert_eq!(queue_capacity(attributes).unwrap(), "4");
+        }
+
+        let zero = TokenTree::Group(Group::new(Delimiter::None, quote!(0)));
+        assert_eq!(
+            queue_capacity(quote!(#[state(queue = #zero,)])).unwrap_err(),
+            "`queue = N` takes a capacity of at least 1"
+        );
+    }
+
+    #[test]
+    fn a_second_queue_option_is_rejected() {
+        for attributes in [
+            quote!(#[state(queue, queue)]),
+            quote!(#[state(queue, queue = 4)]),
+            quote!(#[state(queue = 4)] #[state(queue = 4)]),
+        ] {
+            assert_eq!(
+                queue_capacity(attributes).unwrap_err(),
+                "duplicate `state` option"
+            );
+        }
+    }
 }

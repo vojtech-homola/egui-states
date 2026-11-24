@@ -49,11 +49,11 @@ pub fn counter(port: u16) {
     });
     state.count.set_signal(17);
     // The reset's server-to-client response proves the GUI value was synchronized.
-    state.reset.set(());
+    state.reset.emit(());
     wait("counter reset", || state.count.get() == 0);
     state.count.set_signal(42);
     // A second reset roundtrip ensures the server has processed edits before exit.
-    state.reset.set(());
+    state.reset.emit(());
     wait("second counter reset", || state.count.get() == 0);
 }
 
@@ -85,41 +85,41 @@ pub fn showcase(port: u16) {
         state.image.images.indices() == vec![2, 7]
     });
     assert_eq!(state.image.images.get_size(7), Some([256, 256]));
-    state.value_vec.actions.append_item.set(());
+    state.value_vec.actions.append_item.emit(());
     wait("append", || {
         state.value_vec.items.read(|v| v == &[10, -3, 27, 32])
     });
-    state.value_vec.actions.remove_last.set(());
+    state.value_vec.actions.remove_last.emit(());
     wait("remove", || {
         state.value_vec.items.read(|v| v == &[10, -3, 27])
     });
     // Serial roundtrips avoid coalescing repeated single-mode signals.
     for length in (0..3).rev() {
-        state.value_vec.actions.remove_last.set(());
+        state.value_vec.actions.remove_last.emit(());
         wait("empty vector", || {
             state.value_vec.items.read(|v| v.len() == length)
         });
     }
-    state.value_vec.actions.append_item.set(());
+    state.value_vec.actions.append_item.emit(());
     wait("append to empty vector", || {
         state.value_vec.items.read(|v| v == &[10])
     });
-    state.value_vec.actions.reset_demo.set(());
+    state.value_vec.actions.reset_demo.emit(());
     wait("reset vector", || {
         state.value_vec.items.read(|v| v == &[10, -3, 27])
     });
-    state.value_map.actions.insert_next.set(());
+    state.value_map.actions.insert_next.emit(());
     wait("insert map", || {
         state.value_map.items.read(|v| v.get(&6) == Some(&600))
     });
-    state.value_map.actions.remove_lowest.set(());
+    state.value_map.actions.remove_lowest.emit(());
     wait("remove map", || {
         state
             .value_map
             .items
             .read(|v| !v.contains_key(&1) && v.len() == 3)
     });
-    state.value_map.actions.reset_demo.set(());
+    state.value_map.actions.reset_demo.emit(());
     wait("reset map", || {
         state
             .value_map
@@ -129,7 +129,7 @@ pub fn showcase(port: u16) {
     state.values.count.set_signal(42);
     // A collection roundtrip gives the receiver a chance to dispatch the edit;
     // server-side smoke assertions independently wait for that callback.
-    state.value_vec.actions.append_item.set(());
+    state.value_vec.actions.append_item.emit(());
     wait("final roundtrip", || {
         state.value_vec.items.read(|v| v.len() == 4)
     });

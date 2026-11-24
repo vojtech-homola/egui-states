@@ -1,358 +1,273 @@
-//! Atomic and lock-backed storage for copyable client state values.
+//! Atomic storage for copyable client state values.
 
-use parking_lot::{Mutex, RwLock};
+use std::marker::PhantomData;
 use std::sync::atomic::{
-    AtomicBool, AtomicI8, AtomicI16, AtomicI32, AtomicI64, AtomicU8, AtomicU16, AtomicU32,
     AtomicU64,
     Ordering::{Acquire, Release},
 };
 
-/// A copyable value that can be read through a low-overhead shared lock.
+use parking_lot::Mutex;
+
+/// A copyable value that [`ValueAtomic`] and [`StaticAtomic`] store in one
+/// `AtomicU64`, so reading it is one atomic load, without a lock.
 ///
-/// # Safety
+/// Built-in implementations cover the integers up to 64 bits, `bool`, `f32`,
+/// `f64`, `(f32, f32)` and `[f32; 2]`, and `#[derive(Atomic)]` implements it
+/// for a fieldless enum. Any other value that fits in 64 bits only converts
+/// itself to and from them; the storage, the memory ordering and the lock
+/// that orders a write with its message are the crate's:
 ///
-/// `Lock` must faithfully store and load every value of `Self` and satisfy the
-/// synchronization guarantees documented by [`AtomicLockStatic`].
-pub unsafe trait AtomicStatic: Copy {
-    /// Storage used by [`crate::StaticAtomic`].
-    type Lock: AtomicLockStatic<Self>;
+/// ```
+/// /// Two values that always change together.
+/// #[derive(Clone, Copy)]
+/// struct Range {
+///     low: u16,
+///     high: u16,
+/// }
+///
+/// impl egui_states::Atomic for Range {
+///     fn to_atomic(self) -> u64 {
+///         (u64::from(self.low) << 16) | u64::from(self.high)
+///     }
+///
+///     fn from_atomic(bits: u64) -> Self {
+///         Range {
+///             low: (bits >> 16) as u16,
+///             high: bits as u16,
+///         }
+///     }
+/// }
+/// ```
+///
+/// `#[derive(Atomic)]` covers only fieldless enums. An enum with data that
+/// fits in 64 bits converts itself the same way, here with the variant in the
+/// upper half and an `f32` in the lower:
+///
+/// ```
+/// #[derive(Clone, Copy)]
+/// enum Exposure {
+///     Auto,
+///     Manual(f32),
+/// }
+///
+/// impl egui_states::Atomic for Exposure {
+///     fn to_atomic(self) -> u64 {
+///         match self {
+///             Exposure::Auto => 0,
+///             Exposure::Manual(ms) => (1 << 32) | u64::from(ms.to_bits()),
+///         }
+///     }
+///
+///     fn from_atomic(bits: u64) -> Self {
+///         match bits >> 32 {
+///             0 => Exposure::Auto,
+///             _ => Exposure::Manual(f32::from_bits(bits as u32)),
+///         }
+///     }
+/// }
+/// ```
+///
+/// `from_atomic` must return the value `to_atomic` was given, for every
+/// value; it is only called with bits that `to_atomic` returned. The value
+/// also needs `#[egui_states::typed]` and `InitialValue` to be a state, as
+/// for [`Value`](crate::Value).
+///
+/// [`ValueAtomic`]: crate::ValueAtomic
+/// [`StaticAtomic`]: crate::StaticAtomic
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` cannot be stored in a `ValueAtomic` or `StaticAtomic`",
+    label = "not an atomic value",
+    note = "use `Value` or `Static` instead, or implement `Atomic` for a value that fits in 64 bits"
+)]
+pub trait Atomic: Copy {
+    /// Converts the value to the bits it is stored as.
+    fn to_atomic(self) -> u64;
+    /// Converts stored bits back to the value.
+    fn from_atomic(bits: u64) -> Self;
 }
 
-/// Thread-safe storage backing an [`AtomicStatic`] value.
-///
-/// # Safety
-///
-/// Concurrent calls must be data-race free. A completed [`Self::store`] must
-/// eventually be observable by [`Self::load`], and values must never be torn.
-pub unsafe trait AtomicLockStatic<T: Copy>: Sync + Send {
-    /// Creates storage containing `value`.
-    fn new(value: T) -> Self;
-    /// Loads the current value.
-    fn load(&self) -> T;
-    /// Replaces the current value.
-    fn store(&self, value: T);
-}
+/// One [`Atomic`] value in an `AtomicU64`.
+pub(crate) struct AtomicCell<T>(AtomicU64, PhantomData<fn() -> T>);
 
-/// An [`AtomicStatic`] value whose outgoing update can be ordered with storage.
-///
-/// # Safety
-///
-/// `Lock` must implement [`AtomicLock::update`] atomically with respect to
-/// concurrent updates, in addition to the guarantees of [`AtomicStatic`].
-pub unsafe trait Atomic: Copy {
-    /// Storage used by [`crate::ValueAtomic`].
-    type Lock: AtomicLock<Self>;
-}
-
-/// Storage that orders an outgoing notification before committing a value.
-///
-/// # Safety
-///
-/// Implementations must serialize the callback and store as one update so
-/// concurrent writers cannot send one value and commit another out of order.
-pub unsafe trait AtomicLock<T: Copy>: AtomicLockStatic<T> {
-    /// Runs `before_store` and then commits `value` as one serialized update.
-    fn update<F: FnOnce()>(&self, value: T, before_store: F);
-}
-
-/// Adds mutex-serialized update ordering around an [`AtomicLockStatic`].
-///
-/// Loads and stores may use the inner atomic directly, but [`AtomicLock::update`]
-/// is not lock-free because it holds a mutex across notification and storage.
-pub struct UpdateLock<L>(Mutex<()>, L);
-
-unsafe impl<T: Copy, L: AtomicLockStatic<T>> AtomicLockStatic<T> for UpdateLock<L> {
-    #[inline]
-    fn new(value: T) -> Self {
-        Self(Mutex::new(()), L::new(value))
+impl<T: Atomic> AtomicCell<T> {
+    pub(crate) fn new(value: T) -> Self {
+        Self(AtomicU64::new(value.to_atomic()), PhantomData)
     }
 
     #[inline]
-    fn load(&self) -> T {
+    pub(crate) fn load(&self) -> T {
+        T::from_atomic(self.0.load(Acquire))
+    }
+
+    #[inline]
+    pub(crate) fn store(&self, value: T) {
+        self.0.store(value.to_atomic(), Release);
+    }
+}
+
+/// Orders the outgoing message of a [`crate::ValueAtomic`] change with
+/// storing it.
+///
+/// Loads use the cell directly; [`Self::update`] holds a mutex across the
+/// notification and the store, so concurrent writers cannot send one value
+/// and commit another.
+pub(crate) struct UpdateLock<T>(Mutex<()>, AtomicCell<T>);
+
+impl<T: Atomic> UpdateLock<T> {
+    pub(crate) fn new(value: T) -> Self {
+        Self(Mutex::new(()), AtomicCell::new(value))
+    }
+
+    #[inline]
+    pub(crate) fn load(&self) -> T {
         self.1.load()
     }
 
+    /// Runs `before_store` and then stores `value`, as one update.
     #[inline]
-    fn store(&self, value: T) {
-        self.1.store(value);
-    }
-}
-
-unsafe impl<T: Copy, L: AtomicLockStatic<T>> AtomicLock<T> for UpdateLock<L> {
-    #[inline]
-    fn update<F: FnOnce()>(&self, value: T, before_store: F) {
+    pub(crate) fn update(&self, value: T, before_store: impl FnOnce()) {
         let _guard = self.0.lock();
         before_store();
         self.1.store(value);
     }
 }
 
-/// `RwLock`-based storage for targets without a suitable native atomic.
-///
-/// For example, 64-bit values use this fallback when the target does not
-/// advertise 64-bit atomic support.
-pub struct FallbackLock<T: Copy>(RwLock<T>);
-
-unsafe impl<T: Copy + Send + Sync> AtomicLockStatic<T> for FallbackLock<T> {
-    #[inline]
-    fn new(value: T) -> Self {
-        Self(RwLock::new(value))
-    }
-
-    #[inline]
-    fn load(&self) -> T {
-        *self.0.read()
-    }
-
-    #[inline]
-    fn store(&self, value: T) {
-        *self.0.write() = value;
-    }
-}
-
-unsafe impl<T: Copy + Send + Sync> AtomicLock<T> for FallbackLock<T> {
-    #[inline]
-    fn update<F: FnOnce()>(&self, value: T, before_store: F) {
-        let mut write = self.0.write();
-        before_store();
-        *write = value;
-    }
-}
-
-// Built-in 64-bit atomic storage.
-/// Native atomic storage used by built-in `u64`, `f64`, and two-`f32` values.
-pub struct U64Lock(pub AtomicU64);
-/// Native atomic storage used by the built-in `i64` value.
-pub struct I64Lock(pub AtomicI64);
-
-macro_rules! ImplAtomic64 {
-    ($t:ty, $lock:ty, $atomic:ty) => {
-        unsafe impl AtomicLockStatic<$t> for $lock {
-            fn new(value: $t) -> Self {
-                Self(<$atomic>::new(value))
+// Built-in values --------------------------------------------------------------
+macro_rules! ImplUnsigned {
+    ($($t:ty),*) => {$(
+        impl Atomic for $t {
+            #[inline]
+            fn to_atomic(self) -> u64 {
+                self as u64
             }
 
             #[inline]
-            fn load(&self) -> $t {
-                self.0.load(Acquire)
+            fn from_atomic(bits: u64) -> Self {
+                bits as $t
+            }
+        }
+    )*};
+}
+
+// A signed value is stored with its unsigned bit pattern of the same width.
+macro_rules! ImplSigned {
+    ($($t:ty => $u:ty),*) => {$(
+        impl Atomic for $t {
+            #[inline]
+            fn to_atomic(self) -> u64 {
+                self as $u as u64
             }
 
             #[inline]
-            fn store(&self, value: $t) {
-                self.0.store(value, Release);
+            fn from_atomic(bits: u64) -> Self {
+                bits as $u as $t
             }
         }
-
-        unsafe impl Atomic for $t {
-            #[cfg(target_has_atomic = "64")]
-            type Lock = UpdateLock<$lock>;
-            #[cfg(not(target_has_atomic = "64"))]
-            type Lock = FallbackLock<$t>;
-        }
-
-        unsafe impl AtomicStatic for $t {
-            #[cfg(target_has_atomic = "64")]
-            type Lock = $lock;
-            #[cfg(not(target_has_atomic = "64"))]
-            type Lock = FallbackLock<$t>;
-        }
-    };
+    )*};
 }
 
-ImplAtomic64!(u64, U64Lock, AtomicU64);
-ImplAtomic64!(i64, I64Lock, AtomicI64);
+ImplUnsigned!(u8, u16, u32, u64);
+ImplSigned!(i8 => u8, i16 => u16, i32 => u32, i64 => u64);
 
-// Built-in atomic storage for values up to 32 bits.
-/// Native atomic storage used by built-in `u32` and `f32` values.
-pub struct U32Lock(AtomicU32);
-/// Native atomic storage used by the built-in `i32` value.
-pub struct I32Lock(AtomicI32);
-/// Native atomic storage used by the built-in `u16` value.
-pub struct U16Lock(AtomicU16);
-/// Native atomic storage used by the built-in `i16` value.
-pub struct I16Lock(AtomicI16);
-/// Native atomic storage used by the built-in `u8` value.
-pub struct U8Lock(AtomicU8);
-/// Native atomic storage used by the built-in `i8` value.
-pub struct I8Lock(AtomicI8);
-/// Native atomic storage used by the built-in `bool` value.
-pub struct BoolLock(AtomicBool);
-
-macro_rules! ImplAtomic {
-    ($t:ty, $lock:ty, $atomic:ty) => {
-        unsafe impl AtomicLockStatic<$t> for $lock {
-            fn new(value: $t) -> Self {
-                Self(<$atomic>::new(value))
-            }
-
-            #[inline]
-            fn load(&self) -> $t {
-                self.0.load(Acquire)
-            }
-
-            #[inline]
-            fn store(&self, value: $t) {
-                self.0.store(value, Release);
-            }
-        }
-
-        unsafe impl Atomic for $t {
-            type Lock = UpdateLock<$lock>;
-        }
-
-        unsafe impl AtomicStatic for $t {
-            type Lock = $lock;
-        }
-    };
-}
-
-ImplAtomic!(u32, U32Lock, AtomicU32);
-ImplAtomic!(i32, I32Lock, AtomicI32);
-ImplAtomic!(u16, U16Lock, AtomicU16);
-ImplAtomic!(i16, I16Lock, AtomicI16);
-ImplAtomic!(u8, U8Lock, AtomicU8);
-ImplAtomic!(i8, I8Lock, AtomicI8);
-ImplAtomic!(bool, BoolLock, AtomicBool);
-
-// f64
-unsafe impl AtomicLockStatic<f64> for U64Lock {
-    fn new(value: f64) -> Self {
-        Self(AtomicU64::new(value.to_bits()))
+impl Atomic for bool {
+    #[inline]
+    fn to_atomic(self) -> u64 {
+        self as u64
     }
 
     #[inline]
-    fn load(&self) -> f64 {
-        f64::from_bits(self.0.load(Acquire))
+    fn from_atomic(bits: u64) -> Self {
+        bits != 0
+    }
+}
+
+// Floats keep their exact bits, so NaN payloads and -0.0 survive.
+impl Atomic for f32 {
+    #[inline]
+    fn to_atomic(self) -> u64 {
+        self.to_bits() as u64
     }
 
     #[inline]
-    fn store(&self, value: f64) {
-        self.0.store(value.to_bits(), Release);
+    fn from_atomic(bits: u64) -> Self {
+        f32::from_bits(bits as u32)
     }
 }
 
-unsafe impl Atomic for f64 {
-    #[cfg(target_has_atomic = "64")]
-    type Lock = UpdateLock<U64Lock>;
-    #[cfg(not(target_has_atomic = "64"))]
-    type Lock = FallbackLock<f64>;
-}
-
-unsafe impl AtomicStatic for f64 {
-    #[cfg(target_has_atomic = "64")]
-    type Lock = U64Lock;
-    #[cfg(not(target_has_atomic = "64"))]
-    type Lock = FallbackLock<f64>;
-}
-
-// f32
-unsafe impl AtomicLockStatic<f32> for U32Lock {
-    fn new(value: f32) -> Self {
-        Self(AtomicU32::new(value.to_bits()))
+impl Atomic for f64 {
+    #[inline]
+    fn to_atomic(self) -> u64 {
+        self.to_bits()
     }
 
     #[inline]
-    fn load(&self) -> f32 {
-        f32::from_bits(self.0.load(Acquire))
+    fn from_atomic(bits: u64) -> Self {
+        f64::from_bits(bits)
+    }
+}
+
+// Two f32 in one u64, so both components change atomically.
+impl Atomic for (f32, f32) {
+    #[inline]
+    fn to_atomic(self) -> u64 {
+        ((self.0.to_bits() as u64) << 32) | (self.1.to_bits() as u64)
     }
 
     #[inline]
-    fn store(&self, value: f32) {
-        self.0.store(value.to_bits(), Release);
+    fn from_atomic(bits: u64) -> Self {
+        (
+            f32::from_bits((bits >> 32) as u32),
+            f32::from_bits(bits as u32),
+        )
     }
 }
 
-unsafe impl Atomic for f32 {
-    type Lock = UpdateLock<U32Lock>;
-}
-
-unsafe impl AtomicStatic for f32 {
-    type Lock = U32Lock;
-}
-
-// Pack two f32 bit patterns into one u64 so both components change atomically.
-unsafe impl AtomicLockStatic<(f32, f32)> for U64Lock {
-    fn new(value: (f32, f32)) -> Self {
-        let combined = ((value.0.to_bits() as u64) << 32) | (value.1.to_bits() as u64);
-        Self(AtomicU64::new(combined))
+impl Atomic for [f32; 2] {
+    #[inline]
+    fn to_atomic(self) -> u64 {
+        (self[0], self[1]).to_atomic()
     }
 
-    fn load(&self) -> (f32, f32) {
-        let combined = self.0.load(Acquire);
-        let first = f32::from_bits((combined >> 32) as u32);
-        let second = f32::from_bits(combined as u32);
-        (first, second)
-    }
-
-    fn store(&self, value: (f32, f32)) {
-        self.0.store(
-            ((value.0.to_bits() as u64) << 32) | (value.1.to_bits() as u64),
-            Release,
-        );
-    }
-}
-
-unsafe impl Atomic for (f32, f32) {
-    #[cfg(target_has_atomic = "64")]
-    type Lock = UpdateLock<U64Lock>;
-    #[cfg(not(target_has_atomic = "64"))]
-    type Lock = FallbackLock<(f32, f32)>;
-}
-
-unsafe impl AtomicStatic for (f32, f32) {
-    #[cfg(target_has_atomic = "64")]
-    type Lock = U64Lock;
-    #[cfg(not(target_has_atomic = "64"))]
-    type Lock = FallbackLock<(f32, f32)>;
-}
-
-unsafe impl AtomicLockStatic<[f32; 2]> for U64Lock {
-    fn new(value: [f32; 2]) -> Self {
-        let combined = ((value[0].to_bits() as u64) << 32) | (value[1].to_bits() as u64);
-        Self(AtomicU64::new(combined))
-    }
-
-    fn load(&self) -> [f32; 2] {
-        let combined = self.0.load(Acquire);
-        let first = f32::from_bits((combined >> 32) as u32);
-        let second = f32::from_bits(combined as u32);
+    #[inline]
+    fn from_atomic(bits: u64) -> Self {
+        let (first, second) = <(f32, f32)>::from_atomic(bits);
         [first, second]
     }
-
-    fn store(&self, value: [f32; 2]) {
-        self.0.store(
-            ((value[0].to_bits() as u64) << 32) | (value[1].to_bits() as u64),
-            Release,
-        );
-    }
-}
-
-unsafe impl Atomic for [f32; 2] {
-    #[cfg(target_has_atomic = "64")]
-    type Lock = UpdateLock<U64Lock>;
-    #[cfg(not(target_has_atomic = "64"))]
-    type Lock = FallbackLock<[f32; 2]>;
-}
-
-unsafe impl AtomicStatic for [f32; 2] {
-    #[cfg(target_has_atomic = "64")]
-    type Lock = U64Lock;
-    #[cfg(not(target_has_atomic = "64"))]
-    type Lock = FallbackLock<[f32; 2]>;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn round_trip<T: Atomic + PartialEq + std::fmt::Debug>(values: &[T]) {
+        let cell = AtomicCell::new(values[0]);
+        for &value in values {
+            cell.store(value);
+            assert_eq!(cell.load(), value);
+        }
+    }
+
+    #[test]
+    fn integers_and_bool_round_trip_at_their_limits() {
+        round_trip(&[0_u8, 1, u8::MAX]);
+        round_trip(&[0_u16, 1, u16::MAX]);
+        round_trip(&[0_u32, 1, u32::MAX]);
+        round_trip(&[0_u64, 1, u64::MAX]);
+        round_trip(&[0_i8, -1, i8::MIN, i8::MAX]);
+        round_trip(&[0_i16, -1, i16::MIN, i16::MAX]);
+        round_trip(&[0_i32, -1, i32::MIN, i32::MAX]);
+        round_trip(&[0_i64, -1, i64::MIN, i64::MAX]);
+        round_trip(&[false, true, false]);
+    }
+
     #[test]
     fn float_storage_preserves_bits_including_signed_zero_and_nan() {
-        let f32_lock = <f32 as Atomic>::Lock::new(0.0);
+        let f32_cell = AtomicCell::new(0.0_f32);
         for bits in [0, 0x80000000, 0x7f800000, 0x7fc01234, 1] {
-            f32_lock.store(f32::from_bits(bits));
-            assert_eq!(AtomicLockStatic::<f32>::load(&f32_lock).to_bits(), bits);
+            f32_cell.store(f32::from_bits(bits));
+            assert_eq!(f32_cell.load().to_bits(), bits);
         }
-        let f64_lock = <f64 as Atomic>::Lock::new(0.0);
+        let f64_cell = AtomicCell::new(0.0_f64);
         for bits in [
             0,
             0x8000000000000000,
@@ -360,8 +275,32 @@ mod tests {
             0x7ff8000000001234,
             1,
         ] {
-            f64_lock.store(f64::from_bits(bits));
-            assert_eq!(AtomicLockStatic::<f64>::load(&f64_lock).to_bits(), bits);
+            f64_cell.store(f64::from_bits(bits));
+            assert_eq!(f64_cell.load().to_bits(), bits);
+        }
+        let pair = AtomicCell::new((-0.0_f32, f32::from_bits(0x7fc01234)));
+        let (first, second) = pair.load();
+        assert_eq!(
+            (first.to_bits(), second.to_bits()),
+            (0x80000000, 0x7fc01234)
+        );
+    }
+
+    /// An update notifies before it stores, so the notification sees the
+    /// previous value.
+    #[test]
+    fn an_update_notifies_before_it_stores() {
+        let lock = UpdateLock::new(1_u16);
+        let mut previous = 1_u16;
+        for value in [2_u16, u16::MAX, 0] {
+            let mut notified = false;
+            lock.update(value, || {
+                assert_eq!(lock.load(), previous);
+                notified = true;
+            });
+            assert!(notified);
+            assert_eq!(lock.load(), value);
+            previous = value;
         }
     }
 
@@ -370,8 +309,8 @@ mod tests {
         if crate::test_support::isolated() {
             return;
         }
-        let lock = std::sync::Arc::new(<[f32; 2] as Atomic>::Lock::new([1.0, -1.0]));
-        let writer = lock.clone();
+        let cell = std::sync::Arc::new(AtomicCell::new([1.0_f32, -1.0]));
+        let writer = cell.clone();
         let thread = std::thread::spawn(move || {
             for n in 1..50_000 {
                 let v = n as f32;
@@ -379,13 +318,10 @@ mod tests {
             }
         });
         for _ in 0..50_000 {
-            let pair: [f32; 2] = lock.load();
+            let pair: [f32; 2] = cell.load();
             assert_eq!(pair[0], -pair[1]);
         }
         thread.join().unwrap();
-        assert_eq!(
-            AtomicLockStatic::<[f32; 2]>::load(&*lock),
-            [49_999.0, -49_999.0]
-        );
+        assert_eq!(cell.load(), [49_999.0, -49_999.0]);
     }
 }

@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from egui_states._core import PyObjectType, StateServerCore, _ConnectRequest
-from egui_states.logging import LoggingSignal
+from egui_states._log import forward_logs
 from egui_states.signals import SignalsManager
 from egui_states.structures import ISubStates, _CallbackBase, _StaticBase
 from egui_states.transfer import TransferProfile
@@ -111,15 +111,6 @@ class StatesBase(ABC):
     def __init__(self, server: "StateServerBase") -> None:
         self._server = server
 
-    def update_ui(self, dt: float | None = None) -> None:
-        """Request the UI to update.
-
-        Args:
-            dt (float | None, optional): Repaint delay in seconds, or ``None``
-                for an immediate repaint.
-        """
-        self._server.update(dt)
-
     def get_server(self) -> "StateServerBase":
         """Return the state server that owns this tree.
 
@@ -143,7 +134,6 @@ class StateServerBase[T: StatesBase]:
         signals_workers: int = 3,
         error_handler: Callable[[Exception], None] | None = None,
         version: int | None = None,
-        heartbeat_interval: float = 5.0,
         heartbeat_timeout: float | None = 20.0,
         web_path: str | PathLike[str] | None = None,
         allowed_origins: Sequence[str] = (),
@@ -164,16 +154,15 @@ class StateServerBase[T: StatesBase]:
                 Handler for exceptions raised while processing callbacks.
             version (int | None, optional): Application version required from
                 the client.
-            heartbeat_interval (float, optional): Seconds between the pings the
-                server sends to the connected client. Ignored when the
-                heartbeat is disabled.
-            heartbeat_timeout (float | None, optional): Seconds the client may
-                send nothing before the server treats the connection as lost
-                and disconnects it. Clients answer pings automatically, so
-                this detects clients that disappeared without closing the
-                connection. Keep it above the time the largest transfer takes
-                over the slowest expected network. ``None`` disables the
-                heartbeat.
+            heartbeat_timeout (float | None, optional): Seconds either side
+                may hear nothing from the other before it treats the
+                connection as lost. The server pings the client every quarter
+                of it and sends a keep-alive message when it has nothing else
+                to send, so this detects a peer that disappeared without
+                closing the connection. Keep it above the time the largest
+                transfer takes over the slowest expected network; it must be
+                at least 1 second. ``None`` disables the heartbeat on both
+                sides, for example while debugging with breakpoints.
             web_path (str | PathLike[str] | None, optional): Directory of a
                 static web page, such as a built WASM client, that
                 :meth:`start_web` serves on the server port. A relative path
@@ -241,22 +230,21 @@ class StateServerBase[T: StatesBase]:
                 unencrypted private key of ``tls_cert``.
 
         Raises:
-            ValueError: If ``heartbeat_interval`` is not positive,
-                ``heartbeat_timeout`` is not greater than it, ``web_path``
-                cannot be made absolute (for example because it is empty), an
-                allowed origin is malformed, ``transfer_profile`` is not a
-                :class:`TransferProfile`, ``client_policy`` is not a
-                :class:`ClientPolicy`, ``connect_request_timeout`` is not
-                positive, only one of ``tls_cert`` and ``tls_key`` is given or
-                either without ``tls``, a TLS file holds no valid PEM
-                certificate or unencrypted key, or the key does not belong to
-                the certificate.
+            ValueError: If ``heartbeat_timeout`` is below 1 second,
+                ``web_path`` cannot be made absolute (for example because it
+                is empty), an allowed origin is malformed,
+                ``transfer_profile`` is not a :class:`TransferProfile`,
+                ``client_policy`` is not a :class:`ClientPolicy`,
+                ``connect_request_timeout`` is not positive, only one of
+                ``tls_cert`` and ``tls_key`` is given or either without
+                ``tls``, a TLS file holds no valid PEM certificate or
+                unencrypted key, or the key does not belong to the
+                certificate.
             OSError: If ``tls_cert`` or ``tls_key`` cannot be read, such as
                 ``FileNotFoundError`` for a missing file.
         """
         self._server = StateServerCore(
             version,
-            heartbeat_interval,
             heartbeat_timeout,
             web_path,
             list(allowed_origins),
@@ -273,7 +261,7 @@ class StateServerBase[T: StatesBase]:
 
         _initialize(self._states, "root", self._server, self._signals_manager, self._states._get_obj_types())
         self._server.finalize()
-        self.logging = LoggingSignal(self._signals_manager)
+        forward_logs(self._signals_manager)
         self._on_connect: Callable[[str], Any] | None = None
         self._on_disconnect: Callable[[], Any] | None = None
         self._on_client_message: Callable[[str], Any] | None = None
@@ -457,31 +445,41 @@ class StateServerBase[T: StatesBase]:
         """
         self._signals_manager.set_error_handler(error_handler)
 
-    def on_connect(self, func: Callable[[str], Any] | None) -> None:
+    def on_connect[F: Callable[[str], Any] | None](self, func: F) -> F:
         """Replace the callback invoked when a client connects.
 
         Args:
             func (Callable[[str], Any] | None): Callback receiving the client
                 address, or ``None`` to unregister the current callback.
+
+        Returns:
+            Callable[[str], Any] | None: ``func``, so the method also works as a
+                decorator.
         """
         self._on_connect = func
         self._signals_manager.clear_callbacks(_ON_CONNECT_ID)
         if func is not None:
             self._signals_manager.add_callback(_ON_CONNECT_ID, func)
+        return func
 
-    def on_disconnect(self, func: Callable[[], Any] | None) -> None:
+    def on_disconnect[F: Callable[[], Any] | None](self, func: F) -> F:
         """Replace the callback invoked when a client disconnects.
 
         Args:
             func (Callable[[], Any] | None): Callback to invoke, or ``None`` to
                 unregister the current callback.
+
+        Returns:
+            Callable[[], Any] | None: ``func``, so the method also works as a
+                decorator.
         """
         self._on_disconnect = func
         self._signals_manager.clear_callbacks(_ON_DISCONNECT_ID)
         if func is not None:
             self._signals_manager.add_callback(_ON_DISCONNECT_ID, func)
+        return func
 
-    def on_connect_request(self, func: Callable[[ConnectRequest], bool] | None) -> None:
+    def on_connect_request[F: Callable[[ConnectRequest], bool] | None](self, func: F) -> F:
         """Replace the callback that decides whether a client may connect.
 
         The server asks it for every client that passed the handshake, whether
@@ -506,6 +504,10 @@ class StateServerBase[T: StatesBase]:
                 the request and returning whether to accept the client, or
                 ``None`` to unregister it and return the decision to
                 ``client_policy``.
+
+        Returns:
+            Callable[[ConnectRequest], bool] | None: ``func``, so the
+                method also works as a decorator.
         """
         # The dispatcher stays registered while a callback is swapped: without
         # it, a client connecting in between would be decided by the policy.
@@ -515,6 +517,7 @@ class StateServerBase[T: StatesBase]:
             self._signals_manager.clear_callbacks(_ON_CONNECT_REQUEST_ID)
         elif not registered:
             self._signals_manager.add_callback(_ON_CONNECT_REQUEST_ID, self._decide_connect_request)
+        return func
 
     def _decide_connect_request(self) -> None:
         """Ask the connect-request callback about the pending request."""
@@ -531,15 +534,20 @@ class StateServerBase[T: StatesBase]:
             # An exception refuses the client; the worker then reports it.
             request.answer(accept)
 
-    def on_client_message(self, func: Callable[[str], Any] | None) -> None:
+    def on_client_message[F: Callable[[str], Any] | None](self, func: F) -> F:
         """Replace the callback for diagnostic messages from the client.
 
         Args:
             func (Callable[[str], Any] | None): Callback receiving the
                 diagnostic message, or ``None`` to unregister the current
                 callback.
+
+        Returns:
+            Callable[[str], Any] | None: ``func``, so the method also works as a
+                decorator.
         """
         self._on_client_message = func
         self._signals_manager.clear_callbacks(_CLIENT_MESSAGE_ID)
         if func is not None:
             self._signals_manager.add_callback(_CLIENT_MESSAGE_ID, func)
+        return func

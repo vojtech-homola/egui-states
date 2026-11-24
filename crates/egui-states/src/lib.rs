@@ -33,6 +33,11 @@
 //! - [`Value`] and [`ValueAtomic`] are bidirectional values.
 //! - [`Static`] and [`StaticAtomic`] are controlled by the server and read by
 //!   the client.
+//! - The atomic variants hold a small [`Atomic`] value (a number, `bool` or
+//!   fieldless enum with `#[derive(Atomic)]`), and their `get` is one atomic
+//!   load instead of a lock, for values the UI reads every frame. The crate
+//!   needs a target with 64-bit atomics, as every desktop target and wasm32
+//!   has.
 //! - [`Signal`] is a client-to-server event without retained client state.
 //! - [`ValueTake`], [`DataTake`], and [`DataMultiTake`] are one-shot
 //!   server-to-client transfers.
@@ -56,6 +61,11 @@
 //! complete setup instructions and runnable examples.
 
 extern crate self as egui_states;
+
+// The client's atomic values, the transfers and the server use 64-bit
+// atomics; every desktop target and wasm32 has them.
+#[cfg(not(target_has_atomic = "64"))]
+compile_error!("egui_states needs a target with 64-bit atomics");
 
 #[cfg(test)]
 mod test_support;
@@ -114,16 +124,20 @@ pub use client::tls::Tls;
 #[cfg(feature = "client")]
 pub use client::{
     client::ClientBuilder,
-    client::{Client, CloseReason, ConnectionState, DEFAULT_CONNECT_TIMEOUT},
+    client::{Client, CloseReason, ConnectionState, DEFAULT_CONNECT_TIMEOUT, Reconnect},
     states::{
-        atomics::{Atomic, AtomicLock, AtomicLockStatic, AtomicStatic, FallbackLock, UpdateLock},
-        data::{Data, DataMulti, HeaderValue},
+        atomics::Atomic,
+        data::{Data, DataMulti},
         data_take::{DataMultiTake, DataTake},
         file_transfer::{Download, LocalFile, OfferedFile, TransferOffer, Upload},
+        header::HeaderValue,
         image::{Image, ImageMulti},
         initial_value::{InitValue, InitialValue},
         map::MapState,
-        values::{Diff, DiffAtomic, Signal, Static, StaticAtomic, Value, ValueAtomic, ValueTake},
+        values::{
+            Changed, Diff, DiffAtomic, Signal, Static, StaticAtomic, VALUE_TAKE_QUEUE, Value,
+            ValueAtomic, ValueTake,
+        },
         vec::VecState,
     },
     states_creator::StatesCreator,
@@ -151,13 +165,13 @@ pub trait State {
 
 pub use egui_states_macros::typed;
 #[cfg(feature = "client")]
-pub use egui_states_macros::{Atomic, AtomicStatic, InitialValue, State};
+pub use egui_states_macros::{Atomic, InitialValue, State};
 /// Serde re-export used by [`typed`] and generated implementations.
 ///
 /// Generated derives refer to this module, so applications using [`typed`] do
 /// not need to add a separate direct Serde dependency.
 pub use serde;
-pub use typed::{ObjectType, RustDerive, Typed};
+pub use typed::{ObjectType, RustDerive, Typed, TypedGuard, VariantFields};
 
 // Wire protocol version advertised during the WebSocket handshake. A mismatch
 // rejects the connection; bump this only for an incompatible message change.

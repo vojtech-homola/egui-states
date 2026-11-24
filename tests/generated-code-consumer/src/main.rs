@@ -16,6 +16,7 @@ fn main() {
         generate_python::<awkward::KeywordNames>(directory.join("keywords")).unwrap();
         generate_python::<awkward::SpecialLiterals>(directory.join("literals")).unwrap();
         generate_python::<awkward::UnitStruct>(directory.join("unit")).unwrap();
+        generate_python::<awkward::ShadowedNames>(directory.join("shadows")).unwrap();
     } else {
         egui_states::build_scripts::generate_rust::<schema::Root>(directory.join("rust")).unwrap();
         egui_states::build_scripts::generate_python::<schema::Root>(directory.join("python"))
@@ -53,7 +54,7 @@ mod tests {
         let header = bindings::structs::Inner { enabled: true };
         let measurements = &server.states.measurements;
         measurements
-            .set_with_header(&[1.0, 2.0], &header, false, false)
+            .set_with_header(&[1.0, 2.0], &header, false)
             .unwrap();
         assert_eq!(measurements.header().unwrap(), Some(header));
         assert!(!server.is_running());
@@ -86,11 +87,68 @@ mod tests {
         let reserved = keywords.reserved.get().unwrap();
         assert_eq!((reserved.from, reserved.lambda), (3, true));
         assert_eq!(keywords.global.get().unwrap(), 1);
+        let raw = keywords.r#type.get().unwrap();
+        assert_eq!((raw.r#type, raw.r#in), (5, true));
+        assert_eq!(
+            keywords.raw_command.get().unwrap(),
+            awkward_bindings::enums::RawCommand::r#match {
+                r#type: 1,
+                r#if: true
+            }
+        );
+        // The generated `Option` and `String` enums leave the standard types
+        // of their neighbours alone.
+        use awkward_bindings::enums as generated;
+        assert!(keywords.option.get().unwrap() > generated::Option::Off);
+        assert!(matches!(
+            keywords.short.get().unwrap(),
+            generated::s::Second
+        ));
+        match keywords.shadowed.get().unwrap() {
+            generated::String::r#final {
+                text,
+                maybe: Some(generated::s::Second),
+                choices,
+            } => {
+                assert_eq!(text, "text");
+                assert!(matches!(choices[..], [generated::Option::On]));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        assert_eq!(
+            keywords.shadowed_map.get().unwrap(),
+            generated::String::IntEnum([(1, "one".to_string())].into())
+        );
         assert_eq!(literals.escaped.get().unwrap(), awkward::ESCAPED);
         assert!(literals.not_a_number.get().unwrap().is_nan());
         assert_eq!(literals.positive_infinity.get().unwrap(), f64::INFINITY);
         assert_eq!(literals.negative_infinity.get().unwrap(), f64::NEG_INFINITY);
         assert!(literals.single_not_a_number.get().unwrap().is_nan());
         server.states.unit.marker.get().unwrap();
+
+        // Names that are keywords only in Python are plain names here.
+        let types = &server.states.keyword_types;
+        assert_eq!(types.nothing.get().unwrap(), generated::None::Something);
+        assert_eq!(
+            types.truth.get().unwrap(),
+            generated::True::Maybe(Some(generated::None::Something))
+        );
+        let function = types.function.get().unwrap();
+        assert_eq!(
+            (function.value, function.choice, function.maybe),
+            (2, generated::None::Something, Option::None)
+        );
+
+        // State groups named like the prelude and the Python imports leave
+        // the server methods their types.
+        let shadows = &server.states.shadows;
+        assert_eq!(shadows.group_0.value.get().unwrap(), 0);
+        assert_eq!(shadows.group_8.value.get().unwrap(), 8);
+        assert_eq!(shadows.group_14.value.get().unwrap(), 14);
+        let _: awkward_bindings::Option = shadows.group_8.clone();
+        let _: awkward_bindings::String = shadows.group_9.clone();
+        let _: Option<String> = server.tls_fingerprint();
+        let _: Option<std::net::SocketAddrV4> = server.address();
+        let _handle = server.on_connect(|_address: String| ());
     }
 }

@@ -1,10 +1,12 @@
+use std::collections::BTreeMap;
 use std::error::Error;
 
 use eframe::{App, CreationContext};
 use egui::{Color32, ColorImage};
-use egui_states::{Client, ClientBuilder, ConnectionState, Tls};
+use egui_states::{Client, ClientBuilder, ConnectionState, Reconnect, Tls};
 
 mod collections;
+mod commands;
 mod data;
 mod helpers;
 mod image;
@@ -17,14 +19,19 @@ struct ViewState {
     schema: ShowcaseState,
     last_take_text: String,
     empty_take_count: u32,
+    /// The newest lines of `root.value_take.take_log`.
+    take_log: Vec<String>,
     number_signal_value: f64,
     enum_signal_value: PrimaryChoice,
     last_take_buffer: Vec<u8>,
     last_take_samples: Vec<f32>,
-    last_multi_take_bytes: Vec<(u32, Vec<u8>)>,
-    last_multi_take_samples: Vec<(u32, Vec<f32>)>,
-    last_multi_take_nested: Vec<(u32, Vec<u16>)>,
+    last_multi_take_bytes: BTreeMap<u32, Vec<u8>>,
+    last_multi_take_samples: BTreeMap<u32, Vec<f32>>,
+    last_multi_take_nested: BTreeMap<u32, Vec<u16>>,
     last_offer_note: String,
+    /// The summary of `root.data.samples`, computed only when it changed.
+    samples_summary: String,
+    command_inputs: commands::CommandInputs,
 }
 
 impl ViewState {
@@ -33,14 +40,17 @@ impl ViewState {
             schema,
             last_take_text: String::new(),
             empty_take_count: 0,
+            take_log: Vec::new(),
             number_signal_value: 0.0,
             enum_signal_value: PrimaryChoice::default(),
             last_take_buffer: Vec::new(),
             last_take_samples: Vec::new(),
-            last_multi_take_bytes: Vec::new(),
-            last_multi_take_samples: Vec::new(),
-            last_multi_take_nested: Vec::new(),
+            last_multi_take_bytes: BTreeMap::new(),
+            last_multi_take_samples: BTreeMap::new(),
+            last_multi_take_nested: BTreeMap::new(),
             last_offer_note: String::new(),
+            samples_summary: "not set".to_string(),
+            command_inputs: commands::CommandInputs::default(),
         }
     }
 }
@@ -59,7 +69,10 @@ impl MainApp {
         host: Option<String>,
         tls: Option<Tls>,
     ) -> Result<Box<dyn App>, Box<dyn Error + Send + Sync>> {
-        let mut builder = ClientBuilder::<ShowcaseState>::new(cc.egui_ctx.clone(), port);
+        // After the first connect, the client connects again by itself when
+        // the server restarts or the connection drops.
+        let mut builder = ClientBuilder::<ShowcaseState>::new(cc.egui_ctx.clone(), port)
+            .reconnect(Reconnect::default());
         if let Some(host) = host {
             builder = builder.host(host);
         }
@@ -99,6 +112,10 @@ impl eframe::App for MainApp {
                         }
                         ConnectionState::Disconnected => {
                             egui::Button::new("Reconnect").fill(egui::Color32::LIGHT_RED)
+                        }
+                        // A click tries at once instead of after the delay.
+                        ConnectionState::Reconnecting => {
+                            egui::Button::new("Reconnecting…").fill(egui::Color32::LIGHT_YELLOW)
                         }
                         // `Failed` and any state added in the future.
                         _ => egui::Button::new("Retry").fill(egui::Color32::LIGHT_RED),
@@ -141,6 +158,13 @@ fn poll_take_values(state: &mut ViewState) {
         state.empty_take_count += 1;
     }
 
+    // A queued take: every line of a burst, in order.
+    while let Some(line) = state.schema.value_take.take_log.take() {
+        state.take_log.push(line);
+    }
+    let excess = state.take_log.len().saturating_sub(8);
+    state.take_log.drain(..excess);
+
     if let Some(value) = state.schema.data_take.take_buffer.take() {
         state.last_take_buffer = value;
     }
@@ -149,40 +173,16 @@ fn poll_take_values(state: &mut ViewState) {
         state.last_take_samples = value;
     }
 
-    for key in 0..4 {
-        if let Some(value) = state.schema.data_multi_take.bytes.take(key) {
-            if let Some(entry) = state
-                .last_multi_take_bytes
-                .iter_mut()
-                .find(|(k, _)| *k == key)
-            {
-                entry.1 = value;
-            } else {
-                state.last_multi_take_bytes.push((key, value));
-            }
-        }
-        if let Some(value) = state.schema.data_multi_take.samples.take(key) {
-            if let Some(entry) = state
-                .last_multi_take_samples
-                .iter_mut()
-                .find(|(k, _)| *k == key)
-            {
-                entry.1 = value;
-            } else {
-                state.last_multi_take_samples.push((key, value));
-            }
-        }
-        if let Some(value) = state.schema.data_multi_take.nested.buffer.take(key) {
-            if let Some(entry) = state
-                .last_multi_take_nested
-                .iter_mut()
-                .find(|(k, _)| *k == key)
-            {
-                entry.1 = value;
-            } else {
-                state.last_multi_take_nested.push((key, value));
-            }
-        }
+    // Every key that arrived, without knowing the keys in advance.
+    let multi = &state.schema.data_multi_take;
+    while let Some((key, value)) = multi.bytes.take_next() {
+        state.last_multi_take_bytes.insert(key, value);
+    }
+    while let Some((key, value)) = multi.samples.take_next() {
+        state.last_multi_take_samples.insert(key, value);
+    }
+    while let Some((key, value)) = multi.nested.buffer.take_next() {
+        state.last_multi_take_nested.insert(key, value);
     }
 }
 
@@ -212,4 +212,6 @@ fn show_content(ui: &mut egui::Ui, state: &mut ViewState) {
     image::show_image_section(ui, state);
     ui.separator();
     transfers::show_transfers(ui, state);
+    ui.separator();
+    commands::show_commands(ui, state);
 }

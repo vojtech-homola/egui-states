@@ -86,6 +86,39 @@ def test_multi_data_methods(local_bundle: tuple[StatesServer, State, list[Except
         states.multi_data.bytes[2].get()
 
 
+def test_multi_data_lists_its_indices(local_bundle: tuple[StatesServer, State, list[Exception]]) -> None:
+    _server, states, _errors = local_bundle
+    data = states.multi_data.bytes
+    assert data.indices() == []
+    assert len(data) == 0
+
+    data[9].set(np.array([1], dtype=np.uint8))
+    data[1].set(np.array([], dtype=np.uint8))
+    assert data.indices() == [1, 9]
+    assert len(data) == 2
+    assert 9 in data
+    assert 2 not in data
+    # Without a client nothing waits, for any index or one.
+    assert data.is_idle()
+    assert data.is_idle(9)
+    assert data[9].is_idle()
+    # Keys that cannot exist are not in it, as for a dict.
+    for key in (-1, 2**32, "9", 9.0, None):
+        assert key not in data
+
+    data.remove_index(9)
+    assert data.indices() == [1]
+    data.reset()
+    assert len(data) == 0
+    assert 1 not in data
+
+    # The header variant inherits the listing.
+    keyed = states.headers.keyed
+    keyed[3].set(np.array([7], dtype=np.uint16), header=HeaderMeta(0.5, "y", []))
+    assert keyed.indices() == [3]
+    assert 3 in keyed
+
+
 def test_sparse_float_storage(local_bundle):
     _, states, _ = local_bundle
     samples = np.linspace(0.0, 1.0, 5, dtype=np.float32)
@@ -315,3 +348,76 @@ def test_a_header_of_the_wrong_type_changes_nothing(local_bundle):
         series.set(np.array([2.0, 3.0], dtype=np.float32), header="not a header")
     assert_array(series.get(), np.array([1.0], dtype=np.float32))
     assert series.get_header() == HeaderMeta(1.0, "a", [])
+
+
+def test_multi_data_iterates_over_its_indices(local_bundle: tuple[StatesServer, State, list[Exception]]) -> None:
+    _server, states, _errors = local_bundle
+    data = states.multi_data.bytes
+    assert list(data) == []
+    data[9].set(np.array([1], dtype=np.uint8))
+    data[1].set(np.array([], dtype=np.uint8))
+    assert list(data) == [1, 9]
+    assert [data[index].get().size for index in data] == [0, 1]
+    # The handles of the same indices, alone and with their index, as a dict has.
+    assert [handle.get().size for handle in data.values()] == [0, 1]
+    assert [(index, handle.get().size) for index, handle in data.items()] == [(1, 0), (9, 1)]
+    assert len(data.values()) == len(data.items()) == len(data)
+    # Iteration walks a copy, so the state can change under it.
+    for index, handle in data.items():
+        data.remove_index(index)
+        with pytest.raises(ValueError, match="index not found"):
+            handle.get()
+    assert list(data) == [] and list(data.values()) == [] and list(data.items()) == []
+
+    # The header variant inherits the iteration.
+    keyed = states.headers.keyed
+    keyed[3].set(np.array([7], dtype=np.uint16), header=HeaderMeta(0.5, "y", []))
+    assert list(keyed) == [3]
+    assert dict.fromkeys(keyed) == {3: None}
+    # Its handles are the ones with a header.
+    header = HeaderMeta(0.5, "y", [])
+    assert [handle.get_header() for handle in keyed.values()] == [header]
+    assert [(index, handle.get_header()) for index, handle in keyed.items()] == [(3, header)]
+
+
+def test_multi_take_data_is_not_iterable(local_bundle: tuple[StatesServer, State, list[Exception]]) -> None:
+    """A take state lists no indices, so iterating it fails instead of never ending."""
+    _server, states, _errors = local_bundle
+    for take in (states.data_multi_take.bytes, states.headers.keyed_take):
+        with pytest.raises(TypeError, match="is not iterable"):
+            iter(take)
+        with pytest.raises(TypeError, match="is not iterable"):
+            list(take)
+        with pytest.raises(TypeError):
+            _ = 1 in take
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["multi_data.bytes", "headers.keyed", "data_multi_take.bytes", "headers.keyed_take"],
+)
+def test_multi_data_indices_are_integers(local_bundle: tuple[StatesServer, State, list[Exception]], path: str) -> None:
+    """Every kind of multi data takes the same indices from ``get`` and ``[]``."""
+    _server, states, _errors = local_bundle
+    section, name = path.split(".")
+    data = getattr(getattr(states, section), name)
+    for index in (7, True, np.uint8(7), np.uint32(7), np.int64(7), np.array(7)):
+        assert data.get(index)._index == int(index)
+        assert data[index]._index == int(index)
+        assert type(data[index]._index) is int
+    for wrong in ("7", 7.0, None, np.float32(7), [7], np.array([7.0])):
+        with pytest.raises(TypeError, match="^index must be an integer$"):
+            data.get(wrong)
+        with pytest.raises(TypeError, match="^index must be an integer$"):
+            data[wrong]
+
+
+def test_multi_data_membership_takes_any_integer(local_bundle: tuple[StatesServer, State, list[Exception]]) -> None:
+    _server, states, _errors = local_bundle
+    data = states.multi_data.bytes
+    data[1].set(np.array([5], dtype=np.uint8))
+    for index in (1, True, np.uint8(1), np.uint32(1), np.int64(1)):
+        assert index in data
+        assert_array(data[index].get(), np.array([5], dtype=np.uint8))
+    for index in (2, False, np.uint32(2), np.int64(-1), np.uint64(2**32), np.float32(1), np.array([1.0])):
+        assert index not in data

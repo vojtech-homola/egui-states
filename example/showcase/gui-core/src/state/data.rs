@@ -3,6 +3,9 @@ use egui_states::{Data, DataMulti, DataMultiTake, DataTake, ValueTake};
 pub struct ValueTakeStates {
     pub take_text: ValueTake<String>,
     pub take_empty: ValueTake<()>,
+    /// Queued: the server sends a burst of lines, and the GUI takes every
+    /// one of them, not only the last.
+    pub take_log: ValueTake<String>,
 }
 
 pub struct NestedDataStates {
@@ -58,6 +61,7 @@ impl egui_states::State for ValueTakeStates {
         Self {
             take_text: c.value_take("take_text"),
             take_empty: c.value_take("take_empty"),
+            take_log: c.queue(|c| c.value_take("take_log")),
         }
     }
 }

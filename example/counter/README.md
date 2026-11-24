@@ -29,7 +29,8 @@ cargo run -p counter_gui --bin counter-gui
 ```
 
 Click **Connect**, edit the count, and try **Reset**. Every server uses loopback
-port **8092**; run only one at a time. Stop the server with Ctrl+C.
+port **8092**; run only one at a time. Stop the server with Ctrl+C; the GUI
+connects again by itself once a server runs again.
 
 ## Read the code
 

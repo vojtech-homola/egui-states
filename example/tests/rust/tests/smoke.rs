@@ -42,7 +42,7 @@ fn showcase_setup_and_client() {
 fn counter_setup_and_client() {
     let demo = counter_server::setup_server().unwrap();
     assert_eq!(demo.server.states.count.get().unwrap(), 0);
-    demo.server.states.count.set(-1, false).unwrap();
+    demo.server.states.count.set(-1).unwrap();
     let port = free_port();
     demo.server
         .start(port, Some(std::net::Ipv4Addr::LOCALHOST), None)

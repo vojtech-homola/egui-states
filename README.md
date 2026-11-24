@@ -28,6 +28,10 @@ pub struct CounterState {
   [concurrent writes](docs/architecture.md#concurrent-value-writes).
 - `Static<T>` stores a value the server controls and the client reads.
 - `Signal<T>` sends a client event to server callbacks without retaining a value.
+- `ValueAtomic<T>` and `StaticAtomic<T>` work like `Value` and `Static` for a
+  small copyable value: a number, `bool`, or a fieldless enum with
+  `#[derive(egui_states::Atomic)]`. Their `get()` is one atomic load instead
+  of a lock, for values the UI reads every frame.
 
 `Value` and `Static` fields (and their atomic variants) start from
 `Default::default()`. Give a field another initial value with
@@ -49,11 +53,24 @@ on the environment, the clock, or the target platform.
 
 Nest structs deriving `State` to organize larger state trees. Collections,
 numeric buffers, images, custom types, and one-shot transfers are covered in the
-[showcase](example/showcase/README.md). A numeric buffer can carry a typed
-header that describes it, `Data<f32, Meta>`, which the client publishes
-together with the buffer; see [Data headers](docs/architecture.md#data-headers).
+[showcase](example/showcase/README.md). A numeric buffer or an image can carry
+a typed header that describes it, `Data<f32, Meta>` or `Image<Meta>`, which the
+client publishes together with the buffer or pixels; see
+[Data and image headers](docs/architecture.md#data-and-image-headers).
 A `Data` reads as `None` until the server sets it, so an empty buffer differs
 from no data; see [numeric data](docs/architecture.md#numeric-and-image-data).
+The client draws an image with nearest-neighbor filtering, which keeps
+zoomed-in pixels sharp; `set_texture_options` on an `Image` or `ImageMulti`
+changes that, for example to `egui::TextureOptions::LINEAR`, from the next
+image the server sends.
+
+Custom structs and enums are marked `#[egui_states::typed]`. Such a type has
+one shape in every build: a `#[cfg(...)]` on a field or a variant, and a Serde
+attribute that changes the encoding, are compile errors. An enum can carry
+data in its variants, such as commands with parameters sent in order through
+one `#[state(queue)] Signal<Command>`. In Python, each variant is a frozen
+dataclass, created as `Command.Stop()` or `Command.MoveTo(x=1.0, y=2.0)` and
+read with `match`; see [enums with data](docs/architecture.md#enums-with-data).
 
 A large image or buffer delays the states the server sends after it. Mark it
 `#[state(low_priority)]`, or a substate to mark every image and buffer inside
@@ -67,8 +84,65 @@ server port, start the server, and call `client.connect()` to synchronize.
 Rebuild bindings after changing the state definition; generated files should
 not be edited.
 
-On the client, `set_signal` changes a value and invokes server callbacks.
-Server setters can request an egui repaint with their `update` flag.
+On the client, `set` changes a value and `set_signal` also invokes server
+callbacks. A `Signal` stores nothing: `emit` sends an event that only runs the
+server's callbacks, such as a button press. To bind a widget to a value, `edit` and `edit_signal` pass a copy
+of it to a closure and send it only when the closure changed it:
+
+```rust
+state.count.edit_signal(|count| ui.add(egui::DragValue::new(count)));
+```
+
+On a Python server, `connect` registers a callback for a value's signaled
+changes or a signal's events. It returns the callback, so it also works as a
+decorator, as do the server's `on_connect`, `on_disconnect`,
+`on_connect_request` and `on_client_message`:
+
+```python
+@server.states.count.connect
+def on_count(count: int) -> None:
+    print("count is now", count)
+
+
+server.states.count.disconnect(on_count)  # when it is no longer needed
+```
+
+The client repaints the UI after the server changes a state, once per
+received batch of changes; see
+[repaints](docs/architecture.md#repaints-and-runtimes).
+
+To rebuild something from a `Data`, `VecState` or `MapState` only when the
+server changed it, such as a plot of a large buffer, call `take_changed()`
+once per frame before reading. It returns `true` once after each change, and
+only this call clears it, so other reads don't interfere:
+
+```rust
+if state.samples.take_changed() {
+    self.plot = state.samples.read(|samples| downsample(samples));
+}
+```
+
+`DataMulti` has a flag per key, `take_changed(key)`, which returns `None`
+while the key holds no buffer, and `take_any_changed()` for the whole
+collection, which also reports a removed key.
+
+A `ValueTake<T>` delivers a one-shot value from the server, which the UI
+consumes with `take()`. By default a new value replaces one the UI has not
+taken yet. Mark it `#[state(queue)]` to keep every value in arrival order, up
+to 100, or `#[state(queue = N)]` for another limit; when the queue is full,
+the oldest value is dropped and the client reports it to the server:
+
+```rust
+#[derive(egui_states::State)]
+pub struct JobState {
+    #[state(queue)]
+    pub log: ValueTake<String>,
+}
+
+while let Some(line) = state.log.take() {
+    self.lines.push(line);
+}
+```
 
 ## File transfers
 
@@ -89,12 +163,10 @@ pub struct FilesState {
 A Python server answers the client's request by sending the file:
 
 ```python
+@server.states.request.connect
 def send(name: str) -> None:
     # The client only names a file; the server decides what it may send.
     server.states.files.send_file(DATA / safe_name(name))
-
-
-server.states.request.connect(send)
 ```
 
 and the client takes the offer in `update`, asking for a path without stopping
@@ -153,8 +225,8 @@ again after a rebuild serves the new page.
 
 A WASM client connects back to the host and port its page was loaded from (using
 `wss` for HTTPS pages), so a page served this way reaches the server through any
-address, tunnel, or forwarded port. Set the client builder's `host` or `addr` to
-connect elsewhere. When a separate development server such as `trunk serve`
+address, tunnel, or forwarded port. Set the client builder's `host` to connect
+elsewhere. When a separate development server such as `trunk serve`
 serves the page, let it forward the WebSocket to the state server; the showcase's
 `Trunk.toml` shows how.
 
@@ -254,13 +326,46 @@ Rust needs the crate's `tls` feature.
 
 ## Lost connections
 
-The server pings the connected client every 5 s and disconnects it after 20 s
-without any response, for example when the client's computer sleeps or its
-network drops without closing the connection. Server operations waiting for
-that client's acknowledgements are then released. Clients answer pings
-automatically. Change either time, or disable the heartbeat, with
-`heartbeat_interval` and `heartbeat_timeout` in the Rust `ServerOptions` or the
-Python server's constructor.
+A connection can break without either side being told, for example when the
+client's computer sleeps or the network drops. Each side then treats 20 s
+without hearing from the other as a lost connection:
+
+- The server pings the client every 5 s, which clients answer automatically,
+  and disconnects a client that stays silent. Server operations waiting for
+  that client's acknowledgements are then released.
+- The client learns the timeout when it connects. The server sends a small
+  keep-alive message every 5 s in which it sent nothing else, so a client that
+  hears nothing for 20 s ends the connection with `ConnectionLost`, also in
+  the browser, and reconnects if it was built to.
+
+Change the time with `heartbeat_timeout` in the Rust `ServerOptions` or the
+Python server's constructor; the pings follow at a quarter of it. It must be at
+least 1 s; keep it above the time the largest message takes over the slowest
+expected network. `None`
+disables the heartbeat on both sides, for example while a debugger holds the
+client or the Rust server at a breakpoint.
+
+By default a client connects only when `client.connect()` is called, also
+after a connection ended. Build it with `.reconnect(Reconnect::default())` to
+have it connect again by itself, for example while the Python server
+restarts:
+
+```rust
+let (state, client) = ClientBuilder::<AppState>::new(ctx, 8091)
+    .reconnect(Reconnect::default())
+    .build();
+client.connect();
+```
+
+After the first `connect()`, a client that cannot reach the server, loses the
+connection or sees the server stop tries again after 0.5 s, waiting twice as
+long after each failed attempt up to 5 s. A client refused as `Busy` tries
+every 5 s. Other causes, such as a version mismatch, a refusal, or another
+client taking over, wait for `connect()` as before. Between attempts
+`get_state()` reports `Reconnecting`; `connect()` tries at once and
+`disconnect()` stops. The waits can be set in `Reconnect`; each is at least
+100 ms. Each connection synchronizes every state from the
+server, so what the UI changed while disconnected is replaced.
 
 ## One client at a time
 
@@ -296,13 +401,36 @@ disconnected. In Rust the callback is `StateServer::on_connect_request`.
 
 On the client, `get_state()` reports `Connecting` during an attempt,
 `WaitingForApproval` while the server's callback decides, then `Connected`.
-After `Failed` or `Disconnected`, `last_reason()` returns why as a
-`CloseReason`, such as `Unreachable`, `Timeout`, `VersionMismatch`,
-`TokenRejected`, `Busy`, `Refused`, `Replaced`, `ClosedByServer`, or
-`ConnectionLost`, and `last_error()` describes it in words. An attempt the
-server does not answer fails after the client
-builder's `connect_timeout` (10 s by default). The server sends its reasons in
-the WebSocket close frame, so browser clients receive them too.
+After `Failed`, `Disconnected` or `Reconnecting`, `last_reason()` returns why
+as a `CloseReason`, such as `Unreachable`, `Timeout`, `VersionMismatch`,
+`TokenRejected`, `Busy`, `Refused`, `Replaced`, `ClosedByServer`,
+`ServerStopped`, or `ConnectionLost`, and `last_error()` describes it in words.
+An attempt the server does not answer fails after the client builder's
+`connect_timeout` (10 s by default). The server sends its reasons in the
+WebSocket close frame, so browser clients receive them too.
+
+## Server logging
+
+The server reports what happens to connections, such as a rejected client, a
+handshake that timed out or a failed send, through each language's standard
+logging:
+
+- Python: the `egui_states` logger of the `logging` module. Without any
+  logging configuration, Python prints warnings and errors to stderr; set the
+  logger's level or add handlers as for any library:
+
+  ```python
+  import logging
+
+  logging.getLogger("egui_states").setLevel(logging.ERROR)
+  ```
+
+- Rust: the [`log`](https://docs.rs/log) crate, target `egui_states`. The
+  messages go to the logger the application installs, such as `env_logger`
+  (`RUST_LOG=egui_states=warn`), `fern` or `tracing-subscriber`, and nowhere
+  without one.
+
+Errors from the client's side arrive separately, through `on_client_message`.
 
 ## Examples
 

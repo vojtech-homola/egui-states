@@ -2,12 +2,13 @@
 
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
 use crate::client::client::print_error;
 use crate::client::messages::{ChannelMessage, MessageSender};
-use crate::client::states::atomics::{Atomic, AtomicLock, AtomicLockStatic, AtomicStatic};
+use crate::client::states::atomics::{Atomic, AtomicCell, UpdateLock};
 use crate::protocol::{check_value_size, deserialize, to_message};
 
 /// Report a value that cannot be sent, locally and to the server.
@@ -17,10 +18,65 @@ fn report_error(sender: &MessageSender, error: String) {
     sender.send_message(&error);
 }
 
+/// Whether an edited copy differs from the value it was copied from.
+///
+/// `T`'s [`PartialEq`] decides, except for a value that is not equal to
+/// itself, such as a float holding NaN: comparing it says "changed" although
+/// nothing was edited, so its serialized form is compared instead. A widget
+/// bound to such a value would otherwise send it on every frame.
+fn differs<T: Serialize + PartialEq>(value: &T, original: &T) -> bool {
+    if value == original {
+        return false;
+    }
+    #[allow(clippy::eq_op)]
+    let reflexive = original == original;
+    reflexive || to_message(value).as_slice() != to_message(original).as_slice()
+}
+
+/// The result of a [`Value::write`] closure, reporting whether it changed the
+/// value.
+///
+/// Implemented for `bool`, for widget responses ([`egui::Response::changed`]),
+/// and for the results of containers and popups that wrap one of these
+/// ([`egui::InnerResponse`] and `Option`, where `None` means no change).
+pub trait Changed {
+    /// Returns whether the closure changed the value.
+    fn changed(&self) -> bool;
+}
+
+impl Changed for bool {
+    #[inline]
+    fn changed(&self) -> bool {
+        *self
+    }
+}
+
+impl Changed for egui::Response {
+    #[inline]
+    fn changed(&self) -> bool {
+        egui::Response::changed(self)
+    }
+}
+
+impl<R: Changed> Changed for egui::InnerResponse<R> {
+    #[inline]
+    fn changed(&self) -> bool {
+        self.inner.changed()
+    }
+}
+
+impl<R: Changed> Changed for Option<R> {
+    #[inline]
+    fn changed(&self) -> bool {
+        self.as_ref().is_some_and(Changed::changed)
+    }
+}
+
 /// Editable snapshot that sends a [`Value`] only when it changed.
 ///
 /// Modify [`Self::v`], then consume the snapshot with [`Self::set`] or
-/// [`Self::set_signal`].
+/// [`Self::set_signal`]. Unlike [`Value::edit`], a snapshot can outlive one
+/// closure, so several snapshots can be edited by the same widget.
 pub struct Diff<'a, T> {
     /// Editable copy of the synchronized value.
     pub v: T,
@@ -41,26 +97,30 @@ impl<'a, T: Serialize + Clone + PartialEq> Diff<'a, T> {
 
     /// Sends the edited value if it differs from the captured value.
     ///
-    /// The comparison uses `T`'s [`PartialEq`] implementation.
+    /// The comparison uses `T`'s [`PartialEq`] implementation; a value that
+    /// is not equal to itself, such as a float holding NaN, is compared by
+    /// its serialized form.
     #[inline]
     pub fn set(self) {
-        if self.v != self.original {
+        if differs(&self.v, &self.original) {
             self.value.set(self.v);
         }
     }
 
     /// Sends and signals the edited value if it differs from the captured value.
     ///
-    /// The comparison uses `T`'s [`PartialEq`] implementation.
+    /// The comparison is the one of [`Self::set`].
     #[inline]
     pub fn set_signal(self) {
-        if self.v != self.original {
+        if differs(&self.v, &self.original) {
             self.value.set_signal(self.v);
         }
     }
 }
 
 /// Editable snapshot that sends a [`ValueAtomic`] only when it changed.
+///
+/// See [`Diff`] for when to prefer it over [`ValueAtomic::edit`].
 pub struct DiffAtomic<'a, T: Atomic> {
     /// Editable copy of the synchronized value.
     pub v: T,
@@ -81,20 +141,22 @@ impl<'a, T: Serialize + Clone + PartialEq + Atomic> DiffAtomic<'a, T> {
 
     /// Sends the edited value if it differs from the captured value.
     ///
-    /// The comparison uses `T`'s [`PartialEq`] implementation.
+    /// The comparison uses `T`'s [`PartialEq`] implementation; a value that
+    /// is not equal to itself, such as a float holding NaN, is compared by
+    /// its serialized form.
     #[inline]
     pub fn set(self) {
-        if self.v != self.original {
+        if differs(&self.v, &self.original) {
             self.value.set(self.v);
         }
     }
 
     /// Sends and signals the edited value if it differs from the captured value.
     ///
-    /// The comparison uses `T`'s [`PartialEq`] implementation.
+    /// The comparison is the one of [`Self::set`].
     #[inline]
     pub fn set_signal(self) {
-        if self.v != self.original {
+        if differs(&self.v, &self.original) {
             self.value.set_signal(self.v);
         }
     }
@@ -109,6 +171,9 @@ pub(crate) trait UpdateValueTake: Sync + Send {
     /// The server releases blocking sends when a connection ends, so pending
     /// values from it must not be acknowledged on the next connection.
     fn disconnected(&self);
+    /// Drops the values a closed connection left untaken, without
+    /// acknowledging them.
+    fn connected(&self);
 }
 
 /// What all clones of a value handle share, in one allocation.
@@ -137,7 +202,8 @@ impl<V> Shared<V> {
 ///
 /// Client writes update the local copy immediately and are sent to the server.
 /// By default, server callbacks receive only the latest of the changes
-/// [`Self::set_signal`] and [`Self::write_signal`] produce while they are busy;
+/// [`Self::set_signal`], [`Self::edit_signal`] and [`Self::write_signal`]
+/// produce while they are busy;
 /// a field marked `#[state(queue)]` receives every change in arrival order.
 ///
 /// The server wins concurrent writes. A client write that reaches the server
@@ -181,7 +247,7 @@ where
     /// Do not call this handle or a clone of it from `f`: the read lock is not
     /// reentrant, so a nested read waits behind an incoming server update,
     /// which waits for `f`.
-    pub fn read<R>(&self, f: impl Fn(&T) -> R) -> R {
+    pub fn read<R>(&self, f: impl FnOnce(&T) -> R) -> R {
         let r = self.shared.value.read();
         f(&r)
     }
@@ -205,7 +271,40 @@ where
         ));
     }
 
-    /// Modify the value in place and send it to the server.
+    fn write_with<R: Changed>(&self, f: impl FnOnce(&mut T) -> R, signal: bool) -> R {
+        let mut w = self.shared.value.write();
+        let result = f(&mut w);
+        if result.changed() {
+            self.write_inner(&*w, signal);
+        }
+        result
+    }
+
+    /// Modifies the value in place and sends it to the server if `f` reports a
+    /// change.
+    ///
+    /// Unlike [`Self::edit`], the value is not copied, which suits large values
+    /// such as a `Vec` or a `HashMap`. `f` reports whether it changed the
+    /// value through its result: a `bool`, or a widget's [`egui::Response`]
+    /// (see [`Changed`]). A change `f` does not report is kept locally but not
+    /// sent, so the peers stay out of sync until a later write or server
+    /// update.
+    ///
+    /// ```
+    /// # fn show(ui: &mut egui::Ui, points: &egui_states::Value<Vec<f32>>) {
+    /// points.write(|points| {
+    ///     let mut changed = false;
+    ///     for point in points.iter_mut() {
+    ///         changed |= ui.add(egui::DragValue::new(point)).changed();
+    ///     }
+    ///     if ui.button("Add").clicked() {
+    ///         points.push(0.0);
+    ///         changed = true;
+    ///     }
+    ///     changed
+    /// });
+    /// # }
+    /// ```
     ///
     /// If the modified value serializes to more than the maximum allowed size, it is
     /// kept locally but not sent, which leaves it out of sync with the server until
@@ -214,22 +313,17 @@ where
     ///
     /// The write lock is held while `f` runs, so do not call this handle or a
     /// clone of it from `f`: the nested call would wait for `f` forever.
-    pub fn write<R>(&self, f: impl Fn(&mut T) -> R) -> R {
-        let mut w = self.shared.value.write();
-        let result = f(&mut w);
-        self.write_inner(&*w, false);
-        result
+    pub fn write<R: Changed>(&self, f: impl FnOnce(&mut T) -> R) -> R {
+        self.write_with(f, false)
     }
 
-    /// Same as [`Value::write`], but the server side emits a signal for the new value.
+    /// Same as [`Value::write`], but a reported change also asks the server to
+    /// emit its callbacks, like [`Self::set_signal`].
     ///
-    /// The same out of sync caveat for oversized values and nested calls
-    /// applies.
-    pub fn write_signal<R>(&self, f: impl Fn(&mut T) -> R) -> R {
-        let mut w = self.shared.value.write();
-        let result = f(&mut w);
-        self.write_inner(&*w, true);
-        result
+    /// The same out of sync caveats for unreported changes, oversized values
+    /// and nested calls apply.
+    pub fn write_signal<R: Changed>(&self, f: impl FnOnce(&mut T) -> R) -> R {
+        self.write_with(f, true)
     }
 
     #[inline]
@@ -268,6 +362,49 @@ where
     }
 }
 
+impl<T> Value<T>
+where
+    T: Serialize + Clone + PartialEq,
+{
+    fn edit_inner<R>(&self, f: impl FnOnce(&mut T) -> R, signal: bool) -> R {
+        let original = self.get();
+        let mut value = original.clone();
+        let result = f(&mut value);
+        if differs(&value, &original) {
+            self.set_inner(value, signal);
+        }
+        result
+    }
+
+    /// Edits a copy of the value and sends it without signaling if `f`
+    /// changed it.
+    ///
+    /// Use it to bind a widget to the value; the closure's result, such as the
+    /// widget's response, is returned:
+    ///
+    /// ```
+    /// # fn show(ui: &mut egui::Ui, gain: &egui_states::Value<f32>) {
+    /// let response = gain.edit(|gain| ui.add(egui::Slider::new(gain, 0.0..=1.0)));
+    /// # }
+    /// ```
+    ///
+    /// The copy is compared with the value read before `f` ran, using `T`'s
+    /// [`PartialEq`]; when they are equal nothing is sent. A value that is
+    /// not equal to itself, such as a float holding NaN, is compared by its
+    /// serialized form, so an untouched NaN is not sent. No lock is held
+    /// while `f` runs, so `f` may read this handle. A change is applied like
+    /// [`Self::set`]: an oversized value is reported and not stored.
+    pub fn edit<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
+        self.edit_inner(f, false)
+    }
+
+    /// Same as [`Self::edit`], but a change also asks the server to emit its
+    /// callbacks, like [`Self::set_signal`].
+    pub fn edit_signal<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
+        self.edit_inner(f, true)
+    }
+}
+
 impl<T: for<'a> Deserialize<'a> + Send + Sync> UpdateValue for Value<T> {
     fn update_value(&self, type_id: u32, data: &[u8]) -> Result<(), String> {
         if type_id != self.shared.type_id {
@@ -297,14 +434,17 @@ impl<T> Clone for Value<T> {
 
 /// Atomic variant of [`Value`] for small copyable values.
 ///
-/// Built-in implementations cover integers, `bool`, `f32`, `f64`, `(f32,
-/// f32)`, and `[f32; 2]`. Custom [`Atomic`] implementations must preserve the
-/// synchronization and size guarantees documented by that unsafe trait.
+/// [`get`](Self::get) is one atomic load, without a lock, so it is much
+/// faster than [`Value::get`] and never waits behind an incoming server
+/// update. Built-in implementations cover integers, `bool`, `f32`, `f64`,
+/// `(f32, f32)`, and `[f32; 2]`, and `#[derive(Atomic)]` covers fieldless
+/// enums; [`Atomic`] shows how to implement it for another value of up to 64
+/// bits.
 ///
 /// Concurrent writes and `#[state(queue)]` follow the same rules as
 /// [`Value`]: the server wins.
 pub struct ValueAtomic<T: Atomic> {
-    shared: Arc<Shared<T::Lock>>,
+    shared: Arc<Shared<UpdateLock<T>>>,
 }
 
 impl<T> ValueAtomic<T>
@@ -319,7 +459,7 @@ where
         sender: MessageSender,
     ) -> Self {
         Self {
-            shared: Shared::new(name, id, type_id, T::Lock::new(value), sender),
+            shared: Shared::new(name, id, type_id, UpdateLock::new(value), sender),
         }
     }
 
@@ -352,6 +492,35 @@ where
     /// Atomically replaces the value and asks the server to emit callbacks.
     pub fn set_signal(&self, value: T) {
         self.set_inner(value, true);
+    }
+}
+
+impl<T> ValueAtomic<T>
+where
+    T: Serialize + Clone + PartialEq + Atomic,
+{
+    fn edit_inner<R>(&self, f: impl FnOnce(&mut T) -> R, signal: bool) -> R {
+        let original = self.get();
+        let mut value = original;
+        let result = f(&mut value);
+        if differs(&value, &original) {
+            self.set_inner(value, signal);
+        }
+        result
+    }
+
+    /// Edits a copy of the value and sends it without signaling if `f`
+    /// changed it.
+    ///
+    /// Behaves like [`Value::edit`].
+    pub fn edit<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
+        self.edit_inner(f, false)
+    }
+
+    /// Same as [`Self::edit`], but a change also asks the server to emit
+    /// callbacks, like [`Self::set_signal`].
+    pub fn edit_signal<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
+        self.edit_inner(f, true)
     }
 }
 
@@ -426,7 +595,7 @@ impl<T: Clone> Static<T> {
     /// Do not call this handle or a clone of it from `f`: the read lock is not
     /// reentrant, so a nested read waits behind an incoming server update,
     /// which waits for `f`.
-    pub fn read<R>(&self, f: impl Fn(&T) -> R) -> R {
+    pub fn read<R>(&self, f: impl FnOnce(&T) -> R) -> R {
         let r = self.shared.value.read();
         f(&r)
     }
@@ -453,14 +622,16 @@ impl<T> Clone for Static<T> {
 }
 
 /// Atomic server-controlled value that is read-only on the client.
-pub struct StaticAtomic<T: AtomicStatic> {
-    shared: Arc<StaticShared<T::Lock>>,
+///
+/// [`get`](Self::get) is one atomic load, as for [`ValueAtomic`].
+pub struct StaticAtomic<T: Atomic> {
+    shared: Arc<StaticShared<AtomicCell<T>>>,
 }
 
-impl<T: AtomicStatic> StaticAtomic<T> {
+impl<T: Atomic> StaticAtomic<T> {
     pub(crate) fn new(name: String, type_id: u32, value: T) -> Self {
         Self {
-            shared: StaticShared::new(name, type_id, T::Lock::new(value)),
+            shared: StaticShared::new(name, type_id, AtomicCell::new(value)),
         }
     }
 
@@ -470,11 +641,11 @@ impl<T: AtomicStatic> StaticAtomic<T> {
     }
 }
 
-impl<T: for<'a> Deserialize<'a> + AtomicStatic + Send + Sync> UpdateValue for StaticAtomic<T> {
+impl<T: for<'a> Deserialize<'a> + Atomic + Send + Sync> UpdateValue for StaticAtomic<T> {
     fn update_value(&self, type_id: u32, data: &[u8]) -> Result<(), String> {
         if type_id != self.shared.type_id {
             return Err(format!(
-                "Type id mismatch for AtomicStatic: {}",
+                "Type id mismatch for StaticAtomic: {}",
                 self.shared.name
             ));
         }
@@ -485,7 +656,7 @@ impl<T: for<'a> Deserialize<'a> + AtomicStatic + Send + Sync> UpdateValue for St
     }
 }
 
-impl<T: AtomicStatic> Clone for StaticAtomic<T> {
+impl<T: Atomic> Clone for StaticAtomic<T> {
     fn clone(&self) -> Self {
         Self {
             shared: self.shared.clone(),
@@ -516,7 +687,7 @@ impl<T: Serialize + Clone> Signal<T> {
     ///
     /// The `Into<T>` parameter accepts values that can be converted to the
     /// signal's payload type, such as `&str` for a `Signal<String>`.
-    pub fn set(&self, value: impl Into<T>) {
+    pub fn emit(&self, value: impl Into<T>) {
         let message = to_message(value.into());
 
         if let Err(e) = check_value_size(&self.shared.name, message.len()) {
@@ -545,42 +716,118 @@ impl<T> Clone for Signal<T> {
 }
 
 // ValueTake --------------------------------------------
-/// An untaken value and whether taking it sends an acknowledgement.
-type Pending<T> = RwLock<Option<(T, bool)>>;
+/// The default capacity of a queued [`ValueTake`], `#[state(queue)]`.
+pub const VALUE_TAKE_QUEUE: usize = 100;
+
+/// The untaken values, each with whether taking it sends an
+/// acknowledgement, oldest first.
+struct Pending<T> {
+    values: VecDeque<(T, bool)>,
+    /// `None` for a single value that a new one replaces.
+    capacity: Option<usize>,
+    /// Whether a full queue dropped a value since it was last below its
+    /// capacity, so the overflow was reported.
+    overflowed: bool,
+}
 
 /// A one-shot value sent by the server and consumed by the client.
 ///
-/// A newly received value replaces an untaken value. Taking a blocking value
-/// sends the acknowledgement that releases the server's next send.
+/// By default a newly received value replaces an untaken value. A field
+/// marked `#[state(queue)]` keeps every value in arrival order instead, up to
+/// [`VALUE_TAKE_QUEUE`] values, or N with `#[state(queue = N)]`; when the
+/// queue is full the oldest value is dropped, and the client reports that
+/// once to the server as an error, until the queue was below its capacity
+/// again.
+///
+/// Taking a blocking value sends the acknowledgement that releases the
+/// server's next send. Untaken values stay takeable while the client is
+/// disconnected, and are dropped once a new connection is accepted.
 pub struct ValueTake<T> {
-    shared: Arc<Shared<Pending<T>>>,
+    shared: Arc<Shared<RwLock<Pending<T>>>>,
 }
 
 impl<T> ValueTake<T> {
-    pub(crate) fn new(name: String, id: u64, type_id: u32, sender: MessageSender) -> Self {
+    /// A value that keeps up to `capacity` untaken values, or one that a new
+    /// one replaces for `None`.
+    pub(crate) fn new(
+        name: String,
+        id: u64,
+        type_id: u32,
+        capacity: Option<usize>,
+        sender: MessageSender,
+    ) -> Self {
+        let pending = Pending {
+            values: VecDeque::new(),
+            capacity: capacity.map(|capacity| capacity.max(1)),
+            overflowed: false,
+        };
         Self {
-            shared: Shared::new(name, id, type_id, RwLock::new(None), sender),
+            shared: Shared::new(name, id, type_id, RwLock::new(pending), sender),
         }
     }
 
-    /// Removes and returns the pending value, if one has arrived.
+    /// Removes and returns the oldest untaken value, if one has arrived.
     ///
     /// Each value can be taken once. Taking a blocking value also acknowledges
-    /// it, allowing the server to send the next pending value.
+    /// it, allowing the server to send the next pending value. A queued value
+    /// is drained in arrival order:
+    ///
+    /// ```no_run
+    /// # fn ui(events: &egui_states::ValueTake<String>, log: &mut Vec<String>) {
+    /// while let Some(event) = events.take() {
+    ///     log.push(event);
+    /// }
+    /// # }
+    /// ```
     pub fn take(&self) -> Option<T> {
-        let value = self.shared.value.write().take();
-        if let Some((val, blocking)) = value {
-            if blocking {
-                self.shared.sender.send(ChannelMessage::Ack(self.shared.id));
+        let (value, blocking) = {
+            let mut pending = self.shared.value.write();
+            let taken = pending.values.pop_front()?;
+            if pending
+                .capacity
+                .is_some_and(|capacity| pending.values.len() < capacity)
+            {
+                pending.overflowed = false;
             }
-            return Some(val);
+            taken
+        };
+        if blocking {
+            self.shared.sender.send(ChannelMessage::Ack(self.shared.id));
         }
-        None
+        Some(value)
     }
 
     /// Returns whether a value is waiting to be taken.
     pub fn is_some(&self) -> bool {
-        self.shared.value.read().is_some()
+        !self.shared.value.read().values.is_empty()
+    }
+
+    /// Returns the number of values waiting to be taken: at most one without
+    /// a queue.
+    pub fn len(&self) -> usize {
+        self.shared.value.read().values.len()
+    }
+
+    /// Returns whether no value waits to be taken.
+    pub fn is_empty(&self) -> bool {
+        self.shared.value.read().values.is_empty()
+    }
+
+    /// Drops every value waiting to be taken. A blocking one is
+    /// acknowledged, as taking it would.
+    pub fn clear(&self) {
+        let blocking = {
+            let mut pending = self.shared.value.write();
+            pending.overflowed = false;
+            pending
+                .values
+                .drain(..)
+                .filter(|(_, blocking)| *blocking)
+                .count()
+        };
+        for _ in 0..blocking {
+            self.shared.sender.send(ChannelMessage::Ack(self.shared.id));
+        }
     }
 }
 
@@ -605,15 +852,46 @@ where
             }
             format!("Parse error: {} for value: {}", e, self.shared.name)
         })?;
-        *self.shared.value.write() = Some((value, blocking));
 
-        Ok(())
+        let (dropped, report) = {
+            let mut pending = self.shared.value.write();
+            let Some(capacity) = pending.capacity else {
+                // The server sends no value while a blocking one is untaken,
+                // so a replaced value never waits for an acknowledgement.
+                pending.values.clear();
+                pending.values.push_back((value, blocking));
+                return Ok(());
+            };
+            pending.values.push_back((value, blocking));
+            if pending.values.len() <= capacity {
+                return Ok(());
+            }
+            let dropped = pending.values.pop_front();
+            let report = !std::mem::replace(&mut pending.overflowed, true);
+            (dropped, report)
+        };
+        if let Some((_, true)) = dropped {
+            self.shared.sender.send(ChannelMessage::Ack(self.shared.id));
+        }
+        match report {
+            true => Err(format!(
+                "ValueTake queue of {} is full; the oldest values are dropped until the UI takes them",
+                self.shared.name
+            )),
+            false => Ok(()),
+        }
     }
 
     fn disconnected(&self) {
-        if let Some((_, blocking)) = self.shared.value.write().as_mut() {
+        for (_, blocking) in self.shared.value.write().values.iter_mut() {
             *blocking = false;
         }
+    }
+
+    fn connected(&self) {
+        let mut pending = self.shared.value.write();
+        pending.values.clear();
+        pending.overflowed = false;
     }
 }
 
@@ -664,6 +942,154 @@ mod tests {
     }
 
     #[test]
+    fn edit_sends_only_changes_with_the_requested_signal() {
+        let (sender, mut rx) = MessageSender::new();
+        let value: Value<i32> = Value::new("value".into(), 41, 5, 3, sender.clone());
+        let atomic = ValueAtomic::new("atomic".into(), 42, 6, 1.5f64, sender);
+
+        // an unchanged edit sends nothing but still returns the closure result
+        assert_eq!(value.edit(|v| *v * 2), 6);
+        assert_eq!(atomic.edit_signal(|v| *v), 1.5);
+        assert!(rx.try_recv().is_err());
+
+        // `FnOnce` closures may move values and borrow state mutably
+        let mut calls = 0;
+        let owned = String::from("moved");
+        value.edit_signal(|v| {
+            calls += 1;
+            drop(owned);
+            *v = -7;
+        });
+        atomic.edit(|v| *v = 2.75);
+        assert_eq!(calls, 1);
+
+        // a change back to the original value sends nothing
+        value.edit(|v| {
+            *v += 1;
+            *v -= 1;
+        });
+
+        match rx.try_recv().unwrap().unwrap() {
+            ChannelMessage::Value(41, 5, true, data) => {
+                assert_eq!(deserialize::<i32>(&data.into_bytes()).unwrap(), -7)
+            }
+            _ => panic!("expected signaled value first"),
+        }
+        match rx.try_recv().unwrap().unwrap() {
+            ChannelMessage::Value(42, 6, false, data) => {
+                assert_eq!(deserialize::<f64>(&data.into_bytes()).unwrap(), 2.75)
+            }
+            _ => panic!("expected unsignaled atomic value second"),
+        }
+        assert!(rx.try_recv().is_err());
+        assert_eq!(value.get(), -7);
+        assert_eq!(atomic.get(), 2.75);
+    }
+
+    #[test]
+    fn write_sends_only_reported_changes() {
+        let (sender, mut rx) = MessageSender::new();
+        let value: Value<Vec<u8>> = Value::new("list".into(), 44, 8, vec![1], sender);
+
+        // an unreported change stays local and is not sent
+        assert!(!value.write(|v| {
+            v.push(2);
+            false
+        }));
+        assert_eq!(value.write(|v| Some(v.len() > 5)), Some(false));
+        assert!(rx.try_recv().is_err());
+        assert_eq!(value.get(), [1, 2]);
+
+        value.write_signal(|v| {
+            v.push(3);
+            true
+        });
+        value.write(|v| Some(v.pop().is_some()));
+        match rx.try_recv().unwrap().unwrap() {
+            ChannelMessage::Value(44, 8, true, data) => {
+                assert_eq!(
+                    deserialize::<Vec<u8>>(&data.into_bytes()).unwrap(),
+                    [1, 2, 3]
+                )
+            }
+            _ => panic!("expected signaled list first"),
+        }
+        match rx.try_recv().unwrap().unwrap() {
+            ChannelMessage::Value(44, 8, false, data) => {
+                assert_eq!(deserialize::<Vec<u8>>(&data.into_bytes()).unwrap(), [1, 2])
+            }
+            _ => panic!("expected unsignaled list second"),
+        }
+        assert!(rx.try_recv().is_err());
+    }
+
+    /// NaN is not equal to itself, so a comparison alone would send an
+    /// untouched NaN with every edit, which a bound widget makes each frame.
+    #[test]
+    fn an_untouched_nan_is_not_sent() {
+        let (sender, mut rx) = MessageSender::new();
+        let value: Value<(f32, u8)> =
+            Value::new("value".into(), 41, 5, (f32::NAN, 1), sender.clone());
+        let atomic = ValueAtomic::new("atomic".into(), 42, 6, f64::NAN, sender);
+
+        value.edit(|_| ());
+        atomic.edit_signal(|_| ());
+        Diff::new(&value).set();
+        DiffAtomic::new(&atomic).set_signal();
+        assert!(rx.try_recv().is_err());
+
+        // A change next to the NaN, away from it, and to another NaN is sent.
+        value.edit(|v| v.1 = 2);
+        atomic.edit(|v| *v = 1.0);
+        atomic.edit(|v| *v = f64::NAN);
+        atomic.edit(|v| *v = -f64::NAN);
+        for _ in 0..4 {
+            assert!(matches!(rx.try_recv(), Ok(Some(ChannelMessage::Value(..)))));
+        }
+        assert!(rx.try_recv().is_err());
+        assert_eq!(value.get().1, 2);
+    }
+
+    #[test]
+    fn edit_holds_no_lock_while_the_closure_runs() {
+        let (sender, mut rx) = MessageSender::new();
+        let value: Value<i32> = Value::new("value".into(), 43, 7, 1, sender);
+        let handle = value.clone();
+
+        // reading and even setting the same handle inside `f` must not deadlock
+        let seen = value.edit(|v| {
+            *v = 10;
+            handle.set(5);
+            handle.get()
+        });
+        assert_eq!(seen, 5);
+        // the edit compares with the value read before `f` and sends its copy
+        assert_eq!(value.get(), 10);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Some(ChannelMessage::Value(43, 7, false, _)))
+        ));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Some(ChannelMessage::Value(43, 7, false, _)))
+        ));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn oversized_edit_is_reported_and_not_stored() {
+        let (sender, mut rx) = MessageSender::new();
+        let value: Value<String> = Value::new("text".into(), 1, 2, "seed".into(), sender);
+        value.edit(|v| *v = "x".repeat(VALUE_MAX_SIZE + 1));
+        assert_eq!(value.get(), "seed");
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Some(ChannelMessage::Message(_)))
+        ));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
     fn oversized_set_rejects_but_in_place_write_retains_local_edit() {
         let (sender, mut rx) = MessageSender::new();
         let value: Value<String> = Value::new("text".into(), 1, 2, "seed".into(), sender);
@@ -674,7 +1100,10 @@ mod tests {
             rx.try_recv(),
             Ok(Some(ChannelMessage::Message(_)))
         ));
-        value.write(|v| *v = oversized.clone());
+        value.write(|v| {
+            *v = oversized.clone();
+            true
+        });
         assert_eq!(value.get(), oversized);
         assert!(matches!(
             rx.try_recv(),
@@ -695,10 +1124,92 @@ mod tests {
     #[test]
     fn value_from_a_closed_connection_is_not_acknowledged() {
         let (sender, mut rx) = MessageSender::new();
-        let value = ValueTake::<u8>::new("take".into(), 33, 4, sender);
+        let value = ValueTake::<u8>::new("take".into(), 33, 4, None, sender);
         value.update_take(4, &[5], true).unwrap();
         value.disconnected();
         assert_eq!(value.take(), Some(5));
+        assert!(rx.try_recv().is_err());
+    }
+
+    fn acks(rx: &mut tokio::sync::mpsc::UnboundedReceiver<Option<ChannelMessage>>) -> usize {
+        let mut count = 0;
+        while let Ok(Some(ChannelMessage::Ack(35))) = rx.try_recv() {
+            count += 1;
+        }
+        count
+    }
+
+    /// A queued value keeps every value in arrival order, up to its capacity;
+    /// a full queue drops the oldest and reports it once.
+    #[test]
+    fn a_queued_value_keeps_its_values_in_arrival_order() {
+        let (sender, mut rx) = MessageSender::new();
+        let value = ValueTake::<u8>::new("take".into(), 35, 4, Some(3), sender);
+        for byte in [1, 2, 3] {
+            value.update_take(4, &[byte], false).unwrap();
+        }
+        assert_eq!(value.len(), 3);
+        let error = value.update_take(4, &[4], false).unwrap_err();
+        assert!(error.contains("is full"), "{error}");
+        // Reported once until the queue was below its capacity again.
+        value.update_take(4, &[5], false).unwrap();
+        assert_eq!(value.take(), Some(3));
+        assert_eq!(value.take(), Some(4));
+        value.update_take(4, &[6], false).unwrap();
+        value.update_take(4, &[7], false).unwrap();
+        assert!(value.update_take(4, &[8], false).is_err());
+        assert_eq!(value.take(), Some(6));
+        assert_eq!(value.take(), Some(7));
+        assert_eq!(value.take(), Some(8));
+        assert_eq!(value.take(), None);
+        assert_eq!(acks(&mut rx), 0);
+
+        // Taking or clearing a blocking value acknowledges it once.
+        value.update_take(4, &[9], false).unwrap();
+        value.update_take(4, &[10], true).unwrap();
+        assert_eq!(value.take(), Some(9));
+        assert_eq!(acks(&mut rx), 0);
+        assert_eq!(value.take(), Some(10));
+        assert_eq!(acks(&mut rx), 1);
+        value.update_take(4, &[11], true).unwrap();
+        value.clear();
+        value.clear();
+        assert!(value.is_empty());
+        assert_eq!(acks(&mut rx), 1);
+
+        // A full queue that drops a blocking value acknowledges it.
+        let (sender, mut rx) = MessageSender::new();
+        let value = ValueTake::<u8>::new("take".into(), 35, 4, Some(1), sender);
+        value.update_take(4, &[1], true).unwrap();
+        assert!(value.update_take(4, &[2], false).is_err());
+        assert_eq!(acks(&mut rx), 1);
+        assert_eq!(value.take(), Some(2));
+    }
+
+    /// Without a queue a new value replaces the untaken one.
+    #[test]
+    fn a_value_without_a_queue_keeps_only_the_latest() {
+        let (sender, _rx) = MessageSender::new();
+        let value = ValueTake::<u8>::new("take".into(), 36, 4, None, sender);
+        value.update_take(4, &[1], false).unwrap();
+        value.update_take(4, &[2], false).unwrap();
+        assert_eq!(value.len(), 1);
+        assert_eq!(value.take(), Some(2));
+        assert_eq!(value.take(), None);
+    }
+
+    /// A value stays takeable while the client is disconnected, and is
+    /// dropped once a new connection is accepted, without an
+    /// acknowledgement.
+    #[test]
+    fn a_new_connection_drops_untaken_values() {
+        let (sender, mut rx) = MessageSender::new();
+        let value = ValueTake::<u8>::new("take".into(), 34, 4, None, sender);
+        value.update_take(4, &[5], true).unwrap();
+        value.disconnected();
+        assert!(value.is_some());
+        value.connected();
+        assert_eq!(value.take(), None);
         assert!(rx.try_recv().is_err());
     }
 }

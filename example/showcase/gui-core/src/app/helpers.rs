@@ -34,33 +34,41 @@ pub(super) fn show_multi_data_preview(ui: &mut egui::Ui, items: &[(u32, usize, S
     }
 }
 
-pub(super) fn show_primary_choice_selector(ui: &mut egui::Ui, value: &mut PrimaryChoice) -> bool {
-    let mut changed = false;
+pub(super) fn show_primary_choice_selector(ui: &mut egui::Ui, value: &mut PrimaryChoice) {
     ui.horizontal(|ui| {
-        changed |= ui.selectable_value(value, PrimaryChoice::A, "A").changed();
-        changed |= ui.selectable_value(value, PrimaryChoice::B, "B").changed();
-        changed |= ui.selectable_value(value, PrimaryChoice::C, "C").changed();
+        ui.selectable_value(value, PrimaryChoice::A, "A");
+        ui.selectable_value(value, PrimaryChoice::B, "B");
+        ui.selectable_value(value, PrimaryChoice::C, "C");
     });
-    changed
 }
 
-pub(super) fn show_secondary_choice_selector(
-    ui: &mut egui::Ui,
-    value: &mut SecondaryChoice,
-) -> bool {
-    let mut changed = false;
+pub(super) fn show_secondary_choice_selector(ui: &mut egui::Ui, value: &mut SecondaryChoice) {
     ui.horizontal(|ui| {
-        changed |= ui
-            .selectable_value(value, SecondaryChoice::X, "X")
-            .changed();
-        changed |= ui
-            .selectable_value(value, SecondaryChoice::Y, "Y")
-            .changed();
-        changed |= ui
-            .selectable_value(value, SecondaryChoice::Z, "Z")
-            .changed();
+        ui.selectable_value(value, SecondaryChoice::X, "X");
+        ui.selectable_value(value, SecondaryChoice::Y, "Y");
+        ui.selectable_value(value, SecondaryChoice::Z, "Z");
     });
-    changed
+}
+
+/// Shows a checkbox that switches `value` between `None` and `Some(default)`,
+/// and the editor for the contained value while it is set.
+pub(super) fn show_optional<T>(
+    ui: &mut egui::Ui,
+    value: &mut Option<T>,
+    label: &str,
+    default: T,
+    edit: impl FnOnce(&mut egui::Ui, &mut T),
+) {
+    let mut has_value = value.is_some();
+    ui.checkbox(&mut has_value, label);
+    match (has_value, value.is_some()) {
+        (true, false) => *value = Some(default),
+        (false, true) => *value = None,
+        _ => {}
+    }
+    if let Some(value) = value.as_mut() {
+        edit(ui, value);
+    }
 }
 
 pub(super) fn primary_choice_label(value: PrimaryChoice) -> &'static str {

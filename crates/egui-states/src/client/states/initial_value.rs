@@ -31,6 +31,9 @@ pub enum InitValue {
     Bool(bool),
     /// A fieldless enum variant name.
     Enum(String),
+    /// A variant of an enum with data: its name and its field values in
+    /// declaration order (none for a unit variant).
+    DataEnum(&'static str, Vec<InitValue>),
     /// An optional initial value.
     Option(Option<Box<InitValue>>),
     /// A named struct and its ordered field values.
@@ -65,6 +68,9 @@ impl PartialEq for InitValue {
             (Self::String(left), Self::String(right)) => left == right,
             (Self::Bool(left), Self::Bool(right)) => left == right,
             (Self::Enum(left), Self::Enum(right)) => left == right,
+            (Self::DataEnum(left_name, left), Self::DataEnum(right_name, right)) => {
+                left_name == right_name && left == right
+            }
             (Self::Option(left), Self::Option(right)) => left == right,
             (Self::Struct(left_name, left), Self::Struct(right_name, right)) => {
                 left_name == right_name && left == right
@@ -80,7 +86,7 @@ impl PartialEq for InitValue {
 
 /// Converts a typed client value into the representation used by code generators.
 ///
-/// Derive this trait for user-defined structs and fieldless enums with
+/// Derive this trait for user-defined structs and enums with
 /// [`InitialValue`](derive@crate::InitialValue).
 /// [`crate::typed`] does not derive it automatically: add the derive when a
 /// custom type is used as the initial value of a [`crate::Value`] or

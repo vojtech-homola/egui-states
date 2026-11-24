@@ -7,6 +7,7 @@ use crate::protocol::image::{
     ImageHeader, ImageSetHeader, ImageType, ImageUpdateHeader, checked_image_bounds,
     checked_image_bytes, checked_image_shape, to_rgba, widen, widen_into,
 };
+use crate::server_core::states::header::{HeaderType, WireHeader};
 use crate::server_core::transfer::{Chunk, Messages, chunk_transfer};
 
 /// A borrowed source image in one of the accepted pixel formats.
@@ -67,14 +68,15 @@ impl<'a> ImageData<'a> {
 }
 
 /// Packs a whole-image set of the validated `image`, whose wire size is
-/// `size` (`[width, height]`). `header` serializes a set header with its
-/// payload length for the image's state.
+/// `size` (`[width, height]`), with the header change `wire` on the message
+/// that completes it. `header` serializes a set header with its pixel byte
+/// count for the image's state.
 pub(crate) fn pack_image_set(
     id: u64,
     image: &ImageData,
     size: [u32; 2],
-    update: bool,
     chunk_limit: usize,
+    wire: WireHeader,
     header: impl Fn(ImageSetHeader, u32) -> Result<FastVec<32>, ()>,
 ) -> Result<Messages, String> {
     let pixel_size = image.image_type.bytes_per_pixel();
@@ -82,15 +84,16 @@ pub(crate) fn pack_image_set(
     chunk_transfer(total, pixel_size, chunk_limit, |chunk, range| {
         let len = range.len();
         let pixels = (len / pixel_size) as u32;
-        let set = match chunk {
-            Chunk::All => ImageSetHeader::All(size, update),
-            Chunk::Start => ImageSetHeader::Start(size, pixels),
-            Chunk::Batch => ImageSetHeader::Batch(pixels),
-            Chunk::End => ImageSetHeader::End(pixels, update),
+        let (set, header_bytes) = match chunk {
+            Chunk::All => (ImageSetHeader::All(size, wire.update), wire.bytes),
+            Chunk::Start => (ImageSetHeader::Start(size, pixels), &[][..]),
+            Chunk::Batch => (ImageSetHeader::Batch(pixels), &[][..]),
+            Chunk::End => (ImageSetHeader::End(pixels, wire.update), wire.bytes),
         };
         let mut message = header(set, len as u32)
             .map_err(|_| format!("Failed to serialize header for image {}", id))?;
-        message.reserve_exact(len);
+        message.reserve_exact(header_bytes.len() + len);
+        message.extend_from_slice(header_bytes);
         image.append(&mut message, range.start, len);
         Ok(message)
     })
@@ -106,19 +109,19 @@ pub(crate) fn checked_max_lines(max_lines: Option<usize>) -> Result<(), String> 
 
 /// Packs an update of the validated `image` into the wire rectangle `rect`
 /// (`[x, y, width, height]`). `header` serializes an image header with its
-/// payload length for the image's state.
+/// pixel byte count for the image's state.
 ///
 /// The rectangle is cut into sub-rectangles of at most `max_lines` rows, or
 /// kept whole without a limit. Each sub-rectangle is one group of messages,
-/// chunked like an image set, which the client applies once; `update` asks
-/// for a repaint after every group.
+/// chunked like an image set, which the client applies once. The first
+/// group carries the header change `wire`; the others keep the header.
 pub(crate) fn pack_image_update(
     id: u64,
     image: &ImageData,
     rect: [u32; 4],
-    update: bool,
     max_lines: Option<usize>,
     chunk_limit: usize,
+    wire: WireHeader,
     header: impl Fn(ImageHeader, u32) -> Result<FastVec<32>, ()>,
 ) -> Result<VecDeque<Messages>, String> {
     checked_max_lines(max_lines)?;
@@ -133,6 +136,7 @@ pub(crate) fn pack_image_update(
         let count = (rows - first).min(step);
         let part = [rect[0], rect[1] + first as u32, rect[2], count as u32];
         let offset = first * row_bytes;
+        let wire = if first == 0 { wire } else { WireHeader::KEEP };
         let group = chunk_transfer(
             count * row_bytes,
             pixel_size,
@@ -140,18 +144,19 @@ pub(crate) fn pack_image_update(
             |chunk, range| {
                 let len = range.len();
                 let pixels = (len / pixel_size) as u32;
-                let part_header = match chunk {
-                    Chunk::All => ImageUpdateHeader::All(part, update),
-                    Chunk::Start => ImageUpdateHeader::Start(part, pixels),
-                    Chunk::Batch => ImageUpdateHeader::Batch(pixels),
-                    Chunk::End => ImageUpdateHeader::End(pixels, update),
+                let (part_header, header_bytes) = match chunk {
+                    Chunk::All => (ImageUpdateHeader::All(part, wire.update), wire.bytes),
+                    Chunk::Start => (ImageUpdateHeader::Start(part, pixels), &[][..]),
+                    Chunk::Batch => (ImageUpdateHeader::Batch(pixels), &[][..]),
+                    Chunk::End => (ImageUpdateHeader::End(pixels, wire.update), wire.bytes),
                 };
                 let mut message = header(
                     ImageHeader::Update(part_header, image.image_type),
                     len as u32,
                 )
                 .map_err(|_| format!("Failed to serialize update header for image {}", id))?;
-                message.reserve_exact(len);
+                message.reserve_exact(header_bytes.len() + len);
+                message.extend_from_slice(header_bytes);
                 image.append(&mut message, offset + range.start, len);
                 Ok(message)
             },
@@ -257,13 +262,33 @@ impl ImageFill {
     }
 }
 
+/// The header change a producer sends, if it is known before the stored
+/// header is read: the given header, `Keep` for a state without a header
+/// type, and otherwise, with `resend`, the stored header, read later.
+///
+/// A set, a fill and a forced update `resend`: they can drop waiting parts of
+/// an earlier update, one of which may carry a new header, so they always
+/// leave the client with the stored one.
+pub(crate) fn known_header<'a>(
+    header_type: &HeaderType,
+    header: Option<&'a [u8]>,
+    resend: bool,
+) -> Option<WireHeader<'a>> {
+    match resend && header.is_none() && header_type.has_type() {
+        true => None,
+        false => Some(header_type.change(header)),
+    }
+}
+
 /// A server image: its pixels in the format of the last set or fill,
-/// widened by updates with more channels.
+/// widened by updates with more channels, and its encoded header, which
+/// stays empty for a state without a header type.
 pub(crate) struct StoredImage {
     data: Vec<u8>,
     /// `[height, width]`.
     size: [usize; 2],
     image_type: ImageType,
+    header: Vec<u8>,
 }
 
 impl StoredImage {
@@ -274,6 +299,7 @@ impl StoredImage {
             data: Vec::new(),
             size: [0, 0],
             image_type: ImageType::Gray,
+            header: Vec::new(),
         }
     }
 
@@ -301,6 +327,19 @@ impl StoredImage {
 
     pub(crate) fn image_type(&self) -> ImageType {
         self.image_type
+    }
+
+    /// The encoded header, empty for a state without a header type.
+    pub(crate) fn header(&self) -> &[u8] {
+        &self.header
+    }
+
+    /// Replaces the header with a checked one; `None` keeps it.
+    pub(crate) fn store_header(&mut self, header: Option<&[u8]>) {
+        if let Some(header) = header {
+            self.header.clear();
+            self.header.extend_from_slice(header);
+        }
     }
 
     /// The stored pixels, for packing a whole-image set.

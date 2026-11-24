@@ -36,24 +36,24 @@ def pytest_generate_tests(metafunc):
 
 def _bundle(running):
     from egui_states_test_bindings import StatesServer  # noqa: PLC0415  # ty: ignore[import-not-found]
-    from egui_states.logging import LogLevel  # noqa: PLC0415
+    from tests.python_test_helpers.logs import server_logs  # noqa: PLC0415
 
     errors = []
     server = StatesServer(signals_workers=1, error_handler=errors.append)
-    server.logging.add_logger(LogLevel.Error, lambda message: errors.append(RuntimeError(message)))
-    try:
-        if running:
-            port = free_port()
-            try:
-                server.start(port, (127, 0, 0, 1))
-            except OSError as error:
-                raise RuntimeError(
-                    f"Failed to bind test server on 127.0.0.1:{port}; reservation was released before start"
-                ) from error
-        yield server, server.states, errors
-    finally:
-        server.stop()
-        assert not errors, f"Unexpected server/callback errors: {errors!r}"
+    with server_logs(errors):
+        try:
+            if running:
+                port = free_port()
+                try:
+                    server.start(port, (127, 0, 0, 1))
+                except OSError as error:
+                    raise RuntimeError(
+                        f"Failed to bind test server on 127.0.0.1:{port}; reservation was released before start"
+                    ) from error
+            yield server, server.states, errors
+        finally:
+            server.stop()
+    assert not errors, f"Unexpected server/callback errors: {errors!r}"
 
 
 @pytest.fixture

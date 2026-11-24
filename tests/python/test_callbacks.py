@@ -6,7 +6,6 @@ import time
 import weakref
 
 import pytest
-from egui_states.logging import LogLevel
 from egui_states import signals
 
 from egui_states_test_bindings import (  # ty: ignore[import-not-found]
@@ -19,6 +18,7 @@ from egui_states_test_bindings.enums import (  # ty: ignore[import-not-found]
 
 
 from tests.python_test_helpers.network import free_port
+from tests.python_test_helpers.logs import server_logs
 from tests.python_test_helpers.waiting import wait_until, wait_event
 from .callback_helpers import drain_callbacks
 
@@ -263,9 +263,9 @@ def test_signal_callbacks_and_disconnect_all(
     states.signals.enum_signal.connect(on_enum)
 
     states.signals.empty_signal.signal_set_to_queue()
-    states.signals.empty_signal.set()
-    states.signals.number_signal.set(1.25)
-    states.signals.enum_signal.set(ExampleTestEnum.B)
+    states.signals.empty_signal.emit()
+    states.signals.number_signal.emit(1.25)
+    states.signals.enum_signal.emit(ExampleTestEnum.B)
 
     wait_event(empty_event)
     wait_event(number_event)
@@ -275,7 +275,7 @@ def test_signal_callbacks_and_disconnect_all(
 
     states.signals.enum_signal.disconnect_all()
     enum_event.clear()
-    states.signals.enum_signal.set(ExampleTestEnum.C)
+    states.signals.enum_signal.emit(ExampleTestEnum.C)
     drain_callbacks(states)
     assert not enum_event.is_set()
 
@@ -307,10 +307,17 @@ def test_callback_exception_does_not_stop_dispatch_or_later_events(server_bundle
         server.set_error_handler(unexpected.append)
 
 
-def test_two_workers_process_independent_states_while_one_is_blocked():
-    errors, received = [], []
+@pytest.fixture
+def logged_errors():
+    """Collect the errors the server logs, with the callback errors."""
+    errors = []
+    with server_logs(errors):
+        yield errors
+
+
+def test_two_workers_process_independent_states_while_one_is_blocked(logged_errors):
+    errors, received = logged_errors, []
     server = StatesServer(signals_workers=2, error_handler=errors.append)
-    server.logging.add_logger(LogLevel.Error, lambda message: errors.append(RuntimeError(message)))
     entered, release, other_done, finished = (threading.Event() for _ in range(4))
 
     def blocked(value):
@@ -343,11 +350,10 @@ def test_two_workers_process_independent_states_while_one_is_blocked():
     assert errors == []
 
 
-def test_one_state_never_runs_callbacks_concurrently():
+def test_one_state_never_runs_callbacks_concurrently(logged_errors):
     """Several workers may serve different states, but one state's callbacks stay serial and ordered."""
-    errors, received = [], []
+    errors, received = logged_errors, []
     server = StatesServer(signals_workers=3, error_handler=errors.append)
-    server.logging.add_logger(LogLevel.Error, lambda message: errors.append(RuntimeError(message)))
     running = threading.Lock()
     overlapped = threading.Event()
 
@@ -415,11 +421,11 @@ def test_single_mode_signal_coalesces_while_its_callback_runs(server_bundle):
     signal = states.signals.number_signal
     signal.signal_set_to_single()
     signal.connect(on_number)
-    signal.set(1.0)
+    signal.emit(1.0)
     try:
         wait_event(entered)
-        signal.set(2.0)
-        signal.set(3.0)
+        signal.emit(2.0)
+        signal.emit(3.0)
     finally:
         release.set()
     wait_until(lambda: len(received) >= 2)
@@ -459,3 +465,70 @@ def test_worker_does_not_pass_back_a_released_claim_after_a_failed_get():
     assert server.calls == [None, 5, None]
     assert manager.dispatched == [5]
     assert [str(error) for error in manager.errors] == ["Error while getting signal from server: decode failed"]
+
+
+def test_registration_methods_work_as_decorators(
+    server_bundle: tuple[StatesServer, State, list[Exception]],
+) -> None:
+    """Each registration returns its callback, so it decorates a function."""
+    server, states, _errors = server_bundle
+    received: list[str] = []
+    event = threading.Event()
+
+    @states.values.title.connect
+    def on_title(value: str) -> None:
+        received.append(value)
+        event.set()
+
+    states.values.title.set("decorated", set_signal=True)
+    wait_event(event)
+    assert received == ["decorated"]
+    # The name still refers to the function, so it can be disconnected.
+    states.values.title.disconnect(on_title)
+    states.values.title.set("disconnected", set_signal=True)
+    drain_callbacks(states)
+    assert received == ["decorated"]
+
+    @states.values.title.connect_previous
+    def on_title_previous(value: str, previous: str) -> None:
+        pass
+
+    @states.signals.number_signal.connect
+    def on_number(value: float) -> None:
+        pass
+
+    @states.signals.empty_signal.connect
+    def on_empty() -> None:
+        pass
+
+    @server.on_connect
+    def connected(address: str) -> None:
+        pass
+
+    @server.on_disconnect
+    def disconnected() -> None:
+        pass
+
+    @server.on_client_message
+    def client_message(message: str) -> None:
+        pass
+
+    @server.on_connect_request
+    def decide(request) -> bool:
+        return True
+
+    decorated = [on_title_previous, on_number, on_empty, connected, disconnected, client_message, decide]
+    assert [f.__name__ for f in decorated] == [
+        "on_title_previous",
+        "on_number",
+        "on_empty",
+        "connected",
+        "disconnected",
+        "client_message",
+        "decide",
+    ]
+    assert server.on_connect(None) is None
+    assert server.on_connect_request(None) is None
+    states.values.title.disconnect_all()
+    states.signals.number_signal.disconnect_all()
+    states.signals.empty_signal.disconnect_all()

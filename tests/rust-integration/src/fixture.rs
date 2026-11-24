@@ -1,6 +1,6 @@
 //! Deterministic server setup for the integration-only fixture schema.
-use crate::bindings::enums::{TestEnum, TestEnum2};
-use crate::bindings::structs::{HeaderMeta, TestStruct, TestStruct2};
+use crate::bindings::enums::{TestCommand, TestEnum, TestEnum2, TestStatus};
+use crate::bindings::structs::{HeaderMeta, TestJob, TestStruct, TestStruct2};
 use crate::bindings::{State, StatesServer};
 use egui_states::server::{self as s, CallbackHandle};
 use std::collections::HashMap;
@@ -11,7 +11,41 @@ pub struct Fixture {
     pub server: StatesServer,
     callbacks: Vec<CallbackHandle>,
     errors: Arc<Mutex<Vec<String>>>,
-    warnings: Arc<Mutex<Vec<String>>>,
+    /// How many server messages were logged before this fixture.
+    logged_before: usize,
+}
+
+/// The warnings and errors the servers of this process log.
+///
+/// A logger is global, so tests running at the same time see each other's
+/// messages; CI runs the tests one at a time.
+struct ServerLogs(Mutex<Vec<(log::Level, String)>>);
+
+impl log::Log for ServerLogs {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        metadata.target() == "egui_states" && metadata.level() <= log::Level::Warn
+    }
+
+    fn log(&self, record: &log::Record) {
+        if self.enabled(record.metadata()) {
+            let message = record.args().to_string();
+            self.0.lock().unwrap().push((record.level(), message));
+        }
+    }
+
+    fn flush(&self) {}
+}
+
+static SERVER_LOGS: ServerLogs = ServerLogs(Mutex::new(Vec::new()));
+
+/// The messages logged at `level` since the first `skip` messages.
+fn logged(level: log::Level, skip: usize) -> Vec<String> {
+    let logs = SERVER_LOGS.0.lock().unwrap();
+    logs.iter()
+        .skip(skip)
+        .filter(|(logged, _)| *logged == level)
+        .map(|(_, message)| message.clone())
+        .collect()
 }
 
 type Signals = Arc<Mutex<Vec<String>>>;
@@ -29,15 +63,15 @@ fn edit_headers(all: &State, command: u32) -> s::Result<()> {
     let h = &all.headers;
     if command == 35 {
         h.series
-            .set_with_header(&[1.0, 2.0], &meta(1.5, "series", &[3]), false, false)?;
-        h.series.add(&[3.0], false, false)?;
+            .set_with_header(&[1.0, 2.0], &meta(1.5, "series", &[3]), false)?;
+        h.series.add(&[3.0], false)?;
         h.keyed
-            .set_with_header(1, &[7], &meta(1.0, "first", &[1]), false, false)?;
+            .set_with_header(1, &[7], &meta(1.0, "first", &[1]), false)?;
         h.keyed
-            .set_with_header(2, &[8], &meta(2.0, "keyed", &[1]), false, false)?;
-        h.keyed.set_header(2, &meta(3.0, "renamed", &[]), false)?;
+            .set_with_header(2, &[8], &meta(2.0, "keyed", &[1]), false)?;
+        h.keyed.set_header(2, &meta(3.0, "renamed", &[]))?;
         h.take
-            .set_with_header(&[5], &meta(0.5, "take", &[1]), false, false, true)?;
+            .set_with_header(&[5], &meta(0.5, "take", &[1]), false, true, false)?;
         h.keyed_take.set_with_header(
             4,
             &[6],
@@ -47,13 +81,13 @@ fn edit_headers(all: &State, command: u32) -> s::Result<()> {
             false,
         )?;
         h.transient
-            .set_with_header(&[9], &meta(9.0, "transient", &[1]), false, false)?;
+            .set_with_header(&[9], &meta(9.0, "transient", &[1]), false)?;
         return Ok(());
     }
-    h.series.clear(false)?;
-    h.series.set_header(&meta(4.0, "cleared", &[0]), false)?;
-    h.keyed.remove_index(1, false)?;
-    h.transient.reset(false)?;
+    h.series.clear()?;
+    h.series.set_header(&meta(4.0, "cleared", &[0]))?;
+    h.keyed.remove_index(1)?;
+    h.transient.reset()?;
     let expected = (
         Some(meta(4.0, "cleared", &[0])),
         None,
@@ -72,79 +106,172 @@ fn edit_headers(all: &State, command: u32) -> s::Result<()> {
     Ok(())
 }
 
+/// Every variant shape of the enum with data, sent in this order by the
+/// client in the `data-enums` scenario.
+fn all_commands() -> Vec<TestCommand> {
+    vec![
+        TestCommand::Stop,
+        TestCommand::MoveTo { x: 1.5, y: -2.5 },
+        TestCommand::SetGain(0.25),
+        TestCommand::Pair(-3, "pair".into()),
+        TestCommand::Choose(TestEnum::C),
+        TestCommand::Load {
+            path: "a.tif".into(),
+            summary: Some(TestStruct2 {
+                enabled: true,
+                level: 7,
+                name: "seven".into(),
+            }),
+        },
+        TestCommand::Report(TestStatus::Busy { progress: 0.5 }),
+        TestCommand::None,
+        TestCommand::Keyword { from: 255 },
+    ]
+}
+
+/// Command 38: enums with data in every state kind and header, and as the
+/// metadata of a download, for the client to check.
+fn set_data_enums(all: &State) -> s::Result<()> {
+    let e = &all.data_enums;
+    let gray = s::ImageFormat::Gray;
+    e.command.set(TestCommand::Pair(-1, "server".into()))?;
+    e.fixed
+        .set(TestCommand::Report(TestStatus::Failed("fixed".into())))?;
+    e.job.set(TestJob {
+        name: "server".into(),
+        status: TestStatus::Idle,
+    })?;
+    e.optional.set(None)?;
+    e.list.set(all_commands())?;
+    e.table
+        .set(HashMap::from([(1, TestStatus::Busy { progress: 0.75 })]))?;
+    let load = TestCommand::Load {
+        path: "data.bin".into(),
+        summary: None,
+    };
+    e.data.set_with_header(&[1, 2], &load, false)?;
+    e.data_multi
+        .set_with_header(3, &[4], &TestCommand::Choose(TestEnum::B), false)?;
+    let moved = TestCommand::MoveTo { x: 0.5, y: 1.5 };
+    e.image
+        .set_with_header(&[1, 2], [2, 1], gray, &moved, false)?;
+    e.images
+        .set_with_header(2, &[3], [1, 1], gray, &TestCommand::None, false)?;
+    e.take.set(TestCommand::Keyword { from: 9 }, false)?;
+    e.data_take
+        .set_with_header(&[5], &TestCommand::Stop, false, false, false)?;
+    e.data_multi_take
+        .set_with_header(6, &[6], &TestCommand::SetGain(6.0), false, false, false)?;
+    let failed = |error: s::TransferError| s::ServerError::new(error.to_string());
+    let meta = TestCommand::Report(TestStatus::Busy { progress: 1.0 });
+    e.download
+        .send_bytes(b"enum".to_vec(), "enum.bin", &meta, false, None)
+        .map_err(failed)?
+        .wait(Some(Duration::from_secs(10)))
+        .map_err(failed)
+}
+
+/// Command 39: the values, the queued commands in their order, and the
+/// upload metadata the client sent.
+fn check_data_enums(
+    all: &State,
+    commands: &Mutex<Vec<TestCommand>>,
+    uploads: &Mutex<Vec<TestCommand>>,
+) -> Result<(), String> {
+    let e = &all.data_enums;
+    let command = e.command.get().map_err(|e| e.to_string())?;
+    let expected = TestCommand::Load {
+        path: "client".into(),
+        summary: None,
+    };
+    if command != expected {
+        return Err(format!(
+            "command: received {command:?}, expected {expected:?}"
+        ));
+    }
+    let optional = e.optional.get().map_err(|e| e.to_string())?;
+    if optional != Some(TestStatus::Busy { progress: 0.125 }) {
+        return Err(format!("optional: received {optional:?}"));
+    }
+    // The queued signal runs on the callback workers; give it time.
+    let expected = (all_commands(), vec![TestCommand::Pair(2, "up".into())]);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let received = (
+            commands.lock().unwrap().clone(),
+            uploads.lock().unwrap().clone(),
+        );
+        if received == expected {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "commands and uploads: received {received:?}, expected {expected:?}"
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
 /// Command 30: non-default values of every shape for the client to check.
 fn set_wire_values(all: &State) -> s::Result<()> {
     let v = &all.values;
-    v.bool_value.set(true, false)?;
-    v.count.set(-123_456, false)?;
-    v.ratio.set(0.375, false)?;
-    v.queued_progress.set(0.625, false)?;
-    v.title.set("ünïcødé 🦀".into(), false)?;
-    v.optional_value.set(Some(-5), false)?;
-    v.fixed_numbers.set([1, 65535, 0], false)?;
-    v.test_enum.set(TestEnum::C, false)?;
-    v.nested.secondary_choice.set(TestEnum2::X, false)?;
-    v.nested.selected_enum.set(Some(TestEnum::B), false)?;
+    v.bool_value.set(true)?;
+    v.count.set(-123_456)?;
+    v.ratio.set(0.375)?;
+    v.queued_progress.set(0.625)?;
+    v.title.set("ünïcødé 🦀".into())?;
+    v.optional_value.set(Some(-5))?;
+    v.fixed_numbers.set([1, 65535, 0])?;
+    v.test_enum.set(TestEnum::C)?;
+    v.nested.secondary_choice.set(TestEnum2::X)?;
+    v.nested.selected_enum.set(Some(TestEnum::B))?;
     let c = &all.custom_values;
-    c.point.set(
-        TestStruct {
-            x: -1.5,
-            y: 2.25,
-            label: "point".into(),
-        },
-        false,
-    )?;
-    c.optional_struct.set(
-        Some(TestStruct2 {
-            enabled: true,
-            level: 7,
-            name: "seven".into(),
-        }),
-        false,
-    )?;
+    c.point.set(TestStruct {
+        x: -1.5,
+        y: 2.25,
+        label: "point".into(),
+    })?;
+    c.optional_struct.set(Some(TestStruct2 {
+        enabled: true,
+        level: 7,
+        name: "seven".into(),
+    }))?;
     let st = &all.statics;
-    st.status_text.set("ready".into(), false)?;
-    st.summary.set(
+    st.status_text.set("ready".into())?;
+    st.summary.set(TestStruct2 {
+        enabled: false,
+        level: 65535,
+        name: "max".into(),
+    })?;
+    st.pair.set([0.5, -0.25])?;
+    st.nested.label.set("label".into())?;
+    st.nested.enum_hint.set(TestEnum::C)?;
+    let w = &all.wire_types;
+    w.small_unsigned.set(255)?;
+    w.small_signed.set(-128)?;
+    w.short.set(-32768)?;
+    w.wide.set(u64::MAX)?;
+    w.single.set(-0.125)?;
+    w.tuple.set((-7, "tuple".into(), true))?;
+    w.list.set(vec![
+        TestStruct2 {
+            enabled: true,
+            level: 1,
+            name: "a".into(),
+        },
         TestStruct2 {
             enabled: false,
-            level: 65535,
-            name: "max".into(),
+            level: 2,
+            name: "b".into(),
         },
-        false,
-    )?;
-    st.pair.set([0.5, -0.25], false)?;
-    st.nested.label.set("label".into(), false)?;
-    st.nested.enum_hint.set(TestEnum::C, false)?;
-    let w = &all.wire_types;
-    w.small_unsigned.set(255, false)?;
-    w.small_signed.set(-128, false)?;
-    w.short.set(-32768, false)?;
-    w.wide.set(u64::MAX, false)?;
-    w.single.set(-0.125, false)?;
-    w.tuple.set((-7, "tuple".into(), true), false)?;
-    w.list.set(
-        vec![
-            TestStruct2 {
-                enabled: true,
-                level: 1,
-                name: "a".into(),
-            },
-            TestStruct2 {
-                enabled: false,
-                level: 2,
-                name: "b".into(),
-            },
-        ],
-        false,
-    )?;
-    w.table.set(
-        HashMap::from([("pi".into(), 3.5), ("neg".into(), -0.5)]),
-        false,
-    )?;
+    ])?;
+    w.table
+        .set(HashMap::from([("pi".into(), 3.5), ("neg".into(), -0.5)]))?;
     w.keyed_enum
-        .set(HashMap::from([(TestEnum::A, 1), (TestEnum::C, 3)]), false)?;
-    w.optional_enum.set(Some(TestEnum2::Z), false)?;
-    w.bytes.set(vec![0, 127, 255], false)
+        .set(HashMap::from([(TestEnum::A, 1), (TestEnum::C, 3)]))?;
+    w.optional_enum.set(Some(TestEnum2::Z))?;
+    w.bytes.set(vec![0, 127, 255])
 }
 
 /// Command 31: the values and signals the client sent after command 30.
@@ -213,69 +340,100 @@ fn check_client_values(all: &State, signals: &Signals) -> Result<(), String> {
 /// Command 32: server edits of both collections.
 fn edit_collections(all: &State) -> s::Result<()> {
     let items = &all.value_vec.items;
-    items.set(vec![5, 6, 7], true)?;
-    items.set_item(1, 60, true)?;
-    items.add_item(8, true)?;
-    items.remove_item(0, true)?;
+    items.set(vec![5, 6, 7])?;
+    items.set_item(1, 60)?;
+    items.add_item(8)?;
+    items.remove_item(0)?;
+    items.insert_item(1, 61)?;
+    items.insert_item(0, 59)?;
     let map = &all.value_map.items;
-    map.set(HashMap::from([(1, 10), (2, 20)]), true)?;
-    map.set_item(3, 30, true)?;
-    map.set_item(1, 11, true)?;
-    map.remove_item(&2, true)?;
+    map.set(HashMap::from([(1, 10), (2, 20)]))?;
+    map.set_item(3, 30)?;
+    map.set_item(1, 11)?;
+    map.remove_item(&2)?;
     Ok(())
 }
 
 /// Command 33: numeric edits and the limits of every element type.
 fn edit_numeric(all: &State) -> s::Result<()> {
     let d = &all.data;
-    d.bytes.set(&[1, 2, 3, 4, 5], false, false)?;
-    d.bytes.add(&[6], false, false)?;
-    d.bytes.replace(&[20, 30], 1, false, false)?;
-    d.bytes.remove(0, 1, false, false)?;
-    d.samples.set(&[-1.5, 0.25], false, false)?;
-    d.nested.buffer.set(&[1, 2, 3], false, false)?;
-    d.nested.buffer.clear(false)?;
+    d.bytes.set(&[1, 2, 3, 4, 5], false)?;
+    d.bytes.add(&[6], false)?;
+    d.bytes.replace(&[20, 30], 1, false)?;
+    d.bytes.remove(0, 1, false)?;
+    d.samples.set(&[-1.5, 0.25], false)?;
+    d.nested.buffer.set(&[1, 2, 3], false)?;
+    d.nested.buffer.clear()?;
     let n = &all.numeric;
-    n.u8_data.set(&[u8::MIN, 0, u8::MAX], false, false)?;
-    n.i8_data.set(&[i8::MIN, 0, i8::MAX], false, false)?;
-    n.u16_data.set(&[u16::MIN, 0, u16::MAX], false, false)?;
-    n.i16_data.set(&[i16::MIN, 0, i16::MAX], false, false)?;
-    n.u32_data.set(&[u32::MIN, 0, u32::MAX], false, false)?;
-    n.i32_data.set(&[i32::MIN, 0, i32::MAX], false, false)?;
-    n.u64_data.set(&[u64::MIN, 0, u64::MAX], false, false)?;
-    n.i64_data.set(&[i64::MIN, 0, i64::MAX], false, false)?;
-    n.f32_data.set(&[f32::MIN, 0.0, f32::MAX], false, false)?;
-    n.f64_data.set(&[f64::MIN, 0.0, f64::MAX], false, false)?;
+    n.u8_data.set(&[u8::MIN, 0, u8::MAX], false)?;
+    n.i8_data.set(&[i8::MIN, 0, i8::MAX], false)?;
+    n.u16_data.set(&[u16::MIN, 0, u16::MAX], false)?;
+    n.i16_data.set(&[i16::MIN, 0, i16::MAX], false)?;
+    n.u32_data.set(&[u32::MIN, 0, u32::MAX], false)?;
+    n.i32_data.set(&[i32::MIN, 0, i32::MAX], false)?;
+    n.u64_data.set(&[u64::MIN, 0, u64::MAX], false)?;
+    n.i64_data.set(&[i64::MIN, 0, i64::MAX], false)?;
+    n.f32_data.set(&[f32::MIN, 0.0, f32::MAX], false)?;
+    n.f64_data.set(&[f64::MIN, 0.0, f64::MAX], false)?;
     let m = &all.multi_data;
-    m.bytes.set(1, &[1, 2], false, false)?;
-    m.bytes.add(1, &[3], false, false)?;
-    m.bytes.set(2, &[9], false, false)?;
-    m.bytes.remove_index(2, false)?;
-    m.samples.set(7, &[0.5], false, false)?;
-    m.nested.buffer.set(3, &[4, 5], false, false)?;
-    m.nested.buffer.replace(3, 1, &[6], false, false)
+    m.bytes.set(1, &[1, 2], false)?;
+    m.bytes.add(1, &[3], false)?;
+    m.bytes.set(2, &[9], false)?;
+    m.bytes.remove_index(2)?;
+    m.samples.set(7, &[0.5], false)?;
+    m.nested.buffer.set(3, &[4, 5], false)?;
+    m.nested.buffer.replace(3, 1, &[6], false)
 }
 
 /// Command 34: a full image, partial updates, and sparse images. The first
 /// set returns once the client acknowledged it. The split update finishes
 /// before the remove, which waits for every acknowledgement.
+/// Command 37: typed image headers. The header alone waits for the split
+/// update before it, so the phase follows everything.
+fn edit_image_headers(all: &State) -> s::Result<()> {
+    let gray = s::ImageFormat::Gray;
+    let image = &all.image.framed;
+    image.set_with_header(&[1, 2], [2, 1], gray, &meta(1.0, "frame 1", &[2]), false)?;
+    image.update(&[3], [0, 0], [1, 1], gray, false, None, false)?;
+    image.update_with_header(
+        &[4, 5],
+        [0, 0],
+        [2, 1],
+        gray,
+        &meta(2.0, "frame 2", &[2]),
+        false,
+        Some(1),
+        false,
+    )?;
+    image.set_header(&meta(3.0, "frame 3", &[2]))?;
+    let keys = &all.image.framed_keys;
+    keys.set_with_header(4, &[1], [1, 1], gray, &meta(4.0, "key 4", &[]), false)?;
+    keys.set_all_with_header(
+        5,
+        [1, 1],
+        s::ImageColor::Gray(5),
+        &meta(5.0, "key 5", &[]),
+        false,
+    )?;
+    keys.set_header(5, &meta(5.5, "key 5 renamed", &[]))
+}
+
 fn edit_images(all: &State) -> s::Result<()> {
     let pixels: Vec<u8> = (0..18).collect();
     let image = &all.image.image;
-    image.set(&pixels, [2, 3], s::ImageFormat::Color, false, true)?;
+    image.set(&pixels, [2, 3], s::ImageFormat::Color, true)?;
     image.update(
         &[200, 201, 202, 210, 211, 212],
         [1, 1],
         [1, 2],
         s::ImageFormat::Color,
-        false,
         true,
         None,
         false,
     )?;
     let images = &all.image.images;
-    images.set(2, &[9], [1, 1], s::ImageFormat::Gray, false, false)?;
-    images.set_all(7, [2, 2], s::ImageColor::Color(1, 2, 3), false, false)?;
+    images.set(2, &[9], [1, 1], s::ImageFormat::Gray, false)?;
+    images.set_all(7, [2, 2], s::ImageColor::Color(1, 2, 3), false)?;
     images.update(
         7,
         &[4, 5, 6].repeat(4),
@@ -283,16 +441,21 @@ fn edit_images(all: &State) -> s::Result<()> {
         [2, 2],
         s::ImageFormat::Color,
         false,
-        false,
         Some(1),
-        false,
+        // The keys do not wait for each other: the remove of key 2 follows
+        // the last part of this split update only once it is acknowledged.
+        true,
     )?;
-    images.remove_index(2, false)
+    images.remove_index(2)
 }
 
 impl Fixture {
     /// The server for `scenario`, which some scenarios configure.
     pub fn new(port: u16, scenario: &str) -> s::Result<Self> {
+        if log::set_logger(&SERVER_LOGS).is_ok() {
+            log::set_max_level(log::LevelFilter::Warn);
+        }
+        let logged_before = SERVER_LOGS.0.lock().unwrap().len();
         let errors = Arc::new(Mutex::new(Vec::new()));
         let on_error = errors.clone();
         let client_policy = match scenario {
@@ -308,41 +471,26 @@ impl Fixture {
             ..s::ServerOptions::default()
         })?;
         let states = &server.states.integration;
-        states.value.set(7, false)?;
-        states.items.set(vec![1, 2], false)?;
-        states.cached.set(&[8, 9], false, false, true)?;
+        states.value.set(7)?;
+        states.items.set(vec![1, 2])?;
+        states.cached.set(&[8, 9], false, true, false)?;
         states
             .cached_multi
-            .set(91, &[500, 600], false, false, true)?;
-        states.wire.set(
-            crate::bindings::structs::WirePacket {
-                signed: i64::MIN,
-                unsigned: u64::MAX,
-                text: "žluťoučký 🦀".into(),
-                optional: Some(i32::MIN),
-                fixed: [0, 32768, u16::MAX],
-                nested: crate::bindings::structs::TestStruct2 {
-                    enabled: true,
-                    level: u16::MAX,
-                    name: "中".into(),
-                },
-                choice: crate::bindings::enums::TestEnum2::Z,
+            .set(91, &[500, 600], false, true, false)?;
+        states.wire.set(crate::bindings::structs::WirePacket {
+            signed: i64::MIN,
+            unsigned: u64::MAX,
+            text: "žluťoučký 🦀".into(),
+            optional: Some(i32::MIN),
+            fixed: [0, 32768, u16::MAX],
+            nested: crate::bindings::structs::TestStruct2 {
+                enabled: true,
+                level: u16::MAX,
+                name: "中".into(),
             },
-            false,
-        )?;
-        let on_error = errors.clone();
-        let mut callbacks = vec![server.logging.add_logger(s::LogLevel::Error, move |error| {
-            on_error.lock().unwrap().push(error.to_string())
-        })];
-        let warnings = Arc::new(Mutex::new(Vec::new()));
-        let on_warning = warnings.clone();
-        callbacks.push(
-            server
-                .logging
-                .add_logger(s::LogLevel::Warning, move |warning| {
-                    on_warning.lock().unwrap().push(warning)
-                }),
-        );
+            choice: crate::bindings::enums::TestEnum2::Z,
+        })?;
+        let mut callbacks = Vec::new();
         let signals: Signals = Arc::new(Mutex::new(Vec::new()));
         let record = signals.clone();
         callbacks.push(
@@ -384,13 +532,13 @@ impl Fixture {
         let callback_value = states.callback_value.clone();
         let on_error = errors.clone();
         callbacks.push(states.value.connect(move |value| {
-            if let Err(e) = callback_value.set(value, true) {
+            if let Err(e) = callback_value.set(value) {
                 on_error.lock().unwrap().push(e.to_string());
             }
         }));
         let echo = states.wire_echo.clone();
         callbacks.push(states.wire.connect(move |packet| {
-            echo.set(packet, true).unwrap();
+            echo.set(packet).unwrap();
         }));
         let extra_takes = server.states.data_take.clone();
         let extra_multi = server.states.data_multi_take.clone();
@@ -407,121 +555,150 @@ impl Fixture {
         callbacks.push(server.states.transfers.inputs.connect(move |handle| {
             seen.lock().unwrap().push(handle);
         }));
+        let enum_commands = Arc::new(Mutex::new(Vec::new()));
+        let record = enum_commands.clone();
+        callbacks.push(
+            server
+                .states
+                .data_enums
+                .commands
+                .connect(move |command| record.lock().unwrap().push(command)),
+        );
+        let enum_uploads = Arc::new(Mutex::new(Vec::new()));
+        let record = enum_uploads.clone();
+        callbacks.push(server.states.data_enums.upload.on_offer(move |offer| {
+            record.lock().unwrap().push(offer.meta().clone());
+            offer.accept_memory(1024).unwrap();
+        }));
         let st = states.clone();
         let all = server.states.clone();
         let on_error = errors.clone();
         callbacks.push(states.command.connect(move |command| {
             let result = (|| -> s::Result<()> {
                 match command {
-                    1 => st.value.set(21, true)?,
+                    1 => st.value.set(21)?,
                     2 => {
-                        st.items.add_item(st.value.get()?, true)?;
-                        st.map.set_item(9, 900, true)?;
+                        st.items.add_item(st.value.get()?)?;
+                        st.map.set_item(9, 900)?;
                     }
                     3 => {
                         extra_takes
                             .take_samples
-                            .set(&[-1.25, 0.0, 2.5], false, true, false)?;
+                            .set(&[-1.25, 0.0, 2.5], false, false, false)?;
                         extra_multi
                             .samples
-                            .set(513, &[9.5, -2.25], false, true, false)?;
+                            .set(513, &[9.5, -2.25], false, false, false)?;
                         extra_multi
                             .nested
                             .buffer
-                            .set(24, &[0, u16::MAX], false, true, false)?;
-                        st.take.set("payload".into(), false, true)?;
-                        st.empty.set((), false, true)?;
-                        st.data.set(&[0, 1, 255], false, true, false)?;
-                        st.multi.set(7, &[100, 200], false, true, false)?;
-                        st.multi.set(42, &[], false, true, false)?;
+                            .set(24, &[0, u16::MAX], false, false, false)?;
+                        st.take.set("payload".into(), false)?;
+                        st.empty.set((), false)?;
+                        st.data.set(&[0, 1, 255], false, false, false)?;
+                        st.multi.set(7, &[100, 200], false, false, false)?;
+                        st.multi.set(42, &[], false, false, false)?;
                     }
                     4 => {
-                        st.take.set(String::new(), false, true)?;
-                        st.data.set(&[], false, true, false)?;
+                        st.take.set(String::new(), false)?;
+                        st.data.set(&[], false, false, false)?;
                     }
                     10..=13 => {
                         match command {
-                            10 => st.take.set("first".into(), true, true)?,
-                            11 => st.empty.set((), true, true)?,
-                            12 => st.data.set(&[1, 2], true, true, false)?,
-                            _ => st.multi.set(73, &[100, 200], true, true, false)?,
+                            10 => st.take.set("first".into(), true)?,
+                            11 => st.empty.set((), true)?,
+                            12 => st.data.set(&[1, 2], true, false, false)?,
+                            _ => st.multi.set(73, &[100, 200], true, false, false)?,
                         }
-                        st.phase.set(1, true)?;
+                        st.phase.set(1)?;
                         match command {
-                            10 => st.take.set(String::new(), true, true)?,
-                            11 => st.empty.set((), true, true)?,
-                            12 => st.data.set(&[], true, true, false)?,
-                            _ => st.multi.set(73, &[], true, true, false)?,
+                            10 => st.take.set(String::new(), true)?,
+                            11 => st.empty.set((), true)?,
+                            12 => st.data.set(&[], true, false, false)?,
+                            _ => st.multi.set(73, &[], true, false, false)?,
                         }
-                        st.phase.set(2, true)?;
+                        st.phase.set(2)?;
                     }
                     20 => {
-                        st.cached.set(&[31, 32], false, true, true)?;
-                        st.cached_multi.remove_index(91, true)?;
-                        st.cached_multi.set(513, &[17], false, true, true)?;
-                        st.phase.set(20, true)?;
+                        st.cached.set(&[31, 32], false, true, false)?;
+                        st.cached_multi.remove_index(91)?;
+                        st.cached_multi.set(513, &[17], false, true, false)?;
+                        st.phase.set(20)?;
                     }
                     21 => {
-                        st.cached.set(&[41], false, true, false)?;
-                        st.cached_multi.reset(true)?;
-                        st.phase.set(21, true)?;
+                        st.cached.set(&[41], false, false, false)?;
+                        st.cached_multi.reset()?;
+                        st.phase.set(21)?;
                     }
                     22 => {
-                        st.multi.set(7, &[7], false, true, false)?;
-                        st.multi.set(900, &[9], false, true, false)?;
-                        st.multi.remove_index(7, true)?;
-                        st.phase.set(22, true)?;
+                        st.multi.set(7, &[7], false, false, false)?;
+                        st.multi.set(900, &[9], false, false, false)?;
+                        st.multi.remove_index(7)?;
+                        st.phase.set(22)?;
                     }
                     23 => {
-                        st.multi.reset(true)?;
-                        st.phase.set(23, true)?;
+                        st.multi.reset()?;
+                        st.phase.set(23)?;
                     }
                     24 | 25 => {
-                        st.multi.set(7, &[7], true, true, false)?;
+                        st.multi.set(7, &[7], true, false, false)?;
                         if command == 24 {
-                            st.multi.remove_index(7, true)?;
+                            st.multi.remove_index(7)?;
                         } else {
-                            st.multi.reset(true)?;
+                            st.multi.reset()?;
                         }
-                        st.phase.set(24, true)?;
-                        st.multi.set(513, &[9], true, true, false)?;
-                        st.phase.set(25, true)?;
+                        st.phase.set(24)?;
+                        st.multi.set(513, &[9], true, false, false)?;
+                        st.phase.set(25)?;
                     }
                     30 => {
                         set_wire_values(&all)?;
-                        st.phase.set(30, true)?;
+                        st.phase.set(30)?;
                     }
                     31 => {
                         if let Err(error) = check_client_values(&all, &signals) {
                             on_error.lock().unwrap().push(error);
                         }
-                        st.phase.set(31, true)?;
+                        st.phase.set(31)?;
                     }
                     32 => {
                         edit_collections(&all)?;
-                        st.phase.set(32, true)?;
+                        st.phase.set(32)?;
                     }
                     33 => {
                         edit_numeric(&all)?;
-                        st.phase.set(33, true)?;
+                        st.phase.set(33)?;
                     }
                     34 => {
                         edit_images(&all)?;
-                        st.phase.set(34, true)?;
+                        st.phase.set(34)?;
                     }
                     35 | 36 => {
                         edit_headers(&all, command)?;
-                        st.phase.set(command, true)?;
+                        st.phase.set(command)?;
+                    }
+                    37 => {
+                        edit_image_headers(&all)?;
+                        st.phase.set(37)?;
+                    }
+                    38 => {
+                        set_data_enums(&all)?;
+                        st.phase.set(38)?;
+                    }
+                    39 => {
+                        if let Err(error) = check_data_enums(&all, &enum_commands, &enum_uploads) {
+                            on_error.lock().unwrap().push(error);
+                        }
+                        st.phase.set(39)?;
                     }
                     40..=43 => {
                         transfers(&all, command, &finished)?;
-                        st.phase.set(command, true)?;
+                        st.phase.set(command)?;
                     }
                     44 => {
                         check_uploads(&uploaded);
-                        st.phase.set(44, true)?;
+                        st.phase.set(44)?;
                     }
-                    98 | 99 => st.phase.set(command, true)?,
+                    98 | 99 => st.phase.set(command)?,
                     _ => panic!("unknown fixture command"),
                 }
                 Ok(())
@@ -543,28 +720,27 @@ impl Fixture {
             server,
             callbacks,
             errors,
-            warnings,
+            logged_before,
         })
     }
 
     pub fn assert_no_errors(&self) {
         assert!(self.errors.lock().unwrap().is_empty(), "{:?}", self.errors);
+        let logged = logged(log::Level::Error, self.logged_before);
+        assert!(logged.is_empty(), "{logged:?}");
     }
 
     /// Waits for a logged warning containing `text`.
     pub fn assert_warning(&self, text: &str) {
         let deadline = Instant::now() + Duration::from_secs(5);
-        while !self
-            .warnings
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|w| w.contains(text))
-        {
+        loop {
+            let warnings = logged(log::Level::Warn, self.logged_before);
+            if warnings.iter().any(|w| w.contains(text)) {
+                break;
+            }
             assert!(
                 Instant::now() < deadline,
-                "no warning containing {text:?}: {:?}",
-                self.warnings
+                "no warning containing {text:?}: {warnings:?}"
             );
             std::thread::sleep(Duration::from_millis(5));
         }

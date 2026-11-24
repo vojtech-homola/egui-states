@@ -9,6 +9,8 @@ egui_states = { workspace = true, features = ["server", "build_scripts"] }
 egui_states_test_schema = { path = "../shared-test-states" }
 # Headless texture inspection in the images scenario.
 egui = { workspace = true }
+# Captures the server's warnings and errors.
+log = { workspace = true }
 
 [build-dependencies]
 egui_states = { workspace = true, features = ["build_scripts"] }

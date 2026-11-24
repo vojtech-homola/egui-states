@@ -1,7 +1,7 @@
 # Showcase
 
-Explore values, signals, custom types, collections, numeric buffers, one-shot
-transfers, and images. Native and browser GUIs share the same application;
+Explore values, signals, custom types, enums with data, collections, numeric
+buffers, one-shot transfers, and images. Native and browser GUIs share the same application;
 Python and Rust servers provide the same data and actions.
 
 ## Run
@@ -30,7 +30,8 @@ cargo run -p showcase_gui --bin showcase-gui
 
 Click **Connect** and expand the feature sections to edit values, emit signals,
 and explore collection and data controls. Both servers use loopback port
-**8091**; run only one at a time. Stop the server with Ctrl+C.
+**8091**; run only one at a time. Stop the server with Ctrl+C; the GUI shows
+**Reconnecting…** and connects again by itself once a server runs again.
 
 ## IPython console
 
@@ -46,7 +47,7 @@ Run the same script with `--interactive` to return to the prompt with
 ```ipython
 %run example/showcase/python/run.py --interactive
 states.values.count.get()
-states.values.count.set(42, update=True)
+states.values.count.set(42)
 ```
 
 Connect the GUI as usual. Interactive mode also accepts `--port` and the `--web`

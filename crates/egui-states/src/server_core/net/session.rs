@@ -151,6 +151,7 @@ pub(crate) async fn run<L: Listener>(
         request_timeout,
         values,
         signals,
+        heartbeat,
         transfers,
         low_priority,
         ..
@@ -283,11 +284,16 @@ pub(crate) async fn run<L: Listener>(
             u32::try_from(limits.window).unwrap_or(u32::MAX),
             limits.chunk as u32,
         );
-        let announced = serialize(&limits).map(|data| sender.send(data)).is_ok();
+        let mut announced = serialize(&limits).map(|data| sender.send(data)).is_ok();
+        // The client watches the connection as long as the server does.
+        if let Some(heartbeat) = heartbeat {
+            let timeout = ServerHeader::Heartbeat(heartbeat.timeout_millis());
+            announced &= serialize(&timeout).map(|data| sender.send(data)).is_ok();
+        }
 
         connected.store(true, Ordering::Release);
         let failure = if !announced {
-            Some("failed to serialize the transfer limits")
+            Some("failed to serialize the transfer limits or the heartbeat")
         } else if values.sync.iter().any(|v| v.sync().is_err()) {
             Some("failed to sync value after handshake")
         } else {
@@ -387,7 +393,7 @@ pub(crate) async fn run<L: Listener>(
             if connected.load(Ordering::Acquire) {
                 close_slot
                     .lock()
-                    .get_or_insert_with(|| Close::new(close::CLOSED_BY_SERVER, "server stopped"));
+                    .get_or_insert_with(|| Close::new(close::SERVER_STOPPED, "server stopped"));
             }
             connected.store(false, Ordering::Release);
             sender.close();
@@ -746,17 +752,14 @@ async fn reader<S: FrameSource>(
                 signals.reset();
                 break;
             }
-            Ok(ClientMessage::Ack(id)) => {
-                let val_res = values.ack.get(&id);
-                match val_res {
-                    Some(val) => {
-                        val.acknowledge();
-                    }
-                    None => {
-                        signals.error(format!("value with id {} not found for Acknowledge", id))
-                    }
-                }
-            }
+            Ok(ClientMessage::Ack(id)) => match values.ack.get(&id) {
+                Some(val) => val.acknowledge(),
+                None => signals.error(format!("value with id {} not found for Acknowledge", id)),
+            },
+            Ok(ClientMessage::AckKey(id, key)) => match values.ack.get(&id) {
+                Some(val) => val.acknowledge_key(key),
+                None => signals.error(format!("value with id {} not found for Acknowledge", id)),
+            },
             Ok(ClientMessage::Value(id, type_id, signal, data)) => match values.values.get(&id) {
                 Some(val) => {
                     if let Err(e) = val.update_value(type_id, signal, data) {
@@ -937,6 +940,12 @@ async fn writer<K: FrameSink>(
     let lane_mark = serialize::<_, 32>(&ServerHeader::LaneMark)
         .map(FastVec::into_bytes)
         .unwrap_or_default();
+    let keep_alive = serialize::<_, 32>(&ServerHeader::KeepAlive)
+        .map(FastVec::into_bytes)
+        .unwrap_or_default();
+    // Whether a message went out since the last ping; a ping is invisible
+    // to the page of a web client, so only messages count.
+    let mut sent_message = true;
     let mut normal_streak = 0;
     // Whether the starvation guard's next turn belongs to the file lane.
     let mut chunk_turn = false;
@@ -945,7 +954,8 @@ async fn writer<K: FrameSink>(
     // initial synchronization took.
     activity.touch();
     let mut pings = heartbeat.map(|heartbeat| {
-        let mut pings = interval_at(Instant::now() + heartbeat.interval, heartbeat.interval);
+        let interval = heartbeat.interval();
+        let mut pings = interval_at(Instant::now() + interval, interval);
         pings.set_missed_tick_behavior(MissedTickBehavior::Delay);
         pings
     });
@@ -1035,10 +1045,23 @@ async fn writer<K: FrameSink>(
                     report_silent(&signals, heartbeat);
                     break;
                 }
+                if !std::mem::take(&mut sent_message)
+                    && !send(
+                        &mut websocket,
+                        Outgoing::Binary(keep_alive.clone()),
+                        heartbeat,
+                        &activity,
+                        &signals,
+                    )
+                    .await
+                {
+                    break;
+                }
                 (Outgoing::Ping, false)
             }
         };
 
+        sent_message |= matches!(message, Outgoing::Binary(_));
         if !send(&mut websocket, message, heartbeat, &activity, &signals).await {
             break;
         }
@@ -1384,7 +1407,6 @@ mod run_tests {
     }
 
     const TEST_HEARTBEAT: Heartbeat = Heartbeat {
-        interval: Duration::from_millis(100),
         timeout: Duration::from_millis(400),
     };
     const DEADLINE: Duration = Duration::from_secs(5);
@@ -2329,6 +2351,112 @@ mod run_tests {
         });
     }
 
+    /// The headers of a frame of messages without payloads.
+    fn headers_of(frame: &[u8]) -> Vec<ServerHeader> {
+        let mut headers = Vec::new();
+        let mut rest = frame;
+        while let Ok((header, after)) = postcard::take_from_bytes::<ServerHeader>(rest) {
+            headers.push(header);
+            rest = after;
+        }
+        headers
+    }
+
+    /// The headers of every frame of messages, with the time it arrived.
+    type Received = Arc<Mutex<Vec<(Instant, Vec<ServerHeader>)>>>;
+
+    /// Answers the server's pings, as a WebSocket peer does, and records the
+    /// frames of messages.
+    fn answer_pings(mut client: MemoryClient) -> (JoinHandle<()>, Received) {
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let reader = tokio::spawn({
+            let received = received.clone();
+            async move {
+                while let Some(frame) = client.frames.recv().await {
+                    match frame {
+                        Outgoing::Ping => {
+                            let _ = client.send.send(Incoming::KeepAlive);
+                        }
+                        Outgoing::Binary(frame) => {
+                            received.lock().push((Instant::now(), headers_of(&frame)));
+                        }
+                    }
+                }
+            }
+        });
+        (reader, received)
+    }
+
+    fn is_keep_alive(headers: &[ServerHeader]) -> bool {
+        matches!(headers, [ServerHeader::KeepAlive])
+    }
+
+    #[test]
+    fn heartbeat_keeps_an_idle_client_hearing_from_the_server() {
+        block_on(async {
+            let (server, connector) = TestServer::memory(Some(TEST_HEARTBEAT));
+            let client = connect(&connector);
+            assert!(
+                until(DEADLINE, || server.connected()).await,
+                "the client was not accepted"
+            );
+            let (reader, received) = answer_pings(client);
+            tokio::time::sleep(TEST_HEARTBEAT.timeout * 3).await;
+            reader.abort();
+
+            let received = std::mem::take(&mut *received.lock());
+            let headers: Vec<_> = received.iter().flat_map(|(_, headers)| headers).collect();
+            assert!(
+                matches!(
+                    headers[..2],
+                    [
+                        ServerHeader::TransferLimits(..),
+                        ServerHeader::Heartbeat(400)
+                    ]
+                ),
+                "the client was not told the timeout first"
+            );
+            let keep_alives = received.iter().filter(|(_, h)| is_keep_alive(h)).count();
+            assert!(keep_alives >= 3, "only {keep_alives} keep-alive messages");
+            for pair in received.windows(2) {
+                let gap = pair[1].0 - pair[0].0;
+                assert!(
+                    gap < TEST_HEARTBEAT.timeout,
+                    "the client heard nothing for {gap:?}"
+                );
+            }
+            server.stop().await;
+        });
+    }
+
+    #[test]
+    fn a_busy_connection_sends_no_keep_alive() {
+        block_on(async {
+            let (server, connector) = TestServer::memory(Some(TEST_HEARTBEAT));
+            let client = connect(&connector);
+            assert!(
+                until(DEADLINE, || server.connected()).await,
+                "the client was not accepted"
+            );
+            let (reader, received) = answer_pings(client);
+            let busy_until = Instant::now() + TEST_HEARTBEAT.timeout * 3;
+            while Instant::now() < busy_until {
+                server
+                    .sender
+                    .send(serialize(&ServerHeader::Update(0.0)).unwrap());
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            reader.abort();
+
+            // About twelve intervals passed; a scheduling hiccup may leave
+            // one of them without a message.
+            let received = std::mem::take(&mut *received.lock());
+            let keep_alives = received.iter().filter(|(_, h)| is_keep_alive(h)).count();
+            assert!(keep_alives <= 2, "{keep_alives} keep-alive messages");
+            server.stop().await;
+        });
+    }
+
     #[test]
     fn disabled_heartbeat_neither_pings_nor_disconnects_a_silent_client() {
         block_on(async {
@@ -2345,10 +2473,20 @@ mod run_tests {
                 let Some(frame) = frame else {
                     panic!("the server closed the connection");
                 };
-                assert!(
-                    !matches!(frame, Outgoing::Ping),
-                    "a disabled heartbeat pinged the client"
-                );
+                match frame {
+                    Outgoing::Ping => panic!("a disabled heartbeat pinged the client"),
+                    Outgoing::Binary(frame) => {
+                        for header in headers_of(&frame) {
+                            assert!(
+                                !matches!(
+                                    header,
+                                    ServerHeader::Heartbeat(_) | ServerHeader::KeepAlive
+                                ),
+                                "a disabled heartbeat reached the client"
+                            );
+                        }
+                    }
+                }
             }
 
             assert!(server.connected(), "a silent client was disconnected");

@@ -13,6 +13,8 @@ pub(crate) enum ClientMessage {
     Value(u64, u32, bool, Bytes),
     Signal(u64, u32, Bytes),
     Ack(u64),
+    /// Acknowledges one key of a keyed state.
+    AckKey(u64, u32),
     Message(Bytes),
     Handshake(u16, Option<u64>, Option<String>),
     Transfer(u64, TransferFrame, Bytes),
@@ -111,6 +113,7 @@ impl<S: FrameSource> SocketReader<S> {
             }
             ClientHeader::Signal(id, type_id, _) => ClientMessage::Signal(id, type_id, payload),
             ClientHeader::Ack(id) => ClientMessage::Ack(id),
+            ClientHeader::AckKey(id, key) => ClientMessage::AckKey(id, key),
             ClientHeader::LaneAck => ClientMessage::LaneAck,
             ClientHeader::Message(_) => ClientMessage::Message(payload),
             ClientHeader::Handshake(protocol_version, client_version, hash) => {

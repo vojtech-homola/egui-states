@@ -1,5 +1,6 @@
 //! Valid Rust inputs that are awkward for generated code: target-language
-//! keywords, literals without a plain spelling, and a unit struct.
+//! keywords, raw identifiers, names the generated modules use themselves,
+//! literals without a plain spelling, and a unit struct.
 use egui_states::{State, StatesCreator, Value};
 
 #[egui_states::typed(rust_derive(Clone, Copy, Debug, PartialEq))]
@@ -22,9 +23,97 @@ pub struct Reserved {
 #[derive(Clone, Default, egui_states::InitialValue)]
 pub struct Marker;
 
+/// Raw identifiers as struct fields.
+#[egui_states::typed(rust_derive(Clone, Debug, PartialEq))]
+#[derive(Clone, Default, egui_states::InitialValue)]
+pub struct RawFields {
+    pub r#type: u8,
+    pub r#in: bool,
+}
+
+/// Raw identifiers as the variants of an enum with data and as their fields.
+#[egui_states::typed(rust_derive(Debug, PartialEq))]
+#[derive(Clone, Default, egui_states::InitialValue)]
+#[allow(non_camel_case_types)]
+pub enum RawCommand {
+    #[default]
+    Stop,
+    r#match {
+        r#type: u8,
+        r#if: bool,
+    },
+    r#try(u8),
+}
+
+/// Types and variants named like what the generated modules use themselves:
+/// the Rust prelude, and the imports of the Python `enums` module.
+pub mod shadowing {
+    #[egui_states::typed(rust_derive(Debug, PartialOrd))]
+    #[derive(Clone, Copy, Default, egui_states::InitialValue)]
+    pub enum Option {
+        #[default]
+        Off,
+        On,
+    }
+
+    #[egui_states::typed(rust_derive(Debug))]
+    #[derive(Clone, Copy, Default, egui_states::InitialValue)]
+    #[allow(non_camel_case_types)]
+    pub enum s {
+        #[default]
+        First,
+        Second,
+    }
+
+    #[egui_states::typed(rust_derive(Debug, PartialEq))]
+    #[derive(Clone, Default, egui_states::InitialValue)]
+    #[allow(non_camel_case_types)]
+    pub enum String {
+        #[default]
+        s,
+        dataclass(u8),
+        r#final {
+            text: ::std::string::String,
+            maybe: ::std::option::Option<s>,
+            choices: ::std::vec::Vec<Option>,
+        },
+        IntEnum(::std::collections::HashMap<u8, ::std::string::String>),
+    }
+}
+
+/// Types named like Python keywords. Python cannot define them, so only the
+/// Rust generator takes them.
+pub mod keyword_types {
+    #[egui_states::typed(rust_derive(Clone, Copy, Debug, PartialEq))]
+    #[derive(Clone, Copy, Default, egui_states::InitialValue)]
+    pub enum None {
+        #[default]
+        Nothing,
+        Something,
+    }
+
+    #[egui_states::typed(rust_derive(Debug, PartialEq))]
+    #[derive(Clone, Default, egui_states::InitialValue)]
+    pub enum True {
+        #[default]
+        Yes,
+        Maybe(::std::option::Option<None>),
+    }
+
+    #[egui_states::typed(rust_derive(Clone, Debug, PartialEq))]
+    #[derive(Clone, Default, egui_states::InitialValue)]
+    #[allow(non_camel_case_types)]
+    pub struct lambda {
+        pub value: u8,
+        pub choice: None,
+        pub maybe: ::std::option::Option<u8>,
+    }
+}
+
 pub const ESCAPED: &str = "quote \" backslash \\ tab \t newline \n control \u{1} delete \u{7f}";
 
-/// Python keywords as enum variants, struct fields, and a state name.
+/// Python keywords and raw identifiers as enum variants, struct fields, and
+/// state names, next to types that share a name with the generated code.
 pub struct KeywordNames;
 
 impl State for KeywordNames {
@@ -40,6 +129,34 @@ impl State for KeywordNames {
             },
         );
         let _: Value<u8> = c.value("global", 1);
+        let _: Value<RawFields> = c.value(
+            "r#type",
+            RawFields {
+                r#type: 5,
+                r#in: true,
+            },
+        );
+        let _: Value<RawCommand> = c.value(
+            "raw_command",
+            RawCommand::r#match {
+                r#type: 1,
+                r#if: true,
+            },
+        );
+        let _: Value<shadowing::Option> = c.value("option", shadowing::Option::On);
+        let _: Value<shadowing::s> = c.value("short", shadowing::s::Second);
+        let _: Value<shadowing::String> = c.value(
+            "shadowed",
+            shadowing::String::r#final {
+                text: "text".into(),
+                maybe: Some(shadowing::s::Second),
+                choices: vec![shadowing::Option::On],
+            },
+        );
+        let _: Value<shadowing::String> = c.value(
+            "shadowed_map",
+            shadowing::String::IntEnum([(1, "one".into())].into()),
+        );
         Self
     }
 }
@@ -72,6 +189,79 @@ impl State for UnitStruct {
     }
 }
 
+/// A state group and types named like Python keywords, for the Rust
+/// generator alone.
+pub struct KeywordTypes;
+
+impl State for KeywordTypes {
+    const NAME: &'static str = "None";
+
+    fn new(c: &mut impl StatesCreator) -> Self {
+        use keyword_types as types;
+        let _: Value<types::None> = c.value("nothing", types::None::Something);
+        let _: Value<types::True> =
+            c.value("truth", types::True::Maybe(Some(types::None::Something)));
+        let _: Value<types::lambda> = c.value(
+            "function",
+            types::lambda {
+                value: 2,
+                choice: types::None::Something,
+                maybe: Option::None,
+            },
+        );
+        Self
+    }
+}
+
+/// The names the generated state modules import, or take from the prelude,
+/// besides the ones they reject.
+pub const SHADOWED: [&str; 15] = [
+    "Sequence",
+    "Callable",
+    "PathLike",
+    "ClientPolicy",
+    "StatesBase",
+    "StateServerBase",
+    "TransferProfile",
+    "ISubStates",
+    "Option",
+    "String",
+    "Send",
+    "Sync",
+    "Fn",
+    "Ok",
+    "Clone",
+];
+
+/// A state group named like the `N`th of [`SHADOWED`].
+pub struct Shadow<const N: usize>;
+
+impl<const N: usize> State for Shadow<N> {
+    const NAME: &'static str = SHADOWED[N];
+
+    fn new(c: &mut impl StatesCreator) -> Self {
+        let _: Value<u32> = c.value("value", N as u32);
+        Self
+    }
+}
+
+/// One state group per name of [`SHADOWED`], in the fields `group_0` on.
+pub struct ShadowedNames;
+
+impl State for ShadowedNames {
+    const NAME: &'static str = "ShadowedNames";
+
+    fn new(c: &mut impl StatesCreator) -> Self {
+        macro_rules! groups {
+            ($($index:literal)*) => {
+                $(let _: Shadow<$index> = c.substate(concat!("group_", $index));)*
+            };
+        }
+        groups!(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14);
+        Self
+    }
+}
+
 /// All awkward inputs, for the Rust generator.
 pub struct Awkward;
 
@@ -82,6 +272,8 @@ impl State for Awkward {
         let _: KeywordNames = c.substate("keywords");
         let _: SpecialLiterals = c.substate("literals");
         let _: UnitStruct = c.substate("unit");
+        let _: KeywordTypes = c.substate("keyword_types");
+        let _: ShadowedNames = c.substate("shadows");
         Self
     }
 }

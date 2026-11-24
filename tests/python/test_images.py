@@ -9,6 +9,7 @@ from egui_states_test_bindings import (  # ty: ignore[import-not-found]
     State,
     StatesServer,
 )
+from egui_states_test_bindings.structs import HeaderMeta  # ty: ignore[import-not-found]
 
 
 @pytest.mark.parametrize("multi", [False, True], ids=["image", "image-multi"])
@@ -60,7 +61,7 @@ def test_image_value_roundtrip(local_bundle: tuple[StatesServer, State, list[Exc
     patch = np.zeros((2, 3, 4), dtype=np.uint8)
     patch[..., 1] = 80
     patch[..., 3] = 200
-    states.image.image.update(patch, origin=(3, 2), update=True)
+    states.image.image.update(patch, origin=(3, 2))
 
     image_result = states.image.image.get()
     expected = image.copy()
@@ -79,7 +80,7 @@ def test_image_fill_colors(local_bundle):
 
 
 def _fill(image, color):
-    image.set_all((2, 3), color, update=True)
+    image.set_all((2, 3), color)
     return image.get()
 
 
@@ -154,6 +155,11 @@ def test_image_multi_sparse_collection(local_bundle: tuple[StatesServer, State, 
     assert len(images) == 2
     assert images.indices() == [2, 7]
     assert 2 in images
+    assert images.is_idle(2)
+    assert images[2].is_idle()
+    # Indices that cannot exist are not in it, instead of raising.
+    for index in (-1, 2**32, "2", 2.0):
+        assert index not in images
     assert images[7].shape() == (3, 4)
     assert_array(
         images[7].get(),
@@ -161,7 +167,7 @@ def test_image_multi_sparse_collection(local_bundle: tuple[StatesServer, State, 
     )
 
     patch = np.full((1, 2, 4), [20, 30, 40, 50], dtype=np.uint8)
-    images[7].update(patch, origin=(1, 1), update=True)
+    images[7].update(patch, origin=(1, 1))
     assert_array(images[7].get()[1:2, 1:3], patch)
 
     images[7].set_all((1, 2), 9)
@@ -183,9 +189,9 @@ def test_image_multi_sparse_collection(local_bundle: tuple[StatesServer, State, 
 
     images.remove_index(100)
     assert len(images) == 2
-    images.remove_index(2, update=True)
+    images.remove_index(2)
     assert images.indices() == [7]
-    images.reset(update=True)
+    images.reset()
     assert len(images) == 0
     assert images.indices() == []
 
@@ -224,7 +230,7 @@ def test_image_wait_force_and_max_lines(local_bundle, multi):
     image.set_all((4, 2), 0, wait=True)
 
     rows = np.arange(8, dtype=np.uint8).reshape(4, 2)
-    image.update(rows, (0, 0), update=True, max_lines=1)
+    image.update(rows, (0, 0), max_lines=1)
     assert_array(image.get(), rows)
     image.update(np.full((2, 2), 9, dtype=np.uint8), (1, 0), force=True, max_lines=10, wait=True)
     assert state.is_idle()
@@ -237,3 +243,95 @@ def test_image_wait_force_and_max_lines(local_bundle, multi):
         with pytest.raises(ValueError, match="max_lines"):
             image.update(np.zeros((1, 1), dtype=np.uint8), (0, 0), max_lines=max_lines)
     assert_array(image.get(), before)
+
+
+def test_image_headers_are_stored_with_their_image(local_bundle):
+    _, states, _ = local_bundle
+    framed = states.image.framed
+    assert framed.get_header() is None
+    assert framed.get_with_header() is None
+    # The set that creates the image needs a header, and a header needs an image.
+    pixels = np.array([[1], [2]], dtype=np.uint8)
+    with pytest.raises(ValueError, match="needs a header"):
+        framed.set(pixels)
+    with pytest.raises(ValueError, match="needs a header"):
+        framed.set_all((2, 1), 5)
+    with pytest.raises(ValueError, match="no image"):
+        framed.set_header(HeaderMeta(1.0, "z", []))
+    framed.set(pixels, header=HeaderMeta(1.0, "a", [2]))
+    framed.update(np.array([[3]], dtype=np.uint8), (0, 0))
+    assert framed.get_header() == HeaderMeta(1.0, "a", [2])
+    framed.update(np.array([[4], [5]], dtype=np.uint8), (0, 0), max_lines=1, header=HeaderMeta(2.0, "b", []))
+    image, header = framed.get_with_header()
+    assert_array(image, np.array([[4], [5]], dtype=np.uint8))
+    assert header == HeaderMeta(2.0, "b", [])
+    framed.set_all((1, 1), 7, header=HeaderMeta(3.0, "c", []))
+    framed.set(np.array([[8]], dtype=np.uint8))
+    framed.set_header(HeaderMeta(4.0, "d", [1]))
+    image, header = framed.get_with_header()
+    assert_array(image, np.array([[8]], dtype=np.uint8))
+    assert header == HeaderMeta(4.0, "d", [1])
+
+    keys = states.image.framed_keys
+    with pytest.raises(ValueError, match="needs a header"):
+        keys[1].set(pixels)
+    assert 1 not in keys
+    keys[1].set(pixels, header=HeaderMeta(5.0, "e", []))
+    keys[2].set_all((1, 1), 3, header=HeaderMeta(6.0, "f", []))
+    keys[1].update(np.array([[9]], dtype=np.uint8), (1, 0))
+    keys[2].set_header(HeaderMeta(6.5, "g", []))
+    assert keys[1].get_header() == HeaderMeta(5.0, "e", [])
+    image, header = keys[2].get_with_header()
+    assert_array(image, np.array([[3]], dtype=np.uint8))
+    assert header == HeaderMeta(6.5, "g", [])
+    with pytest.raises(ValueError, match="index not found"):
+        keys[3].get_header()
+    with pytest.raises(ValueError, match="index not found"):
+        keys[3].set_header(HeaderMeta(0.0, "h", []))
+
+
+def test_image_multi_iterates_over_its_indices(local_bundle: tuple[StatesServer, State, list[Exception]]) -> None:
+    _server, states, _errors = local_bundle
+    images = states.image.images
+    assert list(images) == []
+    images[7].set_all((1, 1), 0)
+    images[2].set_all((1, 2), 0)
+    assert list(images) == [2, 7]
+    assert [images[index].shape() for index in images] == [(1, 2), (1, 1)]
+    # The handles of the same indices, alone and with their index, as a dict has.
+    assert [handle.shape() for handle in images.values()] == [(1, 2), (1, 1)]
+    assert [(index, handle.shape()) for index, handle in images.items()] == [(2, (1, 2)), (7, (1, 1))]
+    assert len(images.values()) == len(images.items()) == len(images)
+    # Iteration walks a copy, so the state can change under it.
+    for index, _handle in images.items():
+        images.remove_index(index)
+    assert list(images) == [] and list(images.values()) == [] and list(images.items()) == []
+
+    # The header variant inherits the iteration.
+    keys = states.image.framed_keys
+    keys[4].set_all((1, 1), 3, header=HeaderMeta(6.0, "f", []))
+    assert list(keys) == [4]
+    # Its handles are the ones with a header.
+    header = HeaderMeta(6.0, "f", [])
+    assert [handle.get_header() for handle in keys.values()] == [header]
+    assert [(index, handle.get_header()) for index, handle in keys.items()] == [(4, header)]
+
+
+@pytest.mark.parametrize("name", ["images", "framed_keys"])
+def test_image_multi_indices_are_integers(local_bundle: tuple[StatesServer, State, list[Exception]], name: str) -> None:
+    _server, states, _errors = local_bundle
+    images = getattr(states.image, name)
+    images[1].set_all((1, 1), 0, **({"header": HeaderMeta(1.0, "a", [])} if name == "framed_keys" else {}))
+    for index in (1, True, np.uint8(1), np.uint32(1), np.int64(1)):
+        assert index in images
+        assert images.get(index).shape() == (1, 1)
+        assert images[index].shape() == (1, 1)
+        assert type(images[index]._index) is int
+    for index in (2, np.uint32(2), np.int64(-1), np.uint64(2**32)):
+        assert index not in images
+    for wrong in ("1", 1.0, None, np.float32(1), [1], np.array([1.0])):
+        assert wrong not in images
+        with pytest.raises(TypeError, match="^index must be an integer$"):
+            images.get(wrong)
+        with pytest.raises(TypeError, match="^index must be an integer$"):
+            images[wrong]

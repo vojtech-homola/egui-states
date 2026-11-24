@@ -131,17 +131,15 @@ impl StateServer {
     ///
     /// # Errors
     ///
-    /// Returns an error if the heartbeat interval is zero, the heartbeat
-    /// timeout is not greater than the interval, the web page path cannot be
-    /// made absolute (for example because it is empty), an allowed origin
+    /// Returns an error if the heartbeat timeout is zero, the web page path
+    /// cannot be made absolute (for example because it is empty), an allowed origin
     /// is malformed, or the connect request timeout is zero. With TLS, it also
     /// fails if only one of the certificate and key is given, either is given
     /// without [`ServerOptions::tls`], a file cannot be read or holds no valid
     /// PEM certificate or unencrypted key, the key does not belong to the
     /// certificate, or the `tls` feature is off.
     pub fn with_options(options: ServerOptions) -> Result<Self> {
-        let heartbeat = Heartbeat::new(options.heartbeat_interval, options.heartbeat_timeout)
-            .map_err(ServerError::new)?;
+        let heartbeat = Heartbeat::new(options.heartbeat_timeout).map_err(ServerError::new)?;
         let tls = TlsSettings {
             enabled: options.tls,
             cert: options.tls_cert.as_deref(),
@@ -630,11 +628,12 @@ impl StateServer {
     pub(super) fn add_image(
         &self,
         name: String,
+        header_type: Option<u32>,
         low_priority: bool,
     ) -> Result<(u64, Arc<CoreImage>)> {
         let mut server = self.inner.server.write();
         let id = server
-            .add_image(&name, low_priority)
+            .add_image(&name, header_type, low_priority)
             .map_err(ServerError::new)?;
         let value = server.get_image(id).ok_or_else(|| {
             ServerError::new(format!("image not found after registration: {name}"))
@@ -645,11 +644,12 @@ impl StateServer {
     pub(super) fn add_image_multi(
         &self,
         name: String,
+        header_type: Option<u32>,
         low_priority: bool,
     ) -> Result<(u64, Arc<CoreImageMulti>)> {
         let mut server = self.inner.server.write();
         let id = server
-            .add_image_multi(&name, low_priority)
+            .add_image_multi(&name, header_type, low_priority)
             .map_err(ServerError::new)?;
         let value = server.get_image_multi(id).ok_or_else(|| {
             ServerError::new(format!("image_multi not found after registration: {name}"))
@@ -982,24 +982,14 @@ mod tests {
 
     #[test]
     fn invalid_heartbeat_options_are_rejected() {
-        let second = Duration::from_secs(1);
-        for (interval, timeout) in [
-            (Duration::ZERO, Some(second)),
-            (second, Some(second)),
-            (2 * second, Some(second)),
-        ] {
-            let mut options = ServerOptions::new();
-            options.heartbeat_interval = interval;
-            options.heartbeat_timeout = timeout;
-            let Err(error) = StateServer::with_options(options) else {
-                panic!("heartbeat {interval:?}/{timeout:?} was accepted");
-            };
-            assert!(error.message().contains("heartbeat"), "{error}");
-        }
-
-        // A disabled heartbeat ignores its interval.
         let mut options = ServerOptions::new();
-        options.heartbeat_interval = Duration::ZERO;
+        options.heartbeat_timeout = Some(Duration::ZERO);
+        let Err(error) = StateServer::with_options(options) else {
+            panic!("a zero heartbeat timeout was accepted");
+        };
+        assert!(error.message().contains("heartbeat"), "{error}");
+
+        let mut options = ServerOptions::new();
         options.heartbeat_timeout = None;
         assert!(StateServer::with_options(options).is_ok());
     }
@@ -1028,50 +1018,43 @@ mod tests {
     /// server listening forever.
     #[test]
     fn callbacks_capturing_state_handles_do_not_keep_server_alive() {
-        use crate::server::{LogLevel, LoggingSignal, Signal, Value};
+        use crate::server::{Signal, Value};
 
         let server = StateServer::new().unwrap();
         let source = Value::new(&server, "root.source", 0_i32, false).unwrap();
         let target = Value::new(&server, "root.target", 0_i32, false).unwrap();
         let signal = Signal::<i32>::new(&server, "root.signal", false).unwrap();
         let empty = Signal::<()>::new(&server, "root.empty", false).unwrap();
-        let logging = LoggingSignal::new(&server);
 
         let handles = vec![
             source.connect({
                 let target = target.clone();
                 move |value| {
-                    let _ = target.set(value, false);
+                    let _ = target.set(value);
                 }
             }),
             source.connect_previous({
                 let target = target.clone();
                 move |value, _| {
-                    let _ = target.set(value, false);
+                    let _ = target.set(value);
                 }
             }),
             signal.connect({
                 let signal = signal.clone();
                 move |value| {
-                    let _ = signal.set(value);
+                    let _ = signal.emit(value);
                 }
             }),
             empty.connect_empty({
                 let empty = empty.clone();
                 move || {
-                    let _ = empty.set(());
-                }
-            }),
-            logging.add_logger(LogLevel::Info, {
-                let logging = logging.clone();
-                move |_| {
-                    let _ = &logging;
+                    let _ = empty.emit(());
                 }
             }),
         ];
         let inner = Arc::downgrade(&server.inner);
 
-        drop((server, source, target, signal, empty, logging));
+        drop((server, source, target, signal, empty));
         std::mem::forget(handles);
 
         assert!(
@@ -1084,13 +1067,12 @@ mod tests {
     /// stops it, and connecting afterwards yields an inert handle.
     #[test]
     fn state_handles_outliving_the_server_do_not_keep_it_alive() {
-        use crate::server::{LogLevel, LoggingSignal, Signal, Value};
+        use crate::server::{Signal, Value};
 
         let server = StateServer::new().unwrap();
         let value = Value::new(&server, "root.value", 1_i32, false).unwrap();
         let signal = Signal::<i32>::new(&server, "root.signal", false).unwrap();
         let empty = Signal::<()>::new(&server, "root.empty", false).unwrap();
-        let logging = LoggingSignal::new(&server);
         let inner = Arc::downgrade(&server.inner);
 
         drop(server);
@@ -1104,7 +1086,6 @@ mod tests {
             value.connect_previous(|_, _| {}),
             signal.connect(|_| {}),
             empty.connect_empty(|| {}),
-            logging.add_logger(LogLevel::Info, |_| {}),
         ];
         for handle in &handles {
             handle.disconnect();
@@ -1115,7 +1096,7 @@ mod tests {
         signal.signal_set_to_single();
 
         // The state itself stays usable locally, like every other handle.
-        value.set(2, false).unwrap();
+        value.set(2).unwrap();
         assert_eq!(value.get().unwrap(), 2);
     }
 
@@ -1133,13 +1114,13 @@ mod tests {
         let signals = server.inner.signals.clone();
 
         // Left pending: workers are never started.
-        value.set_signal(1, false).unwrap();
-        signal.set(1).unwrap();
+        value.set_signal(1).unwrap();
+        signal.emit(1).unwrap();
         drop(server);
 
         for index in 0..3 {
-            value.set_signal(index, false).unwrap();
-            signal.set(index).unwrap();
+            value.set_signal(index).unwrap();
+            signal.emit(index).unwrap();
         }
         assert!(
             signals.try_claim(None).is_none(),
@@ -1159,6 +1140,11 @@ mod tests {
 
     #[test]
     fn bind_errors_are_reported_and_start_can_be_retried() {
+        // In its own process: a test running alongside could bind the port
+        // between the drop of the listener and the retry.
+        if crate::test_support::isolated() {
+            return;
+        }
         let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
         let server = StateServer::new().unwrap();
@@ -1221,7 +1207,7 @@ mod tests {
         }
         assert!(connected, "Rust client did not connect to the Rust server");
 
-        server_value.set(123, true).unwrap();
+        server_value.set(123).unwrap();
         for _ in 0..100 {
             if client_state.value.get() == 123 {
                 break;
@@ -1281,12 +1267,12 @@ mod tests {
             client.connect();
             server.is_connected()
         });
-        server_value.set(5, false).unwrap();
+        server_value.set(5).unwrap();
         wait("synchronization", || client_state.value.get() == 5);
 
         // Another clone keeps the client running.
         drop(client);
-        server_value.set(6, false).unwrap();
+        server_value.set(6).unwrap();
         wait("synchronization after dropping a clone", || {
             client_state.value.get() == 6
         });
@@ -1339,7 +1325,7 @@ mod tests {
             thread::sleep(Duration::from_millis(10));
         }
         assert!(server.is_connected(), "first client did not connect");
-        server_value.set(41, false).unwrap();
+        server_value.set(41).unwrap();
         first_client.disconnect();
         server.stop();
         drop(first_state);
@@ -1415,8 +1401,8 @@ mod tests {
 
         server.start_signal_workers();
         // The initial value seeds the chain, so the first change already has a previous.
-        value.set_signal(2, false).unwrap();
-        value.set_signal(3, false).unwrap();
+        value.set_signal(2).unwrap();
+        value.set_signal(3).unwrap();
 
         let mut seen = Vec::new();
         while seen.len() < 2 {
@@ -1450,7 +1436,7 @@ mod tests {
         });
 
         server.start_signal_workers();
-        value.set_signal(2, false).unwrap();
+        value.set_signal(2).unwrap();
 
         assert_eq!(plain_receiver.recv_timeout(Duration::from_secs(1)), Ok(2));
         assert_eq!(
@@ -1509,12 +1495,12 @@ mod tests {
 
         let plain = value.connect(|_: i32| {});
         let with_previous = value.connect_previous(|_: i32, _: i32| {});
-        value.set_signal(2, false).unwrap();
+        value.set_signal(2).unwrap();
         let (id, _, previous) = server.inner.signals.try_claim(None).unwrap();
         assert_eq!(previous, Some(serialize_bytes(&1_i32).unwrap()));
 
         drop(with_previous);
-        value.set_signal(3, false).unwrap();
+        value.set_signal(3).unwrap();
         // `id` has to come back as `last_id`, otherwise it stays blocked and is skipped.
         let (_, _, previous) = server.inner.signals.try_claim(Some(id)).unwrap();
         assert_eq!(
@@ -1617,9 +1603,9 @@ mod tests {
             ("MapState", |sv, n| {
                 s::MapState::<u8, i32>::new(sv, n).map(drop)
             }),
-            ("Image", |sv, n| s::Image::new(sv, n, false).map(drop)),
+            ("Image", |sv, n| s::Image::<()>::new(sv, n, false).map(drop)),
             ("ImageMulti", |sv, n| {
-                s::ImageMulti::new(sv, n, false).map(drop)
+                s::ImageMulti::<()>::new(sv, n, false).map(drop)
             }),
             ("Data", |sv, n| s::Data::<u8>::new(sv, n, false).map(drop)),
             ("DataMulti", |sv, n| {
@@ -1725,7 +1711,7 @@ mod tests {
 
         server.start_signal_workers();
         for new in 1..=40 {
-            value.set_signal(new, false).unwrap();
+            value.set_signal(new).unwrap();
         }
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         while seen.lock().len() < 40 && std::time::Instant::now() < deadline {
@@ -1796,27 +1782,33 @@ mod wire_tests {
             let Some(Ok(Message::Binary(mut bytes))) = response else {
                 panic!("valid handshake did not synchronize");
             };
-            // The transfer limits come first, in the same frame or alone.
-            let (limits, mut offset) = ServerHeader::deserialize(&bytes).unwrap();
-            assert!(matches!(limits, ServerHeader::TransferLimits(..)));
-            if offset == bytes.len() {
-                let Some(Ok(Message::Binary(next))) = ws.next().await else {
-                    panic!("valid handshake did not synchronize");
-                };
-                (bytes, offset) = (next, 0);
-            }
-            let (header, length) = ServerHeader::deserialize(&bytes[offset..]).unwrap();
-            offset += length;
-            match header {
-                ServerHeader::Value(_, _, false, length) => {
-                    assert_eq!(
-                        postcard::from_bytes::<i32>(&bytes[offset..offset + length as usize])
-                            .unwrap(),
-                        731
-                    );
+            let mut offset = 0;
+            let mut before = Vec::new();
+            let value = loop {
+                if offset == bytes.len() {
+                    let Some(Ok(Message::Binary(next))) = ws.next().await else {
+                        panic!("valid handshake did not synchronize");
+                    };
+                    (bytes, offset) = (next, 0);
                 }
-                _ => panic!("non-default state missing from sync"),
-            }
+                let (header, length) = ServerHeader::deserialize(&bytes[offset..]).unwrap();
+                offset += length;
+                if let ServerHeader::Value(_, _, length) = header {
+                    let payload = &bytes[offset..offset + length as usize];
+                    break postcard::from_bytes::<i32>(payload).unwrap();
+                }
+                before.push(header);
+            };
+            // The transfer limits and the heartbeat timeout come first, in
+            // the same frame or alone, and the state follows.
+            assert!(
+                matches!(
+                    before[..],
+                    [ServerHeader::TransferLimits(..), ServerHeader::Heartbeat(_)]
+                ),
+                "non-default state missing from sync"
+            );
+            assert_eq!(value, 731);
             ws.close(None).await.unwrap();
         } else {
             assert!(
@@ -2037,7 +2029,15 @@ mod connection_tests {
         options: ServerOptions,
         token: Option<&str>,
     ) -> (StateServer, crate::server::Value<i32>, u16) {
-        let port = free_port();
+        server_on(options, token, free_port())
+    }
+
+    /// A server with one `i32` value, started on `port`.
+    fn server_on(
+        options: ServerOptions,
+        token: Option<&str>,
+        port: u16,
+    ) -> (StateServer, crate::server::Value<i32>, u16) {
         let server = StateServer::with_options(options).unwrap();
         let value = crate::server::Value::new(&server, "root.value", 731_i32, false).unwrap();
         server.finalize().unwrap();
@@ -2065,7 +2065,10 @@ mod connection_tests {
                     *length as usize
                 }
                 ServerHeader::ValueVec(.., length) => *length as usize,
-                ServerHeader::Update(_) | ServerHeader::TransferLimits(..) => 0,
+                ServerHeader::Update(_)
+                | ServerHeader::TransferLimits(..)
+                | ServerHeader::Heartbeat(_)
+                | ServerHeader::KeepAlive => 0,
                 _ => panic!("unexpected message kind in a connection test"),
             };
             messages.push((header, rest[size..size + payload].to_vec()));
@@ -2176,7 +2179,7 @@ mod connection_tests {
             "the replaced client stayed connected or was not told why"
         );
 
-        value.set(5, false).unwrap();
+        value.set(5).unwrap();
         second.wait_for_value(5);
         assert!(server.is_connected());
         server.stop();
@@ -2200,7 +2203,7 @@ mod connection_tests {
             "a rejected client must be closed without data, with the reason"
         );
 
-        value.set(6, false).unwrap();
+        value.set(6).unwrap();
         accepted.wait_for_value(6);
         assert!(server.is_connected());
         server.stop();
@@ -2262,15 +2265,8 @@ mod connection_tests {
         let port = free_port();
         let server = StateServer::new().unwrap();
         server.finalize().unwrap();
-        let logging = crate::server::LoggingSignal::new(&server);
-        let (warnings, warning) = mpsc::channel();
-        let (errors, error) = mpsc::channel();
-        let _warnings = logging.add_logger(crate::server::LogLevel::Warning, move |message| {
-            let _ = warnings.send(message);
-        });
-        let _errors = logging.add_logger(crate::server::LogLevel::Error, move |message| {
-            let _ = errors.send(message);
-        });
+        let warning = crate::test_support::server_logs(log::Level::Warn);
+        let error = crate::test_support::server_logs(log::Level::Error);
         server
             .start(port, Some(Ipv4Addr::LOCALHOST), Some("secret".into()))
             .unwrap();
@@ -2846,7 +2842,293 @@ mod connection_tests {
         wait("server stopped", || {
             fourth.get_state() == ConnectionState::Disconnected
         });
-        assert_eq!(fourth.last_reason(), Some(CloseReason::ClosedByServer));
+        assert_eq!(fourth.last_reason(), Some(CloseReason::ServerStopped));
+    }
+
+    /// Waits short enough for the tests to see several attempts.
+    /// The shortest waits the client makes.
+    const QUICK_RECONNECT: crate::Reconnect = crate::Reconnect {
+        delay: Duration::from_millis(100),
+        max_delay: Duration::from_millis(100),
+        busy_delay: Duration::from_millis(100),
+    };
+
+    /// A client that reconnects by itself, not connected yet.
+    fn reconnecting_client(port: u16) -> crate::Client {
+        ClientBuilder::<ClientTestState>::new(egui::Context::default(), port)
+            .reconnect(QUICK_RECONNECT)
+            .build()
+            .1
+    }
+
+    /// Tells that `client` stays in `state` while it would have made several
+    /// attempts.
+    fn stays(client: &crate::Client, state: ConnectionState) -> bool {
+        thread::sleep(Duration::from_millis(350));
+        client.get_state() == state
+    }
+
+    /// A reconnecting client keeps trying until the server is up, and again
+    /// after the server stopped, until it disconnects; a server that
+    /// disconnects it is not reconnected to.
+    #[test]
+    fn a_reconnecting_client_waits_for_the_server() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let port = free_port();
+        let client = reconnecting_client(port);
+        client.connect();
+        wait("server unreachable", || {
+            client.get_state() == ConnectionState::Reconnecting
+        });
+        assert_eq!(client.last_reason(), Some(CloseReason::Unreachable));
+        assert!(client.last_error().is_some());
+
+        let (server, _value, _) = server_on(ServerOptions::new(), None, port);
+        wait("connected once the server is up", || {
+            client.get_state() == ConnectionState::Connected
+        });
+
+        server.disconnect_client();
+        wait("disconnected by the server", || {
+            client.get_state() == ConnectionState::Disconnected
+        });
+        assert_eq!(client.last_reason(), Some(CloseReason::ClosedByServer));
+        assert!(stays(&client, ConnectionState::Disconnected));
+        assert!(!server.is_connected());
+
+        client.connect();
+        wait("connected again", || {
+            client.get_state() == ConnectionState::Connected
+        });
+        server.stop();
+        wait("server stopped", || {
+            client.get_state() == ConnectionState::Reconnecting
+        });
+        assert!(matches!(
+            client.last_reason(),
+            Some(CloseReason::ServerStopped | CloseReason::Unreachable)
+        ));
+
+        client.disconnect();
+        wait("reconnecting stopped", || {
+            client.get_state() == ConnectionState::NotConnected
+        });
+        assert_eq!(client.last_reason(), None);
+        assert!(stays(&client, ConnectionState::NotConnected));
+    }
+
+    /// A client the server refuses as busy tries again and gets in once the
+    /// connected client leaves; a replaced client does not take the
+    /// connection back.
+    #[test]
+    fn a_reconnecting_client_retries_only_causes_that_can_pass() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let options = ServerOptions {
+            client_policy: crate::server::ClientPolicy::Reject,
+            ..ServerOptions::new()
+        };
+        let (rejecting, _value, port) = server(options, None);
+        let first = reconnecting_client(port);
+        first.connect();
+        wait("first connected", || {
+            first.get_state() == ConnectionState::Connected
+        });
+        let second = reconnecting_client(port);
+        second.connect();
+        wait("second refused as busy", || {
+            second.get_state() == ConnectionState::Reconnecting
+        });
+        assert_eq!(second.last_reason(), Some(CloseReason::Busy));
+        assert_eq!(first.get_state(), ConnectionState::Connected);
+
+        first.disconnect();
+        wait("second connected once the first left", || {
+            second.get_state() == ConnectionState::Connected
+        });
+        rejecting.stop();
+
+        let (server, _value, port) = server(ServerOptions::new(), None);
+        let first = reconnecting_client(port);
+        first.connect();
+        wait("first connected", || {
+            first.get_state() == ConnectionState::Connected
+        });
+        let second = reconnecting_client(port);
+        second.connect();
+        wait("first replaced", || {
+            first.get_state() == ConnectionState::Disconnected
+        });
+        assert_eq!(first.last_reason(), Some(CloseReason::Replaced));
+        assert!(stays(&first, ConnectionState::Disconnected));
+        assert_eq!(second.get_state(), ConnectionState::Connected);
+        server.stop();
+    }
+
+    /// A disconnect cancels an attempt that is opening the connection, also
+    /// with reconnecting, and one made before the next connect does not
+    /// cancel it.
+    #[test]
+    fn disconnect_cancels_an_opening_attempt() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        // A listener that never answers keeps the attempt opening.
+        let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let client = reconnecting_client(port);
+        client.disconnect();
+        client.connect();
+        wait("connecting", || {
+            client.get_state() == ConnectionState::Connecting
+        });
+        assert!(stays(&client, ConnectionState::Connecting));
+        client.disconnect();
+        wait("cancelled", || {
+            client.get_state() == ConnectionState::NotConnected
+        });
+        assert!(stays(&client, ConnectionState::NotConnected));
+        drop(listener);
+    }
+
+    /// `disconnect` followed by `connect` reconnects: the connection the user
+    /// closed ends without a reason, and the `connect` made after it is kept.
+    #[test]
+    fn disconnect_then_connect_reconnects() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        let (server, _value, port) = server(ServerOptions::new(), None);
+        let connects = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = connects.clone();
+        let _on_connect = server.on_connect(move |_| {
+            count.fetch_add(1, Ordering::SeqCst);
+        });
+
+        // Without a reconnect policy only the `connect` brings the client back.
+        let (_state, client) =
+            ClientBuilder::<ClientTestState>::new(egui::Context::default(), port).build();
+        client.connect();
+        wait("connected", || {
+            client.get_state() == ConnectionState::Connected
+        });
+
+        for connection in 2..=3 {
+            client.disconnect();
+            client.connect();
+            wait("the next connection", || {
+                connects.load(Ordering::SeqCst) == connection
+                    && client.get_state() == ConnectionState::Connected
+            });
+            assert_eq!(client.last_reason(), None);
+            assert_eq!(client.last_error(), None);
+        }
+
+        // A `connect` while connected asks for nothing, also after the
+        // disconnect that follows it.
+        client.connect();
+        client.disconnect();
+        wait("disconnected", || {
+            client.get_state() == ConnectionState::Disconnected
+        });
+        assert!(stays(&client, ConnectionState::Disconnected));
+        assert_eq!(client.last_reason(), None);
+        assert_eq!(connects.load(Ordering::SeqCst), 3);
+        server.stop();
+    }
+
+    const FORWARD: u8 = 0;
+    const HOLD: u8 = 1;
+    const CLOSE: u8 = 2;
+
+    /// Forwards one connection to `target` while `link` is [`FORWARD`]. With
+    /// [`HOLD`] it keeps both sockets open and moves nothing, like a network
+    /// that silently dropped the connection; [`CLOSE`] ends it.
+    fn link_to(target: u16) -> (u16, Arc<std::sync::atomic::AtomicU8>) {
+        use std::io::{ErrorKind, Read, Write};
+        use std::sync::atomic::AtomicU8;
+
+        fn forward(mut from: TcpStream, mut to: TcpStream, link: Arc<AtomicU8>) {
+            from.set_read_timeout(Some(Duration::from_millis(10)))
+                .unwrap();
+            let mut buffer = [0; 4096];
+            loop {
+                match link.load(Ordering::Acquire) {
+                    FORWARD => {}
+                    HOLD => {
+                        thread::sleep(Duration::from_millis(10));
+                        continue;
+                    }
+                    _ => return,
+                }
+                match from.read(&mut buffer) {
+                    Ok(0) => return,
+                    Ok(read) => {
+                        if to.write_all(&buffer[..read]).is_err() {
+                            return;
+                        }
+                    }
+                    Err(error)
+                        if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
+                    Err(_) => return,
+                }
+            }
+        }
+
+        let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let link = Arc::new(AtomicU8::new(FORWARD));
+        let state = link.clone();
+        thread::spawn(move || {
+            let (client, _) = listener.accept().unwrap();
+            let server = TcpStream::connect((Ipv4Addr::LOCALHOST, target)).unwrap();
+            let (from_server, to_client) =
+                (server.try_clone().unwrap(), client.try_clone().unwrap());
+            let back = state.clone();
+            thread::spawn(move || forward(from_server, to_client, back));
+            forward(client, server, state);
+        });
+        (port, link)
+    }
+
+    /// `disconnect` does not wait for the server: on a connection the network
+    /// dropped silently the client is disconnected at once, not when a
+    /// heartbeat or the operating system gives the connection up.
+    #[test]
+    fn disconnect_does_not_wait_for_a_silent_server() {
+        if crate::test_support::isolated() {
+            return;
+        }
+        // Without a heartbeat nothing but the disconnect ends the connection.
+        let mut options = ServerOptions::new();
+        options.heartbeat_timeout = None;
+        let (server, _value, server_port) = server(options, None);
+        let (port, link) = link_to(server_port);
+        let (_state, client) =
+            ClientBuilder::<ClientTestState>::new(egui::Context::default(), port).build();
+        client.connect();
+        wait("connected", || {
+            client.get_state() == ConnectionState::Connected
+        });
+
+        link.store(HOLD, Ordering::Release);
+        let start = Instant::now();
+        client.disconnect();
+        wait("disconnected", || {
+            client.get_state() == ConnectionState::Disconnected
+        });
+        assert!(
+            start.elapsed() < Duration::from_secs(3),
+            "{:?}",
+            start.elapsed()
+        );
+        assert_eq!(client.last_reason(), None);
+
+        link.store(CLOSE, Ordering::Release);
+        server.stop();
     }
 
     const PANIC_VALUE: i32 = -13;
@@ -2911,7 +3193,7 @@ mod connection_tests {
         client.connect();
         wait("first connection", || state.value.get().0 == 731);
 
-        value.set(PANIC_VALUE, false).unwrap();
+        value.set(PANIC_VALUE).unwrap();
         wait("receive panic", || {
             client.get_state() == ConnectionState::Failed
         });
@@ -2922,7 +3204,7 @@ mod connection_tests {
         );
         wait("server disconnect", || !server.is_connected());
 
-        value.set(5, false).unwrap();
+        value.set(5).unwrap();
         wait("reconnection", || {
             client.connect();
             state.value.get().0 == 5
@@ -2958,7 +3240,7 @@ mod connection_tests {
         );
         wait("server disconnect", || !server.is_connected());
 
-        value.set(5, false).unwrap();
+        value.set(5).unwrap();
         wait("reconnection", || {
             client.connect();
             state.value.get() == 5
@@ -2985,7 +3267,7 @@ mod connection_tests {
 
         server.update(Some(f32::INFINITY)).unwrap();
         server.update(Some(1e20)).unwrap();
-        value.set(5, false).unwrap();
+        value.set(5).unwrap();
         wait("update after the delays", || state.value.get() == 5);
         assert_eq!(client.get_state(), ConnectionState::Connected);
         client.disconnect();
@@ -3079,9 +3361,7 @@ mod connection_tests {
             client.connect();
             server.is_connected()
         });
-        items
-            .set(vec!["x".repeat(VALUE_MAX_SIZE - 8); 13], false)
-            .unwrap();
+        items.set(vec!["x".repeat(VALUE_MAX_SIZE - 8); 13]).unwrap();
         let deadline = Instant::now() + Duration::from_secs(10);
         while state.items.read(Vec::len) != 13 && Instant::now() < deadline {
             thread::sleep(Duration::from_millis(10));
@@ -3138,14 +3418,10 @@ mod connection_tests {
                     let mut round = 0_u16;
                     while !stop.load(Ordering::Acquire) {
                         round = round.wrapping_add(1);
-                        data.set(&[writer, round], false, false).unwrap();
-                        data.add(&[round], false, false).unwrap();
-                        multi
-                            .set(u32::from(writer), &[round], false, false)
-                            .unwrap();
-                        multi
-                            .add(u32::from(writer), &[round], false, false)
-                            .unwrap();
+                        data.set(&[writer, round], false).unwrap();
+                        data.add(&[round], false).unwrap();
+                        multi.set(u32::from(writer), &[round], false).unwrap();
+                        multi.add(u32::from(writer), &[round], false).unwrap();
                     }
                 })
             })
@@ -3186,7 +3462,6 @@ mod connection_tests {
                 (0..13)
                     .map(|key| (key, "x".repeat(VALUE_MAX_SIZE - 16)))
                     .collect(),
-                false,
             )
             .unwrap();
         server.start(port, Some(Ipv4Addr::LOCALHOST), None).unwrap();
@@ -3304,7 +3579,7 @@ mod connection_tests {
         assert_eq!(upgrade_from(port, "http://localhost:8090"), 101);
 
         // The refused pages did not replace the connected client.
-        value.set(5, false).unwrap();
+        value.set(5).unwrap();
         peer.wait_for_value(5);
         assert!(server.is_connected());
         server.stop();
@@ -3408,7 +3683,7 @@ mod connection_tests {
         assert!(get(port, "/").ends_with("third"));
 
         // None of the above disturbed the connected client.
-        value.set(5, false).unwrap();
+        value.set(5).unwrap();
         peer.wait_for_value(5);
         assert!(server.is_connected());
         server.stop();
@@ -3701,11 +3976,7 @@ mod connection_tests {
             let port = free_port();
             let server = StateServer::with_options(options).unwrap();
             server.finalize().unwrap();
-            let logging = crate::server::LoggingSignal::new(&server);
-            let (errors, error) = mpsc::channel();
-            let _errors = logging.add_logger(crate::server::LogLevel::Error, move |message| {
-                let _ = errors.send(message);
-            });
+            let error = crate::test_support::server_logs(log::Level::Error);
             server.start_web().unwrap();
             server.start(port, Some(Ipv4Addr::LOCALHOST), None).unwrap();
 

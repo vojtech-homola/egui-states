@@ -1,17 +1,20 @@
 //! Read-only client handles for server-controlled numeric buffers.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use bytes::Bytes;
 use parking_lot::{Mutex, RwLock};
 
-use serde::de::DeserializeOwned;
-
+use super::ChangedFlag;
+use super::header::{
+    HeaderValue, Label, created_header, decode_header, decode_header_bytes, header_type_id,
+    split_header,
+};
 use crate::client::messages::{ChannelMessage, MessageSender};
 use crate::hashing::NoHashMap;
-use crate::protocol::data::{DataHeader, DataType, HeaderBytes, HeaderUpdate, TransportType};
-use crate::protocol::{self, VALUE_MAX_SIZE, deserialize};
-use crate::typed::{ObjectType, Typed};
+use crate::protocol::data::{DataHeader, DataType, HeaderUpdate, TransportType};
+use crate::typed::ObjectType;
 
 /// A Data message: its wire header and the payload that followed it.
 pub(crate) type DataMessage = (DataHeader, Bytes);
@@ -246,96 +249,12 @@ fn checked_range(start: u64, count: u64, len: usize) -> Option<std::ops::Range<u
     (end <= len).then_some(start..end)
 }
 
-// Headers -------------------------------------------------------------------
-/// The header type of a Data state: any `Typed` value the server sends with
-/// the buffer, published together with it.
-///
-/// `()` (the default) means the state has no header, and so does any custom
-/// [`Typed`] type whose [`Typed::get_type`] is [`ObjectType::Empty`]; such a
-/// type must decode from no bytes. A state with a header type never holds
-/// data without a header: the server sends one with the change that creates
-/// the data, so the type needs no default.
-pub trait HeaderValue: Typed + DeserializeOwned + Clone + Send + Sync + 'static {}
-
-impl<H> HeaderValue for H where H: Typed + DeserializeOwned + Clone + Send + Sync + 'static {}
-
-/// The type hash a header of `H` carries on the wire, `None` for a state
-/// without a header.
-pub(crate) fn header_type_id<H: HeaderValue>() -> Option<u32> {
-    protocol::data::header_type_id(&H::get_type())
-}
-
 /// The layout hash type id of a Data state of elements `T` with header `H`.
 /// A state without a header keeps the element type's id.
 pub(crate) fn data_type_hash<T: private::GetDataType, H: HeaderValue>() -> u32 {
     match H::get_type() {
         ObjectType::Empty => T::get_type_id(),
         object_type => object_type.get_hash_from(T::get_type_id()),
-    }
-}
-
-/// Splits a payload into its header bytes and its elements. The parser
-/// checked that both lie inside the frame; a shorter payload is an error.
-pub(crate) fn split_header<'a>(
-    payload: &'a [u8],
-    header: u32,
-    name: &str,
-) -> Result<(&'a [u8], &'a [u8]), String> {
-    usize::try_from(header)
-        .ok()
-        .and_then(|header| payload.split_at_checked(header))
-        .ok_or_else(|| format!("Header of Data {name} exceeds its payload"))
-}
-
-/// Decodes the header `bytes` described by `header` for state `name`, whose
-/// header type id is `type_id`.
-pub(crate) fn decode_header_bytes<H: HeaderValue>(
-    type_id: Option<u32>,
-    header: HeaderBytes,
-    bytes: &[u8],
-    name: &str,
-) -> Result<H, String> {
-    let Some(type_id) = type_id else {
-        return Err(format!("Data {name} has no header, but one was received"));
-    };
-    if header.size as usize > VALUE_MAX_SIZE {
-        return Err(format!(
-            "Header of Data {name} is too large: {} bytes, max {VALUE_MAX_SIZE} bytes",
-            header.size
-        ));
-    }
-    if header.type_id != type_id {
-        return Err(format!("Header type id mismatch for Data: {name}"));
-    }
-    deserialize(bytes).map_err(|e| format!("Header parse error: {e} for Data: {name}"))
-}
-
-/// The header of data that a change creates: the one the change carries, or
-/// for a state without a header type the value no bytes encode. A state with
-/// a header type cannot create data without one.
-pub(crate) fn created_header<H: HeaderValue>(
-    type_id: Option<u32>,
-    header: Option<H>,
-    name: &str,
-) -> Result<H, String> {
-    match (header, type_id) {
-        (Some(header), _) => Ok(header),
-        (None, None) => deserialize(&[])
-            .map_err(|e| format!("Header type of Data {name} without a header: {e}")),
-        (None, Some(_)) => Err(format!("Data {name} was created without a header")),
-    }
-}
-
-/// Decodes a header update; `None` keeps the current header.
-fn decode_header<H: HeaderValue>(
-    type_id: Option<u32>,
-    update: HeaderUpdate,
-    bytes: &[u8],
-    name: &str,
-) -> Result<Option<H>, String> {
-    match update {
-        HeaderUpdate::Keep => Ok(None),
-        HeaderUpdate::Set(header) => decode_header_bytes(type_id, header, bytes, name).map(Some),
     }
 }
 
@@ -379,6 +298,7 @@ pub struct Data<T, H = ()> {
     inner: Arc<RwLock<Option<Store<T, H>>>>,
     buffer: Arc<Mutex<Option<BatchBuffer<T>>>>,
     sender: MessageSender,
+    changed: ChangedFlag,
 }
 
 #[allow(private_bounds)]
@@ -397,7 +317,29 @@ where
             inner: Arc::new(RwLock::new(None)),
             buffer: Arc::new(Mutex::new(None)),
             sender,
+            changed: ChangedFlag::default(),
         }
+    }
+
+    /// Tells whether the server changed the data or its header since the
+    /// last call, and clears the flag.
+    ///
+    /// Only this call clears it; reading the data does not. Call it once per
+    /// frame, before reading, and use the result wherever the UI rebuilds
+    /// something from the data, such as a plot: a second call in the same
+    /// frame returns `false`. The synchronization after a connection also
+    /// counts as a change, and so does a reset to "not set".
+    ///
+    /// ```no_run
+    /// # fn downsample(samples: &[f32]) -> Vec<f32> { samples.to_vec() }
+    /// # fn example(samples: egui_states::Data<f32>, plot: &mut Vec<f32>) {
+    /// if samples.take_changed() {
+    ///     *plot = samples.read(|samples| samples.map(downsample).unwrap_or_default());
+    /// }
+    /// # }
+    /// ```
+    pub fn take_changed(&self) -> bool {
+        self.changed.take()
     }
 
     /// Returns a copy of the complete buffer, or `None` while the data is not
@@ -420,7 +362,7 @@ where
     /// reentrant, so a nested read waits behind an incoming server update,
     /// which waits for `f`.
     /// Use [`Self::read_with_header`] to read the header with the buffer.
-    pub fn read<R>(&self, f: impl Fn(Option<&[T]>) -> R) -> R {
+    pub fn read<R>(&self, f: impl FnOnce(Option<&[T]>) -> R) -> R {
         f(self
             .inner
             .read()
@@ -439,7 +381,7 @@ where
     /// Do not call this handle or a clone of it from `f`: the read lock is not
     /// reentrant, so a nested read waits behind an incoming server update,
     /// which waits for `f`.
-    pub fn read_header<R>(&self, f: impl Fn(Option<&H>) -> R) -> R {
+    pub fn read_header<R>(&self, f: impl FnOnce(Option<&H>) -> R) -> R {
         f(self.inner.read().as_ref().map(|store| &store.header))
     }
 
@@ -462,7 +404,7 @@ where
     /// Do not call this handle or a clone of it from `f`: the read lock is not
     /// reentrant, so a nested read waits behind an incoming server update,
     /// which waits for `f`.
-    pub fn read_with_header<R>(&self, f: impl Fn(Option<(&[T], &H)>) -> R) -> R {
+    pub fn read_with_header<R>(&self, f: impl FnOnce(Option<(&[T], &H)>) -> R) -> R {
         let inner = self.inner.read();
         f(inner
             .as_ref()
@@ -470,7 +412,7 @@ where
     }
 
     fn decode_header(&self, update: HeaderUpdate, bytes: &[u8]) -> Result<Option<H>, String> {
-        decode_header(self.header_type, update, bytes, &self.name)
+        decode_header(self.header_type, update, bytes, Label("Data", &self.name))
     }
 
     fn not_set(&self, what: &str) -> String {
@@ -484,7 +426,7 @@ where
         header: HeaderUpdate,
     ) -> Result<(), String> {
         self.sender.send(ChannelMessage::Ack(self.id));
-        let (header_bytes, data) = split_header(payload, header.len(), &self.name)?;
+        let (header_bytes, data) = split_header(payload, header.len(), Label("Data", &self.name))?;
         element_count::<T>(data, "Data")?;
         let header = self.decode_header(header, header_bytes)?;
         self.save_data(Payload::Bytes(data), transport_type, header)
@@ -514,7 +456,7 @@ where
     ) -> Result<(), String> {
         self.sender.send(ChannelMessage::Ack(self.id));
 
-        let (header_bytes, data) = split_header(payload, header.len(), &self.name)?;
+        let (header_bytes, data) = split_header(payload, header.len(), Label("Data", &self.name))?;
         match self.buffer.lock().take() {
             Some(buffer) => {
                 let data = buffer.finish(data)?;
@@ -589,7 +531,8 @@ where
                         Some(std::mem::replace(&mut store.data, data))
                     }
                     None => {
-                        let header = created_header(self.header_type, header, &self.name)?;
+                        let header =
+                            created_header(self.header_type, header, Label("Data", &self.name))?;
                         *w = Some(Store { data, header });
                         None
                     }
@@ -634,9 +577,31 @@ where
     T: private::GetDataType + Sync + Send,
     H: HeaderValue,
 {
-    fn update_data(&self, (header, data): DataMessage) -> Result<(), String> {
+    fn update_data(&self, message: DataMessage) -> Result<(), String> {
+        // A batch changes nothing readers can see before its end.
+        let changes = !matches!(message.0, DataHeader::StartBatch(..) | DataHeader::Batch(_));
+        let result = self.apply(message);
+        if changes && result.is_ok() {
+            self.changed.mark();
+        }
+        result
+    }
+
+    fn disconnected(&self) {
+        self.buffer.lock().take();
+    }
+}
+
+#[allow(private_bounds)]
+impl<T, H> Data<T, H>
+where
+    T: private::GetDataType + Sync + Send,
+    H: HeaderValue,
+{
+    /// Applies one server message; a failed one changes nothing readers see.
+    fn apply(&self, (header, data): DataMessage) -> Result<(), String> {
         match header {
-            DataHeader::All(data_type, transport_type, _, _, header) => {
+            DataHeader::All(data_type, transport_type, _, header) => {
                 if let Err(error) = check_data_type(self.data_type, data_type, &self.name) {
                     self.sender.send_ack(self.id);
                     return Err(error);
@@ -645,33 +610,34 @@ where
             }
             DataHeader::StartBatch(count, _) => self.batch_start(&data, count),
             DataHeader::Batch(_) => self.batch(&data),
-            DataHeader::End(data_type, transport_type, _, _, header) => {
+            DataHeader::End(data_type, transport_type, _, header) => {
                 if let Err(error) = check_data_type(self.data_type, data_type, &self.name) {
                     self.sender.send_ack(self.id);
                     return Err(error);
                 }
                 self.batch_end(&data, transport_type, header)
             }
-            DataHeader::Drain(index, count, _, header) => self.drain(index, count, header, &data),
-            DataHeader::Clear(_, header) => self.clear(header, &data),
-            DataHeader::Header(_, header) => {
-                let header = decode_header_bytes(self.header_type, header, &data, &self.name)?;
+            DataHeader::Drain(index, count, header) => self.drain(index, count, header, &data),
+            DataHeader::Clear(header) => self.clear(header, &data),
+            DataHeader::Header(header) => {
+                let header = decode_header_bytes(
+                    self.header_type,
+                    header,
+                    &data,
+                    Label("Data", &self.name),
+                )?;
                 let mut w = self.inner.write();
                 let store = w.as_mut().ok_or_else(|| self.not_set("Header"))?;
                 store.header = header;
                 Ok(())
             }
-            DataHeader::Reset(_) => {
+            DataHeader::Reset => {
                 let previous = self.inner.write().take();
                 self.buffer.lock().take();
                 drop(previous);
                 Ok(())
             }
         }
-    }
-
-    fn disconnected(&self) {
-        self.buffer.lock().take();
     }
 }
 
@@ -686,6 +652,7 @@ impl<T, H> Clone for Data<T, H> {
             inner: self.inner.clone(),
             buffer: self.buffer.clone(),
             sender: self.sender.clone(),
+            changed: self.changed.clone(),
         }
     }
 }
@@ -704,6 +671,10 @@ pub(crate) trait UpdateMultiData: Sync + Send {
 struct MultiStore<T, H> {
     data: NoHashMap<u32, Vec<T>>,
     headers: NoHashMap<u32, H>,
+    /// Whether the server changed a key since the UI took its flag. Only a
+    /// key that holds a buffer has a flag, so the keys a state had leave
+    /// nothing behind.
+    changed: NoHashMap<u32, AtomicBool>,
 }
 
 impl<T, H: HeaderValue> MultiStore<T, H> {
@@ -730,6 +701,7 @@ pub struct DataMulti<T, H = ()> {
     inner: Arc<RwLock<MultiStore<T, H>>>,
     buffers: Arc<Mutex<NoHashMap<u32, BatchBuffer<T>>>>,
     sender: MessageSender,
+    any_changed: ChangedFlag,
 }
 
 #[allow(private_bounds)]
@@ -748,10 +720,74 @@ where
             inner: Arc::new(RwLock::new(MultiStore {
                 data: NoHashMap::default(),
                 headers: NoHashMap::default(),
+                changed: NoHashMap::default(),
             })),
             buffers: Arc::new(Mutex::new(NoHashMap::default())),
             sender,
+            any_changed: ChangedFlag::default(),
         }
+    }
+
+    /// Tells whether the server changed or created the buffer at `key`, or
+    /// its header, since the last call for `key`, and clears the flag of
+    /// `key`. Returns `None` while `key` holds no buffer, as reading it does.
+    ///
+    /// Only this call clears the flag; reading does not, and the flags of
+    /// the other keys and of [`Self::take_any_changed`] are separate. Call it
+    /// once per frame and key, before reading, and use the result wherever
+    /// the UI rebuilds something from that buffer: a second call in the same
+    /// frame returns `Some(false)`. A removed key returns `None` for as long
+    /// as it is absent, like a key that never existed, so drop what was
+    /// built from it. A key the server creates again returns `Some(true)`,
+    /// and so does every key after the synchronization of a connection.
+    ///
+    /// ```no_run
+    /// # fn downsample(samples: &[f32]) -> Vec<f32> { samples.to_vec() }
+    /// # fn example(channels: egui_states::DataMulti<f32>, plots: &mut [Vec<f32>; 4]) {
+    /// for (key, plot) in (0..).zip(plots.iter_mut()) {
+    ///     match channels.take_changed(key) {
+    ///         Some(true) => {
+    ///             *plot = channels.read(key, |samples| samples.map(downsample).unwrap_or_default());
+    ///         }
+    ///         Some(false) => {}
+    ///         None => plot.clear(),
+    ///     }
+    /// }
+    /// # }
+    /// ```
+    pub fn take_changed(&self, key: u32) -> Option<bool> {
+        let inner = self.inner.read();
+        if !inner.data.contains_key(&key) {
+            return None;
+        }
+        let flag = inner.changed.get(&key);
+        Some(flag.is_some_and(|flag| flag.swap(false, Ordering::AcqRel)))
+    }
+
+    /// Tells whether the server changed, created or removed any buffer or
+    /// header since the last call, and clears this flag.
+    ///
+    /// It is separate from the flags of [`Self::take_changed`], for UI that
+    /// rebuilds from the whole collection, such as with [`Self::read_all`].
+    pub fn take_any_changed(&self) -> bool {
+        self.any_changed.take()
+    }
+
+    /// Records a server change of `key` that readers can already see.
+    fn mark(&self, key: u32) {
+        let inner = self.inner.read();
+        match inner.changed.get(&key) {
+            Some(flag) => flag.store(true, Ordering::Release),
+            None => {
+                drop(inner);
+                let mut inner = self.inner.write();
+                // Only a key that holds a buffer has a flag.
+                if inner.data.contains_key(&key) {
+                    inner.changed.insert(key, AtomicBool::new(true));
+                }
+            }
+        }
+        self.any_changed.mark();
     }
 
     /// Returns a copy of the buffer at `key`, or `None` when it is absent.
@@ -760,6 +796,29 @@ where
     #[inline]
     pub fn get(&self, key: u32) -> Option<Vec<T>> {
         self.inner.read().data.get(&key).cloned()
+    }
+
+    /// Returns the number of keys that hold a buffer, not the highest key
+    /// plus one.
+    pub fn len(&self) -> usize {
+        self.inner.read().data.len()
+    }
+
+    /// Returns whether no key holds a buffer.
+    pub fn is_empty(&self) -> bool {
+        self.inner.read().data.is_empty()
+    }
+
+    /// Returns whether `key` holds a buffer.
+    pub fn contains(&self, key: u32) -> bool {
+        self.inner.read().data.contains_key(&key)
+    }
+
+    /// Returns a snapshot of the keys that hold a buffer, in ascending order.
+    pub fn indices(&self) -> Vec<u32> {
+        let mut indices = self.inner.read().data.keys().copied().collect::<Vec<_>>();
+        indices.sort_unstable();
+        indices
     }
 
     /// Borrows the buffer at `key` for the duration of `f`.
@@ -771,7 +830,7 @@ where
     /// which waits for `f`.
     /// Use [`Self::read_with_header`] to read the header with the buffer.
     #[inline]
-    pub fn read<R>(&self, key: u32, f: impl Fn(Option<&[T]>) -> R) -> R {
+    pub fn read<R>(&self, key: u32, f: impl FnOnce(Option<&[T]>) -> R) -> R {
         f(self.inner.read().data.get(&key).map(Vec::as_slice))
     }
 
@@ -784,7 +843,7 @@ where
     /// which waits for `f`.
     /// Use [`Self::read_all_with_header`] to read the headers as well.
     #[inline]
-    pub fn read_all<R>(&self, f: impl Fn(&NoHashMap<u32, Vec<T>>) -> R) -> R {
+    pub fn read_all<R>(&self, f: impl FnOnce(&NoHashMap<u32, Vec<T>>) -> R) -> R {
         f(&self.inner.read().data)
     }
 
@@ -796,7 +855,7 @@ where
     /// which waits for `f`.
     pub fn read_all_with_header<R>(
         &self,
-        f: impl Fn(&NoHashMap<u32, Vec<T>>, &NoHashMap<u32, H>) -> R,
+        f: impl FnOnce(&NoHashMap<u32, Vec<T>>, &NoHashMap<u32, H>) -> R,
     ) -> R {
         let inner = self.inner.read();
         f(&inner.data, &inner.headers)
@@ -827,7 +886,7 @@ where
     /// Do not call this handle or a clone of it from `f`: the read lock is not
     /// reentrant, so a nested read waits behind an incoming server update,
     /// which waits for `f`.
-    pub fn read_header<R>(&self, key: u32, f: impl Fn(Option<&H>) -> R) -> R {
+    pub fn read_header<R>(&self, key: u32, f: impl FnOnce(Option<&H>) -> R) -> R {
         f(self.inner.read().headers.get(&key))
     }
 
@@ -852,7 +911,7 @@ where
     /// Do not call this handle or a clone of it from `f`: the read lock is not
     /// reentrant, so a nested read waits behind an incoming server update,
     /// which waits for `f`.
-    pub fn read_with_header<R>(&self, key: u32, f: impl Fn(Option<(&[T], &H)>) -> R) -> R {
+    pub fn read_with_header<R>(&self, key: u32, f: impl FnOnce(Option<(&[T], &H)>) -> R) -> R {
         let inner = self.inner.read();
         let entry = inner
             .data
@@ -879,7 +938,7 @@ where
     }
 
     fn decode_header(&self, update: HeaderUpdate, bytes: &[u8]) -> Result<Option<H>, String> {
-        decode_header(self.header_type, update, bytes, &self.name)
+        decode_header(self.header_type, update, bytes, Label("Data", &self.name))
     }
 
     fn set_all(
@@ -889,8 +948,8 @@ where
         transport_type: TransportType,
         header: HeaderUpdate,
     ) -> Result<(), String> {
-        self.sender.send(ChannelMessage::Ack(self.id));
-        let (header_bytes, data) = split_header(payload, header.len(), &self.name)?;
+        self.sender.send_ack_key(self.id, key);
+        let (header_bytes, data) = split_header(payload, header.len(), Label("Data", &self.name))?;
         element_count::<T>(data, "Data")?;
         let header = self.decode_header(header, header_bytes)?;
         self.save_data(key, Payload::Bytes(data), transport_type, header)
@@ -919,9 +978,9 @@ where
         transport_type: TransportType,
         header: HeaderUpdate,
     ) -> Result<(), String> {
-        self.sender.send(ChannelMessage::Ack(self.id));
+        self.sender.send_ack_key(self.id, key);
 
-        let (header_bytes, data) = split_header(payload, header.len(), &self.name)?;
+        let (header_bytes, data) = split_header(payload, header.len(), Label("Data", &self.name))?;
         match self.buffers.lock().remove(&key) {
             Some(buffer) => {
                 let data = buffer.finish(data)?;
@@ -943,7 +1002,7 @@ where
         header: HeaderUpdate,
         payload: &[u8],
     ) -> Result<(), String> {
-        self.sender.send(ChannelMessage::Ack(self.id));
+        self.sender.send_ack_key(self.id, key);
         let header = self.decode_header(header, payload)?;
 
         let mut w = self.inner.write();
@@ -980,9 +1039,11 @@ where
                 let data = data.into_vec();
                 let mut w = self.inner.write();
                 let header = match header {
-                    None if !w.headers.contains_key(&key) => {
-                        Some(created_header(self.header_type, None, &self.name)?)
-                    }
+                    None if !w.headers.contains_key(&key) => Some(created_header(
+                        self.header_type,
+                        None,
+                        Label("Data", &self.name),
+                    )?),
                     header => header,
                 };
                 let previous = w.data.insert(key, data);
@@ -1042,29 +1103,72 @@ where
     T: private::GetDataType + Sync + Send,
     H: HeaderValue,
 {
-    fn update(&self, index: u32, (header, data): DataMessage) -> Result<(), String> {
+    fn update(&self, index: u32, message: DataMessage) -> Result<(), String> {
+        // A batch changes nothing readers can see before its end.
+        let changes = !matches!(message.0, DataHeader::StartBatch(..) | DataHeader::Batch(_));
+        let result = self.apply(index, message);
+        if changes && result.is_ok() {
+            self.mark(index);
+        }
+        result
+    }
+
+    fn remove(&self, index: u32) {
+        let mut w = self.inner.write();
+        w.data.remove(&index);
+        w.headers.remove(&index);
+        w.changed.remove(&index);
+        drop(w);
+        self.buffers.lock().remove(&index);
+        self.any_changed.mark();
+    }
+
+    fn reset(&self) {
+        let mut w = self.inner.write();
+        w.data.clear();
+        w.headers.clear();
+        w.changed.clear();
+        drop(w);
+        self.buffers.lock().clear();
+        self.any_changed.mark();
+    }
+
+    fn disconnected(&self) {
+        self.buffers.lock().clear();
+    }
+}
+
+#[allow(private_bounds)]
+impl<T, H> DataMulti<T, H>
+where
+    T: private::GetDataType + Sync + Send,
+    H: HeaderValue,
+{
+    /// Applies one server message for `index`; a failed one changes nothing
+    /// readers see.
+    fn apply(&self, index: u32, (header, data): DataMessage) -> Result<(), String> {
         match header {
-            DataHeader::All(data_type, transport_type, _, _, header) => {
+            DataHeader::All(data_type, transport_type, _, header) => {
                 if let Err(error) = check_data_type(self.data_type, data_type, &self.name) {
-                    self.sender.send_ack(self.id);
+                    self.sender.send_ack_key(self.id, index);
                     return Err(error);
                 }
                 self.set_all(index, &data, transport_type, header)
             }
             DataHeader::StartBatch(count, _) => self.batch_start(index, &data, count),
             DataHeader::Batch(_) => self.batch(index, &data),
-            DataHeader::End(data_type, transport_type, _, _, header) => {
+            DataHeader::End(data_type, transport_type, _, header) => {
                 if let Err(error) = check_data_type(self.data_type, data_type, &self.name) {
-                    self.sender.send_ack(self.id);
+                    self.sender.send_ack_key(self.id, index);
                     return Err(error);
                 }
                 self.batch_end(index, &data, transport_type, header)
             }
-            DataHeader::Drain(start, count, _, header) => {
+            DataHeader::Drain(start, count, header) => {
                 self.drain(index, start, count, header, &data)
             }
-            DataHeader::Clear(_, update) => {
-                let header = self.decode_header(update, &data)?;
+            DataHeader::Clear(header_update) => {
+                let header = self.decode_header(header_update, &data)?;
                 // A later change of this key must not complete an older batch.
                 self.buffers.lock().remove(&index);
                 let mut w = self.inner.write();
@@ -1079,8 +1183,13 @@ where
                     None => Err(self.missing_key(index, "Clear")),
                 }
             }
-            DataHeader::Header(_, header) => {
-                let header = decode_header_bytes(self.header_type, header, &data, &self.name)?;
+            DataHeader::Header(header) => {
+                let header = decode_header_bytes(
+                    self.header_type,
+                    header,
+                    &data,
+                    Label("Data", &self.name),
+                )?;
                 let mut w = self.inner.write();
                 if !w.data.contains_key(&index) {
                     return Err(self.missing_key(index, "Header"));
@@ -1088,31 +1197,11 @@ where
                 w.set_header(index, Some(header));
                 Ok(())
             }
-            DataHeader::Reset(_) => Err(format!(
+            DataHeader::Reset => Err(format!(
                 "A Data reset is not valid for key {} in MultiData: {}",
                 index, self.name
             )),
         }
-    }
-
-    fn remove(&self, index: u32) {
-        let mut w = self.inner.write();
-        w.data.remove(&index);
-        w.headers.remove(&index);
-        drop(w);
-        self.buffers.lock().remove(&index);
-    }
-
-    fn reset(&self) {
-        let mut w = self.inner.write();
-        w.data.clear();
-        w.headers.clear();
-        drop(w);
-        self.buffers.lock().clear();
-    }
-
-    fn disconnected(&self) {
-        self.buffers.lock().clear();
     }
 }
 
@@ -1127,6 +1216,7 @@ impl<T, H> Clone for DataMulti<T, H> {
             inner: self.inner.clone(),
             buffers: self.buffers.clone(),
             sender: self.sender.clone(),
+            any_changed: self.any_changed.clone(),
         }
     }
 }
@@ -1158,7 +1248,9 @@ mod tests {
         expected_id: u64,
     ) {
         match receiver.try_recv() {
-            Ok(Some(ChannelMessage::Ack(id))) => assert_eq!(id, expected_id),
+            Ok(Some(ChannelMessage::Ack(id) | ChannelMessage::AckKey(id, _))) => {
+                assert_eq!(id, expected_id)
+            }
             _ => panic!("expected an ACK for {expected_id}"),
         }
         assert!(matches!(receiver.try_recv(), Err(TryRecvError::Empty)));
@@ -1175,7 +1267,6 @@ mod tests {
                 DataHeader::End(
                     DataType::U8,
                     TransportType::Set(4),
-                    false,
                     0,
                     crate::protocol::data::HeaderUpdate::Keep,
                 ),
@@ -1196,7 +1287,7 @@ mod tests {
                 data.update(
                     1,
                     (
-                        DataHeader::Clear(false, crate::protocol::data::HeaderUpdate::Keep),
+                        DataHeader::Clear(crate::protocol::data::HeaderUpdate::Keep),
                         Bytes::new(),
                     ),
                 )
@@ -1229,7 +1320,6 @@ mod tests {
                     DataHeader::All(
                         DataType::U8,
                         TransportType::Set(2),
-                        false,
                         0,
                         crate::protocol::data::HeaderUpdate::Keep,
                     ),
@@ -1255,7 +1345,6 @@ mod tests {
                 DataHeader::All(
                     DataType::U16,
                     TransportType::Set(1),
-                    false,
                     0,
                     crate::protocol::data::HeaderUpdate::Keep
                 ),
@@ -1270,7 +1359,6 @@ mod tests {
                 DataHeader::End(
                     DataType::U16,
                     TransportType::Set(1),
-                    false,
                     0,
                     crate::protocol::data::HeaderUpdate::Keep
                 ),
@@ -1294,7 +1382,6 @@ mod tests {
                     DataHeader::All(
                         DataType::U16,
                         TransportType::Set(1),
-                        false,
                         0,
                         crate::protocol::data::HeaderUpdate::Keep
                     ),
@@ -1312,7 +1399,6 @@ mod tests {
                     DataHeader::End(
                         DataType::U16,
                         TransportType::Set(1),
-                        false,
                         0,
                         crate::protocol::data::HeaderUpdate::Keep
                     ),
@@ -1337,7 +1423,6 @@ mod malformed_tests {
             DataHeader::All(
                 DataType::U8,
                 TransportType::Set(2),
-                false,
                 0,
                 crate::protocol::data::HeaderUpdate::Keep,
             ),
@@ -1350,7 +1435,6 @@ mod malformed_tests {
                 DataHeader::All(
                     DataType::U8,
                     TransportType::Set(3),
-                    false,
                     0,
                     crate::protocol::data::HeaderUpdate::Keep
                 ),
@@ -1369,7 +1453,6 @@ mod malformed_tests {
                 DataHeader::End(
                     DataType::U8,
                     TransportType::Set(3),
-                    false,
                     0,
                     crate::protocol::data::HeaderUpdate::Keep
                 ),
@@ -1383,7 +1466,6 @@ mod malformed_tests {
             DataHeader::All(
                 DataType::U8,
                 TransportType::Set(1),
-                false,
                 0,
                 crate::protocol::data::HeaderUpdate::Keep,
             ),
@@ -1399,13 +1481,184 @@ mod malformed_tests {
             DataHeader::All(
                 DataType::U8,
                 TransportType::Set(values.len() as u64),
-                false,
                 0,
                 crate::protocol::data::HeaderUpdate::Keep,
             ),
             Bytes::copy_from_slice(values),
         ))
         .unwrap();
+    }
+
+    fn set_key(data: &DataMulti<u8>, key: u32, values: &[u8]) {
+        data.update(
+            key,
+            (
+                DataHeader::All(
+                    DataType::U8,
+                    TransportType::Set(values.len() as u64),
+                    0,
+                    crate::protocol::data::HeaderUpdate::Keep,
+                ),
+                Bytes::copy_from_slice(values),
+            ),
+        )
+        .unwrap();
+    }
+
+    /// The flag reports each change readers can see once, is cleared only by
+    /// taking it, and is shared by clones.
+    #[test]
+    fn take_changed_reports_each_visible_change_once() {
+        let (sender, _receiver) = MessageSender::new();
+        let data = Data::<u8>::new("data".to_string(), 1, sender);
+        assert!(!data.take_changed());
+
+        set(&data, &[1, 2]);
+        assert!(data.take_changed());
+        assert!(!data.take_changed());
+
+        // Reading leaves the flag alone.
+        set(&data, &[3]);
+        assert_eq!(data.get(), Some(vec![3]));
+        data.read(|_| ());
+        assert!(data.clone().take_changed());
+        assert!(!data.take_changed());
+
+        // A batch is visible, and reported, only at its end.
+        data.update_data((DataHeader::StartBatch(2, 0), Bytes::from_static(&[4])))
+            .unwrap();
+        data.update_data((DataHeader::Batch(0), Bytes::new()))
+            .unwrap();
+        assert!(!data.take_changed());
+        data.update_data((
+            DataHeader::End(
+                DataType::U8,
+                TransportType::Set(2),
+                0,
+                crate::protocol::data::HeaderUpdate::Keep,
+            ),
+            Bytes::from_static(&[5]),
+        ))
+        .unwrap();
+        assert!(data.take_changed());
+
+        // A failed update changes nothing.
+        let drain = DataHeader::Drain(5, 1, crate::protocol::data::HeaderUpdate::Keep);
+        assert!(data.update_data((drain, Bytes::new())).is_err());
+        assert!(!data.take_changed());
+
+        data.update_data((DataHeader::Reset, Bytes::new())).unwrap();
+        assert!(data.take_changed());
+        assert_eq!(data.get(), None);
+    }
+
+    /// Every key that holds a buffer has its own flag, and one more flag
+    /// reports a change of any key, a removal included. A key without a
+    /// buffer has none, whether it was removed or never existed.
+    #[test]
+    fn data_multi_flags_changes_per_key_and_for_any_key() {
+        let (sender, _receiver) = MessageSender::new();
+        let data = DataMulti::<u8>::new("data".to_string(), 2, sender);
+        assert_eq!(data.take_changed(1), None);
+        assert!(!data.take_any_changed());
+
+        set_key(&data, 1, &[1]);
+        assert_eq!(data.take_changed(2), None);
+        assert_eq!(data.take_changed(1), Some(true));
+        assert_eq!(data.take_changed(1), Some(false));
+        assert!(data.take_any_changed());
+        assert!(!data.take_any_changed());
+
+        set_key(&data, 2, &[2]);
+        assert_eq!(data.take_changed(1), Some(false));
+        assert_eq!(data.take_changed(2), Some(true));
+        assert!(data.take_any_changed());
+
+        // Reading leaves the flags alone; a batch counts at its end.
+        set_key(&data, 1, &[3]);
+        assert_eq!(data.get(1), Some(vec![3]));
+        data.read_all(|_| ());
+        data.update(1, (DataHeader::StartBatch(2, 0), Bytes::from_static(&[4])))
+            .unwrap();
+        assert_eq!(data.clone().take_changed(1), Some(true));
+        data.update(1, (DataHeader::Batch(0), Bytes::new()))
+            .unwrap();
+        assert_eq!(data.take_changed(1), Some(false));
+
+        // A removed key is like one that never existed, until it is created
+        // again.
+        data.remove(1);
+        assert_eq!(data.take_changed(1), None);
+        assert_eq!(data.get(1), None);
+        assert!(data.take_any_changed());
+        set_key(&data, 1, &[5]);
+        assert_eq!(data.take_changed(1), Some(true));
+
+        // A reset removes every key, also for the flags.
+        data.take_any_changed();
+        data.reset();
+        assert_eq!(data.take_changed(1), None);
+        assert_eq!(data.take_changed(2), None);
+        assert!(data.take_any_changed());
+        set_key(&data, 2, &[6]);
+        assert_eq!(data.take_changed(2), Some(true));
+        assert_eq!(data.take_changed(1), None);
+    }
+
+    /// Keys that come and go leave no flag behind, also when the UI never
+    /// asked about them.
+    #[test]
+    fn data_multi_keeps_flags_only_for_its_keys() {
+        let (sender, _receiver) = MessageSender::new();
+        let data = DataMulti::<u8>::new("data".to_string(), 2, sender);
+        for key in 0..100 {
+            set_key(&data, key, &[1]);
+            data.remove(key);
+        }
+        // A removal of a key that is not there creates no flag either.
+        data.remove(500);
+        assert!(data.inner.read().changed.is_empty());
+
+        set_key(&data, 7, &[1]);
+        assert_eq!(data.inner.read().changed.len(), 1);
+    }
+
+    #[test]
+    fn data_multi_acknowledges_each_key_on_its_own() {
+        let (sender, mut receiver) = MessageSender::new();
+        let data = DataMulti::<u8>::new("data".to_string(), 4, sender);
+        set_key(&data, 7, &[1]);
+        set_key(&data, 2, &[2]);
+        for key in [7, 2] {
+            assert!(matches!(
+                receiver.try_recv(),
+                Ok(Some(ChannelMessage::AckKey(4, acked))) if acked == key
+            ));
+        }
+    }
+
+    #[test]
+    fn data_multi_lists_the_keys_that_hold_a_buffer() {
+        let (sender, _receiver) = MessageSender::new();
+        let data = DataMulti::<u8>::new("data".to_string(), 3, sender);
+        assert!(data.is_empty());
+        assert_eq!(data.indices(), Vec::<u32>::new());
+
+        set_key(&data, 7, &[1]);
+        set_key(&data, 2, &[]);
+        // A batch still arriving is not a key yet.
+        data.update(5, (DataHeader::StartBatch(2, 0), Bytes::from_static(&[4])))
+            .unwrap();
+        assert_eq!(data.len(), 2);
+        assert_eq!(data.indices(), vec![2, 7]);
+        assert!(data.contains(2));
+        assert!(!data.contains(5));
+
+        data.remove(7);
+        assert_eq!(data.indices(), vec![2]);
+        assert!(!data.contains(7));
+        data.reset();
+        assert!(data.is_empty());
     }
 
     #[test]
@@ -1428,7 +1681,6 @@ mod malformed_tests {
                 DataHeader::End(
                     DataType::U8,
                     TransportType::Set(1),
-                    false,
                     0,
                     crate::protocol::data::HeaderUpdate::Keep
                 ),
@@ -1453,7 +1705,6 @@ mod malformed_tests {
             DataHeader::End(
                 DataType::U8,
                 TransportType::Set(2),
-                false,
                 0,
                 crate::protocol::data::HeaderUpdate::Keep,
             ),
@@ -1473,7 +1724,7 @@ mod malformed_tests {
 
         assert!(
             data.update_data((
-                DataHeader::Drain(2, 5, false, crate::protocol::data::HeaderUpdate::Keep),
+                DataHeader::Drain(2, 5, crate::protocol::data::HeaderUpdate::Keep),
                 Bytes::new()
             ))
             .is_err()
@@ -1482,7 +1733,7 @@ mod malformed_tests {
         data.read(|v| assert_eq!(v, Some(&[1, 2, 3][..])));
 
         data.update_data((
-            DataHeader::Drain(0, 1, false, crate::protocol::data::HeaderUpdate::Keep),
+            DataHeader::Drain(0, 1, crate::protocol::data::HeaderUpdate::Keep),
             Bytes::new(),
         ))
         .unwrap();
@@ -1502,7 +1753,6 @@ mod malformed_tests {
                 DataHeader::All(
                     DataType::U16,
                     TransportType::Set(3),
-                    false,
                     0,
                     crate::protocol::data::HeaderUpdate::Keep,
                 ),
@@ -1525,7 +1775,7 @@ mod malformed_tests {
         for start in [u64::MAX, u64::MAX - 1] {
             let drain = || {
                 (
-                    DataHeader::Drain(start, 2, false, crate::protocol::data::HeaderUpdate::Keep),
+                    DataHeader::Drain(start, 2, crate::protocol::data::HeaderUpdate::Keep),
                     Bytes::new(),
                 )
             };
@@ -1536,7 +1786,6 @@ mod malformed_tests {
                     DataHeader::All(
                         DataType::U16,
                         TransportType::Replace(start, 1),
-                        false,
                         0,
                         crate::protocol::data::HeaderUpdate::Keep,
                     ),
@@ -1555,7 +1804,9 @@ mod malformed_tests {
 mod header_tests {
     use super::*;
     use crate::client::messages::{ChannelMessage, MessagesParser};
-    use crate::protocol::ServerHeader;
+    use crate::protocol::data::HeaderBytes;
+    use crate::protocol::{ServerHeader, VALUE_MAX_SIZE};
+    use crate::typed::Typed;
     use tokio::sync::mpsc::{UnboundedReceiver, error::TryRecvError};
 
     type Meta = (u32, String);
@@ -1582,12 +1833,14 @@ mod header_tests {
     fn set(update: HeaderUpdate, values: &[u16]) -> DataHeader {
         let count = values.len() as u64;
         let len = size_of_val(values) as u32;
-        DataHeader::All(DataType::U16, TransportType::Set(count), false, len, update)
+        DataHeader::All(DataType::U16, TransportType::Set(count), len, update)
     }
 
     fn acks(receiver: &mut UnboundedReceiver<Option<ChannelMessage>>) -> usize {
         let mut count = 0;
-        while let Ok(Some(ChannelMessage::Ack(_))) = receiver.try_recv() {
+        while let Ok(Some(ChannelMessage::Ack(_) | ChannelMessage::AckKey(..))) =
+            receiver.try_recv()
+        {
             count += 1;
         }
         assert!(matches!(receiver.try_recv(), Err(TryRecvError::Empty)));
@@ -1653,7 +1906,7 @@ mod header_tests {
         assert_eq!(data.get_with_header(), None);
 
         let (update, bytes) = payload(&meta(5), type_id(), &[3]);
-        let end = DataHeader::End(DataType::U16, TransportType::Set(3), true, 2, update);
+        let end = DataHeader::End(DataType::U16, TransportType::Set(3), 2, update);
         data.update_data((end, bytes)).unwrap();
         assert_eq!(acks(&mut receiver), 1);
         data.read_with_header(|entry| {
@@ -1671,19 +1924,16 @@ mod header_tests {
         };
 
         let error = multi
-            .update(4, (DataHeader::Header(false, header), bytes.clone()))
+            .update(4, (DataHeader::Header(header), bytes.clone()))
             .unwrap_err();
         assert!(error.contains("does not exist"), "{error}");
         let error = multi
-            .update(4, (DataHeader::Clear(false, update), bytes.clone()))
+            .update(4, (DataHeader::Clear(update), bytes.clone()))
             .unwrap_err();
         assert!(error.contains("does not exist"), "{error}");
         // A clear that keeps the header loses nothing on a missing key.
         multi
-            .update(
-                4,
-                (DataHeader::Clear(false, HeaderUpdate::Keep), Bytes::new()),
-            )
+            .update(4, (DataHeader::Clear(HeaderUpdate::Keep), Bytes::new()))
             .unwrap();
         assert_eq!(multi.header(4), None);
 
@@ -1693,7 +1943,7 @@ mod header_tests {
         assert!(error.contains("without a header"), "{error}");
         assert_eq!(multi.get(4), None);
         let error = multi
-            .update(4, (DataHeader::Reset(false), Bytes::new()))
+            .update(4, (DataHeader::Reset, Bytes::new()))
             .unwrap_err();
         assert!(error.contains("reset"), "{error}");
 
@@ -1701,7 +1951,7 @@ mod header_tests {
         multi.update(4, (set(created, &[9]), values)).unwrap();
         assert_eq!(multi.header(4), Some(meta(0)));
         multi
-            .update(4, (DataHeader::Header(true, header), bytes))
+            .update(4, (DataHeader::Header(header), bytes))
             .unwrap();
         assert_eq!(multi.header(4), Some(meta(1)));
         assert_eq!(multi.get(4), Some(vec![9]));
@@ -1719,7 +1969,7 @@ mod header_tests {
 
         // A change other than a set needs data that is set.
         let (update, bytes) = payload(&meta(1), type_id(), &[1]);
-        let add = DataHeader::All(DataType::U16, TransportType::Add(1), false, 2, update);
+        let add = DataHeader::All(DataType::U16, TransportType::Add(1), 2, update);
         let error = data.update_data((add, bytes)).unwrap_err();
         assert!(error.contains("is not set"), "{error}");
         let (_, header_bytes) = payload(&meta(1), type_id(), &[]);
@@ -1727,10 +1977,10 @@ mod header_tests {
             unreachable!()
         };
         let error = data
-            .update_data((DataHeader::Header(false, header), header_bytes.clone()))
+            .update_data((DataHeader::Header(header), header_bytes.clone()))
             .unwrap_err();
         assert!(error.contains("is not set"), "{error}");
-        let drain = DataHeader::Drain(0, 0, false, HeaderUpdate::Keep);
+        let drain = DataHeader::Drain(0, 0, HeaderUpdate::Keep);
         let error = data.update_data((drain, Bytes::new())).unwrap_err();
         assert!(error.contains("is not set"), "{error}");
 
@@ -1750,7 +2000,7 @@ mod header_tests {
                 HeaderUpdate::Set(_) => header_bytes.clone(),
             };
             let error = data
-                .update_data((DataHeader::Clear(false, clear), bytes))
+                .update_data((DataHeader::Clear(clear), bytes))
                 .unwrap_err();
             assert!(error.contains("is not set"), "{error}");
             assert_eq!(data.get_with_header(), None);
@@ -1760,14 +2010,13 @@ mod header_tests {
         data.update_data((set(update, &[]), header_bytes)).unwrap();
         assert_eq!(data.get_with_header(), Some((vec![], meta(1))));
         assert_eq!(acks(&mut receiver), 1);
-        data.update_data((DataHeader::Reset(true), Bytes::new()))
-            .unwrap();
+        data.update_data((DataHeader::Reset, Bytes::new())).unwrap();
         assert_eq!(data.get_with_header(), None);
         assert_eq!(acks(&mut receiver), 0);
 
         // Without a header type, a set creates the data alone.
         let plain = Data::<u16>::new("root.plain".into(), 8, sender);
-        let clear = DataHeader::Clear(false, HeaderUpdate::Keep);
+        let clear = DataHeader::Clear(HeaderUpdate::Keep);
         let error = plain.update_data((clear, Bytes::new())).unwrap_err();
         assert!(error.contains("is not set"), "{error}");
         plain
@@ -1798,7 +2047,6 @@ mod header_tests {
             DataHeader::All(
                 DataType::U8,
                 TransportType::Set(0),
-                false,
                 0,
                 HeaderUpdate::Set(header),
             ),
@@ -1807,7 +2055,7 @@ mod header_tests {
         frame.extend([1, 2, 3]);
         assert!(MessagesParser::from_bytes(Bytes::from(frame)).is_err());
 
-        let message = ServerHeader::Data(7, DataHeader::Header(false, header));
+        let message = ServerHeader::Data(7, DataHeader::Header(header));
         let mut frame = postcard::to_stdvec(&message).unwrap();
         frame.extend([0; 10]);
         let (_, (_, payload)) = MessagesParser::from_bytes(Bytes::from(frame)).unwrap();

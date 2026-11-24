@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use serde::Deserialize;
 
+use super::ChangedFlag;
 use crate::protocol::collections::{Part, Replacement, VecHeader};
 use crate::protocol::{Deserializer, deserialize};
 use crate::typed::Typed;
@@ -25,6 +26,7 @@ pub struct VecState<T> {
     list: Arc<RwLock<Vec<T>>>,
     // Items of a chunked replacement received so far; applied on `End`.
     pending: Arc<Replacement<Vec<T>>>,
+    changed: ChangedFlag,
 }
 
 impl<T: Typed + Clone> VecState<T> {
@@ -34,7 +36,39 @@ impl<T: Typed + Clone> VecState<T> {
             type_id,
             list: Arc::new(RwLock::new(Vec::new())),
             pending: Arc::new(Replacement::new()),
+            changed: ChangedFlag::default(),
         }
+    }
+
+    /// Tells whether the server changed the vector since the last call, and
+    /// clears the flag.
+    ///
+    /// Only this call clears it; reading the vector does not. Call it once
+    /// per frame, before reading, and use the result wherever the UI rebuilds
+    /// something from the vector: a second call in the same frame returns
+    /// `false`. The synchronization after a connection also counts as a
+    /// change.
+    ///
+    /// ```no_run
+    /// # fn rebuild(items: &[String]) -> Vec<String> { items.to_vec() }
+    /// # fn example(items: egui_states::VecState<String>, sorted: &mut Vec<String>) {
+    /// if items.take_changed() {
+    ///     *sorted = items.read(|items| rebuild(items));
+    /// }
+    /// # }
+    /// ```
+    pub fn take_changed(&self) -> bool {
+        self.changed.take()
+    }
+
+    /// Returns the number of items, without copying them.
+    pub fn len(&self) -> usize {
+        self.list.read().len()
+    }
+
+    /// Returns whether the vector holds no items.
+    pub fn is_empty(&self) -> bool {
+        self.list.read().is_empty()
     }
 
     /// Returns a copy of the complete vector.
@@ -54,7 +88,7 @@ impl<T: Typed + Clone> VecState<T> {
     /// Do not call this handle or a clone of it from `f`: the read lock is not
     /// reentrant, so a nested read waits behind an incoming server update,
     /// which waits for `f`.
-    pub fn read<R>(&self, mut f: impl FnMut(&Vec<T>) -> R) -> R {
+    pub fn read<R>(&self, f: impl FnOnce(&Vec<T>) -> R) -> R {
         let l = self.list.read();
         f(&*l)
     }
@@ -66,7 +100,7 @@ impl<T: Typed + Clone> VecState<T> {
     /// Do not call this handle or a clone of it from `f`: the read lock is not
     /// reentrant, so a nested read waits behind an incoming server update,
     /// which waits for `f`.
-    pub fn read_item<R>(&self, idx: usize, mut f: impl FnMut(Option<&T>) -> R) -> R {
+    pub fn read_item<R>(&self, idx: usize, f: impl FnOnce(Option<&T>) -> R) -> R {
         let l = self.list.read();
         f(l.get(idx))
     }
@@ -109,6 +143,8 @@ impl<T: for<'a> Deserialize<'a> + Send + Sync> UpdateList for VecState<T> {
             return Err(format!("Type id mismatch for list {}", self.name));
         }
 
+        // A chunk changes nothing readers can see yet.
+        let changes = !matches!(header, VecHeader::Begin(_) | VecHeader::Chunk(_));
         match header {
             VecHeader::All(size) => self.replace(Part::All, size, data)?,
             VecHeader::Begin(size) => self.replace(Part::Begin, size, data)?,
@@ -137,6 +173,19 @@ impl<T: for<'a> Deserialize<'a> + Send + Sync> UpdateList for VecState<T> {
                     list.remove(idx);
                 }
             }
+            VecHeader::Insert(idx) => {
+                let value: T = deserialize(data).map_err(|e| {
+                    format!("Error deserializing list item for {}: {}", self.name, e)
+                })?;
+                let mut list = self.list.write();
+                let idx = idx as usize;
+                if idx <= list.len() {
+                    list.insert(idx, value);
+                }
+            }
+        }
+        if changes {
+            self.changed.mark();
         }
         Ok(())
     }
@@ -153,6 +202,7 @@ impl<T> Clone for VecState<T> {
             type_id: self.type_id,
             list: self.list.clone(),
             pending: self.pending.clone(),
+            changed: self.changed.clone(),
         }
     }
 }
@@ -192,6 +242,50 @@ mod tests {
         assert_eq!(list.get_item(3), None);
         list.update_list(TYPE_ID, VecHeader::All(0), &[]).unwrap();
         assert!(list.get().is_empty());
+    }
+
+    #[test]
+    fn insert_shifts_the_later_items_and_counts_without_copying() {
+        let list = list(&[1, 2, 3]);
+        list.update_list(TYPE_ID, VecHeader::Insert(1), &items(&[9]))
+            .unwrap();
+        list.update_list(TYPE_ID, VecHeader::Insert(4), &items(&[7]))
+            .unwrap();
+        // An index the client does not have changes nothing.
+        list.update_list(TYPE_ID, VecHeader::Insert(9), &items(&[0]))
+            .unwrap();
+        assert_eq!(list.get(), [1, 9, 2, 3, 7]);
+        assert_eq!((list.len(), list.is_empty()), (5, false));
+        list.update_list(TYPE_ID, VecHeader::All(0), &[]).unwrap();
+        assert_eq!((list.len(), list.is_empty()), (0, true));
+    }
+
+    /// Every change readers can see is reported once, a chunk only with its
+    /// end, and reading leaves the flag alone.
+    #[test]
+    fn take_changed_reports_each_visible_change_once() {
+        let list = VecState::<i32>::new("root.list".into(), TYPE_ID);
+        assert!(!list.take_changed());
+        list.update_list(TYPE_ID, VecHeader::All(2), &items(&[1, 2]))
+            .unwrap();
+        assert!(list.take_changed());
+        assert!(!list.take_changed());
+
+        list.update_list(TYPE_ID, VecHeader::Add, &items(&[3]))
+            .unwrap();
+        assert_eq!(list.get(), [1, 2, 3]);
+        assert!(list.clone().take_changed());
+
+        list.update_list(TYPE_ID, VecHeader::Begin(1), &items(&[4]))
+            .unwrap();
+        list.update_list(TYPE_ID, VecHeader::Chunk(1), &items(&[5]))
+            .unwrap();
+        assert!(!list.take_changed());
+        list.update_list(TYPE_ID, VecHeader::End(0), &[]).unwrap();
+        assert!(list.take_changed());
+
+        assert!(list.update_list(TYPE_ID, VecHeader::Add, &[]).is_err());
+        assert!(!list.take_changed());
     }
 
     /// Pins current behavior: the server validates indexes, so the client ignores

@@ -34,8 +34,28 @@ path = "src/bin/typed-tuple.rs"
 required-features = ["invalid"]
 
 [[bin]]
-name = "typed-payload-enum"
-path = "src/bin/typed-payload-enum.rs"
+name = "typed-empty-braces"
+path = "src/bin/typed-empty-braces.rs"
+required-features = ["invalid"]
+
+[[bin]]
+name = "typed-empty-parentheses"
+path = "src/bin/typed-empty-parentheses.rs"
+required-features = ["invalid"]
+
+[[bin]]
+name = "typed-data-discriminant"
+path = "src/bin/typed-data-discriminant.rs"
+required-features = ["invalid"]
+
+[[bin]]
+name = "typed-recursive-enum"
+path = "src/bin/typed-recursive-enum.rs"
+required-features = ["invalid"]
+
+[[bin]]
+name = "typed-serde-variant-field"
+path = "src/bin/typed-serde-variant-field.rs"
 required-features = ["invalid"]
 
 [[bin]]
@@ -109,11 +129,6 @@ path = "src/bin/initial-tuple.rs"
 required-features = ["invalid"]
 
 [[bin]]
-name = "atomic-static-payload"
-path = "src/bin/atomic-static-payload.rs"
-required-features = ["invalid"]
-
-[[bin]]
 name = "typed-serde-skip"
 path = "src/bin/typed-serde-skip.rs"
 required-features = ["invalid"]
@@ -141,4 +156,54 @@ required-features = ["invalid"]
 [[bin]]
 name = "typed-discriminant-overflow"
 path = "src/bin/typed-discriminant-overflow.rs"
+required-features = ["invalid"]
+
+[[bin]]
+name = "typed-recursive-struct"
+path = "src/bin/typed-recursive-struct.rs"
+required-features = ["invalid"]
+
+[[bin]]
+name = "typed-empty-enum"
+path = "src/bin/typed-empty-enum.rs"
+required-features = ["invalid"]
+
+[[bin]]
+name = "atomic-empty-enum"
+path = "src/bin/atomic-empty-enum.rs"
+required-features = ["invalid"]
+
+[[bin]]
+name = "initial-empty-enum"
+path = "src/bin/initial-empty-enum.rs"
+required-features = ["invalid"]
+
+[[bin]]
+name = "typed-serde-cfg-attr"
+path = "src/bin/typed-serde-cfg-attr.rs"
+required-features = ["invalid"]
+
+[[bin]]
+name = "typed-serde-cfg-attr-nested"
+path = "src/bin/typed-serde-cfg-attr-nested.rs"
+required-features = ["invalid"]
+
+[[bin]]
+name = "state-queue-zero"
+path = "src/bin/state-queue-zero.rs"
+required-features = ["invalid"]
+
+[[bin]]
+name = "state-queue-capacity-value"
+path = "src/bin/state-queue-capacity-value.rs"
+required-features = ["invalid"]
+
+[[bin]]
+name = "state-duplicate-queue"
+path = "src/bin/state-duplicate-queue.rs"
+required-features = ["invalid"]
+
+[[bin]]
+name = "state-queue-suffix"
+path = "src/bin/state-queue-suffix.rs"
 required-features = ["invalid"]

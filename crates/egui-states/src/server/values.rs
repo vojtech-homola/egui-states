@@ -56,33 +56,38 @@ where
     T: Serialize,
 {
     /// Replaces the value without emitting callbacks.
-    ///
-    /// If `update` is true, the client is also asked to repaint.
-    pub fn set(&self, value: T, update: bool) -> Result<()> {
-        self.set_with_signal(value, false, update)
+    pub fn set(&self, value: T) -> Result<()> {
+        self.set_with_signal(value, false)
     }
 
-    /// Replaces the value, emits callbacks, and optionally requests a repaint.
-    pub fn set_signal(&self, value: T, update: bool) -> Result<()> {
-        self.set_with_signal(value, true, update)
+    /// Replaces the value and emits callbacks.
+    pub fn set_signal(&self, value: T) -> Result<()> {
+        self.set_with_signal(value, true)
     }
 
-    /// Replaces the value with explicit callback and repaint controls.
-    pub fn set_with_signal(&self, value: T, set_signal: bool, update: bool) -> Result<()> {
+    /// Replaces the value, emitting callbacks when `set_signal` is true.
+    fn set_with_signal(&self, value: T, set_signal: bool) -> Result<()> {
         let data = serialize_bytes(&value)?;
-        self.inner
-            .set(data, set_signal, update)
-            .map_err(ServerError::new)
+        self.inner.set(data, set_signal).map_err(ServerError::new)
     }
 }
 
 impl<T> Value<T> {
-    /// Switches callback delivery to queue mode.
+    /// Switches callback delivery to queue mode: every change is kept and
+    /// delivered in order.
+    ///
+    /// The state definition sets the starting mode (`#[state(queue)]`); this
+    /// overrides it until the next switch. Changes already pending are kept.
     pub fn signal_set_to_queue(&self) {
         self.server.set_signal_to_queue(self.id);
     }
 
-    /// Switches callback delivery to coalescing single mode.
+    /// Switches callback delivery to single mode: pending changes coalesce to
+    /// the latest one.
+    ///
+    /// The state definition sets the starting mode (`#[state(queue)]`); this
+    /// overrides it until the next switch. Of the changes already queued, only
+    /// the newest is delivered.
     pub fn signal_set_to_single(&self) {
         self.server.set_signal_to_single(self.id);
     }
@@ -142,10 +147,10 @@ impl<T> Static<T>
 where
     T: Serialize,
 {
-    /// Replaces the value and optionally asks the client to repaint.
-    pub fn set(&self, value: T, update: bool) -> Result<()> {
+    /// Replaces the value.
+    pub fn set(&self, value: T) -> Result<()> {
         let data = serialize_bytes(&value)?;
-        self.inner.set(data, update).map_err(ServerError::new)
+        self.inner.set(data).map_err(ServerError::new)
     }
 }
 
@@ -187,12 +192,10 @@ where
     /// Sends a value to the client.
     ///
     /// With `blocking`, a subsequent send waits until the client takes and
-    /// acknowledges this value. `update` requests an egui repaint.
-    pub fn set(&self, value: T, blocking: bool, update: bool) -> Result<()> {
+    /// acknowledges this value.
+    pub fn set(&self, value: T, blocking: bool) -> Result<()> {
         let data = serialize_bytes(&value)?;
-        self.inner
-            .set(data, blocking, update)
-            .map_err(ServerError::new)
+        self.inner.set(data, blocking).map_err(ServerError::new)
     }
 }
 
@@ -229,10 +232,11 @@ impl<T> Signal<T>
 where
     T: Serialize,
 {
-    /// Emits an event from the server to local callbacks.
+    /// Emits an event from the server to local callbacks, as if the client
+    /// had emitted it.
     ///
     /// This does not send the event to the client.
-    pub fn set(&self, value: T) -> Result<()> {
+    pub fn emit(&self, value: T) -> Result<()> {
         let data = serialize_bytes(&value)?;
         self.inner.set(data);
         Ok(())
@@ -240,12 +244,21 @@ where
 }
 
 impl<T> Signal<T> {
-    /// Switches callback delivery to queue mode.
+    /// Switches callback delivery to queue mode: every change is kept and
+    /// delivered in order.
+    ///
+    /// The state definition sets the starting mode (`#[state(queue)]`); this
+    /// overrides it until the next switch. Changes already pending are kept.
     pub fn signal_set_to_queue(&self) {
         self.server.set_signal_to_queue(self.id);
     }
 
-    /// Switches callback delivery to coalescing single mode.
+    /// Switches callback delivery to single mode: pending changes coalesce to
+    /// the latest one.
+    ///
+    /// The state definition sets the starting mode (`#[state(queue)]`); this
+    /// overrides it until the next switch. Of the changes already queued, only
+    /// the newest is delivered.
     pub fn signal_set_to_single(&self) {
         self.server.set_signal_to_single(self.id);
     }
@@ -287,11 +300,11 @@ mod tests {
         let static_value = Static::new(&server, "root.static", 10_i32).unwrap();
 
         assert_eq!(value.get().unwrap(), "initial");
-        value.set(String::from("changed"), false).unwrap();
+        value.set(String::from("changed")).unwrap();
         assert_eq!(value.get().unwrap(), "changed");
 
         assert_eq!(static_value.get().unwrap(), 10);
-        static_value.set(20, false).unwrap();
+        static_value.set(20).unwrap();
         assert_eq!(static_value.get().unwrap(), 20);
     }
 
@@ -304,11 +317,11 @@ mod tests {
         // no client is connected, but the value would be sent by sync() after a handshake
         let too_large = "a".repeat(VALUE_MAX_SIZE + 1);
 
-        let error = value.set(too_large.clone(), false).unwrap_err();
+        let error = value.set(too_large.clone()).unwrap_err();
         assert!(error.message().contains("root.value"), "{error}");
         assert_eq!(value.get().unwrap(), "initial");
 
-        let error = static_value.set(too_large, false).unwrap_err();
+        let error = static_value.set(too_large).unwrap_err();
         assert!(error.message().contains("root.static"), "{error}");
         assert_eq!(static_value.get().unwrap(), "initial");
     }

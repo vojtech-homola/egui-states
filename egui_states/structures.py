@@ -3,10 +3,11 @@
 
 from __future__ import annotations
 
+import operator
 import os
 from abc import ABC, abstractmethod
-from collections.abc import Buffer, Callable, Sequence
-from typing import Any, Final
+from collections.abc import Buffer, Callable, Iterator, Sequence
+from typing import Any, Final, SupportsIndex
 
 import numpy as np
 import numpy.typing as npt
@@ -17,6 +18,7 @@ from egui_states._core import (
     StateServerCore,
     bo,
     cl,
+    denu,
     emp,
     enu,
     f32,
@@ -35,6 +37,9 @@ from egui_states._core import (
     u32,
     u64,
     vec,
+    vnamed,
+    vtuple,
+    vunit,
 )
 from egui_states.signals import SignalsManager
 from egui_states.transfer import TransferHandle, TransferOffer
@@ -45,6 +50,33 @@ type ImageColor = int | tuple[int, int] | tuple[int, int, int] | tuple[int, int,
 
 class _CustomStruct:
     __getitem__ = object.__getattribute__
+
+
+class _CustomEnum:
+    """Base class of a generated enum with data.
+
+    The class is only a namespace. Each variant is a frozen dataclass nested
+    in it, created as ``Command.Stop()``, ``Command.MoveTo(x=1.0, y=2.0)`` or
+    ``Command.SetGain(0.5)``, and ``Command.Type`` is the union of the
+    variants: the type of a value.
+    """
+
+    __slots__ = ()
+
+    def __init__(self) -> None:
+        name = type(self).__qualname__
+        raise TypeError(f"{name} is a namespace of variants, not a value; create one of its variants")
+
+
+class _TupleVariant:
+    """Base class of a generated tuple variant, whose fields are ``_0``, ``_1``, ..."""
+
+    __slots__ = ()
+    __match_args__: tuple[str, ...]
+
+    def __repr__(self) -> str:
+        fields = ", ".join(repr(getattr(self, field)) for field in self.__match_args__)
+        return f"{type(self).__qualname__}({fields})"
 
 
 class ISubStates(ABC):
@@ -80,13 +112,17 @@ class _SignalBase(_CallbackBase):
 
         Changes for one state are delivered in order. Callbacks for different
         states may still run concurrently when multiple workers are configured.
+        The state definition sets the starting mode (``#[state(queue)]``); this
+        overrides it until the next switch. Changes already pending are kept.
         """
         self._server.signal_set_to_queue(self._value_id)
 
     def signal_set_to_single(self) -> None:
         """Coalesce pending signaled changes to the latest value.
 
-        This is the default mode.
+        The state definition sets the starting mode, single unless the field
+        is marked ``#[state(queue)]``; this overrides it until the next switch.
+        Of the changes already queued, only the newest is delivered.
         """
         self._server.signal_set_to_single(self._value_id)
 
@@ -112,17 +148,15 @@ class Value[T](_SignalBase):
         del self._obj_id
         del self._queue
 
-    def set(self, value: T, set_signal: bool = False, update: bool = False) -> None:
+    def set(self, value: T, set_signal: bool = False) -> None:
         """Replace the value and send it to the client.
 
         Args:
             value (T): Value to store locally and send to the client.
             set_signal (bool, optional): Whether to emit callbacks for the new
                 value. Defaults to False.
-            update (bool, optional): Whether to request a client repaint.
-                Defaults to False.
         """
-        self._server.value_set(self._value_id, value, set_signal, update)
+        self._server.value_set(self._value_id, value, set_signal)
 
     def get(self) -> T:
         """Return the server's current value.
@@ -132,15 +166,20 @@ class Value[T](_SignalBase):
         """
         return self._server.value_get(self._value_id)
 
-    def connect(self, callback: Callable[[T], Any]) -> None:
+    def connect(self, callback: Callable[[T], Any]) -> Callable[[T], Any]:
         """Connect a callback to the value.
 
         Args:
             callback (Callable[[T], Any]): The callback to connect.
+
+        Returns:
+            Callable[[T], Any]: ``callback``, so the method also works as
+                a decorator.
         """
         self._signals_manager.add_callback(self._value_id, callback)
+        return callback
 
-    def connect_previous(self, callback: Callable[[T, T], Any]) -> None:
+    def connect_previous(self, callback: Callable[[T, T], Any]) -> Callable[[T, T], Any]:
         """Connect a callback which also receives the previous value.
 
         The previous value is the one the callback was last notified about, not
@@ -151,8 +190,13 @@ class Value[T](_SignalBase):
         Args:
             callback (Callable[[T, T], Any]): The callback to connect. It is
                 called with the new value followed by the previous one.
+
+        Returns:
+            Callable[[T, T], Any]: ``callback``, so the method also works as
+                a decorator.
         """
         self._signals_manager.add_callback_previous(self._value_id, callback)
+        return callback
 
     def disconnect(self, callback: Callable[[T], Any] | Callable[[T, T], Any]) -> None:
         """Disconnect a callback from the value.
@@ -186,17 +230,15 @@ class ValueTake[T](_StaticBase):
         self._value_id = self._server.add_value_take(name, types[self._obj_id])
         del self._obj_id
 
-    def set(self, value: T, blocking: bool = False, update: bool = False) -> None:
+    def set(self, value: T, blocking: bool = False) -> None:
         """Send a one-shot value to the client.
 
         Args:
             value (T): The value to set.
             blocking (bool, optional): Whether the next send waits until the
                 client consumes this value. Defaults to False.
-            update (bool, optional): Whether to request a client repaint.
-                Defaults to False.
         """
-        self._server.value_take_set(self._value_id, value, blocking, update)
+        self._server.value_take_set(self._value_id, value, blocking)
 
 
 class ValueTakeEmpty(_StaticBase):
@@ -205,16 +247,14 @@ class ValueTakeEmpty(_StaticBase):
     def _initialize(self, name: str, types: list[PyObjectType]) -> None:
         self._value_id = self._server.add_value_take(name, emp)
 
-    def set(self, blocking: bool = False, update: bool = False) -> None:
+    def set(self, blocking: bool = False) -> None:
         """Set the value of the UI element.
 
         Args:
             blocking (bool, optional): Whether the next send waits until the
                 client consumes this value. Defaults to False.
-            update (bool, optional): Whether to request a client repaint.
-                Defaults to False.
         """
-        self._server.value_take_set(self._value_id, (), blocking, update)
+        self._server.value_take_set(self._value_id, (), blocking)
 
 
 class Static[T](_StaticBase):
@@ -229,15 +269,13 @@ class Static[T](_StaticBase):
         del self._initial_value
         del self._obj_id
 
-    def set(self, value: T, update: bool = False) -> None:
+    def set(self, value: T) -> None:
         """Replace the value mirrored to the client.
 
         Args:
             value (T): The value to set.
-            update (bool, optional): Whether to request a client repaint.
-                Defaults to False.
         """
-        self._server.static_set(self._value_id, value, update)
+        self._server.static_set(self._value_id, value)
 
     def get(self) -> T:
         """Get the static value of the UI.
@@ -251,7 +289,8 @@ class Static[T](_StaticBase):
 class Signal[T](_SignalBase):
     """Client-to-server event that does not retain a client-side value.
 
-    Calling :meth:`set` on the server emits the event to local callbacks.
+    Calling :meth:`emit` on the server runs the local callbacks, as if the
+    client had emitted the event.
     """
 
     def __init__(self, obj_id: int, queue: bool = False) -> None:
@@ -263,23 +302,28 @@ class Signal[T](_SignalBase):
         del self._obj_id
         del self._queue
 
-    def set(self, value: T) -> None:
-        """Set the signal value.
+    def emit(self, value: T) -> None:
+        """Emit the event to the connected callbacks.
 
-        Signal is emitted to all connected callbacks.
+        Nothing is stored and nothing is sent to the client.
 
         Args:
-            value (T): The value to set.
+            value (T): The event's value.
         """
         self._server.signal_set(self._value_id, value)
 
-    def connect(self, callback: Callable[[T], Any]) -> None:
+    def connect(self, callback: Callable[[T], Any]) -> Callable[[T], Any]:
         """Connect a callback to the signal.
 
         Args:
             callback (Callable[[T], Any]): Callback receiving the signal value.
+
+        Returns:
+            Callable[[T], Any]: ``callback``, so the method also works as
+                a decorator.
         """
         self._signals_manager.add_callback(self._value_id, callback)
+        return callback
 
     def disconnect(self, callback: Callable[[T], Any]) -> None:
         """Disconnect a callback from the value.
@@ -304,20 +348,25 @@ class SignalEmpty(_SignalBase):
         self._value_id = self._server.add_signal(name, _core.emp, self._queue)
         del self._queue
 
-    def set(self) -> None:
-        """Set the signal value.
+    def emit(self) -> None:
+        """Emit the event to the connected callbacks.
 
-        Signal is emitted to all connected callbacks.
+        Nothing is sent to the client.
         """
         self._server.signal_set(self._value_id, ())
 
-    def connect(self, callback: Callable[[], Any]) -> None:
+    def connect[F: Callable[[], Any]](self, callback: F) -> F:
         """Connect a callback to the signal.
 
         Args:
             callback (Callable[[], Any]): The callback to connect.
+
+        Returns:
+            Callable[[], Any]: ``callback``, so the method also works as
+                a decorator.
         """
         self._signals_manager.add_callback(self._value_id, callback)
+        return callback
 
     def disconnect(self, callback: Callable[[], Any]) -> None:
         """Disconnect a callback from the value.
@@ -330,6 +379,52 @@ class SignalEmpty(_SignalBase):
     def disconnect_all(self) -> None:
         """Disconnect all callbacks from the signal."""
         self._signals_manager.clear_callbacks(self._value_id)
+
+
+class _Unset:
+    """Type of :data:`UNSET`, the absent-header default."""
+
+    def __repr__(self) -> str:
+        return "UNSET"
+
+
+#: Default of the ``header`` arguments: no header is given, so the current one
+#: is kept. ``None`` is not used for that, so an optional header type can still
+#: send ``None``.
+UNSET: Final = _Unset()
+
+
+def _header(header: object) -> tuple[object] | None:
+    return None if header is UNSET else (header,)
+
+
+#: Largest index of a multi state, which the protocol sends as a ``u32``.
+_MAX_INDEX: Final = 0xFFFF_FFFF
+
+
+def _index(index: object) -> int:
+    """Return the index of a multi state as an ``int``.
+
+    An index is whatever :func:`operator.index` accepts: an ``int``, a
+    ``bool`` or a NumPy integer, but not a ``float`` or a ``str``.
+
+    Args:
+        index (object): The index to convert.
+
+    Returns:
+        int: The index, not checked against the ``u32`` range.
+
+    Raises:
+        TypeError: If ``index`` is not an integer.
+    """
+    if isinstance(index, SupportsIndex):
+        try:
+            return operator.index(index)
+        except TypeError:
+            # ``__index__`` alone does not make an index: an array of floats
+            # has the method, and it raises.
+            pass
+    raise TypeError("index must be an integer")
 
 
 def _image_array(data: bytearray, shape: tuple[int, int], channels: int) -> npt.NDArray[np.uint8]:
@@ -367,13 +462,18 @@ class Image(_StaticBase):
             False.
     """
 
+    _header_id: int | None = None
+
     def __init__(self, low_priority: bool = False) -> None:
         self._low_priority = low_priority
 
-    def _initialize(self, name: str, types: list[PyObjectType]) -> None:
-        self._value_id = self._server.add_image(name, self._low_priority)
+    def _header_type(self, types: list[PyObjectType]) -> PyObjectType | None:
+        return None if self._header_id is None else types[self._header_id]
 
-    def set(self, image: Buffer, update: bool = False, wait: bool = False) -> None:
+    def _initialize(self, name: str, types: list[PyObjectType]) -> None:
+        self._value_id = self._server.add_image(name, self._header_type(types), self._low_priority)
+
+    def set(self, image: Buffer, wait: bool = False) -> None:
         """Set the image in the UI image.
 
         The client shows the image once all of it has arrived. One transfer
@@ -386,19 +486,16 @@ class Image(_StaticBase):
             image (Buffer): The image to set, shaped as ``(height, width)``
                 for gray or ``(height, width, channels)`` with 2, 3 or 4
                 channels. The server keeps it in this format.
-            update (bool, optional): Whether to request a client repaint.
-                Defaults to False.
             wait (bool, optional): Whether to return only once the client has
                 acknowledged this image, or the connection has ended.
                 Defaults to False.
         """
-        self._server.image_set(self._value_id, image, update, wait)
+        self._server.image_set(self._value_id, image, None, wait)
 
     def update(
         self,
         image: Buffer,
         origin: list[int] | tuple[int, int],
-        update: bool = False,
         force: bool = False,
         max_lines: int | None = None,
         wait: bool = False,
@@ -418,8 +515,6 @@ class Image(_StaticBase):
         Args:
             image (Buffer): The image rectangle to write.
             origin (list[int] | tuple[int, int]): Top-left origin as ``(y, x)``.
-            update (bool, optional): Whether to request a client repaint, after
-                every part when ``max_lines`` is set. Defaults to False.
             force (bool, optional): Whether to first drop the parts of the
                 previous split update that are not sent yet, if this rectangle
                 covers its rectangle. The part being sent always completes.
@@ -435,13 +530,12 @@ class Image(_StaticBase):
             ValueError: If ``max_lines`` is less than 1, or the rectangle is
                 invalid.
         """
-        self._server.image_update(self._value_id, image, origin, update, force, max_lines, wait)
+        self._server.image_update(self._value_id, image, origin, None, force, max_lines, wait)
 
     def set_all(
         self,
         shape: list[int] | tuple[int, int],
         color: ImageColor,
-        update: bool = False,
         wait: bool = False,
     ) -> None:
         """Fill the complete image with one color using a compact message.
@@ -455,13 +549,11 @@ class Image(_StaticBase):
                 component must be in ``0..255``. The image is stored in the
                 format of the color: an integer stores gray, and a tuple of
                 2, 3 or 4 components gray-alpha, RGB or RGBA.
-            update (bool, optional): Whether to request a client repaint.
-                Defaults to False.
             wait (bool, optional): Whether to return only once the client has
                 acknowledged this image, or the connection has ended.
                 Defaults to False.
         """
-        self._server.image_set_all(self._value_id, shape, color, update, wait)
+        self._server.image_set_all(self._value_id, shape, color, None, wait)
 
     def is_idle(self) -> bool:
         """Return whether nothing is being sent and nothing waits.
@@ -499,6 +591,145 @@ class Image(_StaticBase):
         return self._server.image_size(self._value_id)
 
 
+class ImageWithHeader[H](Image):
+    """:class:`Image` with a typed header ``H`` published together with the image.
+
+    The image never exists without a header: the :meth:`set` or
+    :meth:`set_all` that creates it must pass one. After that, every change
+    can carry a new header, and a change without one keeps the current
+    header. The client stores the header with the pixels it belongs to. It
+    uploads a texture at the end of the frame being drawn, so for that one
+    frame the UI may still show the old pixels next to a new header.
+
+    Args:
+        header_id (int): Index of the header's protocol type in the generated
+            type list.
+        low_priority (bool, optional): Whether the server sends its transfers
+            in the low-priority lane, as for :class:`Image`. Defaults to
+            False.
+    """
+
+    def __init__(self, header_id: int, low_priority: bool = False) -> None:
+        super().__init__(low_priority)
+        self._header_id = header_id
+
+    def get_header(self) -> H | None:
+        """Return the current header.
+
+        Returns:
+            H | None: The header, or ``None`` until the image is set.
+        """
+        return self._server.image_get_header(self._value_id)
+
+    def get_with_header(self) -> tuple[npt.NDArray[np.uint8], H] | None:
+        """Return the image and its header, read together.
+
+        Separate :meth:`get` and :meth:`get_header` calls can each see a
+        different change made in between.
+
+        Returns:
+            tuple[npt.NDArray[np.uint8], H] | None: The image as :meth:`get`
+                returns it and the header, or ``None`` until the image is set.
+        """
+        entry = self._server.image_get_with_header(self._value_id)
+        if entry is None:
+            return None
+        (data, shape, channels), header = entry
+        return _image_array(data, shape, channels), header
+
+    def set(self, image: Buffer, wait: bool = False, header: H | _Unset = UNSET) -> None:
+        """Set the image and optionally the header.
+
+        It works as :meth:`Image.set`; the client shows the header with the
+        image.
+
+        Args:
+            image (Buffer): The image to set, as for :meth:`Image.set`.
+            wait (bool, optional): Whether to return only once the client has
+                acknowledged this image, or the connection has ended.
+                Defaults to False.
+            header (H | _Unset, optional): New header. Defaults to
+                :data:`UNSET`, which keeps the current one.
+
+        Raises:
+            ValueError: If the image is not set yet and no header is given.
+        """
+        self._server.image_set(self._value_id, image, _header(header), wait)
+
+    def update(
+        self,
+        image: Buffer,
+        origin: list[int] | tuple[int, int],
+        force: bool = False,
+        max_lines: int | None = None,
+        wait: bool = False,
+        header: H | _Unset = UNSET,
+    ) -> None:
+        """Update a rectangular part of the image and optionally the header.
+
+        It works as :meth:`Image.update`. With ``max_lines``, the header goes
+        with the first part, and the client shows it together with that
+        part; the later parts keep it.
+
+        Args:
+            image (Buffer): The image rectangle to write.
+            origin (list[int] | tuple[int, int]): Top-left origin as ``(y, x)``.
+            force (bool, optional): As for :meth:`Image.update`. Defaults to
+                False.
+            max_lines (int | None, optional): As for :meth:`Image.update`.
+                Defaults to None.
+            wait (bool, optional): As for :meth:`Image.update`. Defaults to
+                False.
+            header (H | _Unset, optional): New header. Defaults to
+                :data:`UNSET`, which keeps the current one.
+
+        Raises:
+            ValueError: If ``max_lines`` is less than 1, or the rectangle is
+                invalid.
+        """
+        self._server.image_update(self._value_id, image, origin, _header(header), force, max_lines, wait)
+
+    def set_all(
+        self,
+        shape: list[int] | tuple[int, int],
+        color: ImageColor,
+        wait: bool = False,
+        header: H | _Unset = UNSET,
+    ) -> None:
+        """Fill the complete image with one color and optionally set the header.
+
+        Args:
+            shape (list[int] | tuple[int, int]): Image shape as ``(height,
+                width)``.
+            color (ImageColor): As for :meth:`Image.set_all`.
+            wait (bool, optional): Whether to return only once the client has
+                acknowledged this image, or the connection has ended.
+                Defaults to False.
+            header (H | _Unset, optional): New header. Defaults to
+                :data:`UNSET`, which keeps the current one.
+
+        Raises:
+            ValueError: If the image is not set yet and no header is given.
+        """
+        self._server.image_set_all(self._value_id, shape, color, _header(header), wait)
+
+    def set_header(self, header: H) -> None:
+        """Replace the header alone.
+
+        The client does not acknowledge a header, so this does not wait for
+        the client itself. It is sent after the transfers of this image that
+        are already queued, including the parts of a split :meth:`update` not
+        sent yet, and waits until the client has acknowledged them.
+
+        Args:
+            header (H): New header.
+
+        Raises:
+            ValueError: If the image is not set.
+        """
+        self._server.image_set_header(self._value_id, header)
+
+
 class SingleImage:
     """Handle for one indexed image within an :class:`ImageMulti` state.
 
@@ -516,44 +747,49 @@ class SingleImage:
         self._value_id = value_id
         self._index = index
 
-    def set(self, image: Buffer, update: bool = False, wait: bool = False) -> None:
+    def is_idle(self) -> bool:
+        """Return whether nothing of this index is being sent and nothing waits.
+
+        See :meth:`ImageMulti.is_idle`.
+
+        Returns:
+            bool: Whether this index is idle.
+        """
+        return self._server.image_multi_is_idle(self._value_id, self._index)
+
+    def set(self, image: Buffer, wait: bool = False) -> None:
         """Create or replace this indexed image.
 
-        All indices share one transfer stream, so the call waits for the
-        previous transfer of any index, as :meth:`Image.set` does. Only parts
-        of a split update of this index that are not sent yet are dropped.
+        Each index has its own transfer, so the call waits for the previous
+        transfer of this index only, as :meth:`Image.set` does. Only parts of
+        a split update of this index that are not sent yet are dropped.
 
         Args:
             image (Buffer): Image data shaped as ``(height, width)`` or
                 ``(height, width, channels)``.
-            update (bool, optional): Whether to request a client repaint.
-                Defaults to False.
             wait (bool, optional): Whether to return only once the client has
                 acknowledged this image, or the connection has ended.
                 Defaults to False.
         """
-        self._server.image_multi_set(self._value_id, self._index, image, update, wait)
+        self._server.image_multi_set(self._value_id, self._index, image, None, wait)
 
     def update(
         self,
         image: Buffer,
         origin: list[int] | tuple[int, int],
-        update: bool = False,
         force: bool = False,
         max_lines: int | None = None,
         wait: bool = False,
     ) -> None:
         """Update a rectangular part of this existing indexed image.
 
-        It works as :meth:`Image.update`. All indices share one transfer
-        stream; ``force`` drops only parts of this index, never parts of
-        other indices.
+        It works as :meth:`Image.update`, for this index on its own:
+        ``force`` drops only parts of this index, never parts of other
+        indices, and the call waits only for transfers of this index.
 
         Args:
             image (Buffer): The image rectangle to write.
             origin (list[int] | tuple[int, int]): Top-left origin as ``(y, x)``.
-            update (bool, optional): Whether to request a client repaint, after
-                every part when ``max_lines`` is set. Defaults to False.
             force (bool, optional): Whether to first drop the parts of the
                 previous split update of this index that are not sent yet, if
                 this rectangle covers its rectangle. The part being sent
@@ -569,13 +805,12 @@ class SingleImage:
             ValueError: If ``max_lines`` is less than 1, or the rectangle is
                 invalid.
         """
-        self._server.image_multi_update(self._value_id, self._index, image, origin, update, force, max_lines, wait)
+        self._server.image_multi_update(self._value_id, self._index, image, origin, None, force, max_lines, wait)
 
     def set_all(
         self,
         shape: list[int] | tuple[int, int],
         color: ImageColor,
-        update: bool = False,
         wait: bool = False,
     ) -> None:
         """Create or replace this indexed image with one color.
@@ -587,13 +822,11 @@ class SingleImage:
                 width)``.
             color (ImageColor): Gray, gray-alpha, RGB, or RGBA color. The
                 image is stored in its format, as in :meth:`Image.set_all`.
-            update (bool, optional): Whether to request a client repaint.
-                Defaults to False.
             wait (bool, optional): Whether to return only once the client has
                 acknowledged this image, or the connection has ended.
                 Defaults to False.
         """
-        self._server.image_multi_set_all(self._value_id, self._index, shape, color, update, wait)
+        self._server.image_multi_set_all(self._value_id, self._index, shape, color, None, wait)
 
     def get(self) -> npt.NDArray[np.uint8]:
         """Return this indexed image in the format it is stored in.
@@ -615,10 +848,128 @@ class SingleImage:
         return self._server.image_multi_size(self._value_id, self._index)
 
 
+class SingleImageWithHeader[H](SingleImage):
+    """:class:`SingleImage` of an :class:`ImageMultiWithHeader`, with its header ``H``.
+
+    Creating this index needs a header, as for :class:`ImageWithHeader`.
+    """
+
+    def get_header(self) -> H:
+        """Return the header of this indexed image.
+
+        Returns:
+            H: The header.
+
+        Raises:
+            ValueError: If the index does not exist.
+        """
+        return self._server.image_multi_get_header(self._value_id, self._index)
+
+    def get_with_header(self) -> tuple[npt.NDArray[np.uint8], H]:
+        """Return this indexed image and its header, read together.
+
+        Returns:
+            tuple[npt.NDArray[np.uint8], H]: The image as :meth:`get` returns
+                it and the header.
+
+        Raises:
+            ValueError: If the index does not exist.
+        """
+        (data, shape, channels), header = self._server.image_multi_get_with_header(self._value_id, self._index)
+        return _image_array(data, shape, channels), header
+
+    def set(self, image: Buffer, wait: bool = False, header: H | _Unset = UNSET) -> None:
+        """Create or replace this indexed image, and optionally its header.
+
+        Args:
+            image (Buffer): Image data shaped as ``(height, width)`` or
+                ``(height, width, channels)``.
+            wait (bool, optional): Whether to return only once the client has
+                acknowledged this image, or the connection has ended.
+                Defaults to False.
+            header (H | _Unset, optional): New header. Defaults to
+                :data:`UNSET`, which keeps the current one.
+
+        Raises:
+            ValueError: If the index does not exist yet and no header is
+                given.
+        """
+        self._server.image_multi_set(self._value_id, self._index, image, _header(header), wait)
+
+    def update(
+        self,
+        image: Buffer,
+        origin: list[int] | tuple[int, int],
+        force: bool = False,
+        max_lines: int | None = None,
+        wait: bool = False,
+        header: H | _Unset = UNSET,
+    ) -> None:
+        """Update a rectangular part of this indexed image, and optionally its header.
+
+        It works as :meth:`ImageWithHeader.update`, for this index on its own.
+
+        Args:
+            image (Buffer): The image rectangle to write.
+            origin (list[int] | tuple[int, int]): Top-left origin as ``(y, x)``.
+            force (bool, optional): As for :meth:`SingleImage.update`.
+                Defaults to False.
+            max_lines (int | None, optional): As for :meth:`SingleImage.update`.
+                Defaults to None.
+            wait (bool, optional): As for :meth:`SingleImage.update`. Defaults
+                to False.
+            header (H | _Unset, optional): New header. Defaults to
+                :data:`UNSET`, which keeps the current one.
+        """
+        self._server.image_multi_update(
+            self._value_id, self._index, image, origin, _header(header), force, max_lines, wait
+        )
+
+    def set_all(
+        self,
+        shape: list[int] | tuple[int, int],
+        color: ImageColor,
+        wait: bool = False,
+        header: H | _Unset = UNSET,
+    ) -> None:
+        """Create or replace this indexed image with one color, and optionally its header.
+
+        Args:
+            shape (list[int] | tuple[int, int]): Image shape as ``(height,
+                width)``.
+            color (ImageColor): As for :meth:`Image.set_all`.
+            wait (bool, optional): Whether to return only once the client has
+                acknowledged this image, or the connection has ended.
+                Defaults to False.
+            header (H | _Unset, optional): New header. Defaults to
+                :data:`UNSET`, which keeps the current one.
+        """
+        self._server.image_multi_set_all(self._value_id, self._index, shape, color, _header(header), wait)
+
+    def set_header(self, header: H) -> None:
+        """Replace the header of this indexed image alone.
+
+        It is sent and waits as :meth:`ImageWithHeader.set_header` does.
+
+        Args:
+            header (H): New header.
+
+        Raises:
+            ValueError: If the index does not exist.
+        """
+        self._server.image_multi_set_header(self._value_id, self._index, header)
+
+
 class ImageMulti(_StaticBase):
     """Sparse collection of server-controlled images indexed by integers.
 
     Each image keeps its own format, as described at :class:`Image`.
+
+    ``images[index]`` returns the handle of an index, whether it is populated
+    or not. ``index in images``, ``len(images)`` and iteration cover the
+    populated indices only; iteration walks a copy taken when it starts.
+    :meth:`values` and :meth:`items` return the handles of those indices, as
+    for a dict.
 
     Each image dimension is limited to 65,536 pixels, inclusive. Client renderer
     and memory limits may be smaller.
@@ -632,11 +983,16 @@ class ImageMulti(_StaticBase):
             False.
     """
 
+    _header_id: int | None = None
+
     def __init__(self, low_priority: bool = False) -> None:
         self._low_priority = low_priority
 
+    def _header_type(self, types: list[PyObjectType]) -> PyObjectType | None:
+        return None if self._header_id is None else types[self._header_id]
+
     def _initialize(self, name: str, types: list[PyObjectType]) -> None:
-        self._value_id = self._server.add_image_multi(name, self._low_priority)
+        self._value_id = self._server.add_image_multi(name, self._header_type(types), self._low_priority)
 
     def get(self, index: int) -> SingleImage:
         """Return a handle for one image index.
@@ -645,23 +1001,28 @@ class ImageMulti(_StaticBase):
             index (int): Non-negative image index.
 
         Returns:
-            SingleImage: Handle that can create, update, or read ``index``.
-        """
-        if not isinstance(index, int):
-            raise TypeError("index must be an integer")
-        return SingleImage(self._server, self._value_id, index)
+            SingleImage: Handle that can create, or read ``index``.
 
-    def is_idle(self) -> bool:
-        """Return whether nothing is being sent and nothing waits, for any index.
+        Raises:
+            TypeError: If ``index`` is not an integer.
+        """
+        return SingleImage(self._server, self._value_id, _index(index))
+
+    def is_idle(self, index: int | None = None) -> bool:
+        """Return whether nothing is being sent and nothing waits.
 
         See :meth:`Image.is_idle`.
 
-        Returns:
-            bool: Whether the collection is idle.
-        """
-        return self._server.image_multi_is_idle(self._value_id)
+        Args:
+            index (int | None, optional): The index to ask about. Defaults to
+                None, which asks about every index.
 
-    def remove_index(self, index: int, update: bool = False) -> None:
+        Returns:
+            bool: Whether the index, or every index, is idle.
+        """
+        return self._server.image_multi_is_idle(self._value_id, index)
+
+    def remove_index(self, index: int) -> None:
         """Remove an image index; an absent index is a no-op.
 
         Parts of a split update of this index that are not sent yet are
@@ -669,19 +1030,12 @@ class ImageMulti(_StaticBase):
 
         Args:
             index (int): Non-negative image index.
-            update (bool, optional): Whether to request a client repaint.
-                Defaults to False.
         """
-        self._server.image_multi_remove_index(self._value_id, index, update)
+        self._server.image_multi_remove_index(self._value_id, index)
 
-    def reset(self, update: bool = False) -> None:
-        """Remove every populated image index.
-
-        Args:
-            update (bool, optional): Whether to request a client repaint.
-                Defaults to False.
-        """
-        self._server.image_multi_reset(self._value_id, update)
+    def reset(self) -> None:
+        """Remove every populated image index."""
+        self._server.image_multi_reset(self._value_id)
 
     def indices(self) -> list[int]:
         """Return populated indices.
@@ -695,16 +1049,98 @@ class ImageMulti(_StaticBase):
         return self._server.image_multi_len(self._value_id)
 
     def __contains__(self, index: object) -> bool:
-        if not isinstance(index, int):
+        try:
+            index = _index(index)
+        except TypeError:
             return False
-        return self._server.image_multi_contains(self._value_id, index)
+        return 0 <= index <= _MAX_INDEX and self._server.image_multi_contains(self._value_id, index)
 
     def __getitem__(self, index: int) -> SingleImage:
         return self.get(index)
 
+    def __iter__(self) -> Iterator[int]:
+        """Iterate over a copy of the populated indices."""
+        return iter(self.indices())
+
+    def values(self) -> Sequence[SingleImage]:
+        """Return the handles of the populated indices.
+
+        Returns:
+            Sequence[SingleImage]: The handles, in ascending order of their
+                indices.
+        """
+        return [self.get(index) for index in self.indices()]
+
+    def items(self) -> Sequence[tuple[int, SingleImage]]:
+        """Return the populated indices with their handles.
+
+        Returns:
+            Sequence[tuple[int, SingleImage]]: Pairs of an index and its handle,
+                in ascending order of the indices.
+        """
+        return [(index, self.get(index)) for index in self.indices()]
+
+
+class ImageMultiWithHeader[H](ImageMulti):
+    """:class:`ImageMulti` whose images each carry a typed header ``H``.
+
+    Args:
+        header_id (int): Index of the header's protocol type in the generated
+            type list.
+        low_priority (bool, optional): Whether the server sends its transfers
+            in the low-priority lane, as for :class:`ImageMulti`. Defaults to
+            False.
+    """
+
+    def __init__(self, header_id: int, low_priority: bool = False) -> None:
+        super().__init__(low_priority)
+        self._header_id = header_id
+
+    def get(self, index: int) -> SingleImageWithHeader[H]:
+        """Return a handle for one image index.
+
+        Args:
+            index (int): Non-negative image index.
+
+        Returns:
+            SingleImageWithHeader[H]: Handle that can create, or read
+                ``index``.
+
+        Raises:
+            TypeError: If ``index`` is not an integer.
+        """
+        return SingleImageWithHeader(self._server, self._value_id, _index(index))
+
+    def __getitem__(self, index: int) -> SingleImageWithHeader[H]:
+        return self.get(index)
+
+    def values(self) -> Sequence[SingleImageWithHeader[H]]:
+        """Return the handles of the populated indices.
+
+        Returns:
+            Sequence[SingleImageWithHeader[H]]: The handles, in ascending order
+                of their indices.
+        """
+        return [self.get(index) for index in self.indices()]
+
+    def items(self) -> Sequence[tuple[int, SingleImageWithHeader[H]]]:
+        """Return the populated indices with their handles.
+
+        Returns:
+            Sequence[tuple[int, SingleImageWithHeader[H]]]: Pairs of an index and
+                its handle, in ascending order of the indices.
+        """
+        return [(index, self.get(index)) for index in self.indices()]
+
 
 class Map[K, V](_StaticBase):
-    """Server-controlled dictionary mirrored read-only to the client."""
+    """Server-controlled dictionary mirrored read-only to the client.
+
+    It supports the dict operations ``map[key]``, ``map[key] = value``,
+    ``del map[key]``, ``key in map``, ``len(map)`` and iteration over its
+    keys. A missing key raises :class:`KeyError`. Iteration walks a copy taken
+    when it starts.
+    """
 
     def __init__(self, key_id: int, value_id: int) -> None:
         self._key_id = key_id
@@ -715,15 +1151,13 @@ class Map[K, V](_StaticBase):
         del self._key_id
         del self._value_type_id
 
-    def set(self, value: dict[K, V], update: bool = False) -> None:
+    def set(self, value: dict[K, V]) -> None:
         """Set the dict in the UI dict.
 
         Args:
             value (dict[K, V]): The dictionary to set.
-            update (bool, optional): Whether to request a client repaint.
-                Defaults to False.
         """
-        self._server.map_set(self._value_id, value, update)
+        self._server.map_set(self._value_id, value)
 
     def get(self) -> dict[K, V]:
         """Get the dict in the UI dict.
@@ -733,16 +1167,14 @@ class Map[K, V](_StaticBase):
         """
         return self._server.map_get(self._value_id)
 
-    def set_item(self, key: K, value: V, update: bool = False) -> None:
+    def set_item(self, key: K, value: V) -> None:
         """Set the item in the UI dict.
 
         Args:
             key (K): The key of the item.
             value (V): The value of the item.
-            update (bool, optional): Whether to request a client repaint.
-                Defaults to False.
         """
-        self._server.map_set_item(self._value_id, key, value, update)
+        self._server.map_set_item(self._value_id, key, value)
 
     def get_item(self, key: K) -> V:
         """Get the item in the UI dict.
@@ -752,21 +1184,25 @@ class Map[K, V](_StaticBase):
 
         Returns:
             V: The value of the item.
+
+        Raises:
+            KeyError: If the dict has no such key.
         """
         return self._server.map_get_item(self._value_id, key)
 
-    def remove_item(self, key: K, update: bool = False) -> V:
+    def remove_item(self, key: K) -> V:
         """Remove the item from the UI dict and return it.
 
         Args:
             key (K): The key of the item.
-            update (bool, optional): Whether to request a client repaint.
-                Defaults to False.
 
         Returns:
             V: The removed value.
+
+        Raises:
+            KeyError: If the dict has no such key.
         """
-        return self._server.map_del_item(self._value_id, key, update)
+        return self._server.map_del_item(self._value_id, key)
 
     def __getitem__(self, key: K) -> V:
         """Get the item in the UI dict."""
@@ -774,15 +1210,33 @@ class Map[K, V](_StaticBase):
 
     def __setitem__(self, key: K, value: V) -> None:
         """Set the item in the UI dict."""
-        self.set_item(key, value, update=False)
+        self.set_item(key, value)
 
     def __delitem__(self, key: K) -> None:
         """Remove the item from the UI dict."""
-        self.remove_item(key, update=False)
+        self.remove_item(key)
+
+    def __contains__(self, key: object) -> bool:
+        """Return whether the UI dict has ``key``."""
+        return self._server.map_contains(self._value_id, key)
+
+    def __len__(self) -> int:
+        """Return the number of items in the UI dict."""
+        return self._server.map_len(self._value_id)
+
+    def __iter__(self) -> Iterator[K]:
+        """Iterate over a copy of the keys of the UI dict."""
+        return iter(self.get())
 
 
 class Vec[T](_StaticBase):
-    """Server-controlled list mirrored read-only to the client."""
+    """Server-controlled list mirrored read-only to the client.
+
+    It supports the list operations ``vec[i]``, ``vec[i] = value``,
+    ``del vec[i]``, ``value in vec``, ``len(vec)`` and iteration. A negative
+    index counts from the end, and an index out of range raises
+    :class:`IndexError`. Iteration walks a copy taken when it starts.
+    """
 
     def __init__(self, obj_id: int) -> None:
         self._obj_id = obj_id
@@ -791,15 +1245,13 @@ class Vec[T](_StaticBase):
         self._value_id = self._server.add_vec(name, types[self._obj_id])
         del self._obj_id
 
-    def set(self, value: list[T], update: bool = False) -> None:
+    def set(self, value: list[T]) -> None:
         """Set the list in the UI list.
 
         Args:
             value (list[T]): The list to set.
-            update (bool, optional): Whether to request a client repaint.
-                Defaults to False.
         """
-        self._server.list_set(self._value_id, value, update)
+        self._server.list_set(self._value_id, value)
 
     def get(self) -> list[T]:
         """Get the list in the UI list.
@@ -809,50 +1261,73 @@ class Vec[T](_StaticBase):
         """
         return self._server.list_get(self._value_id)
 
-    def set_item(self, idx: int, value: T, update: bool = False) -> None:
+    def set_item(self, idx: int, value: T) -> None:
         """Set the item in the UI list.
 
         Args:
-            idx (int): The index of the item.
+            idx (int): The index of the item; a negative index counts from
+                the end.
             value (T): The value of the item.
-            update (bool, optional): Whether to request a client repaint.
-                Defaults to False.
+
+        Raises:
+            IndexError: If the index is out of range.
         """
-        self._server.list_set_item(self._value_id, idx, value, update)
+        self._server.list_set_item(self._value_id, idx, value)
 
     def get_item(self, idx: int) -> T:
         """Get the item in the UI list.
 
         Args:
-            idx (int): The index of the item.
+            idx (int): The index of the item; a negative index counts from
+                the end.
 
         Returns:
             T: The value of the item.
+
+        Raises:
+            IndexError: If the index is out of range.
         """
         return self._server.list_get_item(self._value_id, idx)
 
-    def remove_item(self, idx: int, update: bool = False) -> T:
+    def remove_item(self, idx: int) -> T:
         """Remove the item from the UI list and return it.
 
         Args:
-            idx (int): The index of the item.
-            update (bool, optional): Whether to request a client repaint.
-                Defaults to False.
+            idx (int): The index of the item; a negative index counts from
+                the end.
 
         Returns:
             T: The removed item.
-        """
-        return self._server.list_del_item(self._value_id, idx, update)
 
-    def add_item(self, value: T, update: bool = False) -> None:
+        Raises:
+            IndexError: If the index is out of range.
+        """
+        return self._server.list_del_item(self._value_id, idx)
+
+    def insert_item(self, idx: int, value: T) -> None:
+        """Insert the item into the UI list before the item at ``idx``.
+
+        Only the new item is sent to the client.
+
+        Args:
+            idx (int): The position of the new item, up to the length to
+                append; a negative index counts from the end, as for
+                ``list.insert``.
+            value (T): The value of the item.
+
+        Raises:
+            IndexError: If the index is out of range. Unlike
+                ``list.insert``, an index past either end is not clamped.
+        """
+        self._server.list_insert_item(self._value_id, idx, value)
+
+    def add_item(self, value: T) -> None:
         """Add the item to the UI list.
 
         Args:
             value (T): The value of the item.
-            update (bool, optional): Whether to request a client repaint.
-                Defaults to False.
         """
-        self._server.list_append_item(self._value_id, value, update)
+        self._server.list_append_item(self._value_id, value)
 
     def __getitem__(self, idx: int) -> T:
         """Get the item in the UI list."""
@@ -860,7 +1335,23 @@ class Vec[T](_StaticBase):
 
     def __setitem__(self, idx: int, value: T) -> None:
         """Set the item in the UI list."""
-        self.set_item(idx, value, update=False)
+        self.set_item(idx, value)
+
+    def __delitem__(self, idx: int) -> None:
+        """Remove the item from the UI list."""
+        self.remove_item(idx)
+
+    def __contains__(self, value: object) -> bool:
+        """Return whether the UI list holds ``value``."""
+        return value in self.get()
+
+    def __len__(self) -> int:
+        """Return the number of items in the UI list."""
+        return self._server.list_len(self._value_id)
+
+    def __iter__(self) -> Iterator[T]:
+        """Iterate over a copy of the items of the UI list."""
+        return iter(self.get())
 
 
 _DTYPE_TO_ID = {
@@ -882,23 +1373,6 @@ def _get_dtype_id(dtype: type[np.generic]) -> int:
     if t is None:
         raise ValueError(f"Unsupported dtype: {dtype}")
     return t
-
-
-class _Unset:
-    """Type of :data:`UNSET`, the absent-header default."""
-
-    def __repr__(self) -> str:
-        return "UNSET"
-
-
-#: Default of the ``header`` arguments: no header is given, so the current one
-#: is kept. ``None`` is not used for that, so an optional header type can still
-#: send ``None``.
-UNSET: Final = _Unset()
-
-
-def _header(header: object) -> tuple[object] | None:
-    return None if header is UNSET else (header,)
 
 
 class Data[T: np.generic](_StaticBase):
@@ -974,82 +1448,65 @@ class Data[T: np.generic](_StaticBase):
         """
         return self._server.data_is_idle(self._value_id)
 
-    def set(self, data: Buffer, update: bool = False, wait: bool = False) -> None:
+    def set(self, data: Buffer, wait: bool = False) -> None:
         """Set the data in the UI data, creating it when it is not set.
 
         Args:
             data (Buffer): Data to set. NumPy arrays and other buffer-protocol
                 objects are accepted.
-            update (bool, optional): Whether to request a client repaint.
-                Defaults to False.
             wait (bool, optional): Whether to return only once the client has
                 acknowledged this change, or the connection has ended.
                 Defaults to False.
         """
-        self._server.data_set(self._value_id, data, update, None, wait)
+        self._server.data_set(self._value_id, data, None, wait)
 
-    def add(self, data: Buffer, update: bool = False, wait: bool = False) -> None:
+    def add(self, data: Buffer, wait: bool = False) -> None:
         """Add the data to the UI data.
 
         Args:
             data (Buffer): Data to append. NumPy arrays and other
                 buffer-protocol objects are accepted.
-            update (bool, optional): Whether to request a client repaint.
-                Defaults to False.
             wait (bool, optional): Whether to return only once the client has
                 acknowledged this change, or the connection has ended.
                 Defaults to False.
         """
-        self._server.data_add(self._value_id, data, update, None, wait)
+        self._server.data_add(self._value_id, data, None, wait)
 
-    def replace(self, data: Buffer, index: int, update: bool = False, wait: bool = False) -> None:
+    def replace(self, data: Buffer, index: int, wait: bool = False) -> None:
         """Replace the data in the UI data.
 
         Args:
             data (Buffer): Replacement data. NumPy arrays and other
                 buffer-protocol objects are accepted.
             index (int): Index at which replacement starts.
-            update (bool, optional): Whether to request a client repaint.
-                Defaults to False.
             wait (bool, optional): Whether to return only once the client has
                 acknowledged this change, or the connection has ended.
                 Defaults to False.
         """
-        self._server.data_replace(self._value_id, data, index, update, None, wait)
+        self._server.data_replace(self._value_id, data, index, None, wait)
 
-    def remove(self, index: int, count: int, update: bool = False, wait: bool = False) -> None:
+    def remove(self, index: int, count: int, wait: bool = False) -> None:
         """Remove the data from the UI data.
 
         Args:
             index (int): Index at which removal starts.
             count (int): Number of items to remove.
-            update (bool, optional): Whether to request a client repaint.
-                Defaults to False.
             wait (bool, optional): Whether to return only once the client has
                 acknowledged this change, or the connection has ended.
                 Defaults to False.
         """
-        self._server.data_remove(self._value_id, index, count, update, None, wait)
+        self._server.data_remove(self._value_id, index, count, None, wait)
 
-    def clear(self, update: bool = False) -> None:
-        """Clear the data in the UI data; the data stays set, but empty.
+    def clear(self) -> None:
+        """Clear the data in the UI data; the data stays set, but empty."""
+        self._server.data_clear(self._value_id, None)
 
-        Args:
-            update (bool, optional): Whether to request a client repaint.
-                Defaults to False.
-        """
-        self._server.data_clear(self._value_id, update, None)
-
-    def reset(self, update: bool = False) -> None:
+    def reset(self) -> None:
         """Return the data, and its header, to "not set".
 
         Data that is not set stays so.
-
-        Args:
-            update (bool, optional): Whether to request a client repaint.
-                Defaults to False.
         """
-        self._server.data_reset(self._value_id, update)
+        self._server.data_reset(self._value_id)
 
 
 class DataWithHeader[T: np.generic, H](Data[T]):
@@ -1103,13 +1560,11 @@ class DataWithHeader[T: np.generic, H](Data[T]):
         data, header = entry
         return np.frombuffer(data, dtype=self._dtype), header
 
-    def set(self, data: Buffer, update: bool = False, wait: bool = False, header: H | _Unset = UNSET) -> None:
+    def set(self, data: Buffer, wait: bool = False, header: H | _Unset = UNSET) -> None:
         """Set the data and optionally the header.
 
         Args:
             data (Buffer): Data to set.
-            update (bool, optional): Whether to request a client repaint.
-                Defaults to False.
             wait (bool, optional): Whether to return only once the client has
                 acknowledged this change, or the connection has ended.
                 Defaults to False.
@@ -1119,71 +1574,59 @@ class DataWithHeader[T: np.generic, H](Data[T]):
         Raises:
             ValueError: If the data is not set and no header is given.
         """
-        self._server.data_set(self._value_id, data, update, _header(header), wait)
+        self._server.data_set(self._value_id, data, _header(header), wait)
 
-    def add(self, data: Buffer, update: bool = False, wait: bool = False, header: H | _Unset = UNSET) -> None:
+    def add(self, data: Buffer, wait: bool = False, header: H | _Unset = UNSET) -> None:
         """Append data and optionally replace the header.
 
         Args:
             data (Buffer): Data to append.
-            update (bool, optional): Whether to request a client repaint.
-                Defaults to False.
             wait (bool, optional): Whether to return only once the client has
                 acknowledged this change, or the connection has ended.
                 Defaults to False.
             header (H | _Unset, optional): New header; :data:`UNSET` keeps the
                 current one. Defaults to :data:`UNSET`.
         """
-        self._server.data_add(self._value_id, data, update, _header(header), wait)
+        self._server.data_add(self._value_id, data, _header(header), wait)
 
-    def replace(
-        self, data: Buffer, index: int, update: bool = False, wait: bool = False, header: H | _Unset = UNSET
-    ) -> None:
+    def replace(self, data: Buffer, index: int, wait: bool = False, header: H | _Unset = UNSET) -> None:
         """Replace data from ``index`` and optionally the header.
 
         Args:
             data (Buffer): Replacement data.
             index (int): Index at which replacement starts.
-            update (bool, optional): Whether to request a client repaint.
-                Defaults to False.
             wait (bool, optional): Whether to return only once the client has
                 acknowledged this change, or the connection has ended.
                 Defaults to False.
             header (H | _Unset, optional): New header; :data:`UNSET` keeps the
                 current one. Defaults to :data:`UNSET`.
         """
-        self._server.data_replace(self._value_id, data, index, update, _header(header), wait)
+        self._server.data_replace(self._value_id, data, index, _header(header), wait)
 
-    def remove(
-        self, index: int, count: int, update: bool = False, wait: bool = False, header: H | _Unset = UNSET
-    ) -> None:
+    def remove(self, index: int, count: int, wait: bool = False, header: H | _Unset = UNSET) -> None:
         """Remove data and optionally replace the header.
 
         Args:
             index (int): Index at which removal starts.
             count (int): Number of items to remove.
-            update (bool, optional): Whether to request a client repaint.
-                Defaults to False.
             wait (bool, optional): Whether to return only once the client has
                 acknowledged this change, or the connection has ended.
                 Defaults to False.
             header (H | _Unset, optional): New header; :data:`UNSET` keeps the
                 current one. Defaults to :data:`UNSET`.
         """
-        self._server.data_remove(self._value_id, index, count, update, _header(header), wait)
+        self._server.data_remove(self._value_id, index, count, _header(header), wait)
 
-    def clear(self, update: bool = False, header: H | _Unset = UNSET) -> None:
+    def clear(self, header: H | _Unset = UNSET) -> None:
         """Clear the data; the header stays unless a new one is given.
 
         Args:
-            update (bool, optional): Whether to request a client repaint.
-                Defaults to False.
             header (H | _Unset, optional): New header; :data:`UNSET` keeps the
                 current one. Defaults to :data:`UNSET`.
         """
-        self._server.data_clear(self._value_id, update, _header(header))
+        self._server.data_clear(self._value_id, _header(header))
 
-    def set_header(self, header: H, update: bool = False) -> None:
+    def set_header(self, header: H) -> None:
         """Replace the header alone.
 
         The client does not acknowledge a header, so this does not wait for
@@ -1194,13 +1637,11 @@ class DataWithHeader[T: np.generic, H](Data[T]):
 
         Args:
             header (H): New header.
-            update (bool, optional): Whether to request a client repaint.
-                Defaults to False.
 
         Raises:
             ValueError: If the data is not set.
         """
-        self._server.data_set_header(self._value_id, header, update)
+        self._server.data_set_header(self._value_id, header)
 
 
 class DataTake[T: np.generic](_StaticBase):
@@ -1236,8 +1677,8 @@ class DataTake[T: np.generic](_StaticBase):
         self,
         data: Buffer,
         blocking: bool = False,
-        update: bool = False,
         cache: bool = False,
+        wait: bool = False,
     ) -> None:
         """Set the data in the UI DataTake.
 
@@ -1245,17 +1686,35 @@ class DataTake[T: np.generic](_StaticBase):
         the server. It is an alternative to Signal with the opposite transport
         direction.
 
+        Transfers are sent one at a time: the call first waits until the
+        client has received the previous transfer, or taken it if it
+        was blocking. With no client connected it does not wait, and the data
+        is dropped unless ``cache`` keeps it for the next client.
+
         Args:
             data (Buffer): Data to send. NumPy arrays and other buffer-protocol
                 objects are accepted.
-            blocking (bool, optional): Whether the next send waits until the
-                client consumes this data. Defaults to False.
-            update (bool, optional): Whether to request a client repaint.
-                Defaults to False.
+            blocking (bool, optional): Whether the client acknowledges this
+                data only once the UI takes it, so the next send waits until
+                then. Defaults to False.
             cache (bool, optional): Whether to cache the last sent data so a
                 newly initialized client receives it. Defaults to False.
+            wait (bool, optional): Whether to return only once the client has
+                acknowledged this data, by receiving it or, with ``blocking``,
+                taking it, or the connection has ended. Defaults to False.
         """
-        self._server.data_take_set(self._value_id, data, blocking, update, cache, None)
+        self._server.data_take_set(self._value_id, data, blocking, cache, None, wait)
+
+    def is_idle(self) -> bool:
+        """Return whether no transfer waits for the client.
+
+        The next :meth:`set` is then sent at once. It is also true while no
+        client is connected.
+
+        Returns:
+            bool: Whether the DataTake is idle.
+        """
+        return self._server.data_take_is_idle(self._value_id)
 
 
 class DataTakeWithHeader[T: np.generic, H](DataTake[T]):
@@ -1284,27 +1743,29 @@ class DataTakeWithHeader[T: np.generic, H](DataTake[T]):
         self,
         data: Buffer,
         blocking: bool = False,
-        update: bool = False,
         cache: bool = False,
+        wait: bool = False,
         header: H | _Unset = UNSET,
     ) -> None:
-        """Send data with its header.
+        """Send data with its header, as :meth:`DataTake.set`.
 
         Args:
             data (Buffer): Data to send.
-            blocking (bool, optional): Whether the next send waits until the
-                client consumes this data. Defaults to False.
-            update (bool, optional): Whether to request a client repaint.
-                Defaults to False.
+            blocking (bool, optional): Whether the client acknowledges this
+                data only once the UI takes it, so the next send waits until
+                then. Defaults to False.
             cache (bool, optional): Whether to cache the last sent data and
                 header for a newly initialized client. Defaults to False.
+            wait (bool, optional): Whether to return only once the client has
+                acknowledged this data, by receiving it or, with ``blocking``,
+                taking it, or the connection has ended. Defaults to False.
             header (H | _Unset, optional): Header sent with the data; it is
                 required, :data:`UNSET` raises. Defaults to :data:`UNSET`.
 
         Raises:
             ValueError: If no header is given.
         """
-        self._server.data_take_set(self._value_id, data, blocking, update, cache, _header(header))
+        self._server.data_take_set(self._value_id, data, blocking, cache, _header(header), wait)
 
 
 class SingleData[T: np.generic]:
@@ -1325,6 +1786,16 @@ class SingleData[T: np.generic]:
         self._value_id = value_id
         self._index = index
 
+    def is_idle(self) -> bool:
+        """Return whether no change of this index waits for the client.
+
+        See :meth:`DataMulti.is_idle`.
+
+        Returns:
+            bool: Whether this index is idle.
+        """
+        return self._server.data_multi_is_idle(self._value_id, self._index)
+
     def get(self) -> npt.NDArray[T]:
         """Return a locally mutable snapshot of the buffer at this index.
 
@@ -1337,71 +1808,58 @@ class SingleData[T: np.generic]:
         data = self._server.data_multi_get(self._value_id, self._index)
         return np.frombuffer(data, dtype=self._dtype)
 
-    def set(self, data: Buffer, update: bool = False, wait: bool = False) -> None:
+    def set(self, data: Buffer, wait: bool = False) -> None:
         """Set the data in the UI data at this index.
 
         Args:
             data (Buffer): Data to set. NumPy arrays and other buffer-protocol
                 objects are accepted.
-            update (bool, optional): Whether to request a client repaint.
-                Defaults to False.
             wait (bool, optional): Whether to return only once the client has
                 acknowledged this change, or the connection has ended.
                 Defaults to False.
         """
-        self._server.data_multi_set(self._value_id, self._index, data, update, None, wait)
+        self._server.data_multi_set(self._value_id, self._index, data, None, wait)
 
-    def add(self, data: Buffer, update: bool = False, wait: bool = False) -> None:
+    def add(self, data: Buffer, wait: bool = False) -> None:
         """Add the data to the UI data at this index.
 
         Args:
             data (Buffer): Data to append. NumPy arrays and other
                 buffer-protocol objects are accepted.
-            update (bool, optional): Whether to request a client repaint.
-                Defaults to False.
             wait (bool, optional): Whether to return only once the client has
                 acknowledged this change, or the connection has ended.
                 Defaults to False.
         """
-        self._server.data_multi_add(self._value_id, self._index, data, update, None, wait)
+        self._server.data_multi_add(self._value_id, self._index, data, None, wait)
 
-    def replace(self, data: Buffer, index: int, update: bool = False, wait: bool = False) -> None:
+    def replace(self, data: Buffer, index: int, wait: bool = False) -> None:
         """Replace the data in the UI data at this index.
 
         Args:
             data (Buffer): Replacement data. NumPy arrays and other
                 buffer-protocol objects are accepted.
             index (int): Index at which replacement starts within this buffer.
-            update (bool, optional): Whether to request a client repaint.
-                Defaults to False.
             wait (bool, optional): Whether to return only once the client has
                 acknowledged this change, or the connection has ended.
                 Defaults to False.
         """
-        self._server.data_multi_replace(self._value_id, self._index, data, index, update, None, wait)
+        self._server.data_multi_replace(self._value_id, self._index, data, index, None, wait)
 
-    def remove(self, index: int, count: int, update: bool = False, wait: bool = False) -> None:
+    def remove(self, index: int, count: int, wait: bool = False) -> None:
         """Remove the data from the UI data at this index.
 
         Args:
             index (int): Index at which removal starts within this buffer.
             count (int): Number of items to remove.
-            update (bool, optional): Whether to request a client repaint.
-                Defaults to False.
             wait (bool, optional): Whether to return only once the client has
                 acknowledged this change, or the connection has ended.
                 Defaults to False.
         """
-        self._server.data_multi_remove(self._value_id, self._index, index, count, update, None, wait)
+        self._server.data_multi_remove(self._value_id, self._index, index, count, None, wait)
 
-    def clear(self, update: bool = False) -> None:
-        """Clear the data in the UI data at this index.
-
-        Args:
-            update (bool, optional): Whether to request a client repaint.
-                Defaults to False.
-        """
-        self._server.data_multi_clear(self._value_id, self._index, update, None)
+    def clear(self) -> None:
+        """Clear the data in the UI data at this index."""
+        self._server.data_multi_clear(self._value_id, self._index, None)
 
 
 class SingleDataWithHeader[T: np.generic, H](SingleData[T]):
@@ -1437,13 +1895,11 @@ class SingleDataWithHeader[T: np.generic, H](SingleData[T]):
         data, header = self._server.data_multi_get_with_header(self._value_id, self._index)
         return np.frombuffer(data, dtype=self._dtype), header
 
-    def set(self, data: Buffer, update: bool = False, wait: bool = False, header: H | _Unset = UNSET) -> None:
+    def set(self, data: Buffer, wait: bool = False, header: H | _Unset = UNSET) -> None:
         """Set the data at this index and optionally its header.
 
         Args:
             data (Buffer): Data to set.
-            update (bool, optional): Whether to request a client repaint.
-                Defaults to False.
             wait (bool, optional): Whether to return only once the client has
                 acknowledged this change, or the connection has ended.
                 Defaults to False.
@@ -1453,93 +1909,86 @@ class SingleDataWithHeader[T: np.generic, H](SingleData[T]):
         Raises:
             ValueError: If the index does not exist and no header is given.
         """
-        self._server.data_multi_set(self._value_id, self._index, data, update, _header(header), wait)
+        self._server.data_multi_set(self._value_id, self._index, data, _header(header), wait)
 
-    def add(self, data: Buffer, update: bool = False, wait: bool = False, header: H | _Unset = UNSET) -> None:
+    def add(self, data: Buffer, wait: bool = False, header: H | _Unset = UNSET) -> None:
         """Append data at this index and optionally replace its header.
 
         Args:
             data (Buffer): Data to append.
-            update (bool, optional): Whether to request a client repaint.
-                Defaults to False.
             wait (bool, optional): Whether to return only once the client has
                 acknowledged this change, or the connection has ended.
                 Defaults to False.
             header (H | _Unset, optional): New header; :data:`UNSET` keeps the
                 current one. Defaults to :data:`UNSET`.
         """
-        self._server.data_multi_add(self._value_id, self._index, data, update, _header(header), wait)
+        self._server.data_multi_add(self._value_id, self._index, data, _header(header), wait)
 
-    def replace(
-        self, data: Buffer, index: int, update: bool = False, wait: bool = False, header: H | _Unset = UNSET
-    ) -> None:
+    def replace(self, data: Buffer, index: int, wait: bool = False, header: H | _Unset = UNSET) -> None:
         """Replace data from ``index`` and optionally the header.
 
         Args:
             data (Buffer): Replacement data.
             index (int): Index at which replacement starts within this buffer.
-            update (bool, optional): Whether to request a client repaint.
-                Defaults to False.
             wait (bool, optional): Whether to return only once the client has
                 acknowledged this change, or the connection has ended.
                 Defaults to False.
             header (H | _Unset, optional): New header; :data:`UNSET` keeps the
                 current one. Defaults to :data:`UNSET`.
         """
-        self._server.data_multi_replace(self._value_id, self._index, data, index, update, _header(header), wait)
+        self._server.data_multi_replace(self._value_id, self._index, data, index, _header(header), wait)
 
-    def remove(
-        self, index: int, count: int, update: bool = False, wait: bool = False, header: H | _Unset = UNSET
-    ) -> None:
+    def remove(self, index: int, count: int, wait: bool = False, header: H | _Unset = UNSET) -> None:
         """Remove data at this index and optionally replace its header.
 
         Args:
             index (int): Index at which removal starts within this buffer.
             count (int): Number of items to remove.
-            update (bool, optional): Whether to request a client repaint.
-                Defaults to False.
             wait (bool, optional): Whether to return only once the client has
                 acknowledged this change, or the connection has ended.
                 Defaults to False.
             header (H | _Unset, optional): New header; :data:`UNSET` keeps the
                 current one. Defaults to :data:`UNSET`.
         """
-        self._server.data_multi_remove(self._value_id, self._index, index, count, update, _header(header), wait)
+        self._server.data_multi_remove(self._value_id, self._index, index, count, _header(header), wait)
 
-    def clear(self, update: bool = False, header: H | _Unset = UNSET) -> None:
+    def clear(self, header: H | _Unset = UNSET) -> None:
         """Clear the data at this index; its header stays unless a new one is given.
 
         Args:
-            update (bool, optional): Whether to request a client repaint.
-                Defaults to False.
             header (H | _Unset, optional): New header; :data:`UNSET` keeps the
                 current one. Defaults to :data:`UNSET`.
         """
-        self._server.data_multi_clear(self._value_id, self._index, update, _header(header))
+        self._server.data_multi_clear(self._value_id, self._index, _header(header))
 
-    def set_header(self, header: H, update: bool = False) -> None:
+    def set_header(self, header: H) -> None:
         """Replace the header at this index alone.
 
         It does not wait for the client itself, but it is queued after a
-        buffer change to any index that another thread is still sending.
+        buffer change to this index that another thread is still sending.
 
         Args:
             header (H): New header.
-            update (bool, optional): Whether to request a client repaint.
-                Defaults to False.
 
         Raises:
             ValueError: If the index does not exist.
         """
-        self._server.data_multi_set_header(self._value_id, self._index, header, update)
+        self._server.data_multi_set_header(self._value_id, self._index, header)
 
 
 class DataMulti[T: np.generic](_StaticBase):
     """Collection of numeric buffers indexed by non-negative integers.
 
-    Changes wait for the client as in :class:`Data`. All indices share one
-    stream, so a change waits for the previous acknowledged change of any
-    index.
+    Changes wait for the client as in :class:`Data`, each index on its own:
+    a change waits for the previous acknowledged change of its index only, so
+    changes of different indices can reach the client in another order than
+    they were made.
+
+    ``data[index]`` returns the handle of an index, whether it holds data or
+    not. ``index in data``, ``len(data)`` and iteration cover the indices that
+    hold data only; iteration walks a copy taken when it starts.
+    :meth:`values` and :meth:`items` return the handles of those indices, as
+    for a dict.
 
     Args:
         dtype (type[T]): One of the integer or floating-point NumPy scalar
@@ -1570,42 +2019,80 @@ class DataMulti[T: np.generic](_StaticBase):
 
         Returns:
             SingleData[T]: The ``SingleData`` object for the given index.
-        """
-        return SingleData(self._dtype, self._server, self._value_id, index)
 
-    def is_idle(self) -> bool:
-        """Return whether no change of any index waits for the client.
+        Raises:
+            TypeError: If ``index`` is not an integer.
+        """
+        return SingleData(self._dtype, self._server, self._value_id, _index(index))
+
+    def is_idle(self, index: int | None = None) -> bool:
+        """Return whether no change waits for the client.
 
         See :meth:`Data.is_idle`.
 
-        Returns:
-            bool: Whether the collection is idle.
-        """
-        return self._server.data_multi_is_idle(self._value_id)
+        Args:
+            index (int | None, optional): The index to ask about. Defaults to
+                None, which asks about every index.
 
-    def remove_index(self, index: int, update: bool = False) -> None:
+        Returns:
+            bool: Whether the index, or every index, is idle.
+        """
+        return self._server.data_multi_is_idle(self._value_id, index)
+
+    def remove_index(self, index: int) -> None:
         """Remove the given index and its header from the DataMulti.
 
         Args:
             index (int): The index to remove.
-            update (bool, optional): Whether to request a client repaint.
-                Defaults to False.
         """
-        self._server.data_multi_remove_index(self._value_id, index, update)
+        self._server.data_multi_remove_index(self._value_id, index)
 
-    def reset(self, update: bool = False) -> None:
-        """Reset (clear all indices and headers) in the DataMulti.
+    def reset(self) -> None:
+        """Reset (clear all indices and headers) in the DataMulti."""
+        self._server.data_multi_reset(self._value_id)
 
-        Args:
-            update (bool, optional): Whether to request a client repaint.
-                Defaults to False.
+    def indices(self) -> list[int]:
+        """Return the indices that hold data.
+
+        Returns:
+            list[int]: The indices in ascending order.
         """
-        self._server.data_multi_reset(self._value_id, update)
+        return self._server.data_multi_indices(self._value_id)
+
+    def __len__(self) -> int:
+        return self._server.data_multi_len(self._value_id)
+
+    def __contains__(self, index: object) -> bool:
+        try:
+            index = _index(index)
+        except TypeError:
+            return False
+        return 0 <= index <= _MAX_INDEX and self._server.data_multi_contains(self._value_id, index)
 
     def __getitem__(self, index: int) -> SingleData[T]:
-        if isinstance(index, int):
-            return self.get(index)
-        raise TypeError("index must be an integer")
+        return self.get(index)
+
+    def __iter__(self) -> Iterator[int]:
+        """Iterate over a copy of the indices that hold data."""
+        return iter(self.indices())
+
+    def values(self) -> Sequence[SingleData[T]]:
+        """Return the handles of the indices that hold data.
+
+        Returns:
+            Sequence[SingleData[T]]: The handles, in ascending order of their
+                indices.
+        """
+        return [self.get(index) for index in self.indices()]
+
+    def items(self) -> Sequence[tuple[int, SingleData[T]]]:
+        """Return the indices that hold data with their handles.
+
+        Returns:
+            Sequence[tuple[int, SingleData[T]]]: Pairs of an index and its
+                handle, in ascending order of the indices.
+        """
+        return [(index, self.get(index)) for index in self.indices()]
 
 
 class DataMultiWithHeader[T: np.generic, H](DataMulti[T]):
@@ -1636,13 +2123,32 @@ class DataMultiWithHeader[T: np.generic, H](DataMulti[T]):
 
         Returns:
             SingleDataWithHeader[T, H]: The handle for the given index.
+
+        Raises:
+            TypeError: If ``index`` is not an integer.
         """
-        return SingleDataWithHeader(self._dtype, self._server, self._value_id, index)
+        return SingleDataWithHeader(self._dtype, self._server, self._value_id, _index(index))
 
     def __getitem__(self, index: int) -> SingleDataWithHeader[T, H]:
-        if isinstance(index, int):
-            return self.get(index)
-        raise TypeError("index must be an integer")
+        return self.get(index)
+
+    def values(self) -> Sequence[SingleDataWithHeader[T, H]]:
+        """Return the handles of the indices that hold data.
+
+        Returns:
+            Sequence[SingleDataWithHeader[T, H]]: The handles, in ascending order
+                of their indices.
+        """
+        return [self.get(index) for index in self.indices()]
+
+    def items(self) -> Sequence[tuple[int, SingleDataWithHeader[T, H]]]:
+        """Return the indices that hold data with their handles.
+
+        Returns:
+            Sequence[tuple[int, SingleDataWithHeader[T, H]]]: Pairs of an index
+                and its handle, in ascending order of the indices.
+        """
+        return [(index, self.get(index)) for index in self.indices()]
 
 
 class SingleDataTake[T: np.generic]:
@@ -1663,29 +2169,44 @@ class SingleDataTake[T: np.generic]:
         self._value_id = value_id
         self._index = index
 
-    def set(self, data: Buffer, blocking: bool = False, update: bool = False, cache: bool = False) -> None:
+    def set(self, data: Buffer, blocking: bool = False, cache: bool = False, wait: bool = False) -> None:
         """Set the data in the UI DataMultiTake at this index.
+
+        Transfers are sent one at a time: the call first waits until the
+        client has received the previous transfer of this index, or taken it if it
+        was blocking. With no client connected it does not wait, and the data
+        is dropped unless ``cache`` keeps it for the next client.
 
         Args:
             data (Buffer): Data to send. NumPy arrays and other buffer-protocol
                 objects are accepted.
-            blocking (bool, optional): Whether the next send waits until the
-                client consumes this data. Defaults to False.
-            update (bool, optional): Whether to request a client repaint.
-                Defaults to False.
+            blocking (bool, optional): Whether the client acknowledges this
+                data only once the UI takes it, so the next send waits until
+                then. Defaults to False.
             cache (bool, optional): Whether to cache the last sent data for a
                 newly initialized client, which holds only cached indices.
                 Defaults to False.
+            wait (bool, optional): Whether to return only once the client has
+                acknowledged this data, by receiving it or, with ``blocking``,
+                taking it, or the connection has ended. Defaults to False.
         """
         self._server.data_multi_take_set(
             self._value_id,
             self._index,
             data,
             blocking,
-            update,
             cache,
             None,
+            wait,
         )
+
+    def is_idle(self) -> bool:
+        """Return whether no transfer of this index waits for the client.
+
+        Returns:
+            bool: Whether this index is idle.
+        """
+        return self._server.data_multi_take_is_idle(self._value_id, self._index)
 
 
 class SingleDataTakeWithHeader[T: np.generic, H](SingleDataTake[T]):
@@ -1695,21 +2216,23 @@ class SingleDataTakeWithHeader[T: np.generic, H](SingleDataTake[T]):
         self,
         data: Buffer,
         blocking: bool = False,
-        update: bool = False,
         cache: bool = False,
+        wait: bool = False,
         header: H | _Unset = UNSET,
     ) -> None:
-        """Send data at this index with its header.
+        """Send data at this index with its header, as :meth:`SingleDataTake.set`.
 
         Args:
             data (Buffer): Data to send.
-            blocking (bool, optional): Whether the next send waits until the
-                client consumes this data. Defaults to False.
-            update (bool, optional): Whether to request a client repaint.
-                Defaults to False.
+            blocking (bool, optional): Whether the client acknowledges this
+                data only once the UI takes it, so the next send waits until
+                then. Defaults to False.
             cache (bool, optional): Whether to cache the last sent data and
                 header for a newly initialized client, which holds only cached
                 indices. Defaults to False.
+            wait (bool, optional): Whether to return only once the client has
+                acknowledged this data, by receiving it or, with ``blocking``,
+                taking it, or the connection has ended. Defaults to False.
             header (H | _Unset, optional): Header sent with the data; it is
                 required, :data:`UNSET` raises. Defaults to :data:`UNSET`.
 
@@ -1721,14 +2244,18 @@ class SingleDataTakeWithHeader[T: np.generic, H](SingleDataTake[T]):
             self._index,
             data,
             blocking,
-            update,
             cache,
             _header(header),
+            wait,
         )
 
 
 class DataMultiTake[T: np.generic](_StaticBase):
     """Keyed one-shot numeric buffers sent to and consumed by the client.
+
+    ``data[index]`` returns the handle of an index. The server keeps no list
+    of the indices, so the state is not iterable and does not support ``in``;
+    both raise :class:`TypeError`.
 
     Args:
         dtype (type[T]): One of the integer or floating-point NumPy scalar
@@ -1765,32 +2292,45 @@ class DataMultiTake[T: np.generic](_StaticBase):
         Returns:
             SingleDataTake[T]: The ``SingleDataTake`` object for the given
                 index.
-        """
-        return SingleDataTake(self._dtype, self._server, self._value_id, index)
 
-    def remove_index(self, index: int, update: bool = False) -> None:
+        Raises:
+            TypeError: If ``index`` is not an integer.
+        """
+        return SingleDataTake(self._dtype, self._server, self._value_id, _index(index))
+
+    def remove_index(self, index: int) -> None:
         """Remove the given index from the DataMultiTake.
 
         Args:
             index (int): The index to remove.
-            update (bool, optional): Whether to request a client repaint.
-                Defaults to False.
         """
-        self._server.data_multi_take_remove_index(self._value_id, index, update)
+        self._server.data_multi_take_remove_index(self._value_id, index)
 
-    def reset(self, update: bool = False) -> None:
-        """Reset (clear all indices) in the DataMultiTake.
+    def is_idle(self, index: int | None = None) -> bool:
+        """Return whether no transfer waits for the client.
+
+        See :meth:`DataTake.is_idle`; each index has its own transfer.
 
         Args:
-            update (bool, optional): Whether to request a client repaint.
-                Defaults to False.
+            index (int | None, optional): The index to ask about. Defaults to
+                None, which asks about every index.
+
+        Returns:
+            bool: Whether the index, or every index, is idle.
         """
-        self._server.data_multi_take_reset(self._value_id, update)
+        return self._server.data_multi_take_is_idle(self._value_id, index)
+
+    def reset(self) -> None:
+        """Reset (clear all indices) in the DataMultiTake."""
+        self._server.data_multi_take_reset(self._value_id)
 
     def __getitem__(self, index: int) -> SingleDataTake[T]:
-        if isinstance(index, int):
-            return self.get(index)
-        raise TypeError("index must be an integer")
+        return self.get(index)
+
+    # The server keeps no list of the indices, so there is nothing to iterate
+    # over. Without this, ``iter`` and ``in`` would fall back to
+    # ``__getitem__``, which accepts every index, and never end.
+    __iter__: None = None
 
 
 class DataMultiTakeWithHeader[T: np.generic, H](DataMultiTake[T]):
@@ -1821,13 +2361,14 @@ class DataMultiTakeWithHeader[T: np.generic, H](DataMultiTake[T]):
 
         Returns:
             SingleDataTakeWithHeader[T, H]: The handle for the given index.
+
+        Raises:
+            TypeError: If ``index`` is not an integer.
         """
-        return SingleDataTakeWithHeader(self._dtype, self._server, self._value_id, index)
+        return SingleDataTakeWithHeader(self._dtype, self._server, self._value_id, _index(index))
 
     def __getitem__(self, index: int) -> SingleDataTakeWithHeader[T, H]:
-        if isinstance(index, int):
-            return self.get(index)
-        raise TypeError("index must be an integer")
+        return self.get(index)
 
 
 _TRANSFER_OFFER = 0
@@ -1878,7 +2419,7 @@ class _TransferEndpoint(_CallbackBase):
         handle = self._server.transfer_last(self._value_id, self._download)
         return None if handle is None else TransferHandle(handle)
 
-    def connect(self, callback: Callable[[TransferHandle], Any]) -> None:
+    def connect[F: Callable[[TransferHandle], Any]](self, callback: F) -> F:
         """Call ``callback`` once for every transfer when it is done or failed.
 
         The callback runs on a callback worker; exceptions go to the server's
@@ -1887,9 +2428,14 @@ class _TransferEndpoint(_CallbackBase):
         Args:
             callback (Callable[[TransferHandle], Any]): Receives the finished
                 transfer.
+
+        Returns:
+            Callable[[TransferHandle], Any]: ``callback``, so the method also works as
+                a decorator.
         """
         self._finished.append(callback)
         self._update_dispatch()
+        return callback
 
     def disconnect(self, callback: Callable[[TransferHandle], Any]) -> None:
         """Remove a callback added with :meth:`connect`.
@@ -2204,7 +2750,7 @@ class Upload(_TransferEndpoint):
         finally:
             offer.close("the offer was not answered")
 
-    def on_offer(self, func: Callable[[TransferOffer], Any] | None) -> None:
+    def on_offer[F: Callable[[TransferOffer], Any] | None](self, func: F) -> F:
         """Set the function that answers the client's offers.
 
         It runs on a callback worker and must accept or reject the offer
@@ -2214,6 +2760,10 @@ class Upload(_TransferEndpoint):
         Args:
             func (Callable[[TransferOffer], Any] | None): The receiver, or
                 ``None`` to reject offers again.
+
+        Returns:
+            Callable[[TransferOffer], Any] | None: ``func``, so the method
+                also works as a decorator.
         """
         had_receiver = self._receiver is not None
         self._receiver = func
@@ -2222,6 +2772,7 @@ class Upload(_TransferEndpoint):
             self._server.transfer_set_receiver(self._value_id, True)
         elif func is None and had_receiver:
             self._server.transfer_set_receiver(self._value_id, False)
+        return func
 
     def _initialize(self, name: str, types: list[PyObjectType]) -> None:
         meta = None if self._meta_id is None else types[self._meta_id]
@@ -2255,6 +2806,10 @@ __all__ = [
     "bo",
     "emp",
     "enu",
+    "denu",
+    "vunit",
+    "vnamed",
+    "vtuple",
     "cl",
     "st",
     "vec",
@@ -2264,6 +2819,8 @@ __all__ = [
     "map",
     "ImageColor",
     "_CustomStruct",
+    "_CustomEnum",
+    "_TupleVariant",
     "PyObjectType",
     "UNSET",
 ]

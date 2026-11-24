@@ -9,6 +9,11 @@ pub(super) fn show_image_section(ui: &mut egui::Ui, state: &mut ViewState) {
         if let Some(size) = state.schema.image.image.get_size() {
             ui.label(format!("size = {} x {}", size[1], size[0]));
         }
+        // The header arrives with the pixels it describes.
+        ui.label(state.schema.image.image.read_header(|info| match info {
+            Some(info) => format!("frame {}, {} µm/px", info.frame, info.scale),
+            None => "no header yet".to_string(),
+        }));
 
         ui.separator();
         ui.label(format!(

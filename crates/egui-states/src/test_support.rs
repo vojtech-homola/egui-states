@@ -69,7 +69,13 @@ pub(crate) fn ack(
     id: u64,
 ) {
     assert!(
-        matches!(receiver.try_recv(), Ok(Some(crate::client::messages::ChannelMessage::Ack(actual))) if actual == id),
+        matches!(
+            receiver.try_recv(),
+            Ok(Some(
+                crate::client::messages::ChannelMessage::Ack(actual)
+                    | crate::client::messages::ChannelMessage::AckKey(actual, _)
+            )) if actual == id
+        ),
         "expected ACK for {id}"
     );
     assert!(receiver.try_recv().is_err(), "unexpected extra message");
@@ -127,4 +133,43 @@ pub(crate) fn tls_connect(
     tcp.set_read_timeout(Some(std::time::Duration::from_secs(10)))
         .unwrap();
     StreamOwned::new(ClientConnection::new(config, name).unwrap(), tcp)
+}
+
+/// Returns the messages the server logs at `level` from now on, through a
+/// `log` logger installed for the test process.
+///
+/// The logger is shared by every test in the process, so a test that checks
+/// what is logged runs [`isolated`].
+#[cfg(all(feature = "client", any(feature = "server", feature = "python")))]
+pub(crate) fn server_logs(level: log::Level) -> std::sync::mpsc::Receiver<String> {
+    use std::sync::Mutex;
+    use std::sync::mpsc::{Sender, channel};
+
+    struct Capture(Mutex<Vec<(log::Level, Sender<String>)>>);
+
+    impl log::Log for Capture {
+        fn enabled(&self, metadata: &log::Metadata) -> bool {
+            metadata.target() == "egui_states"
+        }
+
+        fn log(&self, record: &log::Record) {
+            if self.enabled(record.metadata()) {
+                for (level, sender) in self.0.lock().unwrap().iter() {
+                    if *level == record.level() {
+                        let _ = sender.send(record.args().to_string());
+                    }
+                }
+            }
+        }
+
+        fn flush(&self) {}
+    }
+
+    static CAPTURE: Capture = Capture(Mutex::new(Vec::new()));
+    if log::set_logger(&CAPTURE).is_ok() {
+        log::set_max_level(log::LevelFilter::Trace);
+    }
+    let (sender, receiver) = channel();
+    CAPTURE.0.lock().unwrap().push((level, sender));
+    receiver
 }

@@ -1,25 +1,25 @@
-"""Exact log levels and callback removal in the Python log dispatcher.
+"""The server's diagnostics in Python's logging.
 
-Native log messages reaching these loggers are checked by the rejected-client
+That a native warning reaches the logger is checked by the rejected-client
 integration scenario.
 """
 
-from egui_states.logging import LogLevel
+import logging
+
+from egui_states import _log  # noqa: PLC2701 - the forwarder has no public name
 
 
-def test_logger_dispatch_filters_levels_and_removes_loggers(local_bundle):
-    """Dispatch each level only to registered loggers and honor their removal."""
-    server, _, _ = local_bundle
-    info, warning = [], []
-    server.logging.add_logger(LogLevel.Info, info.append)
-    server.logging.add_logger(LogLevel.Warning, warning.append)
-    for level, message in [(LogLevel.Debug, "debug"), (LogLevel.Info, "info"), (LogLevel.Warning, "warning")]:
-        server.logging._callback((level.value, message))
-    assert info == ["info"]
-    assert warning == ["warning"]
-    server.logging.remove_logger(LogLevel.Info, info.append)
-    server.logging._callback((LogLevel.Info.value, "removed"))
-    server.logging.remove_all_loggers(LogLevel.Warning)
-    server.logging._callback((LogLevel.Warning.value, "cleared"))
-    assert info == ["info"]
-    assert warning == ["warning"]
+def test_server_messages_reach_the_egui_states_logger_at_their_level(caplog):
+    """Map each native level to its logging level on the ``egui_states`` logger."""
+    caplog.set_level(logging.DEBUG, logger="egui_states")
+    for level, text in enumerate(["debug", "info", "warning", "error"]):
+        _log._forward((level, text))
+    _log._forward((9, "unknown level"))
+    records = [(r.name, r.levelno, r.getMessage()) for r in caplog.records]
+    assert records == [
+        ("egui_states", logging.DEBUG, "debug"),
+        ("egui_states", logging.INFO, "info"),
+        ("egui_states", logging.WARNING, "warning"),
+        ("egui_states", logging.ERROR, "error"),
+        ("egui_states", logging.WARNING, "unknown level"),
+    ]

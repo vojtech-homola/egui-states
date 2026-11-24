@@ -11,11 +11,22 @@ use crate::server_core::server::{Acknowledge, SyncTrait};
 use crate::server_core::signals::SignalsManager;
 
 // Value --------------------------------------------------
+/// What a [`ValueCore`] keeps under its lock.
+struct ValueState {
+    value: Bytes,
+    /// The sends the client has not acknowledged yet. A change from the
+    /// client is dropped while there are any.
+    pending: usize,
+    /// Whether the sync of the current connection has sent the value. Until
+    /// then a `set` only stores: the sync sends what it stored.
+    synced: bool,
+}
+
 pub(crate) struct ValueCore {
     pub(crate) name: String,
     id: u64,
     type_id: u32,
-    value: RwLock<(Bytes, usize)>,
+    value: RwLock<ValueState>,
     sender: MessageSender,
     connected: Arc<AtomicBool>,
     signals: SignalsManager,
@@ -35,7 +46,11 @@ impl ValueCore {
             name,
             id,
             type_id,
-            value: RwLock::new((value, 0)),
+            value: RwLock::new(ValueState {
+                value,
+                pending: 0,
+                synced: false,
+            }),
             sender,
             connected,
             signals,
@@ -63,8 +78,8 @@ impl ValueCore {
         }
 
         let mut w = self.value.write();
-        if w.1 == 0 {
-            self.store(&mut w.0, value, signal);
+        if w.pending == 0 {
+            self.store(&mut w.value, value, signal);
         }
 
         Ok(())
@@ -72,26 +87,36 @@ impl ValueCore {
 
     #[inline]
     pub(crate) fn get(&self) -> Bytes {
-        self.value.read().0.clone()
+        self.value.read().value.clone()
     }
 
-    pub(crate) fn set(&self, value: Bytes, set_signals: bool, update: bool) -> Result<(), String> {
+    pub(crate) fn set(&self, value: Bytes, set_signals: bool) -> Result<(), String> {
         // checked even when disconnected, otherwise the value would be sent by sync()
         check_value_size(&self.name, value.len())?;
 
-        if self.connected.load(Ordering::Acquire) {
-            let message = ServerHeader::serialize_value(self.id, self.type_id, update, &value)?;
-            let mut w = self.value.write();
+        // Serialized before the lock is taken; a disconnected server skips it.
+        let message = match self.connected.load(Ordering::Acquire) {
+            true => Some(ServerHeader::serialize_value(
+                self.id,
+                self.type_id,
+                &value,
+            )?),
+            false => None,
+        };
 
-            w.1 += 1;
+        let mut w = self.value.write();
+        // A connection that has not synced this value yet gets it from the
+        // sync. Sending here as well would put two messages behind the one
+        // send the sync counts, so a change from the client would be
+        // accepted while the second is still on its way.
+        if let Some(message) = message.filter(|_| w.synced) {
+            w.pending += 1;
+            // Sent before the value is stored, but under the same lock, so
+            // the client and the signal consumers observe one order: message
+            // first.
             self.sender.send(message);
-            // Stored last, but still before the lock is released, so the ordering the
-            // client and the signal consumers observe is unchanged: message first.
-            self.store(&mut w.0, value, set_signals);
-        } else {
-            let mut w = self.value.write();
-            self.store(&mut w.0, value, set_signals);
         }
+        self.store(&mut w.value, value, set_signals);
         Ok(())
     }
 }
@@ -99,25 +124,29 @@ impl ValueCore {
 impl Acknowledge for ValueCore {
     fn acknowledge(&self) {
         let mut w = self.value.write();
-        if w.1 > 0 {
-            w.1 -= 1;
-        }
+        w.pending = w.pending.saturating_sub(1);
     }
 
     fn reset(&self) {
-        // Nothing in flight survives a disconnect.
-        self.value.write().1 = 0;
+        // Nothing in flight survives a disconnect, and the next connection
+        // starts with a sync.
+        let mut w = self.value.write();
+        w.pending = 0;
+        w.synced = false;
     }
 }
 
 impl SyncTrait for ValueCore {
     fn sync(&self) -> Result<(), ()> {
         let mut w = self.value.write();
-        w.1 = 1;
         let data =
-            ServerHeader::serialize_value(self.id, self.type_id, false, &w.0).map_err(|_| ())?;
-        drop(w);
-
+            ServerHeader::serialize_value(self.id, self.type_id, &w.value).map_err(|_| ())?;
+        // Set, not added: this is the only message of the connection so far,
+        // whatever an earlier connection left behind.
+        w.pending = 1;
+        w.synced = true;
+        // Sent under the lock, as `set` does: a set made meanwhile follows
+        // this value on the wire instead of being overtaken by it.
         self.sender.send(data);
         Ok(())
     }
@@ -154,17 +183,12 @@ impl ValueTakeCore {
         })
     }
 
-    pub(crate) fn set(&self, value: Bytes, blocking: bool, update: bool) -> Result<(), String> {
+    pub(crate) fn set(&self, value: Bytes, blocking: bool) -> Result<(), String> {
         check_value_size(&self.name, value.len())?;
 
         if self.connected.load(Ordering::Acquire) {
-            let message = ServerHeader::serialize_value_take(
-                self.id,
-                self.type_id,
-                blocking,
-                update,
-                &value,
-            )?;
+            let message =
+                ServerHeader::serialize_value_take(self.id, self.type_id, blocking, &value)?;
 
             let _guard = self.lock.write();
 
@@ -225,12 +249,12 @@ impl ValueStaticCore {
         })
     }
 
-    pub(crate) fn set(&self, value: Bytes, update: bool) -> Result<(), String> {
+    pub(crate) fn set(&self, value: Bytes) -> Result<(), String> {
         // checked even when disconnected, otherwise the value would be sent by sync()
         check_value_size(&self.name, value.len())?;
 
         if self.connected.load(Ordering::Acquire) {
-            let message = ServerHeader::serialize_static(self.id, self.type_id, update, &value)?;
+            let message = ServerHeader::serialize_static(self.id, self.type_id, &value)?;
             let mut w = self.value.write();
 
             *w = value;
@@ -251,10 +275,8 @@ impl ValueStaticCore {
 impl SyncTrait for ValueStaticCore {
     fn sync(&self) -> Result<(), ()> {
         let w = self.value.read();
-        let data =
-            ServerHeader::serialize_static(self.id, self.type_id, false, &w).map_err(|_| ())?;
-        drop(w);
-
+        let data = ServerHeader::serialize_static(self.id, self.type_id, &w).map_err(|_| ())?;
+        // Sent under the lock; see `ValueCore::sync`.
         self.sender.send(data);
         Ok(())
     }
@@ -321,6 +343,15 @@ mod tests {
         (value, signals, receiver)
     }
 
+    /// A value whose connection has synced it and acknowledged the sync.
+    fn synced_value() -> (Arc<ValueCore>, SignalsManager, MessageReceiver) {
+        let (value, signals, mut receiver) = value(true);
+        value.sync().unwrap();
+        next_message(&mut receiver);
+        value.acknowledge();
+        (value, signals, receiver)
+    }
+
     /// Returns the header and payload of the next queued server message.
     fn next_message(receiver: &mut MessageReceiver) -> (ServerHeader, Vec<u8>) {
         let (message, _) = receiver
@@ -334,11 +365,11 @@ mod tests {
 
     #[test]
     fn client_update_is_ignored_while_a_server_send_is_unacknowledged() {
-        let (value, signals, mut receiver) = value(true);
-        value.set(b("server"), false, false).unwrap();
+        let (value, signals, mut receiver) = synced_value();
+        value.set(b("server"), false).unwrap();
         assert!(matches!(
             next_message(&mut receiver),
-            (ServerHeader::Value(ID, TYPE_ID, false, 6), payload) if payload == b"server"
+            (ServerHeader::Value(ID, TYPE_ID, 6), payload) if payload == b"server"
         ));
 
         // The client has not yet seen "server", so its concurrent write must lose:
@@ -361,9 +392,9 @@ mod tests {
 
     #[test]
     fn every_unacknowledged_send_needs_its_own_acknowledgement() {
-        let (value, _signals, mut receiver) = value(true);
-        value.set(b("first"), false, false).unwrap();
-        value.set(b("second"), false, false).unwrap();
+        let (value, _signals, mut receiver) = synced_value();
+        value.set(b("first"), false).unwrap();
+        value.set(b("second"), false).unwrap();
         next_message(&mut receiver);
         next_message(&mut receiver);
 
@@ -383,9 +414,9 @@ mod tests {
 
     #[test]
     fn reset_discards_every_unacknowledged_send() {
-        let (value, _signals, mut receiver) = value(true);
-        value.set(b("first"), false, false).unwrap();
-        value.set(b("second"), false, false).unwrap();
+        let (value, _signals, mut receiver) = synced_value();
+        value.set(b("first"), false).unwrap();
+        value.set(b("second"), false).unwrap();
         next_message(&mut receiver);
         next_message(&mut receiver);
 
@@ -400,7 +431,7 @@ mod tests {
         value.sync().unwrap();
         assert!(matches!(
             next_message(&mut receiver),
-            (ServerHeader::Value(ID, TYPE_ID, false, 7), payload) if payload == b"initial"
+            (ServerHeader::Value(ID, TYPE_ID, 7), payload) if payload == b"initial"
         ));
 
         value.update_value(TYPE_ID, false, b("client")).unwrap();
@@ -410,10 +441,79 @@ mod tests {
         assert_eq!(value.get(), b("client"));
     }
 
+    /// The connection counts as connected before its states are synced. A
+    /// set made in between must not be sent besides the sync: two messages
+    /// for one counted send would let a change from the client through
+    /// while the second is still on its way.
+    #[test]
+    fn a_set_before_the_sync_of_a_connection_is_sent_by_the_sync() {
+        let (value, signals, mut receiver) = value(true);
+        value.set(b("early"), true).unwrap();
+        assert!(receiver.try_recv().is_err(), "the sync sends the value");
+        assert_eq!(value.get(), b("early"));
+        assert_eq!(
+            signals.try_claim(None),
+            Some((ID, b("early"), Some(b("initial"))))
+        );
+
+        value.sync().unwrap();
+        assert!(matches!(
+            next_message(&mut receiver),
+            (ServerHeader::Value(ID, TYPE_ID, 5), payload) if payload == b"early"
+        ));
+        assert!(receiver.try_recv().is_err());
+
+        // One message is on its way, and one acknowledgement answers it.
+        value.update_value(TYPE_ID, false, b("client")).unwrap();
+        assert_eq!(value.get(), b("early"));
+        value.acknowledge();
+        value.update_value(TYPE_ID, false, b("client")).unwrap();
+        assert_eq!(value.get(), b("client"));
+    }
+
+    /// A set after the sync is sent and counted on top of it.
+    #[test]
+    fn a_set_after_the_sync_is_counted_besides_it() {
+        let (value, _signals, mut receiver) = value(true);
+        value.sync().unwrap();
+        value.set(b("late"), false).unwrap();
+        next_message(&mut receiver);
+        assert!(matches!(
+            next_message(&mut receiver),
+            (ServerHeader::Value(ID, TYPE_ID, 4), payload) if payload == b"late"
+        ));
+
+        value.acknowledge();
+        value.update_value(TYPE_ID, false, b("client")).unwrap();
+        assert_eq!(value.get(), b("late"), "the set is still in flight");
+        value.acknowledge();
+        value.update_value(TYPE_ID, false, b("client")).unwrap();
+        assert_eq!(value.get(), b("client"));
+    }
+
+    /// A disconnect ends the sync of its connection: the next one starts
+    /// with a sync again, also when the reset is all that tells them apart.
+    #[test]
+    fn a_reset_makes_the_next_connection_sync_again() {
+        let (value, _signals, mut receiver) = synced_value();
+        value.reset();
+        value.set(b("between"), false).unwrap();
+        assert!(receiver.try_recv().is_err());
+
+        value.sync().unwrap();
+        assert!(matches!(
+            next_message(&mut receiver),
+            (ServerHeader::Value(ID, TYPE_ID, 7), payload) if payload == b"between"
+        ));
+        value.acknowledge();
+        value.update_value(TYPE_ID, false, b("client")).unwrap();
+        assert_eq!(value.get(), b("client"));
+    }
+
     #[test]
     fn disconnected_server_writes_are_stored_without_sending_or_blocking_clients() {
         let (value, _signals, mut receiver) = value(false);
-        value.set(b("offline"), false, false).unwrap();
+        value.set(b("offline"), false).unwrap();
         assert!(receiver.try_recv().is_err());
         value.update_value(TYPE_ID, false, b("client")).unwrap();
         assert_eq!(value.get(), b("client"));
@@ -447,7 +547,7 @@ mod tests {
         let (value, mut receiver) = value_take(true);
         value.sync().unwrap();
         let error = value
-            .set(Bytes::from(vec![0; VALUE_MAX_SIZE + 1]), false, false)
+            .set(Bytes::from(vec![0; VALUE_MAX_SIZE + 1]), false)
             .unwrap_err();
         assert!(error.contains("root.take"), "{error}");
         assert!(receiver.try_recv().is_err());
@@ -459,7 +559,7 @@ mod tests {
         // A regression would block forever, so bound it from another thread.
         let (done, finished) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let result = value.set(b("payload"), true, false);
+            let result = value.set(b("payload"), true);
             let _ = done.send(result);
         });
         let result = finished
@@ -481,14 +581,14 @@ mod tests {
             sender,
             connected.clone(),
         );
-        value.set(b("latest"), true).unwrap();
+        value.set(b("latest")).unwrap();
         assert!(receiver.try_recv().is_err());
 
         connected.store(true, Ordering::Release);
         value.sync().unwrap();
         assert!(matches!(
             next_message(&mut receiver),
-            (ServerHeader::Static(42, TYPE_ID, false, 6), payload) if payload == b"latest"
+            (ServerHeader::Static(42, TYPE_ID, 6), payload) if payload == b"latest"
         ));
     }
 }

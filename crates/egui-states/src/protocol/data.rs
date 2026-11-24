@@ -127,22 +127,21 @@ impl HeaderUpdate {
 
 #[derive(Serialize, Deserialize)]
 pub(crate) enum DataHeader {
-    /// Data type, transport type, update flag, element bytes, header.
-    All(DataType, TransportType, bool, u32, HeaderUpdate),
+    /// Data type, transport type, element bytes, header.
+    All(DataType, TransportType, u32, HeaderUpdate),
     StartBatch(u64, u32), // total element count of data, size of first batch
     Batch(u32),           // size of batch
-    /// Data type, transport type, update flag, element bytes of the last
-    /// batch, header.
-    End(DataType, TransportType, bool, u32, HeaderUpdate),
-    /// Start and element count to drain, update flag, header.
-    Drain(u64, u64, bool, HeaderUpdate),
-    /// Update flag, header.
-    Clear(bool, HeaderUpdate),
-    /// A new header alone: update flag, header.
-    Header(bool, HeaderBytes),
-    /// The data and its header return to "not set": update flag. Only a
-    /// `Data` receives it; a `DataMulti` removes a key instead.
-    Reset(bool),
+    /// Data type, transport type, element bytes of the last batch, header.
+    End(DataType, TransportType, u32, HeaderUpdate),
+    /// Start and element count to drain, header.
+    Drain(u64, u64, HeaderUpdate),
+    /// Header.
+    Clear(HeaderUpdate),
+    /// A new header alone.
+    Header(HeaderBytes),
+    /// The data and its header return to "not set". Only a `Data` receives
+    /// it; a `DataMulti` removes a key instead.
+    Reset,
 }
 
 #[cfg(any(feature = "server", feature = "python"))]
@@ -161,9 +160,9 @@ impl DataHeader {
     /// Bytes of elements in the payload, after the header bytes.
     pub(crate) fn payload_len(&self) -> u32 {
         match self {
-            Self::All(_, _, _, size, _) | Self::End(_, _, _, size, _) => *size,
+            Self::All(_, _, size, _) | Self::End(_, _, size, _) => *size,
             Self::StartBatch(_, size) | Self::Batch(size) => *size,
-            Self::Drain(..) | Self::Clear(..) | Self::Header(..) | Self::Reset(_) => 0,
+            Self::Drain(..) | Self::Clear(..) | Self::Header(..) | Self::Reset => 0,
         }
     }
 
@@ -171,23 +170,16 @@ impl DataHeader {
     pub(crate) fn header_len(&self) -> u32 {
         match self {
             Self::All(.., header) | Self::End(.., header) => header.len(),
-            Self::Drain(.., header) | Self::Clear(_, header) => header.len(),
-            Self::Header(_, header) => header.size,
-            Self::StartBatch(..) | Self::Batch(_) | Self::Reset(_) => 0,
+            Self::Drain(.., header) | Self::Clear(header) => header.len(),
+            Self::Header(header) => header.size,
+            Self::StartBatch(..) | Self::Batch(_) | Self::Reset => 0,
         }
     }
 
-    /// Whether the message asks for a repaint; the first and middle chunks of
-    /// a batch never do.
-    pub(crate) fn update_flag(&self) -> bool {
-        match self {
-            Self::All(_, _, update, ..) | Self::End(_, _, update, ..) => *update,
-            Self::Drain(_, _, update, _)
-            | Self::Clear(update, _)
-            | Self::Header(update, _)
-            | Self::Reset(update) => *update,
-            Self::StartBatch(..) | Self::Batch(_) => false,
-        }
+    /// Whether applying the message changes the data; the first and middle
+    /// chunks of a batch are only buffered.
+    pub(crate) fn changes_state(&self) -> bool {
+        !matches!(self, Self::StartBatch(..) | Self::Batch(_))
     }
 
     /// Whether the client acknowledges this message, also when it fails.
@@ -198,14 +190,14 @@ impl DataHeader {
 
 #[derive(Serialize, Deserialize)]
 pub(crate) enum DataTakeHeader {
-    /// Data type, element count, update flag, element bytes, header (`None`
-    /// for a state without a header type).
-    All(DataType, u64, bool, u32, Option<HeaderBytes>),
+    /// Data type, element count, element bytes, header (`None` for a state
+    /// without a header type).
+    All(DataType, u64, u32, Option<HeaderBytes>),
     StartBatch(u64, u32), // total element count, size of first batch
     Batch(u32),           // size of batch
-    /// Data type, element count, update flag, element bytes of the last
-    /// batch, header (`None` for a state without a header type).
-    End(DataType, u64, bool, u32, Option<HeaderBytes>),
+    /// Data type, element count, element bytes of the last batch, header
+    /// (`None` for a state without a header type).
+    End(DataType, u64, u32, Option<HeaderBytes>),
 }
 
 #[cfg(any(feature = "server", feature = "python"))]
@@ -224,7 +216,7 @@ impl DataTakeHeader {
     /// Bytes of elements in the payload, after the header bytes.
     pub(crate) fn payload_len(&self) -> u32 {
         match self {
-            Self::All(_, _, _, size, _) | Self::End(_, _, _, size, _) => *size,
+            Self::All(_, _, size, _) | Self::End(_, _, size, _) => *size,
             Self::StartBatch(_, size) | Self::Batch(size) => *size,
         }
     }
@@ -237,13 +229,6 @@ impl DataTakeHeader {
         }
     }
 
-    pub(crate) fn update_flag(&self) -> bool {
-        match self {
-            Self::All(_, _, update, ..) | Self::End(_, _, update, ..) => *update,
-            Self::StartBatch(..) | Self::Batch(_) => false,
-        }
-    }
-
     /// Whether the message completes a transfer.
     pub(crate) fn is_terminal(&self) -> bool {
         matches!(self, Self::All(..) | Self::End(..))
@@ -252,9 +237,9 @@ impl DataTakeHeader {
 
 #[derive(Serialize, Deserialize)]
 pub(crate) enum MultiDataHeader {
-    Remove(u32, bool),       // remove index from data collection
+    Remove(u32),             // remove index from data collection
     Modify(u32, DataHeader), // modify index in data collection
-    Reset(bool),             // reset data collection to empty
+    Reset,                   // reset data collection to empty
 }
 
 #[cfg(any(feature = "server", feature = "python"))]
@@ -276,29 +261,31 @@ impl MultiDataHeader {
 
 #[cfg(feature = "client")]
 impl MultiDataHeader {
-    pub(crate) fn requires_ack(&self) -> bool {
+    /// The key to acknowledge for this message, if the client acknowledges
+    /// it.
+    pub(crate) fn ack_key(&self) -> Option<u32> {
         match self {
-            Self::Modify(_, header) => header.requires_ack(),
-            Self::Remove(..) | Self::Reset(_) => false,
+            Self::Modify(key, header) if header.requires_ack() => Some(*key),
+            _ => None,
         }
     }
 }
 
 #[derive(Serialize, Deserialize)]
 pub(crate) enum DataMultiTakeHeader {
-    Remove(u32, bool),                 // remove index from data collection
+    Remove(u32),                       // remove index from data collection
     Modify(u32, DataTakeHeader, bool), // modify index in data collection, blocking flag
-    Reset(bool),                       // reset data collection to empty
+    Reset,                             // reset data collection to empty
 }
 
 #[cfg(feature = "client")]
 impl DataMultiTakeHeader {
-    /// Whether a failure of this message must still be acknowledged: only a
-    /// blocking transfer's last message waits for one.
-    pub(crate) fn requires_ack_on_failure(&self) -> bool {
+    /// The key to acknowledge when this message fails: every transfer's last
+    /// message waits for an acknowledgement.
+    pub(crate) fn ack_key_on_failure(&self) -> Option<u32> {
         match self {
-            Self::Modify(_, header, blocking) => *blocking && header.is_terminal(),
-            Self::Remove(..) | Self::Reset(_) => false,
+            Self::Modify(key, header, _) if header.is_terminal() => Some(*key),
+            _ => None,
         }
     }
 }

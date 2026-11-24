@@ -8,6 +8,7 @@
 //! The Data and take packers changed their format for headers; their encoding
 //! is pinned by `data_transfer_bytes_are_stable`.
 
+use crate::protocol::data::HeaderUpdate;
 use crate::protocol::image::{
     ImageHeader, ImageSetHeader, ImageType, checked_image_bytes, checked_image_shape,
 };
@@ -27,7 +28,6 @@ pub(super) struct ReferenceImage {
 pub(super) fn reference_image_set(
     id: u64,
     image: &ReferenceImage,
-    update: bool,
     chunk_limit: usize,
 ) -> Result<Vec<(FastVec<32>, bool)>, String> {
     let [height, width] = checked_image_shape(image.size)?;
@@ -60,7 +60,7 @@ pub(super) fn reference_image_set(
     };
 
     if bytes_size <= chunk_limit {
-        let header = ImageSetHeader::All(size, update);
+        let header = ImageSetHeader::All(size, HeaderUpdate::Keep);
         let mut message = header
             .serialize(id, image.image_type, bytes_size as u32)
             .map_err(|_| format!("Failed to serialize header for image {}", id))?;
@@ -93,7 +93,7 @@ pub(super) fn reference_image_set(
             let remaining_pixels = pixel_count - processed_pixels;
             if remaining_pixels <= chunk_pixels {
                 let remaining_size = remaining_pixels * pixel_size;
-                let header = ImageSetHeader::End(remaining_pixels as u32, update);
+                let header = ImageSetHeader::End(remaining_pixels as u32, HeaderUpdate::Keep);
                 let mut message = header
                     .serialize(id, image.image_type, remaining_size as u32)
                     .map_err(|_| format!("Failed to serialize header for image {}", id))?;
@@ -122,7 +122,6 @@ pub(super) fn reference_image_multi_set(
     id: u64,
     index: u32,
     image: &ReferenceImage,
-    update: bool,
     chunk_limit: usize,
 ) -> Result<Vec<(FastVec<32>, bool)>, String> {
     let size = checked_image_size(image.size)?;
@@ -154,7 +153,7 @@ pub(super) fn reference_image_multi_set(
     };
 
     if bytes_size <= chunk_limit {
-        let header = ImageSetHeader::All(size, update);
+        let header = ImageSetHeader::All(size, HeaderUpdate::Keep);
         let mut message = header
             .serialize_multi(id, index, image.image_type, bytes_size as u32)
             .map_err(|_| format!("Failed to serialize header for image {}", id))?;
@@ -187,7 +186,7 @@ pub(super) fn reference_image_multi_set(
             let remaining_pixels = pixel_count - processed_pixels;
             if remaining_pixels <= chunk_pixels {
                 let remaining_size = remaining_pixels * pixel_size;
-                let header = ImageSetHeader::End(remaining_pixels as u32, update);
+                let header = ImageSetHeader::End(remaining_pixels as u32, HeaderUpdate::Keep);
                 let mut message = header
                     .serialize_multi(id, index, image.image_type, remaining_size as u32)
                     .map_err(|_| format!("Failed to serialize header for image {}", id))?;
@@ -216,8 +215,9 @@ mod tests {
     use super::*;
     use crate::protocol::data::{DataType, HeaderBytes, HeaderUpdate, TransportType};
     use crate::protocol::image::{ImageMultiHeader, ImageUpdateHeader};
-    use crate::server_core::states::data::{WireHeader, pack_data_chunked};
+    use crate::server_core::states::data::pack_data_chunked;
     use crate::server_core::states::data_take::pack_data_take_chunked;
+    use crate::server_core::states::header::WireHeader;
     use crate::server_core::states::image::multi as image_multi_core;
     use crate::server_core::states::image::single::{self as image_core, ImageData};
 
@@ -286,36 +286,31 @@ mod tests {
     #[test]
     fn image_set_packers_match_the_frozen_reference() {
         for chunk_limit in [8, 12, 24, 64] {
-            for update in [false, true] {
-                for_each_image(|context, live, live_multi, reference| {
-                    let context = format!("{context} chunk {chunk_limit} update {update}");
-                    assert_eq!(
-                        plain(
-                            &image_core::pack_set_data_chunked(7, live, update, chunk_limit)
-                                .unwrap()
-                        ),
-                        plain(&reference_image_set(7, reference, update, chunk_limit).unwrap()),
-                        "{context}"
-                    );
-                    assert_eq!(
-                        plain(
-                            &image_multi_core::pack_set_data_chunked(
-                                7,
-                                2,
-                                live_multi,
-                                update,
-                                chunk_limit
-                            )
+            for_each_image(|context, live, live_multi, reference| {
+                let context = format!("{context} chunk {chunk_limit}");
+                assert_eq!(
+                    plain(
+                        &image_core::pack_set_data_chunked(7, live, chunk_limit, WireHeader::KEEP)
                             .unwrap()
-                        ),
-                        plain(
-                            &reference_image_multi_set(7, 2, reference, update, chunk_limit)
-                                .unwrap()
-                        ),
-                        "multi {context}"
-                    );
-                });
-            }
+                    ),
+                    plain(&reference_image_set(7, reference, chunk_limit).unwrap()),
+                    "{context}"
+                );
+                assert_eq!(
+                    plain(
+                        &image_multi_core::pack_set_data_chunked(
+                            7,
+                            2,
+                            live_multi,
+                            chunk_limit,
+                            WireHeader::KEEP
+                        )
+                        .unwrap()
+                    ),
+                    plain(&reference_image_multi_set(7, 2, reference, chunk_limit).unwrap()),
+                    "multi {context}"
+                );
+            });
         }
     }
 
@@ -348,12 +343,11 @@ mod tests {
         let size = [part[2], part[3]];
         let same = match (update_header, set_header) {
             (
-                ImageHeader::Update(ImageUpdateHeader::All(rect, a), update_type),
-                ImageHeader::Set(ImageSetHeader::All(set_size, b), set_type),
+                ImageHeader::Update(ImageUpdateHeader::All(rect, HeaderUpdate::Keep), update_type),
+                ImageHeader::Set(ImageSetHeader::All(set_size, HeaderUpdate::Keep), set_type),
             ) => {
                 rect == part
                     && set_size == size
-                    && a == b
                     && update_type.bytes_per_pixel() == set_type.bytes_per_pixel()
             }
             (
@@ -365,95 +359,90 @@ mod tests {
                 ImageHeader::Set(ImageSetHeader::Batch(b), _),
             ) => a == b,
             (
-                ImageHeader::Update(ImageUpdateHeader::End(a, x), _),
-                ImageHeader::Set(ImageSetHeader::End(b, y), _),
-            ) => a == b && x == y,
+                ImageHeader::Update(ImageUpdateHeader::End(a, HeaderUpdate::Keep), _),
+                ImageHeader::Set(ImageSetHeader::End(b, HeaderUpdate::Keep), _),
+            ) => a == b,
             _ => false,
         };
         assert!(same, "{context} header");
     }
 
     /// An image update is cut into parts of at most `max_lines` rows, and
-    /// each part is chunked exactly like a set of the same rows, with its
-    /// repaint flag.
+    /// each part is chunked exactly like a set of the same rows.
     #[test]
     fn image_update_parts_are_chunked_like_sets() {
         for chunk_limit in [8, 24, 64] {
             for origin in [[0usize, 0], [1, 2]] {
-                for update in [false, true] {
-                    for max_lines in [None, Some(1), Some(2), Some(100)] {
-                        for_each_image(|context, live, _, _| {
-                            let context = format!(
-                                "{context} chunk {chunk_limit} origin {origin:?} \
-                                 update {update} max_lines {max_lines:?}"
-                            );
-                            let single = image_core::pack_update_data_chunked(
+                for max_lines in [None, Some(1), Some(2), Some(100)] {
+                    for_each_image(|context, live, _, _| {
+                        let context = format!(
+                            "{context} chunk {chunk_limit} origin {origin:?} \
+                             max_lines {max_lines:?}"
+                        );
+                        let single = image_core::pack_update_data_chunked(
+                            7,
+                            &origin,
+                            live,
+                            max_lines,
+                            chunk_limit,
+                            WireHeader::KEEP,
+                        )
+                        .unwrap();
+                        let multi = image_multi_core::pack_update_data_chunked(
+                            7,
+                            2,
+                            &origin,
+                            live,
+                            max_lines,
+                            chunk_limit,
+                            WireHeader::KEEP,
+                        )
+                        .unwrap();
+                        let rows = live.size[0];
+                        let step = max_lines.unwrap_or(rows).min(rows);
+                        assert_eq!(single.len(), rows.div_ceil(step), "{context}");
+                        assert_eq!(multi.len(), single.len(), "{context}");
+
+                        for (part, (group, multi_group)) in single.iter().zip(&multi).enumerate() {
+                            let first = part * step;
+                            let count = step.min(rows - first);
+                            let rows_image = ImageData {
+                                size: [count, live.size[1]],
+                                stride: live.stride,
+                                image_type: live.image_type,
+                                data: &live.data[first * live.stride..],
+                            };
+                            let wire = [
+                                origin[1] as u32,
+                                (origin[0] + first) as u32,
+                                live.size[1] as u32,
+                                count as u32,
+                            ];
+                            let set = image_core::pack_set_data_chunked(
                                 7,
-                                &origin,
-                                live,
-                                update,
-                                max_lines,
+                                &rows_image,
                                 chunk_limit,
+                                WireHeader::KEEP,
                             )
                             .unwrap();
-                            let multi = image_multi_core::pack_update_data_chunked(
+                            let multi_set = image_multi_core::pack_set_data_chunked(
                                 7,
                                 2,
-                                &origin,
-                                live,
-                                update,
-                                max_lines,
+                                &rows_image,
                                 chunk_limit,
+                                WireHeader::KEEP,
                             )
                             .unwrap();
-                            let rows = live.size[0];
-                            let step = max_lines.unwrap_or(rows).min(rows);
-                            assert_eq!(single.len(), rows.div_ceil(step), "{context}");
-                            assert_eq!(multi.len(), single.len(), "{context}");
-
-                            for (part, (group, multi_group)) in
-                                single.iter().zip(&multi).enumerate()
-                            {
-                                let first = part * step;
-                                let count = step.min(rows - first);
-                                let rows_image = ImageData {
-                                    size: [count, live.size[1]],
-                                    stride: live.stride,
-                                    image_type: live.image_type,
-                                    data: &live.data[first * live.stride..],
-                                };
-                                let wire = [
-                                    origin[1] as u32,
-                                    (origin[0] + first) as u32,
-                                    live.size[1] as u32,
-                                    count as u32,
-                                ];
-                                let set = image_core::pack_set_data_chunked(
-                                    7,
-                                    &rows_image,
-                                    update,
-                                    chunk_limit,
-                                )
-                                .unwrap();
-                                let multi_set = image_multi_core::pack_set_data_chunked(
-                                    7,
-                                    2,
-                                    &rows_image,
-                                    update,
-                                    chunk_limit,
-                                )
-                                .unwrap();
-                                assert_eq!(group.len(), set.len(), "{context} part {part}");
-                                assert_eq!(multi_group.len(), set.len(), "{context} part {part}");
-                                for (message, set_message) in group.iter().zip(&set) {
-                                    assert_update_chunk(message, set_message, wire, &context);
-                                }
-                                for (message, set_message) in multi_group.iter().zip(&multi_set) {
-                                    assert_update_chunk(message, set_message, wire, &context);
-                                }
+                            assert_eq!(group.len(), set.len(), "{context} part {part}");
+                            assert_eq!(multi_group.len(), set.len(), "{context} part {part}");
+                            for (message, set_message) in group.iter().zip(&set) {
+                                assert_update_chunk(message, set_message, wire, &context);
                             }
-                        });
-                    }
+                            for (message, set_message) in multi_group.iter().zip(&multi_set) {
+                                assert_update_chunk(message, set_message, wire, &context);
+                            }
+                        }
+                    });
                 }
             }
         }
@@ -463,11 +452,20 @@ mod tests {
     fn image_update_rejects_zero_max_lines() {
         let image = ImageData::packed(&[0; 4], [2, 2], ImageType::Gray);
         assert!(
-            image_core::pack_update_data_chunked(7, &[0, 0], &image, false, Some(0), 64).is_err()
+            image_core::pack_update_data_chunked(7, &[0, 0], &image, Some(0), 64, WireHeader::KEEP)
+                .is_err()
         );
         assert!(
-            image_multi_core::pack_update_data_chunked(7, 2, &[0, 0], &image, false, Some(0), 64)
-                .is_err()
+            image_multi_core::pack_update_data_chunked(
+                7,
+                2,
+                &[0, 0],
+                &image,
+                Some(0),
+                64,
+                WireHeader::KEEP
+            )
+            .is_err()
         );
     }
 
@@ -483,7 +481,6 @@ mod tests {
             10,
             DataType::U8,
             None,
-            true,
             WireHeader::KEEP,
             8,
         )
@@ -492,7 +489,7 @@ mod tests {
             plain(&messages),
             vec![
                 (vec![4, 5, 1, 10, 8, 1, 2, 3, 4, 5, 6, 7, 8], true),
-                (vec![4, 5, 3, 0, 0, 10, 1, 2, 0, 9, 10], false),
+                (vec![4, 5, 3, 0, 0, 10, 2, 0, 9, 10], false),
             ]
         );
 
@@ -503,14 +500,13 @@ mod tests {
             2,
             DataType::U8,
             Some(3),
-            false,
             WireHeader::KEEP,
             8,
         )
         .unwrap();
         assert_eq!(
             plain(&messages),
-            vec![(vec![6, 5, 1, 3, 0, 0, 1, 2, 0, 2, 0, 1, 2], true)]
+            vec![(vec![6, 5, 1, 3, 0, 0, 1, 2, 2, 0, 1, 2], true)]
         );
 
         let header = HeaderBytes {
@@ -524,7 +520,6 @@ mod tests {
             2,
             DataType::U8,
             None,
-            false,
             WireHeader {
                 update: HeaderUpdate::Set(header),
                 bytes: &[7, 8, 9],
@@ -535,7 +530,7 @@ mod tests {
         assert_eq!(
             plain(&messages),
             vec![(
-                vec![4, 5, 0, 0, 0, 2, 0, 2, 1, 0xac, 0x02, 3, 7, 8, 9, 1, 2],
+                vec![4, 5, 0, 0, 0, 2, 2, 1, 0xac, 0x02, 3, 7, 8, 9, 1, 2],
                 true
             )]
         );
@@ -546,7 +541,6 @@ mod tests {
             2,
             DataType::U8,
             false,
-            true,
             Some((header, &[7, 8, 9])),
             8,
         )
@@ -554,7 +548,7 @@ mod tests {
         assert_eq!(
             plain(&messages),
             vec![(
-                vec![5, 5, 0, 0, 2, 1, 2, 1, 0xac, 0x02, 3, 0, 7, 8, 9, 1, 2],
+                vec![5, 5, 0, 0, 2, 2, 1, 0xac, 0x02, 3, 0, 7, 8, 9, 1, 2],
                 true
             )]
         );

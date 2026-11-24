@@ -83,7 +83,7 @@ def test_showcase_interactive_mode(tmp_path):
             assert server.is_running()
             assert states is server.states
             assert states.values.count.get() == 7
-            states.values.count.set(42, update=True)
+            states.values.count.set(42)
             assert states.values.count.get() == 42
             assert all(signal.getsignal(sig) == handler for sig, handler in original_handlers.items())
             ip_addr, port = server.address()

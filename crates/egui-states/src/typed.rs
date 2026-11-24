@@ -1,7 +1,10 @@
 //! Protocol-level type descriptions used to validate peer compatibility.
 
+use std::any::TypeId;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
+use std::marker::PhantomData;
 
 use crate::hashing::StableHasher;
 
@@ -48,6 +51,21 @@ pub enum ObjectType {
     Option(Box<ObjectType>),
     /// The unit type, used for empty signals and take values.
     Empty,
+    /// A named enum with at least one variant that carries data, and its
+    /// variants in declaration order. A fieldless enum is [`Self::Enum`].
+    DataEnum(String, Vec<(String, VariantFields)>),
+}
+
+/// The fields of one [`ObjectType::DataEnum`] variant.
+#[derive(Clone, Debug, PartialEq)]
+pub enum VariantFields {
+    /// A variant without fields, such as `Stop`.
+    Unit,
+    /// A variant with named fields, such as `MoveTo { x: f32, y: f32 }`, and
+    /// its ordered `(field, type)` pairs.
+    Named(Vec<(String, ObjectType)>),
+    /// A tuple variant, such as `SetGain(f32)`, and its ordered field types.
+    Tuple(Vec<ObjectType>),
 }
 
 impl Hash for ObjectType {
@@ -106,6 +124,31 @@ impl Hash for ObjectType {
                 inner.hash(state);
             }
             ObjectType::Empty => 19u8.hash(state),
+            ObjectType::DataEnum(_, variants) => {
+                20u8.hash(state);
+                (variants.len() as u64).hash(state);
+                for (variant_name, fields) in variants {
+                    variant_name.hash(state);
+                    // Field names stay out of the hash, as for structs.
+                    match fields {
+                        VariantFields::Unit => 0u8.hash(state),
+                        VariantFields::Named(fields) => {
+                            1u8.hash(state);
+                            (fields.len() as u64).hash(state);
+                            for (_, field_type) in fields {
+                                field_type.hash(state);
+                            }
+                        }
+                        VariantFields::Tuple(fields) => {
+                            2u8.hash(state);
+                            (fields.len() as u64).hash(state);
+                            for field_type in fields {
+                                field_type.hash(state);
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -144,10 +187,61 @@ impl ObjectType {
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RustDerive {
-    /// Additional derives for a generated fieldless enum.
+    /// Additional derives for a generated enum, fieldless or with data.
     Enum(&'static str, &'static [&'static str]),
     /// Additional derives for a generated struct.
     Struct(&'static str, &'static [&'static str]),
+}
+
+thread_local! {
+    /// The `#[typed]` types this thread is describing, outermost first.
+    static DESCRIBING: RefCell<Vec<TypeId>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Marks a `#[typed]` type as being described until the guard is dropped.
+///
+/// [`crate::typed`] emits [`Self::enter`] at the start of `get_type` and
+/// `rust_derives`, which reach the same functions of every field type. The
+/// macro rejects a type that names itself in a field, but it cannot see a type
+/// that reaches itself through another type or a type alias; describing such a
+/// type would recurse until the stack overflows.
+#[doc(hidden)]
+pub struct TypedGuard {
+    /// The guard belongs to the thread whose list it extends.
+    _not_send: PhantomData<*const ()>,
+}
+
+impl TypedGuard {
+    /// Starts describing `T`, whose name is `name`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if this thread is already describing `T`, which means that `T`
+    /// contains itself.
+    pub fn enter<T: 'static>(name: &'static str) -> Self {
+        let id = TypeId::of::<T>();
+        let recursive = DESCRIBING.with(|describing| {
+            let mut describing = describing.borrow_mut();
+            let recursive = describing.contains(&id);
+            if !recursive {
+                describing.push(id);
+            }
+            recursive
+        });
+        if recursive {
+            panic!("Type {name} contains itself; recursive types are not supported by `#[typed]`");
+        }
+        Self {
+            _not_send: PhantomData,
+        }
+    }
+}
+
+impl Drop for TypedGuard {
+    fn drop(&mut self) {
+        // The list is gone only while the thread exits.
+        let _ = DESCRIBING.try_with(|describing| describing.borrow_mut().pop());
+    }
 }
 
 /// Describes how a Rust type is represented by the synchronization protocol.
@@ -362,6 +456,50 @@ mod tests {
         1621035420, 4132667259, 331490409, 679028502, 3527569321, 410823959,
     ];
     const GOLDEN_MAP_HASH: u32 = 2249675624;
+
+    fn command(names: [&str; 2], kind: u8) -> ObjectType {
+        let fields = match kind {
+            0 => VariantFields::Named(vec![
+                (names[0].into(), ObjectType::F32),
+                (names[1].into(), ObjectType::String),
+            ]),
+            _ => VariantFields::Tuple(vec![ObjectType::F32, ObjectType::String]),
+        };
+        ObjectType::DataEnum(
+            "Command".into(),
+            vec![("Stop".into(), VariantFields::Unit), ("Go".into(), fields)],
+        )
+    }
+
+    /// Enums with data are a separate kind: their hash is stable, ignores
+    /// field names as for structs, and differs from a fieldless enum.
+    #[test]
+    fn data_enum_hashes_are_stable_and_distinct() {
+        let named = command(["x", "label"], 0);
+        assert_eq!(named.get_hash(), GOLDEN_DATA_ENUM_HASH);
+        assert_eq!(named.get_hash(), command(["y", "text"], 0).get_hash());
+        assert_ne!(named.get_hash(), command(["x", "label"], 1).get_hash());
+        let fieldless =
+            ObjectType::Enum("Command".into(), vec![("Stop".into(), 0), ("Go".into(), 1)]);
+        let units = ObjectType::DataEnum(
+            "Command".into(),
+            vec![
+                ("Stop".into(), VariantFields::Unit),
+                ("Go".into(), VariantFields::Unit),
+            ],
+        );
+        assert_ne!(fieldless.get_hash(), units.get_hash());
+        let renamed = ObjectType::DataEnum(
+            "Command".into(),
+            vec![
+                ("Halt".into(), VariantFields::Unit),
+                ("Go".into(), VariantFields::Unit),
+            ],
+        );
+        assert_ne!(units.get_hash(), renamed.get_hash());
+    }
+
+    const GOLDEN_DATA_ENUM_HASH: u32 = 540398448;
 
     #[test]
     fn distinct_wire_shapes_have_distinct_hashes() {
