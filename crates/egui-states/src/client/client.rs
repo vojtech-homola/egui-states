@@ -958,18 +958,18 @@ struct ClientInner {
 }
 
 /// How long a shut-down client, or one whose connection ended, keeps writing
-/// queued messages before it drops the connection.
-#[cfg(not(target_arch = "wasm32"))]
+/// queued messages and closing the socket before it drops the connection.
+///
+/// It also bounds the browser, which buffers the writes but reports a socket
+/// as closed only once the server answered the closing, or after a timeout
+/// of its own (20 s in Firefox): a server that went silent would keep the
+/// connection for that long after the client gave it up.
 const SHUTDOWN_FLUSH_GRACE: Duration = Duration::from_secs(1);
 
-/// Completes [`SHUTDOWN_FLUSH_GRACE`] after `event` is set. On WASM the
-/// browser buffers socket writes, so it never completes there.
+/// Completes [`SHUTDOWN_FLUSH_GRACE`] after `event` is set.
 async fn flush_after(event: &Event) {
     event.wait_async().await;
-    #[cfg(not(target_arch = "wasm32"))]
-    tokio::time::sleep(SHUTDOWN_FLUSH_GRACE).await;
-    #[cfg(target_arch = "wasm32")]
-    std::future::pending::<()>().await;
+    timer::sleep(SHUTDOWN_FLUSH_GRACE).await;
 }
 
 /// Runs `future` until it completes or `stop` does; `None` if `stop` won.
@@ -1034,17 +1034,9 @@ impl ClientCore {
     /// Runs `future` until it completes or [`SHUTDOWN_FLUSH_GRACE`] has passed
     /// since the client shut down.
     ///
-    /// Returns `None` if the grace period ran out first. On WASM the browser
-    /// buffers socket writes, so `future` always runs to completion.
+    /// Returns `None` if the grace period ran out first.
     async fn until_flush_deadline<F: Future>(&self, future: F) -> Option<F::Output> {
-        let deadline = async {
-            self.0.shutdown.wait_async().await;
-            #[cfg(not(target_arch = "wasm32"))]
-            tokio::time::sleep(SHUTDOWN_FLUSH_GRACE).await;
-            #[cfg(target_arch = "wasm32")]
-            std::future::pending::<()>().await;
-        };
-        until(future, deadline).await
+        until(future, flush_after(&self.0.shutdown)).await
     }
 
     /// Ends a connection attempt or connection: requests to connect made
