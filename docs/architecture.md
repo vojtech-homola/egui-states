@@ -570,6 +570,13 @@ sent right after connecting is never lost. Until then the client handles
 report no texture, unless `Image::initialize` set a placeholder. A placeholder
 is only created while no texture exists, so it never replaces a server image.
 
+A client keeps an `Image` across a disconnect, and the synchronization of the
+next connection replaces it with the server's image. A server that has none,
+such as one that was restarted and has not set the image yet, says so in the
+synchronization, and the client returns to no texture, or to the placeholder
+it showed, in the same texture. The keys of an `ImageMulti` are reset by
+every synchronization.
+
 Every image dimension is limited to **65,536 pixels, inclusive**, for both `Image`
 and each entry in `ImageMulti`. Rust and Python inputs, server storage and
 transport packers, and client receive paths enforce the same limit before

@@ -263,6 +263,10 @@ pub(crate) enum ImageHeader {
     Fill([u32; 2], [u8; 4], HeaderUpdate), // [width, height], RGBA, header
     /// A new header alone, for an image that exists.
     Header(HeaderBytes),
+    /// The server has no image: sent by the synchronization of a connection,
+    /// so a client does not keep the image of an earlier connection. Not a
+    /// message of an indexed image, whose key is removed instead.
+    Reset,
 }
 
 #[cfg(feature = "client")]
@@ -270,7 +274,7 @@ impl ImageHeader {
     /// Whether applying the message changes the image; the first and middle
     /// chunks of an image set or update only buffer pixels.
     pub(crate) fn changes_state(&self) -> bool {
-        matches!(self, Self::Header(_)) || self.requires_ack()
+        matches!(self, Self::Header(_) | Self::Reset) || self.requires_ack()
     }
 
     /// Bytes of the header that precede the pixels in the payload.

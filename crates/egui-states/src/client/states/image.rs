@@ -25,6 +25,9 @@ type Texture = (TextureHandle, [usize; 2]);
 /// placeholder without one.
 type Shown<H> = (Texture, Option<H>);
 
+/// The image of a placeholder and its header, kept to show it again.
+type Placeholder<H> = (ColorImage, Option<H>);
+
 /// How a texture is sampled until `set_texture_options` changes it.
 const DEFAULT_TEXTURE_OPTIONS: egui::TextureOptions = egui::TextureOptions::NEAREST;
 
@@ -60,6 +63,11 @@ pub(crate) trait UpdateImageMulti: Send + Sync {
 /// uses nearest-neighbor filtering and clamps sampling at its edges; see
 /// [`Self::set_texture_options`].
 ///
+/// The image stays across a disconnect, and the next connection replaces it
+/// with the server's image. A server that has none, such as one that was
+/// restarted and has not set the image yet, returns the client to the state
+/// before the first image: the placeholder with its header, or no texture.
+///
 /// A header that arrives with an image or an update is stored together with
 /// the pixels it describes, so a reader never sees the new header with the
 /// old pixels. egui uploads a texture change at the end of the frame that is
@@ -73,6 +81,9 @@ pub struct Image<H = ()> {
     context: egui::Context,
     sender: MessageSender,
     texture: Arc<RwLock<Option<Shown<H>>>>,
+    /// The placeholder that was shown and its header, kept to show it again
+    /// when a server has no image. Locked before `texture`.
+    placeholder: Arc<Mutex<Option<Placeholder<H>>>>,
     buffer: Arc<Mutex<Option<PartialImage>>>,
     options: Arc<Mutex<egui::TextureOptions>>,
 }
@@ -91,6 +102,7 @@ impl<H: HeaderValue> Image<H> {
             context,
             sender,
             texture: Arc::new(RwLock::new(None)),
+            placeholder: Arc::new(Mutex::new(None)),
             buffer: Arc::new(Mutex::new(None)),
             options: Arc::new(Mutex::new(DEFAULT_TEXTURE_OPTIONS)),
         }
@@ -172,7 +184,9 @@ impl<H: HeaderValue> Image<H> {
     /// Does nothing once the texture exists, so it never replaces an image
     /// from the server, whether it is called before or after connecting. The
     /// first image from the server replaces the placeholder. The getters then
-    /// return `Some` even though the server has not sent an image yet. An
+    /// return `Some` even though the server has not sent an image yet. The
+    /// client keeps a copy of a placeholder it showed, and shows it again,
+    /// in the same texture, when it connects to a server that has no image. An
     /// image with a header type has no header until the server sends one;
     /// [`Self::initialize_with_header`] gives the placeholder one.
     ///
@@ -206,11 +220,32 @@ impl<H: HeaderValue> Image<H> {
             ));
         }
         checked_image_bytes(image.size, 4)?;
+        let mut placeholder = self.placeholder.lock();
         let mut texture = self.texture.write();
         if texture.is_none() {
-            *texture = Some((self.create_texture(image), header));
+            *texture = Some((self.create_texture(image.clone()), header.clone()));
+            *placeholder = Some((image, header));
         }
         Ok(())
+    }
+
+    /// Returns the image to what it was before the server sent one: the
+    /// placeholder that was shown, in the same texture, or no texture.
+    fn reset(&self) {
+        self.buffer.lock().take();
+        let placeholder = self.placeholder.lock();
+        let mut texture = self.texture.write();
+        match (placeholder.as_ref(), texture.as_mut()) {
+            (Some((image, header)), Some(((texture_handle, size), current))) => {
+                *size = image.size;
+                texture_handle.set(image.clone(), self.texture_options());
+                *current = header.clone();
+            }
+            (Some((image, header)), None) => {
+                *texture = Some((self.create_texture(image.clone()), header.clone()));
+            }
+            (None, _) => *texture = None,
+        }
     }
 
     /// Names the state in header errors.
@@ -441,6 +476,10 @@ impl<H: HeaderValue> UpdateImage for Image<H> {
             }
             ImageHeader::Fill(size, rgba, update) => self.fill_image(size, rgba, update, payload),
             ImageHeader::Header(bytes) => self.replace_header(bytes, payload),
+            ImageHeader::Reset => {
+                self.reset();
+                Ok(())
+            }
         }
     }
 
@@ -458,6 +497,7 @@ impl<H> Clone for Image<H> {
             context: self.context.clone(),
             sender: self.sender.clone(),
             texture: self.texture.clone(),
+            placeholder: self.placeholder.clone(),
             buffer: self.buffer.clone(),
             options: self.options.clone(),
         }
@@ -820,6 +860,10 @@ impl<H: HeaderValue> UpdateImageMulti for ImageMulti<H> {
                 self.fill_image(index, size, rgba, update, payload)
             }
             ImageHeader::Header(bytes) => self.replace_header(index, bytes, payload),
+            ImageHeader::Reset => Err(format!(
+                "ImageMulti {} received the reset of a single image for index {}",
+                self.name, index
+            )),
         }
     }
 

@@ -303,7 +303,12 @@ impl SyncTrait for Image {
         }
 
         let Some(stored) = w.as_ref() else {
-            self.scheduler.begin_sync(&lock, Vec::new(), &[]);
+            // The client may hold the image of an earlier connection, to
+            // another server process for example; it is told there is none.
+            let reset = ServerHeader::Image(self.scheduler.id, ImageHeader::Reset, 0);
+            let message = crate::protocol::serialize_heap(&reset)?;
+            self.scheduler
+                .begin_sync(&lock, vec![(message, false)], &[]);
             return Ok(());
         };
 
@@ -1510,6 +1515,56 @@ mod header_tests {
                 _
             )
         )
+    }
+
+    /// A client keeps its image across a disconnect. A server without an
+    /// image, as after a restart, unsets it with the synchronization: the
+    /// client is back at no texture, or at the placeholder it showed, in the
+    /// same texture.
+    #[test]
+    fn a_server_without_an_image_unsets_the_image_of_the_client() {
+        const PIXELS: [u8; 2] = [1, 2];
+        let type_id = <Meta as Typed>::get_type().get_hash();
+
+        for placeholder in [false, true] {
+            let (client_sender, _client_receiver) = ClientSender::new();
+            let client: ClientImage<Meta> =
+                ClientImage::new("image".into(), 1, client_sender, egui::Context::default());
+            if placeholder {
+                let image = egui::ColorImage::filled([3, 1], egui::Color32::WHITE);
+                client.initialize_with_header(image, decoded(9)).unwrap();
+            }
+            let before = client.get();
+            assert_eq!(before.is_some(), placeholder);
+
+            // A new server process, which the client synchronizes with.
+            let serve = |stored: bool| {
+                let connected = Arc::new(AtomicBool::new(false));
+                let (sender, mut receiver) = MessageSender::new();
+                let image = Image::new("image".into(), 1, Some(type_id), sender, connected.clone());
+                if stored {
+                    let data = ImageData::packed(&PIXELS, [1, 2], ImageType::Gray);
+                    image.set_image(data, Some(&meta(1)), false).unwrap();
+                }
+                connected.store(true, Ordering::Release);
+                image.sync().unwrap();
+                let header = deliver(&mut receiver, &client);
+                assert!(receiver.try_recv().is_err(), "one message per sync");
+                header
+            };
+
+            assert!(matches!(serve(true), ImageHeader::Set(..)));
+            assert_eq!(client.header(), Some(decoded(1)));
+            assert_ne!(client.get_size(), before.map(|(_, size)| size));
+
+            assert!(matches!(serve(false), ImageHeader::Reset));
+            assert_eq!(client.get(), before);
+            assert_eq!(client.header(), placeholder.then(|| decoded(9)));
+
+            // The next image replaces the placeholder again.
+            assert!(matches!(serve(true), ImageHeader::Set(..)));
+            assert_eq!(client.header(), Some(decoded(1)));
+        }
     }
 
     #[test]
