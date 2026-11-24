@@ -128,6 +128,10 @@ compile_fail! {
     // does not follow the condition.
     typed_serde_cfg_attr: "typed-serde-cfg-attr" => "a `serde` attribute inside `cfg_attr` is not supported by `#[typed]`",
     typed_serde_cfg_attr_nested: "typed-serde-cfg-attr-nested" => "a `serde` attribute inside `cfg_attr` is not supported by `#[typed]`",
+    // A field or a variant behind `cfg` would be described in a build that
+    // does not have it.
+    typed_cfg_field: "typed-cfg-field" => "`#[cfg]` on a field or a variant is not supported by `#[typed]`",
+    typed_cfg_variant: "typed-cfg-variant" => "`#[cfg]` on a field or a variant is not supported by `#[typed]`",
 }
 
 #[test]

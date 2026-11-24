@@ -30,6 +30,15 @@ default; applications can pass `ClientBuilder::get_version_hash()` as the
 client application version and the generated `StatesServer::VERSION_HASH` as
 the server version to reject mismatched state trees during the handshake.
 
+A value type marked `#[egui_states::typed]` is described once, and the
+description does not depend on the build: the generated bindings and the
+type's hash come from it, while Serde encodes the type as the build compiled
+it. So the two must not differ by build. A `#[cfg(...)]` on a field or a
+variant of a typed type is a compile error, as are Serde attributes that
+change the encoding (`skip`, `flatten`, ...) and any Serde attribute inside
+`cfg_attr`. A `#[cfg(...)]` on the whole type is fine; a member that only some
+builds need stays in every build, as an `Option` for example.
+
 The state definition can be imported from a library crate or compiled from the
 same source module into both the GUI and build-script crates. See the
 [counter build script](../example/counter/gui/build.rs) for a shared source

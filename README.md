@@ -64,7 +64,9 @@ zoomed-in pixels sharp; `set_texture_options` on an `Image` or `ImageMulti`
 changes that, for example to `egui::TextureOptions::LINEAR`, from the next
 image the server sends.
 
-Custom structs and enums are marked `#[egui_states::typed]`. An enum can carry
+Custom structs and enums are marked `#[egui_states::typed]`. Such a type has
+one shape in every build: a `#[cfg(...)]` on a field or a variant, and a Serde
+attribute that changes the encoding, are compile errors. An enum can carry
 data in its variants, such as commands with parameters sent in order through
 one `#[state(queue)] Signal<Command>`. In Python, each variant is a frozen
 dataclass, created as `Command.Stop()` or `Command.MoveTo(x=1.0, y=2.0)` and
