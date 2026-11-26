@@ -919,7 +919,7 @@ dependencies = [
 
 [[package]]
 name = "counter_gui"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "eframe",
  "egui_states",
@@ -927,7 +927,7 @@ dependencies = [
 
 [[package]]
 name = "counter_server"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "counter_gui",
  "egui_states",
@@ -1261,7 +1261,7 @@ dependencies = [
 
 [[package]]
 name = "egui_states"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "bytes",
  "cap-std",
@@ -1293,7 +1293,7 @@ dependencies = [
 
 [[package]]
 name = "egui_states_bench"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "bytes",
  "criterion",
@@ -1303,7 +1303,7 @@ dependencies = [
 
 [[package]]
 name = "egui_states_macros"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1312,7 +1312,7 @@ dependencies = [
 
 [[package]]
 name = "egui_states_python"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "egui_states",
  "pyo3",
@@ -1321,18 +1321,18 @@ dependencies = [
 
 [[package]]
 name = "egui_states_test_process"
-version = "0.16.0"
+version = "0.17.0"
 
 [[package]]
 name = "egui_states_test_schema"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "egui_states",
 ]
 
 [[package]]
 name = "egui_states_test_support"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "egui",
  "egui_states",
@@ -1496,7 +1496,7 @@ dependencies = [
 
 [[package]]
 name = "example_smoke_tests"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "counter_gui",
  "counter_server",
@@ -3988,7 +3988,7 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
 name = "showcase_gui"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "eframe",
  "egui_states",
@@ -4000,7 +4000,7 @@ dependencies = [
 
 [[package]]
 name = "showcase_gui_core"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "eframe",
  "egui",
@@ -4009,7 +4009,7 @@ dependencies = [
 
 [[package]]
 name = "showcase_server"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "egui_states",
  "log",
