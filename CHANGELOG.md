@@ -1,5 +1,42 @@
 # Changelog
 
+## [0.17.0] - 2026-11-26
+
+### 🚀 Features
+
+- Improve examples [#63](https://github.com/vojtech-homola/egui-states/pull/63)
+- Improve project testing and fix any bugs which ware discovered [#64](https://github.com/vojtech-homola/egui-states/pull/64)
+- Add C ABI interface for state server [#65](https://github.com/vojtech-homola/egui-states/pull/65)
+- Add support for serving static web pages alongside state server [#66](https://github.com/vojtech-homola/egui-states/pull/66)
+- Add macOS and Python 3.15 support [#68](https://github.com/vojtech-homola/egui-states/pull/68)
+- Add CI/CD workflows for GitHub Actions and Dependabot configuration [#69](https://github.com/vojtech-homola/egui-states/pull/69)
+- Add a configurable server heartbeat [#75](https://github.com/vojtech-homola/egui-states/pull/75)
+- [**breaking**] Improve static web page serving [#76](https://github.com/vojtech-homola/egui-states/pull/76)
+- [**breaking**] Add typed Data headers and restructure the server and client cores [#77](https://github.com/vojtech-homola/egui-states/pull/77)
+- [**breaking**] Give Data a "not set" state and require headers to create data [#78](https://github.com/vojtech-homola/egui-states/pull/78)
+- Add data transfer channels [#79](https://github.com/vojtech-homola/egui-states/pull/79)
+- Enhance Python server example with interactive mode and web serving capabilities
+- Add optional TLS for the server and native client [#80](https://github.com/vojtech-homola/egui-states/pull/80)
+- [**breaking**] Lower state latency during image and data transfers [#81](https://github.com/vojtech-homola/egui-states/pull/81)
+- Let the server control which client may connect and tell clients why they were closed [#82](https://github.com/vojtech-homola/egui-states/pull/82)
+- Set initial state values with #[state(init = ...)] [#83](https://github.com/vojtech-homola/egui-states/pull/83)
+- [**breaking**] Store server images in their own format and share the transfer scheduler with Data [#85](https://github.com/vojtech-homola/egui-states/pull/85)
+- [**breaking**] Expand synchronized state types and client behavior [#87](https://github.com/vojtech-homola/egui-states/pull/87)
+
+### 🐛 Bug Fixes
+
+- Resolve hangs, races and panics found in code review [#67](https://github.com/vojtech-homola/egui-states/pull/67)
+- Resolve CI failures and clippy warnings [#73](https://github.com/vojtech-homola/egui-states/pull/73)
+- Bug fixes from code review [#74](https://github.com/vojtech-homola/egui-states/pull/74)
+
+### 🚜 Refactor
+
+- Reorder parameters in set, add, replace, and remove methods for consistency
+
+### 🧪 Testing
+
+- Wait for the low-priority image removal in images-wire [#84](https://github.com/vojtech-homola/egui-states/pull/84)
+
 ## [0.16.0] - 2026-08-24
 
 ### 🚀 Features
